@@ -784,9 +784,29 @@ pub struct OptionsExpressionFeasibilityTimingStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_exactify_us: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_summary_overwrite_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_summary_overwrite_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_enrichment_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_enrichment_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_extreme_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_extreme_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_sealed_stage_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_sealed_stage_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_non_extreme_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_non_extreme_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_extreme_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_extreme_us: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_speedup_vs_cpu: Option<f64>,
 }
@@ -1171,6 +1191,33 @@ mod tests {
         assert_eq!(req.sealed_finalist_count, 5);
         assert_eq!(req.structure_family, OptionsStructureFamily::LongSingle);
         assert!(!req.delay_minutes.is_empty());
+    }
+
+    #[test]
+    fn feasibility_timing_stats_default_prompt12_fields_to_none_and_omit_serialization() {
+        let timings = OptionsExpressionFeasibilityTimingStats::default();
+        assert_eq!(timings.gpu_exactify_summary_overwrite_ms, None);
+        assert_eq!(timings.gpu_exactify_summary_overwrite_us, None);
+        assert_eq!(timings.gpu_exactify_enrichment_ms, None);
+        assert_eq!(timings.gpu_exactify_enrichment_us, None);
+        assert_eq!(timings.gpu_exactify_extreme_ms, None);
+        assert_eq!(timings.gpu_exactify_extreme_us, None);
+        assert_eq!(timings.gpu_sealed_non_extreme_ms, None);
+        assert_eq!(timings.gpu_sealed_non_extreme_us, None);
+        assert_eq!(timings.gpu_sealed_extreme_ms, None);
+        assert_eq!(timings.gpu_sealed_extreme_us, None);
+
+        let value = serde_json::to_value(&timings).expect("serialize timings");
+        assert!(value.get("gpu_exactify_summary_overwrite_ms").is_none());
+        assert!(value.get("gpu_exactify_summary_overwrite_us").is_none());
+        assert!(value.get("gpu_exactify_enrichment_ms").is_none());
+        assert!(value.get("gpu_exactify_enrichment_us").is_none());
+        assert!(value.get("gpu_exactify_extreme_ms").is_none());
+        assert!(value.get("gpu_exactify_extreme_us").is_none());
+        assert!(value.get("gpu_sealed_non_extreme_ms").is_none());
+        assert!(value.get("gpu_sealed_non_extreme_us").is_none());
+        assert!(value.get("gpu_sealed_extreme_ms").is_none());
+        assert!(value.get("gpu_sealed_extreme_us").is_none());
     }
 
     #[test]

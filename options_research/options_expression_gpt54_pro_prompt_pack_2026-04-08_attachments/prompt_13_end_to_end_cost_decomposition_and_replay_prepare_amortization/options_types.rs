@@ -474,9 +474,32 @@ pub struct OptionsExpressionMetrics {
     pub invalid_rate: f64,
     pub expectancy_per_trade: f64,
     pub expectancy_per_premium: f64,
+    #[serde(default)]
+    pub mean_return_on_premium: f64,
+    #[serde(default)]
+    pub return_volatility_on_premium: f64,
     pub median_return_on_premium: f64,
     pub win_rate: f64,
     pub total_pnl_per_contract: f64,
+}
+
+impl OptionsExpressionMetrics {
+    pub fn total_events(&self) -> usize {
+        self.valid_trades.saturating_add(self.invalid_events)
+    }
+
+    pub fn has_supported_trades(&self) -> bool {
+        self.valid_trades > 0
+    }
+
+    pub fn support_rate(&self) -> Option<f64> {
+        let total_events = self.total_events();
+        if total_events == 0 {
+            None
+        } else {
+            Some(self.valid_trades as f64 / total_events as f64)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -524,33 +547,50 @@ pub struct OptionsExpressionTupleResult {
 }
 
 impl OptionsExpressionTupleResult {
+    fn supported_metrics(
+        metrics: Option<&OptionsExpressionMetrics>,
+    ) -> Option<&OptionsExpressionMetrics> {
+        metrics.filter(|metrics| metrics.has_supported_trades())
+    }
+
+    pub fn supported_holdout_metrics(&self) -> Option<&OptionsExpressionMetrics> {
+        Self::supported_metrics(self.holdout_metrics.as_ref())
+    }
+
+    pub fn supported_sealed_evaluation_metrics(&self) -> Option<&OptionsExpressionMetrics> {
+        Self::supported_metrics(self.sealed_evaluation_metrics.as_ref())
+    }
+
     pub fn strongest_validation_metrics(&self) -> Option<&OptionsExpressionMetrics> {
-        self.sealed_evaluation_metrics
-            .as_ref()
-            .or(self.holdout_metrics.as_ref())
+        self.supported_sealed_evaluation_metrics()
+            .or(self.supported_holdout_metrics())
     }
 
     pub fn strongest_validation_stress_metrics(&self) -> Option<&OptionsExpressionMetrics> {
-        self.sealed_extreme_stress_metrics
-            .as_ref()
-            .or(self.sealed_harsher_stress_metrics.as_ref())
-            .or(self.sealed_stress_metrics.as_ref())
-            .or(self.extreme_stress_metrics.as_ref())
-            .or(self.harsher_stress_metrics.as_ref())
-            .or(self.stress_metrics.as_ref())
+        Self::supported_metrics(self.sealed_extreme_stress_metrics.as_ref())
+            .or(Self::supported_metrics(
+                self.sealed_harsher_stress_metrics.as_ref(),
+            ))
+            .or(Self::supported_metrics(self.sealed_stress_metrics.as_ref()))
+            .or(Self::supported_metrics(
+                self.extreme_stress_metrics.as_ref(),
+            ))
+            .or(Self::supported_metrics(
+                self.harsher_stress_metrics.as_ref(),
+            ))
+            .or(Self::supported_metrics(self.stress_metrics.as_ref()))
     }
 
     pub fn inferred_validation_verdict(&self) -> OptionsExpressionValidationVerdict {
-        let has_sealed_validation =
-            self.sealed_finalist || self.sealed_evaluation_metrics.is_some();
-        let has_holdout_validation = self.holdout_metrics.is_some();
-        if has_sealed_validation {
+        let has_supported_sealed_validation = self.supported_sealed_evaluation_metrics().is_some();
+        let has_supported_holdout_validation = self.supported_holdout_metrics().is_some();
+        if has_supported_sealed_validation {
             if self.is_stress_fragile() {
                 OptionsExpressionValidationVerdict::StressFragile
             } else {
                 OptionsExpressionValidationVerdict::SealedFinalist
             }
-        } else if has_holdout_validation {
+        } else if has_supported_holdout_validation {
             if self.is_stress_fragile() {
                 OptionsExpressionValidationVerdict::StressFragile
             } else {
@@ -744,9 +784,29 @@ pub struct OptionsExpressionFeasibilityTimingStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_exactify_us: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_summary_overwrite_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_summary_overwrite_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_enrichment_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_enrichment_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_extreme_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_extreme_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_sealed_stage_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_sealed_stage_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_non_extreme_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_non_extreme_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_extreme_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_extreme_us: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_speedup_vs_cpu: Option<f64>,
 }
@@ -769,6 +829,89 @@ pub struct OptionsExpressionFeasibilityEventCoverage {
     pub search_events_with_harsher_outcomes: usize,
     pub holdout_events_with_harsher_outcomes: usize,
     pub sealed_test_events_with_harsher_outcomes: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionOverlapWindowSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_reference_as_of_utc: Option<String>,
+    pub total_events_in_dataset_window: usize,
+    pub search_events_in_dataset_window: usize,
+    pub holdout_events_in_dataset_window: usize,
+    pub sealed_test_events_in_dataset_window: usize,
+    pub total_events_before_dataset_window: usize,
+    pub total_events_after_dataset_window: usize,
+    pub search_events_before_dataset_window: usize,
+    pub search_events_after_dataset_window: usize,
+    pub holdout_events_before_dataset_window: usize,
+    pub holdout_events_after_dataset_window: usize,
+    pub sealed_test_events_before_dataset_window: usize,
+    pub sealed_test_events_after_dataset_window: usize,
+    #[serde(default)]
+    pub total_events_before_contract_reference_as_of: usize,
+    #[serde(default)]
+    pub search_events_before_contract_reference_as_of: usize,
+    #[serde(default)]
+    pub holdout_events_before_contract_reference_as_of: usize,
+    #[serde(default)]
+    pub sealed_test_events_before_contract_reference_as_of: usize,
+    pub total_overlap_rate: f64,
+    pub search_overlap_rate: f64,
+    pub holdout_overlap_rate: f64,
+    pub sealed_test_overlap_rate: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionSplitInvalidReasonSummary {
+    #[serde(default)]
+    pub search_invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+    #[serde(default)]
+    pub holdout_invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+    #[serde(default)]
+    pub sealed_test_invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExpressionCoverageAdequacyVerdict {
+    #[default]
+    Unknown,
+    Healthy,
+    WeakDatasetOverlap,
+    SearchOverlapMissing,
+    SearchCoverageWeak,
+    HoldoutCoverageWeak,
+    SealedCoverageWeak,
+    ContractEligibilityFragile,
+    LateEntryFragile,
+    StrikeWindowFragile,
+    MixedFragile,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionCoverageAdequacySummary {
+    #[serde(default)]
+    pub verdict: OptionsExpressionCoverageAdequacyVerdict,
+    #[serde(default)]
+    pub non_promotable: bool,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub search_candidate_coverage_rate: f64,
+    #[serde(default)]
+    pub holdout_candidate_coverage_rate: f64,
+    #[serde(default)]
+    pub sealed_test_candidate_coverage_rate: f64,
+    #[serde(default)]
+    pub search_baseline_outcome_coverage_rate: f64,
+    #[serde(default)]
+    pub holdout_baseline_outcome_coverage_rate: f64,
+    #[serde(default)]
+    pub sealed_test_baseline_outcome_coverage_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dominant_invalid_reason: Option<OptionsCandidateInvalidReason>,
+    #[serde(default)]
+    pub dominant_invalid_reason_share: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -863,6 +1006,12 @@ pub struct OptionsExpressionFeasibilityReport {
     pub harsher_summary_bytes_estimate: usize,
     pub timings: OptionsExpressionFeasibilityTimingStats,
     pub event_coverage: OptionsExpressionFeasibilityEventCoverage,
+    #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub split_invalid_reasons: OptionsExpressionSplitInvalidReasonSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
     pub cache_stats: OptionsExpressionFeasibilityCacheStats,
     #[serde(default)]
     pub invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
@@ -923,6 +1072,12 @@ pub struct OptionsExpressionRunResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging: Option<OptionsExpressionStagingStats>,
     #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
+    #[serde(default)]
+    pub split_invalid_reasons: OptionsExpressionSplitInvalidReasonSummary,
+    #[serde(default)]
     pub ranked_results: Vec<OptionsExpressionTupleResult>,
 }
 
@@ -944,6 +1099,12 @@ pub struct OptionsExpressionArtifactV1 {
     pub diagnostics: OptionsExpressionDiagnostics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging: Option<OptionsExpressionStagingStats>,
+    #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
+    #[serde(default)]
+    pub split_invalid_reasons: OptionsExpressionSplitInvalidReasonSummary,
     pub selection_metrics: Vec<OptionsExpressionTupleResult>,
 }
 
@@ -951,17 +1112,32 @@ pub struct OptionsExpressionArtifactV1 {
 mod tests {
     use super::*;
 
-    fn metrics(ev_per_premium: f64) -> OptionsExpressionMetrics {
+    fn metrics_with_counts(
+        ev_per_premium: f64,
+        valid_trades: usize,
+        invalid_events: usize,
+    ) -> OptionsExpressionMetrics {
+        let total_events = valid_trades.saturating_add(invalid_events);
         OptionsExpressionMetrics {
-            valid_trades: 4,
-            invalid_events: 0,
-            invalid_rate: 0.0,
+            valid_trades,
+            invalid_events,
+            invalid_rate: if total_events == 0 {
+                0.0
+            } else {
+                invalid_events as f64 / total_events as f64
+            },
             expectancy_per_trade: ev_per_premium * 10.0,
             expectancy_per_premium: ev_per_premium,
+            mean_return_on_premium: ev_per_premium,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: ev_per_premium * 0.8,
             win_rate: 0.5,
             total_pnl_per_contract: ev_per_premium * 100.0,
         }
+    }
+
+    fn metrics(ev_per_premium: f64) -> OptionsExpressionMetrics {
+        metrics_with_counts(ev_per_premium, 4, 0)
     }
 
     fn sample_tuple_result() -> OptionsExpressionTupleResult {
@@ -1018,6 +1194,33 @@ mod tests {
     }
 
     #[test]
+    fn feasibility_timing_stats_default_prompt12_fields_to_none_and_omit_serialization() {
+        let timings = OptionsExpressionFeasibilityTimingStats::default();
+        assert_eq!(timings.gpu_exactify_summary_overwrite_ms, None);
+        assert_eq!(timings.gpu_exactify_summary_overwrite_us, None);
+        assert_eq!(timings.gpu_exactify_enrichment_ms, None);
+        assert_eq!(timings.gpu_exactify_enrichment_us, None);
+        assert_eq!(timings.gpu_exactify_extreme_ms, None);
+        assert_eq!(timings.gpu_exactify_extreme_us, None);
+        assert_eq!(timings.gpu_sealed_non_extreme_ms, None);
+        assert_eq!(timings.gpu_sealed_non_extreme_us, None);
+        assert_eq!(timings.gpu_sealed_extreme_ms, None);
+        assert_eq!(timings.gpu_sealed_extreme_us, None);
+
+        let value = serde_json::to_value(&timings).expect("serialize timings");
+        assert!(value.get("gpu_exactify_summary_overwrite_ms").is_none());
+        assert!(value.get("gpu_exactify_summary_overwrite_us").is_none());
+        assert!(value.get("gpu_exactify_enrichment_ms").is_none());
+        assert!(value.get("gpu_exactify_enrichment_us").is_none());
+        assert!(value.get("gpu_exactify_extreme_ms").is_none());
+        assert!(value.get("gpu_exactify_extreme_us").is_none());
+        assert!(value.get("gpu_sealed_non_extreme_ms").is_none());
+        assert!(value.get("gpu_sealed_non_extreme_us").is_none());
+        assert!(value.get("gpu_sealed_extreme_ms").is_none());
+        assert!(value.get("gpu_sealed_extreme_us").is_none());
+    }
+
+    #[test]
     fn inferred_validation_verdict_defaults_to_search_only_without_holdout() {
         let tuple = sample_tuple_result();
         assert_eq!(
@@ -1063,6 +1266,77 @@ mod tests {
         assert_eq!(
             tuple.inferred_validation_verdict(),
             OptionsExpressionValidationVerdict::StressFragile
+        );
+    }
+
+    #[test]
+    fn metrics_deserialize_missing_single_pass_expansion_fields_to_zero() {
+        let metrics: OptionsExpressionMetrics = serde_json::from_value(serde_json::json!({
+            "valid_trades": 3,
+            "invalid_events": 1,
+            "invalid_rate": 0.25,
+            "expectancy_per_trade": 5.0,
+            "expectancy_per_premium": 0.10,
+            "median_return_on_premium": 0.08,
+            "win_rate": 0.66,
+            "total_pnl_per_contract": 15.0
+        }))
+        .expect("deserialize legacy metrics");
+
+        assert_eq!(metrics.mean_return_on_premium, 0.0);
+        assert_eq!(metrics.return_volatility_on_premium, 0.0);
+    }
+
+    #[test]
+    fn validation_metrics_helpers_report_support_counts_and_ratio() {
+        let metrics = metrics_with_counts(0.10, 3, 1);
+        assert_eq!(metrics.total_events(), 4);
+        assert!(metrics.has_supported_trades());
+        assert_eq!(metrics.support_rate(), Some(0.75));
+
+        let zero_support = metrics_with_counts(0.05, 0, 3);
+        assert_eq!(zero_support.total_events(), 3);
+        assert!(!zero_support.has_supported_trades());
+        assert_eq!(zero_support.support_rate(), Some(0.0));
+    }
+
+    #[test]
+    fn inferred_validation_verdict_ignores_zero_support_holdout_metrics() {
+        let mut tuple = sample_tuple_result();
+        tuple.holdout_metrics = Some(metrics_with_counts(0.12, 0, 3));
+        tuple.stress_metrics = Some(metrics(0.10));
+
+        assert!(tuple.strongest_validation_metrics().is_none());
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+    }
+
+    #[test]
+    fn inferred_validation_verdict_requires_supported_sealed_metrics_for_promotion() {
+        let mut tuple = sample_tuple_result();
+        tuple.sealed_finalist = true;
+        tuple.holdout_metrics = Some(metrics(0.12));
+        tuple.sealed_evaluation_metrics = Some(metrics_with_counts(0.11, 0, 2));
+        tuple.stress_metrics = Some(metrics(0.10));
+
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::HoldoutSupported
+        );
+    }
+
+    #[test]
+    fn stress_fragility_requires_supported_stress_metrics() {
+        let mut tuple = sample_tuple_result();
+        tuple.holdout_metrics = Some(metrics(0.09));
+        tuple.stress_metrics = Some(metrics_with_counts(0.03, 0, 2));
+
+        assert!(!tuple.is_stress_fragile());
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::HoldoutSupported
         );
     }
 

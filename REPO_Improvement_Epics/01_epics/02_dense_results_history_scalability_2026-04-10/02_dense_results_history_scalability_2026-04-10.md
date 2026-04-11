@@ -10,8 +10,10 @@ Define a measured epic to keep dense result surfaces and history/library tables 
 
 In scope:
 
-- large Top, Validation, Overview, and History table behavior
-- viewport ownership, virtualization thresholds, and dense-scroll correctness
+- dense matrix-result behavior for Top and Validation
+- dense library/list behavior for History
+- large-run winner/baseline review behavior for Overview
+- viewport ownership, virtualization contracts, and dense-scroll correctness
 - representative dense fixtures and browser-side scale journeys
 - keyboard, focus, and a11y behavior on virtualized dense tables
 
@@ -24,19 +26,26 @@ Out of scope:
 
 ## Current User-Facing Behavior
 
-The repo already has several dense result surfaces and at least one clear virtualization pattern in the execution workspace. The first-tier work also hardened some of the Top and Validation virtualization behavior, but the broader dense-surface story remains spread across multiple panels with different ownership patterns.
+The repo already has several dense surfaces, but they are not one uniform “large table” family. Top and Validation are the clearest matrix-style dense surfaces. History is a saved-run/library interaction surface with its own store-driven behavior. Overview is a winner/baseline review surface that may appear under large-run context but is not the same interaction model as Top or Validation. Execution is useful as a mechanical virtualization reference, not as a semantic interaction template.
 
-That means the product can be functionally correct while still degrading under larger shortlist, validation, and history loads if viewport ownership, scroll-host semantics, and virtualization assumptions drift out of sync.
+That means the product can be functionally correct while still degrading under larger shortlist, validation, and history loads if viewport ownership, scroll-host semantics, preserved state, and virtualization assumptions drift out of sync.
 
 ## Current Code Surface
 
+- `web/src/App.vue`
+- `web/src/components/VueWorkspaceShell.vue`
 - `web/src/components/OverviewWorkspacePanel.vue`
 - `web/src/components/TopWorkspacePanel.vue`
 - `web/src/components/ValidationWorkspacePanel.vue`
 - `web/src/components/HistoryWorkspacePanel.vue`
 - `web/src/components/ExecutionWorkspacePanel.vue`
+- `web/src/composables/useShellMount.ts`
 - `web/src/composables/useVirtualTableRows.ts`
 - `web/src/composables/useHeadlessMatrixTable.ts`
+- `web/src/composables/usePersistedMatrixColumnState.ts`
+- `web/src/stores/historyStore.ts`
+- `web/src/services/historyService.ts`
+- `web/src/stores/workflowArtifactsStore.ts`
 
 ## Current Verification Surface
 
@@ -45,9 +54,23 @@ That means the product can be functionally correct while still degrading under l
 - `web/src/components/ValidationWorkspacePanel.virtualization.test.ts`
 - `web/src/components/OverviewWorkspacePanel.test.ts`
 - `web/src/components/HistoryWorkspacePanel.test.ts`
+- `web/src/composables/useHeadlessMatrixTable.test.ts`
+- `web/src/composables/useVirtualTableRows.test.ts`
+- `web/src/stores/historyStore.actions.test.ts`
+- `web/src/stores/historyStore.search.test.ts`
+- `web/src/services/historyService.test.ts`
+- `web/src/components/VueWorkspaceShell.test.ts`
 - `npm.cmd --prefix web run test:browser:ux`
 - `npm.cmd --prefix web run a11y:smoke`
 - `npm.cmd --prefix web run baseline:ui`
+
+## Surface Contract Focus
+
+- Top Results: dense matrix review with selection, keyboard movement, and virtual-row truth requirements
+- Validation Results: dense matrix review with persisted column posture and virtual-row truth requirements
+- History: dense saved-run/library list behavior with search, selected-run state, and reopen correctness
+- Overview: large-run winner/baseline review that must stay readable without being forced into the same interaction contract as Top/Validation
+- Execution: shared-helper reference and regression surface only unless a narrower follow-up widens scope
 
 ## Strengths Already Present
 
@@ -61,6 +84,7 @@ That means the product can be functionally correct while still degrading under l
 - dense tables can regress keyboard/focus behavior even when row rendering is faster
 - panel-specific table behavior can drift if each surface owns its own scroll/height assumptions
 - history/library and result tables can regress separately if fixture sizes remain too small
+- shared helper changes can regress Meta or Execution even when they are not primary implementation targets
 
 ## Regressions To Avoid
 
@@ -86,10 +110,17 @@ That means the product can be functionally correct while still degrading under l
    - large Validation candidate table
    - large History/library lists
    - mixed shell layouts where the outer pane also scrolls
-2. Standardize table viewport ownership and row-height contracts across the dense panels instead of letting each panel infer scroll behavior differently.
-3. Add representative large fixtures so virtualization proofs stop depending on tiny or synthetic row counts.
-4. Add one browser dense-surface journey that validates scroll, focus, and visible-row truth under a realistically heavy surface.
-5. Keep success criteria explicit:
+   - large-run Overview review where row density is not the only cost
+2. Define a per-surface contract instead of one flattened table contract:
+   - scroll owner
+   - interaction role
+   - preserved state
+   - `rowHeightPx` / `overscan` assumptions
+   - whether stable row identity is required before claiming focus restoration
+3. Standardize viewport ownership where shared behavior is truly shared instead of letting each panel infer scroll behavior differently.
+4. Add representative large fixtures so virtualization proofs stop depending on tiny or synthetic row counts.
+5. Add browser proofs that validate scroll-host ownership, visible-row truth, and focus behavior under a realistically heavy surface.
+6. Keep success criteria explicit:
    - better responsiveness on the chosen dense scenarios
    - no a11y regressions
    - no focus/selection regressions
@@ -102,31 +133,34 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the dense fixtures and target row counts for Top, Validation, and History surfaces.
+- [ ] Define the dense fixtures and target row counts for Top, Validation, and History surfaces, including the source of each fixture and any wide-table pressure.
 - [ ] Record current responsiveness and scroll-host ownership before changing implementation.
-- [ ] Standardize which element owns scrolling and height constraints for each dense panel.
+- [ ] Standardize which element owns scrolling and height constraints for each dense panel or state explicitly why a panel remains intentionally different.
+- [ ] Record the per-surface contract for Top, Validation, History, and Overview: role model, preserved state, scroll owner, and required proof.
 - [ ] Reuse the existing virtual-row pattern where it is already proven instead of inventing new table mechanics per panel.
 - [ ] Strengthen component tests so they validate real viewport ownership and not only synthetic row skipping.
-- [ ] Add at least one browser dense-surface journey that catches scroll/focus regressions under real load.
-- [ ] Verify keyboard navigation, focus restoration, and screen-reader-visible structure after virtualization or layout changes.
-- [ ] Keep row selection, sort order, and visible summary copy behaviorally unchanged unless explicitly widened.
-- [ ] Record rollback conditions if a dense-surface optimization makes debugging or accessibility materially worse.
+- [ ] Add browser proof for scroll-host ownership and visible-row truth on every changed dense interaction family.
+- [ ] Verify keyboard navigation, focus restoration, and screen-reader-visible structure after virtualization or layout changes, and require stable row identity before claiming focus-restoration guarantees across reorder/filter changes.
+- [ ] Keep preserved state behaviorally unchanged per surface: Top review state, Validation column posture, History search/selection state, and Overview review context unless explicitly widened.
+- [ ] Record rollback conditions if a dense-surface optimization makes debugging, visible-row truth, or accessibility materially worse.
 - [ ] Record any required cross-doc sync in first-tier shell/results/history docs if operator behavior changes.
 
 ## Verification Plan
 
 - rerun targeted Vitest component coverage for each touched dense panel
+- rerun targeted helper and store tests when shared dense helpers or history owners change
 - rerun `npm.cmd --prefix web run test:browser:ux`
 - rerun `npm.cmd --prefix web run a11y:smoke`
 - rerun `npm.cmd --prefix web run baseline:ui` if visible table layout or density changes
 - run the relevant repo quality gates for any touched surfaces, including `npm.cmd --prefix web run lint` and `npm.cmd --prefix web run typecheck`
 - compare pre/post dense-scenario timings or trace evidence for the selected fixtures
-- capture concrete acceptance evidence for closure, including fixture sizes, browser journey output, and any screenshots needed to prove scroll-host ownership
+- capture concrete acceptance evidence for closure, including fixture sizes, browser proof of the bound scroll element, visible-row proof, and any screenshots needed to prove scroll-host ownership
 
 ## Rollout / Fallback / Compatibility Notes
 
 - land viewport-ownership fixes before deeper virtualization changes when the current scroll host is ambiguous
-- prefer one shared dense-table pattern over per-panel improvisation
+- prefer one shared dense-table pattern over per-panel improvisation only where the interaction model is genuinely shared
+- if `useHeadlessMatrixTable.ts` or `useVirtualTableRows.ts` changes, regression-check Meta and Execution even when they are not primary implementation targets
 - keep the current dense surfaces functional for smaller datasets even if a large-load optimization is later rolled back
 - do not widen this epic into artifact-library backend indexing except where that load directly shapes visible dense-surface behavior
 

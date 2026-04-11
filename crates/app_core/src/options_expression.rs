@@ -18,8 +18,8 @@ use crate::options_types::{
     OptionsTupleSpec, SignalSide,
 };
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -28,8 +28,9 @@ use std::time::Instant;
 use crate::cuda_device::preferred_cuda_device_id;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_expression_gpu::{
-    OptionsGpuRuntimeCacheUsage, OptionsGpuTupleAggregate, inspect_options_expression_gpu_plan,
-    score_options_expression_tensors_gpu_multi_range, score_options_expression_tensors_gpu_range,
+    inspect_options_expression_gpu_plan, score_options_expression_tensors_gpu_multi_range,
+    score_options_expression_tensors_gpu_range, OptionsGpuRuntimeCacheUsage,
+    OptionsGpuTupleAggregate,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_types::OptionsExpressionBackendPreference;
@@ -1924,6 +1925,83 @@ fn compile_tuple_grid(
 struct RankedCompiledTuple {
     compiled: CompiledTupleSpec,
     result: OptionsExpressionTupleResult,
+    retained_summary_state: RetainedSummaryState,
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetainedMetricState {
+    Missing,
+    Exact,
+    AggregateNeedsEnrichment,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RetainedSummaryState {
+    selection: RetainedMetricState,
+    holdout: RetainedMetricState,
+    stress: RetainedMetricState,
+    harsher: RetainedMetricState,
+}
+
+impl RetainedSummaryState {
+    fn cpu_initial(holdout_events: usize) -> Self {
+        let holdout_state = if holdout_events > 0 {
+            RetainedMetricState::Exact
+        } else {
+            RetainedMetricState::Missing
+        };
+        Self {
+            selection: RetainedMetricState::Exact,
+            holdout: holdout_state,
+            stress: holdout_state,
+            harsher: RetainedMetricState::Missing,
+        }
+    }
+
+    #[cfg_attr(
+        not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+        allow(dead_code)
+    )]
+    fn gpu_initial(holdout_events: usize) -> Self {
+        let holdout_state = if holdout_events > 0 {
+            RetainedMetricState::AggregateNeedsEnrichment
+        } else {
+            RetainedMetricState::Missing
+        };
+        Self {
+            selection: RetainedMetricState::AggregateNeedsEnrichment,
+            holdout: holdout_state,
+            stress: holdout_state,
+            harsher: holdout_state,
+        }
+    }
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, Default)]
+struct ExactifyTimingBreakdown {
+    total_us: u64,
+    summary_overwrite_us: u64,
+    enrichment_us: u64,
+    extreme_us: u64,
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, Default)]
+struct SealedStageTimingBreakdown {
+    total_us: u64,
+    non_extreme_us: u64,
+    extreme_us: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -2422,8 +2500,18 @@ fn prepare_options_expression_run(
         gpu_tensor_score_us: None,
         gpu_exactify_ms: None,
         gpu_exactify_us: None,
+        gpu_exactify_summary_overwrite_ms: None,
+        gpu_exactify_summary_overwrite_us: None,
+        gpu_exactify_enrichment_ms: None,
+        gpu_exactify_enrichment_us: None,
+        gpu_exactify_extreme_ms: None,
+        gpu_exactify_extreme_us: None,
         gpu_sealed_stage_ms: None,
         gpu_sealed_stage_us: None,
+        gpu_sealed_non_extreme_ms: None,
+        gpu_sealed_non_extreme_us: None,
+        gpu_sealed_extreme_ms: None,
+        gpu_sealed_extreme_us: None,
         gpu_speedup_vs_cpu: None,
     };
 
@@ -2547,14 +2635,231 @@ fn assign_sealed_final_ranks(ranked_results: &mut [RankedCompiledTuple]) {
     }
 }
 
+fn refresh_validation_verdicts(ranked_results: &mut [RankedCompiledTuple]) {
+    for ranked in ranked_results.iter_mut() {
+        ranked.result.validation_verdict = ranked.result.inferred_validation_verdict();
+    }
+}
+
+fn recompute_retained_robust_scores(ranked_results: &mut [RankedCompiledTuple]) {
+    for ranked in ranked_results.iter_mut() {
+        ranked.result.robust_score = robust_score(
+            &ranked.result.selection_metrics,
+            ranked.result.holdout_metrics.as_ref(),
+            None,
+            ranked.result.stress_metrics.as_ref(),
+            ranked.result.harsher_stress_metrics.as_ref(),
+            ranked.result.extreme_stress_metrics.as_ref(),
+        );
+    }
+}
+
+fn exactify_retained_summary_metrics(
+    prepared: &PreparedOptionsExpressionRun,
+    ranked_results: &mut [RankedCompiledTuple],
+) {
+    let holdout_events = prepared.diagnostics.holdout_events;
+    for ranked in ranked_results.iter_mut() {
+        if matches!(
+            ranked.retained_summary_state.selection,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.selection_metrics = evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Search,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            );
+            ranked.retained_summary_state.selection = RetainedMetricState::Exact;
+        }
+        if holdout_events == 0 {
+            ranked.retained_summary_state.holdout = RetainedMetricState::Missing;
+            ranked.retained_summary_state.stress = RetainedMetricState::Missing;
+            ranked.retained_summary_state.harsher = RetainedMetricState::Missing;
+            ranked.result.holdout_metrics = None;
+            ranked.result.stress_metrics = None;
+            ranked.result.harsher_stress_metrics = None;
+            continue;
+        }
+        if matches!(
+            ranked.retained_summary_state.holdout,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.holdout_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            ));
+            ranked.retained_summary_state.holdout = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.stress,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.stress_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.conservative_candidate_cache,
+                &prepared.conservative_exit_summary_cache,
+            ));
+            ranked.retained_summary_state.stress = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.harsher,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.harsher_stress_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.harsher_candidate_cache,
+                &prepared.harsher_exit_summary_cache,
+            ));
+            ranked.retained_summary_state.harsher = RetainedMetricState::Exact;
+        }
+    }
+}
+
+fn exactify_retained_summary_enrichment(
+    prepared: &PreparedOptionsExpressionRun,
+    ranked_results: &mut [RankedCompiledTuple],
+) {
+    let holdout_events = prepared.diagnostics.holdout_events;
+    for ranked in ranked_results.iter_mut() {
+        if matches!(
+            ranked.retained_summary_state.selection,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            ranked.result.selection_metrics.median_return_on_premium =
+                evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Search,
+                    &prepared.baseline_candidate_cache,
+                    &prepared.baseline_exit_summary_cache,
+                );
+            ranked.retained_summary_state.selection = RetainedMetricState::Exact;
+        }
+        if holdout_events == 0 {
+            continue;
+        }
+        if matches!(
+            ranked.retained_summary_state.holdout,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            if let Some(metrics) = ranked.result.holdout_metrics.as_mut() {
+                metrics.median_return_on_premium = evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Holdout,
+                    &prepared.baseline_candidate_cache,
+                    &prepared.baseline_exit_summary_cache,
+                );
+            }
+            ranked.retained_summary_state.holdout = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.stress,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            if let Some(metrics) = ranked.result.stress_metrics.as_mut() {
+                metrics.median_return_on_premium = evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Holdout,
+                    &prepared.conservative_candidate_cache,
+                    &prepared.conservative_exit_summary_cache,
+                );
+            }
+            ranked.retained_summary_state.stress = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.harsher,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            if let Some(metrics) = ranked.result.harsher_stress_metrics.as_mut() {
+                metrics.median_return_on_premium = evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Holdout,
+                    &prepared.harsher_candidate_cache,
+                    &prepared.harsher_exit_summary_cache,
+                );
+            }
+            ranked.retained_summary_state.harsher = RetainedMetricState::Exact;
+        }
+    }
+}
+
+fn exactify_retained_extreme_stress_metrics(
+    prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
+    ranked_results: &mut [RankedCompiledTuple],
+) {
+    let holdout_events = prepared.diagnostics.holdout_events;
+    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
+    for ranked in ranked_results.iter_mut() {
+        ranked.result.extreme_stress_metrics = if holdout_events > 0 {
+            Some(evaluate_exact_stress_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &index,
+                &prepared.baseline_candidate_cache,
+                dataset.manifest.price_semantics,
+                AggregateStressMode::Extreme,
+            ))
+        } else {
+            None
+        };
+    }
+}
+
+fn exactify_ranked_results(
+    prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
+    ranked_results: &mut [RankedCompiledTuple],
+) -> ExactifyTimingBreakdown {
+    let total_start = Instant::now();
+
+    let summary_overwrite_start = Instant::now();
+    exactify_retained_summary_metrics(prepared, ranked_results);
+    let summary_overwrite_us = elapsed_us(summary_overwrite_start);
+
+    let enrichment_start = Instant::now();
+    exactify_retained_summary_enrichment(prepared, ranked_results);
+    let enrichment_us = elapsed_us(enrichment_start);
+
+    let extreme_start = Instant::now();
+    exactify_retained_extreme_stress_metrics(prepared, dataset, ranked_results);
+    let extreme_us = elapsed_us(extreme_start);
+
+    recompute_retained_robust_scores(ranked_results);
+    refresh_validation_verdicts(ranked_results);
+
+    ExactifyTimingBreakdown {
+        total_us: elapsed_us(total_start),
+        summary_overwrite_us,
+        enrichment_us,
+        extreme_us,
+    }
+}
+
 fn apply_sealed_finalist_stage(
     req: &OptionsExpressionRunRequest,
     prepared: &PreparedOptionsExpressionRun,
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
-) {
+) -> SealedStageTimingBreakdown {
+    let total_start = Instant::now();
+    let non_extreme_start = Instant::now();
+    sort_ranked_results(ranked_results);
+    resequence_pre_sealed_ranks(ranked_results);
     let sealed_test_events = prepared.diagnostics.sealed_test_events;
-    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
     let sealed_finalist_count = if sealed_test_events > 0 {
         req.sealed_finalist_count.max(1).min(ranked_results.len())
     } else {
@@ -2583,6 +2888,12 @@ fn apply_sealed_finalist_stage(
             &prepared.harsher_candidate_cache,
             &prepared.harsher_exit_summary_cache,
         ));
+    }
+    let non_extreme_us = elapsed_us(non_extreme_start);
+
+    let extreme_start = Instant::now();
+    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
+    for ranked in ranked_results.iter_mut().take(sealed_finalist_count) {
         ranked.result.sealed_extreme_stress_metrics = Some(evaluate_exact_stress_for_split(
             &ranked.compiled,
             &prepared.events,
@@ -2594,85 +2905,13 @@ fn apply_sealed_finalist_stage(
         ));
     }
     assign_sealed_final_ranks(ranked_results);
-}
+    let extreme_us = elapsed_us(extreme_start);
 
-fn refresh_validation_verdicts(ranked_results: &mut [RankedCompiledTuple]) {
-    for ranked in ranked_results.iter_mut() {
-        ranked.result.validation_verdict = ranked.result.inferred_validation_verdict();
+    SealedStageTimingBreakdown {
+        total_us: elapsed_us(total_start),
+        non_extreme_us,
+        extreme_us,
     }
-}
-
-fn exactify_ranked_results(
-    prepared: &PreparedOptionsExpressionRun,
-    dataset: &ImportedOptionsDataset,
-    ranked_results: &mut [RankedCompiledTuple],
-) {
-    let holdout_events = prepared.diagnostics.holdout_events;
-    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
-    for ranked in ranked_results.iter_mut() {
-        ranked.result.selection_metrics = evaluate_compiled_tuple_for_split(
-            &ranked.compiled,
-            &prepared.events,
-            OptionsEvaluationSplit::Search,
-            &prepared.baseline_candidate_cache,
-            &prepared.baseline_exit_summary_cache,
-        );
-        ranked.result.holdout_metrics = if holdout_events > 0 {
-            Some(evaluate_compiled_tuple_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &prepared.baseline_candidate_cache,
-                &prepared.baseline_exit_summary_cache,
-            ))
-        } else {
-            None
-        };
-        ranked.result.stress_metrics = if holdout_events > 0 {
-            Some(evaluate_compiled_tuple_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &prepared.conservative_candidate_cache,
-                &prepared.conservative_exit_summary_cache,
-            ))
-        } else {
-            None
-        };
-        ranked.result.harsher_stress_metrics = if holdout_events > 0 {
-            Some(evaluate_compiled_tuple_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &prepared.harsher_candidate_cache,
-                &prepared.harsher_exit_summary_cache,
-            ))
-        } else {
-            None
-        };
-        ranked.result.extreme_stress_metrics = if holdout_events > 0 {
-            Some(evaluate_exact_stress_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &index,
-                &prepared.baseline_candidate_cache,
-                dataset.manifest.price_semantics,
-                AggregateStressMode::Extreme,
-            ))
-        } else {
-            None
-        };
-        ranked.result.robust_score = robust_score(
-            &ranked.result.selection_metrics,
-            ranked.result.holdout_metrics.as_ref(),
-            None,
-            ranked.result.stress_metrics.as_ref(),
-            ranked.result.harsher_stress_metrics.as_ref(),
-            ranked.result.extreme_stress_metrics.as_ref(),
-        );
-    }
-    refresh_validation_verdicts(ranked_results);
 }
 
 fn finalize_ranked_results(
@@ -2680,19 +2919,11 @@ fn finalize_ranked_results(
     prepared: &PreparedOptionsExpressionRun,
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
-) -> (u64, u64) {
-    let exactify_start = Instant::now();
-    exactify_ranked_results(prepared, dataset, ranked_results);
-    let exactify_us = elapsed_us(exactify_start);
-
-    let sealed_stage_start = Instant::now();
-    sort_ranked_results(ranked_results);
-    resequence_pre_sealed_ranks(ranked_results);
-    apply_sealed_finalist_stage(req, prepared, dataset, ranked_results);
+) -> (ExactifyTimingBreakdown, SealedStageTimingBreakdown) {
+    let exactify = exactify_ranked_results(prepared, dataset, ranked_results);
+    let sealed_stage = apply_sealed_finalist_stage(req, prepared, dataset, ranked_results);
     refresh_validation_verdicts(ranked_results);
-    let sealed_stage_us = elapsed_us(sealed_stage_start);
-
-    (exactify_us, sealed_stage_us)
+    (exactify, sealed_stage)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -2704,8 +2935,8 @@ mod gpu_scoring {
     pub(super) struct GpuRankingTimingBreakdown {
         pub(super) total_us: u64,
         pub(super) tensor_score_us: u64,
-        pub(super) exactify_us: u64,
-        pub(super) sealed_stage_us: u64,
+        pub(super) exactify: ExactifyTimingBreakdown,
+        pub(super) sealed_stage: SealedStageTimingBreakdown,
     }
 
     #[derive(Clone, Debug, Default)]
@@ -2908,24 +3139,25 @@ mod gpu_scoring {
                     validation_verdict: Default::default(),
                     robust_score: robust,
                 },
+                retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
             });
         }
 
         sort_ranked_results(&mut ranked_results);
         resequence_pre_sealed_ranks(&mut ranked_results);
         ranked_results.truncate(req.top_k.max(1));
-        let (exactify_us, sealed_stage_us) =
+        let (exactify, sealed_stage) =
             finalize_ranked_results(req, prepared, dataset, &mut ranked_results);
         Ok(Some(GpuRankedTuplePass {
             ranked_results,
             stats: GpuRankingExecutionStats {
                 timing: GpuRankingTimingBreakdown {
                     total_us: tensor_score_us
-                        .saturating_add(exactify_us)
-                        .saturating_add(sealed_stage_us),
+                        .saturating_add(exactify.total_us)
+                        .saturating_add(sealed_stage.total_us),
                     tensor_score_us,
-                    exactify_us,
-                    sealed_stage_us,
+                    exactify,
+                    sealed_stage,
                 },
                 cache_usage: gpu_cache_usage,
             },
@@ -3033,6 +3265,7 @@ fn rank_compiled_tuples_cpu(
                 validation_verdict: Default::default(),
                 robust_score: robust,
             },
+            retained_summary_state: RetainedSummaryState::cpu_initial(holdout_events),
         });
     }
 
@@ -3338,6 +3571,36 @@ fn evaluate_compiled_tuple_for_split(
         }
     }
     compute_metrics(split_event_count, &outcomes)
+}
+
+fn evaluate_median_return_on_premium_for_split(
+    tuple: &CompiledTupleSpec,
+    events: &[OptionsSignalEvent],
+    split: OptionsEvaluationSplit,
+    candidate_cache: &StructuralCandidateCache,
+    exit_summary_cache: &ExitSummaryCache,
+) -> f64 {
+    let mut returns: Vec<f64> = Vec::new();
+    for (event_index, event) in events.iter().enumerate() {
+        if event.fold != split {
+            continue;
+        }
+        let candidate_slot_index = candidate_cache.candidate_slot_index(
+            event_index,
+            tuple.delay_index,
+            tuple.dte_index,
+            tuple.moneyness_index,
+        );
+        if let Some(outcome) = exit_summary_cache.outcome(
+            candidate_slot_index,
+            tuple.hold_index,
+            tuple.target_index,
+            tuple.stop_index,
+        ) {
+            returns.push(outcome.return_on_premium);
+        }
+    }
+    median(returns)
 }
 
 fn evaluate_exact_stress_for_split(
@@ -4338,12 +4601,38 @@ pub fn analyze_options_expression_feasibility_blocking(
         timings.gpu_tensor_score_ms = timings.gpu_tensor_score_us.map(|value| value / 1_000);
         timings.gpu_exactify_us = gpu_ranking_stats
             .as_ref()
-            .map(|stats| stats.timing.exactify_us);
+            .map(|stats| stats.timing.exactify.total_us);
         timings.gpu_exactify_ms = timings.gpu_exactify_us.map(|value| value / 1_000);
+        timings.gpu_exactify_summary_overwrite_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.exactify.summary_overwrite_us);
+        timings.gpu_exactify_summary_overwrite_ms = timings
+            .gpu_exactify_summary_overwrite_us
+            .map(|value| value / 1_000);
+        timings.gpu_exactify_enrichment_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.exactify.enrichment_us);
+        timings.gpu_exactify_enrichment_ms = timings
+            .gpu_exactify_enrichment_us
+            .map(|value| value / 1_000);
+        timings.gpu_exactify_extreme_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.exactify.extreme_us);
+        timings.gpu_exactify_extreme_ms =
+            timings.gpu_exactify_extreme_us.map(|value| value / 1_000);
         timings.gpu_sealed_stage_us = gpu_ranking_stats
             .as_ref()
-            .map(|stats| stats.timing.sealed_stage_us);
+            .map(|stats| stats.timing.sealed_stage.total_us);
         timings.gpu_sealed_stage_ms = timings.gpu_sealed_stage_us.map(|value| value / 1_000);
+        timings.gpu_sealed_non_extreme_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.sealed_stage.non_extreme_us);
+        timings.gpu_sealed_non_extreme_ms =
+            timings.gpu_sealed_non_extreme_us.map(|value| value / 1_000);
+        timings.gpu_sealed_extreme_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.sealed_stage.extreme_us);
+        timings.gpu_sealed_extreme_ms = timings.gpu_sealed_extreme_us.map(|value| value / 1_000);
     }
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     {
@@ -4351,8 +4640,18 @@ pub fn analyze_options_expression_feasibility_blocking(
         timings.gpu_tensor_score_ms = None;
         timings.gpu_exactify_us = None;
         timings.gpu_exactify_ms = None;
+        timings.gpu_exactify_summary_overwrite_us = None;
+        timings.gpu_exactify_summary_overwrite_ms = None;
+        timings.gpu_exactify_enrichment_us = None;
+        timings.gpu_exactify_enrichment_ms = None;
+        timings.gpu_exactify_extreme_us = None;
+        timings.gpu_exactify_extreme_ms = None;
         timings.gpu_sealed_stage_us = None;
         timings.gpu_sealed_stage_ms = None;
+        timings.gpu_sealed_non_extreme_us = None;
+        timings.gpu_sealed_non_extreme_ms = None;
+        timings.gpu_sealed_extreme_us = None;
+        timings.gpu_sealed_extreme_ms = None;
     }
     timings.gpu_speedup_vs_cpu = gpu_ranking_us.and_then(|gpu_us| {
         if gpu_us == 0 {
@@ -4714,6 +5013,73 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+        allow(dead_code)
+    )]
+    fn assert_metrics_close(
+        left: &OptionsExpressionMetrics,
+        right: &OptionsExpressionMetrics,
+        context: &str,
+    ) {
+        assert_eq!(
+            left.valid_trades, right.valid_trades,
+            "{context}: valid_trades"
+        );
+        assert_eq!(
+            left.invalid_events, right.invalid_events,
+            "{context}: invalid_events"
+        );
+        assert!(
+            (left.invalid_rate - right.invalid_rate).abs() < 1e-12,
+            "{context}: invalid_rate left={} right={}",
+            left.invalid_rate,
+            right.invalid_rate
+        );
+        assert!(
+            (left.expectancy_per_trade - right.expectancy_per_trade).abs() < 1e-12,
+            "{context}: expectancy_per_trade left={} right={}",
+            left.expectancy_per_trade,
+            right.expectancy_per_trade
+        );
+        assert!(
+            (left.expectancy_per_premium - right.expectancy_per_premium).abs() < 1e-12,
+            "{context}: expectancy_per_premium left={} right={}",
+            left.expectancy_per_premium,
+            right.expectancy_per_premium
+        );
+        assert!(
+            (left.mean_return_on_premium - right.mean_return_on_premium).abs() < 1e-12,
+            "{context}: mean_return_on_premium left={} right={}",
+            left.mean_return_on_premium,
+            right.mean_return_on_premium
+        );
+        assert!(
+            (left.return_volatility_on_premium - right.return_volatility_on_premium).abs() < 1e-12,
+            "{context}: return_volatility_on_premium left={} right={}",
+            left.return_volatility_on_premium,
+            right.return_volatility_on_premium
+        );
+        assert!(
+            (left.median_return_on_premium - right.median_return_on_premium).abs() < 1e-12,
+            "{context}: median_return_on_premium left={} right={}",
+            left.median_return_on_premium,
+            right.median_return_on_premium
+        );
+        assert!(
+            (left.win_rate - right.win_rate).abs() < 1e-12,
+            "{context}: win_rate left={} right={}",
+            left.win_rate,
+            right.win_rate
+        );
+        assert!(
+            (left.total_pnl_per_contract - right.total_pnl_per_contract).abs() < 1e-12,
+            "{context}: total_pnl_per_contract left={} right={}",
+            left.total_pnl_per_contract,
+            right.total_pnl_per_contract
+        );
+    }
+
     #[test]
     fn compute_metrics_tracks_mean_and_return_on_premium_volatility() {
         let outcomes = vec![
@@ -4816,6 +5182,61 @@ mod tests {
                 < 1e-12
         );
         assert_eq!(aggregate_metrics.median_return_on_premium, 0.0);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn exact_aggregate_for_split(
+        tuple: &CompiledTupleSpec,
+        events: &[OptionsSignalEvent],
+        split: OptionsEvaluationSplit,
+        candidate_cache: &StructuralCandidateCache,
+        exit_summary_cache: &ExitSummaryCache,
+    ) -> TupleAggregateMetrics {
+        let mut split_event_count = 0usize;
+        let mut valid_trades = 0usize;
+        let mut win_count = 0usize;
+        let mut total_pnl_per_contract = 0.0;
+        let mut total_premium_paid = 0.0;
+        let mut sum_return_on_premium = 0.0;
+        let mut sumsq_return_on_premium = 0.0;
+
+        for (event_index, event) in events.iter().enumerate() {
+            if event.fold != split {
+                continue;
+            }
+            split_event_count += 1;
+            let candidate_slot_index = candidate_cache.candidate_slot_index(
+                event_index,
+                tuple.delay_index,
+                tuple.dte_index,
+                tuple.moneyness_index,
+            );
+            if let Some(outcome) = exit_summary_cache.outcome(
+                candidate_slot_index,
+                tuple.hold_index,
+                tuple.target_index,
+                tuple.stop_index,
+            ) {
+                valid_trades += 1;
+                total_pnl_per_contract += outcome.pnl_per_contract;
+                total_premium_paid += outcome.premium_paid;
+                sum_return_on_premium += outcome.return_on_premium;
+                sumsq_return_on_premium += outcome.return_on_premium * outcome.return_on_premium;
+                if outcome.pnl_per_contract > 0.0 {
+                    win_count += 1;
+                }
+            }
+        }
+
+        TupleAggregateMetrics {
+            valid_trades,
+            invalid_events: split_event_count.saturating_sub(valid_trades),
+            win_count,
+            total_pnl_per_contract,
+            total_premium_paid,
+            sum_return_on_premium,
+            sumsq_return_on_premium,
+        }
     }
 
     fn test_dataset() -> ImportedOptionsDataset {
@@ -5156,6 +5577,186 @@ mod tests {
             quote_age_ms: Some(750),
             session_id: Some("2026-04-01".to_string()),
         }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn exactify_enriches_gpu_like_retained_rows_without_summary_overwrite() {
+        let _guard = lock_test_env();
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+        let dataset = test_dataset();
+        let manifest = test_manifest();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let compiled = prepared
+            .compiled_tuples
+            .first()
+            .cloned()
+            .expect("compiled tuple");
+
+        let selection_metrics = metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        ));
+        let holdout_metrics = Some(metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        )));
+        let stress_metrics = Some(metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        )));
+        let harsher_stress_metrics = Some(metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        )));
+
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 0,
+                sealed_finalist: false,
+                sealed_final_rank: 0,
+                selection_metrics,
+                holdout_metrics,
+                sealed_evaluation_metrics: None,
+                stress_metrics,
+                sealed_stress_metrics: None,
+                harsher_stress_metrics,
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
+                robust_score: 0.0,
+            },
+            retained_summary_state: RetainedSummaryState::gpu_initial(
+                prepared.diagnostics.holdout_events,
+            ),
+        }];
+
+        let timing = exactify_ranked_results(&prepared, &dataset, &mut ranked);
+        let exact_selection = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let exact_holdout = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let exact_stress = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        );
+        let exact_harsher = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        );
+        let exact_extreme = evaluate_exact_stress_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &IndexedOptionsDataset::from_dataset(&dataset, &dataset.manifest.root_symbol),
+            &prepared.baseline_candidate_cache,
+            dataset.manifest.price_semantics,
+            AggregateStressMode::Extreme,
+        );
+
+        assert_eq!(timing.summary_overwrite_us, 0);
+        assert_metrics_close(
+            &ranked[0].result.selection_metrics,
+            &exact_selection,
+            "selection",
+        );
+        assert_metrics_close(
+            ranked[0].result.holdout_metrics.as_ref().expect("holdout"),
+            &exact_holdout,
+            "holdout",
+        );
+        assert_metrics_close(
+            ranked[0].result.stress_metrics.as_ref().expect("stress"),
+            &exact_stress,
+            "stress",
+        );
+        assert_metrics_close(
+            ranked[0]
+                .result
+                .harsher_stress_metrics
+                .as_ref()
+                .expect("harsher"),
+            &exact_harsher,
+            "harsher",
+        );
+        assert_metrics_close(
+            ranked[0]
+                .result
+                .extreme_stress_metrics
+                .as_ref()
+                .expect("extreme"),
+            &exact_extreme,
+            "extreme",
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.selection,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.holdout,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.stress,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.harsher,
+            RetainedMetricState::Exact
+        );
     }
 
     #[test]
@@ -6221,6 +6822,7 @@ mod tests {
                     validation_verdict: Default::default(),
                     robust_score: 0.30,
                 },
+                retained_summary_state: RetainedSummaryState::cpu_initial(0),
             },
             RankedCompiledTuple {
                 compiled: right_compiled.clone(),
@@ -6241,6 +6843,7 @@ mod tests {
                     validation_verdict: Default::default(),
                     robust_score: 0.20,
                 },
+                retained_summary_state: RetainedSummaryState::cpu_initial(0),
             },
         ];
 
@@ -6315,6 +6918,7 @@ mod tests {
                 validation_verdict: OptionsExpressionValidationVerdict::SealedFinalist,
                 robust_score: 0.18,
             },
+            retained_summary_state: RetainedSummaryState::cpu_initial(2),
         }];
 
         refresh_validation_verdicts(&mut ranked);
@@ -6387,6 +6991,357 @@ mod tests {
         assert!(!result.ranked_results[1].sealed_finalist);
         assert!(result.ranked_results[1].sealed_evaluation_metrics.is_none());
         assert!(result.ranked_results[1].sealed_stress_metrics.is_none());
+    }
+
+    #[test]
+    fn exactify_ranked_results_cpu_rows_fill_missing_harsher_metrics() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+        let manifest = test_manifest();
+        let dataset = test_dataset();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let compiled = prepared
+            .compiled_tuples
+            .first()
+            .cloned()
+            .expect("compiled tuple");
+        let holdout_events = prepared.diagnostics.holdout_events;
+        assert!(holdout_events > 0);
+
+        let selection_metrics = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let holdout_metrics = Some(evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        ));
+        let stress_metrics = Some(evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        ));
+        let expected_harsher = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        );
+
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 1,
+                sealed_finalist: false,
+                sealed_final_rank: 0,
+                selection_metrics: selection_metrics.clone(),
+                holdout_metrics: holdout_metrics.clone(),
+                sealed_evaluation_metrics: None,
+                stress_metrics: stress_metrics.clone(),
+                sealed_stress_metrics: None,
+                harsher_stress_metrics: None,
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
+                robust_score: robust_score(
+                    &selection_metrics,
+                    holdout_metrics.as_ref(),
+                    None,
+                    stress_metrics.as_ref(),
+                    None,
+                    None,
+                ),
+            },
+            retained_summary_state: RetainedSummaryState::cpu_initial(holdout_events),
+        }];
+
+        let timing = exactify_ranked_results(&prepared, &dataset, &mut ranked);
+        assert!(timing.total_us >= timing.summary_overwrite_us);
+        assert!(timing.total_us >= timing.extreme_us);
+        assert_eq!(
+            ranked[0].retained_summary_state.harsher,
+            RetainedMetricState::Exact
+        );
+        let harsher = ranked[0]
+            .result
+            .harsher_stress_metrics
+            .as_ref()
+            .expect("harsher metrics");
+        assert_eq!(harsher.valid_trades, expected_harsher.valid_trades);
+        assert_eq!(harsher.invalid_events, expected_harsher.invalid_events);
+        assert!(
+            (harsher.expectancy_per_premium - expected_harsher.expectancy_per_premium).abs()
+                < 1e-12
+        );
+        assert!(
+            (harsher.median_return_on_premium - expected_harsher.median_return_on_premium).abs()
+                < 1e-12
+        );
+        assert!(ranked[0].result.extreme_stress_metrics.is_some());
+    }
+
+    #[test]
+    fn exactify_ranked_results_reuses_gpu_summary_metrics_and_only_enriches_medians() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+        let manifest = test_manifest();
+        let dataset = test_dataset();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let compiled = prepared
+            .compiled_tuples
+            .first()
+            .cloned()
+            .expect("compiled tuple");
+        let holdout_events = prepared.diagnostics.holdout_events;
+        assert!(holdout_events > 0);
+
+        let selection_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let holdout_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let stress_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        );
+        let harsher_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        );
+        let expected_extreme = evaluate_exact_stress_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &IndexedOptionsDataset::from_dataset(&dataset, &dataset.manifest.root_symbol),
+            &prepared.baseline_candidate_cache,
+            dataset.manifest.price_semantics,
+            AggregateStressMode::Extreme,
+        );
+
+        let mut selection_gpu = selection_exact.clone();
+        selection_gpu.expectancy_per_premium += 1.0;
+        selection_gpu.median_return_on_premium = 0.0;
+        let mut holdout_gpu = holdout_exact.clone();
+        holdout_gpu.expectancy_per_premium += 0.5;
+        holdout_gpu.median_return_on_premium = 0.0;
+        let mut stress_gpu = stress_exact.clone();
+        stress_gpu.expectancy_per_premium += 0.25;
+        stress_gpu.median_return_on_premium = 0.0;
+        let mut harsher_gpu = harsher_exact.clone();
+        harsher_gpu.expectancy_per_premium += 0.125;
+        harsher_gpu.median_return_on_premium = 0.0;
+
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 1,
+                sealed_finalist: false,
+                sealed_final_rank: 0,
+                selection_metrics: selection_gpu.clone(),
+                holdout_metrics: Some(holdout_gpu.clone()),
+                sealed_evaluation_metrics: None,
+                stress_metrics: Some(stress_gpu.clone()),
+                sealed_stress_metrics: None,
+                harsher_stress_metrics: Some(harsher_gpu.clone()),
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
+                robust_score: robust_score(
+                    &selection_gpu,
+                    Some(&holdout_gpu),
+                    None,
+                    Some(&stress_gpu),
+                    Some(&harsher_gpu),
+                    None,
+                ),
+            },
+            retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
+        }];
+
+        let timing = exactify_ranked_results(&prepared, &dataset, &mut ranked);
+        assert!(timing.total_us >= timing.enrichment_us);
+        assert!(timing.total_us >= timing.extreme_us);
+        assert_eq!(
+            ranked[0].retained_summary_state.selection,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.holdout,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.stress,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.harsher,
+            RetainedMetricState::Exact
+        );
+
+        assert!(
+            (ranked[0].result.selection_metrics.expectancy_per_premium
+                - selection_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .holdout_metrics
+                .as_ref()
+                .expect("holdout")
+                .expectancy_per_premium
+                - holdout_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .stress_metrics
+                .as_ref()
+                .expect("stress")
+                .expectancy_per_premium
+                - stress_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .harsher_stress_metrics
+                .as_ref()
+                .expect("harsher")
+                .expectancy_per_premium
+                - harsher_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0].result.selection_metrics.median_return_on_premium
+                - selection_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .holdout_metrics
+                .as_ref()
+                .expect("holdout")
+                .median_return_on_premium
+                - holdout_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .stress_metrics
+                .as_ref()
+                .expect("stress")
+                .median_return_on_premium
+                - stress_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .harsher_stress_metrics
+                .as_ref()
+                .expect("harsher")
+                .median_return_on_premium
+                - harsher_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+
+        let extreme = ranked[0]
+            .result
+            .extreme_stress_metrics
+            .as_ref()
+            .expect("extreme metrics");
+        assert_eq!(extreme.valid_trades, expected_extreme.valid_trades);
+        assert_eq!(extreme.invalid_events, expected_extreme.invalid_events);
+        assert!(
+            (extreme.expectancy_per_premium - expected_extreme.expectancy_per_premium).abs()
+                < 1e-12
+        );
+        assert!(
+            (extreme.median_return_on_premium - expected_extreme.median_return_on_premium).abs()
+                < 1e-12
+        );
     }
 
     #[test]

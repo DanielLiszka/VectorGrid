@@ -466,7 +466,8 @@ fn resolve_run_artifact_timeframe(v: &Value) -> String {
 }
 
 fn split_backend_route_segments(value: &str) -> Vec<String> {
-    value.split("->")
+    value
+        .split("->")
         .map(|segment| segment.trim().to_string())
         .filter(|segment| !segment.is_empty())
         .collect()
@@ -840,7 +841,8 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
             }
         }
         if !root.contains_key("lineage") {
-            if let Some(lineage) = extract_artifact_lineage_from_artifact(&Value::Object(root.clone()))
+            if let Some(lineage) =
+                extract_artifact_lineage_from_artifact(&Value::Object(root.clone()))
             {
                 if let Ok(value) = serde_json::to_value(lineage) {
                     root.insert("lineage".to_string(), value);
@@ -2319,13 +2321,12 @@ mod tests {
         ensure_path_is_within_dir, extract_artifact_lineage_from_artifact,
         extract_route_provenance_from_artifact, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
-        is_run_artifact_file_name, is_run_artifact_kind,
-        load_latest_run_artifact_summary_blocking, load_run_artifact_detail_blocking,
-        normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
-        prune_old_meta_artifacts_blocking, resolve_run_artifact_csv_path,
-        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
-        save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
-        update_artifact_tags_blocking,
+        is_run_artifact_file_name, is_run_artifact_kind, load_latest_run_artifact_summary_blocking,
+        load_run_artifact_detail_blocking, normalize_dataset_meta,
+        open_runs_dir_blocking_with_revealer, prune_old_meta_artifacts_blocking,
+        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
+        resolve_run_artifact_timeframe, runs_dir, save_run_artifact_blocking,
+        suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
     };
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};

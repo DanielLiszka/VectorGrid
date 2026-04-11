@@ -12,7 +12,7 @@ In scope:
 
 - first-class operator safety controls for the current live-execution surface
 - discrete live-mode control semantics for the existing non-options workflow
-- stop runner, flatten, cancel-open-orders, and emergency-halt semantics
+- stop runner, stop live feed, flatten, cancel-open-orders, and emergency-halt semantics
 - confirmation posture, disabled-state logic, and operator-facing blocked reasons
 - current Alpaca and Polygon-backed live path only
 
@@ -41,6 +41,9 @@ But the operator safety layer is still thin for a discrete live mode:
 - `web/src/services/executionService.ts`
 - `web/src/utils/executionRisk.ts`
 - `src-tauri/src/commands_execution.rs`
+- `src-tauri/src/commands_data.rs`
+- `src-tauri/src/state.rs`
+- `src-tauri/src/polygon.rs`
 - `src-tauri/src/lib.rs`
 
 ## Current Verification Surface
@@ -50,8 +53,32 @@ But the operator safety layer is still thin for a discrete live mode:
 - `web/src/services/executionService.test.ts`
 - `web/src/utils/executionRisk.test.ts`
 - targeted Rust tests in `src-tauri/src/commands_execution.rs`
+- targeted Rust tests in `src-tauri/src/commands_data.rs` and `src-tauri/src/state.rs` when stop-feed or runner/feed interaction behavior changes
+- `npm.cmd --prefix web run parity`
 - `npm.cmd --prefix web run test:browser:ux`
+- `npm.cmd --prefix web run a11y:smoke`
 - `npm.cmd --prefix web run test:desktop:smoke`
+
+## Safety Control Matrix Requirement
+
+The shipped control model for this bundle must separate five actions explicitly:
+
+- stop runner
+- stop live feed
+- flatten current position
+- cancel open orders
+- emergency halt / disarm posture
+
+Each action needs an explicit contract for:
+
+- what it does
+- what it does not do
+- symbol scope
+- runner interaction
+- feed interaction
+- persistence
+- confirmation requirements
+- blocked-state rules
 
 ## Strengths Already Present
 
@@ -92,8 +119,14 @@ But the operator safety layer is still thin for a discrete live mode:
    - cancel open orders
    - emergency halt / disarm posture
 3. Make every safety action explicit about what it does not do.
-4. Add backend-authoritative invariants for any new broker-facing safety action.
-5. Keep the initial scope to current Alpaca + Polygon + single-symbol live mode.
+4. Add backend-authoritative contracts for any new broker-facing safety action.
+5. Freeze runner-active and feed-active interaction rules before shipping controls:
+   - flatten while runner active
+   - cancel open orders while runner active
+   - stop feed while runner active
+   - emergency halt while a runner exists
+6. Keep the initial scope to current Alpaca + Polygon + single-symbol live mode, with current-symbol-only semantics unless a narrower follow-up doc explicitly widens scope.
+7. Define a confirmation contract that restates the actual symbol, live/paper posture, feed state, parameter source, and risk posture inside the modal itself.
 
 Public-repo quality focus:
 - keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
@@ -106,19 +139,24 @@ Public-repo quality focus:
 - [ ] Define the discrete live-mode safety-control matrix for the current supported scope.
 - [ ] Record the exact semantics of stop runner versus stop feed versus flatten versus cancel-open-orders.
 - [ ] Decide whether emergency halt is only session-local or should persist until explicit operator re-arm.
+- [ ] Define dedicated backend request/response contracts for flatten, cancel-open-orders, and any shipped emergency halt/disarm behavior.
+- [ ] Freeze symbol scope for new broker-facing controls and avoid blank-symbol broadening unless a narrower follow-up explicitly widens it.
 - [ ] Define confirmation-copy requirements for every broker-facing safety action.
+- [ ] Define how bracket-order and partial-failure behavior is surfaced for flatten and cancel-open-orders.
 - [ ] Define disabled-state and blocked-reason rules for the new safety controls.
 - [ ] Keep new controls backend-authoritative where they affect broker state.
 - [ ] Preserve current dry-run and paper behavior while adding live-mode safety actions.
 - [ ] Add or strengthen frontend tests around safety-button availability, confirmation flow, and operator-state clarity.
-- [ ] Add or strengthen Rust tests around flatten/cancel/stop semantics and safe degradation.
+- [ ] Add or strengthen Rust tests around flatten/cancel/stop semantics, runner/feed interaction, and safe degradation.
 - [ ] Record rollback conditions if the new control model increases operator ambiguity or weakens current safety posture.
 
 ## Verification Plan
 
 - rerun targeted execution-store, execution-service, risk-helper, and execution-panel tests near touched files
-- rerun targeted Rust tests in `src-tauri/src/commands_execution.rs`
+- rerun targeted Rust tests in `src-tauri/src/commands_execution.rs`, `src-tauri/src/commands_data.rs`, and `src-tauri/src/state.rs` when ownership crosses those boundaries
+- rerun `npm.cmd --prefix web run parity` when the Tauri command surface changes
 - rerun `npm.cmd --prefix web run test:browser:ux` for any live-mode UI/control changes
+- rerun `npm.cmd --prefix web run a11y:smoke` for modal, danger-control, or status-presentation changes
 - rerun `npm.cmd --prefix web run test:desktop:smoke` if the live controls move or surface in a dedicated desktop shell
 - run `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 - capture concrete acceptance evidence such as screenshots, state-transition notes, and any new session/safety artifacts introduced by the work
@@ -128,6 +166,7 @@ Public-repo quality focus:
 - start with explicit semantics and confirmations before adding new control breadth
 - preserve the current one-runner and one-live-stream constraints unless a narrower follow-up doc explicitly widens them
 - if a safety control cannot be made backend-authoritative yet, keep it out of the shipped live-mode control set
+- keep shell-promotion work separate unless a narrower follow-up intentionally widens this bundle beyond safety semantics
 - do not widen this plan into broker expansion or options live trading
 
 ## Related Docs

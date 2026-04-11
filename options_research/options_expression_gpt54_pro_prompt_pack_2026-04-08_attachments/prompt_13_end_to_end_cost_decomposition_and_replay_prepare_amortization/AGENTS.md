@@ -20,6 +20,9 @@ Instructions for AI coding agents working in this repository.
 
 ## Common commands (PowerShell)
 
+- Repo quality gate (recommended before handoff for broad non-options changes): `powershell -File scripts/run_repo_quality_gate.ps1`
+- Repo quality gate with desktop harness typing: `powershell -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck`
+- Repo quality gate with workspace tests: `powershell -File scripts/run_repo_quality_gate.ps1 -IncludeWorkspaceTests`
 - Unit tests (recommended): `cargo test --workspace`
 - Single crate: `cargo test -p ta_app_core`
 - Run app (release): `cargo run -p ta_desktop_demo_app --release`

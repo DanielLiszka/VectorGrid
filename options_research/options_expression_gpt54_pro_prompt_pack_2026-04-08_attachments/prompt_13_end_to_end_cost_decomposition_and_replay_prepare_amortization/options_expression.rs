@@ -2,12 +2,15 @@ use crate::options_types::{
     ImportedOptionsDataset, OptionType, OptionsCandidateAxisCoverage,
     OptionsCandidateInvalidReason, OptionsCandidateInvalidReasonCount, OptionsContractSeries,
     OptionsDelayBucketCoverage, OptionsDteBucketCoverage, OptionsEvaluationSplit,
-    OptionsExitTemplateFamily, OptionsExpressionAutoBackendDecision, OptionsExpressionDiagnostics,
-    OptionsExpressionEventDetailRow, OptionsExpressionEventPathInspectionResult,
-    OptionsExpressionEventPathPoint, OptionsExpressionEventStatus, OptionsExpressionExitReason,
+    OptionsExitTemplateFamily, OptionsExpressionAutoBackendDecision,
+    OptionsExpressionCoverageAdequacySummary, OptionsExpressionCoverageAdequacyVerdict,
+    OptionsExpressionDiagnostics, OptionsExpressionEventDetailRow,
+    OptionsExpressionEventPathInspectionResult, OptionsExpressionEventPathPoint,
+    OptionsExpressionEventStatus, OptionsExpressionExitReason,
     OptionsExpressionFeasibilityCacheStats, OptionsExpressionFeasibilityEventCoverage,
     OptionsExpressionFeasibilityReport, OptionsExpressionFeasibilityTimingStats,
-    OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    OptionsExpressionMetrics, OptionsExpressionOverlapWindowSummary, OptionsExpressionRunRequest,
+    OptionsExpressionRunResult, OptionsExpressionSplitInvalidReasonSummary,
     OptionsExpressionStagingStats, OptionsExpressionTupleInspectionResult,
     OptionsExpressionTupleResult, OptionsFillModelFamily, OptionsMoneynessBucket,
     OptionsMoneynessBucketCoverage, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
@@ -15,10 +18,8 @@ use crate::options_types::{
     OptionsTupleSpec, SignalSide,
 };
 use std::cmp::Ordering;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -47,6 +48,13 @@ const OPTIONS_AUTO_GPU_MIN_COMPILED_TUPLES: usize = 256;
 const OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS: usize = 8;
 const OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES: u64 = 10_000;
 const OPTIONS_AUTO_GPU_MIN_MEASURED_SPEEDUP: f64 = 1.25;
+const OPTIONS_MIN_HEALTHY_SEARCH_OVERLAP_RATE: f64 = 0.75;
+const OPTIONS_MIN_HEALTHY_TOTAL_OVERLAP_RATE: f64 = 0.75;
+const OPTIONS_MIN_HEALTHY_SEARCH_CANDIDATE_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_MIN_HEALTHY_SEARCH_BASELINE_OUTCOME_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD: f64 = 0.40;
 
 #[cfg(test)]
 fn forced_options_expression_cuda_device_id() -> &'static Mutex<Option<Option<u32>>> {
@@ -304,6 +312,47 @@ fn stress_mode_label(stress_mode: AggregateStressMode) -> &'static str {
     }
 }
 
+fn hash_signal_manifest_cache_inputs(signal_manifest: &OptionsSignalEventManifestV1) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    signal_manifest.manifest_id.hash(&mut hasher);
+    signal_manifest.parent_artifact_id.hash(&mut hasher);
+    signal_manifest.parent_run_kind.hash(&mut hasher);
+    signal_manifest
+        .source_dataset_identity_hash
+        .hash(&mut hasher);
+    signal_manifest.source_content_fingerprint.hash(&mut hasher);
+    signal_manifest.dataset_hash.hash(&mut hasher);
+    signal_manifest.timeframe.hash(&mut hasher);
+    signal_manifest.resample_spec_hash.hash(&mut hasher);
+    signal_manifest.adjustment_mode.hash(&mut hasher);
+    signal_manifest.symbol_root.hash(&mut hasher);
+    signal_manifest.calendar_id.hash(&mut hasher);
+    signal_manifest.runtime_dataset_id.hash(&mut hasher);
+    signal_manifest.events.len().hash(&mut hasher);
+    for event in &signal_manifest.events {
+        event.event_id.hash(&mut hasher);
+        std::mem::discriminant(&event.side).hash(&mut hasher);
+        event.decision_timestamp.hash(&mut hasher);
+        event.earliest_tradable_timestamp.hash(&mut hasher);
+        event.decision_bar_index.hash(&mut hasher);
+        event.earliest_tradable_bar_index.hash(&mut hasher);
+        event.raw_underlier_price.to_bits().hash(&mut hasher);
+        event
+            .adjusted_underlier_price
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        event.base_entry_timestamp.hash(&mut hasher);
+        event.base_exit_timestamp.hash(&mut hasher);
+        event.base_exit_bar_index.hash(&mut hasher);
+        std::mem::discriminant(&event.fold).hash(&mut hasher);
+        event.session_id.hash(&mut hasher);
+        event.regime_tag.hash(&mut hasher);
+        event.confidence_tag.hash(&mut hasher);
+        event.calendar_id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn structural_candidate_cache_key(
     signal_manifest: &OptionsSignalEventManifestV1,
     dataset: &ImportedOptionsDataset,
@@ -312,12 +361,14 @@ fn structural_candidate_cache_key(
     filters: &crate::options_types::OptionsStaticFilterBundle,
     stress_mode: AggregateStressMode,
 ) -> String {
+    let signal_manifest_cache_hash = hash_signal_manifest_cache_inputs(signal_manifest);
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         signal_manifest.manifest_id,
         signal_manifest.source_content_fingerprint,
         signal_manifest.dataset_hash,
         signal_manifest.events.len(),
+        signal_manifest_cache_hash,
         dataset.manifest.options_dataset_id,
         dataset.manifest.root_symbol,
         dataset.manifest.row_count,
@@ -1383,6 +1434,23 @@ fn median(mut values: Vec<f64>) -> f64 {
     }
 }
 
+fn return_on_premium_mean_and_volatility(
+    sum_return_on_premium: f64,
+    sumsq_return_on_premium: f64,
+    valid_trades: usize,
+) -> (f64, f64) {
+    if valid_trades == 0 {
+        return (0.0, 0.0);
+    }
+
+    let count = valid_trades as f64;
+    let mean_return_on_premium = sum_return_on_premium / count;
+    let variance = (sumsq_return_on_premium / count
+        - mean_return_on_premium * mean_return_on_premium)
+        .max(0.0);
+    (mean_return_on_premium, variance.sqrt())
+}
+
 fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpressionMetrics {
     if event_count == 0 {
         return OptionsExpressionMetrics::default();
@@ -1396,25 +1464,37 @@ fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpr
             invalid_rate: invalid_events as f64 / event_count as f64,
             expectancy_per_trade: 0.0,
             expectancy_per_premium: 0.0,
+            mean_return_on_premium: 0.0,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: 0.0,
             win_rate: 0.0,
             total_pnl_per_contract: 0.0,
         };
     }
 
-    let total_pnl: f64 = outcomes
-        .iter()
-        .map(|outcome| outcome.pnl_per_contract)
-        .sum();
-    let total_premium: f64 = outcomes.iter().map(|outcome| outcome.premium_paid).sum();
-    let wins = outcomes
-        .iter()
-        .filter(|outcome| outcome.pnl_per_contract > 0.0)
-        .count();
-    let returns: Vec<f64> = outcomes
-        .iter()
-        .map(|outcome| outcome.return_on_premium)
-        .collect();
+    let mut total_pnl = 0.0;
+    let mut total_premium = 0.0;
+    let mut wins = 0usize;
+    let mut sum_return_on_premium = 0.0;
+    let mut sumsq_return_on_premium = 0.0;
+    let mut returns = Vec::with_capacity(valid_trades);
+    for outcome in outcomes {
+        total_pnl += outcome.pnl_per_contract;
+        total_premium += outcome.premium_paid;
+        if outcome.pnl_per_contract > 0.0 {
+            wins += 1;
+        }
+        let return_on_premium = outcome.return_on_premium;
+        sum_return_on_premium += return_on_premium;
+        sumsq_return_on_premium += return_on_premium * return_on_premium;
+        returns.push(return_on_premium);
+    }
+    let (mean_return_on_premium, return_volatility_on_premium) =
+        return_on_premium_mean_and_volatility(
+            sum_return_on_premium,
+            sumsq_return_on_premium,
+            valid_trades,
+        );
 
     OptionsExpressionMetrics {
         valid_trades,
@@ -1426,6 +1506,8 @@ fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpr
         } else {
             0.0
         },
+        mean_return_on_premium,
+        return_volatility_on_premium,
         median_return_on_premium: median(returns),
         win_rate: wins as f64 / valid_trades as f64,
         total_pnl_per_contract: total_pnl,
@@ -1843,6 +1925,83 @@ fn compile_tuple_grid(
 struct RankedCompiledTuple {
     compiled: CompiledTupleSpec,
     result: OptionsExpressionTupleResult,
+    retained_summary_state: RetainedSummaryState,
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetainedMetricState {
+    Missing,
+    Exact,
+    AggregateNeedsEnrichment,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RetainedSummaryState {
+    selection: RetainedMetricState,
+    holdout: RetainedMetricState,
+    stress: RetainedMetricState,
+    harsher: RetainedMetricState,
+}
+
+impl RetainedSummaryState {
+    fn cpu_initial(holdout_events: usize) -> Self {
+        let holdout_state = if holdout_events > 0 {
+            RetainedMetricState::Exact
+        } else {
+            RetainedMetricState::Missing
+        };
+        Self {
+            selection: RetainedMetricState::Exact,
+            holdout: holdout_state,
+            stress: holdout_state,
+            harsher: RetainedMetricState::Missing,
+        }
+    }
+
+    #[cfg_attr(
+        not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+        allow(dead_code)
+    )]
+    fn gpu_initial(holdout_events: usize) -> Self {
+        let holdout_state = if holdout_events > 0 {
+            RetainedMetricState::AggregateNeedsEnrichment
+        } else {
+            RetainedMetricState::Missing
+        };
+        Self {
+            selection: RetainedMetricState::AggregateNeedsEnrichment,
+            holdout: holdout_state,
+            stress: holdout_state,
+            harsher: holdout_state,
+        }
+    }
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, Default)]
+struct ExactifyTimingBreakdown {
+    total_us: u64,
+    summary_overwrite_us: u64,
+    enrichment_us: u64,
+    extreme_us: u64,
+}
+
+#[cfg_attr(
+    not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug, Default)]
+struct SealedStageTimingBreakdown {
+    total_us: u64,
+    non_extreme_us: u64,
+    extreme_us: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1856,6 +2015,7 @@ struct PreparedOptionsExpressionRun {
     harsher_candidate_cache: StructuralCandidateCache,
     harsher_exit_summary_cache: ExitSummaryCache,
     diagnostics: OptionsExpressionDiagnostics,
+    overlap_window: OptionsExpressionOverlapWindowSummary,
     staging: OptionsExpressionStagingStats,
     timings: OptionsExpressionFeasibilityTimingStats,
     cache_stats: OptionsExpressionFeasibilityCacheStats,
@@ -2051,6 +2211,8 @@ struct TupleAggregateMetrics {
     win_count: usize,
     total_pnl_per_contract: f64,
     total_premium_paid: f64,
+    sum_return_on_premium: f64,
+    sumsq_return_on_premium: f64,
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -2066,11 +2228,19 @@ fn metrics_from_aggregate(aggregate: TupleAggregateMetrics) -> OptionsExpression
             invalid_rate: aggregate.invalid_events as f64 / event_count as f64,
             expectancy_per_trade: 0.0,
             expectancy_per_premium: 0.0,
+            mean_return_on_premium: 0.0,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: 0.0,
             win_rate: 0.0,
             total_pnl_per_contract: 0.0,
         };
     }
+    let (mean_return_on_premium, return_volatility_on_premium) =
+        return_on_premium_mean_and_volatility(
+            aggregate.sum_return_on_premium,
+            aggregate.sumsq_return_on_premium,
+            aggregate.valid_trades,
+        );
     OptionsExpressionMetrics {
         valid_trades: aggregate.valid_trades,
         invalid_events: aggregate.invalid_events,
@@ -2081,6 +2251,8 @@ fn metrics_from_aggregate(aggregate: TupleAggregateMetrics) -> OptionsExpression
         } else {
             0.0
         },
+        mean_return_on_premium,
+        return_volatility_on_premium,
         median_return_on_premium: 0.0,
         win_rate: aggregate.win_count as f64 / aggregate.valid_trades as f64,
         total_pnl_per_contract: aggregate.total_pnl_per_contract,
@@ -2311,6 +2483,7 @@ fn prepare_options_expression_run(
         coverage_start: Some(dataset.manifest.coverage_start),
         coverage_end: Some(dataset.manifest.coverage_end),
     };
+    let overlap_window = build_overlap_window_summary(&events, &diagnostics, dataset);
     let timings = OptionsExpressionFeasibilityTimingStats {
         tuple_compile_ms,
         baseline_candidate_compile_ms,
@@ -2327,8 +2500,18 @@ fn prepare_options_expression_run(
         gpu_tensor_score_us: None,
         gpu_exactify_ms: None,
         gpu_exactify_us: None,
+        gpu_exactify_summary_overwrite_ms: None,
+        gpu_exactify_summary_overwrite_us: None,
+        gpu_exactify_enrichment_ms: None,
+        gpu_exactify_enrichment_us: None,
+        gpu_exactify_extreme_ms: None,
+        gpu_exactify_extreme_us: None,
         gpu_sealed_stage_ms: None,
         gpu_sealed_stage_us: None,
+        gpu_sealed_non_extreme_ms: None,
+        gpu_sealed_non_extreme_us: None,
+        gpu_sealed_extreme_ms: None,
+        gpu_sealed_extreme_us: None,
         gpu_speedup_vs_cpu: None,
     };
 
@@ -2342,6 +2525,7 @@ fn prepare_options_expression_run(
         harsher_candidate_cache,
         harsher_exit_summary_cache,
         diagnostics,
+        overlap_window,
         staging,
         timings,
         cache_stats,
@@ -2451,14 +2635,231 @@ fn assign_sealed_final_ranks(ranked_results: &mut [RankedCompiledTuple]) {
     }
 }
 
+fn refresh_validation_verdicts(ranked_results: &mut [RankedCompiledTuple]) {
+    for ranked in ranked_results.iter_mut() {
+        ranked.result.validation_verdict = ranked.result.inferred_validation_verdict();
+    }
+}
+
+fn recompute_retained_robust_scores(ranked_results: &mut [RankedCompiledTuple]) {
+    for ranked in ranked_results.iter_mut() {
+        ranked.result.robust_score = robust_score(
+            &ranked.result.selection_metrics,
+            ranked.result.holdout_metrics.as_ref(),
+            None,
+            ranked.result.stress_metrics.as_ref(),
+            ranked.result.harsher_stress_metrics.as_ref(),
+            ranked.result.extreme_stress_metrics.as_ref(),
+        );
+    }
+}
+
+fn exactify_retained_summary_metrics(
+    prepared: &PreparedOptionsExpressionRun,
+    ranked_results: &mut [RankedCompiledTuple],
+) {
+    let holdout_events = prepared.diagnostics.holdout_events;
+    for ranked in ranked_results.iter_mut() {
+        if matches!(
+            ranked.retained_summary_state.selection,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.selection_metrics = evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Search,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            );
+            ranked.retained_summary_state.selection = RetainedMetricState::Exact;
+        }
+        if holdout_events == 0 {
+            ranked.retained_summary_state.holdout = RetainedMetricState::Missing;
+            ranked.retained_summary_state.stress = RetainedMetricState::Missing;
+            ranked.retained_summary_state.harsher = RetainedMetricState::Missing;
+            ranked.result.holdout_metrics = None;
+            ranked.result.stress_metrics = None;
+            ranked.result.harsher_stress_metrics = None;
+            continue;
+        }
+        if matches!(
+            ranked.retained_summary_state.holdout,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.holdout_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            ));
+            ranked.retained_summary_state.holdout = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.stress,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.stress_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.conservative_candidate_cache,
+                &prepared.conservative_exit_summary_cache,
+            ));
+            ranked.retained_summary_state.stress = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.harsher,
+            RetainedMetricState::Missing
+        ) {
+            ranked.result.harsher_stress_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.harsher_candidate_cache,
+                &prepared.harsher_exit_summary_cache,
+            ));
+            ranked.retained_summary_state.harsher = RetainedMetricState::Exact;
+        }
+    }
+}
+
+fn exactify_retained_summary_enrichment(
+    prepared: &PreparedOptionsExpressionRun,
+    ranked_results: &mut [RankedCompiledTuple],
+) {
+    let holdout_events = prepared.diagnostics.holdout_events;
+    for ranked in ranked_results.iter_mut() {
+        if matches!(
+            ranked.retained_summary_state.selection,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            ranked.result.selection_metrics.median_return_on_premium =
+                evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Search,
+                    &prepared.baseline_candidate_cache,
+                    &prepared.baseline_exit_summary_cache,
+                );
+            ranked.retained_summary_state.selection = RetainedMetricState::Exact;
+        }
+        if holdout_events == 0 {
+            continue;
+        }
+        if matches!(
+            ranked.retained_summary_state.holdout,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            if let Some(metrics) = ranked.result.holdout_metrics.as_mut() {
+                metrics.median_return_on_premium = evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Holdout,
+                    &prepared.baseline_candidate_cache,
+                    &prepared.baseline_exit_summary_cache,
+                );
+            }
+            ranked.retained_summary_state.holdout = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.stress,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            if let Some(metrics) = ranked.result.stress_metrics.as_mut() {
+                metrics.median_return_on_premium = evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Holdout,
+                    &prepared.conservative_candidate_cache,
+                    &prepared.conservative_exit_summary_cache,
+                );
+            }
+            ranked.retained_summary_state.stress = RetainedMetricState::Exact;
+        }
+        if matches!(
+            ranked.retained_summary_state.harsher,
+            RetainedMetricState::AggregateNeedsEnrichment
+        ) {
+            if let Some(metrics) = ranked.result.harsher_stress_metrics.as_mut() {
+                metrics.median_return_on_premium = evaluate_median_return_on_premium_for_split(
+                    &ranked.compiled,
+                    &prepared.events,
+                    OptionsEvaluationSplit::Holdout,
+                    &prepared.harsher_candidate_cache,
+                    &prepared.harsher_exit_summary_cache,
+                );
+            }
+            ranked.retained_summary_state.harsher = RetainedMetricState::Exact;
+        }
+    }
+}
+
+fn exactify_retained_extreme_stress_metrics(
+    prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
+    ranked_results: &mut [RankedCompiledTuple],
+) {
+    let holdout_events = prepared.diagnostics.holdout_events;
+    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
+    for ranked in ranked_results.iter_mut() {
+        ranked.result.extreme_stress_metrics = if holdout_events > 0 {
+            Some(evaluate_exact_stress_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &index,
+                &prepared.baseline_candidate_cache,
+                dataset.manifest.price_semantics,
+                AggregateStressMode::Extreme,
+            ))
+        } else {
+            None
+        };
+    }
+}
+
+fn exactify_ranked_results(
+    prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
+    ranked_results: &mut [RankedCompiledTuple],
+) -> ExactifyTimingBreakdown {
+    let total_start = Instant::now();
+
+    let summary_overwrite_start = Instant::now();
+    exactify_retained_summary_metrics(prepared, ranked_results);
+    let summary_overwrite_us = elapsed_us(summary_overwrite_start);
+
+    let enrichment_start = Instant::now();
+    exactify_retained_summary_enrichment(prepared, ranked_results);
+    let enrichment_us = elapsed_us(enrichment_start);
+
+    let extreme_start = Instant::now();
+    exactify_retained_extreme_stress_metrics(prepared, dataset, ranked_results);
+    let extreme_us = elapsed_us(extreme_start);
+
+    recompute_retained_robust_scores(ranked_results);
+    refresh_validation_verdicts(ranked_results);
+
+    ExactifyTimingBreakdown {
+        total_us: elapsed_us(total_start),
+        summary_overwrite_us,
+        enrichment_us,
+        extreme_us,
+    }
+}
+
 fn apply_sealed_finalist_stage(
     req: &OptionsExpressionRunRequest,
     prepared: &PreparedOptionsExpressionRun,
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
-) {
+) -> SealedStageTimingBreakdown {
+    let total_start = Instant::now();
+    let non_extreme_start = Instant::now();
+    sort_ranked_results(ranked_results);
+    resequence_pre_sealed_ranks(ranked_results);
     let sealed_test_events = prepared.diagnostics.sealed_test_events;
-    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
     let sealed_finalist_count = if sealed_test_events > 0 {
         req.sealed_finalist_count.max(1).min(ranked_results.len())
     } else {
@@ -2487,6 +2888,12 @@ fn apply_sealed_finalist_stage(
             &prepared.harsher_candidate_cache,
             &prepared.harsher_exit_summary_cache,
         ));
+    }
+    let non_extreme_us = elapsed_us(non_extreme_start);
+
+    let extreme_start = Instant::now();
+    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
+    for ranked in ranked_results.iter_mut().take(sealed_finalist_count) {
         ranked.result.sealed_extreme_stress_metrics = Some(evaluate_exact_stress_for_split(
             &ranked.compiled,
             &prepared.events,
@@ -2498,85 +2905,13 @@ fn apply_sealed_finalist_stage(
         ));
     }
     assign_sealed_final_ranks(ranked_results);
-}
+    let extreme_us = elapsed_us(extreme_start);
 
-fn refresh_validation_verdicts(ranked_results: &mut [RankedCompiledTuple]) {
-    for ranked in ranked_results.iter_mut() {
-        ranked.result.validation_verdict = ranked.result.inferred_validation_verdict();
+    SealedStageTimingBreakdown {
+        total_us: elapsed_us(total_start),
+        non_extreme_us,
+        extreme_us,
     }
-}
-
-fn exactify_ranked_results(
-    prepared: &PreparedOptionsExpressionRun,
-    dataset: &ImportedOptionsDataset,
-    ranked_results: &mut [RankedCompiledTuple],
-) {
-    let holdout_events = prepared.diagnostics.holdout_events;
-    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
-    for ranked in ranked_results.iter_mut() {
-        ranked.result.selection_metrics = evaluate_compiled_tuple_for_split(
-            &ranked.compiled,
-            &prepared.events,
-            OptionsEvaluationSplit::Search,
-            &prepared.baseline_candidate_cache,
-            &prepared.baseline_exit_summary_cache,
-        );
-        ranked.result.holdout_metrics = if holdout_events > 0 {
-            Some(evaluate_compiled_tuple_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &prepared.baseline_candidate_cache,
-                &prepared.baseline_exit_summary_cache,
-            ))
-        } else {
-            None
-        };
-        ranked.result.stress_metrics = if holdout_events > 0 {
-            Some(evaluate_compiled_tuple_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &prepared.conservative_candidate_cache,
-                &prepared.conservative_exit_summary_cache,
-            ))
-        } else {
-            None
-        };
-        ranked.result.harsher_stress_metrics = if holdout_events > 0 {
-            Some(evaluate_compiled_tuple_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &prepared.harsher_candidate_cache,
-                &prepared.harsher_exit_summary_cache,
-            ))
-        } else {
-            None
-        };
-        ranked.result.extreme_stress_metrics = if holdout_events > 0 {
-            Some(evaluate_exact_stress_for_split(
-                &ranked.compiled,
-                &prepared.events,
-                OptionsEvaluationSplit::Holdout,
-                &index,
-                &prepared.baseline_candidate_cache,
-                dataset.manifest.price_semantics,
-                AggregateStressMode::Extreme,
-            ))
-        } else {
-            None
-        };
-        ranked.result.robust_score = robust_score(
-            &ranked.result.selection_metrics,
-            ranked.result.holdout_metrics.as_ref(),
-            None,
-            ranked.result.stress_metrics.as_ref(),
-            ranked.result.harsher_stress_metrics.as_ref(),
-            ranked.result.extreme_stress_metrics.as_ref(),
-        );
-    }
-    refresh_validation_verdicts(ranked_results);
 }
 
 fn finalize_ranked_results(
@@ -2584,19 +2919,11 @@ fn finalize_ranked_results(
     prepared: &PreparedOptionsExpressionRun,
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
-) -> (u64, u64) {
-    let exactify_start = Instant::now();
-    exactify_ranked_results(prepared, dataset, ranked_results);
-    let exactify_us = elapsed_us(exactify_start);
-
-    let sealed_stage_start = Instant::now();
-    sort_ranked_results(ranked_results);
-    resequence_pre_sealed_ranks(ranked_results);
-    apply_sealed_finalist_stage(req, prepared, dataset, ranked_results);
+) -> (ExactifyTimingBreakdown, SealedStageTimingBreakdown) {
+    let exactify = exactify_ranked_results(prepared, dataset, ranked_results);
+    let sealed_stage = apply_sealed_finalist_stage(req, prepared, dataset, ranked_results);
     refresh_validation_verdicts(ranked_results);
-    let sealed_stage_us = elapsed_us(sealed_stage_start);
-
-    (exactify_us, sealed_stage_us)
+    (exactify, sealed_stage)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -2608,8 +2935,8 @@ mod gpu_scoring {
     pub(super) struct GpuRankingTimingBreakdown {
         pub(super) total_us: u64,
         pub(super) tensor_score_us: u64,
-        pub(super) exactify_us: u64,
-        pub(super) sealed_stage_us: u64,
+        pub(super) exactify: ExactifyTimingBreakdown,
+        pub(super) sealed_stage: SealedStageTimingBreakdown,
     }
 
     #[derive(Clone, Debug, Default)]
@@ -2658,6 +2985,8 @@ mod gpu_scoring {
             win_count: aggregate.wins as usize,
             total_pnl_per_contract: aggregate.total_pnl as f64,
             total_premium_paid: aggregate.total_premium as f64,
+            sum_return_on_premium: aggregate.sum_return_on_premium as f64,
+            sumsq_return_on_premium: aggregate.sumsq_return_on_premium as f64,
         }
     }
 
@@ -2810,24 +3139,25 @@ mod gpu_scoring {
                     validation_verdict: Default::default(),
                     robust_score: robust,
                 },
+                retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
             });
         }
 
         sort_ranked_results(&mut ranked_results);
         resequence_pre_sealed_ranks(&mut ranked_results);
         ranked_results.truncate(req.top_k.max(1));
-        let (exactify_us, sealed_stage_us) =
+        let (exactify, sealed_stage) =
             finalize_ranked_results(req, prepared, dataset, &mut ranked_results);
         Ok(Some(GpuRankedTuplePass {
             ranked_results,
             stats: GpuRankingExecutionStats {
                 timing: GpuRankingTimingBreakdown {
                     total_us: tensor_score_us
-                        .saturating_add(exactify_us)
-                        .saturating_add(sealed_stage_us),
+                        .saturating_add(exactify.total_us)
+                        .saturating_add(sealed_stage.total_us),
                     tensor_score_us,
-                    exactify_us,
-                    sealed_stage_us,
+                    exactify,
+                    sealed_stage,
                 },
                 cache_usage: gpu_cache_usage,
             },
@@ -2935,6 +3265,7 @@ fn rank_compiled_tuples_cpu(
                 validation_verdict: Default::default(),
                 robust_score: robust,
             },
+            retained_summary_state: RetainedSummaryState::cpu_initial(holdout_events),
         });
     }
 
@@ -3242,6 +3573,36 @@ fn evaluate_compiled_tuple_for_split(
     compute_metrics(split_event_count, &outcomes)
 }
 
+fn evaluate_median_return_on_premium_for_split(
+    tuple: &CompiledTupleSpec,
+    events: &[OptionsSignalEvent],
+    split: OptionsEvaluationSplit,
+    candidate_cache: &StructuralCandidateCache,
+    exit_summary_cache: &ExitSummaryCache,
+) -> f64 {
+    let mut returns: Vec<f64> = Vec::new();
+    for (event_index, event) in events.iter().enumerate() {
+        if event.fold != split {
+            continue;
+        }
+        let candidate_slot_index = candidate_cache.candidate_slot_index(
+            event_index,
+            tuple.delay_index,
+            tuple.dte_index,
+            tuple.moneyness_index,
+        );
+        if let Some(outcome) = exit_summary_cache.outcome(
+            candidate_slot_index,
+            tuple.hold_index,
+            tuple.target_index,
+            tuple.stop_index,
+        ) {
+            returns.push(outcome.return_on_premium);
+        }
+    }
+    median(returns)
+}
+
 fn evaluate_exact_stress_for_split(
     tuple: &CompiledTupleSpec,
     events: &[OptionsSignalEvent],
@@ -3288,27 +3649,23 @@ fn robust_score(
     harsher_stress: Option<&OptionsExpressionMetrics>,
     extreme_stress: Option<&OptionsExpressionMetrics>,
 ) -> f64 {
-    let coverage = (1.0 - search.invalid_rate).clamp(0.0, 1.0);
-    let search_score = search.expectancy_per_premium;
-    let holdout_score = holdout
-        .map(|metrics| metrics.expectancy_per_premium)
-        .unwrap_or(search_score);
-    let stress_score = stress
-        .map(|metrics| metrics.expectancy_per_premium)
-        .unwrap_or(search_score);
-    let harsher_stress_score = harsher_stress
-        .map(|metrics| metrics.expectancy_per_premium)
-        .unwrap_or(stress_score);
+    fn lane_utility(metrics: &OptionsExpressionMetrics) -> f64 {
+        (1.0 - metrics.invalid_rate).clamp(0.0, 1.0) * metrics.expectancy_per_premium
+    }
+
+    let search_score = lane_utility(search);
+    let holdout_score = holdout.map(lane_utility).unwrap_or(search_score);
+    let stress_score = stress.map(lane_utility).unwrap_or(search_score);
+    let harsher_stress_score = harsher_stress.map(lane_utility).unwrap_or(stress_score);
     let extreme_stress_score = extreme_stress
-        .map(|metrics| metrics.expectancy_per_premium)
+        .map(lane_utility)
         .unwrap_or(harsher_stress_score);
     // Sealed metrics are recorded for final reporting, not for tuple ranking.
-    coverage
-        * (0.45 * search_score
-            + 0.25 * holdout_score
-            + 0.15 * stress_score
-            + 0.10 * harsher_stress_score
-            + 0.05 * extreme_stress_score)
+    0.45 * search_score
+        + 0.25 * holdout_score
+        + 0.15 * stress_score
+        + 0.10 * harsher_stress_score
+        + 0.05 * extreme_stress_score
 }
 
 fn build_event_detail_row(
@@ -3665,6 +4022,452 @@ where
     (total, search, holdout, sealed)
 }
 
+fn build_event_coverage_summary(
+    prepared: &PreparedOptionsExpressionRun,
+) -> OptionsExpressionFeasibilityEventCoverage {
+    let (
+        total_events_with_candidates,
+        search_events_with_candidates,
+        holdout_events_with_candidates,
+        sealed_test_events_with_candidates,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_candidate(&prepared.baseline_candidate_cache, event_index)
+    });
+    let (
+        total_events_with_baseline_outcomes,
+        search_events_with_baseline_outcomes,
+        holdout_events_with_baseline_outcomes,
+        sealed_test_events_with_baseline_outcomes,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_outcome(
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+            event_index,
+        )
+    });
+    let (
+        total_events_with_conservative_outcomes,
+        search_events_with_conservative_outcomes,
+        holdout_events_with_conservative_outcomes,
+        sealed_test_events_with_conservative_outcomes,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_outcome(
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+            event_index,
+        )
+    });
+    let (
+        total_events_with_harsher_outcomes,
+        search_events_with_harsher_outcomes,
+        holdout_events_with_harsher_outcomes,
+        sealed_test_events_with_harsher_outcomes,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_outcome(
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+            event_index,
+        )
+    });
+    OptionsExpressionFeasibilityEventCoverage {
+        total_events_with_candidates,
+        search_events_with_candidates,
+        holdout_events_with_candidates,
+        sealed_test_events_with_candidates,
+        total_events_with_baseline_outcomes,
+        search_events_with_baseline_outcomes,
+        holdout_events_with_baseline_outcomes,
+        sealed_test_events_with_baseline_outcomes,
+        total_events_with_conservative_outcomes,
+        search_events_with_conservative_outcomes,
+        holdout_events_with_conservative_outcomes,
+        sealed_test_events_with_conservative_outcomes,
+        total_events_with_harsher_outcomes,
+        search_events_with_harsher_outcomes,
+        holdout_events_with_harsher_outcomes,
+        sealed_test_events_with_harsher_outcomes,
+    }
+}
+
+fn summarize_event_split_counts(
+    events: &[OptionsSignalEvent],
+    predicate: impl Fn(&OptionsSignalEvent) -> bool,
+) -> (usize, usize, usize, usize) {
+    let mut total = 0usize;
+    let mut search = 0usize;
+    let mut holdout = 0usize;
+    let mut sealed = 0usize;
+    for event in events {
+        if !predicate(event) {
+            continue;
+        }
+        total += 1;
+        match event.fold {
+            OptionsEvaluationSplit::Search => search += 1,
+            OptionsEvaluationSplit::Holdout => holdout += 1,
+            OptionsEvaluationSplit::SealedTest => sealed += 1,
+        }
+    }
+    (total, search, holdout, sealed)
+}
+
+fn parse_contract_reference_timestamp_ms(value: Option<&str>) -> Option<i64> {
+    value
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|ts| ts.timestamp_millis())
+}
+
+fn build_overlap_window_summary(
+    events: &[OptionsSignalEvent],
+    diagnostics: &OptionsExpressionDiagnostics,
+    dataset: &ImportedOptionsDataset,
+) -> OptionsExpressionOverlapWindowSummary {
+    let coverage_start = dataset.manifest.coverage_start;
+    let coverage_end = dataset.manifest.coverage_end;
+    let (
+        total_events_in_dataset_window,
+        search_events_in_dataset_window,
+        holdout_events_in_dataset_window,
+        sealed_test_events_in_dataset_window,
+    ) = summarize_event_split_counts(events, |event| {
+        let basis_ts = event.earliest_tradable_timestamp;
+        basis_ts >= coverage_start && basis_ts <= coverage_end
+    });
+    let (
+        total_events_before_dataset_window,
+        search_events_before_dataset_window,
+        holdout_events_before_dataset_window,
+        sealed_test_events_before_dataset_window,
+    ) = summarize_event_split_counts(events, |event| {
+        event.earliest_tradable_timestamp < coverage_start
+    });
+    let (
+        total_events_after_dataset_window,
+        search_events_after_dataset_window,
+        holdout_events_after_dataset_window,
+        sealed_test_events_after_dataset_window,
+    ) = summarize_event_split_counts(events, |event| {
+        event.earliest_tradable_timestamp > coverage_end
+    });
+    let contract_reference_as_of_utc = dataset.manifest.contract_reference_as_of_utc.clone();
+    let contract_reference_as_of_ms =
+        parse_contract_reference_timestamp_ms(contract_reference_as_of_utc.as_deref());
+    let (
+        total_events_before_contract_reference_as_of,
+        search_events_before_contract_reference_as_of,
+        holdout_events_before_contract_reference_as_of,
+        sealed_test_events_before_contract_reference_as_of,
+    ) = if let Some(as_of_ms) = contract_reference_as_of_ms {
+        summarize_event_split_counts(events, |event| event.earliest_tradable_timestamp < as_of_ms)
+    } else {
+        (0, 0, 0, 0)
+    };
+    OptionsExpressionOverlapWindowSummary {
+        contract_reference_as_of_utc,
+        total_events_in_dataset_window,
+        search_events_in_dataset_window,
+        holdout_events_in_dataset_window,
+        sealed_test_events_in_dataset_window,
+        total_events_before_dataset_window,
+        total_events_after_dataset_window,
+        search_events_before_dataset_window,
+        search_events_after_dataset_window,
+        holdout_events_before_dataset_window,
+        holdout_events_after_dataset_window,
+        sealed_test_events_before_dataset_window,
+        sealed_test_events_after_dataset_window,
+        total_events_before_contract_reference_as_of,
+        search_events_before_contract_reference_as_of,
+        holdout_events_before_contract_reference_as_of,
+        sealed_test_events_before_contract_reference_as_of,
+        total_overlap_rate: ratio_or_zero(total_events_in_dataset_window, diagnostics.total_events),
+        search_overlap_rate: ratio_or_zero(
+            search_events_in_dataset_window,
+            diagnostics.search_events,
+        ),
+        holdout_overlap_rate: ratio_or_zero(
+            holdout_events_in_dataset_window,
+            diagnostics.holdout_events,
+        ),
+        sealed_test_overlap_rate: ratio_or_zero(
+            sealed_test_events_in_dataset_window,
+            diagnostics.sealed_test_events,
+        ),
+    }
+}
+
+fn build_split_invalid_reason_summary(
+    events: &[OptionsSignalEvent],
+    candidate_cache: &StructuralCandidateCache,
+) -> OptionsExpressionSplitInvalidReasonSummary {
+    let per_event = candidate_cache.axis.slot_count_per_event();
+    if per_event == 0 || events.is_empty() {
+        return OptionsExpressionSplitInvalidReasonSummary::default();
+    }
+    let mut search_counts: BTreeMap<OptionsCandidateInvalidReason, usize> = BTreeMap::new();
+    let mut holdout_counts: BTreeMap<OptionsCandidateInvalidReason, usize> = BTreeMap::new();
+    let mut sealed_counts: BTreeMap<OptionsCandidateInvalidReason, usize> = BTreeMap::new();
+    for (slot_index, reason) in candidate_cache.invalid_reasons.iter().enumerate() {
+        let Some(reason) = reason else {
+            continue;
+        };
+        let event_index = slot_index / per_event;
+        let Some(event) = events.get(event_index) else {
+            continue;
+        };
+        let counts = match event.fold {
+            OptionsEvaluationSplit::Search => &mut search_counts,
+            OptionsEvaluationSplit::Holdout => &mut holdout_counts,
+            OptionsEvaluationSplit::SealedTest => &mut sealed_counts,
+        };
+        *counts.entry(*reason).or_default() += 1;
+    }
+    let map_counts = |counts: BTreeMap<OptionsCandidateInvalidReason, usize>| {
+        counts
+            .into_iter()
+            .map(|(reason, count)| OptionsCandidateInvalidReasonCount { reason, count })
+            .collect()
+    };
+    OptionsExpressionSplitInvalidReasonSummary {
+        search_invalid_reasons: map_counts(search_counts),
+        holdout_invalid_reasons: map_counts(holdout_counts),
+        sealed_test_invalid_reasons: map_counts(sealed_counts),
+    }
+}
+
+fn dominant_invalid_reason(
+    invalid_reasons: &[OptionsCandidateInvalidReasonCount],
+) -> Option<(OptionsCandidateInvalidReason, f64)> {
+    let total: usize = invalid_reasons.iter().map(|entry| entry.count).sum();
+    let best = invalid_reasons.iter().max_by_key(|entry| entry.count)?;
+    let share = if total == 0 {
+        0.0
+    } else {
+        best.count as f64 / total as f64
+    };
+    Some((best.reason, share))
+}
+
+fn push_adequacy_reason(reasons: &mut Vec<String>, reason: impl Into<String>) {
+    let next = reason.into();
+    if !reasons.iter().any(|existing| existing == &next) {
+        reasons.push(next);
+    }
+}
+
+fn build_coverage_adequacy_summary(
+    diagnostics: &OptionsExpressionDiagnostics,
+    overlap_window: &OptionsExpressionOverlapWindowSummary,
+    event_coverage: &OptionsExpressionFeasibilityEventCoverage,
+    split_invalid_reasons: &OptionsExpressionSplitInvalidReasonSummary,
+    invalid_reasons: &[OptionsCandidateInvalidReasonCount],
+) -> OptionsExpressionCoverageAdequacySummary {
+    let search_candidate_coverage_rate = ratio_or_zero(
+        event_coverage.search_events_with_candidates,
+        overlap_window.search_events_in_dataset_window,
+    );
+    let holdout_candidate_coverage_rate = ratio_or_zero(
+        event_coverage.holdout_events_with_candidates,
+        overlap_window.holdout_events_in_dataset_window,
+    );
+    let sealed_test_candidate_coverage_rate = ratio_or_zero(
+        event_coverage.sealed_test_events_with_candidates,
+        overlap_window.sealed_test_events_in_dataset_window,
+    );
+    let search_baseline_outcome_coverage_rate = ratio_or_zero(
+        event_coverage.search_events_with_baseline_outcomes,
+        overlap_window.search_events_in_dataset_window,
+    );
+    let holdout_baseline_outcome_coverage_rate = ratio_or_zero(
+        event_coverage.holdout_events_with_baseline_outcomes,
+        overlap_window.holdout_events_in_dataset_window,
+    );
+    let sealed_test_baseline_outcome_coverage_rate = ratio_or_zero(
+        event_coverage.sealed_test_events_with_baseline_outcomes,
+        overlap_window.sealed_test_events_in_dataset_window,
+    );
+    let dominant_search_invalid =
+        dominant_invalid_reason(&split_invalid_reasons.search_invalid_reasons);
+    let dominant_overall_invalid = dominant_invalid_reason(invalid_reasons);
+    let (dominant_invalid_reason, dominant_invalid_reason_share) = dominant_search_invalid
+        .or(dominant_overall_invalid)
+        .unwrap_or((OptionsCandidateInvalidReason::NoPriceRowAfterEntry, 0.0));
+    let dominant_invalid_reason = if dominant_invalid_reason_share > 0.0 {
+        Some(dominant_invalid_reason)
+    } else {
+        None
+    };
+    let mut reasons = Vec::new();
+    let mut verdict = OptionsExpressionCoverageAdequacyVerdict::Healthy;
+    let mut non_promotable = false;
+
+    if diagnostics.search_events > 0 && overlap_window.search_events_in_dataset_window == 0 {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::SearchOverlapMissing;
+        non_promotable = true;
+        push_adequacy_reason(
+            &mut reasons,
+            "No search events fall inside the imported options dataset window.",
+        );
+    } else if diagnostics.search_events > 0
+        && (overlap_window.search_overlap_rate < OPTIONS_MIN_HEALTHY_SEARCH_OVERLAP_RATE
+            || overlap_window.total_overlap_rate < OPTIONS_MIN_HEALTHY_TOTAL_OVERLAP_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::WeakDatasetOverlap;
+        non_promotable = true;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Only {:.1}% of search events and {:.1}% of total events overlap the current dataset window.",
+                overlap_window.search_overlap_rate * 100.0,
+                overlap_window.total_overlap_rate * 100.0
+            ),
+        );
+    } else if overlap_window.search_events_in_dataset_window > 0
+        && (search_candidate_coverage_rate < OPTIONS_MIN_HEALTHY_SEARCH_CANDIDATE_COVERAGE_RATE
+            || search_baseline_outcome_coverage_rate
+                < OPTIONS_MIN_HEALTHY_SEARCH_BASELINE_OUTCOME_COVERAGE_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::SearchCoverageWeak;
+        non_promotable = true;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Only {:.1}% of in-window search events reach candidates and {:.1}% reach baseline outcomes.",
+                search_candidate_coverage_rate * 100.0,
+                search_baseline_outcome_coverage_rate * 100.0
+            ),
+        );
+    } else if diagnostics.holdout_events > 0
+        && overlap_window.holdout_events_in_dataset_window > 0
+        && (holdout_candidate_coverage_rate < OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE
+            || holdout_baseline_outcome_coverage_rate < OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::HoldoutCoverageWeak;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Holdout coverage is thin: {:.1}% candidate-ready and {:.1}% baseline-outcome coverage for in-window holdout events.",
+                holdout_candidate_coverage_rate * 100.0,
+                holdout_baseline_outcome_coverage_rate * 100.0
+            ),
+        );
+    } else if diagnostics.sealed_test_events > 0
+        && overlap_window.sealed_test_events_in_dataset_window > 0
+        && (sealed_test_candidate_coverage_rate < OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE
+            || sealed_test_baseline_outcome_coverage_rate
+                < OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::SealedCoverageWeak;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Sealed coverage is thin: {:.1}% candidate-ready and {:.1}% baseline-outcome coverage for in-window sealed events.",
+                sealed_test_candidate_coverage_rate * 100.0,
+                sealed_test_baseline_outcome_coverage_rate * 100.0
+            ),
+        );
+    } else if dominant_invalid_reason_share >= OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD {
+        match dominant_invalid_reason {
+            Some(OptionsCandidateInvalidReason::ContractNotEligibleAsOfEvent) => {
+                verdict = OptionsExpressionCoverageAdequacyVerdict::ContractEligibilityFragile;
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Contract eligibility timing dominates structural invalidity ({:.1}% of invalid slots).",
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+                if overlap_window.search_events_before_contract_reference_as_of > 0 {
+                    push_adequacy_reason(
+                        &mut reasons,
+                        format!(
+                            "{} search event{} occur before the dataset contract-reference as-of timestamp.",
+                            overlap_window.search_events_before_contract_reference_as_of,
+                            if overlap_window.search_events_before_contract_reference_as_of == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ),
+                    );
+                }
+            }
+            Some(OptionsCandidateInvalidReason::EntryPastCutoff) => {
+                verdict = OptionsExpressionCoverageAdequacyVerdict::LateEntryFragile;
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Late-entry cutoff misses dominate structural invalidity ({:.1}% of invalid slots).",
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+            }
+            Some(OptionsCandidateInvalidReason::NoStrikeInTolerance) => {
+                verdict = OptionsExpressionCoverageAdequacyVerdict::StrikeWindowFragile;
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Strike-window misses dominate structural invalidity ({:.1}% of invalid slots).",
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if verdict == OptionsExpressionCoverageAdequacyVerdict::Healthy {
+        if overlap_window.search_events_before_contract_reference_as_of > 0
+            || dominant_invalid_reason_share >= OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD
+        {
+            verdict = OptionsExpressionCoverageAdequacyVerdict::MixedFragile;
+            if overlap_window.search_events_before_contract_reference_as_of > 0 {
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "{} search event{} occur before the dataset contract-reference as-of timestamp.",
+                        overlap_window.search_events_before_contract_reference_as_of,
+                        if overlap_window.search_events_before_contract_reference_as_of == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ),
+                );
+            }
+            if let Some(reason) = dominant_invalid_reason {
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Dominant structural invalid reason: {:?} ({:.1}% of invalid slots).",
+                        reason,
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+            }
+        } else {
+            push_adequacy_reason(
+                &mut reasons,
+                "Search overlap and split-level candidate/outcome coverage are currently adequate for this slice.",
+            );
+        }
+    }
+
+    OptionsExpressionCoverageAdequacySummary {
+        verdict,
+        non_promotable,
+        reasons,
+        search_candidate_coverage_rate,
+        holdout_candidate_coverage_rate,
+        sealed_test_candidate_coverage_rate,
+        search_baseline_outcome_coverage_rate,
+        holdout_baseline_outcome_coverage_rate,
+        sealed_test_baseline_outcome_coverage_rate,
+        dominant_invalid_reason,
+        dominant_invalid_reason_share,
+    }
+}
+
 pub fn run_options_expression_blocking(
     req: OptionsExpressionRunRequest,
     signal_manifest: &OptionsSignalEventManifestV1,
@@ -3672,6 +4475,16 @@ pub fn run_options_expression_blocking(
 ) -> Result<OptionsExpressionRunResult, String> {
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
     let ranked_pass = rank_compiled_tuples(&req, &prepared, dataset)?;
+    let event_coverage = build_event_coverage_summary(&prepared);
+    let split_invalid_reasons =
+        build_split_invalid_reason_summary(&prepared.events, &prepared.baseline_candidate_cache);
+    let coverage_adequacy = build_coverage_adequacy_summary(
+        &prepared.diagnostics,
+        &prepared.overlap_window,
+        &event_coverage,
+        &split_invalid_reasons,
+        &prepared.baseline_candidate_cache.invalid_reason_counts(),
+    );
     let ranked_results: Vec<OptionsExpressionTupleResult> = ranked_pass
         .ranked
         .into_iter()
@@ -3685,6 +4498,9 @@ pub fn run_options_expression_blocking(
         price_semantics: dataset.manifest.price_semantics,
         tuple_count: ranked_results.len(),
         staging: Some(prepared.staging),
+        overlap_window: prepared.overlap_window,
+        coverage_adequacy,
+        split_invalid_reasons,
         ranked_results,
     })
 }
@@ -3772,50 +4588,6 @@ pub fn analyze_options_expression_feasibility_blocking(
         .iter()
         .filter(|entry| entry.is_some())
         .count();
-    let (
-        total_events_with_candidates,
-        search_events_with_candidates,
-        holdout_events_with_candidates,
-        sealed_test_events_with_candidates,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_candidate(&prepared.baseline_candidate_cache, event_index)
-    });
-    let (
-        total_events_with_baseline_outcomes,
-        search_events_with_baseline_outcomes,
-        holdout_events_with_baseline_outcomes,
-        sealed_test_events_with_baseline_outcomes,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_outcome(
-            &prepared.baseline_candidate_cache,
-            &prepared.baseline_exit_summary_cache,
-            event_index,
-        )
-    });
-    let (
-        total_events_with_conservative_outcomes,
-        search_events_with_conservative_outcomes,
-        holdout_events_with_conservative_outcomes,
-        sealed_test_events_with_conservative_outcomes,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_outcome(
-            &prepared.conservative_candidate_cache,
-            &prepared.conservative_exit_summary_cache,
-            event_index,
-        )
-    });
-    let (
-        total_events_with_harsher_outcomes,
-        search_events_with_harsher_outcomes,
-        holdout_events_with_harsher_outcomes,
-        sealed_test_events_with_harsher_outcomes,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_outcome(
-            &prepared.harsher_candidate_cache,
-            &prepared.harsher_exit_summary_cache,
-            event_index,
-        )
-    });
     let mut timings = prepared.timings.clone();
     timings.cpu_ranking_ms = cpu_ranking_ms;
     timings.cpu_ranking_us = cpu_ranking_us;
@@ -3829,12 +4601,38 @@ pub fn analyze_options_expression_feasibility_blocking(
         timings.gpu_tensor_score_ms = timings.gpu_tensor_score_us.map(|value| value / 1_000);
         timings.gpu_exactify_us = gpu_ranking_stats
             .as_ref()
-            .map(|stats| stats.timing.exactify_us);
+            .map(|stats| stats.timing.exactify.total_us);
         timings.gpu_exactify_ms = timings.gpu_exactify_us.map(|value| value / 1_000);
+        timings.gpu_exactify_summary_overwrite_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.exactify.summary_overwrite_us);
+        timings.gpu_exactify_summary_overwrite_ms = timings
+            .gpu_exactify_summary_overwrite_us
+            .map(|value| value / 1_000);
+        timings.gpu_exactify_enrichment_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.exactify.enrichment_us);
+        timings.gpu_exactify_enrichment_ms = timings
+            .gpu_exactify_enrichment_us
+            .map(|value| value / 1_000);
+        timings.gpu_exactify_extreme_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.exactify.extreme_us);
+        timings.gpu_exactify_extreme_ms =
+            timings.gpu_exactify_extreme_us.map(|value| value / 1_000);
         timings.gpu_sealed_stage_us = gpu_ranking_stats
             .as_ref()
-            .map(|stats| stats.timing.sealed_stage_us);
+            .map(|stats| stats.timing.sealed_stage.total_us);
         timings.gpu_sealed_stage_ms = timings.gpu_sealed_stage_us.map(|value| value / 1_000);
+        timings.gpu_sealed_non_extreme_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.sealed_stage.non_extreme_us);
+        timings.gpu_sealed_non_extreme_ms =
+            timings.gpu_sealed_non_extreme_us.map(|value| value / 1_000);
+        timings.gpu_sealed_extreme_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.sealed_stage.extreme_us);
+        timings.gpu_sealed_extreme_ms = timings.gpu_sealed_extreme_us.map(|value| value / 1_000);
     }
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     {
@@ -3842,8 +4640,18 @@ pub fn analyze_options_expression_feasibility_blocking(
         timings.gpu_tensor_score_ms = None;
         timings.gpu_exactify_us = None;
         timings.gpu_exactify_ms = None;
+        timings.gpu_exactify_summary_overwrite_us = None;
+        timings.gpu_exactify_summary_overwrite_ms = None;
+        timings.gpu_exactify_enrichment_us = None;
+        timings.gpu_exactify_enrichment_ms = None;
+        timings.gpu_exactify_extreme_us = None;
+        timings.gpu_exactify_extreme_ms = None;
         timings.gpu_sealed_stage_us = None;
         timings.gpu_sealed_stage_ms = None;
+        timings.gpu_sealed_non_extreme_us = None;
+        timings.gpu_sealed_non_extreme_ms = None;
+        timings.gpu_sealed_extreme_us = None;
+        timings.gpu_sealed_extreme_ms = None;
     }
     timings.gpu_speedup_vs_cpu = gpu_ranking_us.and_then(|gpu_us| {
         if gpu_us == 0 {
@@ -3874,7 +4682,9 @@ pub fn analyze_options_expression_feasibility_blocking(
         if let Some(err) = gpu_ranking_error.as_ref() {
             push_unique_gpu_note(
                 &mut observed_gpu_cache_usage.gpu_plan_notes,
-                format!("GPU ranking attempt failed and feasibility fell back to CPU timing only: {err}"),
+                format!(
+                    "GPU ranking attempt failed and feasibility fell back to CPU timing only: {err}"
+                ),
             );
         }
         cache_stats.gpu_shared_input_cache_hits = observed_gpu_cache_usage.shared_input_cache_hits;
@@ -3911,24 +4721,17 @@ pub fn analyze_options_expression_feasibility_blocking(
             observed_gpu_cache_usage.gpu_chunk_plan_fits_in_memory;
         cache_stats.gpu_plan_notes = observed_gpu_cache_usage.gpu_plan_notes;
     }
-    let event_coverage = OptionsExpressionFeasibilityEventCoverage {
-        total_events_with_candidates,
-        search_events_with_candidates,
-        holdout_events_with_candidates,
-        sealed_test_events_with_candidates,
-        total_events_with_baseline_outcomes,
-        search_events_with_baseline_outcomes,
-        holdout_events_with_baseline_outcomes,
-        sealed_test_events_with_baseline_outcomes,
-        total_events_with_conservative_outcomes,
-        search_events_with_conservative_outcomes,
-        holdout_events_with_conservative_outcomes,
-        sealed_test_events_with_conservative_outcomes,
-        total_events_with_harsher_outcomes,
-        search_events_with_harsher_outcomes,
-        holdout_events_with_harsher_outcomes,
-        sealed_test_events_with_harsher_outcomes,
-    };
+    let split_invalid_reasons =
+        build_split_invalid_reason_summary(&prepared.events, &prepared.baseline_candidate_cache);
+    let invalid_reasons = prepared.baseline_candidate_cache.invalid_reason_counts();
+    let event_coverage = build_event_coverage_summary(&prepared);
+    let coverage_adequacy = build_coverage_adequacy_summary(
+        &prepared.diagnostics,
+        &prepared.overlap_window,
+        &event_coverage,
+        &split_invalid_reasons,
+        &invalid_reasons,
+    );
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let gpu_available = current_preferred_cuda_device_id().is_some();
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -4001,8 +4804,11 @@ pub fn analyze_options_expression_feasibility_blocking(
             * std::mem::size_of::<Option<TradeOutcome>>(),
         timings,
         event_coverage,
+        overlap_window: prepared.overlap_window.clone(),
+        split_invalid_reasons,
+        coverage_adequacy,
         cache_stats,
-        invalid_reasons: prepared.baseline_candidate_cache.invalid_reason_counts(),
+        invalid_reasons,
         axis_coverage: prepared.baseline_candidate_cache.axis_coverage(),
     })
 }
@@ -4163,9 +4969,10 @@ mod tests {
     use super::*;
     use crate::options_types::{
         ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
-        OptionsExpressionEventStatus, OptionsExpressionExitReason, OptionsFillModelFamily,
-        OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
-        OptionsSignalEventManifestV1, OptionsStaticFilterBundle, OptionsStructureFamily,
+        OptionsExpressionEventStatus, OptionsExpressionExitReason,
+        OptionsExpressionValidationVerdict, OptionsFillModelFamily, OptionsMoneynessBucket,
+        OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1,
+        OptionsStaticFilterBundle, OptionsStructureFamily,
     };
     use crate::test_support::lock_test_env;
 
@@ -4182,9 +4989,253 @@ mod tests {
             invalid_rate: 0.0,
             expectancy_per_trade,
             expectancy_per_premium,
+            mean_return_on_premium: expectancy_per_premium,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: expectancy_per_premium,
             win_rate,
             total_pnl_per_contract: expectancy_per_trade * valid_trades as f64,
+        }
+    }
+
+    fn metrics_with_invalid_rate(
+        expectancy_per_premium: f64,
+        invalid_rate: f64,
+    ) -> OptionsExpressionMetrics {
+        OptionsExpressionMetrics {
+            invalid_rate,
+            expectancy_per_trade: expectancy_per_premium * 100.0,
+            ..metrics_with_values(
+                4,
+                expectancy_per_premium * 100.0,
+                expectancy_per_premium,
+                0.5,
+            )
+        }
+    }
+
+    #[cfg_attr(
+        not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
+        allow(dead_code)
+    )]
+    fn assert_metrics_close(
+        left: &OptionsExpressionMetrics,
+        right: &OptionsExpressionMetrics,
+        context: &str,
+    ) {
+        assert_eq!(
+            left.valid_trades, right.valid_trades,
+            "{context}: valid_trades"
+        );
+        assert_eq!(
+            left.invalid_events, right.invalid_events,
+            "{context}: invalid_events"
+        );
+        assert!(
+            (left.invalid_rate - right.invalid_rate).abs() < 1e-12,
+            "{context}: invalid_rate left={} right={}",
+            left.invalid_rate,
+            right.invalid_rate
+        );
+        assert!(
+            (left.expectancy_per_trade - right.expectancy_per_trade).abs() < 1e-12,
+            "{context}: expectancy_per_trade left={} right={}",
+            left.expectancy_per_trade,
+            right.expectancy_per_trade
+        );
+        assert!(
+            (left.expectancy_per_premium - right.expectancy_per_premium).abs() < 1e-12,
+            "{context}: expectancy_per_premium left={} right={}",
+            left.expectancy_per_premium,
+            right.expectancy_per_premium
+        );
+        assert!(
+            (left.mean_return_on_premium - right.mean_return_on_premium).abs() < 1e-12,
+            "{context}: mean_return_on_premium left={} right={}",
+            left.mean_return_on_premium,
+            right.mean_return_on_premium
+        );
+        assert!(
+            (left.return_volatility_on_premium - right.return_volatility_on_premium).abs() < 1e-12,
+            "{context}: return_volatility_on_premium left={} right={}",
+            left.return_volatility_on_premium,
+            right.return_volatility_on_premium
+        );
+        assert!(
+            (left.median_return_on_premium - right.median_return_on_premium).abs() < 1e-12,
+            "{context}: median_return_on_premium left={} right={}",
+            left.median_return_on_premium,
+            right.median_return_on_premium
+        );
+        assert!(
+            (left.win_rate - right.win_rate).abs() < 1e-12,
+            "{context}: win_rate left={} right={}",
+            left.win_rate,
+            right.win_rate
+        );
+        assert!(
+            (left.total_pnl_per_contract - right.total_pnl_per_contract).abs() < 1e-12,
+            "{context}: total_pnl_per_contract left={} right={}",
+            left.total_pnl_per_contract,
+            right.total_pnl_per_contract
+        );
+    }
+
+    #[test]
+    fn compute_metrics_tracks_mean_and_return_on_premium_volatility() {
+        let outcomes = vec![
+            TradeOutcome {
+                pnl_per_contract: 10.0,
+                premium_paid: 10.0,
+                return_on_premium: 1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: -10.0,
+                premium_paid: 10.0,
+                return_on_premium: -1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: 0.0,
+                premium_paid: 5.0,
+                return_on_premium: 0.0,
+            },
+        ];
+
+        let metrics = compute_metrics(4, &outcomes);
+
+        assert_eq!(metrics.valid_trades, 3);
+        assert_eq!(metrics.invalid_events, 1);
+        assert!((metrics.mean_return_on_premium - 0.0).abs() < 1e-12);
+        assert!((metrics.return_volatility_on_premium - (2.0f64 / 3.0f64).sqrt()).abs() < 1e-12);
+        assert_eq!(metrics.median_return_on_premium, 0.0);
+    }
+
+    #[test]
+    fn compute_metrics_zero_valid_trades_zeroes_single_pass_expansion_metrics() {
+        let metrics = compute_metrics(3, &[]);
+
+        assert_eq!(metrics.valid_trades, 0);
+        assert_eq!(metrics.invalid_events, 3);
+        assert_eq!(metrics.mean_return_on_premium, 0.0);
+        assert_eq!(metrics.return_volatility_on_premium, 0.0);
+    }
+
+    #[test]
+    fn compute_metrics_single_trade_zeroes_return_on_premium_volatility() {
+        let metrics = compute_metrics(
+            1,
+            &[TradeOutcome {
+                pnl_per_contract: 12.0,
+                premium_paid: 24.0,
+                return_on_premium: 0.5,
+            }],
+        );
+
+        assert_eq!(metrics.valid_trades, 1);
+        assert_eq!(metrics.mean_return_on_premium, 0.5);
+        assert_eq!(metrics.return_volatility_on_premium, 0.0);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn metrics_from_aggregate_reconstructs_mean_and_return_on_premium_volatility() {
+        let outcomes = vec![
+            TradeOutcome {
+                pnl_per_contract: 10.0,
+                premium_paid: 10.0,
+                return_on_premium: 1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: -10.0,
+                premium_paid: 10.0,
+                return_on_premium: -1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: 0.0,
+                premium_paid: 5.0,
+                return_on_premium: 0.0,
+            },
+        ];
+        let exact_metrics = compute_metrics(5, &outcomes);
+        let aggregate_metrics = metrics_from_aggregate(TupleAggregateMetrics {
+            valid_trades: 3,
+            invalid_events: 2,
+            win_count: 1,
+            total_pnl_per_contract: 0.0,
+            total_premium_paid: 25.0,
+            sum_return_on_premium: 0.0,
+            sumsq_return_on_premium: 2.0,
+        });
+
+        assert_eq!(aggregate_metrics.valid_trades, exact_metrics.valid_trades);
+        assert_eq!(
+            aggregate_metrics.invalid_events,
+            exact_metrics.invalid_events
+        );
+        assert!(
+            (aggregate_metrics.mean_return_on_premium - exact_metrics.mean_return_on_premium).abs()
+                < 1e-12
+        );
+        assert!(
+            (aggregate_metrics.return_volatility_on_premium
+                - exact_metrics.return_volatility_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert_eq!(aggregate_metrics.median_return_on_premium, 0.0);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn exact_aggregate_for_split(
+        tuple: &CompiledTupleSpec,
+        events: &[OptionsSignalEvent],
+        split: OptionsEvaluationSplit,
+        candidate_cache: &StructuralCandidateCache,
+        exit_summary_cache: &ExitSummaryCache,
+    ) -> TupleAggregateMetrics {
+        let mut split_event_count = 0usize;
+        let mut valid_trades = 0usize;
+        let mut win_count = 0usize;
+        let mut total_pnl_per_contract = 0.0;
+        let mut total_premium_paid = 0.0;
+        let mut sum_return_on_premium = 0.0;
+        let mut sumsq_return_on_premium = 0.0;
+
+        for (event_index, event) in events.iter().enumerate() {
+            if event.fold != split {
+                continue;
+            }
+            split_event_count += 1;
+            let candidate_slot_index = candidate_cache.candidate_slot_index(
+                event_index,
+                tuple.delay_index,
+                tuple.dte_index,
+                tuple.moneyness_index,
+            );
+            if let Some(outcome) = exit_summary_cache.outcome(
+                candidate_slot_index,
+                tuple.hold_index,
+                tuple.target_index,
+                tuple.stop_index,
+            ) {
+                valid_trades += 1;
+                total_pnl_per_contract += outcome.pnl_per_contract;
+                total_premium_paid += outcome.premium_paid;
+                sum_return_on_premium += outcome.return_on_premium;
+                sumsq_return_on_premium += outcome.return_on_premium * outcome.return_on_premium;
+                if outcome.pnl_per_contract > 0.0 {
+                    win_count += 1;
+                }
+            }
+        }
+
+        TupleAggregateMetrics {
+            valid_trades,
+            invalid_events: split_event_count.saturating_sub(valid_trades),
+            win_count,
+            total_pnl_per_contract,
+            total_premium_paid,
+            sum_return_on_premium,
+            sumsq_return_on_premium,
         }
     }
 
@@ -4510,6 +5561,276 @@ mod tests {
         manifest
     }
 
+    fn semantics_test_row() -> OptionsPriceRow {
+        OptionsPriceRow {
+            timestamp_ms: 1_700_000_060_000,
+            open: 1.7,
+            high: 2.4,
+            low: 1.2,
+            close: 1.8,
+            underlying_price: 100.0,
+            bid: Some(1.0),
+            ask: Some(2.0),
+            mid: Some(1.5),
+            volume: Some(100.0),
+            open_interest: Some(1000.0),
+            quote_age_ms: Some(750),
+            session_id: Some("2026-04-01".to_string()),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn exactify_enriches_gpu_like_retained_rows_without_summary_overwrite() {
+        let _guard = lock_test_env();
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+        let dataset = test_dataset();
+        let manifest = test_manifest();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let compiled = prepared
+            .compiled_tuples
+            .first()
+            .cloned()
+            .expect("compiled tuple");
+
+        let selection_metrics = metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        ));
+        let holdout_metrics = Some(metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        )));
+        let stress_metrics = Some(metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        )));
+        let harsher_stress_metrics = Some(metrics_from_aggregate(exact_aggregate_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        )));
+
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 0,
+                sealed_finalist: false,
+                sealed_final_rank: 0,
+                selection_metrics,
+                holdout_metrics,
+                sealed_evaluation_metrics: None,
+                stress_metrics,
+                sealed_stress_metrics: None,
+                harsher_stress_metrics,
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
+                robust_score: 0.0,
+            },
+            retained_summary_state: RetainedSummaryState::gpu_initial(
+                prepared.diagnostics.holdout_events,
+            ),
+        }];
+
+        let timing = exactify_ranked_results(&prepared, &dataset, &mut ranked);
+        let exact_selection = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let exact_holdout = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let exact_stress = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        );
+        let exact_harsher = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        );
+        let exact_extreme = evaluate_exact_stress_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &IndexedOptionsDataset::from_dataset(&dataset, &dataset.manifest.root_symbol),
+            &prepared.baseline_candidate_cache,
+            dataset.manifest.price_semantics,
+            AggregateStressMode::Extreme,
+        );
+
+        assert_eq!(timing.summary_overwrite_us, 0);
+        assert_metrics_close(
+            &ranked[0].result.selection_metrics,
+            &exact_selection,
+            "selection",
+        );
+        assert_metrics_close(
+            ranked[0].result.holdout_metrics.as_ref().expect("holdout"),
+            &exact_holdout,
+            "holdout",
+        );
+        assert_metrics_close(
+            ranked[0].result.stress_metrics.as_ref().expect("stress"),
+            &exact_stress,
+            "stress",
+        );
+        assert_metrics_close(
+            ranked[0]
+                .result
+                .harsher_stress_metrics
+                .as_ref()
+                .expect("harsher"),
+            &exact_harsher,
+            "harsher",
+        );
+        assert_metrics_close(
+            ranked[0]
+                .result
+                .extreme_stress_metrics
+                .as_ref()
+                .expect("extreme"),
+            &exact_extreme,
+            "extreme",
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.selection,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.holdout,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.stress,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.harsher,
+            RetainedMetricState::Exact
+        );
+    }
+
+    #[test]
+    fn derived_mid_runtime_semantics_remain_aggregate_style() {
+        let row = semantics_test_row();
+
+        assert_eq!(
+            option_entry_price_for_row(
+                &row,
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch
+            ),
+            Some(1.8)
+        );
+        assert_eq!(
+            option_exit_price_for_row(
+                &row,
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch,
+                AggregateStressMode::Conservative
+            ),
+            Some(1.2)
+        );
+        assert_eq!(
+            option_path_range_for_row(
+                &row,
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch,
+                AggregateStressMode::Baseline
+            ),
+            Some((2.4, 1.2))
+        );
+    }
+
+    #[test]
+    fn quote_aware_runtime_semantics_use_quote_side_prices() {
+        let row = semantics_test_row();
+
+        assert_eq!(
+            option_entry_price_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative
+            ),
+            Some(2.0)
+        );
+        assert_eq!(
+            option_entry_price_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteMid
+            ),
+            Some(1.5)
+        );
+        assert_eq!(
+            option_exit_price_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative,
+                AggregateStressMode::Extreme
+            ),
+            Some(1.0)
+        );
+        assert_eq!(
+            option_path_range_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative,
+                AggregateStressMode::Baseline
+            ),
+            Some((1.0, 1.0))
+        );
+    }
+
     #[test]
     fn options_expression_assign_splits_session_chronological_keeps_sessions_intact() {
         let manifest = test_manifest_multi_session();
@@ -4805,9 +6126,169 @@ mod tests {
                 .total_events_with_conservative_outcomes,
             3
         );
+        assert_eq!(report.overlap_window.total_events_in_dataset_window, 3);
+        assert_eq!(report.overlap_window.search_events_in_dataset_window, 1);
+        assert_eq!(report.overlap_window.holdout_events_in_dataset_window, 1);
+        assert_eq!(
+            report.overlap_window.sealed_test_events_in_dataset_window,
+            1
+        );
+        assert_eq!(report.overlap_window.total_overlap_rate, 1.0);
+        assert_eq!(report.overlap_window.search_overlap_rate, 1.0);
+        assert_eq!(
+            report.coverage_adequacy.verdict,
+            OptionsExpressionCoverageAdequacyVerdict::MixedFragile
+        );
+        assert!(!report.coverage_adequacy.non_promotable);
+        assert_eq!(report.coverage_adequacy.search_candidate_coverage_rate, 1.0);
+        assert_eq!(
+            report
+                .coverage_adequacy
+                .search_baseline_outcome_coverage_rate,
+            1.0
+        );
+        assert_eq!(
+            report.coverage_adequacy.dominant_invalid_reason,
+            Some(OptionsCandidateInvalidReason::NoExpirationInBucket)
+        );
+        assert!(report
+            .coverage_adequacy
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("Dominant structural invalid reason")));
+        assert_eq!(report.split_invalid_reasons.search_invalid_reasons.len(), 1);
+        assert_eq!(
+            report.split_invalid_reasons.search_invalid_reasons[0].reason,
+            OptionsCandidateInvalidReason::NoExpirationInBucket
+        );
+        assert_eq!(
+            report.split_invalid_reasons.search_invalid_reasons[0].count,
+            1
+        );
+        assert_eq!(
+            report.split_invalid_reasons.holdout_invalid_reasons.len(),
+            1
+        );
+        assert_eq!(
+            report
+                .split_invalid_reasons
+                .sealed_test_invalid_reasons
+                .len(),
+            1
+        );
         assert!(report.structural_cache_bytes_estimate > 0);
         assert!(report.baseline_summary_bytes_estimate > 0);
         assert!(report.conservative_summary_bytes_estimate > 0);
+    }
+
+    #[test]
+    fn options_expression_feasibility_report_flags_missing_search_overlap_as_non_promotable() {
+        let _env = lock_test_env();
+        reset_options_expression_prepare_caches();
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        };
+        let mut manifest = test_manifest();
+        for event in &mut manifest.events {
+            event.decision_timestamp += 14 * DAY_MS;
+            event.earliest_tradable_timestamp += 14 * DAY_MS;
+            event.base_entry_timestamp =
+                event.base_entry_timestamp.map(|value| value + 14 * DAY_MS);
+            event.base_exit_timestamp = event.base_exit_timestamp.map(|value| value + 14 * DAY_MS);
+        }
+
+        let report =
+            analyze_options_expression_feasibility_blocking(req, &manifest, &test_dataset())
+                .expect("report");
+
+        assert_eq!(report.overlap_window.total_events_in_dataset_window, 0);
+        assert_eq!(report.overlap_window.search_events_in_dataset_window, 0);
+        assert_eq!(report.event_coverage.search_events_with_candidates, 0);
+        assert_eq!(
+            report.coverage_adequacy.verdict,
+            OptionsExpressionCoverageAdequacyVerdict::SearchOverlapMissing
+        );
+        assert!(report.coverage_adequacy.non_promotable);
+        assert!(report.coverage_adequacy.reasons.iter().any(|reason| {
+            reason.contains("No search events fall inside the imported options dataset window")
+        }));
+    }
+
+    #[test]
+    fn options_expression_prepare_cache_distinguishes_shifted_manifest_events() {
+        let _env = lock_test_env();
+        reset_options_expression_prepare_caches();
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        };
+
+        let baseline = analyze_options_expression_feasibility_blocking(
+            req.clone(),
+            &test_manifest(),
+            &test_dataset(),
+        )
+        .expect("baseline report");
+        assert_eq!(baseline.event_coverage.search_events_with_candidates, 1);
+        assert_eq!(baseline.cache_stats.structural_cache_hits, 0);
+
+        let mut shifted_manifest = test_manifest();
+        for event in &mut shifted_manifest.events {
+            event.decision_timestamp += 14 * DAY_MS;
+            event.earliest_tradable_timestamp += 14 * DAY_MS;
+            event.base_entry_timestamp =
+                event.base_entry_timestamp.map(|value| value + 14 * DAY_MS);
+            event.base_exit_timestamp = event.base_exit_timestamp.map(|value| value + 14 * DAY_MS);
+        }
+
+        let shifted = analyze_options_expression_feasibility_blocking(
+            req,
+            &shifted_manifest,
+            &test_dataset(),
+        )
+        .expect("shifted report");
+
+        assert_eq!(shifted.overlap_window.search_events_in_dataset_window, 0);
+        assert_eq!(shifted.event_coverage.search_events_with_candidates, 0);
+        assert_eq!(shifted.cache_stats.structural_cache_hits, 0);
+        assert!(shifted.cache_stats.structural_cache_misses >= 2);
     }
 
     #[test]
@@ -5149,6 +6630,8 @@ mod tests {
             invalid_rate: 0.0,
             expectancy_per_trade: 10.0,
             expectancy_per_premium: 0.20,
+            mean_return_on_premium: 0.15,
+            return_volatility_on_premium: 0.05,
             median_return_on_premium: 0.10,
             win_rate: 0.5,
             total_pnl_per_contract: 40.0,
@@ -5191,6 +6674,98 @@ mod tests {
     }
 
     #[test]
+    fn robust_score_penalizes_worse_holdout_invalid_rate() {
+        let search = metrics_with_invalid_rate(0.20, 0.0);
+        let holdout_good = metrics_with_invalid_rate(0.10, 0.0);
+        let holdout_bad = metrics_with_invalid_rate(0.10, 0.50);
+
+        let good = robust_score(&search, Some(&holdout_good), None, None, None, None);
+        let bad = robust_score(&search, Some(&holdout_bad), None, None, None, None);
+
+        assert!(good > bad);
+    }
+
+    #[test]
+    fn robust_score_penalizes_worse_stress_invalid_rate() {
+        let search = metrics_with_invalid_rate(0.20, 0.0);
+        let stress_good = metrics_with_invalid_rate(0.08, 0.0);
+        let stress_bad = metrics_with_invalid_rate(0.08, 0.50);
+
+        let good = robust_score(&search, None, None, Some(&stress_good), None, None);
+        let bad = robust_score(&search, None, None, Some(&stress_bad), None, None);
+
+        assert!(good > bad);
+    }
+
+    #[test]
+    fn robust_score_penalizes_worse_harsher_stress_invalid_rate() {
+        let search = metrics_with_invalid_rate(0.20, 0.0);
+        let stress = metrics_with_invalid_rate(0.08, 0.0);
+        let harsher_good = metrics_with_invalid_rate(0.04, 0.0);
+        let harsher_bad = metrics_with_invalid_rate(0.04, 0.50);
+
+        let good = robust_score(
+            &search,
+            None,
+            None,
+            Some(&stress),
+            Some(&harsher_good),
+            None,
+        );
+        let bad = robust_score(&search, None, None, Some(&stress), Some(&harsher_bad), None);
+
+        assert!(good > bad);
+    }
+
+    #[test]
+    fn robust_score_missing_holdout_matches_explicit_search_equivalent_holdout() {
+        let search = metrics_with_invalid_rate(0.20, 0.10);
+
+        let implicit = robust_score(&search, None, None, None, None, None);
+        let explicit = robust_score(&search, Some(&search), None, None, None, None);
+
+        assert_eq!(implicit, explicit);
+    }
+
+    #[test]
+    fn robust_score_missing_harsher_matches_explicit_stress_equivalent_harsher() {
+        let search = metrics_with_invalid_rate(0.20, 0.10);
+        let stress = metrics_with_invalid_rate(0.08, 0.25);
+
+        let implicit = robust_score(&search, None, None, Some(&stress), None, None);
+        let explicit = robust_score(&search, None, None, Some(&stress), Some(&stress), None);
+
+        assert_eq!(implicit, explicit);
+    }
+
+    #[test]
+    fn robust_score_equal_lane_invalid_rates_reduce_to_weighted_expectancy() {
+        let common_invalid_rate = 0.25;
+        let search = metrics_with_invalid_rate(0.20, common_invalid_rate);
+        let holdout = metrics_with_invalid_rate(0.10, common_invalid_rate);
+        let stress = metrics_with_invalid_rate(0.05, common_invalid_rate);
+        let harsher = metrics_with_invalid_rate(0.03, common_invalid_rate);
+        let extreme = metrics_with_invalid_rate(-0.02, common_invalid_rate);
+
+        let score = robust_score(
+            &search,
+            Some(&holdout),
+            None,
+            Some(&stress),
+            Some(&harsher),
+            Some(&extreme),
+        );
+        let expected = (1.0 - common_invalid_rate)
+            * (0.45 * search.expectancy_per_premium
+                + 0.25 * holdout.expectancy_per_premium
+                + 0.15 * stress.expectancy_per_premium
+                + 0.10 * harsher.expectancy_per_premium
+                + 0.05 * extreme.expectancy_per_premium);
+
+        assert!((score - expected).abs() < 1e-12);
+    }
+
+    #[test]
     fn sealed_final_rank_uses_sealed_metrics_ordering() {
         let metrics = |valid_trades, expectancy_per_trade, expectancy_per_premium, win_rate| {
             OptionsExpressionMetrics {
@@ -5199,6 +6774,8 @@ mod tests {
                 invalid_rate: 0.0,
                 expectancy_per_trade,
                 expectancy_per_premium,
+                mean_return_on_premium: expectancy_per_premium,
+                return_volatility_on_premium: 0.0,
                 median_return_on_premium: expectancy_per_premium,
                 win_rate,
                 total_pnl_per_contract: expectancy_per_trade * valid_trades as f64,
@@ -5245,6 +6822,7 @@ mod tests {
                     validation_verdict: Default::default(),
                     robust_score: 0.30,
                 },
+                retained_summary_state: RetainedSummaryState::cpu_initial(0),
             },
             RankedCompiledTuple {
                 compiled: right_compiled.clone(),
@@ -5265,6 +6843,7 @@ mod tests {
                     validation_verdict: Default::default(),
                     robust_score: 0.20,
                 },
+                retained_summary_state: RetainedSummaryState::cpu_initial(0),
             },
         ];
 
@@ -5274,6 +6853,90 @@ mod tests {
         assert_eq!(ranked[0].result.sealed_final_rank, 2);
         assert_eq!(ranked[1].result.pre_sealed_rank, 2);
         assert_eq!(ranked[1].result.sealed_final_rank, 1);
+    }
+
+    #[test]
+    fn refresh_validation_verdicts_requires_supported_validation_lanes() {
+        let metrics = |valid_trades,
+                       invalid_events,
+                       expectancy_per_trade,
+                       expectancy_per_premium,
+                       win_rate| {
+            let total_events = valid_trades + invalid_events;
+            OptionsExpressionMetrics {
+                valid_trades,
+                invalid_events,
+                invalid_rate: if total_events == 0 {
+                    0.0
+                } else {
+                    invalid_events as f64 / total_events as f64
+                },
+                expectancy_per_trade,
+                expectancy_per_premium,
+                mean_return_on_premium: expectancy_per_premium,
+                return_volatility_on_premium: 0.0,
+                median_return_on_premium: expectancy_per_premium,
+                win_rate,
+                total_pnl_per_contract: expectancy_per_trade * valid_trades as f64,
+            }
+        };
+        let compiled = CompiledTupleSpec {
+            tuple: OptionsTupleSpec {
+                structure_family: OptionsStructureFamily::LongSingle,
+                delay_minutes: 0,
+                dte_days: 1,
+                moneyness_bucket: OptionsMoneynessBucket::Atm,
+                hold_minutes: 15,
+                target_return: Some(0.25),
+                stop_return: Some(0.25),
+                exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+                fill_model: OptionsFillModelFamily::AggregateResearch,
+            },
+            delay_index: 0,
+            dte_index: 0,
+            moneyness_index: 0,
+            hold_index: 0,
+            target_index: 0,
+            stop_index: 0,
+        };
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 1,
+                sealed_finalist: true,
+                sealed_final_rank: 1,
+                selection_metrics: metrics(8, 1, 0.30, 0.20, 0.60),
+                holdout_metrics: Some(metrics(0, 2, 0.0, 0.09, 0.0)),
+                sealed_evaluation_metrics: Some(metrics(0, 1, 0.0, 0.08, 0.0)),
+                stress_metrics: Some(metrics(2, 0, 0.04, 0.04, 0.50)),
+                sealed_stress_metrics: None,
+                harsher_stress_metrics: None,
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: OptionsExpressionValidationVerdict::SealedFinalist,
+                robust_score: 0.18,
+            },
+            retained_summary_state: RetainedSummaryState::cpu_initial(2),
+        }];
+
+        refresh_validation_verdicts(&mut ranked);
+        assert_eq!(
+            ranked[0].result.validation_verdict,
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+
+        ranked[0].result.sealed_finalist = false;
+        ranked[0].result.sealed_evaluation_metrics = None;
+        ranked[0].result.holdout_metrics = Some(metrics(2, 0, 0.09, 0.09, 0.50));
+        ranked[0].result.stress_metrics = Some(metrics(2, 0, 0.08, 0.08, 0.50));
+
+        refresh_validation_verdicts(&mut ranked);
+        assert_eq!(
+            ranked[0].result.validation_verdict,
+            OptionsExpressionValidationVerdict::HoldoutSupported
+        );
     }
 
     #[test]
@@ -5328,6 +6991,357 @@ mod tests {
         assert!(!result.ranked_results[1].sealed_finalist);
         assert!(result.ranked_results[1].sealed_evaluation_metrics.is_none());
         assert!(result.ranked_results[1].sealed_stress_metrics.is_none());
+    }
+
+    #[test]
+    fn exactify_ranked_results_cpu_rows_fill_missing_harsher_metrics() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+        let manifest = test_manifest();
+        let dataset = test_dataset();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let compiled = prepared
+            .compiled_tuples
+            .first()
+            .cloned()
+            .expect("compiled tuple");
+        let holdout_events = prepared.diagnostics.holdout_events;
+        assert!(holdout_events > 0);
+
+        let selection_metrics = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let holdout_metrics = Some(evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        ));
+        let stress_metrics = Some(evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        ));
+        let expected_harsher = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        );
+
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 1,
+                sealed_finalist: false,
+                sealed_final_rank: 0,
+                selection_metrics: selection_metrics.clone(),
+                holdout_metrics: holdout_metrics.clone(),
+                sealed_evaluation_metrics: None,
+                stress_metrics: stress_metrics.clone(),
+                sealed_stress_metrics: None,
+                harsher_stress_metrics: None,
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
+                robust_score: robust_score(
+                    &selection_metrics,
+                    holdout_metrics.as_ref(),
+                    None,
+                    stress_metrics.as_ref(),
+                    None,
+                    None,
+                ),
+            },
+            retained_summary_state: RetainedSummaryState::cpu_initial(holdout_events),
+        }];
+
+        let timing = exactify_ranked_results(&prepared, &dataset, &mut ranked);
+        assert!(timing.total_us >= timing.summary_overwrite_us);
+        assert!(timing.total_us >= timing.extreme_us);
+        assert_eq!(
+            ranked[0].retained_summary_state.harsher,
+            RetainedMetricState::Exact
+        );
+        let harsher = ranked[0]
+            .result
+            .harsher_stress_metrics
+            .as_ref()
+            .expect("harsher metrics");
+        assert_eq!(harsher.valid_trades, expected_harsher.valid_trades);
+        assert_eq!(harsher.invalid_events, expected_harsher.invalid_events);
+        assert!(
+            (harsher.expectancy_per_premium - expected_harsher.expectancy_per_premium).abs()
+                < 1e-12
+        );
+        assert!(
+            (harsher.median_return_on_premium - expected_harsher.median_return_on_premium).abs()
+                < 1e-12
+        );
+        assert!(ranked[0].result.extreme_stress_metrics.is_some());
+    }
+
+    #[test]
+    fn exactify_ranked_results_reuses_gpu_summary_metrics_and_only_enriches_medians() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+        let manifest = test_manifest();
+        let dataset = test_dataset();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let compiled = prepared
+            .compiled_tuples
+            .first()
+            .cloned()
+            .expect("compiled tuple");
+        let holdout_events = prepared.diagnostics.holdout_events;
+        assert!(holdout_events > 0);
+
+        let selection_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let holdout_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let stress_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+        );
+        let harsher_exact = evaluate_compiled_tuple_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+        );
+        let expected_extreme = evaluate_exact_stress_for_split(
+            &compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Holdout,
+            &IndexedOptionsDataset::from_dataset(&dataset, &dataset.manifest.root_symbol),
+            &prepared.baseline_candidate_cache,
+            dataset.manifest.price_semantics,
+            AggregateStressMode::Extreme,
+        );
+
+        let mut selection_gpu = selection_exact.clone();
+        selection_gpu.expectancy_per_premium += 1.0;
+        selection_gpu.median_return_on_premium = 0.0;
+        let mut holdout_gpu = holdout_exact.clone();
+        holdout_gpu.expectancy_per_premium += 0.5;
+        holdout_gpu.median_return_on_premium = 0.0;
+        let mut stress_gpu = stress_exact.clone();
+        stress_gpu.expectancy_per_premium += 0.25;
+        stress_gpu.median_return_on_premium = 0.0;
+        let mut harsher_gpu = harsher_exact.clone();
+        harsher_gpu.expectancy_per_premium += 0.125;
+        harsher_gpu.median_return_on_premium = 0.0;
+
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 1,
+                sealed_finalist: false,
+                sealed_final_rank: 0,
+                selection_metrics: selection_gpu.clone(),
+                holdout_metrics: Some(holdout_gpu.clone()),
+                sealed_evaluation_metrics: None,
+                stress_metrics: Some(stress_gpu.clone()),
+                sealed_stress_metrics: None,
+                harsher_stress_metrics: Some(harsher_gpu.clone()),
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
+                robust_score: robust_score(
+                    &selection_gpu,
+                    Some(&holdout_gpu),
+                    None,
+                    Some(&stress_gpu),
+                    Some(&harsher_gpu),
+                    None,
+                ),
+            },
+            retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
+        }];
+
+        let timing = exactify_ranked_results(&prepared, &dataset, &mut ranked);
+        assert!(timing.total_us >= timing.enrichment_us);
+        assert!(timing.total_us >= timing.extreme_us);
+        assert_eq!(
+            ranked[0].retained_summary_state.selection,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.holdout,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.stress,
+            RetainedMetricState::Exact
+        );
+        assert_eq!(
+            ranked[0].retained_summary_state.harsher,
+            RetainedMetricState::Exact
+        );
+
+        assert!(
+            (ranked[0].result.selection_metrics.expectancy_per_premium
+                - selection_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .holdout_metrics
+                .as_ref()
+                .expect("holdout")
+                .expectancy_per_premium
+                - holdout_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .stress_metrics
+                .as_ref()
+                .expect("stress")
+                .expectancy_per_premium
+                - stress_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .harsher_stress_metrics
+                .as_ref()
+                .expect("harsher")
+                .expectancy_per_premium
+                - harsher_gpu.expectancy_per_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0].result.selection_metrics.median_return_on_premium
+                - selection_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .holdout_metrics
+                .as_ref()
+                .expect("holdout")
+                .median_return_on_premium
+                - holdout_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .stress_metrics
+                .as_ref()
+                .expect("stress")
+                .median_return_on_premium
+                - stress_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (ranked[0]
+                .result
+                .harsher_stress_metrics
+                .as_ref()
+                .expect("harsher")
+                .median_return_on_premium
+                - harsher_exact.median_return_on_premium)
+                .abs()
+                < 1e-12
+        );
+
+        let extreme = ranked[0]
+            .result
+            .extreme_stress_metrics
+            .as_ref()
+            .expect("extreme metrics");
+        assert_eq!(extreme.valid_trades, expected_extreme.valid_trades);
+        assert_eq!(extreme.invalid_events, expected_extreme.invalid_events);
+        assert!(
+            (extreme.expectancy_per_premium - expected_extreme.expectancy_per_premium).abs()
+                < 1e-12
+        );
+        assert!(
+            (extreme.median_return_on_premium - expected_extreme.median_return_on_premium).abs()
+                < 1e-12
+        );
     }
 
     #[test]

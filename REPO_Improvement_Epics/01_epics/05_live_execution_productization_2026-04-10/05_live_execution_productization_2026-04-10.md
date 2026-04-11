@@ -41,6 +41,13 @@ But it is intentionally narrow:
 - only one active live stream slot and one active live runner slot exist at a time
 - the execution panel currently lives in the settings workspace rather than as a clearly elevated operating surface
 
+## Current Runtime Reality
+
+- the current shell is still the workspace shell; when the settings workspace is active, `App.vue` mounts both `SettingsWorkspacePanel.vue` and `ExecutionWorkspacePanel.vue`
+- `AppState` currently owns the live stream slot and loaded dataset mutation path, while the live runner runtime itself currently lives in `commands_execution.rs`
+- Alpaca credentials are still frontend-persisted today, while Polygon keys already prefer backend keyring storage with fallback/migration logic
+- chart/account review is still incomplete; the current chart surface still reports `Execution chart sync pending`, and live bars mutate the loaded dataset by `data_id`
+
 ## Current Code Surface
 
 - `web/src/components/ExecutionWorkspacePanel.vue`
@@ -59,8 +66,16 @@ But it is intentionally narrow:
 - `web/src/components/ExecutionWorkspacePanel.test.ts`
 - `web/src/components/ExecutionWorkspacePanel.virtualization.test.ts`
 - targeted Rust tests in `src-tauri/src/commands_execution.rs`
+- targeted Rust tests in `src-tauri/src/commands_data.rs`, `src-tauri/src/state.rs`, and `src-tauri/src/polygon.rs` when the live stream, key storage, or dataset mutation path is touched
 - `npm.cmd --prefix web run test:browser:ux`
 - `npm.cmd --prefix web run test:desktop:smoke`
+
+## Operator Truth Invariants
+
+- runner events and optimistic order rows are provisional; broker snapshots remain authoritative for order and position confirmation
+- chart/account review surfaces must preserve provenance rather than imply broker-confirmed chart overlays that do not yet exist
+- no reconnect, restart, or feed-interruption path should silently leave broker-facing automation effectively re-armed without an explicit operator decision
+- the current single-stream and single-runner constraints remain product boundaries until a narrower follow-up doc widens them
 
 ## Strengths Already Present
 
@@ -101,13 +116,17 @@ But it is intentionally narrow:
    - make safety actions explicit
    - make session evidence explicit
 2. Treat live execution as a discrete operating mode, not only a settings-mounted execution panel.
-3. Decide whether the execution surface should remain settings-mounted or move to a more deliberate dedicated workflow surface.
-4. Add operator-focused controls and state clarity in bounded slices:
+3. Establish prerequisite hardening before surface promotion:
+   - secure credential storage for the current Alpaca path
+   - truthful broker position/order reconciliation
+   - truthful chart/account review completion
+4. Decide whether the execution surface should remain settings-mounted or move to a more deliberate dedicated workflow surface only after those prerequisites are explicit.
+5. Add operator-focused controls and state clarity in bounded slices:
    - flatten / stop / emergency halt semantics
    - broker/order/position refresh clarity
    - runner recovery and reconnect posture
-5. Add a live-session evidence model so important live actions are inspectable after the fact rather than only visible as transient status text.
-6. Keep success criteria explicit:
+6. Add a live-session evidence model so important live actions are inspectable after the fact rather than only visible as transient status text.
+7. Keep success criteria explicit:
    - stronger safety and diagnostics for the current supported live scope
    - no ambiguity about supported symbols, strategies, broker mode, or runner/feed state
    - no regression in existing dry-run and paper workflows
@@ -122,9 +141,13 @@ Public-repo quality focus:
 
 - [ ] Define the intended product posture for live execution in the current repo: narrow MVP hardening versus broader trading-surface expansion.
 - [ ] Record the current operator journey for dry-run, paper, and live modes before changing implementation.
-- [ ] Decide whether the execution surface stays under settings or moves to a dedicated workflow/home.
+- [ ] Freeze the current runtime-owner map for the live stream slot, runner runtime, credential storage, and dataset mutation path before changing behavior.
+- [ ] Make secure credential storage an explicit prerequisite before broader live-surface promotion.
+- [ ] Make broker-confirmed versus provisional state truth explicit before broadening operator controls.
+- [ ] Decide whether the execution surface stays under settings or moves to a dedicated workflow/home only after credential, reconciliation, and review-surface prerequisites are explicit.
 - [ ] Define the minimum operator safety controls that should become first-class in the current scope.
 - [ ] Define the minimum live-session evidence or audit artifact that should exist for runner activity and broker-facing actions.
+- [ ] Define the no-silent-rearm rule for reconnect, restart, and feed interruption behavior.
 - [ ] Preserve the current explicit single-stream and single-runner constraints unless a narrower follow-up doc widens them.
 - [ ] Preserve the current strategy and broker scope unless a narrower follow-up doc explicitly expands them.
 - [ ] Add or strengthen frontend and Tauri tests around the chosen safety/productization slices.
@@ -137,14 +160,17 @@ Public-repo quality focus:
 - rerun targeted Rust command tests near `commands_execution.rs` and any touched live-stream/runtime state surfaces
 - rerun `npm.cmd --prefix web run test:browser:ux` for user-visible live-execution workflow changes
 - rerun `npm.cmd --prefix web run test:desktop:smoke` if the execution surface moves or desktop wiring changes
+- rerun `npm.cmd --prefix web run a11y:smoke` when confirmation posture, status presentation, or dedicated live-surface behavior changes
+- rerun reconnect/interruption, secret migration/precedence, and provisional-versus-confirmed truth scenarios for any touched live-surface contract
 - run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm.cmd --prefix web run lint` and `npm.cmd --prefix web run typecheck`
 - capture concrete acceptance evidence for closure, including updated operator-flow notes, screenshots where needed, and any saved live-session evidence/artifact examples introduced by the epic
 
 ## Rollout / Fallback / Compatibility Notes
 
-- start with posture, safety, and evidence improvements before broker or strategy expansion
+- start with posture, credential hardening, operator truth, and evidence improvements before broker or strategy expansion
 - keep current dry-run and paper flows intact even if later live-facing UX is rolled back
 - prefer explicit narrow support statements over vague “live trading” marketing language
+- preserve historical route/order/position provenance rather than rewriting prior live-session truth into newer vocabulary
 - do not widen this epic into new broker integrations or options/live variants unless a separate follow-up doc explicitly owns that scope
 
 ## Related Docs
