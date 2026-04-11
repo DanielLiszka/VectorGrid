@@ -1295,40 +1295,24 @@ mod tests {
 
     #[test]
     fn price_semantics_fill_model_compatibility_matches_current_product_matrix() {
-        assert!(
-            OptionsPriceSemantics::MinuteAggregate
-                .supports_fill_model(OptionsFillModelFamily::AggregateResearch)
-        );
-        assert!(
-            !OptionsPriceSemantics::MinuteAggregate
-                .supports_fill_model(OptionsFillModelFamily::QuoteConservative)
-        );
-        assert!(
-            !OptionsPriceSemantics::MinuteAggregate
-                .supports_fill_model(OptionsFillModelFamily::QuoteMid)
-        );
+        assert!(OptionsPriceSemantics::MinuteAggregate
+            .supports_fill_model(OptionsFillModelFamily::AggregateResearch));
+        assert!(!OptionsPriceSemantics::MinuteAggregate
+            .supports_fill_model(OptionsFillModelFamily::QuoteConservative));
+        assert!(!OptionsPriceSemantics::MinuteAggregate
+            .supports_fill_model(OptionsFillModelFamily::QuoteMid));
 
-        assert!(
-            OptionsPriceSemantics::DerivedMidSnapshot
-                .supports_fill_model(OptionsFillModelFamily::AggregateResearch)
-        );
-        assert!(
-            !OptionsPriceSemantics::DerivedMidSnapshot
-                .supports_fill_model(OptionsFillModelFamily::QuoteConservative)
-        );
+        assert!(OptionsPriceSemantics::DerivedMidSnapshot
+            .supports_fill_model(OptionsFillModelFamily::AggregateResearch));
+        assert!(!OptionsPriceSemantics::DerivedMidSnapshot
+            .supports_fill_model(OptionsFillModelFamily::QuoteConservative));
 
-        assert!(
-            OptionsPriceSemantics::TopOfBookQuote
-                .supports_fill_model(OptionsFillModelFamily::AggregateResearch)
-        );
-        assert!(
-            OptionsPriceSemantics::TopOfBookQuote
-                .supports_fill_model(OptionsFillModelFamily::QuoteConservative)
-        );
-        assert!(
-            OptionsPriceSemantics::TopOfBookQuote
-                .supports_fill_model(OptionsFillModelFamily::QuoteMid)
-        );
+        assert!(OptionsPriceSemantics::TopOfBookQuote
+            .supports_fill_model(OptionsFillModelFamily::AggregateResearch));
+        assert!(OptionsPriceSemantics::TopOfBookQuote
+            .supports_fill_model(OptionsFillModelFamily::QuoteConservative));
+        assert!(OptionsPriceSemantics::TopOfBookQuote
+            .supports_fill_model(OptionsFillModelFamily::QuoteMid));
         assert_eq!(
             OptionsPriceSemantics::TopOfBookQuote.recommended_fill_model(),
             OptionsFillModelFamily::QuoteConservative

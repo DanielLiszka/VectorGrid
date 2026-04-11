@@ -1,15 +1,15 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
 use crate::gpu_backtest_kernel::{
-    DeviceLaunchCaps, KernelLaunchCaps, LaunchShape1d, choose_launch_shape_1d_from_candidates,
-    detect_device_launch_caps, detect_kernel_launch_caps,
+    choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
+    DeviceLaunchCaps, KernelLaunchCaps, LaunchShape1d,
 };
 use crate::options_expression::GpuFlatScoreInputs;
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
 use cust::function::Function;
 use cust::launch;
-use cust::memory::{CopyDestination, DeviceBuffer, DevicePointer, mem_get_info};
+use cust::memory::{mem_get_info, CopyDestination, DeviceBuffer, DevicePointer};
 use cust::module::{Module, ModuleJitOption, OptLevel};
 use cust::prelude::{CudaFlags, Stream, StreamFlags};
 use std::cell::RefCell;

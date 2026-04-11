@@ -18,9 +18,9 @@ use crate::options_types::{
     OptionsTupleSpec, SignalSide,
 };
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
@@ -30,8 +30,9 @@ use std::time::Instant;
 use crate::cuda_device::preferred_cuda_device_id;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_expression_gpu::{
-    OptionsGpuRuntimeCacheUsage, OptionsGpuTupleAggregate, inspect_options_expression_gpu_plan,
-    score_options_expression_tensors_gpu_multi_range, score_options_expression_tensors_gpu_range,
+    inspect_options_expression_gpu_plan, score_options_expression_tensors_gpu_multi_range,
+    score_options_expression_tensors_gpu_range, OptionsGpuRuntimeCacheUsage,
+    OptionsGpuTupleAggregate,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_types::OptionsExpressionBackendPreference;
@@ -531,7 +532,11 @@ fn assign_splits(
 
 fn lower_bound_timestamp(rows: &[OptionsPriceRow], timestamp_ms: i64) -> Option<usize> {
     let idx = rows.partition_point(|row| row.timestamp_ms < timestamp_ms);
-    if idx < rows.len() { Some(idx) } else { None }
+    if idx < rows.len() {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 fn actual_dte_days(expiration_timestamp_ms: i64, entry_timestamp_ms: i64) -> Option<u16> {
@@ -5200,27 +5205,21 @@ mod tests {
         let session1 = folds_by_session
             .get("2026-04-01")
             .expect("session 1 should be present");
-        assert!(
-            session1
-                .iter()
-                .all(|fold| *fold == OptionsEvaluationSplit::Search)
-        );
+        assert!(session1
+            .iter()
+            .all(|fold| *fold == OptionsEvaluationSplit::Search));
         let session2 = folds_by_session
             .get("2026-04-02")
             .expect("session 2 should be present");
-        assert!(
-            session2
-                .iter()
-                .all(|fold| *fold == OptionsEvaluationSplit::Holdout)
-        );
+        assert!(session2
+            .iter()
+            .all(|fold| *fold == OptionsEvaluationSplit::Holdout));
         let session3 = folds_by_session
             .get("2026-04-03")
             .expect("session 3 should be present");
-        assert!(
-            session3
-                .iter()
-                .all(|fold| *fold == OptionsEvaluationSplit::SealedTest)
-        );
+        assert!(session3
+            .iter()
+            .all(|fold| *fold == OptionsEvaluationSplit::SealedTest));
     }
 
     #[test]
@@ -5446,12 +5445,10 @@ mod tests {
                 .sum::<usize>(),
             report.invalid_slot_count
         );
-        assert!(
-            report
-                .invalid_reasons
-                .iter()
-                .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket)
-        );
+        assert!(report
+            .invalid_reasons
+            .iter()
+            .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket));
         assert_eq!(report.axis_coverage.delay_minutes.len(), 1);
         assert_eq!(report.axis_coverage.dte_days.len(), 2);
         assert_eq!(
@@ -5463,12 +5460,10 @@ mod tests {
         assert_eq!(report.axis_coverage.dte_days[1].dte_days, 9);
         assert_eq!(report.axis_coverage.dte_days[0].valid_slot_count, 3);
         assert_eq!(report.axis_coverage.dte_days[1].valid_slot_count, 0);
-        assert!(
-            report.axis_coverage.dte_days[1]
-                .invalid_reasons
-                .iter()
-                .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket)
-        );
+        assert!(report.axis_coverage.dte_days[1]
+            .invalid_reasons
+            .iter()
+            .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket));
         assert_eq!(report.event_coverage.total_events_with_candidates, 3);
         assert_eq!(report.event_coverage.search_events_with_candidates, 1);
         assert_eq!(report.event_coverage.total_events_with_baseline_outcomes, 3);
@@ -5503,13 +5498,11 @@ mod tests {
             report.coverage_adequacy.dominant_invalid_reason,
             Some(OptionsCandidateInvalidReason::NoExpirationInBucket)
         );
-        assert!(
-            report
-                .coverage_adequacy
-                .reasons
-                .iter()
-                .any(|reason| reason.contains("Dominant structural invalid reason"))
-        );
+        assert!(report
+            .coverage_adequacy
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("Dominant structural invalid reason")));
         assert_eq!(report.split_invalid_reasons.search_invalid_reasons.len(), 1);
         assert_eq!(
             report.split_invalid_reasons.search_invalid_reasons[0].reason,
@@ -5686,20 +5679,16 @@ mod tests {
             "cpu_reference"
         );
         assert!(!report.auto_backend_decision.gpu_eligible);
-        assert!(
-            report
-                .auto_backend_decision
-                .reasons
-                .iter()
-                .any(|entry| entry.contains("synthetic GPU planner failure"))
-        );
-        assert!(
-            report
-                .cache_stats
-                .gpu_plan_notes
-                .iter()
-                .any(|entry| entry.contains("synthetic GPU planner failure"))
-        );
+        assert!(report
+            .auto_backend_decision
+            .reasons
+            .iter()
+            .any(|entry| entry.contains("synthetic GPU planner failure")));
+        assert!(report
+            .cache_stats
+            .gpu_plan_notes
+            .iter()
+            .any(|entry| entry.contains("synthetic GPU planner failure")));
     }
 
     #[test]
@@ -5733,18 +5722,14 @@ mod tests {
 
         assert!(!decision.gpu_eligible);
         assert_eq!(decision.recommended_backend, "cpu_reference");
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|entry| entry.contains("Compiled tuple count"))
-        );
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|entry| entry.contains("Search-event count"))
-        );
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|entry| entry.contains("Compiled tuple count")));
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|entry| entry.contains("Search-event count")));
     }
 
     #[test]
@@ -5860,8 +5845,8 @@ mod tests {
     }
 
     #[test]
-    fn runtime_auto_backend_decision_stays_gpu_eligible_even_if_measured_speedup_is_below_promotion_gate()
-     {
+    fn runtime_auto_backend_decision_stays_gpu_eligible_even_if_measured_speedup_is_below_promotion_gate(
+    ) {
         let template_manifest = test_manifest();
         let template_event = template_manifest.events[0].clone();
         let mut manifest = template_manifest.clone();
@@ -5920,12 +5905,10 @@ mod tests {
         );
         assert!(!promotion_decision.gpu_eligible);
         assert_eq!(promotion_decision.recommended_backend, "cpu_reference");
-        assert!(
-            promotion_decision
-                .reasons
-                .iter()
-                .any(|entry| entry.contains("Measured GPU hybrid speedup"))
-        );
+        assert!(promotion_decision
+            .reasons
+            .iter()
+            .any(|entry| entry.contains("Measured GPU hybrid speedup")));
     }
 
     #[test]

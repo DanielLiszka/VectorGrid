@@ -58,7 +58,10 @@ try {
     }
 
     if ($IncludeWorkspaceTests) {
-      Invoke-Step "Rust workspace tests" { cargo test --workspace }
+      # Keep the optional full-workspace test leg deterministic on Windows.
+      # The Tauri/bin/example surface is large enough that default parallelism
+      # can trip linker/pagefile instability even when the serial workspace suite is green.
+      Invoke-Step "Rust workspace tests" { cargo test --workspace -j 1 }
     }
   }
 
