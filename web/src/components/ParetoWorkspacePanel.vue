@@ -23,6 +23,9 @@ const {
   paretoXOptions,
   paretoYOptions,
   paretoMeta,
+  paretoTruthNote,
+  paretoRepresentativeSummary,
+  paretoConfidenceNote,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(analysisStore)
@@ -127,6 +130,9 @@ function reviewTopResults(): void {
           </div>
         </div>
         <div class="metaLine mono" role="status" aria-live="polite">{{ paretoMeta }}</div>
+        <div class="panelMuted">{{ paretoTruthNote }}</div>
+        <div class="panelMuted mono">Representative points: {{ paretoRepresentativeSummary }}</div>
+        <div class="panelMuted">{{ paretoConfidenceNote }}</div>
       </section>
 
       <section class="pane">
@@ -165,6 +171,7 @@ function reviewTopResults(): void {
             <canvas id="paretoCanvasVue" class="chart" width="1024" height="240" role="img" aria-label="Pareto frontier chart"></canvas>
           </div>
           <div class="panelMuted" style="margin-top: 0.5rem;">Select a Top result or click a point to drill down that parameter pair.</div>
+          <div class="panelMuted" style="margin-top: 0.35rem;">Frontier membership visualizes tradeoffs; validation still decides whether a candidate is acceptable.</div>
         </div>
       </section>
 

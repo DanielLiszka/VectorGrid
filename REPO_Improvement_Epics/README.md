@@ -19,11 +19,11 @@ Canonical epic-program meta docs:
 
 Current catalog status:
 
-- active epic catalog: `v1`
-- planned epic implementation docs: `5`
+- active epic catalog: `v2`
+- planned epic implementation docs: `10`
 - epic-doc creation is complete for the current catalog
-- `9` Markdown files now exist under `REPO_Improvement_Epics/`
-- `5` unique planned epic-doc slots are represented on disk
+- `15` Markdown files now exist under `REPO_Improvement_Epics/`
+- `10` unique planned epic-doc slots are represented on disk
 - first-tier deferred item remains tracked in the original tree:
   - [REPO_Improvement/10_tests_perf/31_vectorbt_faceoff_2026-04-09.md](../REPO_Improvement/10_tests_perf/31_vectorbt_faceoff_2026-04-09.md)
 

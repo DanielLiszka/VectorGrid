@@ -90,6 +90,30 @@ pub struct SaveBatchSummaryResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactLineageSummary {
+    pub parent_artifact_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub parent_artifact_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lineage_relation: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteProvenanceSummary {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requested_route: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resolved_route: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub realized_route: String,
+    pub route_changed: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fallback_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RunArtifactSummary {
     pub ts: String,
     pub path: String,
@@ -120,6 +144,10 @@ pub struct RunArtifactSummary {
     pub source_mtime_utc_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_content_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_provenance: Option<RouteProvenanceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<ArtifactLineageSummary>,
     pub tags: Vec<String>,
 }
 
@@ -197,8 +225,16 @@ pub struct WorkflowArtifactRunPayload {
     pub artifact_path: String,
     pub report_xlsx_path: String,
     pub csv_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_fingerprint_version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_meta: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_provenance: Option<RouteProvenanceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<ArtifactLineageSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_signal: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,15 +269,25 @@ pub struct RunArtifactDetailResponse {
     pub csv_path: String,
     pub report_path: String,
     pub has_validation: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_fingerprint_version: Option<u32>,
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_meta: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_provenance: Option<RouteProvenanceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<ArtifactLineageSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_signal: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimization_metric_surface: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_req: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_res: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_req: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -419,6 +465,193 @@ fn resolve_run_artifact_timeframe(v: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn split_backend_route_segments(value: &str) -> Vec<String> {
+    value.split("->")
+        .map(|segment| segment.trim().to_string())
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn normalize_requested_route(value: Option<&Value>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    match value {
+        Value::String(raw) => raw.trim().to_string(),
+        Value::Object(row) => row
+            .get("backend")
+            .and_then(Value::as_str)
+            .or_else(|| row.get("kind").and_then(Value::as_str))
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+fn normalize_backend_used_route(requested: &str, backend_used: &str) -> String {
+    match backend_used.trim() {
+        "Cpu" if requested.starts_with("Cpu") => requested.to_string(),
+        "Cpu" => "CpuOnly".to_string(),
+        "Gpu" if requested.starts_with("Gpu") => requested.to_string(),
+        "Gpu" => "Gpu".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn extract_route_provenance_from_artifact(v: &Value) -> Option<RouteProvenanceSummary> {
+    if let Some(existing) = v.pointer("/route_provenance").and_then(Value::as_object) {
+        let requested_route = existing
+            .get("requested_route")
+            .and_then(Value::as_str)
+            .or_else(|| existing.get("requestedRoute").and_then(Value::as_str))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let resolved_route = existing
+            .get("resolved_route")
+            .and_then(Value::as_str)
+            .or_else(|| existing.get("resolvedRoute").and_then(Value::as_str))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let realized_route = existing
+            .get("realized_route")
+            .and_then(Value::as_str)
+            .or_else(|| existing.get("realizedRoute").and_then(Value::as_str))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let fallback_reason = existing
+            .get("fallback_reason")
+            .and_then(Value::as_str)
+            .or_else(|| existing.get("fallbackReason").and_then(Value::as_str))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let route_changed = existing
+            .get("route_changed")
+            .and_then(Value::as_bool)
+            .or_else(|| existing.get("routeChanged").and_then(Value::as_bool))
+            .unwrap_or(false);
+        if !requested_route.is_empty()
+            || !resolved_route.is_empty()
+            || !realized_route.is_empty()
+            || !fallback_reason.is_empty()
+            || route_changed
+        {
+            return Some(RouteProvenanceSummary {
+                requested_route,
+                resolved_route,
+                realized_route,
+                route_changed,
+                fallback_reason,
+            });
+        }
+    }
+
+    let requested_route = normalize_requested_route(v.pointer("/run/req/backend"));
+    let backend_route = non_empty_string(v.pointer("/run/res/backend_route")).unwrap_or_default();
+    let backend_used = non_empty_string(v.pointer("/run/res/backend_used")).unwrap_or_default();
+    let fallback_reason =
+        non_empty_string(v.pointer("/run/res/backend_fallback_reason")).unwrap_or_default();
+    let segments = split_backend_route_segments(&backend_route);
+    let resolved_route = segments
+        .first()
+        .cloned()
+        .unwrap_or_else(|| requested_route.clone());
+    let realized_route = segments
+        .last()
+        .cloned()
+        .unwrap_or_else(|| normalize_backend_used_route(&requested_route, &backend_used));
+    let route_changed = !fallback_reason.is_empty()
+        || segments.len() > 1
+        || (!requested_route.is_empty()
+            && !realized_route.is_empty()
+            && requested_route != realized_route);
+    if requested_route.is_empty()
+        && resolved_route.is_empty()
+        && realized_route.is_empty()
+        && fallback_reason.is_empty()
+        && !route_changed
+    {
+        return None;
+    }
+    Some(RouteProvenanceSummary {
+        requested_route,
+        resolved_route,
+        realized_route,
+        route_changed,
+        fallback_reason,
+    })
+}
+
+fn extract_artifact_lineage_from_artifact(v: &Value) -> Option<ArtifactLineageSummary> {
+    let row = v.as_object()?;
+    let parent_artifact_path = row
+        .get("parent_artifact_path")
+        .and_then(Value::as_str)
+        .or_else(|| row.get("parentArtifactPath").and_then(Value::as_str))
+        .or_else(|| {
+            row.get("lineage")
+                .and_then(Value::as_object)
+                .and_then(|lineage| {
+                    lineage
+                        .get("parent_artifact_path")
+                        .and_then(Value::as_str)
+                        .or_else(|| lineage.get("parentArtifactPath").and_then(Value::as_str))
+                })
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let parent_artifact_kind = row
+        .get("parent_artifact_kind")
+        .and_then(Value::as_str)
+        .or_else(|| row.get("parentArtifactKind").and_then(Value::as_str))
+        .or_else(|| {
+            row.get("lineage")
+                .and_then(Value::as_object)
+                .and_then(|lineage| {
+                    lineage
+                        .get("parent_artifact_kind")
+                        .and_then(Value::as_str)
+                        .or_else(|| lineage.get("parentArtifactKind").and_then(Value::as_str))
+                })
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let lineage_relation = row
+        .get("lineage_relation")
+        .and_then(Value::as_str)
+        .or_else(|| row.get("lineageRelation").and_then(Value::as_str))
+        .or_else(|| {
+            row.get("lineage")
+                .and_then(Value::as_object)
+                .and_then(|lineage| {
+                    lineage
+                        .get("lineage_relation")
+                        .and_then(Value::as_str)
+                        .or_else(|| lineage.get("lineageRelation").and_then(Value::as_str))
+                })
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if parent_artifact_path.is_empty()
+        && parent_artifact_kind.is_empty()
+        && lineage_relation.is_empty()
+    {
+        return None;
+    }
+    Some(ArtifactLineageSummary {
+        parent_artifact_path,
+        parent_artifact_kind,
+        lineage_relation,
+    })
+}
+
 fn normalize_dataset_meta(ds: &mut serde_json::Map<String, Value>, csv_path: &str) {
     if !csv_path.trim().is_empty() {
         ds.entry("csv_path".to_string())
@@ -593,6 +826,24 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
                     {
                         ds.insert("source_content_fingerprint".to_string(), Value::String(fp));
                     }
+                }
+            }
+        }
+
+        if !root.contains_key("route_provenance") {
+            if let Some(route_provenance) =
+                extract_route_provenance_from_artifact(&Value::Object(root.clone()))
+            {
+                if let Ok(value) = serde_json::to_value(route_provenance) {
+                    root.insert("route_provenance".to_string(), value);
+                }
+            }
+        }
+        if !root.contains_key("lineage") {
+            if let Some(lineage) = extract_artifact_lineage_from_artifact(&Value::Object(root.clone()))
+            {
+                if let Ok(value) = serde_json::to_value(lineage) {
+                    root.insert("lineage".to_string(), value);
                 }
             }
         }
@@ -1228,7 +1479,19 @@ fn build_workflow_artifacts_hydration_payload(
         artifact_path: artifact_path.to_string(),
         report_xlsx_path: normalize_text_value(artifact.get("report_xlsx_path")),
         csv_path: resolve_run_artifact_csv_path(artifact),
+        config_fingerprint: artifact
+            .get("config_fingerprint")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        config_fingerprint_version: artifact
+            .get("config_fingerprint_version")
+            .and_then(Value::as_u64)
+            .map(|value| value as u32),
         dataset_meta: artifact.pointer("/dataset_meta").cloned(),
+        route_provenance: extract_route_provenance_from_artifact(artifact),
+        lineage: extract_artifact_lineage_from_artifact(artifact),
         ml_signal: artifact.pointer("/ml_signal").cloned(),
         optimization_metric_surface: artifact.pointer("/optimization_metric_surface").cloned(),
         tags: normalized_tags(artifact),
@@ -1260,8 +1523,19 @@ fn build_run_artifact_detail_response(
     let ml_signal = artifact.pointer("/ml_signal").cloned();
     let optimization_metric_surface = artifact.pointer("/optimization_metric_surface").cloned();
     let run_req = artifact.pointer("/run/req").cloned();
+    let run_res = artifact.pointer("/run/res").cloned();
     let validation_req = artifact.pointer("/validation/req").cloned();
     let validation_res = artifact.pointer("/validation/res").cloned();
+    let config_fingerprint = artifact
+        .get("config_fingerprint")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let config_fingerprint_version = artifact
+        .get("config_fingerprint_version")
+        .and_then(Value::as_u64)
+        .map(|value| value as u32);
 
     Ok(RunArtifactDetailResponse {
         ts: if ts.is_empty() {
@@ -1275,11 +1549,16 @@ fn build_run_artifact_detail_response(
         csv_path: resolve_run_artifact_csv_path(artifact),
         report_path: normalize_text_value(artifact.get("report_xlsx_path")),
         has_validation: validation_res.is_some(),
+        config_fingerprint,
+        config_fingerprint_version,
         tags: normalized_tags(artifact),
         dataset_meta,
+        route_provenance: extract_route_provenance_from_artifact(artifact),
+        lineage: extract_artifact_lineage_from_artifact(artifact),
         ml_signal: ml_signal.clone(),
         optimization_metric_surface,
         run_req: run_req.clone(),
+        run_res: run_res.clone(),
         validation_req: validation_req.clone(),
         validation_res: validation_res.clone(),
         ml_signal_stage: normalize_text_value(artifact.pointer("/ml_signal/stage")),
@@ -1383,6 +1662,8 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         .and_then(|x| x.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let route_provenance = extract_route_provenance_from_artifact(v);
+    let lineage = extract_artifact_lineage_from_artifact(v);
 
     Some(RunArtifactSummary {
         ts,
@@ -1404,6 +1685,8 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         source_size_bytes,
         source_mtime_utc_ms,
         source_content_fingerprint,
+        route_provenance,
+        lineage,
         tags: normalized_tags(v),
     })
 }
@@ -2033,8 +2316,10 @@ mod tests {
         build_run_artifact_summary, build_stage5_artifact_summary,
         build_workflow_artifacts_hydration_payload, canonical_json,
         compute_config_fingerprint_from_artifact, delete_run_artifact_blocking,
-        ensure_path_is_within_dir, is_meta_artifact_file_name, is_meta_stage_artifact_file_name,
-        is_options_expression_artifact_kind, is_run_artifact_file_name, is_run_artifact_kind,
+        ensure_path_is_within_dir, extract_artifact_lineage_from_artifact,
+        extract_route_provenance_from_artifact, is_meta_artifact_file_name,
+        is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
+        is_run_artifact_file_name, is_run_artifact_kind,
         load_latest_run_artifact_summary_blocking, load_run_artifact_detail_blocking,
         normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
         prune_old_meta_artifacts_blocking, resolve_run_artifact_csv_path,
@@ -2519,6 +2804,48 @@ mod tests {
                 .collect::<Vec<_>>()
             )
         );
+    }
+
+    #[test]
+    fn route_provenance_extracts_requested_resolved_realized_and_fallback_reason() {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "backend": { "backend": "GpuOnly", "device_id": 0 }
+                },
+                "res": {
+                    "backend_route": "GpuKernel -> CpuOnly",
+                    "backend_used": "Cpu",
+                    "backend_fallback_reason": "cuda unavailable"
+                }
+            }
+        });
+
+        let provenance =
+            extract_route_provenance_from_artifact(&artifact).expect("route provenance");
+
+        assert_eq!(provenance.requested_route, "GpuOnly");
+        assert_eq!(provenance.resolved_route, "GpuKernel");
+        assert_eq!(provenance.realized_route, "CpuOnly");
+        assert!(provenance.route_changed);
+        assert_eq!(provenance.fallback_reason, "cuda unavailable");
+    }
+
+    #[test]
+    fn artifact_lineage_extracts_parent_fields_from_legacy_and_nested_shapes() {
+        let artifact = json!({
+            "parent_artifact_path": "C:/runs/parent.json",
+            "parent_artifact_kind": "vectorgrid_run_artifact",
+            "lineage": {
+                "lineage_relation": "derived_from"
+            }
+        });
+
+        let lineage = extract_artifact_lineage_from_artifact(&artifact).expect("lineage");
+
+        assert_eq!(lineage.parent_artifact_path, "C:/runs/parent.json");
+        assert_eq!(lineage.parent_artifact_kind, "vectorgrid_run_artifact");
+        assert_eq!(lineage.lineage_relation, "derived_from");
     }
 
     #[test]
@@ -3097,6 +3424,61 @@ mod tests {
             .ends_with(&format!("vectorgrid_run_{ts}_2.json")));
         assert!(Path::new(&first.path).is_file());
         assert!(Path::new(&second.path).is_file());
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_backfills_route_provenance_and_lineage() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("route_lineage_backfill");
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": ts,
+            "parent_artifact_path": "C:/runs/parent_run.json",
+            "parent_artifact_kind": "vectorgrid_run_artifact",
+            "lineage_relation": "compare_baseline",
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "backend": "GpuOnly"
+                },
+                "res": {
+                    "backend_route": "GpuKernel -> CpuOnly",
+                    "backend_used": "Cpu",
+                    "backend_fallback_reason": "cuda unavailable",
+                    "top": []
+                }
+            }
+        });
+
+        let saved = save_run_artifact_blocking(artifact, handle).expect("save artifact");
+        let raw = std::fs::read_to_string(&saved.path).expect("read saved artifact");
+        let saved_value: Value = serde_json::from_str(&raw).expect("parse saved artifact");
+
+        assert_eq!(
+            saved_value
+                .pointer("/route_provenance/requestedRoute")
+                .and_then(|value| value.as_str()),
+            Some("GpuOnly")
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/route_provenance/realizedRoute")
+                .and_then(|value| value.as_str()),
+            Some("CpuOnly")
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/lineage/parentArtifactPath")
+                .and_then(|value| value.as_str()),
+            Some("C:/runs/parent_run.json")
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/lineage/lineageRelation")
+                .and_then(|value| value.as_str()),
+            Some("compare_baseline")
+        );
     }
 
     #[test]

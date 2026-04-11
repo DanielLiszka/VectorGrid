@@ -31,12 +31,18 @@ const {
   savedRunsTagsDraft,
   savedRunCount,
   savedRunsMeta,
+  savedRunCompareOptions,
+  savedRunCompareSelected,
+  savedRunCompareSummary,
   savedRunDetailTitle,
   savedRunDetailMeta,
   savedRunDetailStrategy,
+  savedRunDetailConfigFingerprint,
   savedRunDetailDataset,
   savedRunDetailTimeframe,
   savedRunDetailValidation,
+  savedRunDetailProvenance,
+  savedRunDetailLineage,
   savedRunDetailMetricSurface,
   savedRunDetailMetricSurfaceDetail,
   savedRunDetailAdmission,
@@ -84,6 +90,7 @@ interface SavedRunListEntry {
   hasValidation: boolean;
   reportXlsxPath: string;
   csvPath: string;
+  routeProvenance?: { actualRoute?: string; realizedRoute?: string } | null;
   tags: string[];
 }
 
@@ -95,6 +102,7 @@ const sessionValue = ref("");
 const savedValue = ref("");
 const searchDraft = ref("");
 const tagsDraft = ref("");
+const compareDraft = ref("");
 const queuedSearchValue = ref<string | null>(null);
 const queuedTagsValue = ref<string | null>(null);
 const pendingAction = ref<"clearSession" | "deleteSavedRun" | null>(null);
@@ -173,18 +181,22 @@ watch(
     [
       String(sessionSelectedValue.value || "").trim(),
       String(savedSelectedValue.value || "").trim(),
+      String(savedRunCompareSelected.value || "").trim(),
       String(savedRunsSearch.value || ""),
       String(savedRunsTagsDraft.value || ""),
     ] as const,
   ([
     nextSessionValue,
     nextSavedValue,
+    nextCompareValue,
     nextSavedRunsSearch,
     nextSavedRunsTagsDraft,
   ]) => {
     if (sessionValue.value !== nextSessionValue)
       sessionValue.value = nextSessionValue;
     if (savedValue.value !== nextSavedValue) savedValue.value = nextSavedValue;
+    if (compareDraft.value !== nextCompareValue)
+      compareDraft.value = nextCompareValue;
     if (searchDraft.value !== nextSavedRunsSearch)
       searchDraft.value = nextSavedRunsSearch;
     if (tagsDraft.value !== nextSavedRunsTagsDraft)
@@ -293,6 +305,11 @@ function onSessionSelect(value: string): void {
 function onSavedSelect(value: string): void {
   savedValue.value = value;
   historyStore.selectSavedRun(value);
+}
+
+function onSavedRunCompareSelect(value: string): void {
+  compareDraft.value = value;
+  historyStore.setSelectField("savedRunCompareSelect", value);
 }
 
 function onSavedSearch(value: string): void {
@@ -586,6 +603,15 @@ onBeforeUnmount(() => {
                     {{ entry.reportXlsxPath ? "xlsx" : "artifact only" }}
                   </span>
                   <span
+                    v-if="entry.routeProvenance?.realizedRoute || entry.routeProvenance?.actualRoute"
+                    class="pill subtle"
+                  >
+                    {{
+                      entry.routeProvenance?.realizedRoute ||
+                      entry.routeProvenance?.actualRoute
+                    }}
+                  </span>
+                  <span
                     v-for="tag in entry.tags.slice(0, 3)"
                     :key="`saved_tag_${entry.path}_${tag}`"
                     class="pill subtle"
@@ -678,6 +704,10 @@ onBeforeUnmount(() => {
             ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailStrategy }}</span>
           </div>
           <div>
+            <span class="panelMetricKey">Config Fingerprint</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailConfigFingerprint }}</span>
+          </div>
+          <div>
             <span class="panelMetricKey">Dataset</span
             ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailDataset }}</span>
           </div>
@@ -688,6 +718,17 @@ onBeforeUnmount(() => {
           <div>
             <span class="panelMetricKey">Validation</span
             ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailValidation }}</span>
+          </div>
+          <div class="full">
+            <span class="panelMetricKey">Execution Route</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailProvenance }}</span>
+          </div>
+          <div
+            v-if="savedRunDetailLineage !== '—'"
+            class="full"
+          >
+            <span class="panelMetricKey">Lineage</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailLineage }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Metric Surface</span
@@ -769,6 +810,34 @@ onBeforeUnmount(() => {
             <pre class="mono">{{ savedRunDetailParams }}</pre>
           </div>
         </details>
+        <details class="panelDetails">
+          <summary>Saved run compare</summary>
+          <div class="panelDetailsBody compareDetailsBody">
+            <div class="panelMuted">
+              Compare this saved artifact against another saved run without switching the current workflow winner.
+            </div>
+            <label for="historySavedRunCompareSelect">Compare against</label>
+            <select
+              id="historySavedRunCompareSelect"
+              :value="compareDraft"
+              @change="
+                onSavedRunCompareSelect(
+                  String(($event.target as HTMLSelectElement).value || ''),
+                )
+              "
+            >
+              <option
+                v-for="option in savedRunCompareOptions"
+                :key="`saved_compare_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+            <pre class="mono">{{ savedRunCompareSummary }}</pre>
+          </div>
+        </details>
       </section>
 
       <OptionsExpressionPanel
@@ -828,6 +897,11 @@ onBeforeUnmount(() => {
 .historyPaneSaved {
   background: color-mix(in oklab, var(--surface-working) 94%, var(--panel-footer));
   border-color: color-mix(in oklab, var(--panel-focus-edge) 54%, var(--border));
+}
+
+.compareDetailsBody {
+  display: grid;
+  gap: 0.55rem;
 }
 
 .sectionMeta {

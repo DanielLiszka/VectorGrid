@@ -68,6 +68,9 @@ describe('ParetoWorkspacePanel', () => {
     analysisStore.paretoXOptions = [{ value: 'max_dd', label: 'MaxDD', disabled: false }]
     analysisStore.paretoYOptions = [{ value: 'pnl', label: 'PnL', disabled: false }]
     analysisStore.paretoMeta = '12 points • x=max_dd • y=pnl'
+    analysisStore.paretoTruthNote = 'Pareto points show tradeoffs, not proof of robustness.'
+    analysisStore.paretoRepresentativeSummary = 'x-extreme #2 • y-extreme #5 • selected #3'
+    analysisStore.paretoConfidenceNote = 'Validation has not run. Frontier membership alone does not approve a candidate.'
 
     mount(ParetoWorkspacePanel, {
       global: { plugins: [pinia] },
@@ -79,6 +82,9 @@ describe('ParetoWorkspacePanel', () => {
     expect(text).toContain('X axis')
     expect(text).toContain('Y axis')
     expect(text).toContain('12 points • x=max_dd • y=pnl')
+    expect(text).toContain('Pareto points show tradeoffs, not proof of robustness.')
+    expect(text).toContain('Representative points: x-extreme #2 • y-extreme #5 • selected #3')
+    expect(text).toContain('Validation has not run. Frontier membership alone does not approve a candidate.')
     expect(text).toContain('Use the Top results table as the keyboard-friendly way')
   })
 

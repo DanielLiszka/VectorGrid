@@ -1606,7 +1606,7 @@ describe("analysis service", () => {
       "Optimization best:",
     );
     expect(String(analysisStore.compareSummary || "")).toContain(
-      "metric surface: baseline=- | current=Core17",
+      "metric surface: changed (- -> Core17)",
     );
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
       path: "C:/runs/run_a.json",

@@ -182,4 +182,47 @@ describe('OverviewWorkspacePanel', () => {
 
     expect(workflowStore.workspace).toBe('settings')
   })
+
+  it('shows the compact execution route summary under the winner metadata', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowArtifactsStore = useWorkflowArtifactsStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('overview', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.bestKicker = 'Winner ready'
+    analysisStore.bestTitle = 'Rank #1 · SMA 10 / EMA 40'
+    analysisStore.bestMeta = 'Strategy DoubleMa · Objective Sharpe'
+    workflowArtifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:00:00Z',
+        route_provenance: {
+          requestedRoute: 'GpuOnly',
+          resolvedRoute: 'GpuKernel',
+          realizedRoute: 'CpuOnly',
+          routeChanged: true,
+          fallbackReason: 'cuda unavailable',
+        },
+        req: {
+          backend: { backend: 'GpuOnly', device_id: 0 },
+        },
+        res: { top: [] },
+      },
+    })
+
+    mount(OverviewWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Route:')
+    expect(text).toContain('requested=GpuOnly')
+    expect(text).toContain('actual=CpuOnly')
+    expect(text).toContain('fallback=cuda unavailable')
+  })
 })

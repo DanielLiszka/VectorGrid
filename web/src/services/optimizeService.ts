@@ -7,6 +7,7 @@ import { applyWorkflowArtifactsPayload } from "../stores/workflowArtifactsStore"
 import { useWorkflowStore } from "../stores/workflowStore";
 import { computeConfigFingerprint } from "../utils/core/artifactIdentity";
 import { buildDatasetMetaForArtifact } from "../utils/core/datasetMeta";
+import { buildRouteProvenanceFromRun } from "../utils/core/runArtifactReview";
 import type { MaParamsAndSweeps } from "./optimizeRequestBuilder";
 import { resolveRecommendedOptimizationDefaults } from "./recommendedOptimizationDefaults";
 
@@ -2699,6 +2700,8 @@ function buildRunArtifactPayload(
     kind: "vectorgrid_run_artifact",
     ts,
     config_fingerprint: context.configFingerprint,
+    config_fingerprint_version: 1,
+    route_provenance: buildRouteProvenanceFromRun(req, res),
     run: { req, res },
     validation: null,
     report_xlsx_path: "",
@@ -2764,7 +2767,10 @@ function applyVueRunArtifacts(
         artifact_path: persisted.saved ? persisted.path : "",
         report_xlsx_path: "",
         csv_path: context.csvPath,
+        config_fingerprint: context.configFingerprint,
+        config_fingerprint_version: 1,
         dataset_meta: context.datasetMeta,
+        route_provenance: buildRouteProvenanceFromRun(req, res),
         tags: [],
         req,
         res,

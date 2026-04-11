@@ -14,6 +14,10 @@ import {
   emptyResultsWorkspaceIllustration,
 } from '../utils/appSvgAssets'
 import { describeExecutionRisk } from '../utils/executionRisk'
+import {
+  buildRouteProvenanceFromRun,
+  formatRouteProvenanceCompact,
+} from '../utils/core/runArtifactReview'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const analysisStore = useAnalysisStore()
@@ -62,6 +66,13 @@ const executionRisk = computed(() => {
     ? (req as { strategy?: unknown }).strategy ?? null
     : null
   return describeExecutionRisk(strategy)
+})
+const routeProvenanceSummary = computed(() => {
+  const run = currentRun.value
+  if (!run) return ''
+  return formatRouteProvenanceCompact(
+    run.routeProvenance ?? buildRouteProvenanceFromRun(run.req, run.res),
+  )
 })
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
@@ -169,6 +180,13 @@ function reviewTopResults(): void {
             <div class="bestKicker">{{ bestKicker }}</div>
             <div class="bestTitle mono">{{ bestTitle }}</div>
             <div class="panelMuted" style="margin-top: 0.25rem; font-size: 0.85rem;">{{ bestMeta }}</div>
+            <div
+              v-if="routeProvenanceSummary"
+              class="panelMuted mono"
+              style="margin-top: 0.35rem; font-size: 0.78rem;"
+            >
+              Route: {{ routeProvenanceSummary }}
+            </div>
           </div>
         </div>
         <div class="bestGrid">

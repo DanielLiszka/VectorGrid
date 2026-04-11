@@ -127,6 +127,9 @@ interface AnalysisState {
   paretoXOptions: { value: string; label: string; disabled: boolean }[]
   paretoYOptions: { value: string; label: string; disabled: boolean }[]
   paretoWrapVisible: boolean
+  paretoTruthNote: string
+  paretoRepresentativeSummary: string
+  paretoConfidenceNote: string
   drillWrapVisible: boolean
   stabilityWrapVisible: boolean
   tradeStatsWrapVisible: boolean
@@ -528,6 +531,9 @@ export const useAnalysisStore = defineStore('analysis', {
     paretoXOptions: [],
     paretoYOptions: [],
     paretoWrapVisible: false,
+    paretoTruthNote: 'Pareto points show tradeoffs, not proof of robustness.',
+    paretoRepresentativeSummary: '—',
+    paretoConfidenceNote: 'Validation is still required before trusting a frontier candidate.',
     drillWrapVisible: false,
     stabilityWrapVisible: false,
     tradeStatsWrapVisible: false,
@@ -713,6 +719,9 @@ export const useAnalysisStore = defineStore('analysis', {
       this.paretoXOptions = rawArray(snapshot.paretoXOptions, this.paretoXOptions)
       this.paretoYOptions = rawArray(snapshot.paretoYOptions, this.paretoYOptions)
       this.paretoWrapVisible = Boolean(snapshot.paretoWrapVisible ?? this.paretoWrapVisible)
+      this.paretoTruthNote = String(snapshot.paretoTruthNote ?? this.paretoTruthNote ?? 'Pareto points show tradeoffs, not proof of robustness.').trim() || 'Pareto points show tradeoffs, not proof of robustness.'
+      this.paretoRepresentativeSummary = String(snapshot.paretoRepresentativeSummary ?? this.paretoRepresentativeSummary ?? '—').trim() || '—'
+      this.paretoConfidenceNote = String(snapshot.paretoConfidenceNote ?? this.paretoConfidenceNote ?? 'Validation is still required before trusting a frontier candidate.').trim() || 'Validation is still required before trusting a frontier candidate.'
       this.drillWrapVisible = Boolean(snapshot.drillWrapVisible ?? this.drillWrapVisible)
       this.stabilityWrapVisible = Boolean(snapshot.stabilityWrapVisible ?? this.stabilityWrapVisible)
       this.tradeStatsWrapVisible = Boolean(snapshot.tradeStatsWrapVisible ?? this.tradeStatsWrapVisible)

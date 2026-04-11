@@ -1,13 +1,25 @@
 import { defineStore } from "pinia";
 import { markRaw } from "vue";
 import { resolveRuntimePinia } from "./runtimePinia";
+import type {
+  ArtifactLineageSummary,
+  RouteProvenanceSummary,
+} from "../utils/core/runArtifactReview";
+import {
+  parseArtifactLineage,
+  parseRouteProvenance,
+} from "../utils/core/runArtifactReview";
 
 export interface WorkflowRunArtifact {
   ts: string;
   artifactPath: string;
   reportXlsxPath: string;
   csvPath: string;
+  configFingerprint?: string;
+  configFingerprintVersion?: number | null;
   datasetMeta: Record<string, unknown> | null;
+  routeProvenance?: RouteProvenanceSummary | null;
+  lineage?: ArtifactLineageSummary | null;
   mlSignal: WorkflowMlSignalArtifact | null;
   optimizationMetricSurface: Record<string, unknown> | null;
   tags: string[];
@@ -24,6 +36,8 @@ export interface WorkflowValidationArtifact {
 export interface WorkflowRunSnapshot {
   ts: string;
   artifactPath: string;
+  configFingerprint?: string;
+  routeProvenance?: RouteProvenanceSummary | null;
   req: unknown;
   res: unknown;
 }
@@ -106,7 +120,10 @@ function workflowRunSignature(run: WorkflowRunArtifact | null): string {
     artifactPath: run.artifactPath,
     reportXlsxPath: run.reportXlsxPath,
     csvPath: run.csvPath,
+    configFingerprint: run.configFingerprint,
     datasetMeta: run.datasetMeta,
+    routeProvenance: run.routeProvenance,
+    lineage: run.lineage,
     mlSignal: run.mlSignal,
     optimizationMetricSurface: run.optimizationMetricSurface,
     tags: run.tags,
@@ -287,8 +304,15 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     reportXlsxPath?: unknown;
     csv_path?: unknown;
     csvPath?: unknown;
+    config_fingerprint?: unknown;
+    configFingerprint?: unknown;
+    config_fingerprint_version?: unknown;
+    configFingerprintVersion?: unknown;
     dataset_meta?: unknown;
     datasetMeta?: unknown;
+    route_provenance?: unknown;
+    routeProvenance?: unknown;
+    lineage?: unknown;
     ml_signal?: unknown;
     mlSignal?: unknown;
     optimization_metric_surface?: unknown;
@@ -316,7 +340,17 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     artifactPath: normalizeText(row.artifact_path ?? row.artifactPath),
     reportXlsxPath: normalizeText(row.report_xlsx_path ?? row.reportXlsxPath),
     csvPath: normalizeText(row.csv_path ?? row.csvPath),
+    configFingerprint: normalizeText(
+      row.config_fingerprint ?? row.configFingerprint,
+    ),
+    configFingerprintVersion: normalizeOptionalNumber(
+      row.config_fingerprint_version ?? row.configFingerprintVersion,
+    ),
     datasetMeta: markRawUnknown(datasetMeta),
+    routeProvenance: parseRouteProvenance(
+      row.route_provenance ?? row.routeProvenance,
+    ),
+    lineage: parseArtifactLineage(row.lineage),
     mlSignal: normalizeMlSignalArtifact(row.ml_signal ?? row.mlSignal),
     optimizationMetricSurface: markRawUnknown(optimizationMetricSurface),
     tags: markRaw(normalizeTags(row.tags)),
@@ -379,6 +413,8 @@ export const useWorkflowArtifactsStore = defineStore("workflowArtifacts", {
 export function readLatestWorkflowRunSnapshot(): {
   ts: string;
   artifactPath: string;
+  configFingerprint?: string;
+  routeProvenance?: RouteProvenanceSummary | null;
   req: unknown;
   res: unknown;
 } | null {
@@ -413,6 +449,8 @@ function applyNormalizedArtifacts(
       ? {
           ts: run.ts,
           artifactPath: run.artifactPath,
+          configFingerprint: run.configFingerprint ?? "",
+          routeProvenance: run.routeProvenance ?? null,
           req: run.req ?? null,
           res: run.res ?? null,
         }

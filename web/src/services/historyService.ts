@@ -1,5 +1,13 @@
 import { invokeCommand } from "../tauri/invoke";
 import { HISTORY_KEY, SETTINGS_KEY } from "../utils/core/storageKeys";
+import type {
+  ArtifactLineageSummary,
+  RouteProvenanceSummary,
+} from "../utils/core/runArtifactReview";
+import {
+  parseArtifactLineage,
+  parseRouteProvenance,
+} from "../utils/core/runArtifactReview";
 import { workflowStepForMlSignalStage } from "../utils/core/workflowModel";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import {
@@ -76,6 +84,11 @@ function parseBooleanLike(value: unknown): boolean | null {
   if (raw === "0" || raw === "false" || raw === "no" || raw === "off")
     return false;
   return null;
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function isMlSignalStrategyKind(value: unknown): boolean {
@@ -318,9 +331,18 @@ interface RunArtifactSummaryResponse {
   path?: unknown;
   bytes?: unknown;
   strategy_kind?: unknown;
+  config_fingerprint?: unknown;
+  config_fingerprint_version?: unknown;
   has_validation?: unknown;
   report_xlsx_path?: unknown;
   csv_path?: unknown;
+  timeframe?: unknown;
+  base_timeframe?: unknown;
+  derived_timeframe?: unknown;
+  resample_applied?: unknown;
+  source_content_fingerprint?: unknown;
+  route_provenance?: unknown;
+  lineage?: unknown;
   tags?: unknown;
 }
 
@@ -329,9 +351,18 @@ export interface HistorySavedRunSummary {
   path: string;
   bytes: number;
   strategyKind: string;
+  configFingerprint?: string;
+  configFingerprintVersion?: number | null;
   hasValidation: boolean;
   reportXlsxPath: string;
   csvPath: string;
+  timeframe?: string;
+  baseTimeframe?: string;
+  derivedTimeframe?: string;
+  resampleApplied?: boolean | null;
+  sourceContentFingerprint?: string;
+  routeProvenance?: RouteProvenanceSummary | null;
+  lineage?: ArtifactLineageSummary | null;
   tags: string[];
 }
 
@@ -341,10 +372,18 @@ export interface HistorySavedRunsRefreshSummary {
 
 export interface HistorySavedRunDetail {
   strategyKind: string;
+  configFingerprint?: string;
+  configFingerprintVersion?: number | null;
   timeframe: string;
   csvPath: string;
   reportPath: string;
   hasValidation: boolean;
+  datasetMeta?: Record<string, unknown> | null;
+  routeProvenance?: RouteProvenanceSummary | null;
+  lineage?: ArtifactLineageSummary | null;
+  optimizationMetricSurface?: Record<string, unknown> | null;
+  runReq?: Record<string, unknown> | null;
+  runRes?: Record<string, unknown> | null;
   metricSurfaceSummary?: string;
   metricSurfaceDetail?: string;
   validationAdmissionSummary?: string;
@@ -368,10 +407,8 @@ interface RunArtifactHydrationResponse {
 }
 
 interface RunArtifactDetailResponse extends HistorySavedRunDetail {
-  runReq?: unknown;
-  validationReq?: unknown;
-  optimization_metric_surface?: unknown;
-  mlSignalStage?: unknown;
+  validationReq?: Record<string, unknown> | null;
+  mlSignalStage?: string;
 }
 
 interface SessionHistoryEntry {
@@ -1073,9 +1110,23 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
       path,
       bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
       strategyKind: normalizeText(row.strategy_kind),
+      configFingerprint: normalizeText(row.config_fingerprint),
+      configFingerprintVersion: normalizeOptionalNumber(
+        row.config_fingerprint_version,
+      ),
       hasValidation: !!row.has_validation,
       reportXlsxPath: normalizeText(row.report_xlsx_path),
       csvPath: normalizeText(row.csv_path),
+      timeframe: normalizeText(row.timeframe),
+      baseTimeframe: normalizeText(row.base_timeframe),
+      derivedTimeframe: normalizeText(row.derived_timeframe),
+      resampleApplied:
+        row.resample_applied == null
+          ? null
+          : parseBooleanLike(row.resample_applied),
+      sourceContentFingerprint: normalizeText(row.source_content_fingerprint),
+      routeProvenance: parseRouteProvenance(row.route_provenance),
+      lineage: parseArtifactLineage(row.lineage),
       tags: normalizeStringList(row.tags),
     });
   }
@@ -1267,16 +1318,39 @@ export async function loadSavedRunDetail(
   const admission = buildValidationAdmissionSummary(validationReq);
   const metricSurface = buildMetricSurfaceSummary(
     asRecord(
-      detail.optimization_metric_surface ??
-        (detail as unknown as Record<string, unknown>).optimizationMetricSurface,
+      (detail as unknown as Record<string, unknown>).optimizationMetricSurface ??
+        (detail as unknown as Record<string, unknown>).optimization_metric_surface,
     ),
   );
   return {
     strategyKind: normalizeText(detail.strategyKind),
+    configFingerprint: normalizeText(
+      detail.configFingerprint ??
+        (detail as unknown as Record<string, unknown>).config_fingerprint,
+    ),
+    configFingerprintVersion: normalizeOptionalNumber(
+      detail.configFingerprintVersion ??
+        (detail as unknown as Record<string, unknown>).config_fingerprint_version,
+    ),
     timeframe: normalizeText(detail.timeframe),
     csvPath: normalizeText(detail.csvPath),
     reportPath: normalizeText(detail.reportPath),
     hasValidation: !!detail.hasValidation,
+    datasetMeta:
+      detail.datasetMeta && typeof detail.datasetMeta === "object"
+        ? (detail.datasetMeta as Record<string, unknown>)
+        : null,
+    routeProvenance: parseRouteProvenance(
+      detail.routeProvenance ??
+        (detail as unknown as Record<string, unknown>).route_provenance,
+    ),
+    lineage: parseArtifactLineage(detail.lineage),
+    optimizationMetricSurface: asRecord(
+      detail.optimizationMetricSurface ??
+        (detail as unknown as Record<string, unknown>).optimization_metric_surface,
+    ),
+    runReq: asRecord(detail.runReq),
+    runRes: asRecord(detail.runRes),
     ...(metricSurface.summary
       ? { metricSurfaceSummary: metricSurface.summary }
       : {}),

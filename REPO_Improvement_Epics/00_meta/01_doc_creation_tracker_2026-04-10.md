@@ -1,6 +1,6 @@
 # Epic Doc Creation Tracker
 
-Last updated: 2026-04-10
+Last updated: 2026-04-11
 
 ## Purpose
 
@@ -9,18 +9,18 @@ Track the creation status of the active second-tier non-options epic program.
 ## Program Summary
 
 - active scope: `non-options second-tier epics only`
-- planned epic docs in current `v1`: `5`
-- created docs under `REPO_Improvement_Epics/` now: `9`
-- unique planned epic-doc entries now represented on disk: `5`
-- created docs in `00_meta/` now: `3`
+- planned epic docs in current `v2`: `10`
+- created docs under `REPO_Improvement_Epics/` now: `15`
+- unique planned epic-doc entries now represented on disk: `10`
+- created docs in `00_meta/` now: `4`
 - support docs outside the planned epic slots now on disk: `1`
 - epic-doc coverage status: `complete`
 - current implementation-doc audit status: all current planned epic docs now exist, follow the required 14-section template, and keep the stronger post-checklist framing around objectives, measurements, non-goals, and rollback posture
 
 ## Current Folder Status
 
-- `00_meta`: `3/3` current epic-program meta docs present
-- `01_epics`: `5/5` planned epic docs present
+- `00_meta`: `4/4` current epic-program meta docs present
+- `01_epics`: `10/10` planned epic docs present
 
 ## Recent Additions
 
@@ -36,15 +36,24 @@ Added on 2026-04-10 in the second-tier epic-program bootstrap:
 - `01_epics/04_gpu_route_maturity_policy_refinement_2026-04-10.md`
 - `01_epics/05_live_execution_productization_2026-04-10.md`
 
+Added on 2026-04-11 in the live-mode expansion of epic catalog `v2`:
+
+- `00_meta/workspace_quality_gate_triage_2026-04-11.md`
+- `01_epics/06_live_execution_operator_safety_controls_2026-04-11.md`
+- `01_epics/07_live_execution_session_audit_trail_2026-04-11.md`
+- `01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md`
+- `01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md`
+- `01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md`
+
 ## Completion Check
 
-The current completion audit against the active `v1` epic catalog found:
+The current completion audit against the active `v2` epic catalog found:
 
-- all `5` unique planned epic-doc slots are now represented on disk
+- all `10` unique planned epic-doc slots are now represented on disk
 - all current planned epic docs follow the required 14-section template
-- the remaining files under `REPO_Improvement_Epics/` beyond the `5` planned epic slots are expected support docs:
+- the remaining files under `REPO_Improvement_Epics/` beyond the `10` planned epic slots are expected support docs:
   - `1` root README
-  - `3` current-status meta docs
+  - `4` current-status meta docs
 
 ## Next State
 

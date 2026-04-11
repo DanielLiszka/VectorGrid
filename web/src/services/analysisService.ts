@@ -5,6 +5,12 @@ import { useDataStore } from "../stores/dataStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore";
 import { invokeCommand } from "../tauri/invoke";
+import {
+  buildRunCompareSummary,
+  parseArtifactLineage,
+  parseRouteProvenance,
+  type RunComparisonTarget,
+} from "../utils/core/runArtifactReview";
 
 type TopColumn = {
   key?: unknown;
@@ -44,6 +50,9 @@ interface AnalysisStoreState {
   paretoWrapVisible?: unknown;
   paretoRows?: unknown;
   paretoMeta?: unknown;
+  paretoTruthNote?: unknown;
+  paretoRepresentativeSummary?: unknown;
+  paretoConfidenceNote?: unknown;
   topColumns?: unknown;
   topTableRows?: unknown;
   selectedTopTitle?: unknown;
@@ -97,6 +106,17 @@ interface WorkflowRunState {
   ts?: unknown;
   artifactPath?: unknown;
   artifact_path?: unknown;
+  reportXlsxPath?: unknown;
+  report_xlsx_path?: unknown;
+  csvPath?: unknown;
+  csv_path?: unknown;
+  configFingerprint?: unknown;
+  config_fingerprint?: unknown;
+  datasetMeta?: unknown;
+  dataset_meta?: unknown;
+  routeProvenance?: unknown;
+  route_provenance?: unknown;
+  lineage?: unknown;
   optimizationMetricSurface?: unknown;
   optimization_metric_surface?: unknown;
   req?: unknown;
@@ -147,7 +167,14 @@ interface RunArtifactPayload {
 interface BaselineRun {
   source: "disk" | "hist";
   ts: string;
-  optimizationMetricSurface?: Record<string, unknown> | null;
+  csvPath: string;
+  reportPath: string;
+  hasValidation: boolean;
+  configFingerprint: string;
+  datasetMeta: Record<string, unknown> | null;
+  routeProvenance: ReturnType<typeof parseRouteProvenance>;
+  lineage: ReturnType<typeof parseArtifactLineage>;
+  optimizationMetricSurface: Record<string, unknown> | null;
   req: Record<string, unknown>;
   res: Record<string, unknown>;
 }
@@ -1031,6 +1058,8 @@ function readWorkflowRun(): WorkflowRunState | null {
   return {
     ts: snapshot.ts ?? null,
     artifactPath: snapshot.artifactPath ?? null,
+    configFingerprint: snapshot.configFingerprint ?? null,
+    routeProvenance: snapshot.routeProvenance ?? null,
     req: snapshot.req ?? null,
     res: snapshot.res ?? null,
   };
@@ -2522,6 +2551,11 @@ export function refreshAnalysisFromWorkflowRun(): boolean {
       "Run or load a conventional optimization artifact to repopulate analysis views.";
     store.paretoRows = [];
     store.paretoMeta = "—";
+    store.paretoTruthNote =
+      "Pareto points show tradeoffs, not proof of robustness.";
+    store.paretoRepresentativeSummary = "—";
+    store.paretoConfidenceNote =
+      "Validation is still required before trusting a frontier candidate.";
     store.heatmapMeta = "—";
     store.heatmapStatus = "MlSignal artifacts do not emit optimizer heatmaps.";
     markAnalysisVue(store);
@@ -2791,6 +2825,48 @@ function paretoAxisValue(
   return num((row.metrics || {})[key], Number.NaN);
 }
 
+function selectedParetoRowModel(store: AnalysisStoreState): TopRowModel | null {
+  const selectedIndex = readTopRows(store).findIndex((row) => !!row?.selected);
+  if (selectedIndex < 0) return null;
+  return resolveTopRowModelAtIndex(store, selectedIndex);
+}
+
+function buildParetoRepresentativeSummary(
+  store: AnalysisStoreState,
+  points: Array<{ row: TopRowModel; x: number; y: number }>,
+): string {
+  if (!points.length) return "—";
+  const xExtreme = points.reduce((best, point) =>
+    point.x < best.x ? point : best,
+  );
+  const yExtreme = points.reduce((best, point) =>
+    point.y > best.y ? point : best,
+  );
+  const parts: string[] = [
+    `x-extreme #${xExtreme.row.rank}`,
+    `y-extreme #${yExtreme.row.rank}`,
+  ];
+  const selected = selectedParetoRowModel(store);
+  if (selected) {
+    const selectedPoint =
+      points.find((point) => topRowIdFor(point.row) === topRowIdFor(selected)) ||
+      null;
+    parts.push(
+      selectedPoint
+        ? `selected #${selected.rank}`
+        : `selected off-frontier #${selected.rank}`,
+    );
+  }
+  return parts.join(" • ");
+}
+
+function buildParetoConfidenceNote(): string {
+  if (!hasValidationResult()) {
+    return "Validation has not run. Frontier membership alone does not approve a candidate.";
+  }
+  return "Validation adds admission evidence, but robust_pareto and cross_ticker_pareto are still filters rather than approval by themselves.";
+}
+
 function renderParetoCanvas(
   store: AnalysisStoreState,
   req: Record<string, unknown>,
@@ -2817,6 +2893,10 @@ function renderParetoCanvas(
     wrap.style.display = "none";
     store.paretoWrapVisible = false;
     store.paretoMeta = "Pareto scatter unavailable for this run.";
+    store.paretoTruthNote =
+      "Pareto points show non-dominated tradeoffs under the selected axes, not proof of robustness.";
+    store.paretoRepresentativeSummary = "—";
+    store.paretoConfidenceNote = buildParetoConfidenceNote();
     metaEl.textContent = text(store.paretoMeta);
     return true;
   }
@@ -2921,6 +3001,13 @@ function renderParetoCanvas(
 
   wrap.style.display = "block";
   store.paretoWrapVisible = true;
+  store.paretoTruthNote =
+    "Pareto points are non-dominated under the selected axes. They visualize tradeoffs, not validation approval.";
+  store.paretoRepresentativeSummary = buildParetoRepresentativeSummary(
+    store,
+    points,
+  );
+  store.paretoConfidenceNote = buildParetoConfidenceNote();
   store.paretoMeta = `${points.length} points • x=${xKey} (${fmtDisplay(xMin, 3)} to ${fmtDisplay(xMax, 3)}) • y=${yKey} (${fmtDisplay(yMin, 3)} to ${fmtDisplay(yMax, 3)})`;
   metaEl.textContent = text(store.paretoMeta);
   return true;
@@ -3593,41 +3680,6 @@ export function invalidateAnalysisExecutionCaches(): void {
   hideHeatmapTooltip();
 }
 
-function truncate(value: string, maxLen: number): string {
-  const src = String(value || "");
-  const limit = Math.max(8, Math.floor(Number(maxLen || 120)));
-  if (src.length <= limit) return src;
-  return `${src.slice(0, limit - 1)}…`;
-}
-
-function diffParams(
-  left: Record<string, unknown>,
-  right: Record<string, unknown>,
-  limit = 12,
-): Array<{ key: string; from: string; to: string }> {
-  const keys = Array.from(
-    new Set([...Object.keys(left), ...Object.keys(right)]),
-  ).sort();
-  const out: Array<{ key: string; from: string; to: string }> = [];
-  for (const key of keys) {
-    const from = stableStringify(left[key]);
-    const to = stableStringify(right[key]);
-    if (from === to) continue;
-    out.push({ key, from, to });
-    if (out.length >= limit) break;
-  }
-  return out;
-}
-
-function metricSurfaceLabel(value: unknown): string {
-  const row = asRecord(value);
-  const surface = text(row?.surface).toLowerCase();
-  if (surface === "trade22") return "Trade22";
-  if (surface === "core17") return "Core17";
-  if (surface === "legacy") return "Legacy";
-  return "";
-}
-
 async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
   const normalizedPath = text(path);
   if (!normalizedPath) return null;
@@ -3649,9 +3701,21 @@ async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
       return {
         source: "disk" as const,
         ts: text(row.ts) || text(run.ts),
-        optimizationMetricSurface: asRecord(
-          row.optimization_metric_surface ?? row.optimizationMetricSurface,
+        csvPath: text(row.csv_path ?? row.csvPath),
+        reportPath: text(row.report_xlsx_path ?? row.reportXlsxPath),
+        hasValidation: !!asRecord(row.validation).res,
+        configFingerprint: text(
+          row.config_fingerprint ?? row.configFingerprint,
         ),
+        datasetMeta: asRecord(row.dataset_meta ?? row.datasetMeta),
+        routeProvenance: parseRouteProvenance(
+          row.route_provenance ?? row.routeProvenance,
+        ),
+        lineage: parseArtifactLineage(row.lineage),
+        optimizationMetricSurface:
+          asRecord(
+            row.optimization_metric_surface ?? row.optimizationMetricSurface,
+          ) || null,
         req,
         res,
       };
@@ -3687,9 +3751,20 @@ async function resolveBaselineSelection(
     return {
       source: "hist",
       ts: baselineTs,
+      csvPath: text(current.csv_path ?? current.csvPath),
+      reportPath: text(current.report_xlsx_path ?? current.reportXlsxPath),
+      hasValidation: hasValidationResult(),
+      configFingerprint: text(
+        current.config_fingerprint ?? current.configFingerprint,
+      ),
+      datasetMeta: asRecord(current.dataset_meta ?? current.datasetMeta),
+      routeProvenance: parseRouteProvenance(
+        current.route_provenance ?? current.routeProvenance,
+      ),
+      lineage: parseArtifactLineage(current.lineage),
       optimizationMetricSurface: asRecord(
         current.optimization_metric_surface ?? current.optimizationMetricSurface,
-      ),
+      ) || null,
       req: currentReq,
       res: currentRes,
     };
@@ -3706,101 +3781,74 @@ async function resolveBaselineSelection(
   return {
     source: "hist",
     ts: baselineTs || loaded.ts,
+    csvPath: loaded.csvPath,
+    reportPath: loaded.reportPath,
+    hasValidation: loaded.hasValidation,
+    configFingerprint: loaded.configFingerprint,
+    datasetMeta: loaded.datasetMeta,
+    routeProvenance: loaded.routeProvenance,
+    lineage: loaded.lineage,
+    optimizationMetricSurface: loaded.optimizationMetricSurface ?? null,
     req: loaded.req,
     res: loaded.res,
   };
 }
 
-function buildCompareSummary(
-  currentRun: WorkflowRunState,
+function workflowRunToComparisonTarget(
+  source: string,
+  run: WorkflowRunState,
+): RunComparisonTarget | null {
+  const req = asRecord(run.req);
+  const res = asRecord(run.res);
+  if (!Object.keys(req).length || !Object.keys(res).length) return null;
+  return {
+    source,
+    ts: text(run.ts),
+    strategyKind: kindFromReq(req),
+    csvPath: text(run.csv_path ?? run.csvPath),
+    timeframe: text(
+      asRecord(run.dataset_meta ?? run.datasetMeta).timeframe ?? req.timeframe,
+    ),
+    reportPath: text(run.report_xlsx_path ?? run.reportXlsxPath),
+    hasValidation: hasValidationResult(),
+    configFingerprint: text(run.config_fingerprint ?? run.configFingerprint),
+    datasetMeta: asRecord(run.dataset_meta ?? run.datasetMeta),
+    optimizationMetricSurface: asRecord(
+      run.optimization_metric_surface ?? run.optimizationMetricSurface,
+    ) || null,
+    routeProvenance: parseRouteProvenance(
+      run.route_provenance ?? run.routeProvenance,
+    ),
+    lineage: parseArtifactLineage(run.lineage),
+    req,
+    res,
+  };
+}
+
+function baselineRunToComparisonTarget(
   baseline: BaselineRun,
-): string {
-  const currentTs = text(currentRun.ts);
-  const currentMetricSurface = metricSurfaceLabel(
-    currentRun.optimization_metric_surface ?? currentRun.optimizationMetricSurface,
-  );
-  const cReq = asRecord(currentRun.req);
-  const cRes = asRecord(currentRun.res);
-  const bReq = baseline.req;
-  const bRes = baseline.res;
-  const baselineMetricSurface = metricSurfaceLabel(
-    baseline.optimizationMetricSurface,
-  );
-  const cBest = pickBest(cRes, cReq);
-  const bBest = pickBest(bRes, bReq);
-  const cm = cBest.metrics || {};
-  const bm = bBest.metrics || {};
-  const cp = cBest.params || {};
-  const bp = bBest.params || {};
-  const cObj = objectiveOf(cReq);
-  const bObj = objectiveOf(bReq);
-  const cScore = scoreOf(
-    cm,
-    cObj,
-    scoreModeOf(cReq),
-    cp,
-    scoreObservationContextOf(cRes),
-  );
-  const bScore = scoreOf(
-    bm,
-    bObj,
-    scoreModeOf(bReq),
-    bp,
-    scoreObservationContextOf(bRes),
-  );
-  const cRt = runtimeMsOf(cRes);
-  const bRt = runtimeMsOf(bRes);
-  const ratio = cRt > 0 && bRt > 0 ? bRt / cRt : 0;
-  const delta = (left: unknown, right: unknown): number =>
-    num(left, 0) - num(right, 0);
-
-  const lines: string[] = [];
-  lines.push(
-    `baseline (${baseline.source}): ${baseline.ts || "-"} | strategy=${kindFromReq(bReq)} | combos=${combosOf(bRes)} | runtime_ms=${bRt || 0}`,
-  );
-  lines.push(
-    `current:          ${currentTs || "-"} | strategy=${kindFromReq(cReq)} | combos=${combosOf(cRes)} | runtime_ms=${cRt || 0}${ratio ? ` | speedup=${ratio.toFixed(2)}x` : ""}`,
-  );
-  if (baselineMetricSurface || currentMetricSurface) {
-    lines.push(
-      `metric surface: baseline=${baselineMetricSurface || "-"} | current=${currentMetricSurface || "-"}`,
-    );
+): RunComparisonTarget | null {
+  if (!Object.keys(baseline.req).length || !Object.keys(baseline.res).length) {
+    return null;
   }
-  if (kindFromReq(bReq) !== kindFromReq(cReq)) {
-    lines.push(
-      `note: strategies differ (baseline=${kindFromReq(bReq)}, current=${kindFromReq(cReq)})`,
-    );
-  }
-  lines.push("");
-  lines.push("Optimization best:");
-  lines.push(
-    `  baseline: pnl=${fmt(bm.pnl, 6)} ret=${fmtPct(bm.pnl, 2)} sharpe=${fmt(bm.sharpe, 6)} dd=${fmt(bm.max_dd, 6)} trades=${num(bm.trades, 0)} expo=${fmt(bm.exposure, 4)} score(${bObj})=${fmt(bScore, 6)}`,
-  );
-  lines.push(
-    `  current:  pnl=${fmt(cm.pnl, 6)} ret=${fmtPct(cm.pnl, 2)} sharpe=${fmt(cm.sharpe, 6)} dd=${fmt(cm.max_dd, 6)} trades=${num(cm.trades, 0)} expo=${fmt(cm.exposure, 4)} score(${cObj})=${fmt(cScore, 6)}`,
-  );
-  lines.push(
-    `  deltas:   pnl=${fmt(delta(cm.pnl, bm.pnl), 6)} sharpe=${fmt(delta(cm.sharpe, bm.sharpe), 6)} dd=${fmt(delta(cm.max_dd, bm.max_dd), 6)} trades=${delta(cm.trades, bm.trades)} expo=${fmt(delta(cm.exposure, bm.exposure), 4)}`,
-  );
-  if (cObj === bObj) {
-    lines.push(`  scoreΔ:   ${fmt(delta(cScore, bScore), 6)} (${cObj})`);
-  }
-  lines.push("");
-
-  const diffs = diffParams(bp, cp, 12);
-  if (diffs.length > 0) {
-    lines.push("Params diff (current - baseline):");
-    for (const row of diffs) {
-      lines.push(
-        `  ${row.key}: ${truncate(row.from, 60)} -> ${truncate(row.to, 60)}`,
-      );
-    }
-    const totalKeys = new Set([...Object.keys(bp), ...Object.keys(cp)]).size;
-    if (totalKeys > diffs.length)
-      lines.push(`  … (showing ${diffs.length}/${totalKeys} keys)`);
-  }
-
-  return lines.join("\n").trim() || "-";
+  return {
+    source: baseline.source,
+    ts: baseline.ts,
+    strategyKind: kindFromReq(baseline.req),
+    csvPath: baseline.csvPath,
+    timeframe: text(
+      asRecord(baseline.datasetMeta).timeframe ?? baseline.req.timeframe,
+    ),
+    reportPath: baseline.reportPath,
+    hasValidation: baseline.hasValidation,
+    configFingerprint: baseline.configFingerprint,
+    datasetMeta: baseline.datasetMeta,
+    optimizationMetricSurface: baseline.optimizationMetricSurface ?? null,
+    routeProvenance: baseline.routeProvenance,
+    lineage: baseline.lineage,
+    req: baseline.req,
+    res: baseline.res,
+  };
 }
 
 function csvEscape(v: unknown): string {
@@ -5372,7 +5420,15 @@ export async function refreshCompareSummary(): Promise<void> {
       markAnalysisVue(store);
       return;
     }
-    store.compareSummary = buildCompareSummary(current, baseline);
+    const currentTarget = workflowRunToComparisonTarget("current", current);
+    const baselineTarget = baselineRunToComparisonTarget(baseline);
+    if (!currentTarget || !baselineTarget) {
+      store.compareSummary =
+        "Compare unavailable because one side is missing request/result data.";
+      markAnalysisVue(store);
+      return;
+    }
+    store.compareSummary = buildRunCompareSummary(currentTarget, baselineTarget);
     markAnalysisVue(store);
   } catch (error) {
     if (seq !== compareSeq) return;

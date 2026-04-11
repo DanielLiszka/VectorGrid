@@ -8,6 +8,14 @@ import type {
   HistorySessionSummary,
 } from "../services/historyService";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
+import {
+  buildRunCompareSummary,
+  formatArtifactLineageCompact,
+  formatRouteProvenanceCompact,
+  type ArtifactLineageSummary,
+  type RouteProvenanceSummary,
+  type RunComparisonTarget,
+} from "../utils/core/runArtifactReview";
 
 let historyServicePromise:
   | Promise<typeof import("../services/historyService")>
@@ -263,15 +271,21 @@ interface HistoryState {
   compareRunCount: number;
   compareOptions: HistoryOption[];
   compareSelectedValue: string;
+  savedRunCompareOptions: HistoryOption[];
+  savedRunCompareSelected: string;
+  savedRunCompareSummary: string;
   savedRunsSearch: string;
   savedRunsTagsDraft: string;
   savedRunsMeta: string;
   savedRunDetailTitle: string;
   savedRunDetailMeta: string;
   savedRunDetailStrategy: string;
+  savedRunDetailConfigFingerprint: string;
   savedRunDetailDataset: string;
   savedRunDetailTimeframe: string;
   savedRunDetailValidation: string;
+  savedRunDetailProvenance: string;
+  savedRunDetailLineage: string;
   savedRunDetailMetricSurface: string;
   savedRunDetailMetricSurfaceDetail: string;
   savedRunDetailAdmission: string;
@@ -354,9 +368,24 @@ function sanitizeSavedRunsArray(value: unknown): HistorySavedRunEntry[] {
       path,
       bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
       strategyKind: normalizeText(typed.strategyKind),
+      configFingerprint: normalizeText(typed.configFingerprint),
+      configFingerprintVersion: Number.isFinite(
+        Number(typed.configFingerprintVersion),
+      )
+        ? Math.floor(Number(typed.configFingerprintVersion))
+        : null,
       hasValidation: !!typed.hasValidation,
       reportXlsxPath: normalizePath(String(typed.reportXlsxPath || "")),
       csvPath: normalizePath(String(typed.csvPath || "")),
+      timeframe: normalizeText(typed.timeframe),
+      baseTimeframe: normalizeText(typed.baseTimeframe),
+      derivedTimeframe: normalizeText(typed.derivedTimeframe),
+      resampleApplied:
+        typed.resampleApplied == null ? null : Boolean(typed.resampleApplied),
+      sourceContentFingerprint: normalizeText(typed.sourceContentFingerprint),
+      routeProvenance:
+        (typed.routeProvenance as RouteProvenanceSummary | null) ?? null,
+      lineage: (typed.lineage as ArtifactLineageSummary | null) ?? null,
       tags: normalizeTags(typed.tags),
     });
   }
@@ -384,6 +413,88 @@ function pruneSavedRunDetailCache(
     nextCache[path] = detail;
   }
   return removedAny ? nextCache : cache;
+}
+
+function buildSavedRunComparisonTarget(
+  source: string,
+  entry: HistorySavedRunEntry,
+  detail: HistorySavedRunDetail,
+): RunComparisonTarget | null {
+  const runReq =
+    detail.runReq && typeof detail.runReq === "object" ? detail.runReq : null;
+  const runRes =
+    detail.runRes && typeof detail.runRes === "object" ? detail.runRes : null;
+  if (!runReq || !runRes) return null;
+  return {
+    source,
+    ts: normalizeText(entry.ts),
+    strategyKind: normalizeText(detail.strategyKind || entry.strategyKind),
+    csvPath: normalizePath(detail.csvPath || entry.csvPath),
+    timeframe: normalizeText(detail.timeframe || entry.timeframe),
+    reportPath: normalizePath(detail.reportPath || entry.reportXlsxPath),
+    hasValidation: detail.hasValidation ?? entry.hasValidation,
+    configFingerprint: normalizeText(
+      detail.configFingerprint || entry.configFingerprint,
+    ),
+    datasetMeta:
+      detail.datasetMeta && typeof detail.datasetMeta === "object"
+        ? detail.datasetMeta
+        : null,
+    optimizationMetricSurface:
+      detail.optimizationMetricSurface &&
+      typeof detail.optimizationMetricSurface === "object"
+        ? detail.optimizationMetricSurface
+        : null,
+    routeProvenance: detail.routeProvenance ?? entry.routeProvenance ?? null,
+    lineage: detail.lineage ?? entry.lineage ?? null,
+    req: runReq,
+    res: runRes,
+  };
+}
+
+function buildSavedRunCompareOptions(
+  entries: HistorySavedRunEntry[],
+  selectedPath: string,
+): HistoryOption[] {
+  const options: HistoryOption[] = [
+    {
+      value: "",
+      label: entries.length > 1 ? "Compare against another saved run..." : "Need another saved run",
+      disabled: false,
+    },
+  ];
+  for (const entry of entries) {
+    if (entry.path === selectedPath) continue;
+    options.push({
+      value: entry.path,
+      label: savedRunLabel(entry),
+      disabled: false,
+    });
+  }
+  return rawArray(options);
+}
+
+function buildOverviewCompareOptions(
+  entries: HistorySavedRunEntry[],
+): HistoryOption[] {
+  const options: HistoryOption[] = [
+    {
+      value: "",
+      label: entries.length ? "Select a baseline..." : "No saved baselines yet",
+      disabled: false,
+    },
+  ];
+  for (const entry of entries) {
+    const path = normalizePath(entry.path);
+    const value = path ? `disk:${path}` : normalizeText(entry.ts) ? `hist:${normalizeText(entry.ts)}` : "";
+    if (!value) continue;
+    options.push({
+      value,
+      label: savedRunLabel(entry),
+      disabled: false,
+    });
+  }
+  return rawArray(options);
 }
 
 function applyVueTextFieldUpdate(
@@ -424,6 +535,9 @@ function applyVueSelectFieldUpdate(
     case "compareSelect":
       state.compareSelectedValue = next;
       return true;
+    case "savedRunCompareSelect":
+      state.savedRunCompareSelected = next;
+      return true;
     default:
       return false;
   }
@@ -448,15 +562,21 @@ export const useHistoryStore = defineStore("history", {
     compareRunCount: 0,
     compareOptions: [],
     compareSelectedValue: "",
+    savedRunCompareOptions: [],
+    savedRunCompareSelected: "",
+    savedRunCompareSummary: "-",
     savedRunsSearch: "",
     savedRunsTagsDraft: "",
     savedRunsMeta: "—",
     savedRunDetailTitle: "No saved run selected",
     savedRunDetailMeta: "Select a run to inspect metadata and settings.",
     savedRunDetailStrategy: "—",
+    savedRunDetailConfigFingerprint: "—",
     savedRunDetailDataset: "—",
     savedRunDetailTimeframe: "—",
     savedRunDetailValidation: "—",
+    savedRunDetailProvenance: "—",
+    savedRunDetailLineage: "—",
     savedRunDetailMetricSurface: "—",
     savedRunDetailMetricSurfaceDetail: "—",
     savedRunDetailAdmission: "—",
@@ -585,6 +705,16 @@ export const useHistoryStore = defineStore("history", {
       this.compareSelectedValue = String(
         snapshot.compareSelectedValue ?? this.compareSelectedValue ?? "",
       ).trim();
+      this.savedRunCompareOptions = sanitizeOptionArray(
+        snapshot.savedRunCompareOptions ?? this.savedRunCompareOptions,
+      );
+      this.savedRunCompareSelected = String(
+        snapshot.savedRunCompareSelected ?? this.savedRunCompareSelected ?? "",
+      ).trim();
+      this.savedRunCompareSummary =
+        String(
+          snapshot.savedRunCompareSummary ?? this.savedRunCompareSummary ?? "-",
+        ).trim() || "-";
       this.savedRunsSearch = String(
         snapshot.savedRunsSearch ?? this.savedRunsSearch ?? "",
       ).trim();
@@ -610,6 +740,12 @@ export const useHistoryStore = defineStore("history", {
         String(
           snapshot.savedRunDetailStrategy ?? this.savedRunDetailStrategy ?? "—",
         ).trim() || "—";
+      this.savedRunDetailConfigFingerprint =
+        String(
+          snapshot.savedRunDetailConfigFingerprint ??
+            this.savedRunDetailConfigFingerprint ??
+            "—",
+        ).trim() || "—";
       this.savedRunDetailDataset =
         String(
           snapshot.savedRunDetailDataset ?? this.savedRunDetailDataset ?? "—",
@@ -625,6 +761,16 @@ export const useHistoryStore = defineStore("history", {
           snapshot.savedRunDetailValidation ??
             this.savedRunDetailValidation ??
             "—",
+        ).trim() || "—";
+      this.savedRunDetailProvenance =
+        String(
+          snapshot.savedRunDetailProvenance ??
+            this.savedRunDetailProvenance ??
+            "—",
+        ).trim() || "—";
+      this.savedRunDetailLineage =
+        String(
+          snapshot.savedRunDetailLineage ?? this.savedRunDetailLineage ?? "—",
         ).trim() || "—";
       this.savedRunDetailMetricSurface =
         String(
@@ -763,6 +909,9 @@ export const useHistoryStore = defineStore("history", {
       const key = String(field || "").trim();
       const next = String(value || "");
       if (applyVueSelectFieldUpdate(this, key, next)) {
+        if (key === "savedRunCompareSelect") {
+          this.syncSavedRunsView(this.savedSelectedValue);
+        }
         this.source = "vue";
         this.updatedAtUnixMs = Date.now();
       }
@@ -776,9 +925,7 @@ export const useHistoryStore = defineStore("history", {
       const options: HistoryOption[] = [
         {
           value: "",
-          label: filtered.length
-            ? "Select a saved run..."
-            : "No saved runs yet",
+          label: filtered.length ? "Select a saved run..." : "No saved runs yet",
           disabled: false,
         },
       ];
@@ -790,9 +937,7 @@ export const useHistoryStore = defineStore("history", {
         });
       }
 
-      const requestedPath = normalizePath(
-        preferredPath ?? this.savedSelectedValue,
-      );
+      const requestedPath = normalizePath(preferredPath ?? this.savedSelectedValue);
       const selectedPath =
         requestedPath && filtered.some((entry) => entry.path === requestedPath)
           ? requestedPath
@@ -803,16 +948,41 @@ export const useHistoryStore = defineStore("history", {
       this.savedOptions = rawArray(options);
       this.savedRunsVisible = rawArray(filtered);
       this.savedRunCount = this.savedRunsRaw.length;
+      this.compareOptions = buildOverviewCompareOptions(this.savedRunsRaw);
+      this.compareRunCount = Math.max(0, this.compareOptions.length - 1);
+      const validCompareValues = new Set(
+        this.compareOptions.map((option) => normalizeText(option.value)).filter(Boolean),
+      );
+      if (!validCompareValues.has(normalizeText(this.compareSelectedValue))) {
+        this.compareSelectedValue = "";
+      }
       this.savedSelectedValue = selectedPath;
       this.savedSelectedLabel = selectedEntry
         ? savedRunLabel(selectedEntry)
         : "No saved runs";
-      this.savedRunsTagsDraft = selectedEntry
-        ? selectedEntry.tags.join(", ")
-        : "";
+      this.savedRunsTagsDraft = selectedEntry ? selectedEntry.tags.join(", ") : "";
 
       const selectedDetail = selectedEntry
         ? this.savedRunDetailCache[selectedEntry.path]
+        : undefined;
+      this.savedRunCompareOptions = buildSavedRunCompareOptions(
+        filtered,
+        selectedPath,
+      );
+      const requestedComparePath = normalizePath(this.savedRunCompareSelected);
+      const compareSelected =
+        requestedComparePath &&
+        filtered.some(
+          (entry) =>
+            entry.path === requestedComparePath && entry.path !== selectedPath,
+        )
+          ? requestedComparePath
+          : "";
+      this.savedRunCompareSelected = compareSelected;
+      const compareEntry =
+        filtered.find((entry) => entry.path === compareSelected) || null;
+      const compareDetail = compareEntry
+        ? this.savedRunDetailCache[compareEntry.path]
         : undefined;
 
       if (!selectedEntry) {
@@ -821,9 +991,12 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailMeta =
           "Select a run to inspect metadata and settings.";
         this.savedRunDetailStrategy = "—";
+        this.savedRunDetailConfigFingerprint = "—";
         this.savedRunDetailDataset = "—";
         this.savedRunDetailTimeframe = "—";
         this.savedRunDetailValidation = "—";
+        this.savedRunDetailProvenance = "—";
+        this.savedRunDetailLineage = "—";
         this.savedRunDetailMetricSurface = "—";
         this.savedRunDetailMetricSurfaceDetail = "—";
         this.savedRunDetailAdmission = "—";
@@ -839,6 +1012,7 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailMlVerdict = "—";
         this.savedRunDetailMlCandidates = "—";
         this.savedRunDetailParams = "Select a saved run to inspect parameters.";
+        this.savedRunCompareSummary = "-";
         this.savedRunDetailLoadingPath = "";
       } else {
         const strategyKind = normalizeText(
@@ -847,7 +1021,9 @@ export const useHistoryStore = defineStore("history", {
         const csvPath = normalizePath(
           selectedDetail?.csvPath || selectedEntry.csvPath,
         );
-        const timeframe = normalizeText(selectedDetail?.timeframe);
+        const timeframe = normalizeText(
+          selectedDetail?.timeframe || selectedEntry.timeframe,
+        );
         const reportPath = normalizePath(
           selectedDetail?.reportPath || selectedEntry.reportXlsxPath,
         );
@@ -868,6 +1044,15 @@ export const useHistoryStore = defineStore("history", {
         const mlPolicySweepSummary = normalizeText(
           selectedDetail?.mlPolicySweepSummary,
         );
+        const configFingerprint = normalizeText(
+          selectedDetail?.configFingerprint || selectedEntry.configFingerprint,
+        );
+        const provenanceText = formatRouteProvenanceCompact(
+          selectedDetail?.routeProvenance ?? selectedEntry.routeProvenance ?? null,
+        );
+        const lineageText = formatArtifactLineageCompact(
+          selectedDetail?.lineage ?? selectedEntry.lineage ?? null,
+        );
 
         const parts: string[] = [];
         if (selectedEntry.ts) parts.push(`ts=${selectedEntry.ts}`);
@@ -882,11 +1067,14 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailTitle = selectedEntry.ts || "Selected run";
         this.savedRunDetailMeta = `artifact: ${fileBasename(selectedEntry.path) || selectedEntry.path || "unknown"}`;
         this.savedRunDetailStrategy = strategyKind || "—";
+        this.savedRunDetailConfigFingerprint = configFingerprint || "—";
         this.savedRunDetailDataset = fileBasename(csvPath) || csvPath || "—";
         this.savedRunDetailTimeframe = timeframe || "—";
         this.savedRunDetailValidation = hasValidation
           ? "Available"
           : "Not saved";
+        this.savedRunDetailProvenance = provenanceText || "—";
+        this.savedRunDetailLineage = lineageText || "—";
         this.savedRunDetailMetricSurface =
           normalizeText(selectedDetail?.metricSurfaceSummary) || "—";
         this.savedRunDetailMetricSurfaceDetail =
@@ -898,8 +1086,7 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailReport = reportPath
           ? "XLSX available"
           : "Not exported";
-        this.savedRunDetailSize =
-          formatBytesCompact(selectedEntry.bytes) || "—";
+        this.savedRunDetailSize = formatBytesCompact(selectedEntry.bytes) || "—";
         this.savedRunDetailTags = tags.length ? tags.join(", ") : "—";
         this.savedRunDetailMlBundle = mlBundleId || "—";
         this.savedRunDetailMlScoreCache = mlScoreCachePath
@@ -917,6 +1104,33 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailParams =
           normalizeText(selectedDetail?.paramsText) ||
           "Loading parameter snapshot...";
+
+        const selectedTarget =
+          selectedDetail &&
+          buildSavedRunComparisonTarget("saved", selectedEntry, selectedDetail);
+        const compareTarget =
+          compareEntry &&
+          compareDetail &&
+          buildSavedRunComparisonTarget("saved", compareEntry, compareDetail);
+        if (!compareSelected) {
+          this.savedRunCompareSummary =
+            filtered.length > 1
+              ? "Select another saved run to compare against the selected artifact."
+              : "Need another saved run before compare is available.";
+        } else if (!compareEntry) {
+          this.savedRunCompareSummary =
+            "Comparison run not found. Refresh saved runs or choose another artifact.";
+        } else if (!selectedDetail || !compareDetail) {
+          this.savedRunCompareSummary = "Loading compare...";
+        } else if (!selectedTarget || !compareTarget) {
+          this.savedRunCompareSummary =
+            "Compare unavailable for this artifact because request/result data is missing.";
+        } else {
+          this.savedRunCompareSummary = buildRunCompareSummary(
+            selectedTarget,
+            compareTarget,
+          );
+        }
       }
 
       const canMutate = !runtimeRunning();
@@ -933,6 +1147,9 @@ export const useHistoryStore = defineStore("history", {
 
       if (selectedEntry && !selectedDetail) {
         this.loadSavedRunDetail(selectedEntry.path);
+      }
+      if (compareEntry && !compareDetail) {
+        this.loadSavedRunDetail(compareEntry.path);
       }
     },
 
@@ -951,10 +1168,35 @@ export const useHistoryStore = defineStore("history", {
         .then((detail) => {
           this.savedRunDetailCache[nextPath] = {
             strategyKind: normalizeText(detail?.strategyKind),
+            configFingerprint: normalizeText(detail?.configFingerprint || ""),
+            configFingerprintVersion: Number.isFinite(
+              Number(detail?.configFingerprintVersion),
+            )
+              ? Math.floor(Number(detail?.configFingerprintVersion))
+              : null,
             timeframe: normalizeText(detail?.timeframe),
             csvPath: normalizePath(detail?.csvPath || ""),
             reportPath: normalizePath(detail?.reportPath || ""),
             hasValidation: !!detail?.hasValidation,
+            datasetMeta:
+              detail?.datasetMeta && typeof detail.datasetMeta === "object"
+                ? detail.datasetMeta
+                : null,
+            routeProvenance: detail?.routeProvenance ?? null,
+            lineage: detail?.lineage ?? null,
+            optimizationMetricSurface:
+              detail?.optimizationMetricSurface &&
+              typeof detail.optimizationMetricSurface === "object"
+                ? detail.optimizationMetricSurface
+                : null,
+            runReq:
+              detail?.runReq && typeof detail.runReq === "object"
+                ? detail.runReq
+                : null,
+            runRes:
+              detail?.runRes && typeof detail.runRes === "object"
+                ? detail.runRes
+                : null,
             metricSurfaceSummary: normalizeText(
               detail?.metricSurfaceSummary || "",
             ),
@@ -988,9 +1230,10 @@ export const useHistoryStore = defineStore("history", {
           };
           if (
             this.savedRunDetailSeq === seq &&
-            this.savedSelectedValue === nextPath
+            (this.savedSelectedValue === nextPath ||
+              this.savedRunCompareSelected === nextPath)
           ) {
-            this.syncSavedRunsView(nextPath);
+            this.syncSavedRunsView(this.savedSelectedValue);
             this.source = "vue";
             this.updatedAtUnixMs = Date.now();
           }
@@ -998,11 +1241,17 @@ export const useHistoryStore = defineStore("history", {
         .catch((error: unknown) => {
           if (
             this.savedRunDetailSeq !== seq ||
-            this.savedSelectedValue !== nextPath
+            (this.savedSelectedValue !== nextPath &&
+              this.savedRunCompareSelected !== nextPath)
           )
             return;
-          this.savedRunDetailParams =
-            `Failed to load artifact:\n${String(error || "")}`.trim();
+          if (this.savedSelectedValue === nextPath) {
+            this.savedRunDetailParams =
+              `Failed to load artifact:\n${String(error || "")}`.trim();
+          }
+          if (this.savedRunCompareSelected === nextPath) {
+            this.savedRunCompareSummary = `Compare failed: ${String(error || "")}`.trim();
+          }
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         })

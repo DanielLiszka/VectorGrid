@@ -100,13 +100,14 @@ But it is intentionally narrow:
    - make the operating posture explicit
    - make safety actions explicit
    - make session evidence explicit
-2. Decide whether the execution surface should remain settings-mounted or move to a more deliberate dedicated workflow surface.
-3. Add operator-focused controls and state clarity in bounded slices:
+2. Treat live execution as a discrete operating mode, not only a settings-mounted execution panel.
+3. Decide whether the execution surface should remain settings-mounted or move to a more deliberate dedicated workflow surface.
+4. Add operator-focused controls and state clarity in bounded slices:
    - flatten / stop / emergency halt semantics
    - broker/order/position refresh clarity
    - runner recovery and reconnect posture
-4. Add a live-session evidence model so important live actions are inspectable after the fact rather than only visible as transient status text.
-5. Keep success criteria explicit:
+5. Add a live-session evidence model so important live actions are inspectable after the fact rather than only visible as transient status text.
+6. Keep success criteria explicit:
    - stronger safety and diagnostics for the current supported live scope
    - no ambiguity about supported symbols, strategies, broker mode, or runner/feed state
    - no regression in existing dry-run and paper workflows
@@ -148,8 +149,13 @@ Public-repo quality focus:
 
 ## Related Docs
 
-- `REPO_Improvement/09_live/01_execution_command_surface_2026-04-09.md`
-- `REPO_Improvement/09_live/03_execution_ui_state_2026-04-09.md`
-- `REPO_Improvement/09_live/04_alpaca_execution_path_2026-04-09.md`
-- `REPO_Improvement/09_live/05_polygon_live_streams_2026-04-09.md`
+- `REPO_Improvement/09_live/01_execution_command_surface_2026-04-08.md`
+- `REPO_Improvement/09_live/02_execution_workspace_ux_2026-04-09.md`
+- `REPO_Improvement/09_live/06_broker_connectivity_2026-04-09.md`
+- `REPO_Improvement/09_live/07_live_candle_stream_data_2026-04-08.md`
 - `REPO_Improvement/09_live/12_out_execution_monitoring_2026-04-09.md`
+- `06_live_execution_operator_safety_controls_2026-04-11.md`
+- `07_live_execution_session_audit_trail_2026-04-11.md`
+- `08_live_execution_recovery_and_reconnect_2026-04-11.md`
+- `09_live_mode_discrete_surface_promotion_2026-04-11.md`
+- `10_live_execution_broker_position_order_reconciliation_2026-04-11.md`
