@@ -134,20 +134,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the representative non-options screen set for manual accessibility review.
-- [ ] Define the keyboard-only task path for each selected surface.
-- [ ] Define the accessible-name and status-message review points for each selected surface.
-- [ ] Define dense-table and summary-comprehension review points for result-heavy screens.
-- [ ] Define when browser review is enough and when desktop review is also required.
-- [ ] Add a simple review log format so manual findings are captured consistently.
-- [ ] Tie high-risk UI changes to the manual review matrix before release.
-- [ ] Keep automated a11y smoke as the fast gate, not the full gate.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Define the representative non-options screen set for manual accessibility review.
+- [x] Define the keyboard-only task path for each selected surface.
+- [x] Define the accessible-name and status-message review points for each selected surface.
+- [x] Define dense-table and summary-comprehension review points for result-heavy screens.
+- [x] Define when browser review is enough and when desktop review is also required.
+- [x] Add a simple review log format so manual findings are captured consistently.
+- [x] Tie high-risk UI changes to the manual review matrix before release.
+- [x] Keep automated a11y smoke as the fast gate, not the full gate.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -166,6 +166,36 @@ Public-repo quality focus:
 - do not delay safe bug fixes on a full manual sweep when a narrower matrix slice is sufficient
 - preserve existing automated accessibility checks; this plan augments them
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a repo-owned manual accessibility review artifact rather than product-code changes.
+- The new matrix now lives at:
+  - `web/e2e/accessibility-review-matrix.md`
+- The matrix defines the missing process contract this item called for:
+  - representative non-options review slices across shell orientation, overlays, dense result surfaces, validation/history reopen flows, and ML/live status surfaces
+  - keyboard-only task paths for each slice
+  - accessible-name, status-message, and dense-surface readability review points
+  - the browser-versus-desktop review boundary for native-shell behavior
+  - a simple review-log format with a concrete output location: `output/manual_a11y_review/<YYYY-MM-DD>_<slice>.md`
+- Cross-doc sync added the new matrix to the current verification navigation surfaces:
+  - `web/e2e/browser/README.md`
+  - `web/e2e/desktop/README.md`
+  - `REPO_MAP.md`
+  - `RELEASE.md`
+- Fresh acceptance evidence for this closure:
+  - `npm --prefix web run a11y:smoke`
+  - `npm --prefix web run test:browser:ux`
+- The passing automation confirms that the fast gate beneath this matrix still works:
+  - the axe-based browser smoke passed
+  - the representative browser keyboard/focus journeys passed
+- This closure is intentionally scoped to defining and integrating the manual-review matrix itself.
+  - It does **not** claim that every non-options screen received a full release-style manual accessibility sweep in this session.
+  - Instead, it makes that future review repeatable, discoverable, and tied to high-risk UI changes before release.
+- Environment/toolchain context from the fresh verification session:
+  - Node: `v24.4.1`
+  - npm: `11.6.4`
+  - browser UX runner: Playwright Chromium via `npm --prefix web run test:browser:ux`
 
 ## Related Docs
 

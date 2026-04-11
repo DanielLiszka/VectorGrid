@@ -30,7 +30,7 @@ This ledger is intentionally coarse:
 ## Current Totals
 
 - planned implementation-plan documents tracked here: `356`
-- current completed items: `340`
+- current completed items: `341`
 - current in-progress items: `0`
 
 ## 00 Meta
@@ -426,7 +426,7 @@ This ledger is intentionally coarse:
 - [x] [10_tests_perf/54_campaign_preload_vram_perf_2026-04-09.md](../10_tests_perf/54_campaign_preload_vram_perf_2026-04-09.md)
 - [x] [10_tests_perf/55_headless_workflow_bins_2026-04-09.md](../10_tests_perf/55_headless_workflow_bins_2026-04-09.md)
 - [x] [10_tests_perf/56_static_analysis_quality_gates_2026-04-09.md](../10_tests_perf/56_static_analysis_quality_gates_2026-04-09.md)
-- [ ] [10_tests_perf/57_manual_a11y_review_matrix_2026-04-09.md](../10_tests_perf/57_manual_a11y_review_matrix_2026-04-09.md)
+- [x] [10_tests_perf/57_manual_a11y_review_matrix_2026-04-09.md](../10_tests_perf/57_manual_a11y_review_matrix_2026-04-09.md)
 
 ## 11 Docs Ops
 
