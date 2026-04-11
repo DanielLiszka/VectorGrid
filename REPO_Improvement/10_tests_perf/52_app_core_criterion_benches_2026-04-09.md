@@ -1,6 +1,6 @@
 # App Core Criterion Benches Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -28,7 +28,7 @@ The app-core crate already has a substantial Criterion bench inventory. Most of 
 
 ## Current Code Surface
 
-- `crates/app_core/Cargo.toml` declares the current Criterion benches and therefore the authoritative inventory source.
+- `crates/app_core/Cargo.toml` declares most of the current Criterion benches, but Cargo bench discovery on the current tree also includes runnable bench-source files under `crates/app_core/benches/` that are not listed as explicit `[[bench]]` entries.
 - `crates/app_core/benches/double_ma_opt.rs`, `dynamic_strategy_cpu.rs`, and `composite_validation_workflow.rs` are representative non-options bench surfaces.
 - `crates/app_core/benches/meta_select_workflow.rs`, `double_ma_validation_workflow.rs`, and related files extend the non-options bench inventory.
 - `target/criterion/` stores the current local bench outputs that gates and compare flows consume.
@@ -39,6 +39,52 @@ The app-core crate already has a substantial Criterion bench inventory. Most of 
 - `cargo bench -p ta_app_core --bench dynamic_strategy_cpu`
 - `cargo bench -p ta_app_core --bench composite_validation_workflow`
 - inspection of `target/criterion/` outputs for representative non-options benches
+
+## Active Bench Inventory
+
+- explicit non-options `[[bench]]` entries in `crates/app_core/Cargo.toml`:
+  - `double_ma_opt`
+  - `double_ma_metrics`
+  - `composite_mo_opt`
+  - `composite_cpu_opt`
+  - `asr_opt`
+  - `vcc_opt`
+  - `vemr_opt`
+  - `vcet_opt`
+  - `rocb_opt`
+  - `mkcs_opt`
+  - `gpu_native_expansion_opt`
+  - `dynamic_strategy_cpu`
+  - `composite_validation_workflow`
+  - `double_ma_validation_workflow`
+  - `double_ma_followup_workflow`
+  - `meta_select_workflow`
+  - `e2e_workflow_ml`
+- additional runnable non-options bench targets discovered from `crates/app_core/benches/` on the current tree:
+  - `ml_signal_workflow`
+  - `ml_signal_validation`
+- declared but out-of-scope options benches:
+  - `options_expression_candidate_compile`
+  - `options_expression_summary_compile`
+  - `options_expression_cpu_score`
+  - `options_expression_gpu_score`
+- out-of-scope options/support bench-source targets present under `crates/app_core/benches/`:
+  - `options_expression_bench_support.rs`
+
+## Representative Mapping
+
+- `double_ma_opt`
+  - primary engine optimization inventory and the main Criterion source behind CPU/GPU perf-gate case paths
+- `dynamic_strategy_cpu`
+  - supports the CPU perf-gate dynamic-strategy ratio lane
+- `composite_validation_workflow`
+  - representative validation-workflow Criterion surface for composite strategy review
+- `double_ma_validation_workflow`
+  - double-MA validation workflow Criterion lane
+- `meta_select_workflow`
+  - meta-selection workflow Criterion lane
+- `e2e_workflow_ml`
+  - ML-oriented end-to-end workflow Criterion lane with a distinct investigative purpose rather than direct gate authority
 
 ## Strengths Already Present
 
@@ -87,18 +133,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory the current non-options `[[bench]]` entries.
-- [ ] Mark out-of-scope options benches explicitly so they are not mixed into this program.
-- [ ] Map representative benches to the gates or docs that depend on them.
-- [ ] Keep the Criterion inventory plan non-options only.
-- [ ] Review whether each bench still serves a distinct investigative purpose.
-- [ ] Avoid adding new benches without first checking the current inventory.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory the current non-options `[[bench]]` entries.
+- [x] Mark out-of-scope options benches explicitly so they are not mixed into this program.
+- [x] Map representative benches to the gates or docs that depend on them.
+- [x] Keep the Criterion inventory plan non-options only.
+- [x] Review whether each bench still serves a distinct investigative purpose.
+- [x] Avoid adding new benches without first checking the current inventory.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +161,31 @@ Public-repo quality focus:
 - prefer reusing and clarifying existing benches before adding new ones
 - if a bench is obsolete, remove it deliberately and update dependent docs or scripts
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Code changes were not required; this item closed on inventory clarification plus fresh representative bench-target verification.
+- Verified the authoritative inventory by inspecting:
+  - `crates/app_core/Cargo.toml`
+  - `crates/app_core/benches/`
+  - `target/criterion/`
+- Fresh representative compile-only bench verification:
+  - `cargo bench -p ta_app_core --bench double_ma_opt --no-run`
+  - `cargo bench -p ta_app_core --bench dynamic_strategy_cpu --no-run`
+  - `cargo bench -p ta_app_core --bench composite_validation_workflow --no-run`
+  - `cargo bench -p ta_app_core --bench ml_signal_workflow --no-run`
+  - `cargo bench -p ta_app_core --bench ml_signal_validation --no-run`
+- Representative local `target/criterion/` outputs present during closeout included:
+  - `double_ma_cpu_sma_sma_200k`
+  - `double_ma_gpu_kernel_alma_alma_200k`
+  - `dynamic_strategy_cpu_full_run_2k`
+  - `composite_validate_workflow_50k_32candidates`
+- Inventory notes:
+  - the four `options_expression_*` benches remain explicitly out of scope for this non-options plan
+  - `ml_signal_workflow` and `ml_signal_validation` are currently runnable non-options bench targets even though they are not declared as explicit `[[bench]]` entries in `Cargo.toml`
+- `REPO_MAP.md` required a small sync update so its app-core bench list includes `vcet_opt`.
+- Representative bench compilation still emits existing workspace warnings in `ta_app_core`, but those warnings are broader cleanup debt rather than blockers for this inventory closeout.
 
 ## Related Docs
 

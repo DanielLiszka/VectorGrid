@@ -78,7 +78,7 @@ This release line includes the completed frontend migration from the legacy stat
 ### Known deltas
 
 - Frontend source/build now lives under `web/` and is built into `web/dist`.
-- Tauri config points to `web/dist` (`src-tauri/tauri.conf.json` and root `tauri.conf.json`).
+- Tauri config points to `web/dist`, with `src-tauri/tauri.conf.json` using `../web/dist` and the root `tauri.conf.json` mirror using `./web/dist`.
 - UI runtime is now Vue-owned; legacy frontend runtime files under `web/src/legacy/*` have been retired.
 - Task feedback has been expanded with a global task center (progress, cancellation, timeline, completion/failure toasts).
 - Large result surfaces use lazy mounting and row-window virtualization to reduce render overhead.
@@ -92,6 +92,8 @@ This release line includes the completed frontend migration from the legacy stat
 - `npm --prefix web run parity`
 - `npm --prefix web run parity:outputs`
 - `powershell -ExecutionPolicy Bypass -File scripts/run_workflow_gate.ps1 -Mode candidate`
+
+For high-risk non-options UI changes, pair the automated accessibility smoke with the representative manual review slices in `web/e2e/accessibility-review-matrix.md`. Browser review is the default; add desktop review when the change affects native titlebar, geometry, OS notifications, or open/reveal path behavior.
 
 ### Compatibility notes
 

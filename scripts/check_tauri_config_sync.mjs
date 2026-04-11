@@ -10,16 +10,24 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'))
 }
 
-function stableWindowShape(windowConfig) {
-  return {
-    label: windowConfig?.label ?? null,
-    title: windowConfig?.title ?? null,
-    create: windowConfig?.create ?? null,
-    width: windowConfig?.width ?? null,
-    height: windowConfig?.height ?? null,
-    transparent: windowConfig?.transparent ?? null,
-    visible: windowConfig?.visible ?? null,
+function stableValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(stableValue)
   }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, stableValue(value[key])]),
+    )
+  }
+
+  return value ?? null
+}
+
+function stableWindowShape(windowConfig) {
+  return stableValue(windowConfig ?? {})
 }
 
 function comparableShape(config) {

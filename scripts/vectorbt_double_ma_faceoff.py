@@ -772,6 +772,7 @@ def run_faceoff(args: argparse.Namespace) -> dict[str, object]:
         "best": best,
         "environment": {
             "python": sys.version.split()[0],
+            "executable": sys.executable,
             "platform": platform.platform(),
             "vectorbt": getattr(vbt, "__version__", "unknown"),
             "numpy": np.__version__,

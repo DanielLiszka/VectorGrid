@@ -150,12 +150,21 @@ For contributor-facing routing, verification ownership, and the broader workflow
 
 ## Reproduce The Benchmark
 
-Run the real-workflow `250,000`-pair warm faceoff scenario:
+Prepare the dedicated faceoff environment before refreshing any reusable VectorBT comparison artifact:
+
+```powershell
+py -m venv .venv-vectorbt-faceoff
+.\.venv-vectorbt-faceoff\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-vectorbt-faceoff\Scripts\python.exe -m pip install -r scripts/requirements-vectorbt-faceoff.lock.txt
+```
+
+Run the real-workflow `250,000`-pair warm faceoff scenario with the same interpreter explicitly:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1 `
   -ScenarioPath scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json `
-  -OutDir target/vectorbt_vs_vectorgrid_faceoff_250k_real_workflow
+  -OutDir target/vectorbt_vs_vectorgrid_faceoff_250k_real_workflow `
+  -PythonExe .\.venv-vectorbt-faceoff\Scripts\python.exe
 ```
 
 Scenario file:
@@ -163,6 +172,13 @@ Scenario file:
 - [scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json](scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json)
 
 The saved artifacts currently reflected in the README are historical snapshots. Rerun the matching scenario before repeating the numbers as current.
+
+Each faceoff run now writes the lockfile hash plus same-interpreter Python provenance into the output directory and `summary.json`:
+
+- `python-freeze.txt`
+- `python-pip-version.txt`
+- `summary.json` `environment.python.requirements_lock`
+- `summary.json` `environment.python.pip`
 
 Those saved artifacts were written to:
 

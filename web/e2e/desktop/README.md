@@ -36,6 +36,8 @@ npm --prefix web run test:desktop:smoke
 
 Use the browser UX suite for deterministic mocked-Tauri interaction proof, and use desktop smoke for real-shell/native verification.
 
+For manual accessibility review, pair these desktop flows with the representative slices in [accessibility-review-matrix.md](../accessibility-review-matrix.md). Desktop review is only required when the touched change affects native-shell or OS-integrated behavior.
+
 Run only desktop smoke:
 
 ```powershell
@@ -84,6 +86,7 @@ Desktop smoke should continue to own:
 - shell readiness in the native runtime
 - titlebar and native window-control presence
 - workspace, command-palette, task-center, and settings reachability in the real shell
+- native-shell portions of the manual accessibility review matrix when titlebar, geometry, notifications, or open/reveal path flows change
 
 Desktop smoke should not become the primary proof layer for:
 

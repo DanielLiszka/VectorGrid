@@ -1,6 +1,6 @@
 # VectorGrid Internal Benchmark Boundaries Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -38,6 +38,95 @@ The repo already has a rich internal timing vocabulary scattered across scripts 
 - inspection of summary JSON emitted by the various gates and helper bins
 - manual cross-check of README or doc claims against those boundary labels
 - rerunning the specific lane when a boundary label looks stale or ambiguous
+
+## Active Boundary Inventory
+
+- `app-path`
+  - main owners:
+    - `src-tauri/src/bin/ta_app_path_faceoff.rs`
+    - `scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1`
+  - meaning:
+    - same-thread harness using `AppState` plus a blocking optimizer call, not the full Tauri command path
+  - authority use:
+    - valid for saved warm faceoff snapshots when the scenario and artifact date are explicit
+- `app-path-fresh-state`
+  - main owner:
+    - `src-tauri/src/bin/ta_app_path_faceoff.rs`
+  - meaning:
+    - fresh `AppState` plus dataset load/resample and blocking optimizer call per trial
+  - authority use:
+    - helper comparison boundary, not the main README snapshot surface
+- `CliColdWallClock`
+  - main owner:
+    - `scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1`
+  - meaning:
+    - external VectorGrid CLI process wall-clock timing for a cold invocation
+  - authority use:
+    - comparison/helper lane, not the warm app-path README snapshot
+- `PythonProcessWallClock`
+  - main owners:
+    - `scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1`
+    - `scripts/vectorbt_double_ma_faceoff.py`
+  - meaning:
+    - external Python/VectorBT workflow process wall-clock timing
+  - authority use:
+    - valid only for explicit VectorBT faceoff comparisons with captured interpreter provenance
+- `workflow-regression`
+  - main owners:
+    - `src-tauri/src/bin/ta_workflow_regression.rs`
+    - `scripts/run_workflow_gate.ps1`
+    - `scripts/run_cpu_perf_gate.ps1`
+  - meaning:
+    - total deterministic workflow wall time including optimize, validate, meta-select, and holdout, with explicit exclusions for UI hydration and analysis-command latency
+  - authority use:
+    - authoritative workflow gate boundary
+- `Criterion`
+  - main owners:
+    - `scripts/run_cpu_perf_gate.ps1`
+    - `scripts/run_gpu_perf_gate.ps1`
+    - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
+    - `scripts/run_vectorgrid_double_ma_faceoff.ps1`
+  - meaning:
+    - Criterion bench-profile estimate for a deterministic optimization case or ratio
+  - authority use:
+    - authoritative for the Criterion-backed gate cases; not interchangeable with warm faceoff or workflow-regression figures
+- `RunnerSteadyStateWallClock`
+  - main owner:
+    - `scripts/run_gpu_perf_gate.ps1`
+  - meaning:
+    - release-built `profile_gpu_dynamic_runner` steady-state wall-clock ratio between dynamic-strategy off and on runs
+  - authority use:
+    - authoritative only for that specialized dynamic-strategy sub-check, not for general product benchmark claims
+- `route-matrix`
+  - main owner:
+    - `src-tauri/src/bin/ta_profile_route_matrix.rs`
+  - meaning:
+    - helper-bin route profiling boundary
+  - authority use:
+    - helper-bin only; not a public perf gate
+- `validation-cost`
+  - main owner:
+    - `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
+  - meaning:
+    - helper-bin validation-cost profiling boundary
+  - authority use:
+    - helper-bin only; not a public perf gate
+- `process-memory-sampling`
+  - main owners:
+    - `scripts/capture_optimization_memory.ps1`
+    - `scripts/baselines/ui_capture/optimization_memory_metrics.json`
+  - meaning:
+    - peak process working-set/private-byte sampling over a synthetic workflow run
+  - authority use:
+    - telemetry-only and explicitly non-authoritative as a perf gate
+- `headless-output-parity`
+  - main owners:
+    - `scripts/run_output_parity_check.mjs`
+    - `scripts/headless_output_parity_pack.json`
+  - meaning:
+    - deterministic headless report generation for structural JSON/XLSX parity
+  - authority use:
+    - supplemental verification only; not a perf gate
 
 ## Strengths Already Present
 
@@ -86,18 +175,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory the active internal timing boundaries and their canonical names.
-- [ ] Map each boundary to its main scripts or bins.
-- [ ] Keep this boundary taxonomy non-options only.
-- [ ] Review benchmark prose and release notes against the canonical vocabulary.
-- [ ] Mark telemetry-only and helper-bin boundaries explicitly as non-authoritative.
-- [ ] Avoid introducing new ad hoc boundary names without need.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory the active internal timing boundaries and their canonical names.
+- [x] Map each boundary to its main scripts or bins.
+- [x] Keep this boundary taxonomy non-options only.
+- [x] Review benchmark prose and release notes against the canonical vocabulary.
+- [x] Mark telemetry-only and helper-bin boundaries explicitly as non-authoritative.
+- [x] Avoid introducing new ad hoc boundary names without need.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +203,28 @@ Public-repo quality focus:
 - prefer documentation and review discipline over new runtime complexity
 - if a truly new boundary is added, add it explicitly to the taxonomy and surrounding docs
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Code changes were not required; the active timing-boundary vocabulary was already present in the helper bins, gates, and saved artifacts.
+- Verified active boundary labels from current code and artifacts:
+  - `src-tauri/src/bin/ta_app_path_faceoff.rs` emits `app-path` and `app-path-fresh-state`
+  - `src-tauri/src/bin/ta_workflow_regression.rs` emits `workflow-regression` plus explicit exclusions
+  - `scripts/run_cpu_perf_gate.ps1` and `scripts/run_gpu_perf_gate.ps1` use `Criterion` and the specialized `RunnerSteadyStateWallClock` dynamic-strategy ratio boundary
+  - `scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1` uses `app-path`, `CliColdWallClock`, and `PythonProcessWallClock`
+  - `scripts/baselines/ui_capture/optimization_memory_metrics.json` marks `process-memory-sampling` as supplemental telemetry only
+  - `scripts/headless_output_parity_pack.json` marks `headless-output-parity` as supplemental verification only
+- Artifact cross-check evidence:
+  - `target/vectorbt_vs_vectorgrid_faceoff_verify_smoke_2026-04-10/legacy_58300_search_only-search_only_legacy/summary.json`
+  - `target/workflow_regression_summary.json`
+  - `target/gpu_alma_contract_rows_perf_summary.json`
+  - `scripts/baselines/ui_capture/optimization_memory_metrics.json`
+  - `scripts/headless_output_parity_pack.json`
+- README benchmark prose already matched the canonical vocabulary:
+  - README historical benchmark snapshots still describe the public numbers as warm `app-path` saved artifacts, not Criterion or perf-gate outputs
+  - the Criterion anchor remains explicitly called out as a tighter engine benchmark boundary rather than being merged into the warm faceoff story
+- No `README.md`, `REPO_MAP.md`, or release-note edit was required for closure because the existing prose already aligned with the code/artifact vocabulary.
 
 ## Related Docs
 

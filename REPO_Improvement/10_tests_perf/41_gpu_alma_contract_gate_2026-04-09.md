@@ -1,6 +1,6 @@
 # GPU ALMA Contract Gate Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact reason this ALMA lane exists separately from the main GPU gate.
-- [ ] Document its baseline location and refresh policy.
-- [ ] Keep the lane non-options only.
-- [ ] Avoid using ALMA-only results for repo-wide GPU claims.
-- [ ] Cross-link the lane to the main GPU gate and profiling playbooks.
-- [ ] Record the hardware/driver context before trusting a refreshed baseline.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the exact reason this ALMA lane exists separately from the main GPU gate.
+- [x] Document its baseline location and refresh policy.
+- [x] Keep the lane non-options only.
+- [x] Avoid using ALMA-only results for repo-wide GPU claims.
+- [x] Cross-link the lane to the main GPU gate and profiling playbooks.
+- [x] Record the hardware/driver context before trusting a refreshed baseline.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,35 @@ Public-repo quality focus:
 - prefer clearer provenance over more thresholds
 - retire the lane only if the underlying workload becomes obsolete, not because it is narrow
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a small reliability hardening pass plus fresh candidate verification of the specialized ALMA lane.
+- The implementation changes stayed inside the benchmarking harness surfaces that own this lane:
+  - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
+  - `scripts/run_gpu_perf_gate.ps1`
+- The hardening addressed a real evidence problem for this specialized lane:
+  - the main GPU gate's custom-case exact-path flow required a pre-existing `Criterion` estimates file, which made the ALMA wrapper depend on stale case-local artifacts
+  - the ALMA wrapper now clears the case-local `target/criterion/...` directory before each focused case run so the recorded `new/estimates.json` belongs to the current measurement
+  - the ALMA aggregate summary now records authority scope, baseline path, candidate-vs-baseline means, allowed budget, pass/fail, and GPU identity instead of only the raw candidate means
+- Fresh acceptance evidence for this closure:
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
+- Fresh verified artifacts:
+  - aggregate summary: `target/gpu_alma_contract_rows_perf_summary.json`
+  - per-case summaries:
+    - `target/gpu_alma_contract_rows_perf/auto.json`
+    - `target/gpu_alma_contract_rows_perf/full17.json`
+    - `target/gpu_alma_contract_rows_perf/trade22.json`
+- Hardware and driver context captured by the passing summaries:
+  - GPU: `NVIDIA GeForce RTX 4090`
+  - driver: `595.71`
+- The passing candidate summary kept this lane explicitly subordinate to the main GPU gate and passed all three ALMA-specific cases against the checked-in baselines:
+  - `auto`: `65.552367 ms` vs baseline `65.617356 ms`
+  - `full17`: `67.481057 ms` vs baseline `70.551114 ms`
+  - `trade22`: `68.405214 ms` vs baseline `67.362288 ms`
+- No baseline refresh was performed. The checked-in baseline directory remains:
+  - `scripts/baselines/gpu_alma_contract_rows/`
+- No `README.md` or `REPO_MAP.md` update was required because both already described the ALMA lane as a specialized supplemental gate rather than the default GPU authority.
 
 ## Related Docs
 

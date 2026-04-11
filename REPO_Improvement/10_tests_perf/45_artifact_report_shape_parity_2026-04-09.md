@@ -1,6 +1,6 @@
 # Artifact Report Shape Parity Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -87,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which artifact types receive which kind of shape check.
-- [ ] Document the representative sample set and its limitations.
-- [ ] Keep structural parity non-options only.
-- [ ] Cross-link shape parity to richer workbook/report tests.
-- [ ] Review sample representativeness periodically.
-- [ ] Avoid conflating container validity with analyst usefulness.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document which artifact types receive which kind of shape check.
+- [x] Document the representative sample set and its limitations.
+- [x] Keep structural parity non-options only.
+- [x] Cross-link shape parity to richer workbook/report tests.
+- [x] Review sample representativeness periodically.
+- [x] Avoid conflating container validity with analyst usefulness.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +115,36 @@ Public-repo quality focus:
 - prefer better explanation over more exhaustive but low-signal shape checks
 - if semantic drift becomes common, add targeted deeper tests rather than overstretching the shape checker
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh verification of the existing layered report-shape parity model rather than a checker or sample change.
+- The current structural checker responsibilities remain intentionally coarse and were revalidated in place:
+  - JSON artifacts: recursive type/key/array-shape comparison
+  - CSV artifacts: header and column-count shape comparison
+  - XLSX artifacts: zip signature, required container markers, and coarse size-ratio checks
+- The representative sample manifest remains the checked-in sample lineage source:
+  - `scripts/baselines/samples/manifest.json`
+  - current representative outputs:
+    - `top_rows.csv`
+    - `validation_shortlist.csv`
+    - `run_artifact.json`
+    - `batch_summary.json`
+    - `report.json`
+    - `report.xlsx`
+- Fresh acceptance evidence for this closure:
+  - `node scripts/check_output_parity.mjs --pairs scripts/output_parity_pairs.json`
+  - `node scripts/run_output_parity_check.mjs --pack scripts/headless_output_parity_pack.json --pairs scripts/output_parity_pairs.json`
+  - `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+- Verified results on the current tree:
+  - direct structural parity checker: `Output parity check passed for 2 pair(s).`
+  - full regeneration plus parity: JSON/XLSX outputs regenerated and structural parity passed for `2` pairs
+  - workbook integration suite: `15` tests passed
+- This closure intentionally preserved the layered model:
+  - fast structural parity on representative JSON/XLSX artifacts
+  - deeper workbook/report assertions in `src-tauri/tests/validation_xlsx_report_tests.rs`
+  - manual artifact review only as a follow-up when the automated layers flag suspicious shape changes
+- No sample-manifest refresh or checker change was required for this closure. The current sample set stayed representative enough for structural parity, while remaining explicitly insufficient as a standalone semantic correctness proof.
 
 ## Related Docs
 

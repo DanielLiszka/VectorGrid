@@ -49,6 +49,12 @@ New-Item -ItemType Directory -Force -Path $BaselineDir | Out-Null
 $results = @()
 foreach ($spec in $specs) {
   Write-Host "Running ALMA contract-row GPU perf gate for $($spec.name)..."
+  $criterionCaseDir = Split-Path -Parent (Split-Path -Parent $spec.criterion_estimates_path)
+  if (Test-Path $criterionCaseDir) {
+    # Force a fresh Criterion case artifact for this focused lane instead of
+    # inheriting potentially stale case-local output from an earlier run.
+    Remove-Item -Recurse -Force $criterionCaseDir
+  }
   & $gateScript `
     -Mode $Mode `
     -BaselinePath $spec.baseline_path `
@@ -61,22 +67,67 @@ foreach ($spec in $specs) {
 
   $summary = Get-Content -Raw $spec.out_path | ConvertFrom-Json
   $criterion = if ($summary.PSObject.Properties.Name -contains "criterion") { $summary.criterion } else { $summary }
+  $baselineCriterion = $null
+  $candidateMeanMs = [double]$criterion.mean_ms
+  $baselineMeanMs = $null
+  $allowedMeanMs = $null
+  $deltaPct = $null
+  $casePass = $null
+  if ($Mode -eq "candidate" -and (Test-Path $spec.baseline_path)) {
+    $baselineSummary = Get-Content -Raw $spec.baseline_path | ConvertFrom-Json
+    $baselineCriterion = if ($baselineSummary.PSObject.Properties.Name -contains "criterion") {
+      $baselineSummary.criterion
+    } else {
+      $baselineSummary
+    }
+    $baselineMeanMs = [double]$baselineCriterion.mean_ms
+    $allowedMeanMs = [math]::Round($baselineMeanMs * (1.0 + ($RegressionPct / 100.0)), 6)
+    if ($baselineMeanMs -gt 0.0) {
+      $deltaPct = [math]::Round((($candidateMeanMs - $baselineMeanMs) / $baselineMeanMs) * 100.0, 6)
+    }
+    $casePass = $candidateMeanMs -le $allowedMeanMs
+  }
   $results += [ordered]@{
     name = $spec.name
+    case_id = $criterion.id
+    authority_scope = "specialized_alma_contract_rows"
+    authority_note = "Specialized ALMA contract-row GPU perf lane; not the default PR perf authority."
+    criterion_summary_json = $spec.out_path
+    baseline_path = $spec.baseline_path
     bench_filter = $criterion.bench_filter
+    timing_boundary = $criterion.timing_boundary
+    timing_boundary_note = $criterion.timing_boundary_note
+    build_profile = $criterion.build_profile
+    candidate_mean_ms = $candidateMeanMs
+    baseline_mean_ms = $baselineMeanMs
+    allowed_mean_ms = $allowedMeanMs
+    delta_pct = $deltaPct
+    pass = $casePass
     criterion_mean_ms = $criterion.mean_ms
     criterion_mean_ci_lower_ms = $criterion.mean_ci_lower_ms
     criterion_mean_ci_upper_ms = $criterion.mean_ci_upper_ms
     criterion_median_ms = $criterion.median_ms
     criterion_estimates_json = $criterion.estimates_json
     gpu = $summary.gpu
+    gpu_info = $summary.gpu_info
   }
 }
 
 $aggregate = [ordered]@{
+  schema_version = 1
   generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
   mode = $Mode
+  authority_scope = "specialized_alma_contract_rows"
+  authority_note = "Specialized ALMA contract-row GPU perf lane; not the default PR perf authority."
+  baseline_dir = (Resolve-Path $BaselineDir).Path
+  main_gpu_gate_script = (Resolve-Path $gateScript).Path
   regression_pct = $RegressionPct
+  benchmark_count = $results.Count
+  all_cases_pass = if ($Mode -eq "candidate") {
+    @($results | Where-Object { $_.pass -eq $false }).Count -eq 0
+  } else {
+    $null
+  }
   benchmarks = $results
 }
 

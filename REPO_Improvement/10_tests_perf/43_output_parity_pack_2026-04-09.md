@@ -1,6 +1,6 @@
 # Output Parity Pack Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document each field in the current parity pack and why it matters.
-- [ ] Document how the pack relates to the pair registry and checker.
-- [ ] Keep the parity pack non-options only.
-- [ ] Preserve the supplemental timing-boundary note and output-path clarity.
-- [ ] Review pack diffs carefully before updating related baselines.
-- [ ] Avoid expanding the pack into a generic scenario catalog without governance.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document each field in the current parity pack and why it matters.
+- [x] Document how the pack relates to the pair registry and checker.
+- [x] Keep the parity pack non-options only.
+- [x] Preserve the supplemental timing-boundary note and output-path clarity.
+- [x] Review pack diffs carefully before updating related baselines.
+- [x] Avoid expanding the pack into a generic scenario catalog without governance.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,36 @@ Public-repo quality focus:
 - add new packs only if a genuinely separate parity lane is needed
 - prefer explicit versioning over silent reinterpretation of pack fields
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh verification of the existing parity-pack contract rather than a pack or producer change.
+- The current checked-in pack fields were revalidated in place:
+  - `schema_version: 1`
+  - `timing_boundary: headless-output-parity`
+  - `timing_boundary_note: Deterministic ta_headless_validate report generation for structural JSON/XLSX parity. Supplemental verification only; not a perf gate.`
+  - `build_profile: dev`
+  - `package: ta_desktop_demo_app`
+  - `bin: ta_headless_validate`
+  - output paths under `_write_test/headless_reports/`
+  - the fixed non-options CLI argument list targeting the CPU headless validation path on `data/AAPL.csv`
+- Fresh acceptance evidence for this closure:
+  - `node scripts/run_output_parity_check.mjs --pack scripts/headless_output_parity_pack.json --pairs scripts/output_parity_pairs.json`
+- Fresh verified artifacts:
+  - `_write_test/headless_reports/AAPL_headless_current.json`
+  - `_write_test/headless_reports/AAPL_headless_current.xlsx`
+  - `_write_test/headless_reports/AAPL_headless_current.parity_manifest.json`
+- The generated parity manifest preserved the pack contract details that matter for stewardship:
+  - pack path: `scripts/headless_output_parity_pack.json`
+  - pairs path: `scripts/output_parity_pairs.json`
+  - timing boundary: `headless-output-parity`
+  - build profile: `dev`
+  - verification scope: `json_xlsx_structural_parity`
+- The fresh run kept this pack explicitly supplemental and non-performance-authoritative while still proving the intended structural workflow:
+  - headless producer executed successfully through `cargo run -p ta_desktop_demo_app --bin ta_headless_validate -- ...`
+  - JSON and XLSX outputs were regenerated at the expected paths
+  - structural parity check passed for `2` pair(s)
+- No pack edit, pair-registry edit, or adjacent doc update was required because the pack fields, output paths, and pair-registry relationship remained correct on the current tree.
 
 ## Related Docs
 

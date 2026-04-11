@@ -98,7 +98,7 @@ Public-repo quality focus:
 - [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
 - [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 - [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
-- [ ] Re-close only after a current `test:desktop:geometry` run proves restore-to-original-geometry for position as well as size on the real desktop harness.
+- [x] Re-close only after a current `test:desktop:geometry` run proves restore-to-original-geometry for position as well as size on the real desktop harness.
 
 ## Verification Plan
 
@@ -118,28 +118,32 @@ Public-repo quality focus:
 
 ## Execution Notes
 
-- Reopened on 2026-04-10 after a fresh desktop geometry run showed that restore-to-original-geometry is still not proven for position on the current harness.
-- The spec continues to pass the size/usability portion of the journey:
-  - resize to a deterministic target still lands within the configured width/height tolerance (`24px`)
-  - the shell remains usable after resize
-  - settings still opens after the resize step
-- The unresolved gap is restore position:
-  - the original window position at run start was `x=2973`, `y=2245`
-  - after the resize command, both WebDriver `getWindowRect()` and page-level `screenX/screenY` reported `x=5946`, `y=4490`
-  - reissuing the original rectangle in the restore step left the window at `x=5946`, `y=4490`
-  - that means this doc cannot stay closed while its scope still claims restore-to-original-geometry coverage
-- The geometry suite remains explicitly opt-in:
-  - `test:desktop:geometry` remains the focused verification command
-  - `test:desktop:smoke` remains the stable default suite and does not include geometry
+- This item closed on a small desktop-harness hardening pass that stops trusting raw WebDriver `x/y` after resize on Windows for restore-position proof.
+- The implementation changes stayed inside the geometry smoke surface:
+  - `web/e2e/desktop/specs/desktop-window-geometry.spec.ts`
+  - `web/e2e/desktop/support/nativeWindowGeometry.ts`
+- The fix kept the existing scope and default-suite posture intact:
+  - resize-to-target still uses the existing WebDriver width/height tolerance checks
+  - shell-usability and settings reachability after resize are unchanged
+  - `test:desktop:geometry` remains opt-in and `test:desktop:smoke` remains the stable default suite
+- The hardening addressed the real reopen gap from the earlier audit:
+  - on the failing run, WebDriver `getWindowRect()` flipped window coordinates from `x=2973`, `y=2245` to `x=5946`, `y=4490` after resize, which made restore-position assertions unreliable even though the shell itself remained usable
+  - the geometry spec now captures the app window's native outer rect through a Windows `GetWindowRect` helper keyed to the real `ta_desktop_demo_app.exe` process
+  - restore now reissues the original native `left/top/width/height` and waits for the native position to return within the existing `24px` tolerance
+- Fresh acceptance evidence for this closure:
+  - `npm --prefix web run typecheck:desktop`
+  - `npm --prefix web run test:desktop:geometry`
+- Fresh verified artifact bundle:
+  - passing opt-in geometry run: `output/wdio/desktop-smoke/2026-04-11T00-10-21-711Z/`
+- Environment provenance captured in the passing artifact:
+  - platform: `win32`
+  - Node: `v24.4.1`
+  - Cargo: `1.95.0-nightly (8cc0cb136 2026-02-17)`
+  - EdgeDriver: `146.0.3856.84`
 - Geometry smoke remains distinct from persisted window-state correctness:
-  - the failing surface is current-run resize/restore geometry, not relaunch persistence
-  - window-state persistence and titlebar maximize/restore semantics stay documented separately
-- Cross-doc sync updated in this session:
-  - `web/e2e/desktop/README.md` now points troubleshooting at `preview-server.log`, matching the actual harness artifact name
-- Refresh evidence from the reopen audit:
-  - latest failing opt-in geometry run: `output/wdio/desktop-smoke/2026-04-10T17-58-34-582Z/`
-  - previously passing size-only geometry run that is no longer sufficient for closure: `output/wdio/desktop-smoke/2026-04-10T17-44-33-069Z/`
-  - companion stable desktop smoke run from the earlier tranche: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
+  - this closure proves current-run resize/restore geometry plus post-resize shell usability on the real desktop harness
+  - relaunch persistence and maximize/restore titlebar semantics remain documented separately
+- No `README.md`, `REPO_MAP.md`, or release-note update was required in this closure because the documented suite boundary and user-facing desktop behavior did not change.
 
 ## Related Docs
 

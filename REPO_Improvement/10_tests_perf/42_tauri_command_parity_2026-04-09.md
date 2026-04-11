@@ -1,6 +1,6 @@
 # Tauri Command Parity Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -87,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical backend and frontend command sources.
-- [ ] Document what the parity script proves and what it does not prove.
-- [ ] Keep parity checks non-options focused for this program.
-- [ ] Run parity and command-generation checks together when command registration changes.
-- [ ] Review doc and release-note command counts after parity-affecting changes.
-- [ ] Avoid claiming parity implies behavior correctness.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the canonical backend and frontend command sources.
+- [x] Document what the parity script proves and what it does not prove.
+- [x] Keep parity checks non-options focused for this program.
+- [x] Run parity and command-generation checks together when command registration changes.
+- [x] Review doc and release-note command counts after parity-affecting changes.
+- [x] Avoid claiming parity implies behavior correctness.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +115,27 @@ Public-repo quality focus:
 - prefer one canonical registry source over multiple parallel inventories
 - if parity parsing becomes brittle, fix the generation pipeline rather than weakening the contract
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh verification of the existing parity surfaces rather than a source change.
+- The canonical parity surfaces were confirmed as:
+  - backend registration source: `src-tauri/src/lib.rs`
+  - generated frontend registry: `web/src/tauri/commands.ts`
+  - parity checker: `web/scripts/check-tauri-parity.mjs`
+  - frontend invoke/registry contract tests:
+    - `web/src/tauri/invoke.contract.test.ts`
+    - `web/src/tauri/commands.test.ts`
+- Fresh acceptance evidence for this closure:
+  - `npm --prefix web run parity`
+  - `npm --prefix web run check:commands`
+  - `npm --prefix web run test -- src/tauri/invoke.contract.test.ts src/tauri/commands.test.ts`
+- Verified results on the current tree:
+  - parity checker: backend `98` commands, frontend registry `98` commands
+  - generation check: `OK: src/tauri/commands.ts is up to date (98 commands).`
+  - invoke/registry tests: `2` files passed, `6` tests passed
+- No command-registration or generation change was required for this closure. The parity evidence remains explicitly limited to registry sync and frontend unknown-command guarding; it was not used as a claim that every registered command still behaves correctly.
+- No `README.md`, `REPO_MAP.md`, release-note, or generated-registry update was required because the command count and parity health stayed unchanged on the current tree.
 
 ## Related Docs
 

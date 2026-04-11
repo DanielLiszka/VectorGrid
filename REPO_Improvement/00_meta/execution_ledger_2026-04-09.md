@@ -30,7 +30,7 @@ This ledger is intentionally coarse:
 ## Current Totals
 
 - planned implementation-plan documents tracked here: `356`
-- current completed items: `324`
+- current completed items: `340`
 - current in-progress items: `0`
 
 ## 00 Meta
@@ -387,7 +387,7 @@ This ledger is intentionally coarse:
 - [x] [10_tests_perf/15_desktop_native_titlebar_2026-04-09.md](../10_tests_perf/15_desktop_native_titlebar_2026-04-09.md)
 - [x] [10_tests_perf/16_desktop_task_center_nav_2026-04-09.md](../10_tests_perf/16_desktop_task_center_nav_2026-04-09.md)
 - [x] [10_tests_perf/17_desktop_settings_diag_2026-04-09.md](../10_tests_perf/17_desktop_settings_diag_2026-04-09.md)
-- [ ] [10_tests_perf/18_desktop_geometry_behavior_2026-04-09.md](../10_tests_perf/18_desktop_geometry_behavior_2026-04-09.md)
+- [x] [10_tests_perf/18_desktop_geometry_behavior_2026-04-09.md](../10_tests_perf/18_desktop_geometry_behavior_2026-04-09.md)
 - [x] [10_tests_perf/19_desktop_artifact_capture_2026-04-09.md](../10_tests_perf/19_desktop_artifact_capture_2026-04-09.md)
 - [x] [10_tests_perf/20_tauri_runtime_wiring_2026-04-08.md](../10_tests_perf/20_tauri_runtime_wiring_2026-04-08.md)
 - [x] [10_tests_perf/21_tauri_mock_runtime_smoke_2026-04-08.md](../10_tests_perf/21_tauri_mock_runtime_smoke_2026-04-08.md)
@@ -410,21 +410,21 @@ This ledger is intentionally coarse:
 - [x] [10_tests_perf/38_profile_runner_bins_2026-04-09.md](../10_tests_perf/38_profile_runner_bins_2026-04-09.md)
 - [x] [10_tests_perf/39_post_release_telemetry_review_2026-04-09.md](../10_tests_perf/39_post_release_telemetry_review_2026-04-09.md)
 - [x] [10_tests_perf/40_xlsx_regression_tooling_2026-04-08.md](../10_tests_perf/40_xlsx_regression_tooling_2026-04-08.md)
-- [ ] [10_tests_perf/41_gpu_alma_contract_gate_2026-04-09.md](../10_tests_perf/41_gpu_alma_contract_gate_2026-04-09.md)
-- [ ] [10_tests_perf/42_tauri_command_parity_2026-04-09.md](../10_tests_perf/42_tauri_command_parity_2026-04-09.md)
-- [ ] [10_tests_perf/43_output_parity_pack_2026-04-09.md](../10_tests_perf/43_output_parity_pack_2026-04-09.md)
-- [ ] [10_tests_perf/44_parity_pair_registry_2026-04-09.md](../10_tests_perf/44_parity_pair_registry_2026-04-09.md)
-- [ ] [10_tests_perf/45_artifact_report_shape_parity_2026-04-09.md](../10_tests_perf/45_artifact_report_shape_parity_2026-04-09.md)
-- [ ] [10_tests_perf/46_legacy_name_compat_2026-04-09.md](../10_tests_perf/46_legacy_name_compat_2026-04-09.md)
-- [ ] [10_tests_perf/47_tauri_config_sync_2026-04-09.md](../10_tests_perf/47_tauri_config_sync_2026-04-09.md)
-- [ ] [10_tests_perf/48_generated_command_inventory_2026-04-08.md](../10_tests_perf/48_generated_command_inventory_2026-04-08.md)
-- [ ] [10_tests_perf/49_python_faceoff_locking_2026-04-09.md](../10_tests_perf/49_python_faceoff_locking_2026-04-09.md)
-- [ ] [10_tests_perf/50_frontend_test_support_mocks_2026-04-09.md](../10_tests_perf/50_frontend_test_support_mocks_2026-04-09.md)
-- [ ] [10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_2026-04-09.md](../10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_2026-04-09.md)
-- [ ] [10_tests_perf/52_app_core_criterion_benches_2026-04-09.md](../10_tests_perf/52_app_core_criterion_benches_2026-04-09.md)
-- [ ] [10_tests_perf/53_refactor_snapshot_parity_2026-04-09.md](../10_tests_perf/53_refactor_snapshot_parity_2026-04-09.md)
-- [ ] [10_tests_perf/54_campaign_preload_vram_perf_2026-04-09.md](../10_tests_perf/54_campaign_preload_vram_perf_2026-04-09.md)
-- [ ] [10_tests_perf/55_headless_workflow_bins_2026-04-09.md](../10_tests_perf/55_headless_workflow_bins_2026-04-09.md)
+- [x] [10_tests_perf/41_gpu_alma_contract_gate_2026-04-09.md](../10_tests_perf/41_gpu_alma_contract_gate_2026-04-09.md)
+- [x] [10_tests_perf/42_tauri_command_parity_2026-04-09.md](../10_tests_perf/42_tauri_command_parity_2026-04-09.md)
+- [x] [10_tests_perf/43_output_parity_pack_2026-04-09.md](../10_tests_perf/43_output_parity_pack_2026-04-09.md)
+- [x] [10_tests_perf/44_parity_pair_registry_2026-04-09.md](../10_tests_perf/44_parity_pair_registry_2026-04-09.md)
+- [x] [10_tests_perf/45_artifact_report_shape_parity_2026-04-09.md](../10_tests_perf/45_artifact_report_shape_parity_2026-04-09.md)
+- [x] [10_tests_perf/46_legacy_name_compat_2026-04-09.md](../10_tests_perf/46_legacy_name_compat_2026-04-09.md)
+- [x] [10_tests_perf/47_tauri_config_sync_2026-04-09.md](../10_tests_perf/47_tauri_config_sync_2026-04-09.md)
+- [x] [10_tests_perf/48_generated_command_inventory_2026-04-08.md](../10_tests_perf/48_generated_command_inventory_2026-04-08.md)
+- [x] [10_tests_perf/49_python_faceoff_locking_2026-04-09.md](../10_tests_perf/49_python_faceoff_locking_2026-04-09.md)
+- [x] [10_tests_perf/50_frontend_test_support_mocks_2026-04-09.md](../10_tests_perf/50_frontend_test_support_mocks_2026-04-09.md)
+- [x] [10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_2026-04-09.md](../10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_2026-04-09.md)
+- [x] [10_tests_perf/52_app_core_criterion_benches_2026-04-09.md](../10_tests_perf/52_app_core_criterion_benches_2026-04-09.md)
+- [x] [10_tests_perf/53_refactor_snapshot_parity_2026-04-09.md](../10_tests_perf/53_refactor_snapshot_parity_2026-04-09.md)
+- [x] [10_tests_perf/54_campaign_preload_vram_perf_2026-04-09.md](../10_tests_perf/54_campaign_preload_vram_perf_2026-04-09.md)
+- [x] [10_tests_perf/55_headless_workflow_bins_2026-04-09.md](../10_tests_perf/55_headless_workflow_bins_2026-04-09.md)
 - [x] [10_tests_perf/56_static_analysis_quality_gates_2026-04-09.md](../10_tests_perf/56_static_analysis_quality_gates_2026-04-09.md)
 - [ ] [10_tests_perf/57_manual_a11y_review_matrix_2026-04-09.md](../10_tests_perf/57_manual_a11y_review_matrix_2026-04-09.md)
 

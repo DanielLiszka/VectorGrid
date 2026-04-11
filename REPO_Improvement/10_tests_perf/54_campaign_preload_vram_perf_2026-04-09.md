@@ -1,6 +1,6 @@
 # Campaign Preload VRAM Perf Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -87,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document both the higher-level and lower-level campaign/preload tools.
-- [ ] Document their feature requirements and timing boundaries.
-- [ ] Keep this perf plan non-options only.
-- [ ] Review emitted artifacts for mode and staging-outcome clarity.
-- [ ] Avoid using campaign preload numbers for broad product claims.
-- [ ] Cross-link campaign preload work to deeper GPU profiling only when needed.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document both the higher-level and lower-level campaign/preload tools.
+- [x] Document their feature requirements and timing boundaries.
+- [x] Keep this perf plan non-options only.
+- [x] Review emitted artifacts for mode and staging-outcome clarity.
+- [x] Avoid using campaign preload numbers for broad product claims.
+- [x] Cross-link campaign preload work to deeper GPU profiling only when needed.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +115,44 @@ Public-repo quality focus:
 - prefer better provenance and clearer mode labels over more thresholds
 - if one tool becomes the clear authority for a repeated investigation type, document that promotion explicitly
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Code changes were not required; the campaign/preload investigative bins were already implemented.
+- GPU provenance:
+  - `nvidia-smi --query-gpu=name,driver_version --format=csv,noheader`
+  - result: `NVIDIA GeForce RTX 4090, 595.71`
+- Verified release CUDA compile surfaces:
+  - `cargo check -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel --bin ta_campaign_perf`
+  - `cargo check -p ta_app_core --release --features cuda,cuda-backtest-kernel --bin profile_doublema_campaign_prefetch`
+- Verified the higher-level harness CLI contract:
+  - `cargo run -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel --bin ta_campaign_perf -- --help`
+- Fresh higher-level optimize-only artifacts:
+  - `cargo run -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel --bin ta_campaign_perf -- --scope optimize-only --mode host-only --backend gpu-kernel --warmup-trials 1 --measured-trials 2 --validation-max-candidates 1 --output-json target/ta_campaign_perf_optimize_only_host_only_refresh.json`
+  - `cargo run -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel --bin ta_campaign_perf -- --scope optimize-only --mode host-plus-doublema-vram --backend gpu-kernel --warmup-trials 1 --measured-trials 2 --validation-max-candidates 1 --output-json target/ta_campaign_perf_optimize_only_host_plus_doublema_vram_refresh.json`
+- Fresh lower-level staged-vs-host helper artifacts:
+  - `cargo run -p ta_app_core --release --features cuda,cuda-backtest-kernel --bin profile_doublema_campaign_prefetch -- --mode host_only --output-json target/doublema_campaign_prefetch_host_only_refresh.json`
+  - `cargo run -p ta_app_core --release --features cuda,cuda-backtest-kernel --bin profile_doublema_campaign_prefetch -- --mode staged --output-json target/doublema_campaign_prefetch_staged_refresh.json`
+- Higher-level harness results:
+  - `host_only`: `mean_total_wall_ms = 4002.08585`, `mean_campaign_runtime_ms = 4001.0`, `mean_initial_dataset_pack_preload_ms = null`
+  - `host_plus_doublema_vram`: `mean_total_wall_ms = 3330.495`, `mean_campaign_runtime_ms = 3329.5`, `mean_initial_dataset_pack_preload_ms = null`
+  - both higher-level runs stayed on `optimize_backend_route = GpuKernel`
+  - the `host_plus_doublema_vram` run emitted the expected experimental warning and still recorded per-dataset `vram_prefetch_outcome = not_attempted` on this refresh
+- Lower-level helper results:
+  - `host_only`: `stage_attempts = 0`, `stage_successes = 0`, `mean_pair_wall_ms = 144.7029`
+  - `staged`: `stage_attempts = 3`, `stage_successes = 3`, `mean_pair_wall_ms = 195.669133`
+  - both helper modes stayed on `first_backend_route = GpuKernel` / `second_backend_route = GpuKernel`
+- Interpretation kept for this doc:
+  - the higher-level campaign harness is the broader investigate-the-runner lane
+  - the lower-level helper is the direct staged-vs-host VRAM-prefetch probe
+  - neither surface should be treated as a main CPU/GPU perf gate or a broad product-performance claim
+- Output artifact locations:
+  - `target/ta_campaign_perf_optimize_only_host_only_refresh.json`
+  - `target/ta_campaign_perf_optimize_only_host_plus_doublema_vram_refresh.json`
+  - `target/doublema_campaign_prefetch_host_only_refresh.json`
+  - `target/doublema_campaign_prefetch_staged_refresh.json`
+- No `README.md` or `REPO_MAP.md` update was required because the current docs already position this as a specialized investigative lane rather than a primary benchmark authority.
 
 ## Related Docs
 

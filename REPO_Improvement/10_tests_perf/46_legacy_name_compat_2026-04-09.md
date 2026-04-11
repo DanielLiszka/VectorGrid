@@ -1,6 +1,6 @@
 # Legacy Name Compatibility Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -35,10 +35,32 @@ The repo already keeps several explicit compatibility shims: older artifact kind
 
 ## Current Verification Surface
 
-- `cargo test -p ta_desktop_demo_app workflow_summary_deserializes_legacy_payload_without_envelope`
-- `cargo test -p ta_desktop_demo_app run_artifact_kind_alias_accepts_legacy_and_vectorgrid_names`
-- `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+- `cargo test -p ta_desktop_demo_app --lib run_artifact_kind_alias_accepts_legacy_and_vectorgrid_names`
+- `cargo test -p ta_desktop_demo_app --lib meta_artifact_file_name_alias_accepts_legacy_and_vectorgrid_prefixes`
+- `cargo test -p ta_desktop_demo_app --lib meta_stage_file_name_alias_accepts_legacy_and_vectorgrid_prefixes`
+- `cargo test -p ta_desktop_demo_app --lib workflow_hydration_payload_keeps_metric_surface_absent_for_legacy_artifacts`
+- `cargo test -p ta_desktop_demo_app --lib run_artifact_summary_backfills_fingerprint_version_and_dataset_identity_for_legacy_kind`
+- `cargo test -p ta_desktop_demo_app --bin ta_workflow_regression workflow_summary_deserializes_legacy_payload_without_envelope`
+- `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests workbook_supports_legacy_compatibility_mode`
 - manual review of release-note compatibility wording when names or env vars change
+
+## Current Shim Inventory
+
+- `src-tauri/src/run_artifacts.rs` intentionally accepts both legacy `vectorbt_*` and current `vectorgrid_*` names for:
+  - run-artifact kinds
+  - meta artifact file-name prefixes
+  - Stage 4 / Stage 5 / ML-confidence file-name prefixes
+- workflow hydration keeps legacy summaries readable when older payloads omit the newer envelope and metric-surface fields.
+- run-artifact summary hydration backfills current fingerprint and dataset-identity fields when older `vectorbt_run_artifact` payloads do not carry the newer shape directly.
+- validation workbook generation still enters compatibility mode when older validation artifacts lack the full verdict contract.
+- `RELEASE.md` intentionally preserves the legacy internal environment names `VECTORBT_USE_PREBUILT_PTX` and `VECTORBT_REQUIRE_NVCC` as compatibility aliases.
+
+## Retirement Candidates
+
+- `vectorbt_*` artifact kind and filename aliases are retirement candidates only after saved-artifact migration or rewrite tooling exists for older run/meta/stage payloads.
+- legacy workflow-summary envelope shims are retirement candidates only after the historical regression fixtures and any persisted exports no longer depend on the flat payload form.
+- legacy validation workbook compatibility mode is a retirement candidate only after older shortlist-only validation artifacts are migrated or explicitly unsupported.
+- legacy `VECTORBT_*` PTX environment names are retirement candidates only after release notes and automation have a deliberate replacement path.
 
 ## Strengths Already Present
 
@@ -87,22 +109,23 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory current non-options legacy aliases and payload shims.
-- [ ] Document the test coverage that proves each shim still works.
-- [ ] Keep this compatibility plan non-options only.
-- [ ] Review release-note compatibility prose against current code support.
-- [ ] Mark shims that are candidates for future retirement instead of letting them stay indefinite by default.
-- [ ] Avoid adding new aliases without clear migration value.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory current non-options legacy aliases and payload shims.
+- [x] Document the test coverage that proves each shim still works.
+- [x] Keep this compatibility plan non-options only.
+- [x] Review release-note compatibility prose against current code support.
+- [x] Mark shims that are candidates for future retirement instead of letting them stay indefinite by default.
+- [x] Avoid adding new aliases without clear migration value.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
 - run the named compatibility tests after artifact or summary contract changes
+- prefer target-scoped Rust test commands for this surface so unrelated bin failures in a dirty tree do not masquerade as legacy-compat regressions
 - review release-note compatibility wording whenever environment names or build paths change
 - inspect alias-handling code in `run_artifacts.rs` before removing or renaming kinds
 - confirm new compatibility needs are backed by actual migration evidence
@@ -115,6 +138,24 @@ Public-repo quality focus:
 - prefer deliberate retirement plans over silent breakage or silent perpetuation
 - if a shim is retained, document why; if it is removed, document what replaces it
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Code changes were not required; the compatibility shims and release-note wording were already in place.
+- Verified legacy alias coverage with:
+  - `cargo test -p ta_desktop_demo_app --lib run_artifact_kind_alias_accepts_legacy_and_vectorgrid_names`
+  - `cargo test -p ta_desktop_demo_app --lib meta_artifact_file_name_alias_accepts_legacy_and_vectorgrid_prefixes`
+  - `cargo test -p ta_desktop_demo_app --lib meta_stage_file_name_alias_accepts_legacy_and_vectorgrid_prefixes`
+  - `cargo test -p ta_desktop_demo_app --lib workflow_hydration_payload_keeps_metric_surface_absent_for_legacy_artifacts`
+  - `cargo test -p ta_desktop_demo_app --lib run_artifact_summary_backfills_fingerprint_version_and_dataset_identity_for_legacy_kind`
+- Verified legacy summary decoding with:
+  - `cargo test -p ta_desktop_demo_app --bin ta_workflow_regression workflow_summary_deserializes_legacy_payload_without_envelope`
+- Verified workbook compatibility mode with:
+  - `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests workbook_supports_legacy_compatibility_mode`
+- Manual review confirmed `RELEASE.md` still accurately documents the legacy `VECTORBT_USE_PREBUILT_PTX` and `VECTORBT_REQUIRE_NVCC` names as compatibility-only internal environment variables.
+- The broader package-level commands originally listed for this surface currently pull in unrelated dirty-tree bin compilation failures, so the authoritative closure evidence above uses target-scoped Rust test commands that exercise the actual compatibility shims directly.
+- No `README.md` or `REPO_MAP.md` update was required because their current compatibility descriptions already match the verified code paths.
 
 ## Related Docs
 

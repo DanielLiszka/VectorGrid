@@ -1,6 +1,6 @@
 # Frontend Test Support Mocks Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -32,6 +32,29 @@ The repo already has a focused frontend test-support mock layer that wraps `@tau
 - `web/src/test/desktopWindowMocks.ts` provides minimal mocked desktop-window behavior for tests that need it.
 - `web/src/tauri/invoke.mockIPC.test.ts`, `instrumentation.mockIPC.test.ts`, and `errorPathQa.test.ts` are key current consumers.
 - `web/src/tauri/invoke.ts` is the real bridge surface these mocks are standing in for.
+
+## Current Mock Inventory And Coverage
+
+- `web/src/test/tauriMocks.ts`
+  - currently exported helper surface:
+    - `resetTauriApiMocks()`
+    - `installLegacyTauriWindowBridge()`
+    - `installMockIpc()`
+    - `mockCommandSuccess()`
+    - `mockCommandFailure()`
+  - currently exercised in-tree by targeted tests:
+    - `installMockIpc()`
+    - `resetTauriApiMocks()`
+- `web/src/test/desktopWindowMocks.ts`
+  - currently exported helper surface:
+    - `mockDesktopWindows()`
+    - `resetMockWindows()`
+  - current direct in-tree consumers:
+    - none found in the current search surface
+- direct test consumers of the mock IPC layer today:
+  - `web/src/tauri/invoke.mockIPC.test.ts`
+  - `web/src/tauri/instrumentation.mockIPC.test.ts`
+  - `web/src/tauri/errorPathQa.test.ts`
 
 ## Current Verification Surface
 
@@ -86,18 +109,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory the current mock helpers and the tests that depend on them.
-- [ ] Document strict versus permissive unknown-command behavior.
-- [ ] Document when a scenario belongs in browser or desktop harnesses instead of this layer.
-- [ ] Keep this mock plan non-options only.
-- [ ] Keep desktop-window mocking intentionally minimal.
-- [ ] Cross-check mock assumptions against the real Tauri bridge when it changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory the current mock helpers and the tests that depend on them.
+- [x] Document strict versus permissive unknown-command behavior.
+- [x] Document when a scenario belongs in browser or desktop harnesses instead of this layer.
+- [x] Keep this mock plan non-options only.
+- [x] Keep desktop-window mocking intentionally minimal.
+- [x] Cross-check mock assumptions against the real Tauri bridge when it changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +137,30 @@ Public-repo quality focus:
 - prefer tightening existing helpers over creating parallel mock systems
 - if a mock must grow significantly, reevaluate whether the test belongs at a higher layer
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Code changes were not required; the mock IPC layer, real invoke boundary, and targeted tests were already in place.
+- Verified with:
+  - `npm --prefix web run test -- src/tauri/invoke.mockIPC.test.ts src/tauri/instrumentation.mockIPC.test.ts src/tauri/errorPathQa.test.ts`
+  - `npm --prefix web run lint`
+  - `npm --prefix web run typecheck`
+  - `node -v`
+  - `npm -v`
+- Verification results:
+  - targeted Vitest: `3` files passed, `16` tests passed
+  - `lint`: passed and re-ran generated-command plus known-command checks successfully
+  - `typecheck`: passed
+  - Node: `v24.4.1`
+  - npm: `11.6.4`
+- Inventory cross-check notes:
+  - strict versus permissive unknown-command behavior remains centralized in `installMockIpc()` via `allowUnknown`
+  - browser or desktop harnesses remain the correct destination when a test needs real runtime behavior rather than deterministic invoke/event stubbing
+  - `installLegacyTauriWindowBridge()`, `mockCommandSuccess()`, `mockCommandFailure()`, `mockDesktopWindows()`, and `resetMockWindows()` currently appear unexercised by direct in-tree consumers; this is a residual risk to watch rather than a blocker for this documentation closeout
+- No `README.md`, `REPO_MAP.md`, or release-note update was required because this item closed on inventory and verification evidence rather than changed runtime behavior.
+- Output artifact location: none beyond terminal stdout from the verification commands.
+- Refresh trigger for this check: any change to `web/src/test/tauriMocks.ts`, `web/src/test/desktopWindowMocks.ts`, `web/src/tauri/invoke.ts`, or the targeted mock-driven tests.
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Generated Command Inventory Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -105,17 +105,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document how the generator derives command names from Rust.
-- [ ] Document when `commands.ts` must be regenerated or checked.
-- [ ] Document parity-check and literal-check responsibilities separately.
-- [ ] Document how frontend code should consume `TauriCommand` and `isTauriCommand`.
-- [ ] Add or tighten tests/scripts if command generation or checking rules change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document how the generator derives command names from Rust.
+- [x] Document when `commands.ts` must be regenerated or checked.
+- [x] Document parity-check and literal-check responsibilities separately.
+- [x] Document how frontend code should consume `TauriCommand` and `isTauriCommand`.
+- [x] Add or tighten tests/scripts if command generation or checking rules change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -133,6 +133,28 @@ Public-repo quality focus:
 - if the Rust command macro structure changes, update the generator and parity checks in the same change
 - do not accept stale generated output as normal workflow
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Code changes were not required; the generated command inventory, parity checker, literal-command scan, and typed wrapper/tests were already implemented.
+- Verified from `web/` so the cwd-sensitive scripts resolved the Rust and frontend paths consistently:
+  - `npm run check:commands`
+  - `npm run parity`
+  - `node ./scripts/check-known-tauri-commands.mjs`
+  - `npm run test -- src/tauri/commands.test.ts src/tauri/invoke.contract.test.ts src/tauri/invoke.mockIPC.test.ts`
+  - `npm run typecheck`
+  - `npm run lint`
+- Verification results:
+  - `check:commands`: `OK: src/tauri/commands.ts is up to date (98 commands).`
+  - `parity`: backend commands `98`, frontend registry commands `98`
+  - literal-command scan: `OK: All literal invoke command names are known (98 registered commands).`
+  - Vitest: `3` files passed, `13` tests passed
+  - `typecheck`: passed
+  - `lint`: passed and re-ran `check:commands` plus the literal-command scan successfully
+- No `README.md`, `REPO_MAP.md`, or release-note update was required because the existing generated-command workflow documentation already matched the verified behavior.
+- Output artifact location: none beyond command stdout.
+- Refresh trigger for this check: any change to `src-tauri/src/lib.rs`, `web/scripts/generate-tauri-commands.mjs`, `web/scripts/check-tauri-parity.mjs`, `web/scripts/check-known-tauri-commands.mjs`, `web/src/tauri/commands.ts`, or the typed invoke wrappers/tests.
 
 ## Related Docs
 

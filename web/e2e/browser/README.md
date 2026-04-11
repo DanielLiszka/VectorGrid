@@ -12,6 +12,8 @@ This suite fills the gap between:
 
 Browser UX smoke should prove small app-level journeys that are easier to express in a real browser than in component tests, while staying lighter and more deterministic than desktop smoke.
 
+Manual accessibility review guidance for the same non-options surfaces lives in [accessibility-review-matrix.md](../accessibility-review-matrix.md). Use browser review as the default manual slice unless the change crosses into native desktop behavior.
+
 ## Run locally
 
 From the repo root:
@@ -49,6 +51,8 @@ This command:
   - local keyboard/focus behavior
 - browser UX smoke:
   - deterministic app-level keyboard and focus journeys in mocked-Tauri mode
+- manual accessibility review matrix:
+  - representative browser-first keyboard, naming, dense-surface, and reopen-review slices
 - desktop smoke:
   - real Tauri shell launch/readiness and native-shell integrity
 - `baseline:ui`:

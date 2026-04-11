@@ -208,10 +208,10 @@ function Resolve-EstimatePath {
   )
 
   if (-not [string]::IsNullOrWhiteSpace($ExactPath)) {
-    if (!(Test-Path $ExactPath)) {
-      throw "Missing criterion estimates file: $ExactPath"
+    if (Test-Path $ExactPath) {
+      return (Resolve-Path $ExactPath).Path
     }
-    return (Resolve-Path $ExactPath).Path
+    return [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $ExactPath))
   }
 
   if (-not [string]::IsNullOrWhiteSpace($GlobPath)) {

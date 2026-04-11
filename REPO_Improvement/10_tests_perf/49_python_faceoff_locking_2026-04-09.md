@@ -1,6 +1,6 @@
 # Python Faceoff Locking Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -24,7 +24,7 @@ Out of scope:
 
 ## Current User-Facing Behavior
 
-The faceoff harness already supports a locked requirements file and scenario-driven runs, but it still relies on the local Python interpreter and environment being prepared correctly. That means rerun credibility depends on environment discipline more than the script itself. The doc therefore needs to be explicit about how Python state is controlled and recorded when comparison artifacts are generated.
+The faceoff harness is still scenario-driven and lockfile-backed, but it now records the actual Python executable, lockfile SHA-256, same-interpreter `pip freeze`, and `pip --version` artifacts into each run directory and summary. That means rerun credibility no longer depends purely on operator discipline after the run; the saved artifact itself now carries the core provenance needed to audit which Python environment actually produced the comparison numbers.
 
 ## Current Code Surface
 
@@ -32,12 +32,13 @@ The faceoff harness already supports a locked requirements file and scenario-dri
 - `scripts/vectorbt_double_ma_faceoff.py` is the Python comparator surface.
 - `scripts/requirements-vectorbt-faceoff.lock.txt` is the current locked dependency manifest for the faceoff environment.
 - `scripts/vectorbt_double_ma_faceoff_scenario_*.json` files define repeatable comparison scenarios.
+- `README.md` documents the dedicated `.venv-vectorbt-faceoff` setup and the explicit `-PythonExe` invocation path for reusable faceoff reruns.
 
 ## Current Verification Surface
 
 - `powershell -ExecutionPolicy Bypass -File scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1 -ScenarioPath <scenario.json>`
 - inspection of emitted summary JSON and environment details under the chosen output directory
-- manual environment snapshotting via `py -m pip freeze` when rerun credibility matters
+- inspection of the same-run `python-freeze.txt` and `python-pip-version.txt` artifacts written with the selected interpreter
 
 ## Strengths Already Present
 
@@ -86,23 +87,23 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the expected Python environment setup for faceoff runs.
-- [ ] Document how the locked requirements file is used and refreshed.
-- [ ] Document how environment provenance is captured alongside results.
-- [ ] Keep this plan non-options only.
-- [ ] Use a dedicated comparison venv rather than a generic Python environment.
-- [ ] Avoid publishing or repeating comparison results without environment context.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the expected Python environment setup for faceoff runs.
+- [x] Document how the locked requirements file is used and refreshed.
+- [x] Document how environment provenance is captured alongside results.
+- [x] Keep this plan non-options only.
+- [x] Use a dedicated comparison venv rather than a generic Python environment.
+- [x] Avoid publishing or repeating comparison results without environment context.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
 - confirm the intended Python interpreter and venv before a comparison run
-- capture `pip freeze` output or equivalent provenance when results matter beyond one local session
+- capture `pip freeze` output or equivalent provenance with the same interpreter used for the actual faceoff run
 - check that the scenario file, interpreter, and lock file align before refreshing artifacts
 - inspect the output directory for environment/provenance context after the run
 - run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
@@ -114,6 +115,33 @@ Public-repo quality focus:
 - prefer a smaller number of trustworthy comparison reruns over many loosely reproducible ones
 - if Python environment drift remains common, add stronger automation before trusting refreshed claims
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Implemented automatic Python provenance capture in `scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1`:
+  - same-interpreter `python-freeze.txt`
+  - same-interpreter `python-pip-version.txt`
+  - lockfile path and SHA-256 in `summary.json`
+  - selected interpreter provenance in `summary.json`
+- Implemented interpreter-path capture in `scripts/vectorbt_double_ma_faceoff.py` so the saved environment block now records `sys.executable`.
+- Updated `README.md` to require the dedicated `.venv-vectorbt-faceoff` setup, install from `scripts/requirements-vectorbt-faceoff.lock.txt`, and pass the explicit venv interpreter when refreshing reusable faceoff artifacts.
+- Verified with a bounded smoke rerun that avoids a fresh release rebuild:
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1 -ScenarioPath scripts/vectorbt_double_ma_faceoff_scenario.json -OutDir target/vectorbt_vs_vectorgrid_faceoff_verify_smoke_2026-04-10 -PythonExe .\.venv-vectorbt-faceoff\Scripts\python.exe -VectorGridBackends cpu -WarmupTrials 0 -Trials 1 -SkipBuild`
+- Verified output artifact location:
+  - `target/vectorbt_vs_vectorgrid_faceoff_verify_smoke_2026-04-10/legacy_58300_search_only-search_only_legacy/summary.json`
+  - `target/vectorbt_vs_vectorgrid_faceoff_verify_smoke_2026-04-10/legacy_58300_search_only-search_only_legacy/python-freeze.txt`
+  - `target/vectorbt_vs_vectorgrid_faceoff_verify_smoke_2026-04-10/legacy_58300_search_only-search_only_legacy/python-pip-version.txt`
+- Verified provenance captured in the saved summary:
+  - Python executable: `C:\Rust Projects\ta_desktop_demo\.venv-vectorbt-faceoff\Scripts\python.exe`
+  - Python version: `3.10.6`
+  - platform: `Windows-10-10.0.26200-SP0`
+  - `using_preferred_venv`: `true`
+  - requirements lock SHA-256: `57185314dab0cd87be8df63cd1b599b97501f6ae0558953cd8081c184204fca8`
+  - `pip.freeze_status`: `captured`
+  - `pip.version_status`: `captured`
+  - VectorBT stack: `vectorbt 0.28.4`, `numpy 2.2.6`, `pandas 2.3.3`, `numba 0.64.0`
+- This change does not alter the timed benchmark boundaries; the provenance capture happens outside the measured faceoff trial timings.
 
 ## Related Docs
 

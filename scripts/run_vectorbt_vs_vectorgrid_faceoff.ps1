@@ -121,6 +121,28 @@ function Get-PythonCommand {
   }
 }
 
+function Resolve-ExistingPathOrValue {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $null
+  }
+  if (Test-Path $Path) {
+    return (Resolve-Path $Path).Path
+  }
+  return $Path
+}
+
+function Get-FileSha256OrNull {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path $Path)) {
+    return $null
+  }
+
+  return ((Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant())
+}
+
 function Get-VectorGridBoundaryMetadata {
   param(
     [string]$Mode,
@@ -162,6 +184,59 @@ function Ensure-Directory {
   param([string]$Path)
   if ($Path -and -not (Test-Path $Path)) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
+  }
+}
+
+function Capture-PythonProvenance {
+  param(
+    [hashtable]$Python,
+    [string]$OutDir,
+    [string]$RepoRoot
+  )
+
+  Ensure-Directory -Path $OutDir
+
+  $lockfilePath = Join-Path $RepoRoot "scripts/requirements-vectorbt-faceoff.lock.txt"
+  $freezePath = Join-Path $OutDir "python-freeze.txt"
+  $freezeStderrPath = Join-Path $OutDir "python-freeze.stderr.txt"
+  $pipVersionPath = Join-Path $OutDir "python-pip-version.txt"
+  $pipVersionStderrPath = Join-Path $OutDir "python-pip-version.stderr.txt"
+
+  $freezeStatus = "not_run"
+  $freezeError = $null
+  try {
+    Invoke-LoggedCommand -Exe $Python.exe -CmdArgs @($Python.base_args + @("-m", "pip", "freeze")) -StdoutPath $freezePath -StderrPath $freezeStderrPath | Out-Null
+    $freezeStatus = "captured"
+  } catch {
+    $freezeStatus = "failed"
+    $freezeError = $_.Exception.Message
+  }
+
+  $pipVersionStatus = "not_run"
+  $pipVersionError = $null
+  try {
+    Invoke-LoggedCommand -Exe $Python.exe -CmdArgs @($Python.base_args + @("-m", "pip", "--version")) -StdoutPath $pipVersionPath -StderrPath $pipVersionStderrPath | Out-Null
+    $pipVersionStatus = "captured"
+  } catch {
+    $pipVersionStatus = "failed"
+    $pipVersionError = $_.Exception.Message
+  }
+
+  return [ordered]@{
+    lockfile = [ordered]@{
+      path = Resolve-ExistingPathOrValue -Path $lockfilePath
+      sha256 = Get-FileSha256OrNull -Path $lockfilePath
+    }
+    pip = [ordered]@{
+      freeze_status = $freezeStatus
+      freeze_path = Resolve-ExistingPathOrValue -Path $freezePath
+      freeze_stderr_path = Resolve-ExistingPathOrValue -Path $freezeStderrPath
+      freeze_error = $freezeError
+      version_status = $pipVersionStatus
+      version_path = Resolve-ExistingPathOrValue -Path $pipVersionPath
+      version_stderr_path = Resolve-ExistingPathOrValue -Path $pipVersionStderrPath
+      version_error = $pipVersionError
+    }
   }
 }
 
@@ -590,7 +665,18 @@ function New-FaceoffSummary {
     dataset = $datasetInfo
     environment = [ordered]@{
       hardware = Get-CommandHardware
-      python = [ordered]@{ command = $python.display }
+      python = [ordered]@{
+        command = $python.display
+        executable = if ($null -ne $vectorBtEnv -and $vectorBtEnv.PSObject.Properties.Name -contains "executable") { $vectorBtEnv.executable } else { $resolvedPythonExe }
+        version = if ($null -ne $vectorBtEnv) { $vectorBtEnv.python } else { "unknown" }
+        platform = if ($null -ne $vectorBtEnv) { $vectorBtEnv.platform } else { "unknown" }
+        base_args = @($python.base_args)
+        preferred_venv_python = $resolvedPreferredVenvPython
+        auto_selected_preferred_venv = $usedPreferredVenv
+        using_preferred_venv = $pythonUsesPreferredVenv
+        requirements_lock = $pythonProvenance.lockfile
+        pip = $pythonProvenance.pip
+      }
       vectorbt = [ordered]@{
         version = if ($null -ne $vectorBtEnv) { $vectorBtEnv.vectorbt } else { "unknown" }
         numpy = if ($null -ne $vectorBtEnv) { $vectorBtEnv.numpy } else { "unknown" }
@@ -655,9 +741,11 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 $preferredVenvPython = Join-Path $repoRoot ".venv-vectorbt-faceoff\Scripts\python.exe"
+$usedPreferredVenv = $false
 if ($PythonExe -in @("py", "py.exe") -and (Test-Path $preferredVenvPython)) {
   $PythonExe = $preferredVenvPython
   $PythonArgs = @()
+  $usedPreferredVenv = $true
 }
 
 $scenarioFullPath = Resolve-Path $ScenarioPath
@@ -702,6 +790,13 @@ New-Item -ItemType Directory -Force -Path $outPath | Out-Null
 $summaryPath = Join-Path $outPath "summary.json"
 $markdownPath = Join-Path $outPath "summary.md"
 $python = Get-PythonCommand -Exe $PythonExe -BaseArgs $PythonArgs
+$resolvedPreferredVenvPython = Resolve-ExistingPathOrValue -Path $preferredVenvPython
+$resolvedPythonExe = if ($python.exe -and $python.exe -notin @("py", "py.exe")) { Resolve-ExistingPathOrValue -Path $python.exe } else { $python.exe }
+$pythonUsesPreferredVenv = $false
+if ($null -ne $resolvedPreferredVenvPython -and $null -ne $resolvedPythonExe) {
+  $pythonUsesPreferredVenv = [string]::Equals($resolvedPreferredVenvPython, $resolvedPythonExe, [System.StringComparison]::OrdinalIgnoreCase)
+}
+$pythonProvenance = Capture-PythonProvenance -Python $python -OutDir $outPath -RepoRoot $repoRoot
 
 $datasetCsv = $Csv
 if ([string]::IsNullOrWhiteSpace($datasetCsv)) { $datasetCsv = Join-Path $outPath "faceoff_dataset_synth_200k.csv" }

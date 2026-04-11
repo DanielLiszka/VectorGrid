@@ -231,6 +231,8 @@ These crates are smaller than `app_core`, but they are part of the real executio
   - canonical local-first static-analysis lane for broad non-options work: Rust fmt/check/clippy plus web lint/typecheck, with optional desktop typecheck and workspace tests
 - `web/scripts/check-a11y-smoke.mjs`
   - Playwright + axe smoke coverage for the shipped desktop shell surfaces
+- `web/e2e/accessibility-review-matrix.md`
+  - representative browser-first manual accessibility slices, browser-vs-desktop review boundary, and the review-log template for high-risk non-options UI changes
 - `src-tauri/tauri.conf.json`
   - current Tauri app config and the main build handoff
   - `beforeDevCommand`: `npm --prefix ./web run dev -- --host 127.0.0.1 --port 1420`
@@ -239,6 +241,7 @@ These crates are smaller than `app_core`, but they are part of the real executio
   - `devUrl`: `http://127.0.0.1:1420`
 - `tauri.conf.json`
   - compatibility mirror of the canonical `src-tauri/tauri.conf.json`
+  - expected single path difference: root mirror `build.frontendDist` is `./web/dist` while the canonical config keeps `../web/dist`
   - keep it aligned via `scripts/check_tauri_config_sync.mjs`
 - `RELEASE.md`
   - Windows build variants, `cargo tauri build`, PTX packaging notes, and compatibility/release validation commands
@@ -1720,6 +1723,7 @@ These are useful when the task is benchmarking, profiling, or reproducing specif
 - `crates/app_core/benches/asr_opt.rs`
 - `crates/app_core/benches/vcc_opt.rs`
 - `crates/app_core/benches/vemr_opt.rs`
+- `crates/app_core/benches/vcet_opt.rs`
 - `crates/app_core/benches/rocb_opt.rs`
 - `crates/app_core/benches/mkcs_opt.rs`
 - `crates/app_core/src/bin/ta_cli.rs`

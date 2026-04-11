@@ -1,6 +1,6 @@
 # Parity Pair Registry Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current pairs and what each one proves structurally.
-- [ ] Document base-dir and relative-path expectations.
-- [ ] Keep the pair registry non-options only.
-- [ ] Require rationale for every added or removed pair.
-- [ ] Cross-link pair changes to the pack and parity-checker docs.
-- [ ] Avoid implying exhaustive artifact coverage from the registry.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the current pairs and what each one proves structurally.
+- [x] Document base-dir and relative-path expectations.
+- [x] Keep the pair registry non-options only.
+- [x] Require rationale for every added or removed pair.
+- [x] Cross-link pair changes to the pack and parity-checker docs.
+- [x] Avoid implying exhaustive artifact coverage from the registry.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,33 @@ Public-repo quality focus:
 - prefer stronger rationale for a few pairs over a sprawling registry
 - if a pair becomes obsolete, remove it deliberately and explain the replacement coverage
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh verification of the current pair registry rather than a registry edit.
+- The current checked-in registry shape was revalidated in place:
+  - `version: 1`
+  - `base_dir: ".."`
+  - pair count: `2`
+- The `base_dir` contract remains intentional: `scripts/output_parity_pairs.json` resolves `..` to the repo root, so the registry can point cleanly at both:
+  - checked-in baselines under `scripts/baselines/samples/`
+  - candidate artifacts under `_write_test/headless_reports/`
+- The current pairs remain intentionally narrow and structurally meaningful:
+  - `report-json-artifact`
+    - baseline: `scripts/baselines/samples/report.json`
+    - candidate: `_write_test/headless_reports/AAPL_headless_current.json`
+    - structural purpose: JSON shape compatibility for the regenerated headless report
+  - `report-xlsx-zip-structure`
+    - baseline: `scripts/baselines/samples/report.xlsx`
+    - candidate: `_write_test/headless_reports/AAPL_headless_current.xlsx`
+    - structural purpose: workbook container/marker and coarse size-shape compatibility for the regenerated XLSX report
+- Fresh acceptance evidence for this closure:
+  - `node scripts/check_output_parity.mjs --pairs scripts/output_parity_pairs.json`
+  - supporting regenerated-candidate flow already verified through:
+    - `node scripts/run_output_parity_check.mjs --pack scripts/headless_output_parity_pack.json --pairs scripts/output_parity_pairs.json`
+- Verified result on the current tree:
+  - `Output parity check passed for 2 pair(s).`
+- No pair was added, removed, or repointed for this closure. The registry remains intentionally non-exhaustive and continues to work only as a focused structural parity contract in combination with the headless parity pack and checker.
 
 ## Related Docs
 

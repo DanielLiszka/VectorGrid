@@ -1,6 +1,6 @@
 # Tauri Config Sync Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document why both config files exist and which one is canonical.
-- [ ] Document the expected `frontendDist` difference explicitly.
-- [ ] Keep the sync checker current with Tauri config shape changes.
-- [ ] Keep this config-sync plan non-options only.
-- [ ] Run the sync checker whenever config files or build commands change.
-- [ ] Avoid implying that sync alone proves runtime correctness.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document why both config files exist and which one is canonical.
+- [x] Document the expected `frontendDist` difference explicitly.
+- [x] Keep the sync checker current with Tauri config shape changes.
+- [x] Keep this config-sync plan non-options only.
+- [x] Run the sync checker whenever config files or build commands change.
+- [x] Avoid implying that sync alone proves runtime correctness.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,21 @@ Public-repo quality focus:
 - prefer tightening the checker over relying on convention
 - if the mirror becomes unnecessary in the future, remove it deliberately rather than letting it rot
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closure date: `2026-04-10`
+- Implemented a checker hardening change in `scripts/check_tauri_config_sync.mjs` so the window comparison now normalizes the full shared window object instead of a hand-picked subset. This closes the prior silent-drift hole where `decorations` matched today but would not have been checked.
+- Synced adjacent authority docs so the mirror contract is explicit in prose:
+  - `REPO_MAP.md` now states that `src-tauri/tauri.conf.json` is canonical and the root mirror keeps the single expected `frontendDist` exception (`../web/dist` vs `./web/dist`)
+  - `RELEASE.md` now states the same canonical-vs-mirror `frontendDist` distinction directly
+- Verified with:
+  - `node scripts/check_tauri_config_sync.mjs`
+- Verification result:
+  - `Tauri config mirror is in sync with src-tauri/tauri.conf.json`
+- No build or desktop smoke rerun was required for closure because the actual Tauri config values did not change; this item tightened the checker and the explanatory docs only.
+- Output artifact location: none beyond the script's pass/fail stdout.
+- Refresh trigger for this check: any change to `src-tauri/tauri.conf.json`, `tauri.conf.json`, or the checker script itself.
 
 ## Related Docs
 
