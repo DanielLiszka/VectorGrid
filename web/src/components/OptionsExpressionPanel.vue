@@ -191,14 +191,35 @@ function formatBytes(value: number | null | undefined): string {
 }
 
 const VALIDATION_STRESS_DROP_THRESHOLD = 0.03
+const VALIDATION_MONOTONICITY_EPSILON = 1e-9
+const SELECTED_TUPLE_SCOPE_LABEL = 'Selected tuple only'
+const RETAINED_SCOPE_LABEL = 'Within retained top_k only'
+const SEALED_SCOPE_LABEL = 'Within sealed finalists only'
 
 type ValidationTone = 'pass' | 'pending' | 'mixed'
+type ValidationMonotonicityState = 'monotone' | 'non_monotone' | 'insufficient_lanes'
 
 interface ValidationPresentationSummary {
   verdict: OptionsExpressionValidationVerdict
   label: string
   tone: ValidationTone
   detail: string
+}
+
+interface ValidationInterpretationValueRow {
+  key: string
+  label: string
+  value: string
+  detail: string
+  scopeLabel: string
+}
+
+interface ValidationInterpretationStateRow {
+  key: string
+  label: string
+  statusLabel: string
+  detail: string
+  scopeLabel: string
 }
 
 interface RealismLanePresentationSummary {
@@ -472,6 +493,178 @@ function formatMetricsSupport(metrics: OptionsExpressionMetricsSummary | null | 
   const totalEvents = metricsTotalEvents(metrics)
   if (!totalEvents) return `${metrics.validTrades} / 0`
   return `${metrics.validTrades} / ${totalEvents} (${formatPercent(metricsSupportRate(metrics), 1)})`
+}
+
+function formatSignedOptionalDecimal(value: number | null | undefined, digits = 4): string {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return '—'
+  return `${parsed >= 0 ? '+' : ''}${parsed.toFixed(digits)}`
+}
+
+function metricsExpectancy(
+  metrics: OptionsExpressionMetricsSummary | null | undefined,
+  requireSupported = true,
+): number | null {
+  const resolved = requireSupported ? supportedMetrics(metrics) : metrics
+  const parsed = Number(resolved?.expectancyPerPremium)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function buildExpectancyTransitionDetail(
+  fromLabel: string,
+  fromExpectancy: number,
+  toLabel: string,
+  toExpectancy: number,
+): string {
+  return `${fromLabel} ${formatOptionalDecimal(fromExpectancy)} -> ${toLabel} ${formatOptionalDecimal(toExpectancy)}`
+}
+
+function buildValidationDriftRow(
+  key: string,
+  label: string,
+  fromLabel: string,
+  fromExpectancy: number | null,
+  toLabel: string,
+  toExpectancy: number | null,
+  scopeLabel: string,
+): ValidationInterpretationValueRow | null {
+  if (fromExpectancy == null || toExpectancy == null) return null
+  const from = Number(fromExpectancy)
+  const to = Number(toExpectancy)
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null
+  return {
+    key,
+    label,
+    value: formatSignedOptionalDecimal(to - from),
+    detail: buildExpectancyTransitionDetail(fromLabel, from, toLabel, to),
+    scopeLabel,
+  }
+}
+
+function monotonicityStatusLabel(state: ValidationMonotonicityState): string {
+  switch (state) {
+    case 'monotone':
+      return 'Monotone'
+    case 'non_monotone':
+      return 'Non-monotone'
+    case 'insufficient_lanes':
+    default:
+      return 'Insufficient lanes'
+  }
+}
+
+function describeValidationMonotonicity(
+  points: Array<{ label: string; expectancy: number }>,
+): { state: ValidationMonotonicityState; detail: string } {
+  if (points.length < 2) {
+    const onlyPoint = points[0]
+    return {
+      state: 'insufficient_lanes',
+      detail: onlyPoint
+        ? `Observed lane: ${onlyPoint.label} ${formatOptionalDecimal(onlyPoint.expectancy)}`
+        : 'No supported validation lanes are present.',
+    }
+  }
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1]
+    const current = points[index]
+    if (!previous || !current) continue
+    if (current.expectancy > previous.expectancy + VALIDATION_MONOTONICITY_EPSILON) {
+      return {
+        state: 'non_monotone',
+        detail: points
+          .map((point) => `${point.label} ${formatOptionalDecimal(point.expectancy)}`)
+          .join(' -> '),
+      }
+    }
+  }
+  return {
+    state: 'monotone',
+    detail: points
+      .map((point) => `${point.label} ${formatOptionalDecimal(point.expectancy)}`)
+      .join(' -> '),
+  }
+}
+
+function buildValidationRegretRow(
+  key: string,
+  label: string,
+  scopeLabel: string,
+  selectedExpectancy: number | null,
+  candidateExpectancies: Array<number | null>,
+): ValidationInterpretationValueRow | null {
+  if (selectedExpectancy == null) return null
+  const comparators = candidateExpectancies
+    .filter((value): value is number => value != null)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+  if (comparators.length < 2) return null
+  const selected = Number(selectedExpectancy)
+  if (!Number.isFinite(selected)) return null
+  const best = Math.max(...comparators)
+  return {
+    key,
+    label,
+    value: formatOptionalDecimal(best - selected),
+    detail: `Best scope EV ${formatOptionalDecimal(best)} across ${comparators.length} scope row${comparators.length === 1 ? '' : 's'}.`,
+    scopeLabel,
+  }
+}
+
+function supportedTupleMetricsByKey(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+  key: string,
+): OptionsExpressionMetricsSummary | null {
+  if (!tuple) return null
+  switch (key) {
+    case 'holdout':
+      return supportedMetrics(tuple.holdoutMetrics)
+    case 'sealed':
+      return supportedMetrics(tuple.sealedEvaluationMetrics)
+    case 'stress':
+      return supportedMetrics(tuple.stressMetrics)
+    case 'sealed_stress':
+      return supportedMetrics(tuple.sealedStressMetrics)
+    case 'harsher':
+      return supportedMetrics(tuple.harsherStressMetrics)
+    case 'sealed_harsher':
+      return supportedMetrics(tuple.sealedHarsherStressMetrics)
+    case 'extreme':
+      return supportedMetrics(tuple.extremeStressMetrics)
+    case 'sealed_extreme':
+      return supportedMetrics(tuple.sealedExtremeStressMetrics)
+    default:
+      return null
+  }
+}
+
+function buildValidationFamilyPoints(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+  family: 'holdout' | 'sealed',
+): Array<{ label: string; expectancy: number }> {
+  const descriptors = family === 'sealed'
+    ? [
+        { key: 'sealed', label: 'Sealed finalist' },
+        { key: 'sealed_stress', label: 'Sealed stress' },
+        { key: 'sealed_harsher', label: 'Sealed harsher' },
+        { key: 'sealed_extreme', label: 'Sealed extreme' },
+      ]
+    : [
+        { key: 'holdout', label: 'Holdout' },
+        { key: 'stress', label: 'Stress' },
+        { key: 'harsher', label: 'Harsher' },
+        { key: 'extreme', label: 'Extreme' },
+      ]
+  return descriptors
+    .map((descriptor) => {
+      const expectancy = metricsExpectancy(supportedTupleMetricsByKey(tuple, descriptor.key))
+      if (expectancy == null || !Number.isFinite(Number(expectancy))) return null
+      return {
+        label: descriptor.label,
+        expectancy: Number(expectancy),
+      }
+    })
+    .filter((entry): entry is { label: string; expectancy: number } => Boolean(entry))
 }
 
 function formatArtifactSupportCount(
@@ -1666,6 +1859,38 @@ const selectedTupleSupportRows = computed(() => {
     },
   ]
 })
+const selectedTupleValidationScopeRows = computed(() => {
+  const tuple = selectedTuple.value
+  if (!tuple) return []
+  const hasRetainedScope = Boolean(
+    supportedMetrics(tuple.holdoutMetrics)
+    || supportedMetrics(tuple.stressMetrics)
+    || supportedMetrics(tuple.harsherStressMetrics)
+    || supportedMetrics(tuple.extremeStressMetrics),
+  )
+  const hasSealedScope = Boolean(
+    supportedMetrics(tuple.sealedEvaluationMetrics)
+    || supportedMetrics(tuple.sealedStressMetrics)
+    || supportedMetrics(tuple.sealedHarsherStressMetrics)
+    || supportedMetrics(tuple.sealedExtremeStressMetrics),
+  )
+  return [
+    hasRetainedScope
+      ? {
+          key: 'retained-scope',
+          label: 'Retained frontier scope',
+          value: RETAINED_SCOPE_LABEL,
+        }
+      : null,
+    hasSealedScope
+      ? {
+          key: 'sealed-scope',
+          label: 'Sealed frontier scope',
+          value: SEALED_SCOPE_LABEL,
+        }
+      : null,
+  ].filter((entry): entry is { key: string; label: string; value: string } => Boolean(entry))
+})
 const activeRealismLane = computed(() =>
   describeRealismLane(activePriceSemantics.value, activeRequest.value?.fillModel),
 )
@@ -1796,6 +2021,155 @@ const selectedTupleValidationFrontierRows = computed(() => {
     support: string
   } => Boolean(entry))
   return rows
+})
+const selectedTupleValidationDriftRows = computed(() => {
+  const tuple = selectedTuple.value
+  if (!tuple) return []
+  return [
+    buildValidationDriftRow(
+      'drift-sel-hold',
+      'Selection -> Holdout',
+      'Selection',
+      metricsExpectancy(tuple.selectionMetrics, false),
+      'Holdout',
+      metricsExpectancy(tuple.holdoutMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+    buildValidationDriftRow(
+      'drift-hold-sealed',
+      'Holdout -> Sealed',
+      'Holdout',
+      metricsExpectancy(tuple.holdoutMetrics),
+      'Sealed finalist',
+      metricsExpectancy(tuple.sealedEvaluationMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+    buildValidationDriftRow(
+      'drift-hold-stress',
+      'Holdout -> Stress',
+      'Holdout',
+      metricsExpectancy(tuple.holdoutMetrics),
+      'Stress',
+      metricsExpectancy(tuple.stressMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+    buildValidationDriftRow(
+      'drift-stress-harsher',
+      'Stress -> Harsher',
+      'Stress',
+      metricsExpectancy(tuple.stressMetrics),
+      'Harsher',
+      metricsExpectancy(tuple.harsherStressMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+    buildValidationDriftRow(
+      'drift-harsher-extreme',
+      'Harsher -> Extreme',
+      'Harsher',
+      metricsExpectancy(tuple.harsherStressMetrics),
+      'Extreme',
+      metricsExpectancy(tuple.extremeStressMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+    buildValidationDriftRow(
+      'drift-sealed-stress',
+      'Sealed -> Sealed stress',
+      'Sealed finalist',
+      metricsExpectancy(tuple.sealedEvaluationMetrics),
+      'Sealed stress',
+      metricsExpectancy(tuple.sealedStressMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+    buildValidationDriftRow(
+      'drift-sealed-stress-harsher',
+      'Sealed stress -> Sealed harsher',
+      'Sealed stress',
+      metricsExpectancy(tuple.sealedStressMetrics),
+      'Sealed harsher',
+      metricsExpectancy(tuple.sealedHarsherStressMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+    buildValidationDriftRow(
+      'drift-sealed-harsher-extreme',
+      'Sealed harsher -> Sealed extreme',
+      'Sealed harsher',
+      metricsExpectancy(tuple.sealedHarsherStressMetrics),
+      'Sealed extreme',
+      metricsExpectancy(tuple.sealedExtremeStressMetrics),
+      SELECTED_TUPLE_SCOPE_LABEL,
+    ),
+  ].filter((entry): entry is ValidationInterpretationValueRow => Boolean(entry))
+})
+const selectedTupleValidationMonotonicityRows = computed(() => {
+  const tuple = selectedTuple.value
+  if (!tuple) return []
+  const holdoutPoints = buildValidationFamilyPoints(tuple, 'holdout')
+  const sealedPoints = buildValidationFamilyPoints(tuple, 'sealed')
+  return [
+    holdoutPoints.length > 0
+      ? (() => {
+          const verdict = describeValidationMonotonicity(holdoutPoints)
+          return {
+            key: 'monotonicity-holdout-family',
+            label: 'Holdout family',
+            statusLabel: monotonicityStatusLabel(verdict.state),
+            detail: verdict.detail,
+            scopeLabel: SELECTED_TUPLE_SCOPE_LABEL,
+          }
+        })()
+      : null,
+    sealedPoints.length > 0
+      ? (() => {
+          const verdict = describeValidationMonotonicity(sealedPoints)
+          return {
+            key: 'monotonicity-sealed-family',
+            label: 'Sealed family',
+            statusLabel: monotonicityStatusLabel(verdict.state),
+            detail: verdict.detail,
+            scopeLabel: SELECTED_TUPLE_SCOPE_LABEL,
+          }
+        })()
+      : null,
+  ].filter((entry): entry is ValidationInterpretationStateRow => Boolean(entry))
+})
+const selectedTupleValidationRegretRows = computed(() => {
+  const tuple = selectedTuple.value
+  const rows = activeRows.value
+  if (!tuple || rows.length === 0) return []
+  return [
+    buildValidationRegretRow(
+      'regret-holdout',
+      'Retained holdout regret',
+      RETAINED_SCOPE_LABEL,
+      metricsExpectancy(tuple.holdoutMetrics),
+      rows.map((entry) => metricsExpectancy(entry.holdoutMetrics)),
+    ),
+    buildValidationRegretRow(
+      'regret-stress',
+      'Retained stress regret',
+      RETAINED_SCOPE_LABEL,
+      metricsExpectancy(tuple.stressMetrics),
+      rows.map((entry) => metricsExpectancy(entry.stressMetrics)),
+    ),
+    buildValidationRegretRow(
+      'regret-sealed',
+      'Sealed regret',
+      SEALED_SCOPE_LABEL,
+      metricsExpectancy(tuple.sealedEvaluationMetrics),
+      rows
+        .filter((entry) => entry.sealedFinalist)
+        .map((entry) => metricsExpectancy(entry.sealedEvaluationMetrics)),
+    ),
+    buildValidationRegretRow(
+      'regret-sealed-stress',
+      'Sealed stress regret',
+      SEALED_SCOPE_LABEL,
+      metricsExpectancy(tuple.sealedStressMetrics),
+      rows
+        .filter((entry) => entry.sealedFinalist)
+        .map((entry) => metricsExpectancy(entry.sealedStressMetrics)),
+    ),
+  ].filter((entry): entry is ValidationInterpretationValueRow => Boolean(entry))
 })
 const validationWinnersRows = computed(() => {
   const rows = activeRows.value
@@ -3924,7 +4298,7 @@ function focusTupleIndex(index: number): void {
           {{ selectedTupleValidation.detail }}
         </div>
         <div v-if="selectedTupleSupportRows.length > 0" class="panelMuted mono">
-          Hold {{ selectedTupleSupportRows[0]?.value }} · Sealed {{ selectedTupleSupportRows[1]?.value }} · Stress {{ selectedTupleSupportRows[2]?.value }}
+          Holdout support {{ selectedTupleSupportRows[0]?.value }} · Sealed support {{ selectedTupleSupportRows[1]?.value }} · Strongest stress support {{ selectedTupleSupportRows[2]?.value }}
         </div>
         <div v-if="winnerDisagreementSummary" class="gateBadgeRow">
           <span
@@ -4329,6 +4703,85 @@ function focusTupleIndex(index: number): void {
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </details>
+          <details
+            v-if="
+              selectedTupleValidationScopeRows.length > 0
+              || selectedTupleValidationDriftRows.length > 0
+              || selectedTupleValidationMonotonicityRows.length > 0
+              || selectedTupleValidationRegretRows.length > 0
+            "
+            class="panelDetails"
+            open
+          >
+            <summary>Validation interpretation</summary>
+            <div class="panelDetailsBody">
+              <div v-if="selectedTupleValidationScopeRows.length > 0" class="detailGrid detailGridTight">
+                <div v-for="row in selectedTupleValidationScopeRows" :key="row.key">
+                  <span class="panelMetricKey">{{ row.label }}</span>
+                  <span class="panelMetricValue mono">{{ row.value }}</span>
+                </div>
+              </div>
+              <div class="panelMuted">
+                Support rows above reflect valid trades over total events for this retained tuple. They describe retained evidence depth, not a confidence interval. Regret rows below compare only within the stated scope.
+              </div>
+              <div v-if="selectedTupleValidationDriftRows.length > 0" class="tableWrap">
+                <table class="resultTable">
+                  <thead>
+                    <tr>
+                      <th>Transition</th>
+                      <th>Delta EV / Premium</th>
+                      <th>Scope</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in selectedTupleValidationDriftRows" :key="row.key">
+                      <td class="mono">{{ row.label }}</td>
+                      <td class="mono">{{ row.value }}</td>
+                      <td>{{ row.scopeLabel }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="selectedTupleValidationMonotonicityRows.length > 0" class="tableWrap">
+                <table class="resultTable">
+                  <thead>
+                    <tr>
+                      <th>Family</th>
+                      <th>Status</th>
+                      <th>Scope</th>
+                      <th>Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in selectedTupleValidationMonotonicityRows" :key="row.key">
+                      <td class="mono">{{ row.label }}</td>
+                      <td class="mono">{{ row.statusLabel }}</td>
+                      <td>{{ row.scopeLabel }}</td>
+                      <td>{{ row.detail }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="selectedTupleValidationRegretRows.length > 0" class="tableWrap">
+                <table class="resultTable">
+                  <thead>
+                    <tr>
+                      <th>Lane</th>
+                      <th>Regret</th>
+                      <th>Scope</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in selectedTupleValidationRegretRows" :key="row.key">
+                      <td class="mono">{{ row.label }}</td>
+                      <td class="mono">{{ row.value }}</td>
+                      <td>{{ row.scopeLabel }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </details>
           <details v-if="selectedInspection" class="panelDetails" open>

@@ -140,6 +140,45 @@ function makeRunSummary(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function makeMetrics(overrides: Record<string, unknown> = {}) {
+  return {
+    validTrades: 2,
+    invalidEvents: 0,
+    invalidRate: 0,
+    expectancyPerTrade: 10,
+    expectancyPerPremium: 0.1,
+    medianReturnOnPremium: 0.05,
+    winRate: 0.5,
+    totalPnlPerContract: 20,
+    ...overrides,
+  }
+}
+
+function makeTuple(overrides: Record<string, unknown> = {}) {
+  return {
+    delayMinutes: 0,
+    dteDays: 1,
+    moneynessBucket: 'atm',
+    holdMinutes: 15,
+    targetReturn: 0.25,
+    stopReturn: 0.25,
+    exitTemplate: 'fixed_hold_or_target_stop',
+    fillModel: 'aggregate_research',
+    robustScore: 0.1,
+    sealedFinalist: false,
+    selectionMetrics: makeMetrics({ expectancyPerPremium: 0.2, expectancyPerTrade: 12, totalPnlPerContract: 24 }),
+    holdoutMetrics: null,
+    sealedEvaluationMetrics: null,
+    stressMetrics: null,
+    sealedStressMetrics: null,
+    harsherStressMetrics: null,
+    sealedHarsherStressMetrics: null,
+    extremeStressMetrics: null,
+    sealedExtremeStressMetrics: null,
+    ...overrides,
+  }
+}
+
 function makeArtifactRecord(overrides: Record<string, unknown> = {}) {
   return {
     version: 1,
@@ -2414,7 +2453,7 @@ describe('OptionsExpressionPanel', () => {
     await holdoutRow!.trigger('click')
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('Selected tuple validation · Holdout-supported')
-    expect(wrapper.text()).toContain('Hold 2 / 2 (100.0%)')
+    expect(wrapper.text()).toContain('Holdout support 2 / 2 (100.0%)')
 
     const sealedRow = rows.find((entry) => entry.text().includes('itm_1'))
     expect(sealedRow).toBeTruthy()
@@ -2422,7 +2461,7 @@ describe('OptionsExpressionPanel', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('Selected tuple validation · Sealed finalist')
     expect(wrapper.text()).toContain('Promoted into the sealed finalist set (#1)')
-    expect(wrapper.text()).toContain('Sealed 2 / 2 (100.0%)')
+    expect(wrapper.text()).toContain('Sealed support 2 / 2 (100.0%)')
     expect(wrapper.text()).toContain('Validation frontier')
     expect(wrapper.text()).toContain('Sealed finalist')
 
@@ -2582,6 +2621,775 @@ describe('OptionsExpressionPanel', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('Selected tuple validation · Holdout-supported')
     expect(wrapper.text()).toContain('Supported holdout trades are present')
+  })
+
+  it('adds validation interpretation drift, monotonicity, regret, and scope labels for the selected tuple', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          robustScore: 0.3,
+          selectionMetrics: {
+            validTrades: 4,
+            invalidEvents: 1,
+            invalidRate: 0.2,
+            expectancyPerTrade: 10,
+            expectancyPerPremium: 0.2,
+            medianReturnOnPremium: 0.14,
+            winRate: 0.5,
+            totalPnlPerContract: 40,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.1,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.07,
+            medianReturnOnPremium: 0.05,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 3,
+            expectancyPerPremium: 0.04,
+            medianReturnOnPremium: 0.03,
+            winRate: 0.5,
+            totalPnlPerContract: 6,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 2,
+            expectancyPerPremium: 0.03,
+            medianReturnOnPremium: 0.02,
+            winRate: 0.5,
+            totalPnlPerContract: 4,
+          },
+          harsherStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 2,
+            expectancyPerPremium: 0.02,
+            medianReturnOnPremium: 0.01,
+            winRate: 0.5,
+            totalPnlPerContract: 3,
+          },
+          sealedHarsherStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 1,
+            expectancyPerPremium: 0.01,
+            medianReturnOnPremium: 0.01,
+            winRate: 0.5,
+            totalPnlPerContract: 2,
+          },
+          extremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 0,
+            expectancyPerPremium: -0.01,
+            medianReturnOnPremium: -0.01,
+            winRate: 0.5,
+            totalPnlPerContract: 0,
+          },
+          sealedExtremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: -1,
+            expectancyPerPremium: -0.02,
+            medianReturnOnPremium: -0.02,
+            winRate: 0.5,
+            totalPnlPerContract: -2,
+          },
+        },
+        {
+          delayMinutes: 5,
+          dteDays: 3,
+          moneynessBucket: 'otm_1',
+          holdMinutes: 30,
+          targetReturn: 0.5,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: true,
+          sealedFinalRank: 2,
+          robustScore: 0.29,
+          selectionMetrics: {
+            validTrades: 4,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 9,
+            expectancyPerPremium: 0.18,
+            medianReturnOnPremium: 0.12,
+            winRate: 0.5,
+            totalPnlPerContract: 36,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 7,
+            expectancyPerPremium: 0.12,
+            medianReturnOnPremium: 0.09,
+            winRate: 0.5,
+            totalPnlPerContract: 14,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.10,
+            medianReturnOnPremium: 0.07,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.05,
+            medianReturnOnPremium: 0.03,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 3,
+            expectancyPerPremium: 0.04,
+            medianReturnOnPremium: 0.03,
+            winRate: 0.5,
+            totalPnlPerContract: 6,
+          },
+          harsherStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 2,
+            expectancyPerPremium: 0.01,
+            medianReturnOnPremium: 0.01,
+            winRate: 0.5,
+            totalPnlPerContract: 2,
+          },
+          sealedHarsherStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 1,
+            expectancyPerPremium: 0.0,
+            medianReturnOnPremium: 0.0,
+            winRate: 0.5,
+            totalPnlPerContract: 0,
+          },
+          extremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: -1,
+            expectancyPerPremium: -0.03,
+            medianReturnOnPremium: -0.02,
+            winRate: 0.5,
+            totalPnlPerContract: -2,
+          },
+          sealedExtremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: -2,
+            expectancyPerPremium: -0.04,
+            medianReturnOnPremium: -0.03,
+            winRate: 0.5,
+            totalPnlPerContract: -4,
+          },
+        },
+        {
+          delayMinutes: 10,
+          dteDays: 5,
+          moneynessBucket: 'otm_2',
+          holdMinutes: 45,
+          targetReturn: 0.75,
+          stopReturn: 0.5,
+          exitTemplate: 'base_exit_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: false,
+          robustScore: 0.12,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.14,
+            medianReturnOnPremium: 0.09,
+            winRate: 0.5,
+            totalPnlPerContract: 18,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 7,
+            expectancyPerPremium: 0.16,
+            medianReturnOnPremium: 0.11,
+            winRate: 0.5,
+            totalPnlPerContract: 14,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 15,
+            expectancyPerPremium: 0.90,
+            medianReturnOnPremium: 0.80,
+            winRate: 0.5,
+            totalPnlPerContract: 30,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.10,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 14,
+            expectancyPerPremium: 0.80,
+            medianReturnOnPremium: 0.70,
+            winRate: 0.5,
+            totalPnlPerContract: 28,
+          },
+        },
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Validation interpretation')
+    expect(wrapper.text()).toContain('Selection -> Holdout')
+    expect(wrapper.text()).toContain('-0.1000')
+    expect(wrapper.text()).toContain('Holdout -> Sealed')
+    expect(wrapper.text()).toContain('-0.0300')
+    expect(wrapper.text()).toContain('Holdout -> Stress')
+    expect(wrapper.text()).toContain('Sealed stress -> Sealed harsher')
+    expect(wrapper.text()).toContain('Holdout family')
+    expect(wrapper.text()).toContain('Sealed family')
+    expect(wrapper.text()).toContain('Monotone')
+    expect(wrapper.text()).toContain('Selected tuple only')
+    expect(wrapper.text()).toContain('Retained holdout regret')
+    expect(wrapper.text()).toContain('0.0200')
+    expect(wrapper.text()).toContain('Sealed regret')
+    expect(wrapper.text()).toContain('0.0300')
+    expect(wrapper.text()).toContain('Within retained top_k only')
+    expect(wrapper.text()).toContain('Within sealed finalists only')
+    expect(wrapper.text()).toContain('Support rows above reflect valid trades over total events')
+  })
+
+  it('reports non-monotone and insufficient validation ladders separately', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          robustScore: 0.2,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 8,
+            expectancyPerPremium: 0.16,
+            medianReturnOnPremium: 0.11,
+            winRate: 0.5,
+            totalPnlPerContract: 24,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.1,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.12,
+            medianReturnOnPremium: 0.09,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.07,
+            medianReturnOnPremium: 0.05,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+        },
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Validation interpretation')
+    expect(wrapper.text()).toContain('Non-monotone')
+    expect(wrapper.text()).toContain('Holdout 0.1000 -> Stress 0.1200')
+    expect(wrapper.text()).toContain('Insufficient lanes')
+  })
+
+  it('computes retained regret from raw retained rows rather than the filtered display table', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          robustScore: 0.18,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 7,
+            expectancyPerPremium: 0.16,
+            medianReturnOnPremium: 0.1,
+            winRate: 0.5,
+            totalPnlPerContract: 21,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.1,
+            medianReturnOnPremium: 0.07,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 3,
+            expectancyPerPremium: 0.06,
+            medianReturnOnPremium: 0.04,
+            winRate: 0.5,
+            totalPnlPerContract: 6,
+          },
+        },
+        {
+          delayMinutes: 5,
+          dteDays: 3,
+          moneynessBucket: 'otm_1',
+          holdMinutes: 30,
+          targetReturn: 0.5,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: false,
+          robustScore: 0.12,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.12,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 18,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 9,
+            expectancyPerPremium: 0.25,
+            medianReturnOnPremium: 0.18,
+            winRate: 0.5,
+            totalPnlPerContract: 18,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.08,
+            medianReturnOnPremium: 0.05,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+        },
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+
+    const finalistsToggle = wrapper.findAll('label').find((entry) => entry.text().includes('Finalists only'))
+    expect(finalistsToggle).toBeTruthy()
+    await finalistsToggle!.find('input').setValue(true)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Retained holdout regret')
+    expect(wrapper.text()).toContain('0.1500')
+    expect(wrapper.text()).toContain('Within retained top_k only')
+  })
+
+  it('computes sealed-scope regret from sealed finalists only', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          robustScore: 0.2,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 8,
+            expectancyPerPremium: 0.16,
+            medianReturnOnPremium: 0.1,
+            winRate: 0.5,
+            totalPnlPerContract: 24,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.1,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.07,
+            medianReturnOnPremium: 0.05,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.04,
+            medianReturnOnPremium: 0.03,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 3,
+            expectancyPerPremium: 0.03,
+            medianReturnOnPremium: 0.02,
+            winRate: 0.5,
+            totalPnlPerContract: 6,
+          },
+        },
+        {
+          delayMinutes: 5,
+          dteDays: 3,
+          moneynessBucket: 'otm_1',
+          holdMinutes: 30,
+          targetReturn: 0.5,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: true,
+          sealedFinalRank: 2,
+          robustScore: 0.19,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 7,
+            expectancyPerPremium: 0.14,
+            medianReturnOnPremium: 0.09,
+            winRate: 0.5,
+            totalPnlPerContract: 21,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.11,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.09,
+            medianReturnOnPremium: 0.06,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.05,
+            medianReturnOnPremium: 0.03,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.04,
+            medianReturnOnPremium: 0.03,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+        },
+        {
+          delayMinutes: 10,
+          dteDays: 5,
+          moneynessBucket: 'itm_1',
+          holdMinutes: 45,
+          targetReturn: 0.75,
+          stopReturn: 0.5,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: false,
+          robustScore: 0.1,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.12,
+            medianReturnOnPremium: 0.07,
+            winRate: 0.5,
+            totalPnlPerContract: 18,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.1,
+            medianReturnOnPremium: 0.07,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 10,
+            expectancyPerPremium: 0.2,
+            medianReturnOnPremium: 0.14,
+            winRate: 0.5,
+            totalPnlPerContract: 20,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.06,
+            medianReturnOnPremium: 0.04,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 8,
+            expectancyPerPremium: 0.15,
+            medianReturnOnPremium: 0.1,
+            winRate: 0.5,
+            totalPnlPerContract: 16,
+          },
+        },
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Sealed regret')
+    expect(wrapper.text()).toContain('0.0200')
+    expect(wrapper.text()).toContain('Sealed stress regret')
+    expect(wrapper.text()).toContain('0.0100')
+    expect(wrapper.text()).toContain('Within sealed finalists only')
   })
 
   it('surfaces search-winner vs validation-winner disagreement in the current frontier', async () => {
@@ -3079,5 +3887,218 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('event-2 / holdout / bearish')
     expect(wrapper.text()).toContain('candidate_missing / no_expiration_in_bucket')
     expect(wrapper.text()).not.toContain('Event path replay')
+  })
+
+  it('adds validation interpretation drift rows, monotonicity cues, and scope labels for the selected tuple', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        makeTuple({
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          validationVerdict: 'sealed_finalist',
+          selectionMetrics: makeMetrics({ expectancyPerPremium: 0.22, expectancyPerTrade: 12 }),
+          holdoutMetrics: makeMetrics({ expectancyPerPremium: 0.18, expectancyPerTrade: 8 }),
+          sealedEvaluationMetrics: makeMetrics({ expectancyPerPremium: 0.16, expectancyPerTrade: 7 }),
+          stressMetrics: makeMetrics({ expectancyPerPremium: 0.12, expectancyPerTrade: 6 }),
+          sealedStressMetrics: makeMetrics({ expectancyPerPremium: 0.15, expectancyPerTrade: 6 }),
+          harsherStressMetrics: makeMetrics({ expectancyPerPremium: 0.10, expectancyPerTrade: 5 }),
+          sealedHarsherStressMetrics: makeMetrics({ expectancyPerPremium: 0.12, expectancyPerTrade: 5 }),
+          extremeStressMetrics: makeMetrics({ expectancyPerPremium: 0.11, expectancyPerTrade: 4 }),
+          sealedExtremeStressMetrics: makeMetrics({ expectancyPerPremium: 0.08, expectancyPerTrade: 3 }),
+        }),
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Validation interpretation')
+    expect(wrapper.text()).toContain('Retained frontier scope')
+    expect(wrapper.text()).toContain('Within retained top_k only')
+    expect(wrapper.text()).toContain('Sealed frontier scope')
+    expect(wrapper.text()).toContain('Within sealed finalists only')
+    expect(wrapper.text()).toContain('Support rows above reflect valid trades over total events')
+    expect(wrapper.text()).toContain('Selection -> Holdout')
+    expect(wrapper.text()).toContain('Holdout -> Sealed')
+    expect(wrapper.text()).toContain('Holdout -> Stress')
+    expect(wrapper.text()).toContain('Stress -> Harsher')
+    expect(wrapper.text()).toContain('Harsher -> Extreme')
+    expect(wrapper.text()).toContain('Sealed -> Sealed stress')
+    expect(wrapper.text()).toContain('Sealed stress -> Sealed harsher')
+    expect(wrapper.text()).toContain('Sealed harsher -> Sealed extreme')
+    expect(wrapper.text()).toContain('-0.0400')
+    expect(wrapper.text()).toContain('+0.0100')
+    expect(wrapper.text()).toContain('Holdout family')
+    expect(wrapper.text()).toContain('Sealed family')
+    expect(wrapper.text()).toContain('Non-monotone')
+    expect(wrapper.text()).toContain('Monotone')
+  })
+
+  it('marks sparse validation ladders as insufficient instead of treating missing lanes as failure', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        makeTuple({
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          selectionMetrics: makeMetrics({ expectancyPerPremium: 0.20 }),
+          holdoutMetrics: makeMetrics({ expectancyPerPremium: 0.14 }),
+          sealedEvaluationMetrics: makeMetrics({ expectancyPerPremium: 0.13 }),
+          stressMetrics: null,
+          sealedStressMetrics: null,
+          harsherStressMetrics: null,
+          sealedHarsherStressMetrics: null,
+          extremeStressMetrics: null,
+          sealedExtremeStressMetrics: null,
+        }),
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Validation interpretation')
+    expect(wrapper.text()).toContain('Holdout family')
+    expect(wrapper.text()).toContain('Sealed family')
+    expect(wrapper.text().match(/Insufficient lanes/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+  })
+
+  it('computes retained-scope regret from raw retained rows rather than the filtered display table', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      tupleCount: 3,
+      rankedResults: [
+        makeTuple({
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          robustScore: 0.36,
+          selectionMetrics: makeMetrics({ expectancyPerPremium: 0.34 }),
+          holdoutMetrics: makeMetrics({ expectancyPerPremium: 0.30 }),
+          stressMetrics: makeMetrics({ expectancyPerPremium: 0.28 }),
+          sealedFinalist: false,
+          sealedEvaluationMetrics: null,
+          sealedStressMetrics: null,
+        }),
+        makeTuple({
+          delayMinutes: 5,
+          dteDays: 3,
+          moneynessBucket: 'otm_1',
+          robustScore: 0.32,
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          selectionMetrics: makeMetrics({ expectancyPerPremium: 0.29 }),
+          holdoutMetrics: makeMetrics({ expectancyPerPremium: 0.24 }),
+          stressMetrics: makeMetrics({ expectancyPerPremium: 0.20 }),
+          sealedEvaluationMetrics: makeMetrics({ expectancyPerPremium: 0.22 }),
+          sealedStressMetrics: makeMetrics({ expectancyPerPremium: 0.18 }),
+        }),
+        makeTuple({
+          delayMinutes: 10,
+          dteDays: 5,
+          moneynessBucket: 'itm_1',
+          robustScore: 0.28,
+          sealedFinalist: true,
+          sealedFinalRank: 2,
+          selectionMetrics: makeMetrics({ expectancyPerPremium: 0.27 }),
+          holdoutMetrics: makeMetrics({ expectancyPerPremium: 0.26 }),
+          stressMetrics: makeMetrics({ expectancyPerPremium: 0.22 }),
+          sealedEvaluationMetrics: makeMetrics({ expectancyPerPremium: 0.25 }),
+          sealedStressMetrics: makeMetrics({ expectancyPerPremium: 0.21 }),
+        }),
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+
+    const rows = wrapper.findAll('.resultCard > .tableWrap .resultTable tbody tr')
+    const selectedRow = rows.find((entry) => entry.text().includes('otm_1'))
+    expect(selectedRow).toBeTruthy()
+    await selectedRow!.trigger('click')
+    await wrapper.vm.$nextTick()
+
+    const finalistsOnly = wrapper.find('.toggleField input[type="checkbox"]')
+    await finalistsOnly.setValue(true)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Validation interpretation')
+    expect(wrapper.text()).toContain('Retained holdout regret')
+    expect(wrapper.text()).toContain('Retained stress regret')
+    expect(wrapper.text()).toContain('Sealed regret')
+    expect(wrapper.text()).toContain('Sealed stress regret')
+    expect(wrapper.text()).toContain('0.0600')
+    expect(wrapper.text()).toContain('0.0800')
+    expect(wrapper.text()).toContain('0.0300')
   })
 })

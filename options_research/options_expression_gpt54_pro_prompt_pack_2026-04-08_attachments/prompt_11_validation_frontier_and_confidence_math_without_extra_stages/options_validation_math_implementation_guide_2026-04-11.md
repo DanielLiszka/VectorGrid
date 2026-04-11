@@ -1,7 +1,14 @@
 # Options Validation Math - Detailed Implementation Guide
 
 Date: 2026-04-11
-Status: ready for implementation from the validated Prompt 11 residue; this guide is intentionally limited to the valid, additive, zero-extra-state slice and does not authorize ranking, verdict, schema, or workflow changes
+Status: implementation completed for the validated Prompt 11 first slice; the shipped work stays frontend-first and zero-extra-state, while retained-scope dominance remains intentionally deferred
+
+Verified with:
+
+- `npm --prefix web run test -- --run src/components/OptionsExpressionPanel.test.ts`
+- `npm --prefix web run typecheck`
+- `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`
+- `cargo test -q -p ta_app_core options_ --lib`
 
 ## Purpose
 
@@ -586,32 +593,32 @@ This phase is explicitly optional and should not block completion of the core Pr
 
 ### 10.2 Required implementation tasks
 
-- [ ] Keep the first slice frontend-first and zero-extra-state.
-- [ ] Keep ranking, truncation, finalist budgeting, and verdict semantics unchanged.
-- [ ] Keep artifact summary schemas unchanged in the first slice.
-- [ ] Use `activeRows` / `activeRankedResults` as the canonical source for retained-scope Prompt 11 math.
-- [ ] Do not derive new Prompt 11 statistics from `displayedRowsWithIndex` or any filtered/sorted visible subset.
-- [ ] Keep the existing validation-frontier table as the baseline surface rather than replacing it.
-- [ ] Add explicit cross-phase drift rows for `selection -> holdout` and `holdout -> sealed` when both adjacent lanes exist.
-- [ ] Add explicit holdout-family stress drift rows for each observed adjacent pair.
-- [ ] Add explicit sealed-family stress drift rows for each observed adjacent pair.
-- [ ] Keep the drift rows mathematically adjacent rather than cumulative.
-- [ ] Add tri-state monotonicity helpers for the holdout family.
-- [ ] Add tri-state monotonicity helpers for the sealed family.
-- [ ] Use `insufficient_lanes` rather than treating missing lanes as failure.
-- [ ] Add selected-tuple retained holdout regret when holdout metrics exist.
-- [ ] Add selected-tuple retained stress regret when stress metrics exist.
-- [ ] Add selected-tuple sealed regret when sealed metrics exist.
-- [ ] Add selected-tuple sealed stress regret when sealed stress metrics exist.
-- [ ] Label every new regret row with the honest scope of the comparison set.
-- [ ] Refine support/adequacy wording without pretending it is a wholly new metric family.
-- [ ] Add explicit retained-scope / sealed-scope labels near the new interpretation block.
-- [ ] Keep the result table unchanged in the first slice.
-- [ ] Keep artifact library rows unchanged in the first slice.
-- [ ] Keep compare-matrix fields unchanged in the first slice.
-- [ ] Keep `optionsExpressionService.ts` normalization unchanged unless implementation proves otherwise.
-- [ ] Keep `optionsExpressionStore.ts` changes minimal or avoid them entirely.
-- [ ] Keep Rust backend files unchanged unless the work has clearly drifted outside the valid slice.
+- [x] Keep the first slice frontend-first and zero-extra-state.
+- [x] Keep ranking, truncation, finalist budgeting, and verdict semantics unchanged.
+- [x] Keep artifact summary schemas unchanged in the first slice.
+- [x] Use `activeRows` / `activeRankedResults` as the canonical source for retained-scope Prompt 11 math.
+- [x] Do not derive new Prompt 11 statistics from `displayedRowsWithIndex` or any filtered/sorted visible subset.
+- [x] Keep the existing validation-frontier table as the baseline surface rather than replacing it.
+- [x] Add explicit cross-phase drift rows for `selection -> holdout` and `holdout -> sealed` when both adjacent lanes exist.
+- [x] Add explicit holdout-family stress drift rows for each observed adjacent pair.
+- [x] Add explicit sealed-family stress drift rows for each observed adjacent pair.
+- [x] Keep the drift rows mathematically adjacent rather than cumulative.
+- [x] Add tri-state monotonicity helpers for the holdout family.
+- [x] Add tri-state monotonicity helpers for the sealed family.
+- [x] Use `insufficient_lanes` rather than treating missing lanes as failure.
+- [x] Add selected-tuple retained holdout regret when holdout metrics exist.
+- [x] Add selected-tuple retained stress regret when stress metrics exist.
+- [x] Add selected-tuple sealed regret when sealed metrics exist.
+- [x] Add selected-tuple sealed stress regret when sealed stress metrics exist.
+- [x] Label every new regret row with the honest scope of the comparison set.
+- [x] Refine support/adequacy wording without pretending it is a wholly new metric family.
+- [x] Add explicit retained-scope / sealed-scope labels near the new interpretation block.
+- [x] Keep the result table unchanged in the first slice.
+- [x] Keep artifact library rows unchanged in the first slice.
+- [x] Keep compare-matrix fields unchanged in the first slice.
+- [x] Keep `optionsExpressionService.ts` normalization unchanged unless implementation proves otherwise.
+- [x] Keep `optionsExpressionStore.ts` changes minimal or avoid them entirely.
+- [x] Keep Rust backend files unchanged unless the work has clearly drifted outside the valid slice.
 
 ### 10.3 Deferred or secondary tasks
 
@@ -622,14 +629,14 @@ This phase is explicitly optional and should not block completion of the core Pr
 
 ### 10.4 Required test tasks
 
-- [ ] Add panel tests for cross-phase drift rows.
-- [ ] Add panel tests for holdout-family stress drift rows.
-- [ ] Add panel tests for sealed-family stress drift rows.
-- [ ] Add panel tests for monotonicity states: `monotone`, `non_monotone`, and `insufficient_lanes`.
-- [ ] Add panel tests proving regret uses raw retained rows rather than the filtered display table.
-- [ ] Add panel tests proving sealed-scope regret only uses sealed finalists.
-- [ ] Add panel tests proving scope labels appear anywhere new Prompt 11 math is shown.
-- [ ] Add or adjust tests only in store/service layers if a helper truly moves there.
+- [x] Add panel tests for cross-phase drift rows.
+- [x] Add panel tests for holdout-family stress drift rows.
+- [x] Add panel tests for sealed-family stress drift rows.
+- [x] Add panel tests for monotonicity states: `monotone`, `non_monotone`, and `insufficient_lanes`.
+- [x] Add panel tests proving regret uses raw retained rows rather than the filtered display table.
+- [x] Add panel tests proving sealed-scope regret only uses sealed finalists.
+- [x] Add panel tests proving scope labels appear anywhere new Prompt 11 math is shown.
+- [x] Add or adjust tests only in store/service layers if a helper truly moves there. No store/service test changes were needed because the helpers stayed in the panel.
 
 ---
 
