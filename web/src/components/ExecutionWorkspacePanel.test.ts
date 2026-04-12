@@ -265,6 +265,35 @@ describe('ExecutionWorkspacePanel', () => {
     expect(text).toContain('Execution chart unavailable: load a workflow dataset first.')
   })
 
+  it('surfaces degraded feed and runner posture in the summary cards', async () => {
+    const { pinia, workflowStore, executionStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.symbol = 'AAPL'
+    executionStore.liveActive = false
+    executionStore.liveSymbol = 'AAPL'
+    executionStore.liveDelayed = true
+    executionStore.liveLifecycleState = 'closed'
+    executionStore.liveStatusHint = 'Live feed for AAPL [delayed] disconnected. Refresh broker review before re-arming automation.'
+    executionStore.runnerActive = false
+    executionStore.runnerLifecycleState = 'stopped'
+    executionStore.recoveryReviewRequired = true
+    executionStore.runnerStatusHint = 'Auto-runner: stopped'
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const feedCard = document.querySelector('.executionPostureCard[data-label="Feed"]')
+    const runnerCard = document.querySelector('.executionPostureCard[data-label="Runner"]')
+    expect(feedCard?.getAttribute('data-tone')).toBe('warn')
+    expect(feedCard?.textContent || '').toContain('Disconnected · AAPL [delayed]')
+    expect(runnerCard?.getAttribute('data-tone')).toBe('warn')
+    expect(runnerCard?.textContent || '').toContain('Stopped · review required')
+  })
+
   it('renders broker order rows through the shared headless table path', async () => {
     const { pinia, workflowStore, executionStore } = primeExecutionPanelStores()
     workflowStore.selectWorkspace('live')
@@ -612,6 +641,7 @@ describe('ExecutionWorkspacePanel', () => {
 
     expect(runOnceSpy).not.toHaveBeenCalled()
     expect(document.body.textContent || '').toContain('Confirm submit paper order once?')
+    expect(document.body.textContent || '').toContain('Broker review: Broker refresh required.')
 
     const confirmButton = document.querySelector(
       '.confirmationDialogActions button:last-child',
@@ -703,6 +733,8 @@ describe('ExecutionWorkspacePanel', () => {
 
     expect(startRunnerSpy).not.toHaveBeenCalled()
     expect(document.body.textContent || '').toContain('Start the auto-runner?')
+    expect(document.body.textContent || '').toContain('Recovery: No recovery review pending.')
+    expect(document.body.textContent || '').toContain('Broker review: Broker refresh required.')
 
     const confirmButton = document.querySelector(
       '.confirmationDialogActions button:last-child',
@@ -751,6 +783,7 @@ describe('ExecutionWorkspacePanel', () => {
     expect(cancelSpy).not.toHaveBeenCalled()
     expect(document.body.textContent || '').toContain('Cancel current-symbol open orders?')
     expect(document.body.textContent || '').toContain('does not flatten any existing broker position')
+    expect(document.body.textContent || '').toContain('Broker review: Broker refresh required.')
     ;(document.querySelector('.confirmationDialogActions button:last-child') as HTMLButtonElement | null)?.click()
     await nextTick()
     expect(cancelSpy).toHaveBeenCalledTimes(1)

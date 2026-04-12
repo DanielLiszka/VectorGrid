@@ -159,10 +159,10 @@ This plan assumes:
 
 ### 18. Live execution runner
 
-- [ ] Audit risk-sensitive actions for confirmation, clarity, and status reporting
-- [ ] Tighten live snapshot and runner-state refresh behavior
-- [ ] Improve degraded/error-state wording for broker/runtime integration failures
-- [ ] Add tests for runner lifecycle transitions that can affect operator trust
+- [x] Audit risk-sensitive actions for confirmation, clarity, and status reporting
+- [x] Tighten live snapshot and runner-state refresh behavior
+- [x] Improve degraded/error-state wording for broker/runtime integration failures
+- [x] Add tests for runner lifecycle transitions that can affect operator trust
 
 ### 19. Task lifecycle and runtime instrumentation
 

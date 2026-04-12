@@ -59,9 +59,16 @@ interface ExecutionActionOptions {
 interface ExecutionRunnerStatusResponse {
   active?: unknown
   inflight?: unknown
+  started_at_unix_ms?: unknown
+  last_bar_open_unix_ms?: unknown
+  last_triggered_at_unix_ms?: unknown
+  last_completed_at_unix_ms?: unknown
   run_count?: unknown
   skip_count?: unknown
   error_count?: unknown
+  last_action?: unknown
+  last_order_id?: unknown
+  last_error?: unknown
   config?: unknown
 }
 
@@ -333,6 +340,7 @@ export interface ExecutionActionResult {
   liveLifecycleState?: ExecutionLiveLifecycleState
   runnerLifecycleState?: ExecutionRunnerLifecycleState
   recoveryReviewRequired?: boolean
+  brokerReviewRefreshRequired?: boolean
   prependOrderRows?: ExecutionOrderRow[]
   positionMeta?: string
   chartMeta?: string
@@ -446,6 +454,11 @@ export interface ParsedRunnerEvent {
   execution: ExecuteSignalResponse | null
 }
 
+interface ExecutionFollowupWarning {
+  short: string
+  detail: string
+}
+
 export interface ExecutionRuntimeEventHandlers {
   onPolygonLiveStatus?: (event: ParsedLiveStatus) => void
   onRunnerEvent?: (event: ParsedRunnerEvent) => void
@@ -466,6 +479,192 @@ function toNumber(value: unknown): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return Number.NaN
   return parsed
+}
+
+function ensureTrailingPeriod(value: string): string {
+  const trimmed = text(value)
+  if (!trimmed) return ''
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+function detailAfterPrefix(detail: string, prefix: string): string {
+  const trimmed = text(detail)
+  if (!trimmed) return ''
+  return trimmed.toLowerCase().startsWith(prefix.toLowerCase())
+    ? text(trimmed.slice(prefix.length))
+    : trimmed
+}
+
+function liveFeedSubject(symbolRaw: unknown, delayed: boolean): string {
+  const symbol = canonicalSymbol(symbolRaw)
+  return `Live feed${symbol ? ` for ${symbol}` : ''}${delayed ? ' [delayed]' : ''}`
+}
+
+function startsWithAutoRunnerLabel(value: string): boolean {
+  return /^auto-runner\b/i.test(text(value))
+}
+
+function compactRunnerFailureForSummary(value: string): string {
+  const trimmed = text(value)
+  if (!trimmed) return ''
+  const compact = trimmed.replace(/^auto-runner(?: for [A-Z0-9./_-]+)?\s+/i, '')
+  if (!compact) return ''
+  return compact.charAt(0).toUpperCase() + compact.slice(1)
+}
+
+export function normalizeExecutionOperatorError(value: unknown): string {
+  const detail = text(value)
+  const lowered = detail.toLowerCase()
+  if (!detail) return ''
+  if (
+    lowered.includes('failed to fetch alpaca account') ||
+    lowered.includes('alpaca account request failed')
+  ) {
+    return 'Alpaca account review failed. Check credentials and broker connectivity, then retry.'
+  }
+  if (
+    lowered.includes('failed to fetch alpaca orders') ||
+    lowered.includes('alpaca orders request failed')
+  ) {
+    return 'Broker order review failed. Check Alpaca connectivity, then refresh again.'
+  }
+  if (
+    lowered.includes('failed to fetch alpaca position') ||
+    lowered.includes('failed to fetch alpaca positions') ||
+    lowered.includes('alpaca position request failed') ||
+    lowered.includes('alpaca positions request failed')
+  ) {
+    return 'Broker position review failed. Check Alpaca connectivity, then refresh again.'
+  }
+  if (
+    lowered.includes('failed to cancel alpaca order') ||
+    lowered.includes('alpaca order cancel failed')
+  ) {
+    return 'Broker order cancellation failed. Check Alpaca connectivity and retry.'
+  }
+  if (
+    lowered.includes('failed to submit alpaca order') ||
+    lowered.includes('alpaca order failed')
+  ) {
+    return 'Broker order submission failed. Confirm credentials, buying power, and broker availability, then retry.'
+  }
+  if (lowered.includes('failed to decode alpaca')) {
+    return 'Broker response decoding failed. Retry the request.'
+  }
+  if (
+    lowered.includes('failed to initialize alpaca http client') ||
+    lowered.includes('failed to build alpaca http client')
+  ) {
+    return 'Broker connection could not be initialized. Check credentials and network access, then retry.'
+  }
+  if (lowered.includes('polygon api key')) {
+    return 'Polygon credentials are missing. Configure the market-data API key before starting live candles.'
+  }
+  return detail
+}
+
+function normalizeLiveRuntimeMessage(
+  statusRaw: unknown,
+  rawMessage: unknown,
+  symbolRaw: unknown,
+  delayed: boolean,
+): string {
+  const status = text(statusRaw).toLowerCase()
+  const detail = text(rawMessage)
+  const subject = liveFeedSubject(symbolRaw, delayed)
+  if (status === 'connecting') return `${subject} connecting.`
+  if (status === 'subscribed') return `${subject} subscribed to minute aggregates.`
+  if (status === 'started') return `${subject} started.`
+  if (status === 'stopped') return `${subject} stopped.`
+  if (status === 'closed') {
+    if (!detail || detail === 'remote close' || detail === 'stream ended') {
+      return `${subject} disconnected. Refresh broker review before re-arming automation.`
+    }
+    return `${subject} closed. ${ensureTrailingPeriod(detail)} Refresh broker review before re-arming automation.`
+  }
+  if (status === 'error') {
+    if (detail.includes('connect timed out')) {
+      return `${subject} connection timed out. Check Polygon connectivity, then refresh broker review before re-arming automation.`
+    }
+    if (detail.includes('connect failed')) {
+      return `${subject} connection failed. Check Polygon connectivity, then refresh broker review before re-arming automation.`
+    }
+    if (detail.includes('auth send')) {
+      return `${subject} authentication failed. Check the Polygon API key, then refresh broker review before re-arming automation.`
+    }
+    if (detail.includes('subscribe send')) {
+      return `${subject} subscription failed. Check Polygon connectivity, then refresh broker review before re-arming automation.`
+    }
+    if (detail.includes('stream read failed')) {
+      return `${subject} disconnected while reading market data. Check Polygon connectivity, then refresh broker review before re-arming automation.`
+    }
+    if (detail) {
+      return `${subject} encountered an error. ${ensureTrailingPeriod(detail)} Refresh broker review before re-arming automation.`
+    }
+    return `${subject} encountered an error. Refresh broker review before re-arming automation.`
+  }
+  return detail
+}
+
+function normalizeRunnerFailureMessage(rawMessage: unknown, symbolRaw: unknown): string {
+  const detail = text(rawMessage)
+  const lowered = detail.toLowerCase()
+  const symbol = canonicalSymbol(symbolRaw)
+  const subject = `Auto-runner${symbol ? ` for ${symbol}` : ''}`
+  if (!detail) return ''
+  if (lowered.startsWith('runner failed to apply live bar:')) {
+    const inner = detailAfterPrefix(detail, 'runner failed to apply live bar:')
+    const normalizedInner = normalizeExecutionOperatorError(inner)
+    if (normalizedInner === inner || !normalizedInner) {
+      return `${subject} could not apply the latest live candle to the loaded dataset. Review the dataset and re-arm only after broker review is refreshed.`
+    }
+    return `${subject} could not apply the latest live candle. ${normalizedInner}`
+  }
+  if (lowered.startsWith('runner failed to load strategy candles:')) {
+    const inner = detailAfterPrefix(detail, 'runner failed to load strategy candles:')
+    if (inner.toLowerCase().includes('unknown data id')) {
+      return `${subject} could not load the selected execution dataset. Reload the matching dataset and refresh broker review before re-arming.`
+    }
+    const normalizedInner = normalizeExecutionOperatorError(inner)
+    if (normalizedInner === inner || !normalizedInner) {
+      return `${subject} could not load strategy candles for the selected dataset. Reload the matching dataset before re-arming.`
+    }
+    return `${subject} could not load strategy candles. ${normalizedInner}`
+  }
+  if (lowered.startsWith('runner execution failed:')) {
+    const inner = detailAfterPrefix(detail, 'runner execution failed:')
+    const normalizedInner = normalizeExecutionOperatorError(inner)
+    if (normalizedInner === inner || !normalizedInner) {
+      return `${subject} execution failed. ${ensureTrailingPeriod(inner)}`
+    }
+    return `${subject} execution failed. ${normalizedInner}`
+  }
+  return detail
+}
+
+function normalizeRunnerEventMessage(
+  statusRaw: unknown,
+  rawMessage: unknown,
+  symbolRaw: unknown,
+): string {
+  const status = text(statusRaw).toLowerCase()
+  const message = text(rawMessage)
+  const symbol = canonicalSymbol(symbolRaw)
+  if (status === 'started') {
+    return `Auto-runner started${symbol ? ` for ${symbol}` : ''}.`
+  }
+  if (status === 'stopped') return 'Auto-runner stopped.'
+  if (status === 'cancelled') return 'Auto-runner cancelled.'
+  if (status === 'triggered') {
+    return `Auto-runner triggered on the latest live bar${symbol ? ` for ${symbol}` : ''}.`
+  }
+  if (status === 'queued_latest') {
+    return 'Auto-runner queued the latest live bar while the prior run was still in flight.'
+  }
+  if (status === 'error') {
+    return normalizeRunnerFailureMessage(message, symbolRaw) || `Auto-runner error${symbol ? ` for ${symbol}` : ''}.`
+  }
+  return message
 }
 
 function positiveInt(value: unknown): number {
@@ -617,6 +816,49 @@ function trimTrailingZeros(num: number, maxDecimals = 6): string {
   if (!Number.isFinite(num)) return '-'
   const fixed = num.toFixed(Math.max(0, Math.floor(maxDecimals)))
   return fixed.replace(/(?:\.0+|(\.\d*?)0+)$/, '$1')
+}
+
+function redactExecutionSecrets(detail: string, secrets: Array<string | null | undefined>): string {
+  let next = text(detail)
+  for (const secret of secrets) {
+    const token = text(secret)
+    if (!token) continue
+    next = next.split(token).join('[redacted]')
+  }
+  return next
+}
+
+function renderFollowupWarnings(base: string, warnings: ExecutionFollowupWarning[]): string {
+  const prefix = String(base || '').trim()
+  if (!warnings.length) return prefix
+  const rendered = warnings.map((warning) => text(warning.detail)).filter((warning) => warning.length > 0)
+  if (!rendered.length) return prefix
+  if (!prefix) return `Follow-up warnings:\n${rendered.join('\n')}`
+  return `${prefix}\n\nFollow-up warnings:\n${rendered.join('\n')}`
+}
+
+function applyExecutionFollowupWarnings(
+  result: ExecutionActionResult,
+  warnings: ExecutionFollowupWarning[],
+): ExecutionActionResult {
+  const activeWarnings = warnings.filter(
+    (warning) => text(warning.short).length > 0 || text(warning.detail).length > 0,
+  )
+  if (!activeWarnings.length) return result
+  const shortText = activeWarnings
+    .map((warning) => text(warning.short))
+    .filter((warning) => warning.length > 0)
+    .join(' ')
+  const detailText = activeWarnings
+    .map((warning) => text(warning.detail))
+    .filter((warning) => warning.length > 0)
+    .join(' ')
+  return {
+    ...result,
+    statusLine: `${text(result.statusLine)}${shortText ? ` ${shortText}` : ''}`.trim(),
+    statusHint: `${text(result.statusHint || result.statusLine)}${detailText ? ` ${detailText}` : ''}`.trim(),
+    outputPreview: renderFollowupWarnings(result.outputPreview || '', activeWarnings),
+  }
 }
 
 function toUtcDateTime(rawMs: unknown): string {
@@ -956,11 +1198,24 @@ function buildBrokerReview(
   }
 }
 
-function summarizeRunnerStatus(raw: unknown): { text: string; active: boolean } {
+function summarizeRunnerStatus(raw: unknown): {
+  text: string
+  active: boolean
+  lifecycle: ExecutionRunnerLifecycleState
+} {
   const status = isRecord(raw) ? (raw as ExecutionRunnerStatusResponse) : {}
   const active = !!status.active
   const cfg = isRecord(status.config) ? (status.config as ExecutionRunnerConfigResponse) : null
-  if (!active || !cfg) return { text: 'Auto-runner: off', active: false }
+  const lastError = compactRunnerFailureForSummary(
+    normalizeRunnerFailureMessage(status.last_error, cfg?.symbol),
+  )
+  if (!active || !cfg) {
+    return {
+      text: lastError ? `Auto-runner: off. Last failure: ${lastError}` : 'Auto-runner: off',
+      active: false,
+      lifecycle: lastError ? 'error' : 'off',
+    }
+  }
   const mode = text(cfg.mode).toLowerCase() || 'paper'
   const dry = !!cfg.dry_run ? 'dry-run' : 'broker'
   const sym = canonicalSymbol(cfg.symbol) || text(cfg.symbol) || '-'
@@ -968,13 +1223,41 @@ function summarizeRunnerStatus(raw: unknown): { text: string; active: boolean } 
   const errs = Math.max(0, Math.floor(Number(status.error_count || 0)))
   const skips = Math.max(0, Math.floor(Number(status.skip_count || 0)))
   const inflight = !!status.inflight
+  const lastAction = text(status.last_action).toLowerCase()
+  const lastOrderId = text(status.last_order_id)
+  const lastCompletedAt = fetchedAtUnixMs(status.last_completed_at_unix_ms)
+  const lastTriggeredAt = fetchedAtUnixMs(status.last_triggered_at_unix_ms)
+  const lastBarAt = fetchedAtUnixMs(status.last_bar_open_unix_ms)
+  const detailParts: string[] = []
+  if (lastAction) {
+    detailParts.push(`last action=${lastAction}`)
+  }
+  if (lastOrderId) {
+    detailParts.push(`order=${lastOrderId}`)
+  }
+  if (lastCompletedAt != null) {
+    detailParts.push(`completed=${toUtcDateTime(lastCompletedAt)}`)
+  } else if (lastTriggeredAt != null) {
+    detailParts.push(`triggered=${toUtcDateTime(lastTriggeredAt)}`)
+  } else if (lastBarAt != null) {
+    detailParts.push(`bar=${toUtcDateTime(lastBarAt)}`)
+  }
+  const detailSuffix = detailParts.length > 0 ? ` · ${detailParts.join(' · ')}` : ''
+  const summary = `Auto-runner: on (${sym}, ${mode}, ${dry}) runs=${runs} skips=${skips} errs=${errs}${inflight ? ' [in-flight]' : ''}${detailSuffix}`
   return {
-    text: `Auto-runner: on (${sym}, ${mode}, ${dry}) runs=${runs} skips=${skips} errs=${errs}${inflight ? ' [in-flight]' : ''}`,
+    text: lastError ? `${summary}. Last failure: ${lastError}` : summary,
     active,
+    lifecycle: 'active',
   }
 }
 
-function liveStatusHint(active: boolean, symbolRaw: unknown, delayed: boolean, statusRaw?: unknown): string {
+function liveStatusHint(
+  active: boolean,
+  symbolRaw: unknown,
+  delayed: boolean,
+  statusRaw?: unknown,
+  rawMessage?: unknown,
+): string {
   const symbol = canonicalSymbol(symbolRaw)
   const suffix = symbol ? ` for ${symbol}` : ''
   const delayText = delayed ? ' [delayed]' : ''
@@ -990,8 +1273,9 @@ function liveStatusHint(active: boolean, symbolRaw: unknown, delayed: boolean, s
   }
   if (!active) {
     if (status === 'stopped') return 'Live candles stopped.'
-    if (status === 'closed') return `Live candles closed${suffix}${delayText}.`.trim()
-    if (status === 'error') return `Live candles error${suffix}${delayText}.`.trim()
+    if (status === 'closed' || status === 'error') {
+      return normalizeLiveRuntimeMessage(status, rawMessage, symbol, delayed)
+    }
     return 'Live candles: off'
   }
   return `Live candles active${suffix}${delayText}.`.trim()
@@ -1020,13 +1304,14 @@ export function parsePolygonLiveStatusEvent(raw: unknown): ParsedLiveStatus {
   const symbol = canonicalSymbol(row.symbol)
   const delayed = !!row.delayed
   const active = status === 'started' || status === 'connecting' || status === 'subscribed'
+  const message = normalizeLiveRuntimeMessage(status, row.message, symbol, delayed)
   return {
     active,
     symbol,
     delayed,
-    hint: liveStatusHint(active, symbol, delayed, status),
+    hint: liveStatusHint(active, symbol, delayed, status, row.message),
     status,
-    message: text(row.message),
+    message,
   }
 }
 
@@ -1057,7 +1342,7 @@ export function parseRunnerEvent(raw: unknown): ParsedRunnerEvent {
   const row = isRecord(raw) ? (raw as LiveExecutionRunnerEventPayload) : {}
   const status = text(row.status).toLowerCase()
   const symbol = canonicalSymbol(row.symbol)
-  const message = text(row.message)
+  const message = normalizeRunnerEventMessage(status, row.message, symbol)
   let active: boolean | null = null
   if (RUNNER_INACTIVE_EVENT_STATUSES.has(status)) {
     active = false
@@ -1069,7 +1354,9 @@ export function parseRunnerEvent(raw: unknown): ParsedRunnerEvent {
     status,
     symbol,
     message,
-    hint: message ? `Auto-runner: ${message}` : 'Auto-runner status updated.',
+    hint: message
+      ? (startsWithAutoRunnerLabel(message) ? message : `Auto-runner: ${message}`)
+      : 'Auto-runner status updated.',
     active,
     execution: isRecord(row.execution) ? (row.execution as ExecuteSignalResponse) : null,
   }
@@ -1301,6 +1588,40 @@ async function persistRememberedExecutionTypedOverride(
   await storeExecutionCredentialsSecurely(typedOverride.apiKey, typedOverride.apiSecret)
 }
 
+async function persistRememberedExecutionTypedOverrideWarning(
+  options: ExecutionActionOptions,
+  typedOverride: { apiKey: string; apiSecret: string } | null,
+  successContext: string,
+): Promise<ExecutionFollowupWarning | null> {
+  if (!options.rememberKeys || !typedOverride) return null
+  try {
+    await persistRememberedExecutionTypedOverride(options, typedOverride)
+    return null
+  } catch (error) {
+    const detail = redactExecutionSecrets(String(error || '').trim(), [
+      typedOverride.apiKey,
+      typedOverride.apiSecret,
+      options.apiKey,
+      options.apiSecret,
+    ])
+    return {
+      short: 'Secure credential storage did not update.',
+      detail: `${text(successContext) || 'The action still succeeded.'} Secure credential storage did not update${detail ? `: ${detail}` : '.'}`,
+    }
+  }
+}
+
+function brokerReviewRefreshFailureWarning(
+  actionSummary: string,
+  error: unknown,
+): ExecutionFollowupWarning {
+  const detail = text(error)
+  return {
+    short: 'Broker review refresh failed.',
+    detail: `${text(actionSummary) || 'The broker-facing action still succeeded.'} Broker review refresh failed${detail ? `: ${detail}` : '.'} Refresh orders manually now.`,
+  }
+}
+
 async function resolveManualExecutionStrategy(
   options: ExecutionActionOptions,
 ): Promise<{ strategyKind: string; strategy: { kind: 'double_ma' | 'composite_cpu'; req: Record<string, unknown> }; source: string }> {
@@ -1423,10 +1744,14 @@ async function buildExecutionInvokePayload(
   }
 }
 
-async function refreshRunnerStatusHint(): Promise<{ hint: string; active: boolean }> {
+async function refreshRunnerStatusHint(): Promise<{
+  hint: string
+  active: boolean
+  lifecycle: ExecutionRunnerLifecycleState
+}> {
   const raw = await invokeCommand('live_execution_runner_status')
   const summary = summarizeRunnerStatus(raw)
-  return { hint: summary.text, active: summary.active }
+  return { hint: summary.text, active: summary.active, lifecycle: summary.lifecycle }
 }
 
 async function refreshLiveStatus(): Promise<ParsedLiveStatus> {
@@ -1441,12 +1766,16 @@ export async function testConnection(options: ExecutionActionOptions): Promise<E
   const resp = (await invokeCommand('test_alpaca_connection', {
     req,
   })) as ExecutionConnectionResponse
-  await persistRememberedExecutionTypedOverride(options, typedOverride)
+  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
+    options,
+    typedOverride,
+    `Alpaca ${mode} connection still succeeded.`,
+  )
   const accountReview = buildAccountReview(mode, resp, 'test_alpaca_connection', resp?.fetched_at_unix_ms)
   const account = text(resp?.account_number || resp?.account_id)
   const status = text(resp?.status)
   const suffix = `${account ? ` account=${account}` : ''}${status ? ` status=${status}` : ''}`
-  return {
+  return applyExecutionFollowupWarnings({
     statusLine: `Alpaca ${mode} connection OK.`,
     statusHint: `Alpaca ${mode} connection OK.${suffix}`.trim(),
     accountMeta: accountMeta(accountReview),
@@ -1457,7 +1786,7 @@ export async function testConnection(options: ExecutionActionOptions): Promise<E
       `${mode} account verification`,
       accountReview.fetchedAtUnixMs,
     ),
-  }
+  }, persistWarning ? [persistWarning] : [])
 }
 
 export async function refreshOrders(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
@@ -1477,7 +1806,11 @@ export async function refreshOrders(options: ExecutionActionOptions): Promise<Ex
   const resp = (await invokeCommand('get_live_execution_snapshot', {
     req,
   })) as ExecutionSnapshotResponse
-  await persistRememberedExecutionTypedOverride(options, typedOverride)
+  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
+    options,
+    typedOverride,
+    'Broker review still loaded successfully.',
+  )
   const rows = buildOrderRows(resp?.orders)
   const count = rows.length
   const brokerReview = buildBrokerReview(mode, resp?.symbol || symbol, resp)
@@ -1502,7 +1835,7 @@ export async function refreshOrders(options: ExecutionActionOptions): Promise<Ex
   }
   if (brokerReview?.account) result.accountReview = brokerReview.account
   if (brokerReview) result.brokerReview = brokerReview
-  return result
+  return applyExecutionFollowupWarnings(result, persistWarning ? [persistWarning] : [])
 }
 
 export async function startLive(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
@@ -1550,16 +1883,20 @@ export async function startRunner(options: ExecutionActionOptions): Promise<Exec
   }
 
   const statusRaw = await invokeCommand('start_live_execution_runner', { req })
-  await persistRememberedExecutionTypedOverride(options, typedOverride)
+  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
+    options,
+    typedOverride,
+    'Auto-runner start still succeeded.',
+  )
   const summary = summarizeRunnerStatus(statusRaw)
-  return {
+  return applyExecutionFollowupWarnings({
     statusLine: `Auto-runner started for ${text(req.symbol) || '-'}.`,
     runnerStatusHint: summary.text,
     runnerLifecycleState: 'started',
     runnerActive: summary.active,
     liveSymbol: live.symbol,
     liveDelayed: live.delayed,
-  }
+  }, persistWarning ? [persistWarning] : [])
 }
 
 export async function stopRunner(): Promise<ExecutionActionResult> {
@@ -1582,8 +1919,6 @@ export async function cancelOpenOrders(options: ExecutionActionOptions): Promise
   const resp = (await invokeCommand('cancel_live_execution_open_orders', {
     req,
   })) as CancelLiveExecutionOpenOrdersResponse
-  await persistRememberedExecutionTypedOverride(options, typedOverride)
-  const refreshed = await refreshOrders({ ...options, mode, symbol })
   const cancelledCount = positiveInt(resp?.cancelled_count)
   const openOrderCountBefore = positiveInt(resp?.open_order_count_before)
   const statusLine = cancelledCount > 0
@@ -1592,10 +1927,31 @@ export async function cancelOpenOrders(options: ExecutionActionOptions): Promise
   const statusHint = cancelledCount > 0
     ? `${statusLine} Broker review refreshed from ${openOrderCountBefore} previously open order${openOrderCountBefore === 1 ? '' : 's'}.`
     : `${statusLine} Broker review refreshed.`
-  return {
-    ...refreshed,
-    statusLine,
-    statusHint,
+  const warnings: ExecutionFollowupWarning[] = []
+  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
+    options,
+    typedOverride,
+    `${statusLine} Broker-side order cancellation still succeeded.`,
+  )
+  if (persistWarning) warnings.push(persistWarning)
+  try {
+    const refreshed = await refreshOrders({ ...options, mode, symbol })
+    return applyExecutionFollowupWarnings({
+      ...refreshed,
+      statusLine,
+      statusHint,
+    }, warnings)
+  } catch (error) {
+    warnings.push(brokerReviewRefreshFailureWarning(`${statusLine} Broker-side order cancellation still succeeded.`, error))
+    return applyExecutionFollowupWarnings({
+      statusLine,
+      statusHint: `${statusLine} Broker review refresh is still required.`,
+      reviewMeta: `Broker review: ${mode} symbol-scoped ${symbol} pending manual refresh after a successful cancel-open-orders action.`,
+      positionMeta: 'Position: pending broker refresh.',
+      chartMeta: `Execution chart pending refreshed broker review for ${symbol}.`,
+      outputPreview: safePrettyJson(resp),
+      brokerReviewRefreshRequired: true,
+    }, warnings)
   }
 }
 
@@ -1606,8 +1962,6 @@ export async function flattenPosition(options: ExecutionActionOptions): Promise<
   const resp = (await invokeCommand('flatten_live_execution_position', {
     req,
   })) as FlattenLiveExecutionPositionResponse
-  await persistRememberedExecutionTypedOverride(options, typedOverride)
-  const refreshed = await refreshOrders({ ...options, mode, symbol })
   const submitted = !!resp?.order_submitted
   const positionFound = !!resp?.position_found
   const action = text(resp?.action).toUpperCase()
@@ -1617,10 +1971,41 @@ export async function flattenPosition(options: ExecutionActionOptions): Promise<
     : submitted
       ? `Submitted ${action || 'FLATTEN'} flatten order${orderId ? ` (id=${orderId})` : ''} for ${symbol}.`
       : `Flatten request for ${symbol} did not submit a broker order.`
-  return {
-    ...refreshed,
-    statusLine,
-    statusHint: `${statusLine} Broker review refreshed.`,
+  const warnings: ExecutionFollowupWarning[] = []
+  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
+    options,
+    typedOverride,
+    `${statusLine} Broker-side flatten handling still succeeded.`,
+  )
+  if (persistWarning) warnings.push(persistWarning)
+  try {
+    const refreshed = await refreshOrders({ ...options, mode, symbol })
+    return applyExecutionFollowupWarnings({
+      ...refreshed,
+      statusLine,
+      statusHint: `${statusLine} Broker review refreshed.`,
+    }, warnings)
+  } catch (error) {
+    warnings.push(brokerReviewRefreshFailureWarning(`${statusLine} Broker-side flatten handling still succeeded.`, error))
+    const result: ExecutionActionResult = {
+      statusLine,
+      statusHint: `${statusLine} Broker review refresh is still required.`,
+      reviewMeta: `Broker review: ${mode} symbol-scoped ${symbol} pending manual refresh after a successful flatten-position action.`,
+      positionMeta: 'Position: pending broker refresh.',
+      chartMeta: `Execution chart pending refreshed broker review for ${symbol}.`,
+      outputPreview: safePrettyJson(resp),
+      brokerReviewRefreshRequired: true,
+    }
+    if (submitted) {
+      const optimisticRow = optimisticOrderRowFromExecution({
+        order_submitted: true,
+        action: text(resp?.action),
+        order_id: orderId,
+        delta_qty: toNumber(resp?.qty),
+      })
+      if (optimisticRow) result.prependOrderRows = [optimisticRow]
+    }
+    return applyExecutionFollowupWarnings(result, warnings)
   }
 }
 
@@ -1653,7 +2038,6 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
   const payload = await buildExecutionInvokePayload(options)
   const { req, typedOverride } = applyTypedExecutionCredentialOverride(payload.req, options)
   const resp = (await invokeCommand('execute_strategy_signal_once', { req })) as ExecuteSignalResponse
-  await persistRememberedExecutionTypedOverride(options, typedOverride)
 
   const action = text(resp?.action || 'hold') || 'hold'
   const submitted = !!resp?.order_submitted
@@ -1684,9 +2068,17 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
     if (optimisticRow) {
       result.prependOrderRows = [optimisticRow]
     }
+    result.brokerReviewRefreshRequired = true
   }
 
-  return result
+  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
+    options,
+    typedOverride,
+    submitted && !req.dry_run
+      ? 'Signal execution still completed and a broker order may already have been submitted.'
+      : 'Signal execution still completed.',
+  )
+  return applyExecutionFollowupWarnings(result, persistWarning ? [persistWarning] : [])
 }
 
 export async function refreshStatuses(): Promise<ExecutionActionResult> {
@@ -1694,28 +2086,37 @@ export async function refreshStatuses(): Promise<ExecutionActionResult> {
     refreshRunnerStatusHint(),
     refreshLiveStatus(),
   ])
+  const refreshWarnings: string[] = []
+  if (runner.status !== 'fulfilled') refreshWarnings.push('Auto-runner status refresh unavailable.')
+  if (live.status !== 'fulfilled') refreshWarnings.push('Live-feed status refresh unavailable.')
   const runnerHint = runner.status === 'fulfilled'
     ? runner.value.hint
     : 'Auto-runner status unavailable.'
-  const runnerActive = runner.status === 'fulfilled' ? runner.value.active : false
   const liveSummary = live.status === 'fulfilled'
     ? live.value
     : null
   const liveHint = liveSummary
     ? liveSummary.hint
     : 'Live status unavailable.'
-  const liveActive = liveSummary ? liveSummary.active : false
-  return {
-    statusLine: 'Execution status refreshed.',
+  const result: ExecutionActionResult = {
+    statusLine: refreshWarnings.length > 0 ? 'Execution status refreshed with warnings.' : 'Execution status refreshed.',
+    statusHint: refreshWarnings.length > 0
+      ? `Execution status refreshed with warnings. ${refreshWarnings.join(' ')}`
+      : 'Execution status refreshed.',
     runnerStatusHint: runnerHint,
-    runnerActive,
     liveStatusHint: liveHint,
-    runnerLifecycleState: runner.status === 'fulfilled' ? (runner.value.active ? 'active' : 'off') : 'off',
-    liveActive,
-    liveLifecycleState: liveSummary?.status === 'active' ? 'active' : 'off',
-    liveSymbol: liveSummary?.symbol || '',
-    liveDelayed: !!liveSummary?.delayed,
   }
+  if (runner.status === 'fulfilled') {
+    result.runnerActive = runner.value.active
+    result.runnerLifecycleState = runner.value.lifecycle
+  }
+  if (liveSummary) {
+    result.liveActive = liveSummary.active
+    result.liveLifecycleState = liveSummary.status as ExecutionLiveLifecycleState
+    result.liveSymbol = liveSummary.symbol
+    result.liveDelayed = liveSummary.delayed
+  }
+  return result
 }
 
 export async function getStoredExecutionCredentialStatus(): Promise<ExecutionStoredCredentialStatus> {

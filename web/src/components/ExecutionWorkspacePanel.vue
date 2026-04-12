@@ -83,6 +83,7 @@ const {
   liveLifecycleLabel,
   runnerLifecycleLabel,
   recoveryStatusLabel,
+  brokerReviewRefreshRequired,
   refreshOrdersBlockedReasons,
   runOnceActionLabel,
   runOnceActionDetail,
@@ -204,6 +205,28 @@ const {
   bottomSpacerPx: orderTableBottomSpacerPx,
 } = useVirtualTableRows(executionOrderRowModelRows, { rowHeightPx: 30, overscan: 8 })
 const modeBadgeLabel = computed(() => liveModeArmed.value ? 'Live broker' : 'Paper broker')
+const feedPostureTone = computed<ExecutionPostureItem['tone']>(() => {
+  if (liveLifecycleLabel.value === 'Error') return 'danger'
+  if (liveLifecycleLabel.value === 'Disconnected') return 'warn'
+  if (liveLifecycleLabel.value === 'Connecting' || liveLifecycleLabel.value === 'Subscribed') return 'info'
+  if (!String(feedStateLabel.value || '').trim() || feedStateLabel.value === 'Off') return 'neutral'
+  return liveSymbolMatchesRequested.value ? 'success' : 'warn'
+})
+const runnerPostureTone = computed<ExecutionPostureItem['tone']>(() => {
+  if (runnerStateLabel.value === 'Error' || runnerStateLabel.value === 'Active · recent error') return 'danger'
+  if (
+    runnerStateLabel.value === 'Review required' ||
+    runnerStateLabel.value === 'Stopped · review required'
+  ) return 'warn'
+  if (runnerStateLabel.value === 'Active') return dryRun.value ? 'info' : 'warn'
+  if (
+    runnerStateLabel.value === 'Triggered' ||
+    runnerStateLabel.value === 'Queued latest' ||
+    runnerStateLabel.value === 'Order submitted'
+  ) return dryRun.value ? 'info' : 'warn'
+  if (runnerStateLabel.value === 'Signal processed') return 'info'
+  return 'neutral'
+})
 const executionPostureItems = computed<ExecutionPostureItem[]>(() => [
   {
     label: 'Broker mode',
@@ -218,18 +241,12 @@ const executionPostureItems = computed<ExecutionPostureItem[]>(() => [
   {
     label: 'Feed',
     value: feedStateLabel.value,
-    tone: !String(feedStateLabel.value || '').trim() || feedStateLabel.value === 'Off'
-      ? 'neutral'
-      : liveSymbolMatchesRequested.value
-        ? 'success'
-        : 'warn',
+    tone: feedPostureTone.value,
   },
   {
     label: 'Runner',
     value: runnerStateLabel.value,
-    tone: runnerStateLabel.value === 'Active'
-      ? (dryRun.value ? 'info' : 'warn')
-      : 'neutral',
+    tone: runnerPostureTone.value,
   },
   {
     label: 'Key state',
@@ -247,6 +264,12 @@ const brokerReviewStale = computed(() => {
   const review = brokerReview.value
   if (!review?.fetchedAtUnixMs) return false
   return Date.now() - review.fetchedAtUnixMs > review.staleThresholdMs
+})
+const brokerReviewFreshnessLabel = computed(() => {
+  const review = brokerReview.value
+  const asOf = review?.fetchedAtUnixMs ? formatUiTimeFromUnixMs(review.fetchedAtUnixMs) : 'Unknown'
+  if (brokerReviewRefreshRequired.value) return `Pending manual refresh · ${asOf}`
+  return brokerReviewStale.value ? `Stale · ${asOf}` : `Fresh · ${asOf}`
 })
 const reconciliationLabel = computed(() => {
   switch (reconciliationState.value) {
@@ -302,11 +325,10 @@ const brokerReviewDetails = computed<ReviewDetailItem[]>(() => {
     }
     return items
   }
-  const asOf = review.fetchedAtUnixMs ? formatUiTimeFromUnixMs(review.fetchedAtUnixMs) : 'Unknown'
   const items: ReviewDetailItem[] = [
     { label: 'Scope', value: `symbol-scoped ${review.symbol || '—'}` },
     { label: 'Reconciliation', value: reconciliationLabel.value },
-    { label: 'Freshness', value: brokerReviewStale.value ? `Stale · ${asOf}` : `Fresh · ${asOf}` },
+    { label: 'Freshness', value: brokerReviewFreshnessLabel.value },
     { label: 'Open orders', value: String(review.orders.openCount) },
     { label: 'Review rows', value: String(review.orders.totalCount) },
     { label: 'Position', value: positionMeta.value },
@@ -454,6 +476,12 @@ const safetyControlNotes = computed(() => {
     'Emergency halt: stops the live feed and auto-runner only. Refresh broker review before re-arming automation.',
   ]
 })
+function formatConfirmationContextLines(lines: Array<string | null | undefined>): string {
+  return lines
+    .map((line) => String(line || '').trim())
+    .filter((line) => line.length > 0)
+    .join('\n')
+}
 const confirmationTitle = computed(() => {
   if (pendingAction.value === 'clearKeys') return 'Clear stored execution credentials?'
   if (pendingAction.value === 'runOnce') {
@@ -471,22 +499,50 @@ const confirmationBody = computed(() => {
     return 'This removes any typed execution override from the current session and clears stored secure execution credentials plus any legacy remembered local keys.'
   }
   if (pendingAction.value === 'runOnce') {
-    return `${runOnceActionDetail.value} Review ${requestedSymbolLabel.value}, ${brokerModeLabel.value.toLowerCase()} mode, and ${keyStateLabel.value.toLowerCase()} credentials before continuing.`
+    return formatConfirmationContextLines([
+      `${runOnceActionDetail.value} Review ${requestedSymbolLabel.value}, ${brokerModeLabel.value.toLowerCase()} mode, and ${keyStateLabel.value.toLowerCase()} credentials before continuing.`,
+      `Submission: ${submissionModeLabel.value}.`,
+      `Broker review: ${reconciliationLabel.value}.`,
+      ...reconciliationAdvisories.value.map((note) => `Advisory: ${note}`),
+    ])
   }
   if (pendingAction.value === 'startLive') {
-    return 'The app will begin consuming live candle updates for the current symbol. Review symbol, mode, and delayed-feed settings first.'
+    return formatConfirmationContextLines([
+      'The app will begin consuming live candle updates for the current symbol. Review symbol, mode, and delayed-feed settings first.',
+      `Feed: ${feedStateLabel.value}.`,
+      `Recovery: ${recoveryStatusLabel.value}.`,
+    ])
   }
   if (pendingAction.value === 'startRunner') {
-    return 'The auto-runner can issue repeated execution decisions as new bars arrive. Confirm mode, parameter source, and risk settings first.'
+    return formatConfirmationContextLines([
+      'The auto-runner can issue repeated execution decisions as new bars arrive. Confirm mode, parameter source, and risk settings first.',
+      `Feed: ${feedStateLabel.value}.`,
+      `Recovery: ${recoveryStatusLabel.value}.`,
+      `Broker review: ${reconciliationLabel.value}.`,
+      ...reconciliationAdvisories.value.map((note) => `Advisory: ${note}`),
+    ])
   }
   if (pendingAction.value === 'cancelOpenOrders') {
-    return `This cancels currently open broker orders for ${selectedSymbolLabel.value}. It does not flatten any existing broker position, and the auto-runner must already be off.`
+    return formatConfirmationContextLines([
+      `This cancels currently open broker orders for ${selectedSymbolLabel.value}. It does not flatten any existing broker position, and the auto-runner must already be off.`,
+      `Broker review: ${reconciliationLabel.value}.`,
+      ...reconciliationAdvisories.value.map((note) => `Advisory: ${note}`),
+    ])
   }
   if (pendingAction.value === 'flattenPosition') {
-    return `This submits a market order to flatten the broker position for ${selectedSymbolLabel.value}. It does not cancel open orders or stop the live feed.`
+    return formatConfirmationContextLines([
+      `This submits a market order to flatten the broker position for ${selectedSymbolLabel.value}. It does not cancel open orders or stop the live feed.`,
+      `Broker review: ${reconciliationLabel.value}.`,
+      ...reconciliationAdvisories.value.map((note) => `Advisory: ${note}`),
+    ])
   }
   if (pendingAction.value === 'emergencyHalt') {
-    return 'Emergency halt stops the live feed and auto-runner, then requires a fresh broker review before re-arming. It does not cancel broker orders or flatten positions.'
+    return formatConfirmationContextLines([
+      'Emergency halt stops the live feed and auto-runner, then requires a fresh broker review before re-arming. It does not cancel broker orders or flatten positions.',
+      `Feed: ${feedStateLabel.value}.`,
+      `Recovery: ${recoveryStatusLabel.value}.`,
+      `Broker review: ${reconciliationLabel.value}.`,
+    ])
   }
   return ''
 })
@@ -840,6 +896,8 @@ watch(
           :key="`execution_posture_${item.label}`"
           class="executionPostureCard"
           :class="item.tone"
+          :data-label="item.label"
+          :data-tone="item.tone"
         >
           <div class="executionPostureLabel">{{ item.label }}</div>
           <div class="executionPostureValue mono">{{ item.value }}</div>

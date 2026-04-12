@@ -10,6 +10,7 @@ import {
   listSavedLiveSessions as listSavedLiveSessionsAction,
   loadSavedLiveSessionDetail as loadSavedLiveSessionDetailAction,
   migrateLegacyStoredExecutionKeysToSecureStorage,
+  normalizeExecutionOperatorError,
   optimisticOrderRowFromExecution,
   refreshOrders as refreshOrdersAction,
   refreshStatuses as refreshStatusesAction,
@@ -372,6 +373,14 @@ function deriveReconciliationState(state: ExecutionState): {
       optimisticOrderCount: optimisticCount,
     }
   }
+  if (state.brokerReviewRefreshRequired) {
+    return {
+      kind: optimisticCount > 0 ? 'optimistic_local_pending' : 'unknown',
+      fetchedAtUnixMs: null,
+      openOrderCount: 0,
+      optimisticOrderCount: optimisticCount,
+    }
+  }
   const brokerReview =
     state.brokerReview && state.brokerReview.symbol === symbol && state.brokerReview.mode === (String(state.mode || 'paper').trim() === 'live' ? 'live' : 'paper')
       ? state.brokerReview
@@ -412,6 +421,12 @@ function reviewMetaFromState(state: ExecutionState): string {
   if (state.recoveryReviewRequired) {
     return `Broker review: ${String(state.mode || 'paper').trim()} symbol-scoped ${symbol || '-'} pending broker refresh after the last live interruption.`
   }
+  if (state.brokerReviewRefreshRequired) {
+    if (optimisticOrderCount(state.orderRows) > 0) {
+      return `Broker review: ${String(state.mode || 'paper').trim()} symbol-scoped ${symbol || '-'} waiting for broker confirmation after the latest broker-facing action.`
+    }
+    return `Broker review: ${String(state.mode || 'paper').trim()} symbol-scoped ${symbol || '-'} pending manual refresh after the latest broker-facing action.`
+  }
   const review = deriveReconciliationState(state)
   if (review.kind === 'disabled') {
     return 'Broker review: unavailable until the selected symbol is refreshed.'
@@ -433,6 +448,17 @@ function reviewMetaFromState(state: ExecutionState): string {
 }
 
 function reconciliationAdvisories(state: ExecutionState): string[] {
+  if (state.brokerReviewRefreshRequired) {
+    const optimisticCount = optimisticOrderCount(state.orderRows)
+    if (optimisticCount > 0) {
+      return [
+        `Broker review is waiting on ${optimisticCount} optimistic local order${optimisticCount === 1 ? '' : 's'}. Refresh orders before the next broker-armed action.`,
+      ]
+    }
+    return [
+      'Broker review is pending a manual refresh after the latest broker-facing action.',
+    ]
+  }
   const review = deriveReconciliationState(state)
   if (review.kind === 'optimistic_local_pending') {
     return [
@@ -504,6 +530,33 @@ function recoveryStatusLabel(state: ExecutionState): string {
   return 'Select one symbol to enable recovery review.'
 }
 
+function liveStateSummaryLabel(state: ExecutionState): string {
+  const requestedSymbol = canonicalSymbol(state.symbol)
+  const liveSymbol = canonicalSymbol(state.liveSymbol) || requestedSymbol || '-'
+  const delayedSuffix = state.liveDelayed ? ' [delayed]' : ''
+  const mismatchSuffix =
+    requestedSymbol && liveSymbol && requestedSymbol !== liveSymbol ? ` (mismatch: ${requestedSymbol})` : ''
+  switch (state.liveLifecycleState) {
+    case 'connecting':
+      return `Connecting · ${liveSymbol}${delayedSuffix}${mismatchSuffix}`
+    case 'subscribed':
+      return `Subscribed · ${liveSymbol}${delayedSuffix}${mismatchSuffix}`
+    case 'started':
+    case 'active': {
+      const feedMode = state.liveDelayed ? 'Delayed' : 'Realtime'
+      return `${feedMode} · ${liveSymbol}${mismatchSuffix}`
+    }
+    case 'closed':
+      return `Disconnected · ${liveSymbol}${delayedSuffix}${mismatchSuffix}`
+    case 'error':
+      return `Error · ${liveSymbol}${delayedSuffix}${mismatchSuffix}`
+    case 'stopped':
+      return requestedSymbol ? `Stopped · ${liveSymbol}${delayedSuffix}${mismatchSuffix}` : 'Stopped'
+    default:
+      return 'Off'
+  }
+}
+
 function liveLifecycleStateLabel(state: ExecutionState): string {
   switch (state.liveLifecycleState) {
     case 'connecting':
@@ -513,7 +566,7 @@ function liveLifecycleStateLabel(state: ExecutionState): string {
     case 'started':
       return 'Started'
     case 'closed':
-      return 'Closed'
+      return 'Disconnected'
     case 'error':
       return 'Error'
     case 'stopped':
@@ -523,6 +576,39 @@ function liveLifecycleStateLabel(state: ExecutionState): string {
     default:
       return 'Off'
   }
+}
+
+function runnerStateSummaryLabel(state: ExecutionState): string {
+  if (state.runnerActive) {
+    switch (state.runnerLifecycleState) {
+      case 'triggered':
+        return 'Triggered'
+      case 'queued_latest':
+        return 'Queued latest'
+      case 'signal_processed':
+        return 'Signal processed'
+      case 'order_submitted':
+        return 'Order submitted'
+      case 'error':
+        return 'Active · recent error'
+      default:
+        return 'Active'
+    }
+  }
+  switch (state.runnerLifecycleState) {
+    case 'error':
+      return 'Error'
+    case 'cancelled':
+      return 'Cancelled'
+    case 'stopped':
+      return state.recoveryReviewRequired ? 'Stopped · review required' : 'Stopped'
+    default:
+      return state.recoveryReviewRequired ? 'Review required' : 'Off'
+  }
+}
+
+function preserveInactiveLiveContext(state: ParsedLiveStatus): boolean {
+  return state.status === 'closed' || state.status === 'error' || state.status === 'stopped'
 }
 
 function runnerLifecycleStateLabel(state: ExecutionState): string {
@@ -552,9 +638,26 @@ function runnerLifecycleStateLabel(state: ExecutionState): string {
 
 function syncReviewPresentation(state: ExecutionState): void {
   state.accountMeta = accountMetaFromReview(state.accountReview)
-  state.positionMeta = positionMetaFromReview(state.brokerReview?.position ?? defaultPositionReview())
-  state.chartMeta = chartMetaFromReview(state.brokerReview?.chart ?? defaultChartReview())
+  if (state.brokerReviewRefreshRequired) {
+    const symbol = canonicalSymbol(state.symbol)
+    state.positionMeta = 'Position: pending broker refresh.'
+    state.chartMeta = symbol
+      ? `Execution chart pending refreshed broker review for ${symbol}.`
+      : chartMetaFromReview(state.brokerReview?.chart ?? defaultChartReview())
+  } else {
+    state.positionMeta = positionMetaFromReview(state.brokerReview?.position ?? defaultPositionReview())
+    state.chartMeta = chartMetaFromReview(state.brokerReview?.chart ?? defaultChartReview())
+  }
   state.reviewMeta = reviewMetaFromState(state)
+}
+
+function syncExecutionReviewState(state: ExecutionState): void {
+  const reconciliation = deriveReconciliationState(state)
+  state.reconciliationState = reconciliation.kind
+  state.reconciliationFetchedAtUnixMs = reconciliation.fetchedAtUnixMs
+  state.reconciliationOpenOrderCount = reconciliation.openOrderCount
+  state.reconciliationOptimisticOrderCount = reconciliation.optimisticOrderCount
+  syncReviewPresentation(state)
 }
 
 function prependOptimisticOrderRows(state: ExecutionState, rows: ExecutionOrderRow[]): boolean {
@@ -900,9 +1003,13 @@ function applyActionResult(state: ExecutionState, result: ExecutionActionResult)
   if (result.brokerReview) {
     state.brokerReview = result.brokerReview
     state.recoveryReviewRequired = false
+    state.brokerReviewRefreshRequired = false
   }
   if (typeof result.recoveryReviewRequired === 'boolean') {
     state.recoveryReviewRequired = result.recoveryReviewRequired
+  }
+  if (typeof result.brokerReviewRefreshRequired === 'boolean') {
+    state.brokerReviewRefreshRequired = result.brokerReviewRefreshRequired
   }
   if (result.outputPreviewMeta) {
     state.outputPreviewMeta = result.outputPreviewMeta
@@ -935,12 +1042,7 @@ function applyActionResult(state: ExecutionState, result: ExecutionActionResult)
   if (typeof result.liveDelayed === 'boolean') {
     state.liveDelayed = result.liveDelayed
   }
-  const reconciliation = deriveReconciliationState(state)
-  state.reconciliationState = reconciliation.kind
-  state.reconciliationFetchedAtUnixMs = reconciliation.fetchedAtUnixMs
-  state.reconciliationOpenOrderCount = reconciliation.openOrderCount
-  state.reconciliationOptimisticOrderCount = reconciliation.optimisticOrderCount
-  syncReviewPresentation(state)
+  syncExecutionReviewState(state)
   if (typeof result.positionMeta === 'string' && result.positionMeta.trim()) {
     state.positionMeta = result.positionMeta.trim()
   }
@@ -982,6 +1084,7 @@ interface ExecutionState {
   liveLifecycleState: ExecutionLiveLifecycleState
   runnerLifecycleState: ExecutionRunnerLifecycleState
   recoveryReviewRequired: boolean
+  brokerReviewRefreshRequired: boolean
   liveStatusHint: string
   runnerStatusHint: string
   statusHint: string
@@ -1054,6 +1157,7 @@ export const useExecutionStore = defineStore('execution', {
       liveLifecycleState: 'off',
       runnerLifecycleState: 'off',
       recoveryReviewRequired: false,
+      brokerReviewRefreshRequired: false,
       liveStatusHint: 'Live candles: off',
       runnerStatusHint: 'Auto-runner: off',
       statusHint: 'Requires a loaded dataset. Optimization run is optional when using Manual parameter source.',
@@ -1106,16 +1210,8 @@ export const useExecutionStore = defineStore('execution', {
       if (state.dryRun) return 'Simulation'
       return String(state.mode || 'paper').trim() === 'live' ? 'Live order' : 'Paper order'
     },
-    feedStateLabel: (state): string => {
-      if (!state.liveActive) return 'Off'
-      const liveSymbol = canonicalSymbol(state.liveSymbol) || canonicalSymbol(state.symbol) || '-'
-      const feedMode = state.liveDelayed ? 'Delayed' : 'Realtime'
-      const requestedSymbol = canonicalSymbol(state.symbol)
-      const mismatchSuffix =
-        requestedSymbol && liveSymbol && requestedSymbol !== liveSymbol ? ` (mismatch: ${requestedSymbol})` : ''
-      return `${feedMode} · ${liveSymbol}${mismatchSuffix}`
-    },
-    runnerStateLabel: (state): string => (state.runnerActive ? 'Active' : 'Off'),
+    feedStateLabel: (state): string => liveStateSummaryLabel(state),
+    runnerStateLabel: (state): string => runnerStateSummaryLabel(state),
     requestedSymbolLabel: (state): string => canonicalSymbol(state.symbol) || 'No symbol',
     liveSymbolMatchesRequested: (state): boolean => {
       const requestedSymbol = canonicalSymbol(state.symbol)
@@ -1167,6 +1263,7 @@ export const useExecutionStore = defineStore('execution', {
       this.liveLifecycleState = String((snapshot as Partial<ExecutionState>).liveLifecycleState ?? this.liveLifecycleState ?? 'off').trim() as ExecutionLiveLifecycleState || 'off'
       this.runnerLifecycleState = String((snapshot as Partial<ExecutionState>).runnerLifecycleState ?? this.runnerLifecycleState ?? 'off').trim() as ExecutionRunnerLifecycleState || 'off'
       this.recoveryReviewRequired = Boolean((snapshot as Partial<ExecutionState>).recoveryReviewRequired ?? false)
+      this.brokerReviewRefreshRequired = Boolean((snapshot as Partial<ExecutionState>).brokerReviewRefreshRequired ?? false)
       this.liveStatusHint = String(snapshot.liveStatusHint ?? this.liveStatusHint ?? 'Live candles: off').trim() || 'Live candles: off'
       this.runnerStatusHint = String(snapshot.runnerStatusHint ?? this.runnerStatusHint ?? 'Auto-runner: off').trim() || 'Auto-runner: off'
       this.statusHint = String(snapshot.statusHint ?? this.statusHint ?? '-').trim() || '-'
@@ -1215,19 +1312,20 @@ export const useExecutionStore = defineStore('execution', {
         if (key === 'execSymbol') {
           this.brokerReview = null
           this.recoveryReviewRequired = false
+          this.brokerReviewRefreshRequired = false
           this.reconciliationState = 'disabled'
           this.reconciliationFetchedAtUnixMs = null
           this.reconciliationOpenOrderCount = 0
           this.orderRows = []
           this.orderCount = 0
           this.reconciliationOptimisticOrderCount = 0
-          syncReviewPresentation(this)
         }
         if (key === 'execApiKey' || key === 'execApiSecret') {
           this.storedCredentialClearFailed = false
           syncTypedCredentialPersistenceState(this)
         }
         setAvailability(this)
+        syncExecutionReviewState(this)
         markVue(this)
       }
     },
@@ -1241,15 +1339,16 @@ export const useExecutionStore = defineStore('execution', {
           this.brokerReview = null
           this.outputPreviewMeta = defaultPreviewMeta()
           this.recoveryReviewRequired = false
+          this.brokerReviewRefreshRequired = false
           this.reconciliationState = hasRequestedSymbol(this) ? 'unknown' : 'disabled'
           this.reconciliationFetchedAtUnixMs = null
           this.reconciliationOpenOrderCount = 0
           this.orderRows = []
           this.orderCount = 0
           this.reconciliationOptimisticOrderCount = 0
-          syncReviewPresentation(this)
         }
         setAvailability(this)
+        syncExecutionReviewState(this)
         markVue(this)
       }
     },
@@ -1266,6 +1365,7 @@ export const useExecutionStore = defineStore('execution', {
           syncTypedCredentialPersistenceState(this)
         }
         setAvailability(this)
+        syncExecutionReviewState(this)
         markVue(this)
       }
     },
@@ -1419,7 +1519,8 @@ export const useExecutionStore = defineStore('execution', {
     },
 
     failAction(prefix: string, error: unknown): void {
-      const msg = redactExecutionCredentialText(this, error) || 'Unknown execution error.'
+      const raw = redactExecutionCredentialText(this, error)
+      const msg = normalizeExecutionOperatorError(raw) || raw || 'Unknown execution error.'
       this.statusLine = `${prefix}: ${msg}`
       this.statusHint = this.statusLine
       this.outputPreview = msg
@@ -1438,8 +1539,9 @@ export const useExecutionStore = defineStore('execution', {
     },
 
     applyPolygonLiveStatusEvent(event: ParsedLiveStatus): void {
-      const nextLiveSymbol = event.active ? event.symbol : ''
-      const nextLiveDelayed = event.active ? event.delayed : false
+      const retainContext = preserveInactiveLiveContext(event)
+      const nextLiveSymbol = event.active || retainContext ? event.symbol : ''
+      const nextLiveDelayed = event.active || retainContext ? event.delayed : false
       const nextLiveLifecycleState = (event.status || (event.active ? 'active' : 'off')) as ExecutionLiveLifecycleState
       let changed = false
       if (this.liveActive !== event.active) {
@@ -1482,12 +1584,7 @@ export const useExecutionStore = defineStore('execution', {
         changed = true
       }
       if (!changed) return
-      const reconciliation = deriveReconciliationState(this)
-      this.reconciliationState = reconciliation.kind
-      this.reconciliationFetchedAtUnixMs = reconciliation.fetchedAtUnixMs
-      this.reconciliationOpenOrderCount = reconciliation.openOrderCount
-      this.reconciliationOptimisticOrderCount = reconciliation.optimisticOrderCount
-      syncReviewPresentation(this)
+      syncExecutionReviewState(this)
       setAvailability(this)
       markVue(this)
     },
@@ -1523,6 +1620,10 @@ export const useExecutionStore = defineStore('execution', {
         const optimisticRow = optimisticOrderRowFromExecution(event.execution)
         if (optimisticRow) {
           changed = prependOptimisticOrderRows(this, [optimisticRow]) || changed
+          if (!this.dryRun && !this.brokerReviewRefreshRequired) {
+            this.brokerReviewRefreshRequired = true
+            changed = true
+          }
         }
       }
       if (
@@ -1535,12 +1636,7 @@ export const useExecutionStore = defineStore('execution', {
         changed = true
       }
       if (!changed) return
-      const reconciliation = deriveReconciliationState(this)
-      this.reconciliationState = reconciliation.kind
-      this.reconciliationFetchedAtUnixMs = reconciliation.fetchedAtUnixMs
-      this.reconciliationOpenOrderCount = reconciliation.openOrderCount
-      this.reconciliationOptimisticOrderCount = reconciliation.optimisticOrderCount
-      syncReviewPresentation(this)
+      syncExecutionReviewState(this)
       setAvailability(this)
       markVue(this)
     },

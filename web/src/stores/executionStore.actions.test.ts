@@ -12,6 +12,7 @@ import {
   type ExecutionActionResult,
   type ExecutionRuntimeEventHandlers,
   migrateLegacyStoredExecutionKeysToSecureStorage,
+  normalizeExecutionOperatorError,
   refreshOrders,
   refreshStatuses,
   runOnce,
@@ -53,6 +54,7 @@ vi.mock('../services/executionService', () => ({
     storageBackend: 'keyring',
     message: '',
   })),
+  normalizeExecutionOperatorError: vi.fn((raw: unknown) => String(raw ?? '').trim()),
   optimisticOrderRowFromExecution: vi.fn((executionRaw: unknown) => {
     const execution = executionRaw as { order_submitted?: boolean; action?: string; order_id?: string; delta_qty?: number } | null
     return execution?.order_submitted
@@ -84,6 +86,7 @@ const getStoredExecutionCredentialStatusMock = vi.mocked(getStoredExecutionCrede
 const listSavedLiveSessionsMock = vi.mocked(listSavedLiveSessions)
 const loadSavedLiveSessionDetailMock = vi.mocked(loadSavedLiveSessionDetail)
 const migrateLegacyStoredExecutionKeysToSecureStorageMock = vi.mocked(migrateLegacyStoredExecutionKeysToSecureStorage)
+const normalizeExecutionOperatorErrorMock = vi.mocked(normalizeExecutionOperatorError)
 const optimisticOrderRowFromExecutionMock = vi.mocked(optimisticOrderRowFromExecution)
 const runOnceMock = vi.mocked(runOnce)
 const refreshOrdersMock = vi.mocked(refreshOrders)
@@ -159,6 +162,8 @@ describe('execution store actions', () => {
       storageBackend: 'keyring',
       message: '',
     })
+    normalizeExecutionOperatorErrorMock.mockClear()
+    normalizeExecutionOperatorErrorMock.mockImplementation((raw: unknown) => String(raw ?? '').trim())
     optimisticOrderRowFromExecutionMock.mockClear()
     optimisticOrderRowFromExecutionMock.mockImplementation((executionRaw: unknown) => {
       const execution = executionRaw as { order_submitted?: boolean; action?: string; order_id?: string; delta_qty?: number } | null
@@ -343,6 +348,43 @@ describe('execution store actions', () => {
     resolveRunOnce({ statusLine: 'Signal processed.' })
     await waitForStoreToSettle(store)
     expect(store.pending.runOnce).toBe(false)
+  })
+
+  it('keeps the last known live and runner state when a status refresh returns warnings only', async () => {
+    const store = useExecutionStore()
+    store.applyPolygonLiveStatusEvent({
+      active: true,
+      symbol: 'AAPL',
+      delayed: true,
+      hint: 'Live candles active for AAPL [delayed].',
+      status: 'started',
+      message: 'live started',
+    })
+    store.applyLiveExecutionRunnerEvent({
+      status: 'started',
+      symbol: 'AAPL',
+      message: 'runner started',
+      hint: 'Auto-runner: started',
+      active: true,
+      execution: null,
+    })
+    refreshStatusesMock.mockResolvedValueOnce({
+      statusLine: 'Execution status refreshed with warnings.',
+      statusHint: 'Execution status refreshed with warnings. Auto-runner status refresh unavailable. Live-feed status refresh unavailable.',
+      runnerStatusHint: 'Auto-runner status unavailable.',
+      liveStatusHint: 'Live status unavailable.',
+    })
+
+    await store.refreshStatuses()
+
+    expect(store.liveActive).toBe(true)
+    expect(store.liveLifecycleState).toBe('started')
+    expect(store.liveSymbol).toBe('AAPL')
+    expect(store.runnerActive).toBe(true)
+    expect(store.runnerLifecycleState).toBe('started')
+    expect(store.liveStatusHint).toBe('Live status unavailable.')
+    expect(store.runnerStatusHint).toBe('Auto-runner status unavailable.')
+    expect(store.statusLine).toBe('Execution status refreshed with warnings.')
   })
 
   it('requires a matching live symbol before the runner can start', () => {
@@ -762,12 +804,14 @@ describe('execution store actions', () => {
 
     expect(store.runnerActive).toBe(true)
     expect(store.runnerStatusHint).toBe('Auto-runner: runner execution failed: timeout')
+    expect(store.runnerStateLabel).toBe('Active · recent error')
     expect(store.statusLine).toBe('runner execution failed: timeout')
   })
 
   it('enters a review-required inactive posture after feed closure and backend runner stop', () => {
     const store = useExecutionStore()
     store.setInputField('execSymbol', 'AAPL')
+    store.setCheckboxField('execDryRun', false)
     store.applyPolygonLiveStatusEvent({
       active: true,
       symbol: 'AAPL',
@@ -789,9 +833,9 @@ describe('execution store actions', () => {
       active: false,
       symbol: 'AAPL',
       delayed: true,
-      hint: 'Live candles closed for AAPL [delayed].',
+      hint: 'Live feed for AAPL [delayed] disconnected. Refresh broker review before re-arming automation.',
       status: 'closed',
-      message: 'remote close',
+      message: 'Live feed for AAPL [delayed] disconnected. Refresh broker review before re-arming automation.',
     })
     store.applyLiveExecutionRunnerEvent({
       status: 'stopped',
@@ -804,8 +848,11 @@ describe('execution store actions', () => {
 
     expect(store.liveActive).toBe(false)
     expect(store.runnerActive).toBe(false)
-    expect(store.liveStatusHint).toContain('closed')
+    expect(store.feedStateLabel).toBe('Disconnected · AAPL [delayed]')
+    expect(store.liveLifecycleLabel).toBe('Disconnected')
+    expect(store.liveStatusHint).toContain('disconnected')
     expect(store.runnerStatusHint).toBe('Auto-runner: stopped')
+    expect(store.runnerStateLabel).toBe('Stopped · review required')
     expect(store.canStartRunner).toBe(false)
     expect(store.reviewMeta).toContain('pending broker refresh')
   })
@@ -839,9 +886,9 @@ describe('execution store actions', () => {
       active: false,
       symbol: 'AAPL',
       delayed: true,
-      hint: 'Live candles closed for AAPL [delayed].',
+      hint: 'Live feed for AAPL [delayed] disconnected. Refresh broker review before re-arming automation.',
       status: 'closed',
-      message: 'remote close',
+      message: 'Live feed for AAPL [delayed] disconnected. Refresh broker review before re-arming automation.',
     })
     store.applyLiveExecutionRunnerEvent({
       status: 'stopped',
@@ -1140,6 +1187,81 @@ describe('execution store actions', () => {
     expect(store.reviewMeta).toContain('Broker review: paper symbol-scoped AAPL')
     expect(store.reconciliationState).toBe('broker_confirmed_flat')
     expect(store.accountReview.accountNumber).toBe('ABC123')
+  })
+
+  it('treats optimistic local orders as pending manual broker refresh even when a prior broker review was fresh', () => {
+    const store = useExecutionStore()
+    const freshNow = Date.now()
+
+    store.setInputField('execSymbol', 'AAPL')
+    store.accountReview = {
+      state: 'broker_confirmed',
+      mode: 'paper',
+      sourceCommand: 'get_live_execution_snapshot',
+      fetchedAtUnixMs: freshNow,
+      accountId: '',
+      accountNumber: 'ABC123',
+      status: 'ACTIVE',
+      currency: 'USD',
+      buyingPower: '100000',
+      cash: '25000',
+      portfolioValue: '125000',
+    }
+    store.brokerReview = {
+      sourceCommand: 'get_live_execution_snapshot',
+      mode: 'paper',
+      symbol: 'AAPL',
+      fetchedAtUnixMs: freshNow,
+      staleThresholdMs: 90_000,
+      account: store.accountReview,
+      position: {
+        state: 'flat',
+        symbol: 'AAPL',
+        qty: 0,
+        side: '',
+        avgEntryPrice: null,
+        currentPrice: null,
+        marketValue: null,
+        unrealizedPl: null,
+        unrealizedPlpc: null,
+      },
+      orders: {
+        state: 'broker_confirmed',
+        scope: 'symbol_scoped',
+        sourceCommand: 'get_live_execution_snapshot',
+        fetchedAtUnixMs: freshNow,
+        totalCount: 0,
+        openCount: 0,
+      },
+      chart: {
+        state: 'loaded_no_markers',
+        symbol: 'AAPL',
+        datasetId: 'AAPL',
+        datasetLabel: 'AAPL',
+        datasetSymbol: 'AAPL',
+        orderCount: 0,
+        sourceCommand: 'get_live_execution_snapshot',
+        fetchedAtUnixMs: freshNow,
+      },
+    }
+
+    store.applyActionResult({
+      statusLine: 'Submitted BUY order.',
+      prependOrderRows: [
+        {
+          cells: ['2026-04-10 14:55:00', 'buy', 'submitted*', '1', '-', '-', 'ord_123'],
+        },
+      ],
+      brokerReviewRefreshRequired: true,
+    })
+
+    expect(store.reconciliationState).toBe('optimistic_local_pending')
+    expect(store.reviewMeta).toContain('waiting for broker confirmation')
+    expect(store.positionMeta).toBe('Position: pending broker refresh.')
+    expect(store.chartMeta).toContain('pending refreshed broker review')
+    expect(store.reconciliationAdvisories).toEqual([
+      'Broker review is waiting on 1 optimistic local order. Refresh orders before the next broker-armed action.',
+    ])
   })
 
   it('bounds optimistic rows and dedupes by order id', () => {

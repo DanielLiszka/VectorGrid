@@ -19,6 +19,7 @@ import {
   loadPersistedExecutionKeys,
   loadSavedLiveSessionDetail,
   migrateLegacyStoredExecutionKeysToSecureStorage,
+  normalizeExecutionOperatorError,
   parseRunnerEvent,
   parsePolygonLiveStatusEvent,
   refreshOrders,
@@ -521,6 +522,39 @@ describe('executionService', () => {
     expect(result.statusHint).toContain('Broker review refreshed.')
   })
 
+  it('keeps successful flatten submission visible when broker review refresh fails afterward', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'flatten_live_execution_position') {
+        return {
+          mode: 'paper',
+          symbol: 'AAPL',
+          position_found: true,
+          open_order_count_before: 0,
+          order_submitted: true,
+          order_id: 'ord_flatten',
+          action: 'sell',
+          qty: 1,
+        }
+      }
+      if (command === 'get_live_execution_snapshot') {
+        throw new Error('snapshot timeout')
+      }
+      return {}
+    })
+
+    const result = await flattenPosition({
+      ...baseOptions(),
+      dryRun: false,
+    })
+
+    expect(result.statusLine).toContain('Submitted SELL flatten order (id=ord_flatten) for AAPL.')
+    expect(result.statusLine).toContain('Broker review refresh failed.')
+    expect(result.statusHint).toContain('Broker-side flatten handling still succeeded.')
+    expect(result.statusHint).toContain('Refresh orders manually now.')
+    expect(result.brokerReviewRefreshRequired).toBe(true)
+    expect(result.prependOrderRows?.[0]?.cells?.[2]).toBe('submitted*')
+  })
+
   it('emergency halt disarms local live automation and requires manual review', async () => {
     invokeCommandMock.mockResolvedValue({
       runner_stopped: true,
@@ -704,7 +738,7 @@ describe('executionService', () => {
       if (command === 'polygon_live_candle_stream_status') {
         return {
           active: true,
-          stream: { symbol: ' brk.b ', delayed: true, market: 'stocks' },
+          stream: { symbol: ' brk.b ', delayed: true, market: 'stocks', status: 'started' },
         }
       }
       return {}
@@ -715,6 +749,7 @@ describe('executionService', () => {
     expect(result.liveActive).toBe(true)
     expect(result.liveSymbol).toBe('BRK.B')
     expect(result.liveDelayed).toBe(true)
+    expect(result.liveLifecycleState).toBe('started')
     expect(result.liveStatusHint).toContain('BRK.B')
     expect(result.liveStatusHint).toContain('[delayed]')
   })
@@ -773,7 +808,7 @@ describe('executionService', () => {
         status: 'error',
         symbol: ' brk.b ',
         delayed: true,
-        message: 'stream read failed',
+        message: 'stream read failed: websocket reset',
       }),
     ).toEqual(
       expect.objectContaining({
@@ -781,6 +816,7 @@ describe('executionService', () => {
         symbol: 'BRK.B',
         active: false,
         delayed: true,
+        message: 'Live feed for BRK.B [delayed] disconnected while reading market data. Check Polygon connectivity, then refresh broker review before re-arming automation.',
       }),
     )
 
@@ -796,6 +832,10 @@ describe('executionService', () => {
           run_count: 4,
           skip_count: 1,
           error_count: 2,
+          last_action: 'buy',
+          last_order_id: 'ord_987',
+          last_completed_at_unix_ms: 1_700_000_123_000,
+          last_error: 'runner execution failed: failed to submit Alpaca order: timeout',
           config: {
             symbol: ' brk.b ',
             mode: 'live',
@@ -820,9 +860,45 @@ describe('executionService', () => {
     expect(result.runnerStatusHint).toContain('skips=1')
     expect(result.runnerStatusHint).toContain('errs=2')
     expect(result.runnerStatusHint).toContain('[in-flight]')
+    expect(result.runnerStatusHint).toContain('last action=buy')
+    expect(result.runnerStatusHint).toContain('order=ord_987')
+    expect(result.runnerStatusHint).toContain('completed=2023-11-14 22:15:23')
+    expect(result.runnerStatusHint).toContain('Last failure: Execution failed. Broker order submission failed.')
     expect(result.liveActive).toBe(true)
     expect(result.liveSymbol).toBe('BRK.B')
     expect(result.liveDelayed).toBe(false)
+  })
+
+  it('falls back to the latest triggered time when the runner has not completed a cycle yet', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'live_execution_runner_status') {
+        return {
+          active: true,
+          inflight: false,
+          run_count: 0,
+          skip_count: 0,
+          error_count: 0,
+          last_triggered_at_unix_ms: 1_700_000_180_000,
+          config: {
+            symbol: 'AAPL',
+            mode: 'paper',
+            dry_run: true,
+          },
+        }
+      }
+      if (command === 'polygon_live_candle_stream_status') {
+        return {
+          active: true,
+          stream: { symbol: 'AAPL', delayed: true, market: 'stocks', status: 'started' },
+        }
+      }
+      return {}
+    })
+
+    const result = await refreshStatuses()
+
+    expect(result.runnerStatusHint).toContain('triggered=2023-11-14 22:16:20')
+    expect(result.runnerStatusHint).not.toContain('completed=')
   })
 
   it('degrades status refresh hints gracefully when live or runner status commands fail', async () => {
@@ -838,13 +914,15 @@ describe('executionService', () => {
 
     const result = await refreshStatuses()
 
-    expect(result.statusLine).toBe('Execution status refreshed.')
+    expect(result.statusLine).toBe('Execution status refreshed with warnings.')
+    expect(result.statusHint).toContain('Auto-runner status refresh unavailable.')
+    expect(result.statusHint).toContain('Live-feed status refresh unavailable.')
     expect(result.runnerStatusHint).toBe('Auto-runner status unavailable.')
-    expect(result.runnerActive).toBe(false)
+    expect(result.runnerActive).toBeUndefined()
     expect(result.liveStatusHint).toBe('Live status unavailable.')
-    expect(result.liveActive).toBe(false)
-    expect(result.liveSymbol).toBe('')
-    expect(result.liveDelayed).toBe(false)
+    expect(result.liveActive).toBeUndefined()
+    expect(result.liveSymbol).toBeUndefined()
+    expect(result.liveDelayed).toBeUndefined()
   })
 
   it('rejects auto-runner start when live candles are active for another symbol', async () => {
@@ -924,14 +1002,24 @@ describe('executionService', () => {
       parseRunnerEvent({
         status: 'error',
         symbol: ' aapl ',
-        message: 'runner execution failed: network timeout',
+        message: 'runner execution failed: failed to submit Alpaca order: network timeout',
       }),
     ).toEqual(
       expect.objectContaining({
         status: 'error',
         symbol: 'AAPL',
         active: null,
+        message: 'Auto-runner for AAPL execution failed. Broker order submission failed. Confirm credentials, buying power, and broker availability, then retry.',
       }),
+    )
+  })
+
+  it('normalizes broker-facing operator errors into action-oriented wording', () => {
+    expect(normalizeExecutionOperatorError('failed to fetch Alpaca orders: timeout')).toBe(
+      'Broker order review failed. Check Alpaca connectivity, then refresh again.',
+    )
+    expect(normalizeExecutionOperatorError('failed to submit Alpaca order: timeout')).toBe(
+      'Broker order submission failed. Confirm credentials, buying power, and broker availability, then retry.',
     )
   })
 
@@ -966,6 +1054,38 @@ describe('executionService', () => {
     })
     expect(result.statusLine).toContain('Submitted BUY order')
     expect(result.prependOrderRows?.[0]?.cells?.[1]).toBe('buy')
+    expect(result.brokerReviewRefreshRequired).toBe(true)
+  })
+
+  it('keeps submitted runOnce success visible when secure credential persistence fails afterward', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'execute_strategy_signal_once') {
+        return {
+          action: 'buy',
+          order_submitted: true,
+          order_id: 'ord_123',
+          delta_qty: 1,
+          warnings: [],
+        }
+      }
+      if (command === 'alpaca_set_api_credentials') {
+        throw new Error('keyring write failed for key_1 / secret_1')
+      }
+      return {}
+    })
+
+    const result = await runOnce({
+      ...baseOptions(),
+      dryRun: false,
+    })
+
+    expect(result.statusLine).toContain('Submitted BUY order')
+    expect(result.statusLine).toContain('Secure credential storage did not update.')
+    expect(result.statusHint).toContain('Signal execution still completed and a broker order may already have been submitted.')
+    expect(result.statusHint).toContain('[redacted]')
+    expect(result.statusHint).not.toContain('key_1')
+    expect(result.statusHint).not.toContain('secret_1')
+    expect(result.brokerReviewRefreshRequired).toBe(true)
   })
 
   it('passes source-run provenance through runOnce request payloads', async () => {
