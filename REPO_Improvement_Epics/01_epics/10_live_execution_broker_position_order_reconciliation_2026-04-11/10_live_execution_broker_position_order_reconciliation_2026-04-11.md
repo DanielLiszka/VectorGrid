@@ -1,6 +1,6 @@
 # Live Execution Broker Position And Order Reconciliation Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -99,14 +99,14 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the current reconciliation state model for desired action, broker position, and open orders.
-- [ ] Define how stale broker snapshot data is represented to the operator.
-- [ ] Define partial-fill and open-order states that should block or warn before the next action.
-- [ ] Define how optimistic rows relate to canonical reconciliation state.
-- [ ] Preserve current delta-submission semantics while improving review clarity.
-- [ ] Add or strengthen frontend tests around reconciliation summaries, warnings, and stale-state presentation.
-- [ ] Add or strengthen Rust tests around position/order snapshot interpretation and safe delta handling.
-- [ ] Define rollback conditions if the new reconciliation layer becomes less truthful than the current explicit review tables.
+- [x] Define the current reconciliation state model for desired action, broker position, and open orders.
+- [x] Define how stale broker snapshot data is represented to the operator.
+- [x] Define partial-fill and open-order states that should block or warn before the next action.
+- [x] Define how optimistic rows relate to canonical reconciliation state.
+- [x] Preserve current delta-submission semantics while improving review clarity.
+- [x] Add or strengthen frontend tests around reconciliation summaries, warnings, and stale-state presentation.
+- [x] Add or strengthen Rust tests around position/order snapshot interpretation and safe delta handling.
+- [x] Define rollback conditions if the new reconciliation layer becomes less truthful than the current explicit review tables.
 
 ## Verification Plan
 
@@ -123,6 +123,25 @@ Public-repo quality focus:
 - Final validation must include browser, desktop, and accessibility checks for the visible reconciliation surface, plus a paper/live-mode manual smoke path proving the final model does not overclaim broker truth or widen submission risk.
 - Final validation must include performance evaluation for any touched broker-refresh, reconciliation-build, or review-render path so the final state does not regress operator responsiveness.
 - If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
+## Execution Notes
+
+- Reconciliation is now a first-class review layer instead of an implied reading of the raw broker table:
+  - `web/src/stores/executionStore.ts` derives explicit reconciliation states and advisories from broker freshness, open orders, optimistic rows, and position state
+  - `web/src/components/ExecutionWorkspacePanel.vue` renders those summaries and warnings without weakening the existing order-table detail
+  - `web/src/services/executionService.ts` continues to preserve broker-confirmed versus optimistic provenance instead of collapsing them into one status
+- The implementation intentionally preserved the current delta-submission backend semantics:
+  - no new smart OMS behavior was introduced
+  - the operator-facing change is clarity, not hidden order-management automation
+- This epic closed for the current single-symbol Alpaca-backed review scope:
+  - reconciliation now surfaces stale/open/flat/pending posture directly
+  - the detailed broker order table remains the fallback truth surface
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 
 ## Rollout / Fallback / Compatibility Notes
 

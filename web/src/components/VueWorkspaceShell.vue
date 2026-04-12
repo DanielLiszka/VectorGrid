@@ -33,6 +33,7 @@ const workspaceItems = [
   { key: 'library', label: 'Run Library' },
   { key: 'aggregate', label: 'Aggregate Analysis' },
   { key: 'pro', label: 'Pro Tools' },
+  { key: 'live', label: 'Live' },
   { key: 'settings', label: 'Settings' },
 ] as const
 
@@ -104,6 +105,8 @@ const workflowStepItems = computed(() => [
   { key: 'finalize', label: `5 ${workflowStepLabelForMode('finalize', currentMode.value)}` },
 ])
 const settingsWorkspaceActive = computed(() => currentWorkspace.value === 'settings')
+const liveWorkspaceActive = computed(() => currentWorkspace.value === 'live')
+const standardWorkspaceActive = computed(() => !settingsWorkspaceActive.value && !liveWorkspaceActive.value)
 const currentModeLabel = computed(() => shellModeLabel(currentMode.value))
 const currentWorkspaceLabel = computed(() => workspaceItems.find((item) => item.key === currentWorkspace.value)?.label || 'Workflow')
 const currentWorkflowStepLabel = computed(
@@ -174,9 +177,9 @@ const visibleResultsItems = computed(() => {
   return []
 })
 
-const controlsColumnEligible = computed(() => visibleControlsItems.value.length > 0 && !settingsWorkspaceActive.value)
+const controlsColumnEligible = computed(() => visibleControlsItems.value.length > 0 && standardWorkspaceActive.value)
 const controlsColumnVisible = computed(() => controlsColumnEligible.value && !controlsCollapsed.value)
-const resultsColumnVisible = computed(() => visibleResultsItems.value.length > 0 && !settingsWorkspaceActive.value)
+const resultsColumnVisible = computed(() => visibleResultsItems.value.length > 0 && standardWorkspaceActive.value)
 const resultsTabsVisible = computed(() => resultsColumnVisible.value && visibleResultsItems.value.length > 1)
 const controlsTabsVisible = computed(() => controlsColumnVisible.value && visibleControlsItems.value.length > 1)
 const shellUsesSplitLayout = computed(() => {
@@ -253,7 +256,17 @@ const allContextItems = computed<ContextItem[]>(() => {
             current: false,
             defaultVisible: true,
           },
-        ]
+      ]
+  const liveSupportItems = currentWorkspace.value === 'live'
+    ? [
+        {
+          key: 'Support',
+          value: 'Single symbol · Alpaca · Polygon',
+          current: false,
+          defaultVisible: true,
+        },
+      ]
+    : []
   return [
     {
       key: 'Dataset',
@@ -264,6 +277,7 @@ const allContextItems = computed<ContextItem[]>(() => {
     { key: 'Range', value: range && range !== '—' ? range : 'No range', current: false, defaultVisible: true },
     { key: 'Rows', value: rows && rows !== '—' ? rows : '—', current: false, defaultVisible: false },
     ...modeContextItems,
+    ...liveSupportItems,
     { key: 'Status', value: status || 'Ready.', current: statusCardCurrent.value, defaultVisible: true },
     { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—', current: false, defaultVisible: false },
   ]
@@ -689,7 +703,7 @@ onBeforeUnmount(() => {
           class="workspaceGrid"
           :class="workspaceGridClass"
           :style="workspaceGridStyle"
-          v-show="!settingsWorkspaceActive"
+          v-show="standardWorkspaceActive"
         >
         <section
           id="shellControlsColumn"
@@ -938,11 +952,40 @@ onBeforeUnmount(() => {
         </section>
         </section>
 
-        <section v-show="settingsWorkspaceActive" id="settingsShellGrid">
-          <div id="settingsVueShellMount"></div>
+        <section v-show="liveWorkspaceActive" id="liveShellGrid" aria-label="Live workspace shell">
+          <section class="liveSupportPane surfaceSunken" aria-label="Current live support envelope">
+            <div class="liveSupportCopy">
+              <div class="contextKey">Current live support envelope</div>
+              <div class="liveSupportLead">
+                Live mode stays narrow and depends on the currently loaded dataset and strategy context.
+              </div>
+            </div>
+            <div class="liveSupportGrid">
+              <article class="liveSupportCard">
+                <div class="contextKey">Strategies</div>
+                <div class="contextValue mono">DoubleMa · CompositeCpu</div>
+              </article>
+              <article class="liveSupportCard">
+                <div class="contextKey">Broker</div>
+                <div class="contextValue mono">Alpaca REST</div>
+              </article>
+              <article class="liveSupportCard">
+                <div class="contextKey">Feed</div>
+                <div class="contextValue mono">Polygon stocks</div>
+              </article>
+              <article class="liveSupportCard">
+                <div class="contextKey">Limits</div>
+                <div class="contextValue mono">One symbol · one runner · one stream</div>
+              </article>
+            </div>
+          </section>
           <div id="executionShellPane">
             <div id="executionVueShellMount"></div>
           </div>
+        </section>
+
+        <section v-show="settingsWorkspaceActive" id="settingsShellGrid">
+          <div id="settingsVueShellMount"></div>
         </section>
       </section>
     </main>
@@ -1424,7 +1467,8 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-#settingsShellGrid {
+#settingsShellGrid,
+#liveShellGrid {
   flex: 1 1 auto;
   height: 100%;
   width: 100%;
@@ -1438,6 +1482,45 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 0.9rem;
   box-shadow: var(--shadow-sm);
+}
+
+#liveShellGrid {
+  align-content: start;
+}
+
+.liveSupportPane {
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 14px;
+  padding: 0.8rem 0.9rem;
+  display: grid;
+  gap: 0.7rem;
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--surface-shell));
+}
+
+.liveSupportCopy {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.liveSupportLead {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--muted-strong);
+}
+
+.liveSupportGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.liveSupportCard {
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface) 95%, var(--panel));
+  padding: 0.6rem 0.65rem;
+  display: grid;
+  gap: 0.14rem;
 }
 
 #executionShellPane {
@@ -1535,9 +1618,14 @@ onBeforeUnmount(() => {
     gap: 0.75rem;
   }
 
-  #settingsShellGrid {
+  #settingsShellGrid,
+  #liveShellGrid {
     margin: 0.75rem;
     padding: 0.75rem;
+  }
+
+  .liveSupportGrid {
+    grid-template-columns: 1fr;
   }
 
   #runFooterShell {

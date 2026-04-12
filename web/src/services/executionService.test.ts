@@ -9,10 +9,15 @@ import {
 } from './analysisService'
 import {
   canonicalSymbol,
+  cancelOpenOrders,
   clearKeys,
   clearStoredExecutionCredentialsSecurely,
+  emergencyHalt,
+  flattenPosition,
   getStoredExecutionCredentialStatus,
+  listSavedLiveSessions,
   loadPersistedExecutionKeys,
+  loadSavedLiveSessionDetail,
   migrateLegacyStoredExecutionKeysToSecureStorage,
   parseRunnerEvent,
   parsePolygonLiveStatusEvent,
@@ -35,6 +40,15 @@ vi.mock('../tauri/events', () => ({
 
 vi.mock('../stores/workflowArtifactsStore', () => ({
   readLatestWorkflowRunSnapshot: vi.fn(() => ({
+    artifactPath: 'C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json',
+    configFingerprint: 'cfg1-fnv1a64-demo',
+    routeProvenance: {
+      requestedRoute: 'GpuOnly',
+      resolvedRoute: 'CpuOnly',
+      realizedRoute: 'CpuOnly',
+      routeChanged: true,
+      fallbackReason: 'gpu unavailable',
+    },
     req: { strategy_kind: 'DoubleMa', data_id: 'data_1' },
     res: { best_params: { fast_len: 5, slow_len: 20, fast_ma_type: 'sma', slow_ma_type: 'alma' } },
   })),
@@ -133,7 +147,7 @@ describe('executionService', () => {
     expect(canonicalSymbol(' spy/iv ')).toBe('SPY/IV')
   })
 
-  it('clears persisted execution keys and returns reset summary', async () => {
+  it('clears secure and legacy execution credentials and returns reset summary', async () => {
     const removeItem = vi.fn()
     vi.stubGlobal('localStorage', {
       getItem: vi.fn(() => null),
@@ -150,6 +164,21 @@ describe('executionService', () => {
     expect(result.runnerActive).toBeUndefined()
     expect(result.liveStatusHint).toBeUndefined()
     expect(result.runnerStatusHint).toBeUndefined()
+  })
+
+  it('surfaces secure clear failures while still clearing legacy local storage', async () => {
+    const removeItem = vi.fn()
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem,
+    })
+    invokeCommandMock.mockRejectedValueOnce(new Error('Keyring clear failed'))
+
+    await expect(clearKeys()).rejects.toThrow('Keyring clear failed')
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_clear_api_credentials')
+    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
   })
 
   it('reads secure credential storage status without secret readback', async () => {
@@ -264,7 +293,7 @@ describe('executionService', () => {
   it('tests connection through direct tauri command path', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === 'test_alpaca_connection') {
-        return { account_number: 'ABC123', status: 'ACTIVE' }
+        return { account_number: 'ABC123', status: 'ACTIVE', fetched_at_unix_ms: 1_744_297_700_000 }
       }
       return {}
     })
@@ -278,7 +307,98 @@ describe('executionService', () => {
       },
     })
     expect(result.statusHint).toContain('connection OK')
+    expect(result.accountMeta).toContain('Account review: paper')
+    expect(result.accountReview).toEqual(
+      expect.objectContaining({
+        state: 'broker_confirmed',
+        sourceCommand: 'test_alpaca_connection',
+        accountNumber: 'ABC123',
+      }),
+    )
+    expect(result.outputPreviewMeta).toEqual(
+      expect.objectContaining({
+        sourceCommand: 'test_alpaca_connection',
+        scopeLabel: 'paper account verification',
+        generatedAtUnixMs: 1_744_297_700_000,
+      }),
+    )
     expect(result.outputPreview).toContain('ABC123')
+  })
+
+  it('omits Alpaca typed override fields when broker actions rely on stored secure credentials', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'test_alpaca_connection') {
+        return { account_number: 'ABC123', status: 'ACTIVE' }
+      }
+      return {}
+    })
+    const getItem = vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' }))
+    vi.stubGlobal('localStorage', {
+      getItem,
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+
+    await testConnection({
+      ...baseOptions(),
+      apiKey: '',
+      apiSecret: '',
+    })
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('test_alpaca_connection', {
+      req: {
+        mode: 'paper',
+      },
+    })
+    expect(getItem).not.toHaveBeenCalled()
+  })
+
+  it('persists remembered typed execution credentials to secure storage only after a successful broker action', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'test_alpaca_connection') {
+        return { account_number: 'ABC123', status: 'ACTIVE' }
+      }
+      if (command === 'alpaca_set_api_credentials') {
+        return {
+          remember_available: true,
+          has_api_key: true,
+          has_api_secret: true,
+          has_credentials: true,
+          state: 'stored',
+          storage_backend: 'keyring',
+        }
+      }
+      return {}
+    })
+
+    await testConnection({
+      ...baseOptions(),
+      rememberKeys: true,
+    })
+
+    expect(invokeCommandMock.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          'test_alpaca_connection',
+          {
+            req: {
+              mode: 'paper',
+              alpaca_api_key: 'key_1',
+              alpaca_api_secret: 'secret_1',
+            },
+          },
+        ],
+        [
+          'alpaca_set_api_credentials',
+          {
+            req: {
+              api_key: 'key_1',
+              api_secret: 'secret_1',
+            },
+          },
+        ],
+      ]),
+    )
   })
 
   it('uses the live Alpaca mode when testing a live broker connection', async () => {
@@ -301,6 +421,124 @@ describe('executionService', () => {
         alpaca_api_secret: 'secret_1',
       },
     })
+  })
+
+  it('cancels open orders and refreshes broker review for the current symbol', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'cancel_live_execution_open_orders') {
+        return {
+          mode: 'paper',
+          symbol: 'AAPL',
+          open_order_count_before: 2,
+          cancelled_count: 2,
+          cancelled_order_ids: ['ord_1', 'ord_2'],
+        }
+      }
+      if (command === 'get_live_execution_snapshot') {
+        return {
+          symbol: 'AAPL',
+          account_number: 'ABC123',
+          account_status: 'ACTIVE',
+          fetched_at_unix_ms: 1_900_000_000_000,
+          position: null,
+          orders: [],
+        }
+      }
+      return {}
+    })
+
+    const result = await cancelOpenOrders({
+      ...baseOptions(),
+      dryRun: false,
+    })
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('cancel_live_execution_open_orders', {
+      req: {
+        mode: 'paper',
+        symbol: 'AAPL',
+        alpaca_api_key: 'key_1',
+        alpaca_api_secret: 'secret_1',
+      },
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('get_live_execution_snapshot', {
+      req: {
+        mode: 'paper',
+        symbol: 'AAPL',
+        limit: 200,
+        include_account: true,
+        include_orders: true,
+        include_position: true,
+        alpaca_api_key: 'key_1',
+        alpaca_api_secret: 'secret_1',
+      },
+    })
+    expect(result.statusLine).toContain('Cancelled 2 open broker orders for AAPL.')
+    expect(result.reviewMeta).toContain('symbol-scoped AAPL')
+    expect(result.accountReview).toEqual(expect.objectContaining({ accountNumber: 'ABC123' }))
+  })
+
+  it('flattens the current position and refreshes broker review', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'flatten_live_execution_position') {
+        return {
+          mode: 'paper',
+          symbol: 'AAPL',
+          position_found: true,
+          open_order_count_before: 0,
+          order_submitted: true,
+          order_id: 'ord_flatten',
+          action: 'sell',
+          qty: 1,
+        }
+      }
+      if (command === 'get_live_execution_snapshot') {
+        return {
+          symbol: 'AAPL',
+          account_number: 'ABC123',
+          account_status: 'ACTIVE',
+          fetched_at_unix_ms: 1_900_000_000_000,
+          position: null,
+          orders: [],
+        }
+      }
+      return {}
+    })
+
+    const result = await flattenPosition({
+      ...baseOptions(),
+      dryRun: false,
+    })
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('flatten_live_execution_position', {
+      req: {
+        mode: 'paper',
+        symbol: 'AAPL',
+        alpaca_api_key: 'key_1',
+        alpaca_api_secret: 'secret_1',
+      },
+    })
+    expect(result.statusLine).toContain('Submitted SELL flatten order (id=ord_flatten) for AAPL.')
+    expect(result.statusHint).toContain('Broker review refreshed.')
+  })
+
+  it('emergency halt disarms local live automation and requires manual review', async () => {
+    invokeCommandMock.mockResolvedValue({
+      runner_stopped: true,
+      live_stopped: true,
+      live_symbol: 'AAPL',
+      requires_manual_review: true,
+      status_message: 'Emergency halt applied. Live feed and auto-runner stopped. Refresh orders before re-arming.',
+    })
+
+    const result = await emergencyHalt()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('emergency_halt_live_execution')
+    expect(result.statusLine).toContain('Emergency halt applied.')
+    expect(result.liveStatusHint).toContain('Live candles stopped for AAPL.')
+    expect(result.runnerStatusHint).toBe('Auto-runner stopped.')
+    expect(result.recoveryReviewRequired).toBe(true)
+    expect(result.liveActive).toBe(false)
+    expect(result.runnerActive).toBe(false)
   })
 
   it('uses the live Alpaca mode when refreshing a live broker snapshot', async () => {
@@ -335,6 +573,7 @@ describe('executionService', () => {
           symbol: 'AAPL',
           position: null,
           orders: [],
+          fetched_at_unix_ms: 1_744_297_700_000,
         }
       }
       return {}
@@ -346,7 +585,7 @@ describe('executionService', () => {
       req: expect.objectContaining({
         mode: 'paper',
         symbol: 'AAPL',
-        include_account: false,
+        include_account: true,
         include_orders: true,
         include_position: true,
       }),
@@ -354,11 +593,61 @@ describe('executionService', () => {
     expect(result.statusLine).toContain('recent orders for AAPL')
   })
 
-  it('maps broker refresh into confirmed flat review state and chart metadata', async () => {
+  it('refreshes orders without reading legacy local storage when no typed override is provided', async () => {
+    const getItem = vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' }))
+    vi.stubGlobal('localStorage', {
+      getItem,
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === 'get_live_execution_snapshot') {
         return {
           symbol: 'AAPL',
+          position: null,
+          orders: [],
+        }
+      }
+      return {}
+    })
+
+    await refreshOrders({
+      ...baseOptions(),
+      apiKey: '',
+      apiSecret: '',
+    })
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('get_live_execution_snapshot', {
+      req: expect.objectContaining({
+        mode: 'paper',
+        symbol: 'AAPL',
+      }),
+    })
+    const request = invokeCommandMock.mock.calls[0]?.[1] as { req: Record<string, unknown> } | undefined
+    expect(request?.req).not.toHaveProperty('alpaca_api_key')
+    expect(request?.req).not.toHaveProperty('alpaca_api_secret')
+    expect(getItem).not.toHaveBeenCalled()
+  })
+
+  it('rejects broker order review without an explicit symbol', async () => {
+    await expect(
+      refreshOrders({
+        ...baseOptions(),
+        symbol: '',
+      }),
+    ).rejects.toThrow('Execution symbol is required')
+  })
+
+  it('maps broker refresh into confirmed flat review state and chart metadata', async () => {
+    const freshNow = Date.now()
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'get_live_execution_snapshot') {
+        return {
+          symbol: 'AAPL',
+          account_number: 'ABC123',
+          account_status: 'ACTIVE',
+          currency: 'USD',
+          fetched_at_unix_ms: freshNow,
           position: null,
           orders: [
             {
@@ -381,7 +670,29 @@ describe('executionService', () => {
     expect(result.positionMeta).toBe('Position: flat')
     expect(result.orderCount).toBe(1)
     expect(result.orderRows?.[0]?.cells?.[1]).toBe('buy')
-    expect(result.chartMeta).toBe('Execution chart sync pending. symbol=AAPL orders=1')
+    expect(result.chartMeta).toBe('Execution chart loaded for AAPL with 1 broker-confirmed order marker.')
+    expect(result.reviewMeta).toContain('Broker review: paper symbol-scoped AAPL')
+    expect(result.reviewMeta).toContain('0 open orders')
+    expect(result.accountReview).toEqual(
+      expect.objectContaining({
+        state: 'broker_confirmed',
+        accountNumber: 'ABC123',
+        status: 'ACTIVE',
+      }),
+    )
+    expect(result.brokerReview).toEqual(
+      expect.objectContaining({
+        symbol: 'AAPL',
+        sourceCommand: 'get_live_execution_snapshot',
+        fetchedAtUnixMs: freshNow,
+      }),
+    )
+    expect(result.outputPreviewMeta).toEqual(
+      expect.objectContaining({
+        sourceCommand: 'get_live_execution_snapshot',
+        scopeLabel: 'symbol-scoped AAPL',
+      }),
+    )
     expect(result.outputPreview).toContain('"ord_123"')
   })
 
@@ -647,9 +958,72 @@ describe('executionService', () => {
     expect(resolveExecutionTopRowSnapshotMock).toHaveBeenCalledWith('selected')
     expect(buildExecutionStrategyFromRunContextMock).toHaveBeenCalled()
     expect(invokeCommandMock).toHaveBeenCalledWith('execute_strategy_signal_once', expect.any(Object))
-    expect(invokeCommandMock).toHaveBeenCalledTimes(1)
+    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_set_api_credentials', {
+      req: {
+        api_key: 'key_1',
+        api_secret: 'secret_1',
+      },
+    })
     expect(result.statusLine).toContain('Submitted BUY order')
     expect(result.prependOrderRows?.[0]?.cells?.[1]).toBe('buy')
+  })
+
+  it('passes source-run provenance through runOnce request payloads', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'execute_strategy_signal_once') {
+        return {
+          action: 'hold',
+          order_submitted: false,
+          warnings: [],
+        }
+      }
+      return {}
+    })
+
+    await runOnce(baseOptions())
+
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
+    expect(call?.[1]).toEqual({
+      req: expect.objectContaining({
+        param_source: 'selected',
+        source_run_artifact_path: 'C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json',
+        source_run_config_fingerprint: 'cfg1-fnv1a64-demo',
+        source_run_route_provenance: expect.objectContaining({
+          requestedRoute: 'GpuOnly',
+          resolvedRoute: 'CpuOnly',
+          realizedRoute: 'CpuOnly',
+        }),
+      }),
+    })
+  })
+
+  it('omits Alpaca typed override fields when runOnce relies on stored secure credentials', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'execute_strategy_signal_once') {
+        return {
+          action: 'hold',
+          order_submitted: false,
+          warnings: [],
+        }
+      }
+      return {}
+    })
+
+    await runOnce({
+      ...baseOptions(),
+      dryRun: false,
+      apiKey: '',
+      apiSecret: '',
+    })
+
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
+    expect(call).toBeTruthy()
+    expect(call?.[1]).toEqual({
+      req: expect.not.objectContaining({
+        alpaca_api_key: expect.anything(),
+        alpaca_api_secret: expect.anything(),
+      }),
+    })
   })
 
   it('executes runOnce with manual parameter source without reading a top-row snapshot', async () => {
@@ -804,6 +1178,143 @@ describe('executionService', () => {
     })
     expect(result.statusLine).toContain('Auto-runner started for AAPL.')
     expect(result.runnerActive).toBe(true)
+  })
+
+  it('lists saved live session artifacts via the new tauri command surface', async () => {
+    invokeCommandMock.mockResolvedValueOnce([
+      {
+        ts: '2026-04-12T16:10:00Z',
+        path: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
+        sessionId: 'live-session-1',
+        mode: 'paper',
+        symbol: 'AAPL',
+        strategyKind: 'DoubleMa',
+        dataId: 'data_1',
+        dryRun: false,
+        paramSource: 'best',
+        sessionState: 'completed',
+        createdAtUnixMs: 1_700_000_000_000,
+        finalizedAtUnixMs: 1_700_000_000_500,
+        eventCount: 3,
+        brokerSnapshotCount: 1,
+      },
+    ])
+
+    await expect(listSavedLiveSessions()).resolves.toEqual([
+      expect.objectContaining({
+        path: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
+        symbol: 'AAPL',
+        sessionState: 'completed',
+        eventCount: 3,
+      }),
+    ])
+    expect(invokeCommandMock).toHaveBeenCalledWith('list_live_session_artifacts')
+  })
+
+  it('loads saved live session detail as read-only review data', async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      ts: '2026-04-12T16:10:00Z',
+      artifactPath: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
+      sessionId: 'live-session-1',
+      sessionState: 'completed',
+      mode: 'paper',
+      symbol: 'AAPL',
+      qty: 1,
+      dryRun: false,
+      strategyKind: 'DoubleMa',
+      dataId: 'data_1',
+      paramSource: 'best',
+      createdAtUnixMs: 1_700_000_000_000,
+      finalizedAtUnixMs: 1_700_000_000_500,
+      sourceRunArtifactPath: 'C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json',
+      sourceRunConfigFingerprint: 'cfg1-fnv1a64-demo',
+      sourceRunRouteProvenance: {
+        requestedRoute: 'GpuOnly',
+        resolvedRoute: 'CpuOnly',
+        realizedRoute: 'CpuOnly',
+        routeChanged: true,
+        fallbackReason: 'gpu unavailable',
+      },
+      eventCount: 2,
+      brokerSnapshotCount: 1,
+      events: [
+        {
+          provenance: 'local_control',
+          status: 'execute_strategy_signal_once',
+          message: 'manual execution requested for AAPL',
+          symbol: 'AAPL',
+          atUnixMs: 1_700_000_000_000,
+        },
+      ],
+      brokerSnapshots: [
+        {
+          sourceCommand: 'get_live_execution_snapshot',
+          mode: 'paper',
+          symbol: 'AAPL',
+          atUnixMs: 1_700_000_000_100,
+          accountStatus: 'ACTIVE',
+          positionState: 'flat',
+          openOrderCount: 0,
+          orderCount: 0,
+        },
+      ],
+    })
+
+    await expect(
+      loadSavedLiveSessionDetail('C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        artifactPath: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
+        sourceRunRouteSummary: expect.stringContaining('requested=GpuOnly'),
+        events: [expect.objectContaining({ provenance: 'local_control' })],
+        brokerSnapshots: [expect.objectContaining({ sourceCommand: 'get_live_execution_snapshot' })],
+      }),
+    )
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_live_session_artifact_detail', {
+      path: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
+    })
+  })
+
+  it('omits Alpaca typed override fields when auto-runner start relies on stored secure credentials', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'polygon_live_candle_stream_status') {
+        return {
+          active: true,
+          stream: { symbol: 'AAPL', delayed: true, market: 'stocks' },
+        }
+      }
+      if (command === 'start_live_execution_runner') {
+        return {
+          active: true,
+          run_count: 0,
+          skip_count: 0,
+          error_count: 0,
+          inflight: false,
+          config: {
+            symbol: 'AAPL',
+            mode: 'paper',
+            dry_run: false,
+          },
+        }
+      }
+      return {}
+    })
+
+    await startRunner({
+      ...baseOptions(),
+      dryRun: false,
+      apiKey: '',
+      apiSecret: '',
+    })
+
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'start_live_execution_runner')
+    expect(call).toBeTruthy()
+    expect(call?.[1]).toEqual({
+      req: expect.not.objectContaining({
+        alpaca_api_key: expect.anything(),
+        alpaca_api_secret: expect.anything(),
+      }),
+    })
   })
 
   it('parses runtime events and subscribes both execution channels', async () => {

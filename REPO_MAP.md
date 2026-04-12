@@ -900,7 +900,7 @@ Progress truth anchors:
 
 Important current-state note:
 
-- the settings workspace is not only preferences; when the settings workspace is active, `App.vue` mounts both `SettingsWorkspacePanel.vue` and `ExecutionWorkspacePanel.vue`
+- the shell now exposes a discrete `live` workspace; `App.vue` mounts `SettingsWorkspacePanel.vue` only for `settings`, and `ExecutionWorkspacePanel.vue` only for `live`
 
 ### Saved run rehydration and history bridge
 
@@ -1598,12 +1598,15 @@ Important current-state notes:
 
 - current live execution strategy coverage is limited to `DoubleMa` and `CompositeCpu`
 - live execution reuses drilldown compute paths
+- the frontend shell now exposes live execution as a dedicated `live` workspace instead of a settings-mounted execution pane
 - broker integration is Alpaca over REST
 - `dry_run=true` requires no broker credentials; non-dry-run requires Alpaca credentials
+- Alpaca commands can now resolve credentials from secure backend storage when typed request credentials are omitted
 - the runner emits `live_execution_runner_event` status messages as bars are processed
 - runner cancellation remains intentionally silent on the event bus; the shipped runner event vocabulary is `started`, `stopped`, `triggered`, `queued_latest`, `signal_processed`, `order_submitted`, and `error`
 - execution targets the delta between desired and current position; bracket orders are only attached when both stop-loss and take-profit are present
 - the live runner depends on an active Polygon live stream, and runner start now enforces that the active stream symbol matches the requested execution symbol on both the frontend and Rust command boundary
+- feed interruption now disarms the live runner and finalizes active session evidence instead of leaving automation armed implicitly
 - only one active live execution runner slot exists at a time
 
 ### System and desktop runtime

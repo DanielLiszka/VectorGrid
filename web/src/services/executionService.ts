@@ -1,9 +1,11 @@
 import { invokeCommand } from '../tauri/invoke'
 import { listenEvent } from '../tauri/events'
+import { useDataStore } from '../stores/dataStore'
+import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
 import { EXEC_KEYS_STORAGE_KEY } from '../utils/core/storageKeys'
 import { formatUtcDateTimeFromUnixMs } from '../utils/uiFormat'
-import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
+import { readStorageString, removeStorageKey } from '../utils/storage'
 
 let analysisServicePromise: Promise<typeof import('./analysisService')> | null = null
 let optimizeServicePromise: Promise<typeof import('./optimizeService')> | null = null
@@ -73,6 +75,11 @@ interface ExecutionConnectionResponse {
   account_number?: unknown
   account_id?: unknown
   status?: unknown
+  currency?: unknown
+  buying_power?: unknown
+  cash?: unknown
+  portfolio_value?: unknown
+  fetched_at_unix_ms?: unknown
 }
 
 interface ExecutionSnapshotOrderResponse {
@@ -103,6 +110,41 @@ interface ExecutionSnapshotResponse {
   orders?: unknown
   symbol?: unknown
   position?: unknown
+  account_id?: unknown
+  account_number?: unknown
+  account_status?: unknown
+  currency?: unknown
+  buying_power?: unknown
+  cash?: unknown
+  portfolio_value?: unknown
+  fetched_at_unix_ms?: unknown
+}
+
+interface CancelLiveExecutionOpenOrdersResponse {
+  mode?: unknown
+  symbol?: unknown
+  open_order_count_before?: unknown
+  cancelled_count?: unknown
+  cancelled_order_ids?: unknown
+}
+
+interface FlattenLiveExecutionPositionResponse {
+  mode?: unknown
+  symbol?: unknown
+  position_found?: unknown
+  open_order_count_before?: unknown
+  order_submitted?: unknown
+  order_id?: unknown
+  action?: unknown
+  qty?: unknown
+}
+
+interface EmergencyHaltLiveExecutionResponse {
+  runner_stopped?: unknown
+  live_stopped?: unknown
+  live_symbol?: unknown
+  requires_manual_review?: unknown
+  status_message?: unknown
 }
 
 interface LiveCandleStreamInfoResponse {
@@ -110,6 +152,7 @@ interface LiveCandleStreamInfoResponse {
   delayed?: unknown
   market?: unknown
   active?: unknown
+  status?: unknown
 }
 
 interface LiveCandleStreamStatusResponse {
@@ -165,8 +208,121 @@ const RUNNER_INACTIVE_EVENT_STATUSES = new Set([
   'cancelled',
 ])
 
+const BROKER_OPEN_ORDER_STATUSES = new Set([
+  'new',
+  'accepted',
+  'pending_new',
+  'accepted_for_bidding',
+  'partially_filled',
+  'pending_replace',
+  'held',
+  'stopped',
+  'calculated',
+  'suspended',
+])
+
+export type ExecutionLiveLifecycleState =
+  | 'off'
+  | 'active'
+  | 'connecting'
+  | 'subscribed'
+  | 'started'
+  | 'closed'
+  | 'error'
+  | 'stopped'
+
+export type ExecutionRunnerLifecycleState =
+  | 'off'
+  | 'active'
+  | 'started'
+  | 'triggered'
+  | 'queued_latest'
+  | 'signal_processed'
+  | 'order_submitted'
+  | 'stopped'
+  | 'cancelled'
+  | 'error'
+
 export interface ExecutionOrderRow {
   cells: string[]
+}
+
+export interface ExecutionPreviewMeta {
+  sourceCommand:
+    | 'none'
+    | 'test_alpaca_connection'
+    | 'get_live_execution_snapshot'
+    | 'execute_strategy_signal_once'
+    | 'alpaca_clear_api_credentials'
+  scopeLabel: string
+  generatedAtUnixMs: number | null
+}
+
+export interface ExecutionAccountReview {
+  state: 'not_verified' | 'broker_confirmed' | 'unavailable'
+  mode: 'paper' | 'live'
+  sourceCommand: 'none' | 'test_alpaca_connection' | 'get_live_execution_snapshot'
+  fetchedAtUnixMs: number | null
+  accountId: string
+  accountNumber: string
+  status: string
+  currency: string
+  buyingPower: string
+  cash: string
+  portfolioValue: string
+}
+
+export interface ExecutionPositionReview {
+  state: 'suppressed' | 'flat' | 'open' | 'unavailable'
+  symbol: string
+  qty: number | null
+  side: string
+  avgEntryPrice: number | null
+  currentPrice: number | null
+  marketValue: number | null
+  unrealizedPl: number | null
+  unrealizedPlpc: number | null
+}
+
+export interface ExecutionOrderReview {
+  state: 'disabled' | 'broker_confirmed'
+  scope: 'symbol_scoped' | 'all_symbols'
+  sourceCommand: 'none' | 'get_live_execution_snapshot'
+  fetchedAtUnixMs: number | null
+  totalCount: number
+  openCount: number
+}
+
+export interface ExecutionChartReview {
+  state:
+    | 'no_symbol'
+    | 'no_dataset'
+    | 'symbol_mismatch'
+    | 'stale_broker_review'
+    | 'provenance_suppressed'
+    | 'loaded_no_markers'
+    | 'loaded_broker_markers'
+    | 'broker_review_loaded_chart_unavailable'
+    | 'sync_pending'
+  symbol: string
+  datasetId: string
+  datasetLabel: string
+  datasetSymbol: string
+  orderCount: number
+  sourceCommand: 'none' | 'get_live_execution_snapshot'
+  fetchedAtUnixMs: number | null
+}
+
+export interface ExecutionBrokerReview {
+  sourceCommand: 'get_live_execution_snapshot'
+  mode: 'paper' | 'live'
+  symbol: string
+  fetchedAtUnixMs: number | null
+  staleThresholdMs: number
+  account: ExecutionAccountReview
+  position: ExecutionPositionReview
+  orders: ExecutionOrderReview
+  chart: ExecutionChartReview
 }
 
 export interface ExecutionActionResult {
@@ -174,9 +330,17 @@ export interface ExecutionActionResult {
   statusHint?: string
   liveStatusHint?: string
   runnerStatusHint?: string
+  liveLifecycleState?: ExecutionLiveLifecycleState
+  runnerLifecycleState?: ExecutionRunnerLifecycleState
+  recoveryReviewRequired?: boolean
   prependOrderRows?: ExecutionOrderRow[]
   positionMeta?: string
   chartMeta?: string
+  accountMeta?: string
+  reviewMeta?: string
+  accountReview?: ExecutionAccountReview
+  brokerReview?: ExecutionBrokerReview
+  outputPreviewMeta?: ExecutionPreviewMeta
   outputPreview?: string
   orderRows?: ExecutionOrderRow[]
   orderCount?: number
@@ -194,6 +358,74 @@ export interface ExecutionStoredCredentialStatus {
   state: 'missing' | 'stored' | 'incomplete' | 'unavailable'
   storageBackend: string
   message: string
+}
+
+export interface ExecutionSavedSessionSummary {
+  ts: string
+  path: string
+  sessionId: string
+  mode: 'paper' | 'live'
+  symbol: string
+  strategyKind: string
+  dataId: string
+  dryRun: boolean
+  paramSource: string
+  sessionState: string
+  createdAtUnixMs: number | null
+  finalizedAtUnixMs: number | null
+  eventCount: number
+  brokerSnapshotCount: number
+}
+
+export interface ExecutionSavedSessionEvent {
+  provenance: string
+  status: string
+  message: string
+  symbol: string
+  atUnixMs: number | null
+  barOpenUnixMs: number | null
+  action: string
+  orderId: string
+  deltaQty: number | null
+  orderSubmitted: boolean | null
+  warnings: string[]
+}
+
+export interface ExecutionSavedSessionBrokerSnapshot {
+  sourceCommand: string
+  mode: 'paper' | 'live'
+  symbol: string
+  atUnixMs: number | null
+  accountStatus: string
+  currency: string
+  positionState: string
+  positionQty: number | null
+  positionSide: string
+  openOrderCount: number
+  orderCount: number
+}
+
+export interface ExecutionSavedSessionDetail {
+  ts: string
+  artifactPath: string
+  sessionId: string
+  sessionState: string
+  mode: 'paper' | 'live'
+  symbol: string
+  qty: number
+  dryRun: boolean
+  strategyKind: string
+  dataId: string
+  paramSource: string
+  createdAtUnixMs: number | null
+  finalizedAtUnixMs: number | null
+  sourceRunArtifactPath: string
+  sourceRunConfigFingerprint: string
+  sourceRunRouteSummary: string
+  eventCount: number
+  brokerSnapshotCount: number
+  events: ExecutionSavedSessionEvent[]
+  brokerSnapshots: ExecutionSavedSessionBrokerSnapshot[]
 }
 
 export interface ParsedLiveStatus {
@@ -236,8 +468,76 @@ function toNumber(value: unknown): number {
   return parsed
 }
 
+function positiveInt(value: unknown): number {
+  const parsed = Math.floor(toNumber(value))
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+const BROKER_REVIEW_STALE_THRESHOLD_MS = 90_000
+
+function fetchedAtUnixMs(raw: unknown): number | null {
+  const parsed = Math.floor(toNumber(raw))
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function looksLikeTradingSymbol(raw: unknown): boolean {
+  const symbol = canonicalSymbol(raw)
+  return /^[A-Z][A-Z0-9./-]{0,23}$/.test(symbol)
+}
+
+function latestExecutionDatasetContext(): {
+  dataId: string
+  datasetLabel: string
+  datasetSymbol: string
+} {
+  const pinia = resolveRuntimePinia()
+  if (pinia) {
+    try {
+      const dataStore = useDataStore(pinia)
+      const dataId = text(dataStore.dataId)
+      const datasetLabel = text(dataStore.datasetLabel) || dataId || '-'
+      const directSymbol = looksLikeTradingSymbol(dataId) ? canonicalSymbol(dataId) : ''
+      const labelSymbol = looksLikeTradingSymbol(datasetLabel.replace(/\.[A-Za-z0-9]+$/, ''))
+        ? canonicalSymbol(datasetLabel.replace(/\.[A-Za-z0-9]+$/, ''))
+        : ''
+      if (dataId) {
+        return {
+          dataId,
+          datasetLabel,
+          datasetSymbol: directSymbol || labelSymbol,
+        }
+      }
+    } catch {
+      // fall back to workflow artifact context
+    }
+  }
+  const snapshot = readLatestWorkflowRunSnapshot()
+  const runReq = isRecord(snapshot?.req) ? snapshot.req : null
+  const runRes = isRecord(snapshot?.res) ? snapshot.res : null
+  const dataId = text(runReq?.data_id ?? runReq?.dataId ?? runRes?.data_id ?? runRes?.dataId)
+  const datasetLabel = dataId || '-'
+  const datasetSymbol = looksLikeTradingSymbol(datasetLabel) ? canonicalSymbol(datasetLabel) : ''
+  return {
+    dataId,
+    datasetLabel,
+    datasetSymbol,
+  }
+}
+
+function buildPreviewMeta(
+  sourceCommand: ExecutionPreviewMeta['sourceCommand'],
+  scopeLabel: string,
+  generatedAtUnixMs: number | null,
+): ExecutionPreviewMeta {
+  return {
+    sourceCommand,
+    scopeLabel: text(scopeLabel) || 'unscoped',
+    generatedAtUnixMs: generatedAtUnixMs && generatedAtUnixMs > 0 ? Math.floor(generatedAtUnixMs) : null,
+  }
 }
 
 function modeValue(raw: unknown): 'paper' | 'live' {
@@ -364,23 +664,296 @@ function buildOrderRows(ordersRaw: unknown): ExecutionOrderRow[] {
   return rows
 }
 
-function positionMeta(raw: unknown): string {
+function buildPositionReview(raw: unknown, symbolRaw: unknown): ExecutionPositionReview {
+  const symbol = canonicalSymbol(symbolRaw)
+  if (!symbol) {
+    return {
+      state: 'suppressed',
+      symbol: '',
+      qty: null,
+      side: '',
+      avgEntryPrice: null,
+      currentPrice: null,
+      marketValue: null,
+      unrealizedPl: null,
+      unrealizedPlpc: null,
+    }
+  }
   const position = isRecord(raw) ? (raw as ExecutionSnapshotPositionResponse) : null
-  if (!position) return 'Position: flat'
+  if (!position) {
+    return {
+      state: 'flat',
+      symbol,
+      qty: 0,
+      side: '',
+      avgEntryPrice: null,
+      currentPrice: null,
+      marketValue: null,
+      unrealizedPl: null,
+      unrealizedPlpc: null,
+    }
+  }
   const qty = toNumber(position.qty)
-  if (!Number.isFinite(qty) || Math.abs(qty) < 1e-12) return 'Position: flat'
-  const side = text(position.side) || (qty > 0 ? 'long' : 'short')
-  const avg = trimTrailingZeros(toNumber(position.avg_entry_price), 4)
-  const now = trimTrailingZeros(toNumber(position.current_price), 4)
-  const upl = trimTrailingZeros(toNumber(position.unrealized_pl), 4)
-  const uplPct = toNumber(position.unrealized_plpc)
-  const uplPctText = Number.isFinite(uplPct) ? `${trimTrailingZeros(uplPct * 100, 2)}%` : '-'
-  return `Position: qty=${trimTrailingZeros(qty, 6)} side=${side} avg=${avg} now=${now} upl=${upl} (${uplPctText})`
+  if (!Number.isFinite(qty) || Math.abs(qty) < 1e-12) {
+    return {
+      state: 'flat',
+      symbol,
+      qty: 0,
+      side: text(position.side),
+      avgEntryPrice: null,
+      currentPrice: null,
+      marketValue: null,
+      unrealizedPl: null,
+      unrealizedPlpc: null,
+    }
+  }
+  return {
+    state: 'open',
+    symbol,
+    qty,
+    side: text(position.side) || (qty > 0 ? 'long' : 'short'),
+    avgEntryPrice: Number.isFinite(toNumber(position.avg_entry_price)) ? toNumber(position.avg_entry_price) : null,
+    currentPrice: Number.isFinite(toNumber(position.current_price)) ? toNumber(position.current_price) : null,
+    marketValue: Number.isFinite(toNumber(position.market_value)) ? toNumber(position.market_value) : null,
+    unrealizedPl: Number.isFinite(toNumber(position.unrealized_pl)) ? toNumber(position.unrealized_pl) : null,
+    unrealizedPlpc: Number.isFinite(toNumber(position.unrealized_plpc)) ? toNumber(position.unrealized_plpc) : null,
+  }
 }
 
-function chartMeta(symbolRaw: unknown, orderCount: number): string {
-  const symbol = canonicalSymbol(symbolRaw) || '-'
-  return `Execution chart sync pending. symbol=${symbol} orders=${orderCount}`
+function buildChartReview(
+  symbolRaw: unknown,
+  orderCount: number,
+  fetchedAt: number | null,
+  sourceCommand: ExecutionChartReview['sourceCommand'],
+): ExecutionChartReview {
+  const symbol = canonicalSymbol(symbolRaw)
+  const dataset = latestExecutionDatasetContext()
+  if (!symbol) {
+    return {
+      state: 'no_symbol',
+      symbol: '',
+      datasetId: dataset.dataId,
+      datasetLabel: dataset.datasetLabel,
+      datasetSymbol: dataset.datasetSymbol,
+      orderCount,
+      sourceCommand,
+      fetchedAtUnixMs: fetchedAt,
+    }
+  }
+  if (!dataset.dataId) {
+    return {
+      state: 'no_dataset',
+      symbol,
+      datasetId: '',
+      datasetLabel: '-',
+      datasetSymbol: '',
+      orderCount,
+      sourceCommand,
+      fetchedAtUnixMs: fetchedAt,
+    }
+  }
+  if (dataset.datasetSymbol && dataset.datasetSymbol !== symbol) {
+    return {
+      state: 'symbol_mismatch',
+      symbol,
+      datasetId: dataset.dataId,
+      datasetLabel: dataset.datasetLabel,
+      datasetSymbol: dataset.datasetSymbol,
+      orderCount,
+      sourceCommand,
+      fetchedAtUnixMs: fetchedAt,
+    }
+  }
+  const stale =
+    Number.isFinite(fetchedAt ?? Number.NaN) &&
+    fetchedAt != null &&
+    Date.now() - fetchedAt > BROKER_REVIEW_STALE_THRESHOLD_MS
+  if (stale) {
+    return {
+      state: 'stale_broker_review',
+      symbol,
+      datasetId: dataset.dataId,
+      datasetLabel: dataset.datasetLabel,
+      datasetSymbol: dataset.datasetSymbol,
+      orderCount,
+      sourceCommand,
+      fetchedAtUnixMs: fetchedAt,
+    }
+  }
+  return {
+    state: orderCount > 0 ? 'loaded_broker_markers' : 'loaded_no_markers',
+    symbol,
+    datasetId: dataset.dataId,
+    datasetLabel: dataset.datasetLabel,
+    datasetSymbol: dataset.datasetSymbol,
+    orderCount,
+    sourceCommand,
+    fetchedAtUnixMs: fetchedAt,
+  }
+}
+
+function buildAccountReview(
+  mode: 'paper' | 'live',
+  raw: unknown,
+  sourceCommand: ExecutionAccountReview['sourceCommand'],
+  fetchedAtRaw: unknown,
+): ExecutionAccountReview {
+  const resp = isRecord(raw) ? (raw as ExecutionConnectionResponse) : null
+  if (!resp) {
+    return {
+      state: sourceCommand === 'none' ? 'not_verified' : 'unavailable',
+      mode,
+      sourceCommand,
+      fetchedAtUnixMs: fetchedAtUnixMs(fetchedAtRaw),
+      accountId: '',
+      accountNumber: '',
+      status: '',
+      currency: '',
+      buyingPower: '',
+      cash: '',
+      portfolioValue: '',
+    }
+  }
+  const accountId = text(resp.account_id)
+  const accountNumber = text(resp.account_number)
+  const status = text(resp.status)
+  const currency = text(resp.currency)
+  const buyingPower = text(resp.buying_power)
+  const cash = text(resp.cash)
+  const portfolioValue = text(resp.portfolio_value)
+  const hasAnyDetails = !!(accountId || accountNumber || status || currency || buyingPower || cash || portfolioValue)
+  return {
+    state: hasAnyDetails ? 'broker_confirmed' : 'unavailable',
+    mode,
+    sourceCommand,
+    fetchedAtUnixMs: fetchedAtUnixMs(resp.fetched_at_unix_ms ?? fetchedAtRaw),
+    accountId,
+    accountNumber,
+    status,
+    currency,
+    buyingPower,
+    cash,
+    portfolioValue,
+  }
+}
+
+function positionMeta(review: ExecutionPositionReview | null | undefined): string {
+  if (!review || review.state === 'suppressed') return 'Position: -'
+  if (review.state === 'flat') return 'Position: flat'
+  if (review.state !== 'open' || !Number.isFinite(review.qty ?? Number.NaN)) return 'Position: unavailable.'
+  const avg = trimTrailingZeros(review.avgEntryPrice ?? Number.NaN, 4)
+  const now = trimTrailingZeros(review.currentPrice ?? Number.NaN, 4)
+  const upl = trimTrailingZeros(review.unrealizedPl ?? Number.NaN, 4)
+  const uplPctText = Number.isFinite(review.unrealizedPlpc ?? Number.NaN)
+    ? `${trimTrailingZeros((review.unrealizedPlpc ?? 0) * 100, 2)}%`
+    : '-'
+  return `Position: qty=${trimTrailingZeros(review.qty ?? Number.NaN, 6)} side=${review.side || '-'} avg=${avg} now=${now} upl=${upl} (${uplPctText})`
+}
+
+function chartMeta(review: ExecutionChartReview | null | undefined): string {
+  if (!review) return 'Load a dataset and refresh orders to overlay broker events.'
+  if (review.state === 'no_symbol') return 'Execution chart unavailable: select a symbol first.'
+  if (review.state === 'no_dataset') return 'Execution chart unavailable: load a workflow dataset first.'
+  if (review.state === 'symbol_mismatch') {
+    return `Execution chart unavailable: loaded dataset ${review.datasetLabel || review.datasetId || '-'} does not match ${review.symbol || '-'}.`
+  }
+  if (review.state === 'stale_broker_review') {
+    return `Execution chart loaded for ${review.symbol || '-'}, but broker review is stale as of ${toUtcDateTime(review.fetchedAtUnixMs)}.`
+  }
+  if (review.state === 'provenance_suppressed') {
+    return `Execution chart loaded for ${review.symbol || '-'}. Broker-confirmed markers stay suppressed until a symbol-scoped broker review is refreshed.`
+  }
+  if (review.state === 'loaded_no_markers') {
+    return `Execution chart loaded for ${review.symbol || '-'}. No broker-confirmed order markers are present in the current review.`
+  }
+  if (review.state === 'loaded_broker_markers') {
+    return `Execution chart loaded for ${review.symbol || '-'} with ${review.orderCount} broker-confirmed order marker${review.orderCount === 1 ? '' : 's'}.`
+  }
+  if (review.state === 'broker_review_loaded_chart_unavailable') {
+    return `Execution chart unavailable after broker review. symbol=${review.symbol || '-'}`
+  }
+  return `Execution chart sync pending. symbol=${review.symbol || '-'} orders=${review.orderCount}`
+}
+
+function accountMeta(review: ExecutionAccountReview | null | undefined): string {
+  if (!review || review.state === 'not_verified') return 'Account review: not verified.'
+  if (review.state === 'unavailable') return `Account review: ${review.mode} account unavailable.`
+  const parts = [
+    `Account review: ${review.mode}`,
+    review.accountNumber || review.accountId ? `account=${review.accountNumber || review.accountId}` : '',
+    review.status ? `status=${review.status}` : '',
+    review.currency ? `currency=${review.currency}` : '',
+    review.buyingPower ? `buying_power=${review.buyingPower}` : '',
+    review.cash ? `cash=${review.cash}` : '',
+    review.portfolioValue ? `portfolio=${review.portfolioValue}` : '',
+  ].filter((part) => part.length > 0)
+  return parts.join(' · ')
+}
+
+function isOpenBrokerOrderStatus(raw: unknown): boolean {
+  return BROKER_OPEN_ORDER_STATUSES.has(text(raw).toLowerCase())
+}
+
+function openOrderCount(ordersRaw: unknown): number {
+  if (!Array.isArray(ordersRaw)) return 0
+  let count = 0
+  for (const entry of ordersRaw) {
+    if (!isRecord(entry)) continue
+    if (isOpenBrokerOrderStatus(entry.status)) count += 1
+  }
+  return count
+}
+
+function reviewMeta(review: ExecutionBrokerReview | null | undefined): string {
+  if (!review) return 'Broker review: unavailable until the selected symbol is refreshed.'
+  const symbol = review.symbol || '-'
+  const fetchedAt = toUtcDateTime(review.fetchedAtUnixMs)
+  const accountStatus = review.account.status || 'unknown'
+  return `Broker review: ${review.mode} symbol-scoped ${symbol} · as of ${fetchedAt} · status=${accountStatus} · ${review.orders.openCount} open orders`
+}
+
+function buildBrokerReview(
+  mode: 'paper' | 'live',
+  symbolRaw: unknown,
+  raw: unknown,
+): ExecutionBrokerReview | null {
+  const resp = isRecord(raw) ? (raw as ExecutionSnapshotResponse) : null
+  const symbol = canonicalSymbol(resp?.symbol ?? symbolRaw)
+  if (!resp || !symbol) return null
+  const fetchedAt = fetchedAtUnixMs(resp.fetched_at_unix_ms)
+  const ordersCount = Array.isArray(resp.orders) ? resp.orders.length : 0
+  return {
+    sourceCommand: 'get_live_execution_snapshot',
+    mode,
+    symbol,
+    fetchedAtUnixMs: fetchedAt,
+    staleThresholdMs: BROKER_REVIEW_STALE_THRESHOLD_MS,
+    account: buildAccountReview(
+      mode,
+      {
+        account_id: resp.account_id,
+        account_number: resp.account_number,
+        status: resp.account_status,
+        currency: resp.currency,
+        buying_power: resp.buying_power,
+        cash: resp.cash,
+        portfolio_value: resp.portfolio_value,
+        fetched_at_unix_ms: resp.fetched_at_unix_ms,
+      },
+      'get_live_execution_snapshot',
+      resp.fetched_at_unix_ms,
+    ),
+    position: buildPositionReview(resp.position, symbol),
+    orders: {
+      state: 'broker_confirmed',
+      scope: 'symbol_scoped',
+      sourceCommand: 'get_live_execution_snapshot',
+      fetchedAtUnixMs: fetchedAt,
+      totalCount: ordersCount,
+      openCount: openOrderCount(resp.orders),
+    },
+    chart: buildChartReview(symbol, ordersCount, fetchedAt, 'get_live_execution_snapshot'),
+  }
 }
 
 function summarizeRunnerStatus(raw: unknown): { text: string; active: boolean } {
@@ -430,12 +1003,13 @@ function parseLiveStreamStatus(raw: unknown): ParsedLiveStatus {
   const active = !!row.active
   const symbol = canonicalSymbol(stream?.symbol)
   const delayed = !!stream?.delayed
+  const status = text(stream?.status).toLowerCase() || (active ? 'active' : 'off')
   return {
     active,
     symbol,
     delayed,
-    hint: liveStatusHint(active, symbol, delayed),
-    status: active ? 'active' : 'off',
+    hint: liveStatusHint(active, symbol, delayed, status),
+    status,
     message: '',
   }
 }
@@ -550,6 +1124,142 @@ function parseStoredExecutionCredentialStatus(raw: unknown): ExecutionStoredCred
   }
 }
 
+function routeProvenanceSummary(raw: unknown): string {
+  if (!isRecord(raw)) return ''
+  const requested = text(raw.requestedRoute ?? raw.requested_route)
+  const resolved = text(raw.resolvedRoute ?? raw.resolved_route)
+  const realized = text(raw.realizedRoute ?? raw.realized_route)
+  const fallback = text(raw.fallbackReason ?? raw.fallback_reason)
+  const parts = [
+    requested ? `requested=${requested}` : '',
+    resolved ? `resolved=${resolved}` : '',
+    realized ? `realized=${realized}` : '',
+    fallback ? `fallback=${fallback}` : '',
+  ].filter((part) => part.length > 0)
+  return parts.join(' · ')
+}
+
+function parseSavedSessionSummary(raw: unknown): ExecutionSavedSessionSummary | null {
+  const row = isRecord(raw) ? raw : null
+  if (!row) return null
+  const path = text(row.path)
+  if (!path) return null
+  return {
+    ts: text(row.ts),
+    path,
+    sessionId: text(row.sessionId ?? row.session_id),
+    mode: modeValue(row.mode),
+    symbol: canonicalSymbol(row.symbol),
+    strategyKind: text(row.strategyKind ?? row.strategy_kind),
+    dataId: text(row.dataId ?? row.data_id),
+    dryRun: !!row.dryRun,
+    paramSource: text(row.paramSource ?? row.param_source),
+    sessionState: text(row.sessionState ?? row.session_state),
+    createdAtUnixMs: fetchedAtUnixMs(row.createdAtUnixMs ?? row.created_at_unix_ms),
+    finalizedAtUnixMs: fetchedAtUnixMs(row.finalizedAtUnixMs ?? row.finalized_at_unix_ms),
+    eventCount: Math.max(0, Math.floor(toNumber(row.eventCount ?? row.event_count) || 0)),
+    brokerSnapshotCount: Math.max(0, Math.floor(toNumber(row.brokerSnapshotCount ?? row.broker_snapshot_count) || 0)),
+  }
+}
+
+function parseSavedSessionEvent(raw: unknown): ExecutionSavedSessionEvent | null {
+  const row = isRecord(raw) ? raw : null
+  if (!row) return null
+  const provenance = text(row.provenance)
+  const status = text(row.status)
+  const message = text(row.message)
+  if (!provenance && !status && !message) return null
+  const deltaQty = toNumber(row.deltaQty ?? row.delta_qty)
+  return {
+    provenance,
+    status,
+    message,
+    symbol: canonicalSymbol(row.symbol),
+    atUnixMs: fetchedAtUnixMs(row.atUnixMs ?? row.at_unix_ms),
+    barOpenUnixMs: fetchedAtUnixMs(row.barOpenUnixMs ?? row.bar_open_unix_ms),
+    action: text(row.action),
+    orderId: text(row.orderId ?? row.order_id),
+    deltaQty: Number.isFinite(deltaQty) ? deltaQty : null,
+    orderSubmitted: typeof (row.orderSubmitted ?? row.order_submitted) === 'boolean'
+      ? Boolean(row.orderSubmitted ?? row.order_submitted)
+      : null,
+    warnings: Array.isArray(row.warnings)
+      ? row.warnings.map((entry) => text(entry)).filter((entry) => entry.length > 0)
+      : [],
+  }
+}
+
+function parseSavedSessionBrokerSnapshot(raw: unknown): ExecutionSavedSessionBrokerSnapshot | null {
+  const row = isRecord(raw) ? raw : null
+  if (!row) return null
+  const sourceCommand = text(row.sourceCommand ?? row.source_command)
+  const symbol = canonicalSymbol(row.symbol)
+  if (!sourceCommand && !symbol) return null
+  const positionQty = toNumber(row.positionQty ?? row.position_qty)
+  return {
+    sourceCommand,
+    mode: modeValue(row.mode),
+    symbol,
+    atUnixMs: fetchedAtUnixMs(row.atUnixMs ?? row.at_unix_ms),
+    accountStatus: text(row.accountStatus ?? row.account_status),
+    currency: text(row.currency),
+    positionState: text(row.positionState ?? row.position_state),
+    positionQty: Number.isFinite(positionQty) ? positionQty : null,
+    positionSide: text(row.positionSide ?? row.position_side),
+    openOrderCount: Math.max(0, Math.floor(toNumber(row.openOrderCount ?? row.open_order_count) || 0)),
+    orderCount: Math.max(0, Math.floor(toNumber(row.orderCount ?? row.order_count) || 0)),
+  }
+}
+
+function parseSavedSessionDetail(raw: unknown): ExecutionSavedSessionDetail {
+  const row = isRecord(raw) ? raw : {}
+  const qty = toNumber(row.qty)
+  const rawBrokerSnapshots = row.brokerSnapshots ?? row.broker_snapshots
+  const events = Array.isArray(row.events)
+    ? row.events.map(parseSavedSessionEvent).filter((event): event is ExecutionSavedSessionEvent => !!event)
+    : []
+  const brokerSnapshots = Array.isArray(rawBrokerSnapshots)
+    ? rawBrokerSnapshots
+        .map(parseSavedSessionBrokerSnapshot)
+        .filter((snapshot): snapshot is ExecutionSavedSessionBrokerSnapshot => !!snapshot)
+    : []
+  return {
+    ts: text(row.ts),
+    artifactPath: text(row.artifactPath ?? row.artifact_path),
+    sessionId: text(row.sessionId ?? row.session_id),
+    sessionState: text(row.sessionState ?? row.session_state),
+    mode: modeValue(row.mode),
+    symbol: canonicalSymbol(row.symbol),
+    qty: Number.isFinite(qty) ? qty : 0,
+    dryRun: !!row.dryRun,
+    strategyKind: text(row.strategyKind ?? row.strategy_kind),
+    dataId: text(row.dataId ?? row.data_id),
+    paramSource: text(row.paramSource ?? row.param_source),
+    createdAtUnixMs: fetchedAtUnixMs(row.createdAtUnixMs ?? row.created_at_unix_ms),
+    finalizedAtUnixMs: fetchedAtUnixMs(row.finalizedAtUnixMs ?? row.finalized_at_unix_ms),
+    sourceRunArtifactPath: text(row.sourceRunArtifactPath ?? row.source_run_artifact_path),
+    sourceRunConfigFingerprint: text(row.sourceRunConfigFingerprint ?? row.source_run_config_fingerprint),
+    sourceRunRouteSummary: routeProvenanceSummary(row.sourceRunRouteProvenance ?? row.source_run_route_provenance),
+    eventCount: Math.max(0, Math.floor(toNumber(row.eventCount ?? row.event_count) || events.length)),
+    brokerSnapshotCount: Math.max(0, Math.floor(toNumber(row.brokerSnapshotCount ?? row.broker_snapshot_count) || brokerSnapshots.length)),
+    events,
+    brokerSnapshots,
+  }
+}
+
+function latestExecutionSourceRunContext(): {
+  artifactPath: string
+  configFingerprint: string
+  routeProvenance: unknown
+} {
+  const snapshot = readLatestWorkflowRunSnapshot()
+  return {
+    artifactPath: text(snapshot?.artifactPath),
+    configFingerprint: text(snapshot?.configFingerprint),
+    routeProvenance: snapshot?.routeProvenance ?? null,
+  }
+}
+
 export function loadPersistedExecutionKeys(): { apiKey: string; apiSecret: string } {
   try {
     const parsed = JSON.parse(readStorageString(EXEC_KEYS_STORAGE_KEY, 'null'))
@@ -559,35 +1269,36 @@ export function loadPersistedExecutionKeys(): { apiKey: string; apiSecret: strin
   }
 }
 
-function syncPersistedExecutionKeys(options: ExecutionActionOptions): void {
-  try {
-    if (options.rememberKeys) {
-      const apiKey = text(options.apiKey)
-      const apiSecret = text(options.apiSecret)
-      if (apiKey && apiSecret) {
-        writeStorageString(
-          EXEC_KEYS_STORAGE_KEY,
-          JSON.stringify({ api_key: apiKey, api_secret: apiSecret }),
-        )
-        return
-      }
-    }
-    removeStorageKey(EXEC_KEYS_STORAGE_KEY)
-  } catch {
-    // best effort only
+function resolveTypedExecutionCredentialOverride(
+  options: ExecutionActionOptions,
+): { apiKey: string; apiSecret: string } | null {
+  const apiKey = text(options.apiKey)
+  const apiSecret = text(options.apiSecret)
+  if (!apiKey && !apiSecret) return null
+  if (!apiKey || !apiSecret) {
+    throw new Error('API key + secret must both be provided when using a typed override.')
   }
+  return { apiKey, apiSecret }
 }
 
-function resolveApiKeys(options: ExecutionActionOptions): { apiKey: string; apiSecret: string } {
-  const providedKey = text(options.apiKey)
-  const providedSecret = text(options.apiSecret)
-  if (providedKey || providedSecret) {
-    return {
-      apiKey: providedKey,
-      apiSecret: providedSecret,
-    }
+function applyTypedExecutionCredentialOverride(
+  req: Record<string, unknown>,
+  options: ExecutionActionOptions,
+): { req: Record<string, unknown>; typedOverride: { apiKey: string; apiSecret: string } | null } {
+  const typedOverride = resolveTypedExecutionCredentialOverride(options)
+  if (typedOverride) {
+    req.alpaca_api_key = typedOverride.apiKey
+    req.alpaca_api_secret = typedOverride.apiSecret
   }
-  return loadPersistedExecutionKeys()
+  return { req, typedOverride }
+}
+
+async function persistRememberedExecutionTypedOverride(
+  options: ExecutionActionOptions,
+  typedOverride: { apiKey: string; apiSecret: string } | null,
+): Promise<void> {
+  if (!options.rememberKeys || !typedOverride) return
+  await storeExecutionCredentialsSecurely(typedOverride.apiKey, typedOverride.apiSecret)
 }
 
 async function resolveManualExecutionStrategy(
@@ -659,7 +1370,7 @@ async function buildExecutionInvokePayload(
     stop_loss_pct: parseRiskPct(options.riskStopLossPct, 'Risk override SL'),
     take_profit_pct: parseRiskPct(options.riskTakeProfitPct, 'Risk override TP'),
   }
-  const api = resolveApiKeys(options)
+  const sourceRun = latestExecutionSourceRunContext()
 
   const paramSource = sourceValue(options.paramSource)
   if (paramSource === 'manual') {
@@ -671,8 +1382,10 @@ async function buildExecutionInvokePayload(
         mode,
         dry_run,
         risk,
-        alpaca_api_key: api.apiKey,
-        alpaca_api_secret: api.apiSecret,
+        param_source: manual.source,
+        source_run_artifact_path: sourceRun.artifactPath,
+        source_run_config_fingerprint: sourceRun.configFingerprint,
+        source_run_route_provenance: sourceRun.routeProvenance,
         strategy: manual.strategy,
       },
       strategyKind: manual.strategyKind,
@@ -693,16 +1406,18 @@ async function buildExecutionInvokePayload(
     throw new Error('Unable to build strategy request from selected parameters.')
   }
   return {
-    req: {
-      symbol,
-      qty,
-      mode,
-      dry_run,
-      risk,
-      alpaca_api_key: api.apiKey,
-      alpaca_api_secret: api.apiSecret,
-      strategy: strategy.strategy,
-    },
+      req: {
+        symbol,
+        qty,
+        mode,
+        dry_run,
+        risk,
+        param_source: row.source,
+        source_run_artifact_path: sourceRun.artifactPath,
+        source_run_config_fingerprint: sourceRun.configFingerprint,
+        source_run_route_provenance: sourceRun.routeProvenance,
+        strategy: strategy.strategy,
+      },
     strategyKind: strategy.strategyKind,
     source: row.source,
   }
@@ -722,59 +1437,72 @@ async function refreshLiveStatus(): Promise<ParsedLiveStatus> {
 
 export async function testConnection(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
   const mode = modeValue(options.mode)
-  const api = resolveApiKeys(options)
-  if (!api.apiKey || !api.apiSecret) {
-    throw new Error('API key + secret are required for account test.')
-  }
-
+  const { req, typedOverride } = applyTypedExecutionCredentialOverride({ mode }, options)
   const resp = (await invokeCommand('test_alpaca_connection', {
-    req: { mode, alpaca_api_key: api.apiKey, alpaca_api_secret: api.apiSecret },
+    req,
   })) as ExecutionConnectionResponse
-  syncPersistedExecutionKeys(options)
+  await persistRememberedExecutionTypedOverride(options, typedOverride)
+  const accountReview = buildAccountReview(mode, resp, 'test_alpaca_connection', resp?.fetched_at_unix_ms)
   const account = text(resp?.account_number || resp?.account_id)
   const status = text(resp?.status)
   const suffix = `${account ? ` account=${account}` : ''}${status ? ` status=${status}` : ''}`
   return {
     statusLine: `Alpaca ${mode} connection OK.`,
     statusHint: `Alpaca ${mode} connection OK.${suffix}`.trim(),
+    accountMeta: accountMeta(accountReview),
+    accountReview,
     outputPreview: safePrettyJson(resp),
+    outputPreviewMeta: buildPreviewMeta(
+      'test_alpaca_connection',
+      `${mode} account verification`,
+      accountReview.fetchedAtUnixMs,
+    ),
   }
 }
 
 export async function refreshOrders(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
   const mode = modeValue(options.mode)
-  const api = resolveApiKeys(options)
-  if (!api.apiKey || !api.apiSecret) {
-    throw new Error('API key + secret are required to refresh broker orders.')
-  }
-  const symbol = canonicalSymbol(options.symbol)
-  const resp = (await invokeCommand('get_live_execution_snapshot', {
-    req: {
+  const symbol = requireSymbol(options.symbol)
+  const { req, typedOverride } = applyTypedExecutionCredentialOverride(
+    {
       mode,
-      alpaca_api_key: api.apiKey,
-      alpaca_api_secret: api.apiSecret,
       symbol,
       limit: 200,
-      include_account: false,
+      include_account: true,
       include_orders: true,
       include_position: true,
     },
+    options,
+  )
+  const resp = (await invokeCommand('get_live_execution_snapshot', {
+    req,
   })) as ExecutionSnapshotResponse
-  syncPersistedExecutionKeys(options)
+  await persistRememberedExecutionTypedOverride(options, typedOverride)
   const rows = buildOrderRows(resp?.orders)
   const count = rows.length
+  const brokerReview = buildBrokerReview(mode, resp?.symbol || symbol, resp)
   const scopeLabel = symbol
     ? `recent order${count === 1 ? '' : 's'} for ${symbol}`
     : `order${count === 1 ? '' : 's'} for all symbols`
-  return {
+  const result: ExecutionActionResult = {
     statusLine: `Loaded ${count} ${scopeLabel}.`,
     statusHint: `Loaded ${count} ${scopeLabel}.`,
     outputPreview: safePrettyJson(resp),
+    outputPreviewMeta: buildPreviewMeta(
+      'get_live_execution_snapshot',
+      `symbol-scoped ${canonicalSymbol(resp?.symbol || symbol) || symbol}`,
+      fetchedAtUnixMs(resp?.fetched_at_unix_ms),
+    ),
     orderRows: rows,
     orderCount: count,
-    positionMeta: positionMeta(resp?.position),
-    chartMeta: chartMeta(resp?.symbol || symbol, count),
+    positionMeta: positionMeta(brokerReview?.position),
+    chartMeta: chartMeta(brokerReview?.chart),
+    accountMeta: accountMeta(brokerReview?.account),
+    reviewMeta: reviewMeta(brokerReview),
   }
+  if (brokerReview?.account) result.accountReview = brokerReview.account
+  if (brokerReview) result.brokerReview = brokerReview
+  return result
 }
 
 export async function startLive(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
@@ -786,6 +1514,7 @@ export async function startLive(options: ExecutionActionOptions): Promise<Execut
   return {
     statusLine: `Live candles started for ${text(resp?.symbol) || symbol}.`,
     liveStatusHint: `Live candles started for ${text(resp?.symbol) || symbol}${text(resp?.channel) ? ` (${text(resp?.channel)})` : ''}${resp?.delayed ? ' [delayed]' : ''}.`,
+    liveLifecycleState: 'started',
     liveActive: true,
     liveSymbol: canonicalSymbol(resp?.symbol || symbol),
     liveDelayed: !!resp?.delayed,
@@ -798,6 +1527,7 @@ export async function stopLive(): Promise<ExecutionActionResult> {
   return {
     statusLine: stopped ? 'Live candles stopped.' : 'Live candles were already stopped.',
     liveStatusHint: stopped ? 'Live candles stopped.' : 'Live candles were already stopped.',
+    liveLifecycleState: stopped ? 'stopped' : 'off',
     liveActive: false,
     liveSymbol: '',
     liveDelayed: false,
@@ -806,10 +1536,7 @@ export async function stopLive(): Promise<ExecutionActionResult> {
 
 export async function startRunner(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
   const payload = await buildExecutionInvokePayload(options)
-  const req = payload.req
-  if (!req.dry_run && (!text(req.alpaca_api_key) || !text(req.alpaca_api_secret))) {
-    throw new Error('API key + secret are required unless dry-run is enabled.')
-  }
+  const { req, typedOverride } = applyTypedExecutionCredentialOverride(payload.req, options)
 
   const live = parseLiveStreamStatus(
     (await invokeCommand('polygon_live_candle_stream_status')) as LiveCandleStreamStatusResponse,
@@ -823,11 +1550,12 @@ export async function startRunner(options: ExecutionActionOptions): Promise<Exec
   }
 
   const statusRaw = await invokeCommand('start_live_execution_runner', { req })
-  syncPersistedExecutionKeys(options)
+  await persistRememberedExecutionTypedOverride(options, typedOverride)
   const summary = summarizeRunnerStatus(statusRaw)
   return {
     statusLine: `Auto-runner started for ${text(req.symbol) || '-'}.`,
     runnerStatusHint: summary.text,
+    runnerLifecycleState: 'started',
     runnerActive: summary.active,
     liveSymbol: live.symbol,
     liveDelayed: live.delayed,
@@ -842,18 +1570,90 @@ export async function stopRunner(): Promise<ExecutionActionResult> {
   return {
     statusLine: stopped ? 'Auto-runner stopped.' : 'Auto-runner was already off.',
     runnerStatusHint: summary.text,
+    runnerLifecycleState: stopped ? 'stopped' : 'off',
     runnerActive: summary.active,
+  }
+}
+
+export async function cancelOpenOrders(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
+  const mode = modeValue(options.mode)
+  const symbol = requireSymbol(options.symbol)
+  const { req, typedOverride } = applyTypedExecutionCredentialOverride({ mode, symbol }, options)
+  const resp = (await invokeCommand('cancel_live_execution_open_orders', {
+    req,
+  })) as CancelLiveExecutionOpenOrdersResponse
+  await persistRememberedExecutionTypedOverride(options, typedOverride)
+  const refreshed = await refreshOrders({ ...options, mode, symbol })
+  const cancelledCount = positiveInt(resp?.cancelled_count)
+  const openOrderCountBefore = positiveInt(resp?.open_order_count_before)
+  const statusLine = cancelledCount > 0
+    ? `Cancelled ${cancelledCount} open broker order${cancelledCount === 1 ? '' : 's'} for ${symbol}.`
+    : `No open broker orders to cancel for ${symbol}.`
+  const statusHint = cancelledCount > 0
+    ? `${statusLine} Broker review refreshed from ${openOrderCountBefore} previously open order${openOrderCountBefore === 1 ? '' : 's'}.`
+    : `${statusLine} Broker review refreshed.`
+  return {
+    ...refreshed,
+    statusLine,
+    statusHint,
+  }
+}
+
+export async function flattenPosition(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
+  const mode = modeValue(options.mode)
+  const symbol = requireSymbol(options.symbol)
+  const { req, typedOverride } = applyTypedExecutionCredentialOverride({ mode, symbol }, options)
+  const resp = (await invokeCommand('flatten_live_execution_position', {
+    req,
+  })) as FlattenLiveExecutionPositionResponse
+  await persistRememberedExecutionTypedOverride(options, typedOverride)
+  const refreshed = await refreshOrders({ ...options, mode, symbol })
+  const submitted = !!resp?.order_submitted
+  const positionFound = !!resp?.position_found
+  const action = text(resp?.action).toUpperCase()
+  const orderId = text(resp?.order_id)
+  const statusLine = !positionFound
+    ? `No open broker position to flatten for ${symbol}.`
+    : submitted
+      ? `Submitted ${action || 'FLATTEN'} flatten order${orderId ? ` (id=${orderId})` : ''} for ${symbol}.`
+      : `Flatten request for ${symbol} did not submit a broker order.`
+  return {
+    ...refreshed,
+    statusLine,
+    statusHint: `${statusLine} Broker review refreshed.`,
+  }
+}
+
+export async function emergencyHalt(): Promise<ExecutionActionResult> {
+  const resp = (await invokeCommand('emergency_halt_live_execution')) as EmergencyHaltLiveExecutionResponse
+  const liveStopped = !!resp?.live_stopped
+  const runnerStopped = !!resp?.runner_stopped
+  const liveSymbol = canonicalSymbol(resp?.live_symbol)
+  const statusLine = text(resp?.status_message) || 'Live automation was already disarmed.'
+  return {
+    statusLine,
+    statusHint: statusLine,
+    liveStatusHint: liveStopped
+      ? `Live candles stopped${liveSymbol ? ` for ${liveSymbol}` : ''}.`
+      : 'Live candles were already off.',
+    runnerStatusHint: runnerStopped ? 'Auto-runner stopped.' : 'Auto-runner was already off.',
+    liveLifecycleState: liveStopped ? 'stopped' : 'off',
+    runnerLifecycleState: runnerStopped ? 'stopped' : 'off',
+    recoveryReviewRequired: !!resp?.requires_manual_review,
+    liveActive: false,
+    runnerActive: false,
+    liveSymbol: '',
+    liveDelayed: false,
+    outputPreview: safePrettyJson(resp),
+    outputPreviewMeta: buildPreviewMeta('none', 'emergency halt', Date.now()),
   }
 }
 
 export async function runOnce(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
   const payload = await buildExecutionInvokePayload(options)
-  const req = payload.req
-  if (!req.dry_run && (!text(req.alpaca_api_key) || !text(req.alpaca_api_secret))) {
-    throw new Error('API key + secret are required unless dry-run is enabled.')
-  }
+  const { req, typedOverride } = applyTypedExecutionCredentialOverride(payload.req, options)
   const resp = (await invokeCommand('execute_strategy_signal_once', { req })) as ExecuteSignalResponse
-  syncPersistedExecutionKeys(options)
+  await persistRememberedExecutionTypedOverride(options, typedOverride)
 
   const action = text(resp?.action || 'hold') || 'hold'
   const submitted = !!resp?.order_submitted
@@ -872,6 +1672,11 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
     statusLine: statusHint,
     statusHint,
     outputPreview: safePrettyJson(resp),
+    outputPreviewMeta: buildPreviewMeta(
+      'execute_strategy_signal_once',
+      `symbol-scoped ${canonicalSymbol(req.symbol) || '-'}`,
+      Date.now(),
+    ),
   }
 
   if (submitted && !req.dry_run) {
@@ -905,7 +1710,9 @@ export async function refreshStatuses(): Promise<ExecutionActionResult> {
     runnerStatusHint: runnerHint,
     runnerActive,
     liveStatusHint: liveHint,
+    runnerLifecycleState: runner.status === 'fulfilled' ? (runner.value.active ? 'active' : 'off') : 'off',
     liveActive,
+    liveLifecycleState: liveSummary?.status === 'active' ? 'active' : 'off',
     liveSymbol: liveSummary?.symbol || '',
     liveDelayed: !!liveSummary?.delayed,
   }
@@ -960,19 +1767,41 @@ export async function migrateLegacyStoredExecutionKeysToSecureStorage(): Promise
 }
 
 export async function clearKeys(): Promise<ExecutionActionResult> {
+  let secureClearError: unknown = null
   try {
     await clearStoredExecutionCredentialsSecurely()
-  } catch {
-    // best-effort secure-store cleanup during the transition to backend-owned secrets
+  } catch (error) {
+    secureClearError = error
   }
   try {
     removeStorageKey(EXEC_KEYS_STORAGE_KEY)
   } catch {
     // best-effort local key cleanup only
   }
+  if (secureClearError) {
+    const detail = text(secureClearError)
+    throw new Error(detail || 'Stored credential clear failed.')
+  }
   return {
     statusLine: 'Cleared execution API keys.',
     statusHint: 'Cleared execution API keys.',
     outputPreview: '-',
+    outputPreviewMeta: buildPreviewMeta('alpaca_clear_api_credentials', 'credential clear', Date.now()),
   }
+}
+
+export async function listSavedLiveSessions(): Promise<ExecutionSavedSessionSummary[]> {
+  const raw = await invokeCommand('list_live_session_artifacts')
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map(parseSavedSessionSummary)
+    .filter((row): row is ExecutionSavedSessionSummary => !!row)
+}
+
+export async function loadSavedLiveSessionDetail(path: string): Promise<ExecutionSavedSessionDetail> {
+  return parseSavedSessionDetail(
+    await invokeCommand('load_live_session_artifact_detail', {
+      path: text(path),
+    }),
+  )
 }

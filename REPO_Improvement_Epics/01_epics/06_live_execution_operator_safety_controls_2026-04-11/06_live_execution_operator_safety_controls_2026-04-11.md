@@ -1,6 +1,6 @@
 # Live Execution Operator Safety Controls Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -136,19 +136,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the discrete live-mode safety-control matrix for the current supported scope.
-- [ ] Record the exact semantics of stop runner versus stop feed versus flatten versus cancel-open-orders.
-- [ ] Decide whether emergency halt is only session-local or should persist until explicit operator re-arm.
-- [ ] Define dedicated backend request/response contracts for flatten, cancel-open-orders, and any shipped emergency halt/disarm behavior.
-- [ ] Freeze symbol scope for new broker-facing controls and avoid blank-symbol broadening unless a narrower follow-up explicitly widens it.
-- [ ] Define confirmation-copy requirements for every broker-facing safety action.
-- [ ] Define how bracket-order and partial-failure behavior is surfaced for flatten and cancel-open-orders.
-- [ ] Define disabled-state and blocked-reason rules for the new safety controls.
-- [ ] Keep new controls backend-authoritative where they affect broker state.
-- [ ] Preserve current dry-run and paper behavior while adding live-mode safety actions.
-- [ ] Add or strengthen frontend tests around safety-button availability, confirmation flow, and operator-state clarity.
-- [ ] Add or strengthen Rust tests around flatten/cancel/stop semantics, runner/feed interaction, and safe degradation.
-- [ ] Record rollback conditions if the new control model increases operator ambiguity or weakens current safety posture.
+- [x] Define the discrete live-mode safety-control matrix for the current supported scope.
+- [x] Record the exact semantics of stop runner versus stop feed versus flatten versus cancel-open-orders.
+- [x] Decide whether emergency halt is only session-local or should persist until explicit operator re-arm.
+- [x] Define dedicated backend request/response contracts for flatten, cancel-open-orders, and any shipped emergency halt/disarm behavior.
+- [x] Freeze symbol scope for new broker-facing controls and avoid blank-symbol broadening unless a narrower follow-up explicitly widens it.
+- [x] Define confirmation-copy requirements for every broker-facing safety action.
+- [x] Define how bracket-order and partial-failure behavior is surfaced for flatten and cancel-open-orders.
+- [x] Define disabled-state and blocked-reason rules for the new safety controls.
+- [x] Keep new controls backend-authoritative where they affect broker state.
+- [x] Preserve current dry-run and paper behavior while adding live-mode safety actions.
+- [x] Add or strengthen frontend tests around safety-button availability, confirmation flow, and operator-state clarity.
+- [x] Add or strengthen Rust tests around flatten/cancel/stop semantics, runner/feed interaction, and safe degradation.
+- [x] Record rollback conditions if the new control model increases operator ambiguity or weakens current safety posture.
 
 ## Verification Plan
 
@@ -176,6 +176,21 @@ Public-repo quality focus:
 - if a safety control cannot be made backend-authoritative yet, keep it out of the shipped live-mode control set
 - keep shell-promotion work separate unless a narrower follow-up intentionally widens this bundle beyond safety semantics
 - do not widen this plan into broker expansion or options live trading
+
+## Execution Notes
+
+- Implemented a five-action safety matrix directly in the live execution surface so stop runner, stop live feed, cancel open orders, flatten position, and emergency halt all state what they do, what they do not do, and how scope is constrained.
+- Added backend-authoritative Tauri commands for `cancel_live_execution_open_orders`, `flatten_live_execution_position`, and `emergency_halt_live_execution` in `src-tauri/src/commands_execution.rs`, with current-symbol-only semantics and explicit runner-off requirements for broker-facing safety actions.
+- Preserved current dry-run and paper behavior. The new broker-facing controls only light up when symbol and effective credentials are present, while emergency halt remains a local disarm path that stops the feed and runner but does not flatten or cancel broker state.
+- Surfaced confirmation copy and blocked reasons in `ExecutionWorkspacePanel.vue` / `executionStore.ts`, and added targeted frontend coverage plus browser UX proof for the new control contract.
+- Verification run for closure:
+  - `cargo test -p ta_desktop_demo_app --lib`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run parity`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 
 ## Related Docs
 

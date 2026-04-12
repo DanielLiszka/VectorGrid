@@ -297,6 +297,8 @@ function deriveSubtitle(state: Pick<WorkflowState, 'mode' | 'workspace' | 'workf
     }
   } else if (workspace === 'settings') {
     view = 'Appearance + storage'
+  } else if (workspace === 'live') {
+    view = 'Broker operations'
   }
 
   const next = base ? (view ? `${base} (${view})` : base) : (view || '—')
@@ -371,6 +373,8 @@ export const useWorkflowStore = defineStore('workflow', {
         this.workflow = 'data'
         this.controlsTab = 'data'
         this.resultsTab = 'overview'
+      } else if (this.workspace === 'live') {
+        // Live workspace preserves the underlying workflow context; it is a shell placement change, not a new workflow family.
       } else if (this.workspace === 'library') {
         this.workflow = 'history'
         this.controlsTab = 'data'
@@ -491,6 +495,12 @@ export const useWorkflowStore = defineStore('workflow', {
         nextStep = workflowStep('data')
         nextControls = 'data'
         nextResults = 'overview'
+      } else if (nextWorkspace === 'live') {
+        rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
+        nextWorkflow = normalizeWorkflow(this.workflow) || DEFAULT_WORKFLOW
+        nextStep = normalizeStep(this.workflowStep) || workflowStep(nextWorkflow)
+        nextControls = normalizeControls(this.controlsTab) || resolveTabs(this.mode, nextWorkflow).controls
+        nextResults = normalizeResults(this.resultsTab) || resolveTabs(this.mode, nextWorkflow).results
       }
 
       const changed =

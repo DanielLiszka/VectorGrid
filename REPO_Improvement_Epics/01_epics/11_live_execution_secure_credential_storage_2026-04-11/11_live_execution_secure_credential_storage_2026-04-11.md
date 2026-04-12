@@ -1,6 +1,6 @@
 # Live Execution Secure Credential Storage Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -93,15 +93,15 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Record the current credential persistence path and define the target secure-storage owner.
-- [ ] Define the backend command contract for setting, clearing, and checking stored Alpaca credentials.
-- [ ] Define whether raw credential retrieval is ever necessary for the frontend after migration.
-- [ ] Define migration behavior for already persisted frontend credentials.
-- [ ] Define the precedence rules if both legacy frontend and new backend credential stores exist during migration.
-- [ ] Define user-visible status text for stored, missing, invalid, and cleared credential states.
-- [ ] Add or strengthen frontend tests for remember/clear flows and status behavior.
-- [ ] Add or strengthen Rust tests for secure storage, clear semantics, and redaction-safe error handling.
-- [ ] Define rollback conditions if the secure-storage path introduces more ambiguity than the current remembered-key UX.
+- [x] Record the current credential persistence path and define the target secure-storage owner.
+- [x] Define the backend command contract for setting, clearing, and checking stored Alpaca credentials.
+- [x] Define whether raw credential retrieval is ever necessary for the frontend after migration.
+- [x] Define migration behavior for already persisted frontend credentials.
+- [x] Define the precedence rules if both legacy frontend and new backend credential stores exist during migration.
+- [x] Define user-visible status text for stored, missing, invalid, and cleared credential states.
+- [x] Add or strengthen frontend tests for remember/clear flows and status behavior.
+- [x] Add or strengthen Rust tests for secure storage, clear semantics, and redaction-safe error handling.
+- [x] Define rollback conditions if the secure-storage path introduces more ambiguity than the current remembered-key UX.
 
 ## Verification Plan
 
@@ -120,6 +120,32 @@ Public-repo quality focus:
 - Final validation must include browser, desktop, and accessibility checks for the credential UX, plus a paper/live-mode manual smoke path proving command resolution works without raw-secret readback or accidental secret disclosure.
 - Final validation must include performance evaluation for any touched secure-store lookup, hydration, or submit path so the final state does not introduce avoidable latency or retry regressions.
 - If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
+## Execution Notes
+
+- Alpaca credential ownership now matches the seriousness of the live surface:
+  - `src-tauri/src/commands_execution.rs` exposes secure credential status/set/clear commands and backend-default credential resolution for broker-facing actions
+  - `web/src/services/executionService.ts` wraps secure-storage status, migration, and clear/set flows
+  - `web/src/stores/executionStore.ts` and `web/src/components/ExecutionWorkspacePanel.vue` now show credential presence/state without hydrating raw remembered secrets back into the UI
+- The migration posture is explicit and additive:
+  - legacy frontend-local remembered keys can migrate forward into secure storage
+  - backend presence/status becomes the remembered-credential truth source
+  - raw-secret readback is not part of the frontend contract after migration
+- This epic closed for the current single-broker execution surface:
+  - existing paper/live workflows remain intact
+  - secure-storage failures still surface diagnosably without leaking credentials
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app alpaca_keyring_service_name_scopes_to_app_identifier --lib`
+  - `cargo test -p ta_desktop_demo_app alpaca_credential_storage_status_tracks_presence_bits --lib`
+  - `cargo test -p ta_desktop_demo_app store_alpaca_api_credentials_rejects_empty_values_before_secure_storage --lib`
+  - `cargo test -p ta_desktop_demo_app normalize_alpaca_typed_override_rejects_partial_pairs --lib`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 
 ## Rollout / Fallback / Compatibility Notes
 

@@ -20,7 +20,7 @@ import {
 } from './artifactHistoryPerf'
 import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
 
-const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])
+const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'live', 'settings'])
 const WORKFLOW_MODE_KEYS = new Set(['conventional', 'ml-signal'])
 const WORKFLOW_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize', 'history', 'settings'])
 const WORKFLOW_STEP_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize'])
@@ -118,6 +118,35 @@ export function applyWorkflowBootstrapFromStorage(options: WorkflowBootstrapOpti
     return startupDataPromise
   }
   const store = useWorkflowStore(pinia)
+
+  if (state.workspace === 'live') {
+    store.applyLegacySnapshot({
+      mode: normalizeShellMode(state.mode) || store.mode,
+      workspace: state.workspace,
+      workflow: state.workflow,
+      workflowStep: state.workflowStep,
+      controlsTab: state.controlsTab,
+      resultsTab: state.resultsTab,
+      aggregateTab: state.aggregateTab,
+      splitFraction: state.splitFraction ? Number(state.splitFraction) : store.splitFraction,
+    })
+    recordArtifactHistoryPerf(
+      'workflowBootstrap.restoreShellStateMs',
+      artifactHistoryPerfNow() - restoreShellStateStartedAt,
+      {
+        restoredState: true,
+        mode: state.mode || null,
+        workspace: state.workspace || null,
+        workflow: state.workflow || null,
+        workflowStep: state.workflowStep || null,
+        controlsTab: state.controlsTab || null,
+        resultsTab: state.resultsTab || null,
+        aggregateTab: state.aggregateTab || null,
+        splitFraction: state.splitFraction || null,
+      },
+    )
+    return startupDataPromise
+  }
 
   if (state.mode) {
     const restoredMode = normalizeShellMode(state.mode)

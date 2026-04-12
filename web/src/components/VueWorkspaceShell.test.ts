@@ -100,6 +100,32 @@ describe('VueWorkspaceShell', () => {
     wrapper.unmount()
   })
 
+  it('promotes live into its own shell surface with the current support envelope visible', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflowStep('optimize', { persist: false })
+    workflowStore.selectControlsTab('strategy', { persist: false })
+    workflowStore.selectResultsTab('top', { persist: false })
+    workflowStore.selectWorkspace('live')
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Live')
+    expect(text).toContain('Current live support envelope')
+    expect(text).toContain('DoubleMa · CompositeCpu')
+    expect(text).toContain('One symbol · one runner · one stream')
+    expect((document.querySelector('#liveShellGrid') as HTMLElement | null)?.style.display).not.toBe('none')
+    expect((document.querySelector('#settingsShellGrid') as HTMLElement | null)?.style.display).toBe('none')
+
+    wrapper.unmount()
+  })
+
   it('keeps five default context cards and routes task review through the shell launcher', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

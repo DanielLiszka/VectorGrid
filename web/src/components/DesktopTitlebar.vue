@@ -47,6 +47,7 @@ const workspaceLabel = computed(() => {
   if (normalizedWorkspace === 'library') return 'Run Library'
   if (normalizedWorkspace === 'aggregate') return 'Aggregate Analysis'
   if (normalizedWorkspace === 'pro') return 'Pro Tools'
+  if (normalizedWorkspace === 'live') return 'Live'
   if (normalizedWorkspace === 'settings') return 'Settings'
   return 'Workflow'
 })

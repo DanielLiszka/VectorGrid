@@ -97,4 +97,30 @@ describe('App root shell', () => {
 
     wrapper.unmount()
   })
+
+  it('mounts execution under the live workspace instead of the settings workspace', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+
+    mount(App, {
+      global: {
+        plugins: [pinia],
+        stubs: APP_STUBS,
+      },
+      attachTo: document.body,
+    })
+    await flushApp()
+
+    expect(document.querySelector('[data-stub="ExecutionWorkspacePanel"]')).toBeNull()
+
+    workflowStore.selectWorkspace('settings', undefined, { persist: false })
+    await flushApp()
+    expect(document.querySelector('[data-stub="ExecutionWorkspacePanel"]')).toBeNull()
+    expect(document.querySelector('[data-stub="SettingsWorkspacePanel"]')).not.toBeNull()
+
+    workflowStore.selectWorkspace('live', undefined, { persist: false })
+    await flushApp()
+    expect(document.querySelector('[data-stub="ExecutionWorkspacePanel"]')).not.toBeNull()
+  })
 })

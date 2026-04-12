@@ -682,6 +682,8 @@ fn emit_polygon_live_status(
     status: &str,
     message: impl Into<String>,
 ) {
+    let state = app.state::<AppState>();
+    let _ = state.record_live_candle_stream_status(market, symbol, delayed, status);
     let payload = PolygonLiveStatusEvent {
         status: status.to_string(),
         message: message.into(),
@@ -692,6 +694,26 @@ fn emit_polygon_live_status(
         at_unix_ms: now_unix_ms(),
     };
     let _ = app.emit(POLYGON_LIVE_STATUS_EVENT, payload);
+}
+
+fn should_force_runner_review_posture(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "closed" | "error"
+    )
+}
+
+fn disarm_runner_after_nonmanual_feed_interruption(
+    app: &tauri::AppHandle,
+    status: &str,
+    message: &str,
+) {
+    if should_force_runner_review_posture(status) {
+        let _ = super::commands_execution::stop_live_execution_runner_for_interruption(app.clone());
+        let _ = super::commands_execution::record_live_session_interruption_and_finalize(
+            app, status, message,
+        );
+    }
 }
 
 fn normalize_polygon_live_bar(
@@ -806,6 +828,11 @@ async fn run_polygon_live_candle_stream(
                 "error",
                 format!("connect failed: {e}"),
             );
+            disarm_runner_after_nonmanual_feed_interruption(
+                &app,
+                "error",
+                &format!("connect failed: {e}"),
+            );
             return;
         }
         Err(_) => {
@@ -818,6 +845,7 @@ async fn run_polygon_live_candle_stream(
                 "error",
                 "connect timed out",
             );
+            disarm_runner_after_nonmanual_feed_interruption(&app, "error", "connect timed out");
             return;
         }
     };
@@ -842,6 +870,7 @@ async fn run_polygon_live_candle_stream(
             "error",
             "auth send timed out",
         );
+        disarm_runner_after_nonmanual_feed_interruption(&app, "error", "auth send timed out");
         return;
     }
     if let Ok(Err(e)) = auth_send {
@@ -853,6 +882,11 @@ async fn run_polygon_live_candle_stream(
             &channel,
             "error",
             format!("auth send failed: {e}"),
+        );
+        disarm_runner_after_nonmanual_feed_interruption(
+            &app,
+            "error",
+            &format!("auth send failed: {e}"),
         );
         return;
     }
@@ -877,6 +911,7 @@ async fn run_polygon_live_candle_stream(
             "error",
             "subscribe send timed out",
         );
+        disarm_runner_after_nonmanual_feed_interruption(&app, "error", "subscribe send timed out");
         return;
     }
     if let Ok(Err(e)) = subscribe_send {
@@ -888,6 +923,11 @@ async fn run_polygon_live_candle_stream(
             &channel,
             "error",
             format!("subscribe send failed: {e}"),
+        );
+        disarm_runner_after_nonmanual_feed_interruption(
+            &app,
+            "error",
+            &format!("subscribe send failed: {e}"),
         );
         return;
     }
@@ -921,7 +961,8 @@ async fn run_polygon_live_candle_stream(
                 let why = frame
                     .map(|f| f.reason.to_string())
                     .unwrap_or_else(|| "remote close".to_string());
-                emit_polygon_live_status(&app, &market, &symbol, delayed, &channel, "closed", why);
+                emit_polygon_live_status(&app, &market, &symbol, delayed, &channel, "closed", &why);
+                disarm_runner_after_nonmanual_feed_interruption(&app, "closed", &why);
                 break;
             }
             Some(Ok(_)) => {}
@@ -935,6 +976,11 @@ async fn run_polygon_live_candle_stream(
                     "error",
                     format!("stream read failed: {e}"),
                 );
+                disarm_runner_after_nonmanual_feed_interruption(
+                    &app,
+                    "error",
+                    &format!("stream read failed: {e}"),
+                );
                 break;
             }
             None => {
@@ -947,6 +993,7 @@ async fn run_polygon_live_candle_stream(
                     "closed",
                     "stream ended",
                 );
+                disarm_runner_after_nonmanual_feed_interruption(&app, "closed", "stream ended");
                 break;
             }
         }
@@ -1067,7 +1114,7 @@ pub fn polygon_live_candle_stream_status(
 ) -> Result<PolygonLiveCandleStreamStatusResponse, String> {
     let stream = state.live_candle_stream_info()?;
     Ok(PolygonLiveCandleStreamStatusResponse {
-        active: stream.is_some(),
+        active: stream.as_ref().is_some_and(|info| info.active),
         stream,
     })
 }
@@ -1403,6 +1450,7 @@ mod tests {
     use super::parse_csv_fields;
     use super::sample_csvs_from_root;
     use super::set_market_data_dir_for_base;
+    use super::should_force_runner_review_posture;
     use crate::state::AppState;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -1434,6 +1482,15 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("background task"));
+    }
+
+    #[test]
+    fn nonmanual_feed_interruptions_force_review_required_runner_posture() {
+        assert!(should_force_runner_review_posture("closed"));
+        assert!(should_force_runner_review_posture("error"));
+        assert!(should_force_runner_review_posture(" CLOSED "));
+        assert!(!should_force_runner_review_posture("stopped"));
+        assert!(!should_force_runner_review_posture("started"));
     }
 
     fn make_candles(len: usize) -> Candles {

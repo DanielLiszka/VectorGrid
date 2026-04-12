@@ -1,6 +1,6 @@
 # GPU Route Maturity And Policy Refinement Plan
 
-Last updated: 2026-04-10
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -131,17 +131,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the supported-route matrix that should be refreshed for this epic, including whether the scope stays within the Double-MA family plus routed composite profiles or is intentionally widened.
-- [ ] Record the current optimize and validation route/fallback outcomes for those scenarios as separate columns, not one flattened route table.
-- [ ] Freeze the owner files that define route truth across request legality, runtime behavior, frontend summaries, and persisted artifacts.
-- [ ] Identify where user-facing route copy currently understates or overstates backend reality.
-- [ ] Preserve CPU fallback safety and current supported-route boundaries unless a narrower follow-up doc widens them.
-- [ ] Add or strengthen route-policy and fallback-reason tests where the current contract is too implicit.
-- [ ] Audit helper and copy paths that collapse `GpuKernel`, `GpuHybridKernel`, and `GpuOnly` into one generic “GPU kernel” preview bucket, and either justify or narrow that grouping.
-- [ ] Refresh the measurement evidence for any route claim that will change.
-- [ ] Define artifact-compatibility handling for route vocabulary changes, including how historical `route_provenance` should be reopened or compared.
-- [ ] Define rollback conditions if a route-policy refinement makes current behavior harder to reason about or less truthful.
-- [ ] Record any required cross-doc sync in the first-tier strategy/optimization/validation/perf docs when route wording or evidence changes.
+- [x] Define the supported-route matrix that should be refreshed for this epic, including whether the scope stays within the Double-MA family plus routed composite profiles or is intentionally widened.
+- [x] Record the current optimize and validation route/fallback outcomes for those scenarios as separate columns, not one flattened route table.
+- [x] Freeze the owner files that define route truth across request legality, runtime behavior, frontend summaries, and persisted artifacts.
+- [x] Identify where user-facing route copy currently understates or overstates backend reality.
+- [x] Preserve CPU fallback safety and current supported-route boundaries unless a narrower follow-up doc widens them.
+- [x] Add or strengthen route-policy and fallback-reason tests where the current contract is too implicit.
+- [x] Audit helper and copy paths that collapse `GpuKernel`, `GpuHybridKernel`, and `GpuOnly` into one generic “GPU kernel” preview bucket, and either justify or narrow that grouping.
+- [x] Refresh the measurement evidence for any route claim that will change.
+- [x] Define artifact-compatibility handling for route vocabulary changes, including how historical `route_provenance` should be reopened or compared.
+- [x] Define rollback conditions if a route-policy refinement makes current behavior harder to reason about or less truthful.
+- [x] Record any required cross-doc sync in the first-tier strategy/optimization/validation/perf docs when route wording or evidence changes.
 
 ## Verification Plan
 
@@ -156,6 +156,74 @@ Public-repo quality focus:
 - rerun `powershell -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate` only when ALMA contract-row claims or helper paths are affected
 - run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm.cmd --prefix web run lint` and `npm.cmd --prefix web run typecheck`
 - capture concrete acceptance evidence for closure, including the refreshed route matrix and the exact measured scenarios used to justify any copy or policy change
+
+## Execution Notes
+
+- This epic closed on two bounded implementation waves:
+  - route-truth cleanup across frontend validation previews, backend validation/report summaries, and saved-run route provenance review surfaces
+  - refreshed GPU route and workflow evidence after the route-truth changes landed
+- Route-truth implementation surfaces updated during this epic:
+  - `web/src/services/validationRequestBuilder.ts`
+  - `web/src/services/validationRequestBuilder.test.ts`
+  - `src-tauri/src/commands_reports_validation_common.rs`
+  - `web/src/components/HistoryWorkspacePanel.vue`
+  - `web/src/components/HistoryWorkspacePanel.test.ts`
+- The route-truth cleanup explicitly preserved the current validation-runtime reality:
+  - `Auto` validation previews and report summaries stay on kernel-route wording for the routed composite profiles because backend auto validation still resolves through the kernel route today
+  - explicit `GpuHybridKernel` and ADX-bearing routed profile requests now surface the hybrid route honestly
+  - saved-run route review rows now show compact requested/resolved/actual/fallback provenance instead of a reduced actual-only pill
+- Fresh acceptance evidence used for closure:
+  - `npm.cmd --prefix web run test -- src/services/validationRequestBuilder.test.ts src/utils/strategyOptimizationCapabilities.test.ts`
+  - `npm.cmd --prefix web run test -- src/components/HistoryWorkspacePanel.test.ts src/services/validationRequestBuilder.test.ts src/utils/strategyOptimizationCapabilities.test.ts`
+  - `cargo test -p ta_desktop_demo_app composite_trend_auto_expected_summary_stays_on_kernel_wording_even_with_adx --lib`
+  - `cargo test -p ta_desktop_demo_app breakout_momentum_expected_summary_reroutes_explicit_kernel_request_when_adx_is_on --lib`
+  - `cargo test -p ta_desktop_demo_app composite_double_like_cpu_and_gpuonly_expected_summaries_keep_strategy_labels --lib`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run build`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
+  - `cargo run -p ta_desktop_demo_app --release --bin ta_profile_route_matrix --features cuda,cuda-backtest-kernel -- --csv data/benchmarks/AAPL.csv --strict --warmup-runs 1 --measured-runs 3 --out target/profile_route_matrix_epic04_aapl_15m.json`
+  - `cargo test -p ta_desktop_demo_app --bin ta_profile_route_matrix`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+  - `npm.cmd --prefix web run parity`
+  - `npm.cmd --prefix web run parity:outputs`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_workflow_gate.ps1 -Mode candidate`
+- Verified route-matrix artifact:
+  - `target/profile_route_matrix_epic04_aapl_15m.json`
+  - `schema_version`: `1`
+  - `build_profile`: `release`
+  - `csv_path`: `data/benchmarks/AAPL.csv`
+  - `timeframe`: `15m`
+  - `total_bars`: `205886`
+  - audited case count: `10`
+  - strict failures: `0`
+  - all canonical measured runs stayed on the expected route with no fallback reason
+- Representative canonical measured-run route timings from the refreshed route matrix:
+  - `CompositeTrend/ADX off/GpuKernel`: `90 ms`
+  - `CompositeTrend/ADX on/GpuHybridKernel`: `92 ms`
+  - `BreakoutMomentum/ADX off/GpuKernel`: `103 ms`
+  - `BreakoutMomentum/ADX on/GpuHybridKernel`: `101 ms`
+  - `RegimeHybrid/GpuHybridKernel`: `98 ms`
+- Verified GPU perf gate artifact:
+  - `target/gpu_perf_summary.json`
+  - GPU: `NVIDIA GeForce RTX 4090`
+  - driver: `595.71`
+  - passing checks:
+    - `gpu_criterion_case_gpu_sma_small_not_regressed_10pct`: `65.224588 ms` vs baseline `70.640588 ms`
+    - `gpu_criterion_case_gpu_alma_large_not_regressed_10pct`: `69.144527 ms` vs baseline `85.373831 ms`
+    - `gpu_dynamic_strategy_ratio_not_regressed_20pct`: `0.988372` vs baseline `0.966667`
+    - `gpu_dynamic_strategy_static_off_latency_not_regressed_20pct`: `64.5 ms` vs baseline `67.5 ms`
+- Verified workflow/output parity artifacts:
+  - `target/workflow_regression_summary.json`
+  - `runtime_ms`: `241` vs baseline `229`
+  - `optimize_ms_total`: `21` vs baseline `22`
+  - `validate_ms_total`: `126` vs baseline `119`
+  - `meta_select_ms`: `14` vs baseline `14`
+  - `holdout_ms`: `57` vs baseline `55`
+  - `npm.cmd --prefix web run parity:outputs` passed for `2` pair(s)
+- No `README.md` or `REPO_MAP.md` update was required for closure because this epic refined route truth and refreshed evidence without changing the published route-policy scope or benchmark-authority boundaries.
 
 ## Rollout / Fallback / Compatibility Notes
 

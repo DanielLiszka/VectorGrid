@@ -1,6 +1,8 @@
 const DEFAULT_COMMAND_RESULTS = {
   load_latest_run_artifact_hydration: null,
   load_latest_run_artifact_summary: null,
+  list_live_session_artifacts: [],
+  load_live_session_artifact_detail: null,
 }
 
 export async function installMockedTauri(context, options = {}) {

@@ -125,6 +125,7 @@ pub struct AppState {
     running: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     live_candle_stream: Mutex<Option<LiveCandleStreamTask>>,
+    live_candle_stream_status: Mutex<Option<LiveCandleStreamInfo>>,
 }
 
 pub struct LiveCandleStreamTask {
@@ -140,6 +141,7 @@ pub struct LiveCandleStreamInfo {
     pub symbol: String,
     pub delayed: bool,
     pub active: bool,
+    pub status: String,
 }
 
 impl Default for AppState {
@@ -152,6 +154,7 @@ impl Default for AppState {
             running: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
             live_candle_stream: Mutex::new(None),
+            live_candle_stream_status: Mutex::new(None),
         }
     }
 }
@@ -584,11 +587,21 @@ impl AppState {
                 symbol: prev.symbol,
                 delayed: prev.delayed,
                 active: !prev.handle.inner().is_finished(),
+                status: "started".to_string(),
             };
             prev.handle.abort();
             info
         });
         *slot = Some(task);
+        if let Ok(mut status) = self.live_candle_stream_status.lock() {
+            *status = slot.as_ref().map(|active| LiveCandleStreamInfo {
+                market: active.market.clone(),
+                symbol: active.symbol.clone(),
+                delayed: active.delayed,
+                active: true,
+                status: "started".to_string(),
+            });
+        }
         Ok(prior)
     }
 
@@ -603,10 +616,22 @@ impl AppState {
                 symbol: prev.symbol,
                 delayed: prev.delayed,
                 active: !prev.handle.inner().is_finished(),
+                status: "stopped".to_string(),
             };
             prev.handle.abort();
             info
         });
+        if let Some(info) = prior.as_ref() {
+            if let Ok(mut status) = self.live_candle_stream_status.lock() {
+                *status = Some(LiveCandleStreamInfo {
+                    market: info.market.clone(),
+                    symbol: info.symbol.clone(),
+                    delayed: info.delayed,
+                    active: false,
+                    status: "stopped".to_string(),
+                });
+            }
+        }
         Ok(prior)
     }
 
@@ -619,15 +644,76 @@ impl AppState {
             .as_ref()
             .is_some_and(|s| s.handle.inner().is_finished())
         {
-            slot.take();
-            return Ok(None);
+            let finished = slot.take();
+            if let Some(task) = finished {
+                if let Ok(mut status) = self.live_candle_stream_status.lock() {
+                    *status = Some(LiveCandleStreamInfo {
+                        market: task.market,
+                        symbol: task.symbol,
+                        delayed: task.delayed,
+                        active: false,
+                        status: "closed".to_string(),
+                    });
+                }
+            }
         }
-        Ok(slot.as_ref().map(|s| LiveCandleStreamInfo {
-            market: s.market.clone(),
-            symbol: s.symbol.clone(),
-            delayed: s.delayed,
-            active: true,
-        }))
+        if let Some(task) = slot.as_ref() {
+            if let Ok(status) = self.live_candle_stream_status.lock() {
+                if let Some(last) = status.as_ref() {
+                    if last.symbol == task.symbol && last.market == task.market {
+                        return Ok(Some(LiveCandleStreamInfo {
+                            market: last.market.clone(),
+                            symbol: last.symbol.clone(),
+                            delayed: task.delayed,
+                            active: true,
+                            status: if last.status.trim().is_empty() {
+                                "active".to_string()
+                            } else {
+                                last.status.clone()
+                            },
+                        }));
+                    }
+                }
+            }
+            return Ok(Some(LiveCandleStreamInfo {
+                market: task.market.clone(),
+                symbol: task.symbol.clone(),
+                delayed: task.delayed,
+                active: true,
+                status: "active".to_string(),
+            }));
+        }
+        let status = self
+            .live_candle_stream_status
+            .lock()
+            .map_err(|_| "failed to lock live stream status".to_string())?;
+        Ok(status.clone())
+    }
+
+    pub fn record_live_candle_stream_status(
+        &self,
+        market: &str,
+        symbol: &str,
+        delayed: bool,
+        status: &str,
+    ) -> Result<(), String> {
+        let normalized = status.trim().to_ascii_lowercase();
+        let active = matches!(
+            normalized.as_str(),
+            "connecting" | "subscribed" | "started" | "active"
+        );
+        let mut slot = self
+            .live_candle_stream_status
+            .lock()
+            .map_err(|_| "failed to lock live stream status".to_string())?;
+        *slot = Some(LiveCandleStreamInfo {
+            market: market.trim().to_string(),
+            symbol: symbol.trim().to_string(),
+            delayed,
+            active,
+            status: normalized,
+        });
+        Ok(())
     }
 
     fn find_matching_loaded_base(
@@ -1440,6 +1526,7 @@ mod state_live_stream_tests {
         assert_eq!(active.symbol, "AAPL");
         assert!(active.delayed);
         assert!(active.active);
+        assert_eq!(active.status, "started");
 
         let replaced = match state.replace_live_candle_stream(make_live_stream_task("MSFT", false))
         {
@@ -1457,6 +1544,7 @@ mod state_live_stream_tests {
         assert_eq!(active.symbol, "MSFT");
         assert!(!active.delayed);
         assert!(active.active);
+        assert_eq!(active.status, "started");
 
         let stopped = state
             .stop_live_candle_stream()
@@ -1464,13 +1552,13 @@ mod state_live_stream_tests {
             .expect("stopped stream metadata");
         assert_eq!(stopped.symbol, "MSFT");
         assert!(!stopped.delayed);
-        assert!(
-            state
-                .live_candle_stream_info()
-                .expect("live stream info")
-                .is_none(),
-            "stop should clear the live stream slot"
-        );
+        let status = state
+            .live_candle_stream_info()
+            .expect("live stream info")
+            .expect("last-known stopped status");
+        assert_eq!(status.symbol, "MSFT");
+        assert!(!status.active);
+        assert_eq!(status.status, "stopped");
     }
 
     #[test]
@@ -1489,13 +1577,13 @@ mod state_live_stream_tests {
         }
         std::thread::sleep(Duration::from_millis(10));
 
-        assert!(
-            state
-                .live_candle_stream_info()
-                .expect("live stream info after finished task")
-                .is_none(),
-            "finished tasks should be cleared on status inspection"
-        );
+        let status = state
+            .live_candle_stream_info()
+            .expect("live stream info after finished task")
+            .expect("last-known closed status");
+        assert_eq!(status.symbol, "AAPL");
+        assert!(!status.active);
+        assert_eq!(status.status, "closed");
     }
 }
 

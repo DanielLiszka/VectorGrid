@@ -1,6 +1,6 @@
 # Shell Workspace Grid Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -25,14 +25,14 @@ Out of scope:
 
 `VueWorkspaceShell.vue` already defines the current shell posture. Current behavior includes:
 
-- top-level workspace tabs for `Workflow`, `Run Library`, `Aggregate Analysis`, `Pro Tools`, and `Settings`
+- top-level workspace tabs for `Workflow`, `Run Library`, `Aggregate Analysis`, `Pro Tools`, `Live`, and `Settings`
 - mode tabs for `Conventional` and `ML Signal`
 - workflow-step tabs when in the workflow workspace
 - a context strip with default and overflow context cards
 - a task-center launcher in the shell header
 - controls and results columns that appear only when the current workspace/mode/step supports them
 - split-layout behavior for selected conventional workflow postures, with keyboard-accessible and pointer-accessible resizing
-- alternate settings workspace layout with a dedicated settings area plus execution pane
+- alternate dedicated layouts for `live` and `settings`, with execution promoted out of the settings shell
 
 The component already acts as the main shell layout authority, not just visual chrome.
 
@@ -103,6 +103,7 @@ The component already acts as the main shell layout authority, not just visual c
    - library
    - aggregate
    - pro
+   - live
    - settings
 3. Preserve keyboard navigation and tab semantics as first-class contract items.
 4. Document split-layout eligibility and resizing rules explicitly.

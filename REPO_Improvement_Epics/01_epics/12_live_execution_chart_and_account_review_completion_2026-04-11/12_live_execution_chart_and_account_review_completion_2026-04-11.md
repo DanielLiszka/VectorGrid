@@ -1,6 +1,6 @@
 # Live Execution Chart And Account Review Completion Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -91,15 +91,15 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Record the current execution chart gap and define the minimum review-complete chart behavior.
-- [ ] Decide which account fields should become first-class in the discrete live-mode review surface.
-- [ ] Define which chart overlays can be treated as broker-confirmed, locally optimistic, or advisory only.
-- [ ] Define the minimum loaded-dataset and broker-refresh prerequisites before execution chart markers are shown.
-- [ ] Preserve the current order and position review surfaces while chart/account review expands.
-- [ ] Add or strengthen frontend tests for chart-meta, account summaries, and review-state provenance.
-- [ ] Add or strengthen backend tests if snapshot/account payload shape changes.
-- [ ] Capture screenshots and acceptance evidence for the completed execution review surface.
-- [ ] Define rollback conditions if the chart becomes more visually impressive but less truthful.
+- [x] Record the current execution chart gap and define the minimum review-complete chart behavior.
+- [x] Decide which account fields should become first-class in the discrete live-mode review surface.
+- [x] Define which chart overlays can be treated as broker-confirmed, locally optimistic, or advisory only.
+- [x] Define the minimum loaded-dataset and broker-refresh prerequisites before execution chart markers are shown.
+- [x] Preserve the current order and position review surfaces while chart/account review expands.
+- [x] Add or strengthen frontend tests for chart-meta, account summaries, and review-state provenance.
+- [x] Add or strengthen backend tests if snapshot/account payload shape changes.
+- [x] Capture screenshots and acceptance evidence for the completed execution review surface.
+- [x] Define rollback conditions if the chart becomes more visually impressive but less truthful.
 
 ## Verification Plan
 
@@ -119,6 +119,26 @@ Public-repo quality focus:
 - Final validation must include browser, desktop, and accessibility checks for the review surface, plus a paper/live-mode manual smoke path proving broker-confirmed versus optimistic state remains visibly distinct.
 - Final validation must include performance evaluation for any touched chart sync, account refresh, or review-render path so the final state does not regress operator responsiveness.
 - If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
+## Execution Notes
+
+- The execution review surface is no longer a chart placeholder:
+  - `web/src/services/executionChartService.ts` provides an execution-owned lightweight-charts path with explicit chart-state taxonomy, price-bar caching, and broker-confirmed marker rendering
+  - `web/src/components/ExecutionWorkspacePanel.vue` now renders richer account review details, structured chart review details, and a truthful chart status line
+  - `web/src/services/executionService.ts` and `web/src/stores/executionStore.ts` now distinguish `stale_broker_review`, `provenance_suppressed`, `loaded_no_markers`, and `loaded_broker_markers`
+- Chart provenance remains conservative:
+  - broker-confirmed order rows are the only rows promoted into chart markers
+  - optimistic rows stay out of the chart overlay path
+  - placeholder dataset tokens such as `—` are normalized away so the panel does not pretend a dataset-backed chart exists when the shell has no loaded dataset
+- The current order table and position/account review surfaces remain first-class:
+  - richer account review fields are visible without turning the chart into the only review surface
+  - the browser execution review journey now proves truthful review behavior with no loaded workflow dataset
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts src/services/executionChartService.test.ts`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 
 ## Rollout / Fallback / Compatibility Notes
 

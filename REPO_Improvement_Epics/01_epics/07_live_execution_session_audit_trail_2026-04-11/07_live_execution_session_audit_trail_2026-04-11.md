@@ -1,6 +1,6 @@
 # Live Execution Session Audit Trail Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -105,15 +105,15 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the minimum useful live-session artifact schema for the current scope.
-- [ ] Decide whether live-session evidence should live inside the existing artifact system or beside it.
-- [ ] Define the provenance vocabulary for local runtime, optimistic action, and broker-confirmed state.
-- [ ] Define redaction rules for secrets, account identifiers, and any sensitive broker payload fields.
-- [ ] Define when session artifacts are created, updated, finalized, and reopened.
-- [ ] Decide whether session evidence is opt-in, default-on, or mode-dependent for live versus paper.
-- [ ] Add or strengthen tests around artifact persistence, redaction, and reopen behavior.
-- [ ] Add a lightweight operator-facing review path for the saved live-session evidence.
-- [ ] Define rollback conditions if the persisted session format becomes too noisy or hard to trust.
+- [x] Define the minimum useful live-session artifact schema for the current scope.
+- [x] Decide whether live-session evidence should live inside the existing artifact system or beside it.
+- [x] Define the provenance vocabulary for local runtime, optimistic action, and broker-confirmed state.
+- [x] Define redaction rules for secrets, account identifiers, and any sensitive broker payload fields.
+- [x] Define when session artifacts are created, updated, finalized, and reopened.
+- [x] Decide whether session evidence is opt-in, default-on, or mode-dependent for live versus paper.
+- [x] Add or strengthen tests around artifact persistence, redaction, and reopen behavior.
+- [x] Add a lightweight operator-facing review path for the saved live-session evidence.
+- [x] Define rollback conditions if the persisted session format becomes too noisy or hard to trust.
 
 ## Verification Plan
 
@@ -130,6 +130,37 @@ Public-repo quality focus:
 - Final validation must include browser, desktop, and accessibility checks for any new review surface, plus a paper/live-mode manual smoke path proving session capture and reopen do not re-arm runtime state.
 - Final validation must include performance evaluation for any touched write-path, reopen-path, or history-surface flow so session auditing does not cause unacceptable persistence or review regressions.
 - If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
+## Execution Notes
+
+- Live-session evidence is now persisted as a distinct local artifact family under the existing runs directory, not through workflow hydration:
+  - `src-tauri/src/run_artifacts.rs` owns create, append, finalize, list, and read-only detail load for `vectorgrid_live_session_v1`
+  - `src-tauri/src/commands_artifacts.rs`, `src-tauri/src/commands.rs`, and `src-tauri/src/lib.rs` expose list/detail commands without reusing `currentRun`, `currentValidation`, or `latestWorkflowRunSnapshot`
+- The persisted contract is compact and explicitly provenance-scoped:
+  - session seed captures mode, symbol, qty, strategy kind, `data_id`, param source, and source-run context when present
+  - bounded event and broker-snapshot lists preserve only review-safe summary fields
+  - session files are finalized on explicit stop, interruption, supersession, or one-shot completion
+- Redaction is enforced by construction rather than best-effort filtering after the fact:
+  - raw Alpaca credentials, remembered-key payloads, raw account identifiers, raw balances, and raw output preview do not enter the saved-session artifact shape
+  - reopened saved-session evidence remains read-only review data in the execution surface
+- The operator review path is intentionally lightweight:
+  - `web/src/services/executionService.ts` projects saved-session list/detail responses into typed read-only review models
+  - `web/src/stores/executionStore.ts` keeps saved-session state separate from workflow-artifact hydration
+  - `web/src/components/ExecutionWorkspacePanel.vue` exposes a manual-refresh “Saved session evidence” section rather than a broader session-history browser
+- This epic closed for the current narrow live-mode scope only:
+  - no workflow artifact hydration reuse
+  - no re-arm on reopen
+  - no cloud/archive semantics
+  - no widened broker/runtime scope beyond the current Alpaca + Polygon, single-runner, single-stream model
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app --lib live_session_`
+  - `cargo test -p ta_desktop_demo_app --lib build_live_session_seed_preserves_mode_and_source_run_context`
+  - `cargo test -p ta_desktop_demo_app --lib broker_open_order_status_matches_only_open_like_states`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run test:desktop:smoke`
 
 ## Rollout / Fallback / Compatibility Notes
 

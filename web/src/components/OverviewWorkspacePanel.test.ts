@@ -175,12 +175,12 @@ describe('OverviewWorkspacePanel', () => {
     expect(text).toContain('Same-bar execution')
 
     const reviewExecutionButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
-      String(button.textContent || '').includes('Review execution settings'),
+      String(button.textContent || '').includes('Review live execution'),
     )
     reviewExecutionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPanel()
 
-    expect(workflowStore.workspace).toBe('settings')
+    expect(workflowStore.workspace).toBe('live')
   })
 
   it('shows the compact execution route summary under the winner metadata', async () => {

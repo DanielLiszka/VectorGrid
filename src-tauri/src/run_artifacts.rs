@@ -18,6 +18,8 @@ const CONFIG_FINGERPRINT_SCHEMA_VERSION: u64 = 1;
 const RESAMPLE_RULE_SESSION_RELATIVE_OHLCV: &str = "session_relative_ohlcv";
 const RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP: &str = "day_first_timestamp";
 const ARTIFACT_PATH_SUFFIX_LIMIT: u32 = 999;
+const LIVE_SESSION_EVENT_LIMIT: usize = 64;
+const LIVE_SESSION_SNAPSHOT_LIMIT: usize = 16;
 
 fn is_run_artifact_kind(kind: &str) -> bool {
     matches!(
@@ -28,6 +30,10 @@ fn is_run_artifact_kind(kind: &str) -> bool {
 
 fn is_options_expression_artifact_kind(kind: &str) -> bool {
     matches!(kind.trim(), "vectorgrid_options_expression_v1")
+}
+
+fn is_live_session_artifact_kind(kind: &str) -> bool {
+    matches!(kind.trim(), "vectorgrid_live_session_v1")
 }
 
 fn is_meta_selection_kind(kind: &str) -> bool {
@@ -62,6 +68,10 @@ fn is_meta_artifact_file_name(name: &str) -> bool {
 fn is_run_artifact_file_name(name: &str) -> bool {
     let trimmed = name.trim();
     trimmed.starts_with("vectorbt_run_") || trimmed.starts_with("vectorgrid_run_")
+}
+
+fn is_live_session_artifact_file_name(name: &str) -> bool {
+    name.trim().starts_with("vectorgrid_live_session_")
 }
 
 #[cfg(test)]
@@ -149,6 +159,103 @@ pub struct RunArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<ArtifactLineageSummary>,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSessionArtifactSummary {
+    pub ts: String,
+    pub path: String,
+    pub bytes: u64,
+    pub session_id: String,
+    pub mode: String,
+    pub symbol: String,
+    pub strategy_kind: String,
+    pub data_id: String,
+    pub dry_run: bool,
+    pub param_source: String,
+    pub session_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_at_unix_ms: Option<i64>,
+    pub event_count: usize,
+    pub broker_snapshot_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSessionEventDetail {
+    pub provenance: String,
+    pub status: String,
+    pub message: String,
+    pub symbol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_open_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub action: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub order_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_qty: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_submitted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSessionBrokerSnapshotDetail {
+    pub source_command: String,
+    pub mode: String,
+    pub symbol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub account_status: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub currency: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub position_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_qty: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub position_side: String,
+    pub open_order_count: usize,
+    pub order_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSessionArtifactDetailResponse {
+    pub ts: String,
+    pub artifact_path: String,
+    pub session_id: String,
+    pub session_state: String,
+    pub mode: String,
+    pub symbol: String,
+    pub qty: f64,
+    pub dry_run: bool,
+    pub strategy_kind: String,
+    pub data_id: String,
+    pub param_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_run_artifact_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_run_config_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_route_provenance: Option<RouteProvenanceSummary>,
+    pub event_count: usize,
+    pub broker_snapshot_count: usize,
+    pub events: Vec<LiveSessionEventDetail>,
+    pub broker_snapshots: Vec<LiveSessionBrokerSnapshotDetail>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -529,8 +636,8 @@ fn normalize_backend_used_route(requested: &str, backend_used: &str) -> String {
     }
 }
 
-fn extract_route_provenance_from_artifact(v: &Value) -> Option<RouteProvenanceSummary> {
-    if let Some(existing) = v.pointer("/route_provenance").and_then(Value::as_object) {
+fn extract_route_provenance_from_value(v: Option<&Value>) -> Option<RouteProvenanceSummary> {
+    if let Some(existing) = v.and_then(Value::as_object) {
         let requested_route = existing
             .get("requested_route")
             .and_then(Value::as_str)
@@ -579,6 +686,13 @@ fn extract_route_provenance_from_artifact(v: &Value) -> Option<RouteProvenanceSu
             });
         }
     }
+    None
+}
+
+fn extract_route_provenance_from_artifact(v: &Value) -> Option<RouteProvenanceSummary> {
+    if let Some(existing) = extract_route_provenance_from_value(v.pointer("/route_provenance")) {
+        return Some(existing);
+    }
 
     let requested_route = normalize_requested_route(v.pointer("/run/req/backend"));
     let backend_route = non_empty_string(v.pointer("/run/res/backend_route")).unwrap_or_default();
@@ -614,6 +728,136 @@ fn extract_route_provenance_from_artifact(v: &Value) -> Option<RouteProvenanceSu
         route_changed,
         fallback_reason,
     })
+}
+
+fn live_session_artifact_path<R: tauri::Runtime>(
+    artifact: &Value,
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
+    let ts = artifact
+        .get("ts")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_live_session", ts, "json")
+}
+
+fn write_json_pretty(path: &Path, value: &Value) -> Result<(), String> {
+    let raw = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    std::fs::write(path, raw).map_err(|e| e.to_string())
+}
+
+fn sanitize_live_session_route_provenance(value: Option<&Value>) -> Option<Value> {
+    extract_route_provenance_from_value(value)
+        .and_then(|summary| serde_json::to_value(summary).ok())
+}
+
+fn sanitize_live_session_event_value(value: &Value) -> Value {
+    serde_json::json!({
+        "provenance": normalize_text_value(value.get("provenance")),
+        "status": normalize_text_value(value.get("status")),
+        "message": normalize_text_value(value.get("message")),
+        "symbol": normalize_text_value(value.get("symbol")),
+        "at_unix_ms": value.get("at_unix_ms").and_then(Value::as_i64),
+        "bar_open_unix_ms": value.get("bar_open_unix_ms").and_then(Value::as_i64),
+        "action": normalize_text_value(value.get("action")),
+        "order_id": normalize_text_value(value.get("order_id")),
+        "delta_qty": value.get("delta_qty").and_then(Value::as_f64),
+        "order_submitted": value.get("order_submitted").and_then(Value::as_bool),
+        "warnings": normalize_string_list(value.get("warnings")),
+    })
+}
+
+fn sanitize_live_session_broker_snapshot_value(value: &Value) -> Value {
+    serde_json::json!({
+        "source_command": normalize_text_value(value.get("source_command")),
+        "mode": normalize_text_value(value.get("mode")),
+        "symbol": normalize_text_value(value.get("symbol")),
+        "at_unix_ms": value.get("at_unix_ms").and_then(Value::as_i64),
+        "account_status": normalize_text_value(value.get("account_status")),
+        "currency": normalize_text_value(value.get("currency")),
+        "position_state": normalize_text_value(value.get("position_state")),
+        "position_qty": value.get("position_qty").and_then(Value::as_f64),
+        "position_side": normalize_text_value(value.get("position_side")),
+        "open_order_count": value
+            .get("open_order_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        "order_count": value.get("order_count").and_then(Value::as_u64).unwrap_or(0),
+    })
+}
+
+fn sanitize_live_session_artifact_seed(value: &Value) -> Value {
+    let ts = normalize_text_value(value.get("ts"));
+    let created_at_unix_ms = value
+        .get("created_at_unix_ms")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let session_state = {
+        let state = normalize_text_value(value.get("session_state"));
+        if state.is_empty() {
+            "active".to_string()
+        } else {
+            state
+        }
+    };
+    serde_json::json!({
+        "kind": "vectorgrid_live_session_v1",
+        "ts": if ts.is_empty() { chrono::Utc::now().to_rfc3339() } else { ts },
+        "session_id": normalize_text_value(value.get("session_id")),
+        "session_state": session_state,
+        "created_at_unix_ms": created_at_unix_ms,
+        "mode": normalize_text_value(value.get("mode")),
+        "symbol": normalize_text_value(value.get("symbol")),
+        "qty": value.get("qty").and_then(Value::as_f64).unwrap_or(0.0),
+        "dry_run": value.get("dry_run").and_then(Value::as_bool).unwrap_or(false),
+        "strategy_kind": normalize_text_value(value.get("strategy_kind")),
+        "data_id": normalize_text_value(value.get("data_id")),
+        "param_source": normalize_text_value(value.get("param_source")),
+        "source_run_artifact_path": normalize_text_value(value.get("source_run_artifact_path")),
+        "source_run_config_fingerprint": normalize_text_value(value.get("source_run_config_fingerprint")),
+        "source_run_route_provenance": sanitize_live_session_route_provenance(value.get("source_run_route_provenance")),
+        "events": value
+            .get("events")
+            .and_then(Value::as_array)
+            .map(|events| {
+                events
+                    .iter()
+                    .map(sanitize_live_session_event_value)
+                    .take(LIVE_SESSION_EVENT_LIMIT)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        "broker_snapshots": value
+            .get("broker_snapshots")
+            .and_then(Value::as_array)
+            .map(|snapshots| {
+                snapshots
+                    .iter()
+                    .map(sanitize_live_session_broker_snapshot_value)
+                    .take(LIVE_SESSION_SNAPSHOT_LIMIT)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+fn with_live_session_artifact_mutation<R: tauri::Runtime, T>(
+    path: String,
+    app: tauri::AppHandle<R>,
+    mutate: impl FnOnce(&mut Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let dir = runs_dir(&app)?;
+    let path = PathBuf::from(path.trim());
+    ensure_path_is_within_dir(&path, &dir)?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+    if !is_live_session_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    let result = mutate(&mut value)?;
+    write_json_pretty(&path, &value)?;
+    Ok(result)
 }
 
 fn extract_artifact_lineage_from_artifact(v: &Value) -> Option<ArtifactLineageSummary> {
@@ -1618,6 +1862,166 @@ fn build_run_artifact_detail_response(
     })
 }
 
+fn build_live_session_event_detail(value: &Value) -> Option<LiveSessionEventDetail> {
+    let provenance = normalize_text_value(value.get("provenance"));
+    let status = normalize_text_value(value.get("status"));
+    let message = normalize_text_value(value.get("message"));
+    if provenance.is_empty() && status.is_empty() && message.is_empty() {
+        return None;
+    }
+    Some(LiveSessionEventDetail {
+        provenance,
+        status,
+        message,
+        symbol: normalize_text_value(value.get("symbol")),
+        at_unix_ms: value.get("at_unix_ms").and_then(Value::as_i64),
+        bar_open_unix_ms: value.get("bar_open_unix_ms").and_then(Value::as_i64),
+        action: normalize_text_value(value.get("action")),
+        order_id: normalize_text_value(value.get("order_id")),
+        delta_qty: value.get("delta_qty").and_then(Value::as_f64),
+        order_submitted: value.get("order_submitted").and_then(Value::as_bool),
+        warnings: normalize_string_list(value.get("warnings")),
+    })
+}
+
+fn build_live_session_broker_snapshot_detail(
+    value: &Value,
+) -> Option<LiveSessionBrokerSnapshotDetail> {
+    let source_command = normalize_text_value(value.get("source_command"));
+    let symbol = normalize_text_value(value.get("symbol"));
+    let mode = normalize_text_value(value.get("mode"));
+    if source_command.is_empty() && symbol.is_empty() && mode.is_empty() {
+        return None;
+    }
+    Some(LiveSessionBrokerSnapshotDetail {
+        source_command,
+        mode,
+        symbol,
+        at_unix_ms: value.get("at_unix_ms").and_then(Value::as_i64),
+        account_status: normalize_text_value(value.get("account_status")),
+        currency: normalize_text_value(value.get("currency")),
+        position_state: normalize_text_value(value.get("position_state")),
+        position_qty: value.get("position_qty").and_then(Value::as_f64),
+        position_side: normalize_text_value(value.get("position_side")),
+        open_order_count: value
+            .get("open_order_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        order_count: value
+            .get("order_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+    })
+}
+
+fn build_live_session_artifact_detail_response(
+    artifact_path: &str,
+    artifact: &Value,
+) -> Result<LiveSessionArtifactDetailResponse, String> {
+    let kind = artifact.get("kind").and_then(Value::as_str).unwrap_or("");
+    if !is_live_session_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+
+    let ts = normalize_text_value(artifact.get("ts"));
+    let events = artifact
+        .get("events")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(build_live_session_event_detail)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let broker_snapshots = artifact
+        .get("broker_snapshots")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(build_live_session_broker_snapshot_detail)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(LiveSessionArtifactDetailResponse {
+        ts: if ts.is_empty() {
+            chrono::Utc::now().to_rfc3339()
+        } else {
+            ts
+        },
+        artifact_path: artifact_path.to_string(),
+        session_id: normalize_text_value(artifact.get("session_id")),
+        session_state: normalize_text_value(artifact.get("session_state")),
+        mode: normalize_text_value(artifact.get("mode")),
+        symbol: normalize_text_value(artifact.get("symbol")),
+        qty: artifact.get("qty").and_then(Value::as_f64).unwrap_or(0.0),
+        dry_run: artifact
+            .get("dry_run")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        strategy_kind: normalize_text_value(artifact.get("strategy_kind")),
+        data_id: normalize_text_value(artifact.get("data_id")),
+        param_source: normalize_text_value(artifact.get("param_source")),
+        created_at_unix_ms: artifact.get("created_at_unix_ms").and_then(Value::as_i64),
+        finalized_at_unix_ms: artifact.get("finalized_at_unix_ms").and_then(Value::as_i64),
+        source_run_artifact_path: normalize_text_value(artifact.get("source_run_artifact_path")),
+        source_run_config_fingerprint: normalize_text_value(
+            artifact.get("source_run_config_fingerprint"),
+        ),
+        source_run_route_provenance: extract_route_provenance_from_value(
+            artifact.get("source_run_route_provenance"),
+        ),
+        event_count: events.len(),
+        broker_snapshot_count: broker_snapshots.len(),
+        events,
+        broker_snapshots,
+    })
+}
+
+fn build_live_session_artifact_summary(
+    path: &Path,
+    bytes: u64,
+    artifact: &Value,
+) -> Option<LiveSessionArtifactSummary> {
+    let kind = artifact.get("kind").and_then(Value::as_str).unwrap_or("");
+    if !is_live_session_artifact_kind(kind) {
+        return None;
+    }
+    let ts = normalize_text_value(artifact.get("ts"));
+    let event_count = artifact
+        .get("events")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let broker_snapshot_count = artifact
+        .get("broker_snapshots")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    Some(LiveSessionArtifactSummary {
+        ts,
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        session_id: normalize_text_value(artifact.get("session_id")),
+        mode: normalize_text_value(artifact.get("mode")),
+        symbol: normalize_text_value(artifact.get("symbol")),
+        strategy_kind: normalize_text_value(artifact.get("strategy_kind")),
+        data_id: normalize_text_value(artifact.get("data_id")),
+        dry_run: artifact
+            .get("dry_run")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        param_source: normalize_text_value(artifact.get("param_source")),
+        session_state: normalize_text_value(artifact.get("session_state")),
+        created_at_unix_ms: artifact.get("created_at_unix_ms").and_then(Value::as_i64),
+        finalized_at_unix_ms: artifact.get("finalized_at_unix_ms").and_then(Value::as_i64),
+        event_count,
+        broker_snapshot_count,
+    })
+}
+
 fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunArtifactSummary> {
     let kind = v
         .get("kind")
@@ -2062,6 +2466,96 @@ pub(super) fn load_latest_run_artifact_hydration_blocking<R: tauri::Runtime>(
     }))
 }
 
+pub(super) fn create_live_session_artifact_blocking<R: tauri::Runtime>(
+    artifact: Value,
+    app: tauri::AppHandle<R>,
+) -> Result<SaveRunArtifactResponse, String> {
+    let artifact = sanitize_live_session_artifact_seed(&artifact);
+    let path = live_session_artifact_path(&artifact, &app)?;
+    write_json_pretty(&path, &artifact)?;
+    let bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
+    Ok(SaveRunArtifactResponse {
+        path: path.to_string_lossy().to_string(),
+        bytes,
+    })
+}
+
+pub(super) fn append_live_session_event_blocking<R: tauri::Runtime>(
+    path: String,
+    event: Value,
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    with_live_session_artifact_mutation(path, app, move |artifact| {
+        let next = sanitize_live_session_event_value(&event);
+        let events = artifact
+            .as_object_mut()
+            .ok_or_else(|| "live session artifact root must be an object".to_string())?
+            .entry("events")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let items = events
+            .as_array_mut()
+            .ok_or_else(|| "live session events must be an array".to_string())?;
+        items.push(next);
+        if items.len() > LIVE_SESSION_EVENT_LIMIT {
+            let overflow = items.len() - LIVE_SESSION_EVENT_LIMIT;
+            items.drain(0..overflow);
+        }
+        Ok(())
+    })
+}
+
+pub(super) fn append_live_session_broker_snapshot_blocking<R: tauri::Runtime>(
+    path: String,
+    snapshot: Value,
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    with_live_session_artifact_mutation(path, app, move |artifact| {
+        let next = sanitize_live_session_broker_snapshot_value(&snapshot);
+        let snapshots = artifact
+            .as_object_mut()
+            .ok_or_else(|| "live session artifact root must be an object".to_string())?
+            .entry("broker_snapshots")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let items = snapshots
+            .as_array_mut()
+            .ok_or_else(|| "live session broker snapshots must be an array".to_string())?;
+        items.push(next);
+        if items.len() > LIVE_SESSION_SNAPSHOT_LIMIT {
+            let overflow = items.len() - LIVE_SESSION_SNAPSHOT_LIMIT;
+            items.drain(0..overflow);
+        }
+        Ok(())
+    })
+}
+
+pub(super) fn finalize_live_session_artifact_blocking<R: tauri::Runtime>(
+    path: String,
+    session_state: String,
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    with_live_session_artifact_mutation(path, app, move |artifact| {
+        let root = artifact
+            .as_object_mut()
+            .ok_or_else(|| "live session artifact root must be an object".to_string())?;
+        let next_state = session_state.trim();
+        root.insert(
+            "session_state".to_string(),
+            Value::String(if next_state.is_empty() {
+                "finalized".to_string()
+            } else {
+                next_state.to_string()
+            }),
+        );
+        root.insert(
+            "finalized_at_unix_ms".to_string(),
+            Value::Number(serde_json::Number::from(
+                chrono::Utc::now().timestamp_millis(),
+            )),
+        );
+        Ok(())
+    })
+}
+
 pub(super) fn load_run_artifact_detail_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
@@ -2076,6 +2570,14 @@ pub(super) fn load_run_artifact_detail_blocking<R: tauri::Runtime>(
         return Err(format!("unsupported artifact kind: {kind}"));
     }
     build_run_artifact_detail_response(entry.path.to_string_lossy().as_ref(), &entry.value)
+}
+
+pub(super) fn load_live_session_artifact_detail_blocking<R: tauri::Runtime>(
+    path: String,
+    app: tauri::AppHandle<R>,
+) -> Result<LiveSessionArtifactDetailResponse, String> {
+    let entry = load_artifact_entry_checked(path, app)?;
+    build_live_session_artifact_detail_response(entry.path.to_string_lossy().as_ref(), &entry.value)
 }
 
 pub(super) fn load_meta_artifact_replay_blocking(
@@ -2282,6 +2784,24 @@ pub(super) fn list_run_artifacts_blocking<R: tauri::Runtime>(
     Ok(runs)
 }
 
+pub(super) fn list_live_session_artifacts_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<LiveSessionArtifactSummary>, String> {
+    let mut sessions = Vec::new();
+    for entry in scan_artifact_library(&app)? {
+        if !is_live_session_artifact_file_name(&entry.file_name) {
+            continue;
+        }
+        if let Some(summary) =
+            build_live_session_artifact_summary(&entry.path, entry.bytes, &entry.value)
+        {
+            sessions.push(summary);
+        }
+    }
+    sessions.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    Ok(sessions)
+}
+
 pub(super) fn list_meta_artifacts_blocking(
     app: tauri::AppHandle,
 ) -> Result<Vec<MetaArtifactSummary>, String> {
@@ -2372,16 +2892,19 @@ pub(super) fn update_artifact_tags_blocking(
 mod tests {
     use super::super::metric_surface::build_optimization_metric_surface_artifact_value;
     use super::{
+        append_live_session_broker_snapshot_blocking, append_live_session_event_blocking,
         build_ml_policy_eval_summary, build_run_artifact_detail_response,
         build_run_artifact_summary, build_stage5_artifact_summary,
         build_workflow_artifacts_hydration_payload, canonical_json,
-        compute_config_fingerprint_from_artifact, delete_run_artifact_blocking,
-        ensure_path_is_within_dir, extract_artifact_lineage_from_artifact,
-        extract_route_provenance_from_artifact, is_meta_artifact_file_name,
+        compute_config_fingerprint_from_artifact, create_live_session_artifact_blocking,
+        delete_run_artifact_blocking, ensure_path_is_within_dir,
+        extract_artifact_lineage_from_artifact, extract_route_provenance_from_artifact,
+        finalize_live_session_artifact_blocking, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
-        is_run_artifact_file_name, is_run_artifact_kind, list_run_artifacts_blocking,
-        load_artifact_value_checked_blocking, load_latest_run_artifact_hydration_blocking,
-        load_latest_run_artifact_summary_blocking, load_run_artifact_detail_blocking,
+        is_run_artifact_file_name, is_run_artifact_kind, list_live_session_artifacts_blocking,
+        list_run_artifacts_blocking, load_artifact_value_checked_blocking,
+        load_latest_run_artifact_hydration_blocking, load_latest_run_artifact_summary_blocking,
+        load_live_session_artifact_detail_blocking, load_run_artifact_detail_blocking,
         normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
         prune_old_meta_artifacts_blocking, resolve_run_artifact_csv_path,
         resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
@@ -4038,5 +4561,328 @@ mod tests {
         let err = ensure_path_is_within_dir(&missing, &dir).expect_err("missing path");
         assert!(err.contains("artifact path does not exist"));
         assert!(err.contains("missing.json"));
+    }
+
+    #[test]
+    fn live_session_artifact_round_trip_redacts_and_lists_review_data() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        let saved = create_live_session_artifact_blocking(
+            json!({
+                "ts": "2026-04-12T15:30:00Z",
+                "session_id": "live-session-aapl-1",
+                "session_state": "active",
+                "mode": "paper",
+                "symbol": "AAPL",
+                "qty": 2.0,
+                "dry_run": false,
+                "strategy_kind": "DoubleMa",
+                "data_id": "data_aapl",
+                "param_source": "selected",
+                "source_run_artifact_path": "C:/runs/vectorgrid_run_2026-04-11T15-00-00Z.json",
+                "source_run_config_fingerprint": "cfg1-fnv1a64-abc123",
+                "source_run_route_provenance": {
+                    "requested_route": "GpuOnly",
+                    "resolved_route": "GpuKernel",
+                    "realized_route": "CpuOnly",
+                    "route_changed": true,
+                    "fallback_reason": "cuda unavailable",
+                    "ignored_nested": { "heads": ["x"] }
+                },
+                "alpaca_api_key": "should_not_persist",
+                "alpaca_api_secret": "should_not_persist",
+                "persistedApiKey": "should_not_persist",
+                "persistedApiSecret": "should_not_persist",
+                "outputPreview": "{\"secrets\":true}",
+                "account_number": "ABC123",
+                "events": [
+                    {
+                        "provenance": "local_control",
+                        "status": "start_runner",
+                        "message": "runner armed",
+                        "symbol": "AAPL",
+                        "at_unix_ms": 1_900_000_000_000_i64,
+                        "alpaca_api_key": "nope",
+                        "outputPreview": "hide me"
+                    }
+                ],
+                "broker_snapshots": [
+                    {
+                        "source_command": "get_live_execution_snapshot",
+                        "mode": "paper",
+                        "symbol": "AAPL",
+                        "at_unix_ms": 1_900_000_000_500_i64,
+                        "account_status": "ACTIVE",
+                        "currency": "USD",
+                        "position_state": "flat",
+                        "position_qty": 0.0,
+                        "position_side": "",
+                        "open_order_count": 0,
+                        "order_count": 1,
+                        "account_number": "ABC123",
+                        "cash": "25000"
+                    }
+                ]
+            }),
+            handle.clone(),
+        )
+        .expect("create live session artifact");
+
+        append_live_session_event_blocking(
+            saved.path.clone(),
+            json!({
+                "provenance": "submission_attempt",
+                "status": "order_submitted",
+                "message": "submitted buy order",
+                "symbol": "AAPL",
+                "at_unix_ms": 1_900_000_001_000_i64,
+                "action": "buy",
+                "order_id": "ord_123",
+                "delta_qty": 2.0,
+                "order_submitted": true,
+                "warnings": ["paper only"],
+                "apiSecret": "should_not_persist",
+                "raw_payload": { "secret": true }
+            }),
+            handle.clone(),
+        )
+        .expect("append event");
+        append_live_session_broker_snapshot_blocking(
+            saved.path.clone(),
+            json!({
+                "source_command": "test_alpaca_connection",
+                "mode": "paper",
+                "symbol": "AAPL",
+                "at_unix_ms": 1_900_000_001_500_i64,
+                "account_status": "ACTIVE",
+                "currency": "USD",
+                "position_state": "flat",
+                "position_qty": 0.0,
+                "position_side": "",
+                "open_order_count": 0,
+                "order_count": 0,
+                "buying_power": "100000",
+                "account_id": "acct_123"
+            }),
+            handle.clone(),
+        )
+        .expect("append snapshot");
+        finalize_live_session_artifact_blocking(
+            saved.path.clone(),
+            "completed".to_string(),
+            handle.clone(),
+        )
+        .expect("finalize session");
+
+        let stored =
+            load_artifact_value_checked_blocking(saved.path.clone(), handle.clone()).expect("load");
+        assert_eq!(
+            stored.get("kind").and_then(Value::as_str),
+            Some("vectorgrid_live_session_v1")
+        );
+        assert!(stored.get("alpaca_api_key").is_none());
+        assert!(stored.get("alpaca_api_secret").is_none());
+        assert!(stored.get("persistedApiKey").is_none());
+        assert!(stored.get("persistedApiSecret").is_none());
+        assert!(stored.get("outputPreview").is_none());
+        assert!(stored.get("account_number").is_none());
+        assert!(stored.pointer("/events/0/alpaca_api_key").is_none());
+        assert!(stored.pointer("/events/1/apiSecret").is_none());
+        assert!(stored
+            .pointer("/broker_snapshots/0/account_number")
+            .is_none());
+        assert!(stored.pointer("/broker_snapshots/1/account_id").is_none());
+        let detail = load_live_session_artifact_detail_blocking(saved.path.clone(), handle.clone())
+            .expect("detail");
+        assert_eq!(detail.session_id, "live-session-aapl-1");
+        assert_eq!(detail.session_state, "completed");
+        assert_eq!(detail.symbol, "AAPL");
+        assert_eq!(detail.event_count, 2);
+        assert_eq!(detail.broker_snapshot_count, 2);
+        assert_eq!(detail.events[1].status, "order_submitted");
+        assert_eq!(detail.events[1].action, "buy");
+        assert_eq!(detail.events[1].order_id, "ord_123");
+        assert_eq!(detail.events[1].warnings, vec!["paper only".to_string()]);
+        assert_eq!(
+            detail.broker_snapshots[0].source_command,
+            "get_live_execution_snapshot"
+        );
+        assert_eq!(
+            detail.broker_snapshots[1].source_command,
+            "test_alpaca_connection"
+        );
+        assert_eq!(
+            detail
+                .source_run_route_provenance
+                .as_ref()
+                .map(|value| value.requested_route.as_str()),
+            Some("GpuOnly")
+        );
+        assert_eq!(
+            detail
+                .source_run_route_provenance
+                .as_ref()
+                .map(|value| value.resolved_route.as_str()),
+            Some("GpuKernel")
+        );
+        assert_eq!(
+            detail
+                .source_run_route_provenance
+                .as_ref()
+                .map(|value| value.realized_route.as_str()),
+            Some("CpuOnly")
+        );
+        assert_eq!(
+            detail
+                .source_run_route_provenance
+                .as_ref()
+                .map(|value| value.fallback_reason.as_str()),
+            Some("cuda unavailable")
+        );
+        assert_eq!(
+            detail
+                .source_run_route_provenance
+                .as_ref()
+                .map(|value| value.route_changed),
+            Some(true)
+        );
+
+        let sessions = list_live_session_artifacts_blocking(handle).expect("list sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].path, saved.path);
+        assert_eq!(sessions[0].session_state, "completed");
+        assert_eq!(sessions[0].event_count, 2);
+        assert_eq!(sessions[0].broker_snapshot_count, 2);
+    }
+
+    #[test]
+    fn live_session_event_retention_keeps_latest_entries_only() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = create_live_session_artifact_blocking(
+            json!({
+                "ts": "2026-04-12T15:31:00Z",
+                "session_id": "live-session-retention-events",
+                "mode": "paper",
+                "symbol": "AAPL",
+                "qty": 1.0,
+                "dry_run": true,
+                "strategy_kind": "DoubleMa",
+                "data_id": "data_aapl"
+            }),
+            handle.clone(),
+        )
+        .expect("create session");
+
+        for index in 0..(super::LIVE_SESSION_EVENT_LIMIT + 5) {
+            append_live_session_event_blocking(
+                saved.path.clone(),
+                json!({
+                    "provenance": "runner_lifecycle",
+                    "status": format!("status_{index}"),
+                    "message": format!("message_{index}"),
+                    "symbol": "AAPL",
+                    "at_unix_ms": index as i64
+                }),
+                handle.clone(),
+            )
+            .expect("append retained event");
+        }
+
+        let detail =
+            load_live_session_artifact_detail_blocking(saved.path, handle).expect("detail");
+        assert_eq!(detail.events.len(), super::LIVE_SESSION_EVENT_LIMIT);
+        assert_eq!(detail.event_count, super::LIVE_SESSION_EVENT_LIMIT);
+        assert_eq!(detail.events[0].status, "status_5");
+        assert_eq!(
+            detail.events.last().map(|event| event.status.as_str()),
+            Some("status_68")
+        );
+    }
+
+    #[test]
+    fn live_session_snapshot_retention_keeps_latest_entries_only() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = create_live_session_artifact_blocking(
+            json!({
+                "ts": "2026-04-12T15:32:00Z",
+                "session_id": "live-session-retention-snapshots",
+                "mode": "paper",
+                "symbol": "AAPL",
+                "qty": 1.0,
+                "dry_run": true,
+                "strategy_kind": "DoubleMa",
+                "data_id": "data_aapl"
+            }),
+            handle.clone(),
+        )
+        .expect("create session");
+
+        for index in 0..(super::LIVE_SESSION_SNAPSHOT_LIMIT + 3) {
+            append_live_session_broker_snapshot_blocking(
+                saved.path.clone(),
+                json!({
+                    "source_command": format!("snapshot_{index}"),
+                    "mode": "paper",
+                    "symbol": "AAPL",
+                    "at_unix_ms": index as i64,
+                    "account_status": "ACTIVE",
+                    "currency": "USD",
+                    "position_state": "flat",
+                    "position_qty": 0.0,
+                    "position_side": "",
+                    "open_order_count": index,
+                    "order_count": index + 1
+                }),
+                handle.clone(),
+            )
+            .expect("append retained snapshot");
+        }
+
+        let detail =
+            load_live_session_artifact_detail_blocking(saved.path, handle).expect("detail");
+        assert_eq!(
+            detail.broker_snapshots.len(),
+            super::LIVE_SESSION_SNAPSHOT_LIMIT
+        );
+        assert_eq!(
+            detail.broker_snapshot_count,
+            super::LIVE_SESSION_SNAPSHOT_LIMIT
+        );
+        assert_eq!(detail.broker_snapshots[0].source_command, "snapshot_3");
+        assert_eq!(
+            detail
+                .broker_snapshots
+                .last()
+                .map(|snapshot| snapshot.source_command.as_str()),
+            Some("snapshot_18")
+        );
+    }
+
+    #[test]
+    fn load_live_session_artifact_detail_rejects_paths_outside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let outside_dir = make_temp_dir("live_session_outside_load");
+        let outside_path = outside_dir.join("outside.json");
+        std::fs::write(
+            &outside_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_live_session_v1",
+                "ts": "2026-04-12T12:00:00Z"
+            }))
+            .expect("artifact json"),
+        )
+        .expect("write outside artifact");
+
+        let err = load_live_session_artifact_detail_blocking(
+            outside_path.to_string_lossy().to_string(),
+            handle,
+        )
+        .expect_err("outside path should fail");
+
+        assert_eq!(err, "path is outside app runs dir");
     }
 }

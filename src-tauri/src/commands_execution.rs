@@ -2,6 +2,9 @@ use crate::state::AppState;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+#[cfg(test)]
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -49,6 +52,14 @@ pub struct ExecuteStrategySignalRequest {
     pub alpaca_api_key: String,
     #[serde(default)]
     pub alpaca_api_secret: String,
+    #[serde(default)]
+    pub param_source: String,
+    #[serde(default)]
+    pub source_run_artifact_path: String,
+    #[serde(default)]
+    pub source_run_config_fingerprint: String,
+    #[serde(default)]
+    pub source_run_route_provenance: Option<Value>,
     pub strategy: LiveStrategySpec,
 }
 
@@ -78,6 +89,8 @@ pub struct TestAlpacaConnectionResponse {
     pub cash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio_value: Option<String>,
+    #[serde(default)]
+    pub fetched_at_unix_ms: i64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -177,13 +190,72 @@ pub struct GetLiveExecutionSnapshotResponse {
     pub mode: LiveExecutionMode,
     pub symbol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buying_power: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portfolio_value: Option<String>,
     #[serde(default)]
     pub fetched_at_unix_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<LivePositionSnapshot>,
     #[serde(default)]
     pub orders: Vec<LiveOrderSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct LiveExecutionSafetyActionRequest {
+    pub mode: LiveExecutionMode,
+    #[serde(default)]
+    pub alpaca_api_key: String,
+    #[serde(default)]
+    pub alpaca_api_secret: String,
+    pub symbol: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CancelLiveExecutionOpenOrdersResponse {
+    pub mode: LiveExecutionMode,
+    pub symbol: String,
+    pub open_order_count_before: usize,
+    pub cancelled_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled_order_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FlattenLiveExecutionPositionResponse {
+    pub mode: LiveExecutionMode,
+    pub symbol: String,
+    pub position_found: bool,
+    pub open_order_count_before: usize,
+    pub order_submitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qty: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EmergencyHaltLiveExecutionResponse {
+    pub runner_stopped: bool,
+    pub live_stopped: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub live_symbol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_runner: Option<LiveExecutionRunnerStatus>,
+    pub requires_manual_review: bool,
+    pub status_message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -214,7 +286,7 @@ const ALPACA_IDLE_POOL_TIMEOUT_SECS: u64 = 90;
 const ALPACA_KEYRING_API_KEY_USERNAME: &str = "alpaca_execution_api_key";
 const ALPACA_KEYRING_API_SECRET_USERNAME: &str = "alpaca_execution_api_secret";
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LiveExecutionRunnerConfig {
     pub symbol: String,
     pub qty: f64,
@@ -224,7 +296,7 @@ pub struct LiveExecutionRunnerConfig {
     pub strategy_kind: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LiveExecutionRunnerStatus {
     pub active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,6 +361,12 @@ struct LiveExecutionRunnerRuntime {
 }
 
 #[derive(Clone, Debug)]
+struct LiveSessionAuditRuntime {
+    path: String,
+    symbol: String,
+}
+
+#[derive(Clone, Debug)]
 struct LiveExecutionRunnerInternalCfg {
     req: ExecuteStrategySignalRequest,
     symbol: String,
@@ -310,6 +388,7 @@ pub(crate) struct LiveExecutionRunnerBar {
 
 static LIVE_EXECUTION_RUNNER: OnceLock<Mutex<Option<LiveExecutionRunnerRuntime>>> = OnceLock::new();
 static LIVE_EXECUTION_RUNNER_GEN: AtomicU64 = AtomicU64::new(1);
+static LIVE_SESSION_AUDIT: OnceLock<Mutex<Option<LiveSessionAuditRuntime>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct RunnerAbortHandle {
@@ -442,6 +521,10 @@ fn live_execution_runner_slot() -> &'static Mutex<Option<LiveExecutionRunnerRunt
     LIVE_EXECUTION_RUNNER.get_or_init(|| Mutex::new(None))
 }
 
+fn live_session_audit_slot() -> &'static Mutex<Option<LiveSessionAuditRuntime>> {
+    LIVE_SESSION_AUDIT.get_or_init(|| Mutex::new(None))
+}
+
 fn with_active_runner_generation<T>(
     generation: u64,
     f: impl FnOnce(&mut LiveExecutionRunnerRuntime) -> T,
@@ -454,6 +537,17 @@ fn with_active_runner_generation<T>(
         return None;
     }
     Some(f(runtime))
+}
+
+fn active_live_session_path() -> Option<String> {
+    let slot = live_session_audit_slot().lock().ok()?;
+    slot.as_ref().map(|runtime| runtime.path.clone())
+}
+
+fn clear_active_live_session() {
+    if let Ok(mut slot) = live_session_audit_slot().lock() {
+        *slot = None;
+    }
 }
 
 fn strategy_kind_label(spec: &LiveStrategySpec) -> String {
@@ -529,7 +623,186 @@ fn emit_live_execution_runner_event(
         bar_open_unix_ms,
         execution,
     };
+    let provenance = match status {
+        "signal_processed" => "signal_outcome",
+        "order_submitted" => "submission_attempt",
+        _ => "runner_lifecycle",
+    };
+    let event_value = serde_json::json!({
+        "provenance": provenance,
+        "status": payload.status,
+        "message": payload.message,
+        "symbol": payload.symbol,
+        "at_unix_ms": payload.at_unix_ms,
+        "bar_open_unix_ms": payload.bar_open_unix_ms,
+        "action": payload.execution.as_ref().map(|row| row.action.clone()).unwrap_or_default(),
+        "order_id": payload.execution.as_ref().and_then(|row| row.order_id.clone()).unwrap_or_default(),
+        "delta_qty": payload.execution.as_ref().map(|row| row.delta_qty),
+        "order_submitted": payload.execution.as_ref().map(|row| row.order_submitted),
+        "warnings": payload.execution.as_ref().map(|row| row.warnings.clone()).unwrap_or_default(),
+    });
     let _ = app.emit(LIVE_EXECUTION_RUNNER_EVENT, payload);
+    let _ = record_live_session_event(app, event_value);
+}
+
+fn live_session_id(symbol: &str) -> String {
+    format!(
+        "live-session-{}-{}",
+        now_unix_ms(),
+        canonical_symbol_key(symbol).to_ascii_lowercase()
+    )
+}
+
+fn build_live_session_seed(
+    req: &ExecuteStrategySignalRequest,
+    symbol: &str,
+    qty: f64,
+    strategy_kind: &str,
+    data_id: &str,
+) -> Value {
+    serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "session_id": live_session_id(symbol),
+        "session_state": "active",
+        "created_at_unix_ms": now_unix_ms(),
+        "mode": match req.mode {
+            LiveExecutionMode::Paper => "paper",
+            LiveExecutionMode::Live => "live",
+        },
+        "symbol": symbol,
+        "qty": qty,
+        "dry_run": req.dry_run,
+        "strategy_kind": strategy_kind,
+        "data_id": data_id,
+        "param_source": req.param_source.trim(),
+        "source_run_artifact_path": req.source_run_artifact_path.trim(),
+        "source_run_config_fingerprint": req.source_run_config_fingerprint.trim(),
+        "source_run_route_provenance": req.source_run_route_provenance.clone(),
+    })
+}
+
+fn record_live_session_event(app: &tauri::AppHandle, event: Value) -> Result<(), String> {
+    let Some(path) = active_live_session_path() else {
+        return Ok(());
+    };
+    super::run_artifacts::append_live_session_event_blocking(path, event, app.clone())
+}
+
+fn record_live_session_broker_snapshot(
+    app: &tauri::AppHandle,
+    snapshot: Value,
+) -> Result<(), String> {
+    let Some(path) = active_live_session_path() else {
+        return Ok(());
+    };
+    super::run_artifacts::append_live_session_broker_snapshot_blocking(path, snapshot, app.clone())
+}
+
+fn finalize_active_live_session(app: &tauri::AppHandle, session_state: &str) -> Result<(), String> {
+    let path = {
+        let mut slot = live_session_audit_slot()
+            .lock()
+            .map_err(|_| "failed to lock live session audit state".to_string())?;
+        let Some(runtime) = slot.take() else {
+            return Ok(());
+        };
+        runtime.path
+    };
+    super::run_artifacts::finalize_live_session_artifact_blocking(
+        path,
+        session_state.to_string(),
+        app.clone(),
+    )
+}
+
+pub(crate) fn record_live_session_interruption_and_finalize(
+    app: &tauri::AppHandle,
+    status: &str,
+    message: impl Into<String>,
+) -> Result<(), String> {
+    let symbol = {
+        let slot = live_session_audit_slot()
+            .lock()
+            .map_err(|_| "failed to lock live session audit state".to_string())?;
+        let Some(runtime) = slot.as_ref() else {
+            return Ok(());
+        };
+        runtime.symbol.clone()
+    };
+    record_live_session_event(
+        app,
+        serde_json::json!({
+            "provenance": "interruption",
+            "status": status,
+            "message": message.into(),
+            "symbol": symbol,
+            "at_unix_ms": now_unix_ms(),
+        }),
+    )?;
+    finalize_active_live_session(app, "interrupted")
+}
+
+fn capture_manual_execution_live_session(
+    app: &tauri::AppHandle,
+    req: &ExecuteStrategySignalRequest,
+    symbol: &str,
+    qty: f64,
+    data_id: &str,
+    strategy_kind: &str,
+    response: &ExecuteStrategySignalResponse,
+) -> Result<(), String> {
+    let saved = super::run_artifacts::create_live_session_artifact_blocking(
+        build_live_session_seed(req, symbol, qty, strategy_kind, data_id),
+        app.clone(),
+    )?;
+    super::run_artifacts::append_live_session_event_blocking(
+        saved.path.clone(),
+        serde_json::json!({
+            "provenance": "local_control",
+            "status": "execute_strategy_signal_once",
+            "message": format!("manual execution requested for {symbol}"),
+            "symbol": symbol,
+            "at_unix_ms": now_unix_ms(),
+            "action": response.action,
+            "order_id": response.order_id,
+            "delta_qty": response.delta_qty,
+            "order_submitted": response.order_submitted,
+            "warnings": response.warnings,
+        }),
+        app.clone(),
+    )?;
+    super::run_artifacts::append_live_session_event_blocking(
+        saved.path.clone(),
+        serde_json::json!({
+            "provenance": if response.order_submitted { "submission_attempt" } else { "signal_outcome" },
+            "status": if response.order_submitted { "order_submitted" } else { "signal_processed" },
+            "message": if response.order_submitted {
+                format!(
+                    "manual execution submitted {} order{}",
+                    response.action,
+                    response.order_id
+                        .as_deref()
+                        .map(|id| format!(" (id={id})"))
+                        .unwrap_or_default()
+                )
+            } else {
+                format!("manual execution processed signal action={}", response.action)
+            },
+            "symbol": symbol,
+            "at_unix_ms": now_unix_ms(),
+            "action": response.action,
+            "order_id": response.order_id,
+            "delta_qty": response.delta_qty,
+            "order_submitted": response.order_submitted,
+            "warnings": response.warnings,
+        }),
+        app.clone(),
+    )?;
+    super::run_artifacts::finalize_live_session_artifact_blocking(
+        saved.path,
+        "completed".to_string(),
+        app.clone(),
+    )
 }
 
 pub(crate) fn canonical_symbol_key(raw: &str) -> String {
@@ -653,7 +926,47 @@ fn alpaca_keyring_entries(
     Ok((key_entry, secret_entry))
 }
 
+#[cfg(test)]
+fn test_alpaca_credential_store() -> &'static Mutex<HashMap<String, (String, String)>> {
+    static TEST_STORE: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
+    TEST_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn read_test_alpaca_credentials(app_identifier: &str) -> Option<(String, String)> {
+    test_alpaca_credential_store()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(app_identifier).cloned())
+}
+
+#[cfg(test)]
+fn write_test_alpaca_credentials(app_identifier: &str, api_key: &str, api_secret: &str) {
+    if let Ok(mut map) = test_alpaca_credential_store().lock() {
+        map.insert(
+            app_identifier.to_string(),
+            (api_key.to_string(), api_secret.to_string()),
+        );
+    }
+}
+
+#[cfg(test)]
+fn clear_test_alpaca_credentials(app_identifier: &str) {
+    if let Ok(mut map) = test_alpaca_credential_store().lock() {
+        map.remove(app_identifier);
+    }
+}
+
 fn alpaca_credential_storage_status_for_app(app_identifier: &str) -> AlpacaCredentialStorageStatus {
+    #[cfg(test)]
+    if let Some((key, secret)) = read_test_alpaca_credentials(app_identifier) {
+        return build_alpaca_credential_storage_status(
+            true,
+            !key.is_empty(),
+            !secret.is_empty(),
+            None,
+        );
+    }
     let Ok((key_entry, secret_entry)) = alpaca_keyring_entries(app_identifier) else {
         return build_alpaca_credential_storage_status(
             false,
@@ -677,29 +990,47 @@ fn store_alpaca_api_credentials(
     if key.is_empty() || secret.is_empty() {
         return Err("Both Alpaca API key and secret are required.".to_string());
     }
-    let (key_entry, secret_entry) = alpaca_keyring_entries(app_identifier)?;
-    key_entry
-        .set_password(key)
-        .map_err(|e| format!("failed to store Alpaca API key securely: {e}"))?;
-    if let Err(error) = secret_entry.set_password(secret) {
-        let _ = key_entry.delete_credential();
-        return Err(format!(
-            "failed to store Alpaca API secret securely: {error}"
-        ));
+    #[cfg(test)]
+    {
+        write_test_alpaca_credentials(app_identifier, key, secret);
+        Ok(build_alpaca_credential_storage_status(
+            true, true, true, None,
+        ))
     }
-    let status = alpaca_credential_storage_status_for_app(app_identifier);
-    if !status.has_credentials {
-        return Err("secure storage write could not be verified".to_string());
+    #[cfg(not(test))]
+    {
+        let (key_entry, secret_entry) = alpaca_keyring_entries(app_identifier)?;
+        key_entry
+            .set_password(key)
+            .map_err(|e| format!("failed to store Alpaca API key securely: {e}"))?;
+        if let Err(error) = secret_entry.set_password(secret) {
+            let _ = key_entry.delete_credential();
+            return Err(format!(
+                "failed to store Alpaca API secret securely: {error}"
+            ));
+        }
+        let status = alpaca_credential_storage_status_for_app(app_identifier);
+        if !status.has_credentials {
+            return Err("secure storage write could not be verified".to_string());
+        }
+        Ok(status)
     }
-    Ok(status)
 }
 
 fn clear_alpaca_api_credentials_for_app(app_identifier: &str) -> AlpacaCredentialStorageStatus {
-    if let Ok((key_entry, secret_entry)) = alpaca_keyring_entries(app_identifier) {
-        let _ = key_entry.delete_credential();
-        let _ = secret_entry.delete_credential();
+    #[cfg(test)]
+    {
+        clear_test_alpaca_credentials(app_identifier);
+        build_alpaca_credential_storage_status(true, false, false, None)
     }
-    alpaca_credential_storage_status_for_app(app_identifier)
+    #[cfg(not(test))]
+    {
+        if let Ok((key_entry, secret_entry)) = alpaca_keyring_entries(app_identifier) {
+            let _ = key_entry.delete_credential();
+            let _ = secret_entry.delete_credential();
+        }
+        alpaca_credential_storage_status_for_app(app_identifier)
+    }
 }
 
 fn normalize_alpaca_typed_override(
@@ -727,6 +1058,10 @@ fn resolve_alpaca_credentials_for_app(
 ) -> Result<Option<(String, String)>, String> {
     if let Some(override_pair) = normalize_alpaca_typed_override(api_key, api_secret)? {
         return Ok(Some(override_pair));
+    }
+    #[cfg(test)]
+    if let Some((key, secret)) = read_test_alpaca_credentials(app_identifier) {
+        return Ok(Some((key, secret)));
     }
     let Ok((key_entry, secret_entry)) = alpaca_keyring_entries(app_identifier) else {
         return Ok(None);
@@ -962,6 +1297,31 @@ fn fetch_alpaca_position(
         .map_err(|e| format!("failed to decode Alpaca position response: {e}"))
 }
 
+fn cancel_alpaca_order(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+    order_id: &str,
+) -> Result<(), String> {
+    let headers = build_alpaca_headers(api_key, api_secret)?;
+    let url = format!("{}/v2/orders/{}", base_url(mode), order_id);
+    let resp = client
+        .delete(url)
+        .headers(headers)
+        .send()
+        .map_err(|e| format!("failed to cancel Alpaca order {order_id}: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(format!("Alpaca order cancel failed ({status}): {body}"));
+    }
+    Ok(())
+}
+
 fn normalize_order_snapshot(v: &serde_json::Value) -> Option<LiveOrderSnapshot> {
     let id = json_field_as_string(v, "id")?;
     let symbol = json_field_as_string(v, "symbol").unwrap_or_default();
@@ -986,6 +1346,31 @@ fn normalize_order_snapshot(v: &serde_json::Value) -> Option<LiveOrderSnapshot> 
     })
 }
 
+fn is_broker_open_order_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "new"
+            | "accepted"
+            | "pending_new"
+            | "accepted_for_bidding"
+            | "partially_filled"
+            | "pending_replace"
+            | "held"
+            | "stopped"
+            | "calculated"
+            | "suspended"
+    )
+}
+
+fn open_orders_for_symbol(orders: &[serde_json::Value], symbol: &str) -> Vec<LiveOrderSnapshot> {
+    orders
+        .iter()
+        .filter_map(normalize_order_snapshot)
+        .filter(|order| is_broker_open_order_status(&order.status))
+        .filter(|order| symbol_matches(&order.symbol, symbol))
+        .collect()
+}
+
 fn normalize_position_snapshot(v: &serde_json::Value) -> Option<LivePositionSnapshot> {
     let symbol = json_field_as_string(v, "symbol")?;
     let qty = json_field_as_f64(v, "qty").unwrap_or(0.0);
@@ -999,6 +1384,31 @@ fn normalize_position_snapshot(v: &serde_json::Value) -> Option<LivePositionSnap
         unrealized_pl: json_field_as_f64(v, "unrealized_pl"),
         unrealized_plpc: json_field_as_f64(v, "unrealized_plpc"),
     })
+}
+
+fn flatten_position_order_payload(
+    symbol: &str,
+    current_position_qty: f64,
+) -> Option<(String, Value)> {
+    if !current_position_qty.is_finite() || current_position_qty.abs() <= f64::EPSILON {
+        return None;
+    }
+    let action = if current_position_qty > 0.0 {
+        "sell"
+    } else {
+        "buy"
+    }
+    .to_string();
+    Some((
+        action,
+        serde_json::json!({
+            "symbol": symbol,
+            "qty": format!("{:.6}", current_position_qty.abs()),
+            "side": if current_position_qty > 0.0 { "sell" } else { "buy" },
+            "type": "market",
+            "time_in_force": "day"
+        }),
+    ))
 }
 
 fn alpaca_order_payload(
@@ -1052,6 +1462,43 @@ fn alpaca_order_payload(
     }
 
     (payload, warnings)
+}
+
+fn normalize_execution_safety_symbol(raw: &str) -> Result<String, String> {
+    let symbol = canonical_symbol_key(raw);
+    if symbol.is_empty() {
+        Err("symbol is required".to_string())
+    } else {
+        Ok(symbol)
+    }
+}
+
+fn ensure_runner_inactive_for_broker_safety_action() -> Result<(), String> {
+    let slot = live_execution_runner_slot()
+        .lock()
+        .map_err(|_| "failed to lock live execution runner state".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Err(format!(
+            "Stop the auto-runner for {} before broker safety actions.",
+            runtime.cfg.symbol
+        ));
+    }
+    Ok(())
+}
+
+fn emergency_halt_status_message(runner_stopped: bool, live_stopped: bool) -> String {
+    match (runner_stopped, live_stopped) {
+        (true, true) => {
+            "Emergency halt applied. Live feed and auto-runner stopped. Refresh orders before re-arming.".to_string()
+        }
+        (true, false) => {
+            "Emergency halt applied. Auto-runner stopped. Refresh orders before re-arming.".to_string()
+        }
+        (false, true) => {
+            "Emergency halt applied. Live feed stopped. Refresh orders before re-arming.".to_string()
+        }
+        (false, false) => "Live automation was already disarmed.".to_string(),
+    }
 }
 
 fn submit_alpaca_order(
@@ -1228,12 +1675,27 @@ pub async fn execute_strategy_signal_once(
     }
     let (req, symbol, qty) = normalize_execute_request(req)?;
     let data_id = strategy_data_id(&req.strategy).to_string();
+    let strategy_kind = strategy_kind_label(&req.strategy);
     let candles = state.get_candles(&data_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let req_for_session = req.clone();
+    let symbol_for_session = symbol.clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
         execute_strategy_signal_blocking(req, symbol, qty, candles, None)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    if !req_for_session.dry_run {
+        capture_manual_execution_live_session(
+            &app,
+            &req_for_session,
+            &symbol_for_session,
+            qty,
+            &data_id,
+            &strategy_kind,
+            &response,
+        )?;
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1262,6 +1724,7 @@ pub async fn start_live_execution_runner(
     let _ = state.get_candles(&data_id)?;
     let live_stream = state.live_candle_stream_info()?;
     validate_live_runner_stream_preconditions(live_stream.as_ref(), &symbol)?;
+    let _ = finalize_active_live_session(&app, "superseded");
 
     let strategy_kind = strategy_kind_label(&req.strategy);
     let generation = LIVE_EXECUTION_RUNNER_GEN.fetch_add(1, Ordering::SeqCst);
@@ -1300,6 +1763,22 @@ pub async fn start_live_execution_runner(
         *slot = Some(runtime);
     }
 
+    if !req.dry_run {
+        let saved = super::run_artifacts::create_live_session_artifact_blocking(
+            build_live_session_seed(&req, &symbol, qty, &strategy_kind, &data_id),
+            app.clone(),
+        )?;
+        let mut session_slot = live_session_audit_slot()
+            .lock()
+            .map_err(|_| "failed to lock live session audit state".to_string())?;
+        *session_slot = Some(LiveSessionAuditRuntime {
+            path: saved.path,
+            symbol: symbol.clone(),
+        });
+    } else {
+        clear_active_live_session();
+    }
+
     emit_live_execution_runner_event(
         &app,
         "started",
@@ -1314,9 +1793,9 @@ pub async fn start_live_execution_runner(
     live_execution_runner_status()
 }
 
-#[tauri::command]
-pub fn stop_live_execution_runner(
+fn stop_live_execution_runner_internal(
     app: tauri::AppHandle,
+    finalize_session: bool,
 ) -> Result<StopLiveExecutionRunnerResponse, String> {
     let prior = {
         let mut slot = live_execution_runner_slot()
@@ -1343,11 +1822,27 @@ pub fn stop_live_execution_runner(
         );
     }
     let status = live_execution_runner_status()?;
+    if finalize_session {
+        let _ = finalize_active_live_session(&app, "stopped");
+    }
     Ok(StopLiveExecutionRunnerResponse {
         stopped,
         prior,
         status,
     })
+}
+
+#[tauri::command]
+pub fn stop_live_execution_runner(
+    app: tauri::AppHandle,
+) -> Result<StopLiveExecutionRunnerResponse, String> {
+    stop_live_execution_runner_internal(app, true)
+}
+
+pub(crate) fn stop_live_execution_runner_for_interruption(
+    app: tauri::AppHandle,
+) -> Result<StopLiveExecutionRunnerResponse, String> {
+    stop_live_execution_runner_internal(app, false)
 }
 
 #[tauri::command]
@@ -1627,22 +2122,62 @@ pub async fn test_alpaca_connection(
     )?
     .ok_or_else(|| "alpaca_api_key and alpaca_api_secret are required".to_string())?;
     let mode = req.mode;
-    tauri::async_runtime::spawn_blocking(move || {
-        let client = alpaca_client()?;
-        let account = fetch_alpaca_account(client, mode, &api_key, &api_secret)?;
-        Ok(TestAlpacaConnectionResponse {
-            mode,
-            account_id: json_field_as_string(&account, "id"),
-            account_number: json_field_as_string(&account, "account_number"),
-            status: json_field_as_string(&account, "status"),
-            currency: json_field_as_string(&account, "currency"),
-            buying_power: json_field_as_string(&account, "buying_power"),
-            cash: json_field_as_string(&account, "cash"),
-            portfolio_value: json_field_as_string(&account, "portfolio_value"),
-        })
-    })
+    let response = tauri::async_runtime::spawn_blocking(
+        move || -> Result<TestAlpacaConnectionResponse, String> {
+            let client = alpaca_client()?;
+            let account = fetch_alpaca_account(client, mode, &api_key, &api_secret)?;
+            let fetched_at_unix_ms = now_unix_ms();
+            Ok(TestAlpacaConnectionResponse {
+                mode,
+                account_id: json_field_as_string(&account, "id"),
+                account_number: json_field_as_string(&account, "account_number"),
+                status: json_field_as_string(&account, "status"),
+                currency: json_field_as_string(&account, "currency"),
+                buying_power: json_field_as_string(&account, "buying_power"),
+                cash: json_field_as_string(&account, "cash"),
+                portfolio_value: json_field_as_string(&account, "portfolio_value"),
+                fetched_at_unix_ms,
+            })
+        },
+    )
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    let symbol = active_live_session_path()
+        .and_then(|_| {
+            live_session_audit_slot()
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|runtime| runtime.symbol.clone()))
+        })
+        .unwrap_or_default();
+    let _ = record_live_session_event(
+        &app,
+        serde_json::json!({
+            "provenance": "local_control",
+            "status": "test_connection",
+            "message": "broker account connectivity tested",
+            "symbol": symbol,
+            "at_unix_ms": response.fetched_at_unix_ms,
+        }),
+    );
+    let _ = record_live_session_broker_snapshot(
+        &app,
+        serde_json::json!({
+            "source_command": "test_alpaca_connection",
+            "mode": match response.mode {
+                LiveExecutionMode::Paper => "paper",
+                LiveExecutionMode::Live => "live",
+            },
+            "symbol": symbol,
+            "at_unix_ms": response.fetched_at_unix_ms,
+            "account_status": response.status,
+            "currency": response.currency,
+            "position_state": "suppressed",
+            "open_order_count": 0,
+            "order_count": 0,
+        }),
+    );
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1664,75 +2199,341 @@ pub async fn get_live_execution_snapshot(
     let include_orders = req.include_orders.unwrap_or(true);
     let include_position = req.include_position.unwrap_or(true);
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let client = alpaca_client()?;
-        let account_status = if include_account {
-            let account = fetch_alpaca_account(client, mode, &api_key, &api_secret)?;
-            json_field_as_string(&account, "status")
-        } else {
-            None
-        };
+    let response = tauri::async_runtime::spawn_blocking(
+        move || -> Result<GetLiveExecutionSnapshotResponse, String> {
+            let client = alpaca_client()?;
+            let (
+                account_id,
+                account_number,
+                account_status,
+                currency,
+                buying_power,
+                cash,
+                portfolio_value,
+            ) = if include_account {
+                let account = fetch_alpaca_account(client, mode, &api_key, &api_secret)?;
+                (
+                    json_field_as_string(&account, "id"),
+                    json_field_as_string(&account, "account_number"),
+                    json_field_as_string(&account, "status"),
+                    json_field_as_string(&account, "currency"),
+                    json_field_as_string(&account, "buying_power"),
+                    json_field_as_string(&account, "cash"),
+                    json_field_as_string(&account, "portfolio_value"),
+                )
+            } else {
+                (None, None, None, None, None, None, None)
+            };
 
-        let order_scan_limit = if include_orders && !symbol.is_empty() {
-            return_limit.max(500)
-        } else {
-            return_limit
-        };
-        let mut orders: Vec<LiveOrderSnapshot> = Vec::new();
-        if include_orders {
-            let orders_raw =
-                fetch_alpaca_orders(client, mode, &api_key, &api_secret, order_scan_limit)?;
-            for o in &orders_raw {
-                let Some(ord) = normalize_order_snapshot(o) else {
-                    continue;
-                };
-                if !symbol_matches(&ord.symbol, &symbol) {
-                    continue;
-                }
-                orders.push(ord);
-                if orders.len() >= return_limit as usize {
-                    break;
-                }
-            }
-        }
-
-        let mut position: Option<LivePositionSnapshot> = None;
-        if include_position {
-            if symbol.is_empty() {
-                let positions_raw = fetch_alpaca_positions(client, mode, &api_key, &api_secret)?;
-                for p in &positions_raw {
-                    let Some(pos) = normalize_position_snapshot(p) else {
+            let order_scan_limit = if include_orders && !symbol.is_empty() {
+                return_limit.max(500)
+            } else {
+                return_limit
+            };
+            let mut orders: Vec<LiveOrderSnapshot> = Vec::new();
+            if include_orders {
+                let orders_raw =
+                    fetch_alpaca_orders(client, mode, &api_key, &api_secret, order_scan_limit)?;
+                for o in &orders_raw {
+                    let Some(ord) = normalize_order_snapshot(o) else {
                         continue;
                     };
-                    if !symbol_matches(&pos.symbol, &symbol) {
+                    if !symbol_matches(&ord.symbol, &symbol) {
                         continue;
                     }
-                    position = Some(pos);
-                    break;
+                    orders.push(ord);
+                    if orders.len() >= return_limit as usize {
+                        break;
+                    }
                 }
-            } else if let Some(position_raw) =
-                fetch_alpaca_position(client, mode, &api_key, &api_secret, &symbol)?
-            {
-                position = normalize_position_snapshot(&position_raw);
             }
-        }
 
-        let fetched_at_unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            let mut position: Option<LivePositionSnapshot> = None;
+            if include_position {
+                if symbol.is_empty() {
+                    let positions_raw =
+                        fetch_alpaca_positions(client, mode, &api_key, &api_secret)?;
+                    for p in &positions_raw {
+                        let Some(pos) = normalize_position_snapshot(p) else {
+                            continue;
+                        };
+                        if !symbol_matches(&pos.symbol, &symbol) {
+                            continue;
+                        }
+                        position = Some(pos);
+                        break;
+                    }
+                } else if let Some(position_raw) =
+                    fetch_alpaca_position(client, mode, &api_key, &api_secret, &symbol)?
+                {
+                    position = normalize_position_snapshot(&position_raw);
+                }
+            }
 
-        Ok(GetLiveExecutionSnapshotResponse {
-            mode,
-            symbol,
-            account_status,
-            fetched_at_unix_ms,
-            position,
-            orders,
-        })
-    })
+            let fetched_at_unix_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+
+            Ok(GetLiveExecutionSnapshotResponse {
+                mode,
+                symbol,
+                account_id,
+                account_number,
+                account_status,
+                currency,
+                buying_power,
+                cash,
+                portfolio_value,
+                fetched_at_unix_ms,
+                position,
+                orders,
+            })
+        },
+    )
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    let _ = record_live_session_event(
+        &app,
+        serde_json::json!({
+            "provenance": "local_control",
+            "status": "refresh_snapshot",
+            "message": "broker snapshot refreshed",
+            "symbol": response.symbol,
+            "at_unix_ms": response.fetched_at_unix_ms,
+        }),
+    );
+    let position_state = if response.position.is_some() {
+        "open"
+    } else {
+        "flat"
+    };
+    let position_qty = response.position.as_ref().map(|position| position.qty);
+    let position_side = response
+        .position
+        .as_ref()
+        .and_then(|position| position.side.clone())
+        .unwrap_or_default();
+    let open_order_count = response
+        .orders
+        .iter()
+        .filter(|order| is_broker_open_order_status(&order.status))
+        .count();
+    let _ = record_live_session_broker_snapshot(
+        &app,
+        serde_json::json!({
+            "source_command": "get_live_execution_snapshot",
+            "mode": match response.mode {
+                LiveExecutionMode::Paper => "paper",
+                LiveExecutionMode::Live => "live",
+            },
+            "symbol": response.symbol,
+            "at_unix_ms": response.fetched_at_unix_ms,
+            "account_status": response.account_status,
+            "currency": response.currency,
+            "position_state": position_state,
+            "position_qty": position_qty,
+            "position_side": position_side,
+            "open_order_count": open_order_count,
+            "order_count": response.orders.len(),
+        }),
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn cancel_live_execution_open_orders(
+    req: LiveExecutionSafetyActionRequest,
+    app: tauri::AppHandle,
+) -> Result<CancelLiveExecutionOpenOrdersResponse, String> {
+    ensure_runner_inactive_for_broker_safety_action()?;
+    let symbol = normalize_execution_safety_symbol(&req.symbol)?;
+    let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
+        &app.config().identifier,
+        &req.alpaca_api_key,
+        &req.alpaca_api_secret,
+    )?
+    .ok_or_else(|| "alpaca_api_key and alpaca_api_secret are required".to_string())?;
+    let mode = req.mode;
+    let response = tauri::async_runtime::spawn_blocking(
+        move || -> Result<CancelLiveExecutionOpenOrdersResponse, String> {
+            let client = alpaca_client()?;
+            let orders = fetch_alpaca_orders(client, mode, &api_key, &api_secret, 500)?;
+            let open_orders = open_orders_for_symbol(&orders, &symbol);
+            let open_order_count_before = open_orders.len();
+            let mut cancelled_order_ids = Vec::with_capacity(open_orders.len());
+            for order in open_orders {
+                if let Err(error) = cancel_alpaca_order(client, mode, &api_key, &api_secret, &order.id) {
+                    if cancelled_order_ids.is_empty() {
+                        return Err(format!("failed to cancel order {}: {error}", order.id));
+                    }
+                    return Err(format!(
+                        "cancelled {} order(s) before failure on {}: {}. Refresh orders immediately.",
+                        cancelled_order_ids.len(),
+                        order.id,
+                        error
+                    ));
+                }
+                cancelled_order_ids.push(order.id);
+            }
+            Ok(CancelLiveExecutionOpenOrdersResponse {
+                mode,
+                symbol,
+                open_order_count_before,
+                cancelled_count: cancelled_order_ids.len(),
+                cancelled_order_ids,
+            })
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = record_live_session_event(
+        &app,
+        serde_json::json!({
+            "provenance": "local_control",
+            "status": "cancel_open_orders",
+            "message": format!(
+                "cancel-open-orders requested for {} (cancelled={})",
+                response.symbol,
+                response.cancelled_count
+            ),
+            "symbol": response.symbol,
+            "at_unix_ms": now_unix_ms(),
+        }),
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn flatten_live_execution_position(
+    req: LiveExecutionSafetyActionRequest,
+    app: tauri::AppHandle,
+) -> Result<FlattenLiveExecutionPositionResponse, String> {
+    ensure_runner_inactive_for_broker_safety_action()?;
+    let symbol = normalize_execution_safety_symbol(&req.symbol)?;
+    let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
+        &app.config().identifier,
+        &req.alpaca_api_key,
+        &req.alpaca_api_secret,
+    )?
+    .ok_or_else(|| "alpaca_api_key and alpaca_api_secret are required".to_string())?;
+    let mode = req.mode;
+    let response = tauri::async_runtime::spawn_blocking(
+        move || -> Result<FlattenLiveExecutionPositionResponse, String> {
+            let client = alpaca_client()?;
+            let orders = fetch_alpaca_orders(client, mode, &api_key, &api_secret, 500)?;
+            let open_order_count_before = open_orders_for_symbol(&orders, &symbol).len();
+            if open_order_count_before > 0 {
+                let plural = if open_order_count_before == 1 { "" } else { "s" };
+                return Err(format!(
+                    "Cancel {open_order_count_before} open order{plural} for {symbol} before flattening the position."
+                ));
+            }
+            let position = fetch_alpaca_position(client, mode, &api_key, &api_secret, &symbol)?
+                .and_then(|value| normalize_position_snapshot(&value))
+                .filter(|position| position.qty.abs() > f64::EPSILON);
+            let Some(position) = position else {
+                return Ok(FlattenLiveExecutionPositionResponse {
+                    mode,
+                    symbol,
+                    position_found: false,
+                    open_order_count_before,
+                    order_submitted: false,
+                    order_id: None,
+                    action: String::new(),
+                    qty: None,
+                });
+            };
+            let (action, payload) = flatten_position_order_payload(&symbol, position.qty)
+                .ok_or_else(|| "position qty is invalid for flattening".to_string())?;
+            let order_id = submit_alpaca_order(client, mode, &api_key, &api_secret, &payload)?;
+            Ok(FlattenLiveExecutionPositionResponse {
+                mode,
+                symbol,
+                position_found: true,
+                open_order_count_before,
+                order_submitted: true,
+                order_id: Some(order_id),
+                action,
+                qty: Some(position.qty.abs()),
+            })
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = record_live_session_event(
+        &app,
+        serde_json::json!({
+            "provenance": "local_control",
+            "status": "flatten_position",
+            "message": if response.order_submitted {
+                format!(
+                    "flatten-position submitted {} order{}",
+                    response.action,
+                    response
+                        .order_id
+                        .as_deref()
+                        .map(|id| format!(" (id={id})"))
+                        .unwrap_or_default()
+                )
+            } else if response.position_found {
+                format!("flatten-position requested for {}", response.symbol)
+            } else {
+                format!("flatten-position found no open position for {}", response.symbol)
+            },
+            "symbol": response.symbol,
+            "at_unix_ms": now_unix_ms(),
+            "action": response.action,
+            "order_id": response.order_id,
+            "delta_qty": response.qty,
+            "order_submitted": response.order_submitted,
+        }),
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn emergency_halt_live_execution(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<EmergencyHaltLiveExecutionResponse, String> {
+    let live_before = state.live_candle_stream_info()?;
+    let halt_symbol = live_before
+        .as_ref()
+        .map(|info| info.symbol.clone())
+        .or_else(|| {
+            live_execution_runner_slot()
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|runtime| runtime.cfg.symbol.clone()))
+        })
+        .unwrap_or_default();
+    let _ = record_live_session_event(
+        &app,
+        serde_json::json!({
+            "provenance": "local_control",
+            "status": "emergency_halt",
+            "message": "emergency halt requested",
+            "symbol": halt_symbol,
+            "at_unix_ms": now_unix_ms(),
+        }),
+    );
+    let runner = stop_live_execution_runner_internal(app.clone(), false)?;
+    let live_prior = state.stop_live_candle_stream()?;
+    let live_symbol = live_prior
+        .as_ref()
+        .map(|info| info.symbol.clone())
+        .or_else(|| live_before.as_ref().map(|info| info.symbol.clone()))
+        .unwrap_or_default();
+    let _ = finalize_active_live_session(&app, "halted");
+    Ok(EmergencyHaltLiveExecutionResponse {
+        runner_stopped: runner.stopped,
+        live_stopped: live_prior.is_some(),
+        live_symbol,
+        prior_runner: runner.prior,
+        requires_manual_review: true,
+        status_message: emergency_halt_status_message(runner.stopped, live_prior.is_some()),
+    })
 }
 
 #[cfg(test)]
@@ -1806,6 +2607,205 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_live_session_seed_preserves_mode_and_source_run_context() {
+        let mut req = test_execute_request(" aapl ", 2.5);
+        req.mode = LiveExecutionMode::Live;
+        req.dry_run = false;
+        req.param_source = "best".to_string();
+        req.source_run_artifact_path =
+            "C:/runs/vectorgrid_run_2026-04-12T15-00-00Z.json".to_string();
+        req.source_run_config_fingerprint = "cfg1-fnv1a64-seed".to_string();
+        req.source_run_route_provenance = Some(json!({
+            "requested_route": "GpuOnly",
+            "resolved_route": "GpuKernel",
+            "realized_route": "CpuOnly",
+            "route_changed": true,
+            "fallback_reason": "cuda unavailable",
+        }));
+
+        let seed = build_live_session_seed(&req, "AAPL", 2.5, "DoubleMa", "data_1");
+
+        assert_eq!(seed.get("mode").and_then(Value::as_str), Some("live"));
+        assert_eq!(seed.get("symbol").and_then(Value::as_str), Some("AAPL"));
+        assert_eq!(seed.get("qty").and_then(Value::as_f64), Some(2.5));
+        assert_eq!(seed.get("dry_run").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            seed.get("param_source").and_then(Value::as_str),
+            Some("best")
+        );
+        assert_eq!(
+            seed.get("source_run_artifact_path").and_then(Value::as_str),
+            Some("C:/runs/vectorgrid_run_2026-04-12T15-00-00Z.json")
+        );
+        assert_eq!(
+            seed.get("source_run_config_fingerprint")
+                .and_then(Value::as_str),
+            Some("cfg1-fnv1a64-seed")
+        );
+        assert_eq!(
+            seed.pointer("/source_run_route_provenance/realized_route")
+                .and_then(Value::as_str),
+            Some("CpuOnly")
+        );
+        assert_eq!(
+            seed.get("session_state").and_then(Value::as_str),
+            Some("active")
+        );
+        assert!(seed
+            .get("session_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.starts_with("live-session-")));
+    }
+
+    #[test]
+    fn broker_open_order_status_matches_only_open_like_states() {
+        for status in ["new", "accepted", "pending_new", "partially_filled", "held"] {
+            assert!(
+                is_broker_open_order_status(status),
+                "expected open-like status {status} to match"
+            );
+        }
+        for status in ["filled", "canceled", "expired", "done_for_day", "replaced"] {
+            assert!(
+                !is_broker_open_order_status(status),
+                "expected terminal status {status} to be excluded"
+            );
+        }
+    }
+
+    #[test]
+    fn open_orders_for_symbol_filters_to_open_current_symbol_rows() {
+        let orders = vec![
+            json!({ "id": "ord_1", "symbol": "AAPL", "status": "new", "side": "buy", "type": "market" }),
+            json!({ "id": "ord_2", "symbol": "AAPL", "status": "filled", "side": "buy", "type": "market" }),
+            json!({ "id": "ord_3", "symbol": "TSLA", "status": "accepted", "side": "sell", "type": "limit" }),
+        ];
+
+        let filtered = open_orders_for_symbol(&orders, "AAPL");
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "ord_1");
+        assert_eq!(filtered[0].symbol, "AAPL");
+    }
+
+    #[test]
+    fn flatten_position_order_payload_handles_long_and_short_positions() {
+        let long_payload =
+            flatten_position_order_payload("AAPL", 2.5).expect("long payload should exist");
+        assert_eq!(long_payload.0, "sell");
+        assert_eq!(
+            long_payload.1.get("side").and_then(Value::as_str),
+            Some("sell")
+        );
+        assert_eq!(
+            long_payload.1.get("qty").and_then(Value::as_str),
+            Some("2.500000")
+        );
+
+        let short_payload =
+            flatten_position_order_payload("AAPL", -1.25).expect("short payload should exist");
+        assert_eq!(short_payload.0, "buy");
+        assert_eq!(
+            short_payload.1.get("side").and_then(Value::as_str),
+            Some("buy")
+        );
+        assert_eq!(
+            short_payload.1.get("qty").and_then(Value::as_str),
+            Some("1.250000")
+        );
+
+        assert!(flatten_position_order_payload("AAPL", 0.0).is_none());
+    }
+
+    #[test]
+    fn normalize_execution_safety_symbol_requires_non_blank_symbol() {
+        assert_eq!(
+            normalize_execution_safety_symbol(" aapl ").expect("normalized symbol"),
+            "AAPL"
+        );
+        assert!(normalize_execution_safety_symbol("   ").is_err());
+    }
+
+    #[test]
+    fn emergency_halt_status_message_reflects_runner_and_feed_state() {
+        assert!(
+            emergency_halt_status_message(true, true).contains("Live feed and auto-runner stopped")
+        );
+        assert!(emergency_halt_status_message(true, false).contains("Auto-runner stopped"));
+        assert!(emergency_halt_status_message(false, true).contains("Live feed stopped"));
+        assert_eq!(
+            emergency_halt_status_message(false, false),
+            "Live automation was already disarmed."
+        );
+    }
+
+    #[test]
+    fn ensure_runner_inactive_for_broker_safety_action_rejects_active_runner() {
+        let _guard = runner_test_guard().lock().expect("runner test guard");
+        {
+            let mut slot = live_execution_runner_slot().lock().expect("runner slot");
+            *slot = Some(test_runner_runtime(99));
+        }
+
+        let err = ensure_runner_inactive_for_broker_safety_action()
+            .expect_err("active runner should block broker safety actions");
+        assert!(err.contains("Stop the auto-runner for AAPL before broker safety actions."));
+
+        {
+            let mut slot = live_execution_runner_slot().lock().expect("runner slot");
+            *slot = None;
+        }
+
+        ensure_runner_inactive_for_broker_safety_action()
+            .expect("inactive runner state should allow broker safety actions");
+    }
+
+    fn unique_test_app_identifier(suffix: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        format!("dev.vectoralpha.vectorgrid.test.{suffix}.{nanos}")
+    }
+
+    #[test]
+    fn resolve_alpaca_credentials_reads_stored_pair_by_default() {
+        let app_identifier = unique_test_app_identifier("resolve-default");
+        let _ = clear_alpaca_api_credentials_for_app(&app_identifier);
+        store_alpaca_api_credentials(&app_identifier, "stored_key", "stored_secret")
+            .expect("store secure credentials");
+
+        let resolved =
+            resolve_alpaca_credentials_for_app(&app_identifier, "", "").expect("resolve default");
+
+        assert_eq!(
+            resolved,
+            Some(("stored_key".to_string(), "stored_secret".to_string()))
+        );
+
+        let _ = clear_alpaca_api_credentials_for_app(&app_identifier);
+    }
+
+    #[test]
+    fn resolve_alpaca_credentials_prefers_complete_typed_override() {
+        let app_identifier = unique_test_app_identifier("resolve-override");
+        let _ = clear_alpaca_api_credentials_for_app(&app_identifier);
+        store_alpaca_api_credentials(&app_identifier, "stored_key", "stored_secret")
+            .expect("store secure credentials");
+
+        let resolved =
+            resolve_alpaca_credentials_for_app(&app_identifier, "typed_key", "typed_secret")
+                .expect("resolve complete typed override");
+
+        assert_eq!(
+            resolved,
+            Some(("typed_key".to_string(), "typed_secret".to_string()))
+        );
+
+        let _ = clear_alpaca_api_credentials_for_app(&app_identifier);
+    }
+
     fn runner_test_guard() -> &'static Mutex<()> {
         static RUNNER_TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
         RUNNER_TEST_GUARD.get_or_init(|| Mutex::new(()))
@@ -1820,6 +2820,10 @@ mod tests {
             risk: LiveRiskOverride::default(),
             alpaca_api_key: String::new(),
             alpaca_api_secret: String::new(),
+            param_source: "selected".to_string(),
+            source_run_artifact_path: String::new(),
+            source_run_config_fingerprint: String::new(),
+            source_run_route_provenance: None,
             strategy: LiveStrategySpec::DoubleMa {
                 req: DoubleMaDrilldownRequest {
                     data_id: "data_1".to_string(),
@@ -1967,6 +2971,7 @@ mod tests {
                     symbol: "AAPL".to_string(),
                     delayed: true,
                     active: false,
+                    status: "closed".to_string(),
                 }),
                 "AAPL",
             ),
@@ -1983,6 +2988,7 @@ mod tests {
                     symbol: "TSLA".to_string(),
                     delayed: true,
                     active: true,
+                    status: "started".to_string(),
                 }),
                 "AAPL",
             ),
@@ -1998,6 +3004,7 @@ mod tests {
                 symbol: " brk.b ".to_string(),
                 delayed: true,
                 active: true,
+                status: "started".to_string(),
             }),
             "BRK.B",
         )

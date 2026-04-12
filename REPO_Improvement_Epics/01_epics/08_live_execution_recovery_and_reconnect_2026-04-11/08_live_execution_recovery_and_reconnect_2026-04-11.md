@@ -1,6 +1,6 @@
 # Live Execution Recovery And Reconnect Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -102,15 +102,15 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define startup behavior for discrete live mode after app relaunch.
-- [ ] Define the feed/runner/broker recovery state matrix for the current scope.
-- [ ] Decide whether interrupted live mode always re-enters a safe inactive posture by default.
-- [ ] Define stale-symbol, stale-feed, and stale-broker snapshot detection rules.
-- [ ] Define explicit operator prompts or review steps required after interruption.
-- [ ] Preserve current single-stream and single-runner constraints unless a narrower follow-up doc widens them.
-- [ ] Add or strengthen tests around reconnect, mismatch, and stale-state parsing.
-- [ ] Add or strengthen Rust tests around stream replacement, runner stop, and recovery-safe state transitions.
-- [ ] Define rollback conditions if the reconnect model becomes more confusing than the current manual-refresh posture.
+- [x] Define startup behavior for discrete live mode after app relaunch.
+- [x] Define the feed/runner/broker recovery state matrix for the current scope.
+- [x] Decide whether interrupted live mode always re-enters a safe inactive posture by default.
+- [x] Define stale-symbol, stale-feed, and stale-broker snapshot detection rules.
+- [x] Define explicit operator prompts or review steps required after interruption.
+- [x] Preserve current single-stream and single-runner constraints unless a narrower follow-up doc widens them.
+- [x] Add or strengthen tests around reconnect, mismatch, and stale-state parsing.
+- [x] Add or strengthen Rust tests around stream replacement, runner stop, and recovery-safe state transitions.
+- [x] Define rollback conditions if the reconnect model becomes more confusing than the current manual-refresh posture.
 
 ## Verification Plan
 
@@ -128,6 +128,27 @@ Public-repo quality focus:
 - Final validation must include browser, desktop, and accessibility checks for recovery-state rendering, plus a paper/live-mode manual smoke path covering disconnect, stale-state, and restart flows without silent re-arm.
 - Final validation must include performance evaluation for any touched refresh, reconnect, or recovery path so the final state does not introduce avoidable polling or render regressions.
 - If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
+## Execution Notes
+
+- Recovery behavior now hardens the existing single-stream, single-runner model instead of widening it:
+  - `src-tauri/src/state.rs` preserves last-known live-stream lifecycle metadata across replacement/stop transitions
+  - `src-tauri/src/commands_data.rs` now emits explicit closed/error lifecycle outcomes instead of collapsing interruption cases into one generic inactive state
+  - `web/src/services/executionService.ts`, `web/src/stores/executionStore.ts`, and `web/src/components/ExecutionWorkspacePanel.vue` now distinguish feed lifecycle, runner lifecycle, broker freshness, dataset-validity, and recovery-review requirements
+- The implemented recovery posture is conservative by design:
+  - no silent re-arm after non-manual feed interruption
+  - symbol mismatch, stale broker review, and missing dataset context remain visible to the operator
+  - the existing live/paper runner guardrails stay in force
+- This epic closed for the current repo-owned scope with mocked/browser/desktop validation rather than real broker credentials:
+  - the recovery contract is now explicit and test-backed for the existing command/runtime surface
+  - no multi-symbol, multi-runner, or live-broker continuity claims were added
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app live_candle_stream_ --lib`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 
 ## Rollout / Fallback / Compatibility Notes
 

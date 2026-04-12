@@ -21,6 +21,7 @@ const wsItems = [
   { key: 'library', label: 'Library' },
   { key: 'aggregate', label: 'Aggregate' },
   { key: 'pro', label: 'Pro' },
+  { key: 'live', label: 'Live' },
   { key: 'settings', label: 'Settings' },
 ] as const
 

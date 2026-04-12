@@ -1,10 +1,10 @@
 # Execution Workspace UX Plan
 
-Last updated: 2026-04-10
+Last updated: 2026-04-12
 
 ## Purpose
 
-Define the current execution workspace UX contract so layout, posture copy, confirmation flows, operator review surfaces, and settings-workspace embedding remain explicit and stable.
+Define the current execution workspace UX contract so layout, posture copy, confirmation flows, operator review surfaces, and the discrete live-workspace placement remain explicit and stable.
 
 ## Scope Boundaries
 
@@ -13,7 +13,7 @@ In scope:
 - `ExecutionWorkspacePanel.vue`
 - current execution panel information architecture
 - confirmation patterns for risky actions
-- current relationship between the execution panel and the settings workspace
+- current relationship between the execution panel and the dedicated live workspace
 - operator-facing status/review copy
 
 Out of scope:
@@ -24,7 +24,7 @@ Out of scope:
 
 ## Current User-Facing Behavior
 
-The execution panel is currently mounted inside the settings workspace rather than exposed as a fully separate live-only workspace. The shipped UX groups:
+The execution panel now mounts inside a dedicated `live` workspace rather than the old settings-embedded shell path. The shipped UX groups:
 
 - posture cards
 - safety copy
@@ -55,7 +55,7 @@ Current behavior also distinguishes between actions that run immediately and act
 - `web/src/components/ConfirmationDialog.vue`
   - shared confirmation primitive used by risky execution actions
 - `web/src/App.vue`
-  - current mounting arrangement that places execution inside the settings workspace
+  - current mounting arrangement that places execution inside the dedicated live workspace
 
 ## Current Verification Surface
 
@@ -107,7 +107,7 @@ Current behavior also distinguishes between actions that run immediately and act
    - dry-run/broker-armed
    - one-shot/runner
    - live-feed on/off
-4. Document the current settings-workspace embedding so future UX cleanup work does not misdescribe the current product.
+4. Document the current dedicated live-workspace placement so future UX cleanup work does not misdescribe the current product.
 5. Keep review surfaces grouped with action surfaces because that is how operators currently reason about the tool.
 6. Treat the placeholder chart and key-persistence behavior as important UX caveats rather than incidental bugs.
 7. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.

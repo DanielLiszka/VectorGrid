@@ -1,10 +1,11 @@
-export type WorkspaceKey = 'workflow' | 'library' | 'aggregate' | 'pro' | 'settings'
+export type WorkspaceKey = 'workflow' | 'library' | 'aggregate' | 'pro' | 'live' | 'settings'
 
 export const shellSelectors = {
   titlebar: '[aria-label="Desktop titlebar"]',
   shellHeader: '[aria-label="Workspace shell header"]',
   workspaceBar: '#workspaceBar',
   runFooter: '#runFooterShell',
+  liveGrid: '#liveShellGrid',
   settingsGrid: '#settingsShellGrid',
   settingsDiagnosticsSection: '[aria-label="Desktop settings diagnostics"]',
   settingsDiagnosticsRuntimeCard: '[aria-label="Runtime diagnostics card"]',

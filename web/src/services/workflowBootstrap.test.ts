@@ -188,6 +188,25 @@ describe('workflow bootstrap service', () => {
     expect(store.resultsTab).toBe('top')
   })
 
+  it('restores the persisted live workspace together with its underlying workflow posture', async () => {
+    installStorage({
+      vta_workspace_tab_v1: 'live',
+      vta_workflow_tab_v1: 'optimize',
+      vta_workflow_step_v1: 'optimize',
+      vectorgrid_controls_tab_v1: 'strategy',
+      vectorgrid_results_tab_v1: 'top',
+    })
+
+    await applyWorkflowBootstrapFromStorage()
+    const store = useWorkflowStore(pinia)
+    expect(store.workspace).toBe('live')
+    expect(store.mode).toBe('conventional')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workflowStep).toBe('optimize')
+    expect(store.controlsTab).toBe('strategy')
+    expect(store.resultsTab).toBe('top')
+  })
+
   it('restores the finalizer workflow step from storage', async () => {
     installStorage({
       vta_workspace_tab_v1: 'workflow',

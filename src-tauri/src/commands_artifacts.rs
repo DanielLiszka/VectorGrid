@@ -1,5 +1,6 @@
 use super::run_artifacts::{
-    self, ArtifactLibrarySnapshot, LatestRunArtifactHydrationResponse, MetaArtifactReplayResponse,
+    self, ArtifactLibrarySnapshot, LatestRunArtifactHydrationResponse,
+    LiveSessionArtifactDetailResponse, LiveSessionArtifactSummary, MetaArtifactReplayResponse,
     MetaArtifactSummary, MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary,
     RunArtifactDetailResponse, RunArtifactSummary, SaveBatchSummaryResponse,
     SaveRunArtifactResponse, Stage4ArtifactSummary, Stage5ArtifactReplayResponse,
@@ -37,6 +38,17 @@ pub async fn list_run_artifacts(app: tauri::AppHandle) -> Result<Vec<RunArtifact
     tauri::async_runtime::spawn_blocking(move || run_artifacts::list_run_artifacts_blocking(app))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_live_session_artifacts(
+    app: tauri::AppHandle,
+) -> Result<Vec<LiveSessionArtifactSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::list_live_session_artifacts_blocking(app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -149,6 +161,18 @@ pub async fn load_run_artifact_detail(
 ) -> Result<RunArtifactDetailResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
         run_artifacts::load_run_artifact_detail_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_live_session_artifact_detail(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<LiveSessionArtifactDetailResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_live_session_artifact_detail_blocking(path, app)
     })
     .await
     .map_err(|e| e.to_string())?

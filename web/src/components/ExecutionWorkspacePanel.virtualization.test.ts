@@ -40,7 +40,7 @@ describe('ExecutionWorkspacePanel virtualization', () => {
   beforeEach(() => {
     localStorage.clear()
     document.body.innerHTML = `
-      <div id="settingsShellGrid">
+      <div id="liveShellGrid">
         <div id="executionShellPane">
           <div id="executionVueShellMount"></div>
         </div>
@@ -53,7 +53,7 @@ describe('ExecutionWorkspacePanel virtualization', () => {
     setActivePinia(pinia)
     const workflowStore = useWorkflowStore(pinia)
     const executionStore = useExecutionStore(pinia)
-    workflowStore.selectWorkspace('settings')
+    workflowStore.selectWorkspace('live')
     executionStore.orderRows = [
       { cells: ['2026-03-28 14:54:00', 'BUY', 'filled', '5', '5', '181.40', 'order-0'] },
       { cells: ['2026-03-28 14:55:00', 'SELL', 'filled', '6', '6', '182.40', 'order-1'] },

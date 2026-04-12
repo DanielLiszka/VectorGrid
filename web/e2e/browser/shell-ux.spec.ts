@@ -10,6 +10,7 @@ test.describe('browser shell ux', () => {
     const libraryTab = page.locator(workspaceTabSelector('library'))
     const aggregateTab = page.locator(workspaceTabSelector('aggregate'))
     const proTab = page.locator(workspaceTabSelector('pro'))
+    const liveTab = page.locator(workspaceTabSelector('live'))
     const settingsTab = page.locator(workspaceTabSelector('settings'))
 
     await workflowTab.focus()
@@ -29,6 +30,12 @@ test.describe('browser shell ux', () => {
     await expect(proTab).toBeFocused()
 
     await proTab.press('ArrowRight')
+    await expect(liveTab).toHaveAttribute('aria-selected', 'true')
+    await expect(liveTab).toBeFocused()
+    await expect(page.locator(shellSelectors.liveGrid)).toBeVisible()
+    await expect(page.getByText('Current live support envelope')).toBeVisible()
+
+    await liveTab.press('ArrowRight')
     await expect(settingsTab).toHaveAttribute('aria-selected', 'true')
     await expect(settingsTab).toBeFocused()
     await expect(page.locator(shellSelectors.settingsGrid)).toBeVisible()

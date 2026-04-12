@@ -44,6 +44,7 @@ workflowStore.syncRuntimeState()
 const { controlsTab, mode, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
 
 const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
+const liveWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'live')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
@@ -136,7 +137,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <DataWorkspacePanel v-if="mountedPanels.data" />
   <DebugWorkspacePanel v-if="debugPanelActive" />
   <DrillWorkspacePanel v-if="drillPanelActive" />
-  <ExecutionWorkspacePanel v-if="settingsWorkspaceActive" />
+  <ExecutionWorkspacePanel v-if="liveWorkspaceActive" />
   <HeatmapWorkspacePanel v-if="heatmapPanelActive" />
   <HistoryContextDock v-if="historyPanelActive" />
   <HistoryWorkspacePanel v-if="historyPanelActive" />

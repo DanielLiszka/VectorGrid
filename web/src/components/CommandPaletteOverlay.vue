@@ -226,6 +226,18 @@ const commands = computed<PaletteCommand[]>(() => {
       },
     },
     {
+      id: 'go_workspace_live',
+      group: 'navigation',
+      name: 'Go to Live',
+      desc: 'Switch to the live broker workspace.',
+      keys: [],
+      keywords: ['navigate', 'live', 'execution', 'broker'],
+      enabled: true,
+      run: () => {
+        setWorkspaceIfNeeded('live')
+      },
+    },
+    {
       id: 'go_workspace_settings',
       group: 'navigation',
       name: 'Go to Settings',

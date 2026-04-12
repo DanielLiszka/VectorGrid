@@ -1,6 +1,6 @@
 # Live Execution Productization Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -39,14 +39,15 @@ But it is intentionally narrow:
 - broker integration is Alpaca over REST
 - live streaming is Polygon stocks only
 - only one active live stream slot and one active live runner slot exist at a time
-- the execution panel currently lives in the settings workspace rather than as a clearly elevated operating surface
+- the execution panel now lives in a dedicated `live` workspace rather than a settings-mounted shell
 
 ## Current Runtime Reality
 
-- the current shell is still the workspace shell; when the settings workspace is active, `App.vue` mounts both `SettingsWorkspacePanel.vue` and `ExecutionWorkspacePanel.vue`
+- the current shell exposes a discrete `live` workspace; `App.vue` mounts `SettingsWorkspacePanel.vue` only for `settings` and `ExecutionWorkspacePanel.vue` only for `live`
 - `AppState` currently owns the live stream slot and loaded dataset mutation path, while the live runner runtime itself currently lives in `commands_execution.rs`
-- Alpaca credentials are still frontend-persisted today, while Polygon keys already prefer backend keyring storage with fallback/migration logic
-- chart/account review is still incomplete; the current chart surface still reports `Execution chart sync pending`, and live bars mutate the loaded dataset by `data_id`
+- Alpaca credentials can now resolve from backend secure storage, while legacy frontend persistence remains a compatibility/migration concern rather than the primary broker-secret path
+- chart/account review now uses explicit symbol-scoped broker review, typed chart-surface states, and broker-confirmed marker handling instead of a single placeholder summary
+- live session evidence, interruption finalization, and recovery-review posture are now part of the shipped runtime contract
 
 ## Current Code Surface
 
@@ -65,6 +66,12 @@ But it is intentionally narrow:
 - `web/src/stores/executionStore.actions.test.ts`
 - `web/src/components/ExecutionWorkspacePanel.test.ts`
 - `web/src/components/ExecutionWorkspacePanel.virtualization.test.ts`
+- `web/src/stores/workflowStore.test.ts`
+- `web/src/services/workflowBootstrap.test.ts`
+- `web/src/components/VueWorkspaceShell.test.ts`
+- `web/src\App.test.ts`
+- `web/e2e/browser/execution-review-surface.spec.ts`
+- `web/e2e/browser/shell-ux.spec.ts`
 - targeted Rust tests in `src-tauri/src/commands_execution.rs`
 - targeted Rust tests in `src-tauri/src/commands_data.rs`, `src-tauri/src/state.rs`, and `src-tauri/src/polygon.rs` when the live stream, key storage, or dataset mutation path is touched
 - `npm.cmd --prefix web run test:browser:ux`
@@ -139,20 +146,29 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the intended product posture for live execution in the current repo: narrow MVP hardening versus broader trading-surface expansion.
-- [ ] Record the current operator journey for dry-run, paper, and live modes before changing implementation.
-- [ ] Freeze the current runtime-owner map for the live stream slot, runner runtime, credential storage, and dataset mutation path before changing behavior.
-- [ ] Make secure credential storage an explicit prerequisite before broader live-surface promotion.
-- [ ] Make broker-confirmed versus provisional state truth explicit before broadening operator controls.
-- [ ] Decide whether the execution surface stays under settings or moves to a dedicated workflow/home only after credential, reconciliation, and review-surface prerequisites are explicit.
-- [ ] Define the minimum operator safety controls that should become first-class in the current scope.
-- [ ] Define the minimum live-session evidence or audit artifact that should exist for runner activity and broker-facing actions.
-- [ ] Define the no-silent-rearm rule for reconnect, restart, and feed interruption behavior.
-- [ ] Preserve the current explicit single-stream and single-runner constraints unless a narrower follow-up doc widens them.
-- [ ] Preserve the current strategy and broker scope unless a narrower follow-up doc explicitly expands them.
-- [ ] Add or strengthen frontend and Tauri tests around the chosen safety/productization slices.
-- [ ] Define rollback conditions if a live-execution UX expansion increases operator ambiguity or weakens the existing dry-run/paper guardrails.
-- [ ] Record any required cross-doc sync in first-tier live, shell, and tests/perf docs when the operator workflow changes.
+- [x] Define the intended product posture for live execution in the current repo: narrow MVP hardening versus broader trading-surface expansion.
+- [x] Record the current operator journey for dry-run, paper, and live modes before changing implementation.
+- [x] Freeze the current runtime-owner map for the live stream slot, runner runtime, credential storage, and dataset mutation path before changing behavior.
+- [x] Make secure credential storage an explicit prerequisite before broader live-surface promotion.
+- [x] Make broker-confirmed versus provisional state truth explicit before broadening operator controls.
+- [x] Decide whether the execution surface stays under settings or moves to a dedicated workflow/home only after credential, reconciliation, and review-surface prerequisites are explicit.
+- [x] Define the minimum operator safety controls that should become first-class in the current scope.
+- [x] Define the minimum live-session evidence or audit artifact that should exist for runner activity and broker-facing actions.
+- [x] Define the no-silent-rearm rule for reconnect, restart, and feed interruption behavior.
+- [x] Preserve the current explicit single-stream and single-runner constraints unless a narrower follow-up doc widens them.
+- [x] Preserve the current strategy and broker scope unless a narrower follow-up doc explicitly expands them.
+- [x] Add or strengthen frontend and Tauri tests around the chosen safety/productization slices.
+- [x] Define rollback conditions if a live-execution UX expansion increases operator ambiguity or weakens the existing dry-run/paper guardrails.
+- [x] Record any required cross-doc sync in first-tier live, shell, and tests/perf docs when the operator workflow changes.
+
+## Execution Notes
+
+- Completed the live hardening program as bounded slices: operator safety controls, session audit trail, recovery/reconnect hardening, broker position/order reconciliation, secure credential storage, chart/account review completion, and shell promotion into a discrete `live` workspace.
+- Preserved the narrow product boundary: `DoubleMa` and `CompositeCpu`, Alpaca REST, Polygon stocks, one active stream, and one active runner.
+- Promoted secure backend credential resolution, symbol-scoped broker review, broker-confirmed chart markers, interruption-driven runner disarm/finalization, and explicit recovery-review posture as product contracts rather than advisory behavior.
+- Moved execution out of the settings shell into a dedicated live workspace while keeping the support envelope visible at point of use and preserving current blocked reasons, confirmations, and operator monitoring detail.
+- Synced current-state docs in `REPO_MAP.md`, `REPO_Improvement/09_live/02_execution_workspace_ux_2026-04-09.md`, and `REPO_Improvement/01_shell/02_shell_workspace_grid_2026-04-08.md`.
+- Verified the integrated state with targeted frontend/runtime tests, browser UX, desktop smoke, accessibility smoke, workflow gate candidate timing, and the repo quality gate.
 
 ## Verification Plan
 

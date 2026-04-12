@@ -31,6 +31,22 @@ describe('workflow store actions', () => {
     expect(store.source).toBe('vue')
   })
 
+  it('selects the live workspace without rewriting the underlying workflow context', () => {
+    const store = useWorkflowStore()
+    store.selectWorkflowStep('optimize', { persist: false })
+    store.selectControlsTab('strategy', { persist: false })
+    store.selectResultsTab('top', { persist: false })
+
+    store.selectWorkspace('live')
+
+    expect(store.workspace).toBe('live')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workflowStep).toBe('optimize')
+    expect(store.controlsTab).toBe('strategy')
+    expect(store.resultsTab).toBe('top')
+    expect(store.workflowSubtitle).toContain('single symbol')
+  })
+
   it('selects workflow and applies workflow defaults', () => {
     const store = useWorkflowStore()
     store.selectWorkflow('validate')

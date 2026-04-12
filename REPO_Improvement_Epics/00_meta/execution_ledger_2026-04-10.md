@@ -1,6 +1,6 @@
 # Epic Execution Ledger
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -31,7 +31,7 @@ This ledger is intentionally coarse:
 ## Current Totals
 
 - planned epic implementation-plan documents tracked here: `12`
-- current completed items: `3`
+- current completed items: `12`
 - current in-progress items: `0`
 
 ## 01 Epics
@@ -41,15 +41,15 @@ This ledger is intentionally coarse:
 - [x] [01_epics/01_artifact_history_scale_bootstrap_latency_2026-04-10.md](../01_epics/01_artifact_history_scale_bootstrap_latency_2026-04-10/01_artifact_history_scale_bootstrap_latency_2026-04-10.md)
 - [x] [01_epics/02_dense_results_history_scalability_2026-04-10.md](../01_epics/02_dense_results_history_scalability_2026-04-10/02_dense_results_history_scalability_2026-04-10.md)
 - [x] [01_epics/03_validation_report_throughput_2026-04-10.md](../01_epics/03_validation_report_throughput_2026-04-10/03_validation_report_throughput_2026-04-10.md)
-- [ ] [01_epics/04_gpu_route_maturity_policy_refinement_2026-04-10.md](../01_epics/04_gpu_route_maturity_policy_refinement_2026-04-10/04_gpu_route_maturity_policy_refinement_2026-04-10.md)
-- [ ] [01_epics/05_live_execution_productization_2026-04-10.md](../01_epics/05_live_execution_productization_2026-04-10/05_live_execution_productization_2026-04-10.md)
-- [ ] [01_epics/06_live_execution_operator_safety_controls_2026-04-11.md](../01_epics/06_live_execution_operator_safety_controls_2026-04-11/06_live_execution_operator_safety_controls_2026-04-11.md)
-- [ ] [01_epics/07_live_execution_session_audit_trail_2026-04-11.md](../01_epics/07_live_execution_session_audit_trail_2026-04-11/07_live_execution_session_audit_trail_2026-04-11.md)
-- [ ] [01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md](../01_epics/08_live_execution_recovery_and_reconnect_2026-04-11/08_live_execution_recovery_and_reconnect_2026-04-11.md)
-- [ ] [01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md](../01_epics/09_live_mode_discrete_surface_promotion_2026-04-11/09_live_mode_discrete_surface_promotion_2026-04-11.md)
-- [ ] [01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md](../01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11/10_live_execution_broker_position_order_reconciliation_2026-04-11.md)
-- [ ] [01_epics/11_live_execution_secure_credential_storage_2026-04-11.md](../01_epics/11_live_execution_secure_credential_storage_2026-04-11/11_live_execution_secure_credential_storage_2026-04-11.md)
-- [ ] [01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md](../01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11/12_live_execution_chart_and_account_review_completion_2026-04-11.md)
+- [x] [01_epics/04_gpu_route_maturity_policy_refinement_2026-04-10.md](../01_epics/04_gpu_route_maturity_policy_refinement_2026-04-10/04_gpu_route_maturity_policy_refinement_2026-04-10.md)
+- [x] [01_epics/05_live_execution_productization_2026-04-10.md](../01_epics/05_live_execution_productization_2026-04-10/05_live_execution_productization_2026-04-10.md)
+- [x] [01_epics/06_live_execution_operator_safety_controls_2026-04-11.md](../01_epics/06_live_execution_operator_safety_controls_2026-04-11/06_live_execution_operator_safety_controls_2026-04-11.md)
+- [x] [01_epics/07_live_execution_session_audit_trail_2026-04-11.md](../01_epics/07_live_execution_session_audit_trail_2026-04-11/07_live_execution_session_audit_trail_2026-04-11.md)
+- [x] [01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md](../01_epics/08_live_execution_recovery_and_reconnect_2026-04-11/08_live_execution_recovery_and_reconnect_2026-04-11.md)
+- [x] [01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md](../01_epics/09_live_mode_discrete_surface_promotion_2026-04-11/09_live_mode_discrete_surface_promotion_2026-04-11.md)
+- [x] [01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md](../01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11/10_live_execution_broker_position_order_reconciliation_2026-04-11.md)
+- [x] [01_epics/11_live_execution_secure_credential_storage_2026-04-11.md](../01_epics/11_live_execution_secure_credential_storage_2026-04-11/11_live_execution_secure_credential_storage_2026-04-11.md)
+- [x] [01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md](../01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11/12_live_execution_chart_and_account_review_completion_2026-04-11.md)
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Live Mode Discrete Surface Promotion Plan
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 
 ## Purpose
 
@@ -24,13 +24,14 @@ Out of scope:
 
 ## Current User-Facing Behavior
 
-The current execution feature is real, but it still reads as a settings-adjacent tool:
+The current execution feature is real and now has a dedicated shell entry:
 
-- the execution panel is mounted in the current execution/settings workspace area
-- live, paper, and dry-run actions share one surface with operational and review content mixed together
-- the feature can feel both too secondary and too risky at the same time
+- the shell exposes a first-class `live` workspace
+- settings is now settings-only; execution is no longer mounted inside the settings shell
+- live, paper, and dry-run actions still share one bounded operating surface, but that surface now has its own live-mode posture and support envelope
+- command-palette, quick-switch, keyboard workspace navigation, persisted shell restore, and desktop shell labels all understand the `live` workspace
 
-If live mode is meant to be a discrete mode, the product needs a clearer boundary than the current placement provides.
+The feature remains intentionally narrow, but the shell boundary is now explicit instead of implied.
 
 ## Current Code Surface
 
@@ -40,6 +41,11 @@ If live mode is meant to be a discrete mode, the product needs a clearer boundar
 - `web/src/stores/workflowStore.ts`
 - `web/src/App.vue`
 - `web/src/components/VueWorkspaceShell.vue`
+- `web/src/utils/core/workflowModel.ts`
+- `web/src/services/workflowBootstrap.ts`
+- `web/src/components/WorkflowQuickSwitch.vue`
+- `web/src/components/CommandPaletteOverlay.vue`
+- `web/src/components/DesktopTitlebar.vue`
 - `src-tauri/src/commands_execution.rs`
 
 ## Current Verification Surface
@@ -47,6 +53,10 @@ If live mode is meant to be a discrete mode, the product needs a clearer boundar
 - `web/src/components/ExecutionWorkspacePanel.test.ts`
 - `web/src/stores/executionStore.actions.test.ts`
 - `web/src/services/executionService.test.ts`
+- `web/src/stores/workflowStore.test.ts`
+- `web/src/services/workflowBootstrap.test.ts`
+- `web/src/components/VueWorkspaceShell.test.ts`
+- `web/src/App.test.ts`
 - `npm.cmd --prefix web run test:browser:ux`
 - `npm.cmd --prefix web run test:desktop:smoke`
 
@@ -102,14 +112,23 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the intended discrete live-mode entry point and shell placement.
-- [ ] Decide what remains on the existing execution/settings surface versus what moves into live mode.
-- [ ] Define the minimum visible posture information required before any live-mode action is available.
-- [ ] Define how paper, dry-run, and live broker-armed states are represented inside the promoted surface.
-- [ ] Preserve current blocked reasons, confirmations, and review surfaces while reshaping layout.
-- [ ] Add or strengthen browser and desktop tests for the promoted live-mode shell.
-- [ ] Capture screenshots and route-flow acceptance evidence for the promoted surface.
-- [ ] Define rollback conditions if surface promotion increases confusion or weakens safety posture.
+- [x] Define the intended discrete live-mode entry point and shell placement.
+- [x] Decide what remains on the existing execution/settings surface versus what moves into live mode.
+- [x] Define the minimum visible posture information required before any live-mode action is available.
+- [x] Define how paper, dry-run, and live broker-armed states are represented inside the promoted surface.
+- [x] Preserve current blocked reasons, confirmations, and review surfaces while reshaping layout.
+- [x] Add or strengthen browser and desktop tests for the promoted live-mode shell.
+- [x] Capture screenshots and route-flow acceptance evidence for the promoted surface.
+- [x] Define rollback conditions if surface promotion increases confusion or weakens safety posture.
+
+## Execution Notes
+
+- Shipped a first-class `live` workspace in the shell vocabulary, persistence layer, bootstrap restore path, quick switch, command palette, and titlebar labeling.
+- Moved the primary execution mount out of the settings shell and into a dedicated `live` shell grid while keeping settings-only content under `settings`.
+- Added a live support-envelope block so the promoted surface still states the current strategy, broker, feed, and single-runner/single-stream limits at point of use.
+- Preserved current execution confirmations, blocked reasons, monitoring detail, and broker-review surfaces by changing shell placement rather than rewriting execution runtime behavior.
+- Verified the promoted shell through direct workflow-store/bootstrap/shell/app tests, browser UX, accessibility smoke, desktop smoke, workflow gate candidate timing, and the repo quality gate.
+- Synced current-state routing docs in `REPO_MAP.md`, `REPO_Improvement/09_live/02_execution_workspace_ux_2026-04-09.md`, and `REPO_Improvement/01_shell/02_shell_workspace_grid_2026-04-08.md`.
 
 ## Verification Plan
 
@@ -131,7 +150,7 @@ Public-repo quality focus:
 ## Rollout / Fallback / Compatibility Notes
 
 - start with shell and posture clarification before broad new action expansion
-- preserve the existing execution surface as a fallback while the discrete live mode is proven
+- the promoted `live` workspace is now the authoritative interactive entry; rollback means mapping navigation and persisted `live` workspace state back to `settings` if a future regression forces shell demotion
 - if a promoted live shell weakens clarity or safety, keep the current placement until the narrower issues are fixed
 - do not widen this plan into a full app-wide navigation redesign
 

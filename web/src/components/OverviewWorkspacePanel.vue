@@ -104,8 +104,8 @@ function setSelectValue(id: string, nextValue: string): void {
   analysisStore.setSelectField(id, nextValue)
 }
 
-function reviewExecutionSettings(): void {
-  workflowStore.selectWorkspace('settings')
+function reviewExecutionSurface(): void {
+  workflowStore.selectWorkspace('live')
 }
 
 function reviewTopResults(): void {
@@ -170,7 +170,7 @@ function reviewTopResults(): void {
         <div class="riskTitle">{{ executionRisk.title }}</div>
         <div class="riskBody">{{ executionRisk.body }}</div>
         <div class="actions" style="margin-top: 0.75rem;">
-          <button type="button" class="primary" @click="reviewExecutionSettings()">Review execution settings</button>
+          <button type="button" class="primary" @click="reviewExecutionSurface()">Review live execution</button>
         </div>
       </section>
 
