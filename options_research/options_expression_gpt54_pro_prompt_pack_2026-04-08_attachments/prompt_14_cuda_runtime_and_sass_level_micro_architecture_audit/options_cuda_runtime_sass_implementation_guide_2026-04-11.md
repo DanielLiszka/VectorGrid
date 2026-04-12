@@ -1,7 +1,7 @@
 # Options CUDA Runtime / SASS - Implementation Guide
 
 Date: 2026-04-11
-Status: validated defer-by-default guide created; no code implementation authorized by current evidence
+Status: validated defer-by-default guide created; 2026-04-12 re-anchor completed; no code implementation authorized by current evidence
 
 Validated against:
 
@@ -13,6 +13,8 @@ Validated against:
 - [options_expression.cu](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/kernels/options_expression.cu)
 - [SPY prompt13 pass2 phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt13_reruns/spy_pass2/2026-04-11T20-32-04/2026-04-11T20-32-04/phase05_summary.json)
 - [QQQ prompt13 pass2 phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt13_reruns/qqq_pass2/2026-04-11T20-32-14/2026-04-11T20-32-14/phase05_summary.json)
+- [SPY prompt14 pass3 phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt14_reruns/spy_pass3/2026-04-12T00-19-51/2026-04-12T00-19-51/phase05_summary.json)
+- [QQQ prompt14 pass3 phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt14_reruns/qqq_pass3/2026-04-12T00-21-02/2026-04-12T00-21-02/phase05_summary.json)
 - [run_options_expression_gpu_promotion_gate.ps1](/C:/Rust%20Projects/ta_desktop_demo/scripts/run_options_expression_gpu_promotion_gate.ps1)
 - [profile_gpu_backtest_nsys.ps1](/C:/Rust%20Projects/ta_desktop_demo/scripts/profile_gpu_backtest_nsys.ps1)
 - [profile_gpu_backtest_ncu.ps1](/C:/Rust%20Projects/ta_desktop_demo/scripts/profile_gpu_backtest_ncu.ps1)
@@ -28,6 +30,7 @@ Important correction applied here:
   - preserve the current CUDA runtime and kernel surfaces unchanged
   - define when profiling is allowed
   - define what evidence would be required before any runtime or SASS work could reopen
+  - record the 2026-04-12 re-anchor result that keeps profiling closed
 
 Quick pointers:
 
@@ -71,37 +74,47 @@ It is not a code-change implementation guide.
 
 ## 2. Current Evidence Snapshot
 
-Use the Prompt 13 pass-2 reruns as the current decision anchor.
+Use the 2026-04-12 Prompt 14 re-anchor reruns as the current decision anchor.
 
-### SPY pass-2
+### SPY re-anchor (2026-04-12)
 
-- `replay_build_ms = 172`
-- `total_preview_ms = 312`
-- `gpu_ranking_us = 1691`
-- `gpu_tensor_score_us = 1405`
-- `gpu_exactify_us = 191`
-- `gpu_sealed_stage_us = 95`
+- `replay_build_ms = 188`
+- `total_preview_ms = 346`
+- `gpu_ranking_us = 2724`
+- `gpu_tensor_score_us = 2413`
+- `gpu_exactify_us = 211`
+- `gpu_sealed_stage_us = 100`
+- `scorer_share_of_preview_observed = 0.29%`
+- `gpu_tuple_chunk_count = 1`
+- `gpu_kernel_launch_count = 4`
+- `gpu_output_buffer_reuses = 3`
 - promotion gate still fails
 - coverage adequacy verdict remains `holdout_coverage_weak`
 - dominant invalid reason remains `entry_past_cutoff`
 
-### QQQ pass-2
+### QQQ re-anchor (2026-04-12)
 
-- `replay_build_ms = 131`
-- `total_preview_ms = 383`
-- `gpu_ranking_us = 4061`
-- `gpu_tensor_score_us = 1937`
-- `gpu_exactify_us = 1838`
-- `gpu_sealed_stage_us = 286`
+- `replay_build_ms = 134`
+- `total_preview_ms = 299`
+- `gpu_ranking_us = 3878`
+- `gpu_tensor_score_us = 1827`
+- `gpu_exactify_us = 1778`
+- `gpu_sealed_stage_us = 273`
+- `scorer_share_of_preview_observed = 1.00%`
+- `gpu_tuple_chunk_count = 1`
+- `gpu_kernel_launch_count = 4`
+- `gpu_output_buffer_reuses = 3`
 - promotion gate passes
 - coverage adequacy verdict remains `weak_dataset_overlap`
 - dominant invalid reason remains `contract_not_eligible_as_of_event`
 
 Immediate implication:
 
-- the current kernel/runtime layer is still a low-single-digit-millisecond component inside a workflow whose more important remaining issues are elsewhere
+- both canonical reruns still show the runtime/kernel layer as a low-single-digit-millisecond component
+- both canonical reruns still show replay/build and non-runtime quality issues as the larger explanation
+- both canonical reruns still show one chunk, four launches, and effective output-buffer reuse
 
-That is not a sufficient runtime/SASS justification.
+That is not a sufficient runtime/SASS justification, so the profiling lane remains closed.
 
 ---
 
@@ -307,14 +320,14 @@ Phase-1 success condition:
 
 Only enter this phase if someone explicitly wants to challenge the defer decision.
 
-- [ ] confirm no other benchmark or profiler processes are running
-- [ ] use an elevated PowerShell terminal before Nsight or CUDA profiling
-- [ ] re-anchor the current SPY/QQQ options-expression feasibility evidence first
-- [ ] refuse profiling if the current anchor still already makes runtime clearly non-first-order
+- [x] confirm no other benchmark or profiler processes are running
+- [ ] if profiling is ever reopened later, use an elevated PowerShell terminal before Nsight or CUDA profiling
+- [x] re-anchor the current SPY/QQQ options-expression feasibility evidence first
+- [x] refuse profiling because the re-anchor still makes runtime clearly non-first-order
 
 ## 7.4 Phase 3 - Optional bounded profiling
 
-Only if Phase 2 is justified:
+Only if Phase 2 is justified. This phase was not entered on 2026-04-12 because the re-anchor did not justify it.
 
 - [ ] capture a bounded Nsight Systems trace around a representative options-expression feasibility run
 - [ ] measure wall-time share for:
@@ -344,9 +357,9 @@ Hard rule:
 
 ## 7.6 Phase 5 - Stop-or-defer
 
-- [ ] stop if runtime is still not first-order
-- [ ] stop if the likely win is too small in end-to-end terms
-- [ ] stop if the evidence is coverage/overlap/finalist shaped instead of runtime shaped
+- [x] stop because runtime is still not first-order
+- [x] stop because the likely win is too small in end-to-end terms
+- [x] stop because the evidence remains coverage/overlap/finalist shaped instead of runtime shaped
 
 ---
 
@@ -369,10 +382,10 @@ Hard rule:
 
 ### 8.3 Optional profiling prerequisites
 
-- [ ] Confirm no active benchmark/profiler overlap before profiling.
-- [ ] Use an elevated PowerShell terminal for Nsight/CUDA profiling.
-- [ ] Re-anchor current SPY/QQQ pass-2 feasibility evidence first.
-- [ ] Confirm profiling is still worth doing after re-anchor.
+- [x] Confirm no active benchmark/profiler overlap before profiling.
+- [ ] If profiling is reopened later, use an elevated PowerShell terminal for Nsight/CUDA profiling.
+- [x] Re-anchor current SPY/QQQ feasibility evidence first.
+- [x] Confirm profiling is not worth doing after re-anchor.
 
 ### 8.4 Optional bounded profiling
 
@@ -395,11 +408,11 @@ Hard rule:
 
 ### 8.7 Stop conditions
 
-- [ ] Stop if replay/build still dominates the cold path.
-- [ ] Stop if GPU ranking remains a low-single-digit-millisecond stage on representative workloads.
-- [ ] Stop if `gpu_tuple_chunk_count` stays `1` and launch count stays tiny.
-- [ ] Stop if output-buffer reuse already looks effective.
-- [ ] Stop if the evidence remains coverage / overlap / eligibility / finalist shaped.
+- [x] Stop because replay/build still dominates the cold path.
+- [x] Stop because GPU ranking remains a low-single-digit-millisecond stage on representative workloads.
+- [x] Stop because `gpu_tuple_chunk_count` stays `1` and launch count stays tiny.
+- [x] Stop because output-buffer reuse already looks effective.
+- [x] Stop because the evidence remains coverage / overlap / eligibility / finalist shaped.
 
 ---
 
@@ -409,8 +422,8 @@ Hard rule:
 
 The current defer decision should continue to rely on:
 
-- [x] Prompt 13 SPY pass-2 summary
-- [x] Prompt 13 QQQ pass-2 summary
+- [x] Prompt 14 SPY re-anchor summary
+- [x] Prompt 14 QQQ re-anchor summary
 - [x] current runtime shape in `options_expression_gpu.rs`
 - [x] current kernel shape in `options_expression.cu`
 
@@ -424,10 +437,10 @@ The current defer decision should continue to rely on:
 
 Use these before any future profiling discussion:
 
-- [ ] `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`
-- [ ] `cargo check -q -p ta_desktop_demo_app --bin ta_options_expression_feasibility`
-- [ ] rerun the canonical SPY feasibility command through [run_options_expression_gpu_promotion_gate.ps1](/C:/Rust%20Projects/ta_desktop_demo/scripts/run_options_expression_gpu_promotion_gate.ps1)
-- [ ] rerun the canonical QQQ feasibility command through [run_options_expression_gpu_promotion_gate.ps1](/C:/Rust%20Projects/ta_desktop_demo/scripts/run_options_expression_gpu_promotion_gate.ps1)
+- [x] `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`
+- [x] `cargo check -q -p ta_desktop_demo_app --bin ta_options_expression_feasibility`
+- [x] rerun the canonical SPY feasibility command through [run_options_expression_gpu_promotion_gate.ps1](/C:/Rust%20Projects/ta_desktop_demo/scripts/run_options_expression_gpu_promotion_gate.ps1)
+- [x] rerun the canonical QQQ feasibility command through [run_options_expression_gpu_promotion_gate.ps1](/C:/Rust%20Projects/ta_desktop_demo/scripts/run_options_expression_gpu_promotion_gate.ps1)
 
 ### 9.4 Profiling command policy
 
