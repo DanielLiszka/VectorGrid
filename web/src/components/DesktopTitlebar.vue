@@ -40,7 +40,6 @@ const desktopWindow = desktopRuntimeAvailable ? getCurrentWindow() : null
 const isFocused = ref(true)
 const isMaximized = ref(false)
 const closeConfirmOpen = ref(false)
-const allowNextCloseRequest = ref(false)
 const unlisteners: Array<() => void> = []
 
 const workspaceLabel = computed(() => {
@@ -187,11 +186,7 @@ async function toggleMaximizeWindow(): Promise<void> {
 
 async function requestClose(): Promise<void> {
   if (!desktopWindow) return
-  allowNextCloseRequest.value = true
-  await desktopWindow.close().catch(() => undefined)
-  window.setTimeout(() => {
-    allowNextCloseRequest.value = false
-  }, 0)
+  await desktopWindow.destroy().catch(() => desktopWindow.close().catch(() => undefined))
 }
 
 async function closeWindow(): Promise<void> {
@@ -213,10 +208,6 @@ function cancelCloseWindow(): void {
 }
 
 async function onWindowCloseRequested(event: CloseRequestedEvent): Promise<void> {
-  if (allowNextCloseRequest.value) {
-    allowNextCloseRequest.value = false
-    return
-  }
   if (!shouldGuardClose.value) return
   event.preventDefault()
   closeConfirmOpen.value = true
@@ -249,7 +240,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   for (const off of unlisteners.splice(0)) off()
   closeConfirmOpen.value = false
-  allowNextCloseRequest.value = false
   delete document.documentElement.dataset.desktopChrome
 })
 </script>

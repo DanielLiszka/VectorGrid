@@ -121,6 +121,14 @@ Public-repo quality focus:
 - run `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 - capture concrete acceptance evidence such as recovery-state screenshots, restart notes, and any new session/reconnect artifacts introduced by the work
 
+## Final Regression Validation Requirement
+
+- Do not mark this item complete until the finished implementation state has been revalidated at the end of the work, not only during individual recovery-slice changes.
+- Final validation must include targeted unit/integration tests for feed lifecycle, runner disarm logic, broker-freshness handling, dataset-validity handling, and recovery messaging, plus the relevant repo quality gates required by the final change set.
+- Final validation must include browser, desktop, and accessibility checks for recovery-state rendering, plus a paper/live-mode manual smoke path covering disconnect, stale-state, and restart flows without silent re-arm.
+- Final validation must include performance evaluation for any touched refresh, reconnect, or recovery path so the final state does not introduce avoidable polling or render regressions.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollout / Fallback / Compatibility Notes
 
 - prefer explicit inactive-after-interruption posture over aggressive automatic recovery

@@ -15,6 +15,7 @@ import { useWorkflowStore } from '../stores/workflowStore'
 const minimizeMock = vi.fn(async () => undefined)
 const toggleMaximizeMock = vi.fn(async () => undefined)
 const closeMock = vi.fn(async () => undefined)
+const destroyMock = vi.fn(async () => undefined)
 const startDraggingMock = vi.fn(async () => undefined)
 const isMaximizedMock = vi.fn(async () => false)
 const isFocusedMock = vi.fn(async () => true)
@@ -27,6 +28,7 @@ vi.mock('@tauri-apps/api/window', () => ({
     minimize: minimizeMock,
     toggleMaximize: toggleMaximizeMock,
     close: closeMock,
+    destroy: destroyMock,
     startDragging: startDraggingMock,
     isMaximized: isMaximizedMock,
     isFocused: isFocusedMock,
@@ -50,6 +52,7 @@ describe('DesktopTitlebar', () => {
     minimizeMock.mockClear()
     toggleMaximizeMock.mockClear()
     closeMock.mockClear()
+    destroyMock.mockClear()
     startDraggingMock.mockClear()
     isMaximizedMock.mockClear()
     isFocusedMock.mockClear()
@@ -142,7 +145,7 @@ describe('DesktopTitlebar', () => {
 
     expect(minimizeMock).toHaveBeenCalledTimes(1)
     expect(toggleMaximizeMock).toHaveBeenCalled()
-    expect(closeMock).toHaveBeenCalledTimes(1)
+    expect(destroyMock).toHaveBeenCalledTimes(1)
   })
 
   it('guards close when the live runner is active', async () => {
@@ -164,7 +167,7 @@ describe('DesktopTitlebar', () => {
     await wrapper.get('.confirmationDialogActions button:last-child').trigger('click')
     await nextTick()
 
-    expect(closeMock).toHaveBeenCalledTimes(1)
+    expect(destroyMock).toHaveBeenCalledTimes(1)
   })
 
   it('guards native close requests while tracked work is active', async () => {

@@ -163,6 +163,14 @@ Do not mark the bundle complete until:
 - `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate` when persisted shell-state behavior changes
 - full-shell before/after screenshots
 
+## Final Regression Validation Requirement
+
+- Do not close this guide’s implementation work until the finished integrated state has been revalidated at the end of the work, not only during intermediate shell slices.
+- Final validation must rerun the targeted shell/bootstrap/frontend tests against the completed promoted surface, then run the relevant repo quality gates required by the final change set.
+- Final validation must include browser, desktop, and accessibility checks proving the final shell state is truthful and navigable.
+- Final validation must include performance evaluation for touched bootstrap, workspace switch, and live-surface mount flows so the final state does not regress startup or navigation responsiveness.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollback Rule
 
 If the promoted `live` workspace increases shell confusion or weakens current safety posture, remove the `live` workspace entry and map the feature back to the prior settings placement until the narrower shell-truth issues are resolved.

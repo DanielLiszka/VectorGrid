@@ -64,6 +64,37 @@ describe('startVectorGridApp', () => {
     })
   })
 
+  it('waits for the first paint boundary before starting bootstrap work', async () => {
+    let paintCallback: FrameRequestCallback | null = null
+    let paintCalls = 0
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      paintCalls += 1
+      if (paintCalls === 1) {
+        paintCallback = cb
+      } else {
+        cb(0)
+      }
+      return 1
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    const appPromise = startVectorGridApp(root)
+
+    await Promise.resolve()
+    expect(vi.mocked(applyWorkflowBootstrapFromStorage)).not.toHaveBeenCalled()
+    expect(vi.mocked(initializeDesktopProductization)).not.toHaveBeenCalled()
+
+    expect(paintCallback).toBeTruthy()
+    const releaseFirstPaint = paintCallback!
+    releaseFirstPaint(0)
+    await appPromise
+
+    expect(vi.mocked(applyWorkflowBootstrapFromStorage)).toHaveBeenCalledWith({ includeDeferredData: false })
+    expect(vi.mocked(initializeDesktopProductization)).toHaveBeenCalled()
+  })
+
   it('waits for critical workflow bootstrap hydration before marking the runtime ready', async () => {
     const deferred = createDeferred<void>()
     vi.mocked(initializeDesktopProductization).mockResolvedValueOnce(undefined)
@@ -88,7 +119,7 @@ describe('startVectorGridApp', () => {
     expect(pinia).not.toBeNull()
     const runtimeStore = useRuntimeStore(pinia!)
     expect(runtimeStore.bootPhase).toBe('booting')
-    expect(runtimeStore.bootStage).toBe(BOOT_STAGES.FINALIZING_DATASET_READINESS)
+    expect(runtimeStore.bootStage).toBe(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
 
     deferred.resolve()
     await appPromise

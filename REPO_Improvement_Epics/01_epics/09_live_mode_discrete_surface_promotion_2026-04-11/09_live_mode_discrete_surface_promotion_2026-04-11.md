@@ -120,6 +120,14 @@ Public-repo quality focus:
 - run `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 - capture concrete acceptance evidence such as route screenshots, live-mode shell screenshots, and operator-flow notes
 
+## Final Regression Validation Requirement
+
+- Do not mark this item complete until the finished implementation state has been revalidated at the end of the work, not only per shell/layout slice.
+- Final validation must include targeted unit/integration tests for shell state, workspace persistence, bootstrap/restore behavior, and execution-surface mounting, plus the relevant repo quality gates required by the final change set.
+- Final validation must include browser, desktop, and accessibility checks proving the promoted live surface is truthful, navigable, and still compatible with the existing settings-mounted dependency posture where required.
+- Final validation must include performance evaluation for any touched shell bootstrap, workspace switching, or live-surface mount path so promotion does not degrade startup or navigation responsiveness.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollout / Fallback / Compatibility Notes
 
 - start with shell and posture clarification before broad new action expansion

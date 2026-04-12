@@ -183,6 +183,14 @@ Run:
 
 Raw preview stays protected as fallback evidence and must not be removed by this slice.
 
+## Final Regression Validation Requirement
+
+- Do not close this guide’s implementation work until the finished integrated state has been revalidated at the end of the work, not only during intermediate reconciliation slices.
+- Final validation must rerun the targeted backend/frontend tests against the completed reconciliation model, then run the relevant repo quality gates required by the final change set.
+- Final validation must include any required browser, desktop, and accessibility checks for the reconciliation surface, plus a paper/live-mode manual smoke path proving the final model does not overclaim broker truth or widen submission risk.
+- Final validation must include performance evaluation for touched broker-refresh, reconciliation-build, and review-render flows so the final state does not regress operator responsiveness.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollback Rule
 
 If the new summary layer is less truthful than the existing review table plus raw preview, hide the summary layer and keep the manual-review surface authoritative.

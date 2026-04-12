@@ -32,20 +32,21 @@ export async function startVectorGridApp(root: HTMLElement): Promise<void> {
   app.mount(root)
 
   try {
+    await waitForNextPaint()
+
     runStorageMigrations()
     applySettingsBootstrapFromStorage()
     const startupDataPromise = applyWorkflowBootstrapFromStorage({ includeDeferredData: false })
-    applyRecommendedOptimizationDefaults()
-
-    runtimeStore.setBootStage(BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES)
-    await initializeDesktopProductization().catch((error) => {
+    const desktopInitializationPromise = initializeDesktopProductization().catch((error) => {
       const message = String(error instanceof Error ? error.message : error ?? 'Unknown desktop startup error')
       runtimeStore.pushDesktopLog('warn', `Desktop startup service failed: ${message}`)
       console.warn(error)
     })
+    applyRecommendedOptimizationDefaults()
 
-    runtimeStore.setBootStage(BOOT_STAGES.FINALIZING_DATASET_READINESS)
     await startupDataPromise
+    runtimeStore.setBootStage(BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES)
+    await desktopInitializationPromise
 
     runtimeStore.setBootStage(BOOT_STAGES.MOUNTING_WORKSPACE_SHELL)
     await waitForNextPaint()

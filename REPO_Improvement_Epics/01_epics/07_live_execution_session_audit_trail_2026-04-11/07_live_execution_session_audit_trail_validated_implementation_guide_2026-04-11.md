@@ -213,8 +213,16 @@ Do not mark the bundle complete until all of the following are true:
 - targeted frontend tests in:
   - `executionService.test.ts`
   - `executionStore.actions.test.ts`
-  - `ExecutionWorkspacePanel.test.ts`
+- `ExecutionWorkspacePanel.test.ts`
 - `npm.cmd --prefix web run parity:outputs` if artifact/output shape changes
+
+## Final Regression Validation Requirement
+
+- Do not close this guide’s implementation work until the finished integrated state has been revalidated at the end of the work, not only during intermediate slices.
+- Final validation must rerun the targeted backend/frontend tests against the completed session-audit shape, then run the relevant repo quality gates required by the final change set.
+- Final validation must include any required browser, desktop, and accessibility checks for added review UI, plus a paper/live-mode manual smoke path proving session capture and reopen remain read-only.
+- Final validation must include performance evaluation for touched write, reopen, and review flows so the final state does not regress persistence cost or history responsiveness.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
 
 ## Rollback Rule
 

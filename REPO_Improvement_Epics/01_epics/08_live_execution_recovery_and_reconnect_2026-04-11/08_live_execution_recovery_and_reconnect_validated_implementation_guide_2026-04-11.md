@@ -184,6 +184,14 @@ Run:
 - targeted frontend tests in `executionService.test.ts`, `executionStore.actions.test.ts`, and `ExecutionWorkspacePanel.test.ts`
 - `npm.cmd --prefix web run test:browser:ux` when recovery state becomes user-visible
 
+## Final Regression Validation Requirement
+
+- Do not close this guide’s implementation work until the finished integrated state has been revalidated at the end of the work, not only during intermediate recovery slices.
+- Final validation must rerun the targeted backend/frontend tests against the completed recovery model, then run the relevant repo quality gates required by the final change set.
+- Final validation must include any required browser, desktop, and accessibility checks for recovery-state UI, plus a paper/live-mode manual smoke path covering disconnect, stale-state, and restart behavior without silent re-arm.
+- Final validation must include performance evaluation for touched refresh, reconnect, and recovery flows so the final state does not regress responsiveness or polling cost.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollback Rule
 
 If reconnect UX becomes less truthful than the current manual-refresh posture, fall back to explicit inactive-after-interruption behavior and keep richer recovery logic out of the shipped path.

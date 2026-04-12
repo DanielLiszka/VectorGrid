@@ -112,6 +112,14 @@ Public-repo quality focus:
 - rerun `cargo check --workspace`
 - run `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 
+## Final Regression Validation Requirement
+
+- Do not mark this item complete until the finished implementation state has been revalidated at the end of the work, not only while the chart/account surface is being filled in.
+- Final validation must include targeted unit/integration tests for symbol scoping, freshness/provenance mapping, account-summary truth, and chart-state rendering, plus the relevant repo quality gates required by the final change set.
+- Final validation must include browser, desktop, and accessibility checks for the review surface, plus a paper/live-mode manual smoke path proving broker-confirmed versus optimistic state remains visibly distinct.
+- Final validation must include performance evaluation for any touched chart sync, account refresh, or review-render path so the final state does not regress operator responsiveness.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollout / Fallback / Compatibility Notes
 
 - complete account review first if the chart cannot yet be made truthful enough

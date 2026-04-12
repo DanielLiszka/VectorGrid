@@ -165,6 +165,14 @@ Public-repo quality focus:
 - run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm.cmd --prefix web run lint` and `npm.cmd --prefix web run typecheck`
 - capture concrete acceptance evidence for closure, including updated operator-flow notes, screenshots where needed, and any saved live-session evidence/artifact examples introduced by the epic
 
+## Final Regression Validation Requirement
+
+- Do not mark this item complete until the finished implementation state has been revalidated at the end of the work, not only slice by slice during development.
+- Final validation must include targeted unit/integration tests for every touched frontend, Tauri, and core-runtime surface, plus the relevant repo quality gates required by the final change set.
+- Final validation must include browser, desktop, and accessibility checks for any user-visible workflow or operator-surface change, plus a paper/live-mode manual smoke path when broker-facing behavior or state transitions changed.
+- Final validation must include performance evaluation for any touched startup, refresh, chart, reconciliation, hydration, or broker-status path so the final state does not regress responsiveness or runtime cost.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollout / Fallback / Compatibility Notes
 
 - start with posture, credential hardening, operator truth, and evidence improvements before broker or strategy expansion

@@ -3,9 +3,16 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useMediaQuery } from '@vueuse/core'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
-import { useRuntimeStore } from '../stores/runtimeStore'
+import { BOOT_STAGES, useRuntimeStore } from '../stores/runtimeStore'
 
 type OverlayStage = 'hidden' | 'intro' | 'exiting' | 'dismissed'
+type StepTone = 'pending' | 'active' | 'done' | 'error'
+
+type StageStep = {
+  key: string
+  label: string
+  tone: StepTone
+}
 
 const MIN_VISIBLE_MS = 360
 const SIGNATURE_MS = 900
@@ -15,6 +22,12 @@ const HOLD_QUERY_VALUE = 'hold'
 const HOLD_QUERY_KEY = 'startup_overlay'
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
 
+const STAGE_STRIP = [
+  { key: 'restore', label: 'Restore' },
+  { key: 'desktop', label: 'Desktop' },
+  { key: 'shell', label: 'Shell' },
+] as const
+
 const runtimeStore = useRuntimeStore()
 const { bootPhase, bootStage } = storeToRefs(runtimeStore)
 const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
@@ -22,6 +35,7 @@ const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
 const overlayStage = ref<OverlayStage>('hidden')
 const canSkip = ref(false)
 const introStartedAt = ref<number | null>(null)
+const lastBootingStage = ref<string>(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
 
 let skipUnlockTimer: number | null = null
 let signatureTimer: number | null = null
@@ -30,7 +44,7 @@ let readyDelayTimer: number | null = null
 let keyListenerBound = false
 
 function clearTimer(timer: number | null): void {
-  if (timer) window.clearTimeout(timer)
+  if (timer !== null) window.clearTimeout(timer)
 }
 
 function clearScheduledTransitions(): void {
@@ -55,6 +69,12 @@ function readHoldDebugFlag(): boolean {
   }
 }
 
+function resolveStageIndex(stage: string): number {
+  if (stage === BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES) return 1
+  if (stage === BOOT_STAGES.MOUNTING_WORKSPACE_SHELL || stage === BOOT_STAGES.FRONTEND_RUNTIME_READY) return 2
+  return 0
+}
+
 const holdDebugState = computed(() => readHoldDebugFlag())
 const showOverlay = computed(() => overlayStage.value === 'intro' || overlayStage.value === 'exiting')
 const railTone = computed(() => {
@@ -64,12 +84,46 @@ const railTone = computed(() => {
 })
 const stageLabel = computed(() => String(bootStage.value || '').trim() || 'Starting VectorGrid')
 const phaseLabel = computed(() => {
-  if (bootPhase.value === 'error') return 'Failed'
+  if (bootPhase.value === 'error') return 'Error'
   if (overlayStage.value === 'exiting' && bootPhase.value === 'ready') return 'Ready'
   if (overlayStage.value === 'exiting') return 'Finishing'
   return 'Booting'
 })
+const stageReference = computed(() => {
+  if (bootPhase.value === 'error') return lastBootingStage.value
+  return String(bootStage.value || '').trim()
+})
+const stageSteps = computed<StageStep[]>(() => {
+  const activeIndex = resolveStageIndex(stageReference.value)
+  return STAGE_STRIP.map((step, index) => {
+    let tone: StepTone = 'pending'
+
+    if (bootPhase.value === 'ready') {
+      tone = 'done'
+    } else if (bootPhase.value === 'error') {
+      if (index < activeIndex) tone = 'done'
+      else if (index === activeIndex) tone = 'error'
+    } else if (index < activeIndex) {
+      tone = 'done'
+    } else if (index === activeIndex) {
+      tone = 'active'
+    }
+
+    return {
+      key: step.key,
+      label: step.label,
+      tone,
+    }
+  })
+})
+const assistLabel = computed(() => {
+  if (bootPhase.value === 'error') return 'Handing off to runtime diagnostics.'
+  if (overlayStage.value === 'exiting' && bootPhase.value === 'ready') return 'Workspace live. Releasing the startup veil.'
+  if (canSkip.value) return 'Dismiss the veil without interrupting real startup.'
+  return 'Shell is already mounted underneath while startup finishes.'
+})
 const skipHintVisible = computed(() => canSkip.value && bootPhase.value !== 'error')
+const skipButtonLabel = computed(() => (bootPhase.value === 'ready' ? 'Enter workspace' : 'Dismiss'))
 
 function bindKeyListener(): void {
   if (typeof window === 'undefined' || keyListenerBound) return
@@ -118,6 +172,8 @@ function requestSkip(): void {
 function handleKeydown(event: KeyboardEvent): void {
   if (!skipHintVisible.value) return
   if (event.repeat) return
+  if (event.key !== 'Escape' && event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
   requestSkip()
 }
 
@@ -140,6 +196,17 @@ function startIntro(): void {
     }, SIGNATURE_MS)
   }
 }
+
+watch(
+  [bootPhase, bootStage],
+  ([phase, stage]) => {
+    const stageText = String(stage || '').trim()
+    if (phase === 'booting' && stageText) {
+      lastBootingStage.value = stageText
+    }
+  },
+  { immediate: true },
+)
 
 watch(
   bootPhase,
@@ -195,11 +262,19 @@ onBeforeUnmount(() => {
     @click="requestSkip"
   >
     <div class="startupVeil" aria-hidden="true"></div>
+    <div class="startupSurvey" aria-hidden="true">
+      <span class="startupSurveyLine startupSurveyLine--top"></span>
+      <span class="startupSurveyLine startupSurveyLine--mid"></span>
+      <span class="startupSurveyGlow"></span>
+    </div>
     <section class="startupScene" role="region" aria-label="VectorGrid startup overlay">
       <div class="startupRail" :class="railTone" role="status" aria-live="polite">
         <div class="startupRailAccent" aria-hidden="true"></div>
-        <div class="startupMark" aria-hidden="true">
-          <VectorAlphaLogo class="startupMarkLogo" decorative :size="34" />
+        <div class="startupMarkCluster" aria-hidden="true">
+          <div class="startupMarkHalo"></div>
+          <div class="startupMarkPlate">
+            <VectorAlphaLogo class="startupMarkLogo" decorative :size="40" />
+          </div>
         </div>
         <div class="startupCopy">
           <div class="startupMetaRow">
@@ -207,6 +282,20 @@ onBeforeUnmount(() => {
             <span class="startupPhaseTag">{{ phaseLabel }}</span>
           </div>
           <p class="startupStageLine">{{ stageLabel }}</p>
+          <div class="startupAssistRow">
+            <p class="startupAssistLabel">{{ assistLabel }}</p>
+            <div class="startupStageSteps" aria-hidden="true">
+              <span
+                v-for="step in stageSteps"
+                :key="step.key"
+                class="startupStageStep"
+                :class="step.tone"
+              >
+                <span class="startupStageDot"></span>
+                <span class="startupStageText">{{ step.label }}</span>
+              </span>
+            </div>
+          </div>
         </div>
         <button
           v-if="skipHintVisible"
@@ -214,7 +303,7 @@ onBeforeUnmount(() => {
           class="startupSkipButton"
           @click.stop="requestSkip"
         >
-          Dismiss
+          {{ skipButtonLabel }}
         </button>
       </div>
     </section>
@@ -228,8 +317,9 @@ onBeforeUnmount(() => {
   z-index: 5000;
   overflow: hidden;
   opacity: 1;
-  transition: opacity 180ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1));
+  isolation: isolate;
   pointer-events: auto;
+  transition: opacity 180ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1));
 }
 
 .startupOverlay.exiting {
@@ -240,16 +330,63 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 18% 16%, color-mix(in oklab, var(--accent-soft) 24%, transparent), transparent 28%),
+    radial-gradient(circle at 12% 10%, color-mix(in oklab, var(--accent-soft) 42%, transparent), transparent 34%),
+    radial-gradient(circle at 84% 12%, color-mix(in oklab, var(--surface-accent) 68%, transparent), transparent 22%),
     linear-gradient(
       180deg,
-      color-mix(in oklab, var(--surface-sticky) 36%, transparent),
-      color-mix(in oklab, var(--header-bg) 18%, transparent) 42%,
-      color-mix(in oklab, var(--surface-sticky) 52%, transparent)
+      color-mix(in oklab, var(--header-bg) 44%, transparent),
+      color-mix(in oklab, var(--surface-sticky) 22%, transparent) 26%,
+      color-mix(in oklab, var(--surface-overlay) 14%, transparent) 58%,
+      color-mix(in oklab, var(--surface-sticky) 12%, transparent) 100%
     );
-  backdrop-filter: blur(10px) saturate(1.04);
-  opacity: 0.9;
+  backdrop-filter: blur(14px) saturate(1.05);
+  opacity: 0.96;
   pointer-events: none;
+}
+
+.startupSurvey {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.startupSurveyLine,
+.startupSurveyGlow {
+  position: absolute;
+  opacity: 0;
+}
+
+.startupSurveyLine {
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--accent) 0%, transparent) 0%,
+    color-mix(in oklab, var(--accent) 26%, transparent) 14%,
+    color-mix(in oklab, var(--border-strong) 28%, transparent) 48%,
+    transparent 100%
+  );
+  animation: startupFieldReveal 300ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+.startupSurveyLine--top {
+  top: calc(var(--desktop-titlebar-h, 0px) + 14px);
+}
+
+.startupSurveyLine--mid {
+  top: calc(var(--desktop-titlebar-h, 0px) + 76px);
+  animation-delay: 80ms;
+}
+
+.startupSurveyGlow {
+  top: calc(var(--desktop-titlebar-h, 0px) + 4px);
+  left: -6%;
+  width: min(68rem, 94vw);
+  height: 12rem;
+  background: radial-gradient(circle at 18% 36%, color-mix(in oklab, var(--accent-soft-2) 88%, transparent), transparent 58%);
+  filter: blur(26px);
+  animation: startupGlowReveal 360ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupScene {
@@ -261,23 +398,47 @@ onBeforeUnmount(() => {
 .startupRail {
   --startup-rail-accent: var(--accent);
   position: absolute;
-  top: calc(var(--desktop-titlebar-h, 0px) + 10px);
-  left: 10px;
-  max-width: min(58ch, calc(100vw - 20px));
+  top: calc(var(--desktop-titlebar-h, 0px) + 14px);
+  left: 12px;
+  width: min(64ch, calc(100vw - 24px));
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
-  gap: 0.72rem;
+  gap: 0.9rem;
   align-items: center;
-  padding: 0.65rem 0.8rem;
-  border-radius: 12px;
-  border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 34%, var(--border));
-  background: color-mix(in oklab, var(--surface-sticky) 96%, var(--panel-footer));
-  box-shadow: var(--shadow-focus);
-  backdrop-filter: blur(8px);
+  padding: 0.82rem 0.98rem;
+  border-radius: 16px;
+  border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 22%, var(--border-strong));
+  background:
+    linear-gradient(
+      155deg,
+      color-mix(in oklab, var(--surface-overlay) 92%, var(--surface-working)),
+      color-mix(in oklab, var(--panel-footer) 96%, var(--surface-working))
+    );
+  box-shadow:
+    0 18px 34px rgb(var(--shadow-overflow-rgb, 15 23 42) / 0.13),
+    inset 0 1px 0 rgb(255 255 255 / 0.18);
+  backdrop-filter: blur(16px);
+  animation: startupRailReveal 280ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+.startupRail::after {
+  content: '';
+  position: absolute;
+  left: 1.3rem;
+  right: 1.3rem;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--startup-rail-accent) 30%, transparent),
+    color-mix(in oklab, var(--startup-rail-accent) 10%, transparent) 54%,
+    transparent 100%
+  );
+  opacity: 0.9;
 }
 
 .startupRail.settling {
-  --startup-rail-accent: var(--accent-soft);
+  --startup-rail-accent: var(--accent-hover);
 }
 
 .startupRail.error {
@@ -285,30 +446,46 @@ onBeforeUnmount(() => {
 }
 
 .startupRailAccent {
-  width: 3px;
+  width: 4px;
   align-self: stretch;
   border-radius: 999px;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, white 14%, var(--startup-rail-accent)),
-      color-mix(in srgb, black 8%, var(--startup-rail-accent))
-    );
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--startup-rail-accent) 16%, transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, white 18%, var(--startup-rail-accent)),
+    color-mix(in srgb, black 4%, var(--startup-rail-accent))
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--startup-rail-accent) 18%, transparent),
+    0 0 18px color-mix(in oklab, var(--startup-rail-accent) 22%, transparent);
 }
 
-.startupMark {
-  width: 2.4rem;
-  height: 2.4rem;
+.startupMarkCluster {
+  position: relative;
+  width: 3rem;
+  height: 3rem;
+}
+
+.startupMarkHalo {
+  position: absolute;
+  inset: -18%;
+  border-radius: 18px;
+  background: radial-gradient(circle, color-mix(in oklab, var(--startup-rail-accent) 18%, transparent), transparent 72%);
+}
+
+.startupMarkPlate {
+  position: relative;
+  width: 100%;
+  height: 100%;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 18%, var(--border));
   background:
-    radial-gradient(circle at 50% 50%, color-mix(in oklab, var(--surface-working) 72%, transparent), transparent 70%),
-    color-mix(in oklab, var(--surface-sunken) 52%, transparent);
+    linear-gradient(180deg, rgb(255 255 255 / 0.1), transparent 42%),
+    color-mix(in oklab, var(--surface-overlay) 86%, var(--surface-sunken));
   box-shadow:
-    inset 0 0 0 1px color-mix(in oklab, var(--border) 60%, transparent),
-    0 0 0 1px color-mix(in srgb, white 3%, transparent);
+    inset 0 1px 0 rgb(255 255 255 / 0.18),
+    0 10px 18px rgb(var(--shadow-overflow-rgb, 15 23 42) / 0.1);
 }
 
 .startupMarkLogo {
@@ -318,20 +495,20 @@ onBeforeUnmount(() => {
 .startupCopy {
   min-width: 0;
   display: grid;
-  gap: 0.15rem;
+  gap: 0.26rem;
 }
 
 .startupMetaRow {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.55rem;
   min-width: 0;
 }
 
 .startupProductLabel {
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted-soft);
 }
@@ -340,59 +517,214 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  padding: 0.14rem 0.38rem;
+  padding: 0.16rem 0.42rem;
   border-radius: 999px;
-  border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 28%, var(--border));
-  background: color-mix(in oklab, var(--startup-rail-accent) 8%, var(--surface-inline));
-  font-size: 0.66rem;
+  border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 22%, var(--border));
+  background: color-mix(in oklab, var(--startup-rail-accent) 7%, var(--surface-inline));
+  font-size: 0.65rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text);
 }
 
 .startupStageLine {
   margin: 0;
-  font-size: 0.84rem;
+  font-size: 0.98rem;
+  font-weight: 650;
+  line-height: 1.28;
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  text-wrap: pretty;
+}
+
+.startupAssistRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem 0.9rem;
+}
+
+.startupAssistLabel {
+  margin: 0;
+  font-size: 0.77rem;
+  line-height: 1.35;
+  color: var(--muted-strong);
+}
+
+.startupStageSteps {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.42rem;
+}
+
+.startupStageStep {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.18rem 0.42rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
+  background: color-mix(in oklab, var(--surface-working) 90%, var(--surface-inline));
+  color: var(--muted);
+}
+
+.startupStageDot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--border-strong) 70%, transparent);
+}
+
+.startupStageText {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.startupStageStep.active,
+.startupStageStep.done,
+.startupStageStep.error {
+  border-color: color-mix(in oklab, var(--startup-rail-accent) 18%, var(--border));
+  color: var(--text);
+}
+
+.startupStageStep.active {
+  background: color-mix(in oklab, var(--startup-rail-accent) 8%, var(--surface-inline));
+}
+
+.startupStageStep.done {
+  background: color-mix(in oklab, var(--startup-rail-accent) 10%, var(--surface-working));
+}
+
+.startupStageStep.error {
+  background: color-mix(in oklab, var(--danger-soft) 78%, var(--surface-working));
+}
+
+.startupStageStep.active .startupStageDot,
+.startupStageStep.done .startupStageDot {
+  background: color-mix(in oklab, var(--startup-rail-accent) 78%, white 10%);
+}
+
+.startupStageStep.error .startupStageDot {
+  background: color-mix(in oklab, var(--danger) 88%, white 8%);
 }
 
 .startupSkipButton {
   pointer-events: auto;
-  min-height: 34px;
-  padding: 0.42rem 0.72rem;
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  background: color-mix(in oklab, var(--surface-inline) 84%, var(--panel-footer));
+  min-height: 38px;
+  padding: 0.5rem 0.82rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 18%, var(--border));
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.12), transparent 48%),
+    color-mix(in oklab, var(--surface-inline) 88%, var(--panel-footer));
   color: var(--text);
   box-shadow: var(--shadow-inline);
   font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .startupSkipButton:hover {
-  background: color-mix(in oklab, var(--surface-focus) 88%, var(--panel-footer));
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.14), transparent 48%),
+    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer));
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .startupOverlay {
-    transition: none;
+@keyframes startupRailReveal {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
-@media (max-width: 720px) {
+@keyframes startupFieldReveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes startupGlowReveal {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startupSurveyLine,
+  .startupSurveyGlow,
   .startupRail {
-    left: 10px;
-    right: 10px;
-    max-width: none;
+    animation: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .startupRail {
     grid-template-columns: auto auto minmax(0, 1fr);
   }
 
   .startupSkipButton {
     grid-column: 1 / -1;
     justify-self: start;
+  }
+
+  .startupAssistRow {
+    align-items: flex-start;
+  }
+
+  .startupStageSteps {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 620px) {
+  .startupRail {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.78rem 0.82rem;
+  }
+
+  .startupRailAccent {
+    grid-row: 1 / span 2;
+  }
+
+  .startupMarkCluster {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .startupCopy {
+    grid-column: 2;
+  }
+
+  .startupSkipButton {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .startupStageLine {
+    font-size: 0.9rem;
   }
 }
 </style>

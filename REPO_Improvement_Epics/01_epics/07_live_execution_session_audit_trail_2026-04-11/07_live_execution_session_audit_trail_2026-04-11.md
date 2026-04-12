@@ -123,6 +123,14 @@ Public-repo quality focus:
 - rerun `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 - capture concrete acceptance evidence such as sample session artifacts, redaction proofs, and reopened-session review screenshots if a UI review surface is added
 
+## Final Regression Validation Requirement
+
+- Do not mark this item complete until the finished implementation state has been revalidated at the end of the work, not only while the artifact schema is being introduced.
+- Final validation must include targeted unit/integration tests for event capture, artifact writing, redaction, reopen, and read-only review behavior, plus the relevant repo quality gates required by the final change set.
+- Final validation must include browser, desktop, and accessibility checks for any new review surface, plus a paper/live-mode manual smoke path proving session capture and reopen do not re-arm runtime state.
+- Final validation must include performance evaluation for any touched write-path, reopen-path, or history-surface flow so session auditing does not cause unacceptable persistence or review regressions.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollout / Fallback / Compatibility Notes
 
 - start with compact additive evidence before attempting a broad session-history browser

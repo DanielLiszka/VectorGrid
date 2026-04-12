@@ -49,7 +49,7 @@ describe('App root shell', () => {
     document.body.innerHTML = ''
   })
 
-  it('mounts the root shell surfaces without re-enabling the startup overlay', async () => {
+  it('mounts the root shell surfaces with startup overlay wiring in place', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
 
@@ -62,7 +62,7 @@ describe('App root shell', () => {
     })
     await flushApp()
 
-    expect(document.querySelector('[data-stub="StartupAnimationOverlay"]')).toBeNull()
+    expect(document.querySelector('[data-stub="StartupAnimationOverlay"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="DesktopTitlebar"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="VueWorkspaceShell"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="CommandPaletteOverlay"]')).not.toBeNull()

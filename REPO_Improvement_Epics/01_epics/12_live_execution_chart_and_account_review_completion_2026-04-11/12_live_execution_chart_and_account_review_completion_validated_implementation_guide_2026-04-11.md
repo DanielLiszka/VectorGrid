@@ -179,6 +179,14 @@ Run:
 
 Screenshot evidence must include non-happy paths, not only the final polished state.
 
+## Final Regression Validation Requirement
+
+- Do not close this guide’s implementation work until the finished integrated state has been revalidated at the end of the work, not only during intermediate chart/review slices.
+- Final validation must rerun the targeted backend/frontend tests against the completed review model, then run the relevant repo quality gates required by the final change set.
+- Final validation must include any required browser, desktop, and accessibility checks for the review surface, plus a paper/live-mode manual smoke path proving broker-confirmed and optimistic state remain visibly distinct.
+- Final validation must include performance evaluation for touched chart sync, account refresh, and review-render flows so the final state does not regress operator responsiveness.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollback Rule
 
 If richer account/order/position review can be made truthful but chart provenance cannot, ship the richer review surface first and keep the chart in an explicitly suppressed or `sync pending` honesty state.

@@ -191,6 +191,14 @@ Run:
 - targeted Rust tests near new credential commands
 - `npm.cmd --prefix web run test:browser:ux` and `npm.cmd --prefix web run test:desktop:smoke` when visible startup behavior changes
 
+## Final Regression Validation Requirement
+
+- Do not close this guide’s implementation work until the finished integrated state has been revalidated at the end of the work, not only during intermediate migration slices.
+- Final validation must rerun the targeted backend/frontend tests against the completed secure-storage model, then run the relevant repo quality gates required by the final change set.
+- Final validation must include any required browser, desktop, and accessibility checks for the credential UX, plus a paper/live-mode manual smoke path proving command resolution works without raw-secret readback or accidental disclosure.
+- Final validation must include performance evaluation for touched secure-store lookup, hydration, and submit flows so the final state does not regress responsiveness.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollback Rule
 
 If secure storage cannot be made less ambiguous than the current remembered-key UX, rollback to the prior local-only behavior and keep this bundle open rather than shipping a misleading half-migration.

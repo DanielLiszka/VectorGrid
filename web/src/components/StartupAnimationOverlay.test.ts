@@ -79,8 +79,11 @@ describe('StartupAnimationOverlay', () => {
     expect(wrapper.text()).toContain('Restoring workspace state')
     expect(wrapper.find('.startupRail').exists()).toBe(true)
     expect(wrapper.find('.startupPhaseTag').text()).toBe('Booting')
-    expect(wrapper.find('.startupGridField').exists()).toBe(false)
-    expect(wrapper.find('.startupResultRail').exists()).toBe(false)
+    expect(wrapper.find('.startupAssistLabel').text()).toContain('Shell is already mounted underneath')
+    expect(wrapper.findAll('.startupStageStep')).toHaveLength(3)
+    expect(wrapper.text()).toContain('Restore')
+    expect(wrapper.text()).toContain('Desktop')
+    expect(wrapper.text()).toContain('Shell')
 
     runtimeStore.markReady()
     await nextTick()
@@ -130,6 +133,7 @@ describe('StartupAnimationOverlay', () => {
     expect(wrapper.find('.startupSkipButton').exists()).toBe(false)
     await flushTimers(SKIP_UNLOCK_MS)
     expect(wrapper.find('.startupSkipButton').exists()).toBe(true)
+    expect(wrapper.find('.startupSkipButton').text()).toBe('Dismiss')
 
     await wrapper.find('.startupSkipButton').trigger('click')
     await nextTick()

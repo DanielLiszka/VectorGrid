@@ -161,6 +161,14 @@ Public-repo quality focus:
 - run `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeWorkspaceTests`
 - capture concrete acceptance evidence such as screenshots, state-transition notes, and any new session/safety artifacts introduced by the work
 
+## Final Regression Validation Requirement
+
+- Do not mark this item complete until the finished implementation state has been revalidated at the end of the work, not only per control slice.
+- Final validation must include targeted unit/integration tests for every touched execution-store, execution-service, Tauri command, and runtime-control surface, plus the relevant repo quality gates required by the final change set.
+- Final validation must include browser, desktop, and accessibility checks for the operator controls and confirmation flows, plus a paper/live-mode manual smoke path proving the final control matrix does not silently widen risk.
+- Final validation must include performance evaluation for any touched refresh, status, or control-trigger path so safety controls do not materially degrade the live surface.
+- If the final integrated state introduces correctness, UX, safety, or performance regressions, narrow the slice, add a guard, or revert the offending portion before closure.
+
 ## Rollout / Fallback / Compatibility Notes
 
 - start with explicit semantics and confirmations before adding new control breadth
