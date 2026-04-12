@@ -30,6 +30,7 @@ use ta_app_core::{
 use tauri::Manager;
 
 const OPTIONS_REPLAY_CACHE_LIMIT: usize = 4;
+const OPTIONS_DATASET_REPLAY_CACHE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunOptionsExpressionResponse {
@@ -42,7 +43,34 @@ pub struct RunOptionsExpressionResponse {
 pub struct AnalyzeOptionsExpressionFeasibilityResponse {
     pub replay_build_ms: u64,
     pub total_preview_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_build_timing: Option<OptionsExpressionReplayBuildTimingBreakdown>,
     pub report: OptionsExpressionFeasibilityReport,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct OptionsExpressionReplayBuildTimingBreakdown {
+    pub total_us: u64,
+    pub parent_artifact_validation_us: u64,
+    pub source_resolution_us: u64,
+    pub parent_signal_process_cache_lookup_us: u64,
+    #[serde(default)]
+    pub parent_signal_process_cache_hit: bool,
+    pub persisted_signal_manifest_cache_lookup_us: u64,
+    #[serde(default)]
+    pub persisted_signal_manifest_cache_hit: bool,
+    pub candle_replay_load_us: u64,
+    pub parent_replay_and_drilldown_us: u64,
+    pub signal_manifest_materialization_us: u64,
+    pub options_dataset_manifest_validation_us: u64,
+    pub options_dataset_process_cache_lookup_us: u64,
+    #[serde(default)]
+    pub options_dataset_process_cache_hit: bool,
+    pub options_dataset_persisted_cache_lookup_us: u64,
+    #[serde(default)]
+    pub options_dataset_persisted_cache_hit: bool,
+    pub options_dataset_csv_load_us: u64,
+    pub request_normalization_us: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -153,6 +181,19 @@ struct CachedOptionsDatasetReplay {
     dataset: Arc<ta_app_core::ImportedOptionsDataset>,
 }
 
+#[derive(Clone)]
+struct OptionsExpressionReplayInputsBuildResult {
+    inputs: OptionsExpressionReplayInputs,
+    timing: OptionsExpressionReplayBuildTimingBreakdown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedOptionsDatasetReplayCacheV1 {
+    version: u32,
+    options_dataset_hash: String,
+    dataset: ta_app_core::ImportedOptionsDataset,
+}
+
 fn parent_signal_cache() -> &'static Mutex<Vec<CachedParentSignalReplay>> {
     static CACHE: OnceLock<Mutex<Vec<CachedParentSignalReplay>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(Vec::new()))
@@ -213,6 +254,10 @@ fn file_cache_stamp(path: &Path) -> Result<String, String> {
         metadata.len(),
         modified_ms
     ))
+}
+
+fn saturating_elapsed_us(start: std::time::Instant) -> u64 {
+    start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 fn insert_parent_signal_cache_entry(entry: CachedParentSignalReplay) {
@@ -398,6 +443,14 @@ fn signal_manifest_replay_cache_dir(
     Ok(dir)
 }
 
+fn options_dataset_replay_cache_dir(
+    app_local_data_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let dir = options_replay_cache_dir(app_local_data_dir)?.join("datasets");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
 fn runs_dir(app_local_data_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let dir = app_local_data_dir.join("runs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -465,6 +518,25 @@ fn signal_manifest_replay_cache_path(
     )))
 }
 
+fn options_dataset_replay_cache_path(
+    app_local_data_dir: &std::path::Path,
+    dataset_id: &str,
+    cache_key: &str,
+) -> Result<std::path::PathBuf, String> {
+    let dir = options_dataset_replay_cache_dir(app_local_data_dir)?;
+    let safe_dataset = sanitize_dataset_id_component(dataset_id);
+    let stem = if safe_dataset.is_empty() {
+        "dataset".to_string()
+    } else {
+        safe_dataset
+    };
+    Ok(dir.join(format!(
+        "vectorgrid_options_dataset_{}_{}.json",
+        stem,
+        cache_key_digest(cache_key)
+    )))
+}
+
 fn load_signal_manifest_replay_cache(
     app_local_data_dir: &std::path::Path,
     parent_artifact_id: &str,
@@ -514,6 +586,67 @@ fn persist_signal_manifest_replay_cache(
     std::fs::write(&path, bytes).map_err(|e| {
         format!(
             "failed to write cached signal manifest {}: {e}",
+            path.display()
+        )
+    })
+}
+
+fn load_options_dataset_replay_cache(
+    app_local_data_dir: &std::path::Path,
+    dataset_id: &str,
+    cache_key: &str,
+) -> Result<Option<(String, ta_app_core::ImportedOptionsDataset)>, String> {
+    let path = options_dataset_replay_cache_path(app_local_data_dir, dataset_id, cache_key)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let dir = options_dataset_replay_cache_dir(app_local_data_dir)?;
+    ensure_path_is_within_dir(&path, &dir)?;
+    let bytes = std::fs::read(&path).map_err(|e| {
+        format!(
+            "failed to read cached options dataset {}: {e}",
+            path.display()
+        )
+    })?;
+    let cached =
+        serde_json::from_slice::<PersistedOptionsDatasetReplayCacheV1>(&bytes).map_err(|e| {
+            format!(
+                "failed to deserialize cached options dataset {}: {e}",
+                path.display()
+            )
+        })?;
+    if cached.version != OPTIONS_DATASET_REPLAY_CACHE_VERSION {
+        return Ok(None);
+    }
+    Ok(Some((cached.options_dataset_hash, cached.dataset)))
+}
+
+fn persist_options_dataset_replay_cache(
+    app_local_data_dir: &std::path::Path,
+    dataset_id: &str,
+    cache_key: &str,
+    options_dataset_hash: &str,
+    dataset: &ta_app_core::ImportedOptionsDataset,
+) -> Result<(), String> {
+    let path = options_dataset_replay_cache_path(app_local_data_dir, dataset_id, cache_key)?;
+    let dir = options_dataset_replay_cache_dir(app_local_data_dir)?;
+    if !path.starts_with(&dir) {
+        return Err(format!(
+            "cached options dataset path {} is outside {}",
+            path.display(),
+            dir.display()
+        ));
+    }
+    let payload = PersistedOptionsDatasetReplayCacheV1 {
+        version: OPTIONS_DATASET_REPLAY_CACHE_VERSION,
+        options_dataset_hash: options_dataset_hash.to_string(),
+        dataset: dataset.clone(),
+    };
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|e| format!("failed to serialize cached options dataset: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| {
+        format!(
+            "failed to write cached options dataset {}: {e}",
             path.display()
         )
     })
@@ -954,6 +1087,7 @@ pub(crate) fn summarize_options_expression_artifact(
     }
 }
 
+#[derive(Clone)]
 struct OptionsExpressionReplayInputs {
     parent_artifact_id: String,
     normalized_req: OptionsExpressionRunRequest,
@@ -995,10 +1129,14 @@ fn validate_saved_artifact_replay_provenance(
     Ok(())
 }
 
-fn build_options_expression_replay_inputs(
+fn build_options_expression_replay_inputs_with_timing(
     req: OptionsExpressionRunRequest,
     app_local_data_dir: &std::path::Path,
-) -> Result<OptionsExpressionReplayInputs, String> {
+) -> Result<OptionsExpressionReplayInputsBuildResult, String> {
+    let total_start = std::time::Instant::now();
+    let mut replay_timing = OptionsExpressionReplayBuildTimingBreakdown::default();
+
+    let parent_artifact_start = std::time::Instant::now();
     let runs_dir = runs_dir(app_local_data_dir)?;
     let parent_artifact_path = std::path::Path::new(req.parent_artifact_path.trim());
     if !parent_artifact_path.is_file() {
@@ -1032,6 +1170,9 @@ fn build_options_expression_replay_inputs(
                 .trim()
         ));
     }
+    replay_timing.parent_artifact_validation_us = saturating_elapsed_us(parent_artifact_start);
+
+    let source_resolution_start = std::time::Instant::now();
     let csv_path = resolve_csv_path(&artifact);
     if csv_path.trim().is_empty() {
         return Err("parent artifact is missing dataset CSV path".to_string());
@@ -1053,65 +1194,89 @@ fn build_options_expression_replay_inputs(
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_string())
     );
+    replay_timing.source_resolution_us = saturating_elapsed_us(source_resolution_start);
+
+    let parent_signal_process_cache_start = std::time::Instant::now();
+    let process_cached_parent = load_parent_signal_cache_entry(&parent_cache_key);
+    replay_timing.parent_signal_process_cache_lookup_us =
+        saturating_elapsed_us(parent_signal_process_cache_start);
+
     let (parent_artifact_id, signal_manifest) =
-        if let Some((cached_parent_artifact_id, cached_manifest)) =
-            load_parent_signal_cache_entry(&parent_cache_key)
-        {
+        if let Some((cached_parent_artifact_id, cached_manifest)) = process_cached_parent {
+            replay_timing.parent_signal_process_cache_hit = true;
             (cached_parent_artifact_id, cached_manifest)
-        } else if let Some(cached_manifest) = load_signal_manifest_replay_cache(
-            app_local_data_dir,
-            &parent_artifact_id,
-            &parent_cache_key,
-        )? {
-            let signal_manifest = Arc::new(cached_manifest);
-            insert_parent_signal_cache_entry(CachedParentSignalReplay {
-                cache_key: parent_cache_key.clone(),
-                parent_artifact_id: parent_artifact_id.clone(),
-                signal_manifest: Arc::clone(&signal_manifest),
-            });
-            (parent_artifact_id, signal_manifest)
         } else {
-            let (candles, source_identity, source_content_fingerprint) =
-                load_replayed_candles(app_local_data_dir, &artifact, &csv_path, &timeframe)?;
-            let source_dataset_identity_hash =
-                build_source_dataset_identity_hash(source_csv_path, source_identity);
-            let dataset_hash = build_dataset_hash(&source_content_fingerprint, &timeframe);
-            let symbol_root = resolve_symbol_root(&artifact, &csv_path);
-            let replay =
-                build_supported_options_parent_replay(&artifact, req.parent_candidate_index)?;
-            let curves = compute_double_ma_drilldown_blocking_with_candles(
-                replay.drilldown_request,
-                &candles,
-            )?;
-            let signal_manifest = Arc::new(build_supported_options_parent_signal_manifest(
-                replay.family,
-                &parent_artifact_id,
-                &kind,
-                &source_dataset_identity_hash,
-                &source_content_fingerprint,
-                &dataset_hash,
-                &timeframe,
-                None,
-                &adjustment_mode,
-                &symbol_root,
-                replay.trade_on_next_bar,
-                &candles,
-                &curves,
-            )?);
-            persist_signal_manifest_replay_cache(
+            let persisted_signal_manifest_start = std::time::Instant::now();
+            let persisted_manifest = load_signal_manifest_replay_cache(
                 app_local_data_dir,
                 &parent_artifact_id,
                 &parent_cache_key,
-                signal_manifest.as_ref(),
             )?;
-            insert_parent_signal_cache_entry(CachedParentSignalReplay {
-                cache_key: parent_cache_key,
-                parent_artifact_id: parent_artifact_id.clone(),
-                signal_manifest: Arc::clone(&signal_manifest),
-            });
-            (parent_artifact_id, signal_manifest)
+            replay_timing.persisted_signal_manifest_cache_lookup_us =
+                saturating_elapsed_us(persisted_signal_manifest_start);
+            if let Some(cached_manifest) = persisted_manifest {
+                replay_timing.persisted_signal_manifest_cache_hit = true;
+                let signal_manifest = Arc::new(cached_manifest);
+                insert_parent_signal_cache_entry(CachedParentSignalReplay {
+                    cache_key: parent_cache_key.clone(),
+                    parent_artifact_id: parent_artifact_id.clone(),
+                    signal_manifest: Arc::clone(&signal_manifest),
+                });
+                (parent_artifact_id, signal_manifest)
+            } else {
+                let candle_replay_start = std::time::Instant::now();
+                let (candles, source_identity, source_content_fingerprint) =
+                    load_replayed_candles(app_local_data_dir, &artifact, &csv_path, &timeframe)?;
+                replay_timing.candle_replay_load_us = saturating_elapsed_us(candle_replay_start);
+
+                let parent_replay_and_drilldown_start = std::time::Instant::now();
+                let source_dataset_identity_hash =
+                    build_source_dataset_identity_hash(source_csv_path, source_identity);
+                let dataset_hash = build_dataset_hash(&source_content_fingerprint, &timeframe);
+                let symbol_root = resolve_symbol_root(&artifact, &csv_path);
+                let replay =
+                    build_supported_options_parent_replay(&artifact, req.parent_candidate_index)?;
+                let curves = compute_double_ma_drilldown_blocking_with_candles(
+                    replay.drilldown_request,
+                    &candles,
+                )?;
+                replay_timing.parent_replay_and_drilldown_us =
+                    saturating_elapsed_us(parent_replay_and_drilldown_start);
+
+                let signal_manifest_materialization_start = std::time::Instant::now();
+                let signal_manifest = Arc::new(build_supported_options_parent_signal_manifest(
+                    replay.family,
+                    &parent_artifact_id,
+                    &kind,
+                    &source_dataset_identity_hash,
+                    &source_content_fingerprint,
+                    &dataset_hash,
+                    &timeframe,
+                    None,
+                    &adjustment_mode,
+                    &symbol_root,
+                    replay.trade_on_next_bar,
+                    &candles,
+                    &curves,
+                )?);
+                persist_signal_manifest_replay_cache(
+                    app_local_data_dir,
+                    &parent_artifact_id,
+                    &parent_cache_key,
+                    signal_manifest.as_ref(),
+                )?;
+                insert_parent_signal_cache_entry(CachedParentSignalReplay {
+                    cache_key: parent_cache_key,
+                    parent_artifact_id: parent_artifact_id.clone(),
+                    signal_manifest: Arc::clone(&signal_manifest),
+                });
+                replay_timing.signal_manifest_materialization_us =
+                    saturating_elapsed_us(signal_manifest_materialization_start);
+                (parent_artifact_id, signal_manifest)
+            }
         };
 
+    let dataset_manifest_validation_start = std::time::Instant::now();
     let datasets_dir = options_datasets_dir(app_local_data_dir)?;
     let dataset_id = sanitize_dataset_id(req.options_dataset_id.trim())?;
     let manifest_path = dataset_manifest_path(&datasets_dir, &dataset_id);
@@ -1147,37 +1312,87 @@ fn build_options_expression_replay_inputs(
         );
     }
     let dataset_rows_path = dataset_rows_path_from_manifest_path(&manifest_path)?;
+    replay_timing.options_dataset_manifest_validation_us =
+        saturating_elapsed_us(dataset_manifest_validation_start);
+
     let dataset_cache_key = format!(
         "{}|{}",
         file_cache_stamp(&manifest_path)?,
         file_cache_stamp(&dataset_rows_path)?
     );
+    let options_dataset_process_cache_start = std::time::Instant::now();
+    let process_cached_dataset = load_options_dataset_cache_entry(&dataset_cache_key);
+    replay_timing.options_dataset_process_cache_lookup_us =
+        saturating_elapsed_us(options_dataset_process_cache_start);
+
     let (options_dataset_hash, dataset) = if let Some((cached_hash, cached_dataset)) =
-        load_options_dataset_cache_entry(&dataset_cache_key)
+        process_cached_dataset
     {
+        replay_timing.options_dataset_process_cache_hit = true;
         (cached_hash, cached_dataset)
     } else {
-        let options_dataset_hash = data_cache::content_fingerprint_for_source(&dataset_rows_path)?;
-        let dataset = Arc::new(load_imported_options_dataset_from_csv(
-            &build_import_request_from_manifest(&dataset_manifest, &dataset_rows_path),
-        )?);
-        insert_options_dataset_cache_entry(CachedOptionsDatasetReplay {
-            cache_key: dataset_cache_key,
-            options_dataset_hash: options_dataset_hash.clone(),
-            dataset: Arc::clone(&dataset),
-        });
-        (options_dataset_hash, dataset)
+        let options_dataset_persisted_cache_start = std::time::Instant::now();
+        let persisted_dataset =
+            load_options_dataset_replay_cache(app_local_data_dir, &dataset_id, &dataset_cache_key)?;
+        replay_timing.options_dataset_persisted_cache_lookup_us =
+            saturating_elapsed_us(options_dataset_persisted_cache_start);
+        if let Some((cached_hash, cached_dataset)) = persisted_dataset {
+            replay_timing.options_dataset_persisted_cache_hit = true;
+            let dataset = Arc::new(cached_dataset);
+            insert_options_dataset_cache_entry(CachedOptionsDatasetReplay {
+                cache_key: dataset_cache_key,
+                options_dataset_hash: cached_hash.clone(),
+                dataset: Arc::clone(&dataset),
+            });
+            (cached_hash, dataset)
+        } else {
+            let options_dataset_csv_load_start = std::time::Instant::now();
+            let options_dataset_hash =
+                data_cache::content_fingerprint_for_source(&dataset_rows_path)?;
+            let dataset = Arc::new(load_imported_options_dataset_from_csv(
+                &build_import_request_from_manifest(&dataset_manifest, &dataset_rows_path),
+            )?);
+            persist_options_dataset_replay_cache(
+                app_local_data_dir,
+                &dataset_id,
+                &dataset_cache_key,
+                &options_dataset_hash,
+                dataset.as_ref(),
+            )?;
+            replay_timing.options_dataset_csv_load_us =
+                saturating_elapsed_us(options_dataset_csv_load_start);
+            insert_options_dataset_cache_entry(CachedOptionsDatasetReplay {
+                cache_key: dataset_cache_key,
+                options_dataset_hash: options_dataset_hash.clone(),
+                dataset: Arc::clone(&dataset),
+            });
+            (options_dataset_hash, dataset)
+        }
     };
+
+    let request_normalization_start = std::time::Instant::now();
     let mut normalized_req = req;
     normalized_req.options_dataset_id = dataset_id;
+    replay_timing.request_normalization_us = saturating_elapsed_us(request_normalization_start);
+    replay_timing.total_us = saturating_elapsed_us(total_start);
 
-    Ok(OptionsExpressionReplayInputs {
-        parent_artifact_id,
-        normalized_req,
-        signal_manifest,
-        dataset,
-        options_dataset_hash,
+    Ok(OptionsExpressionReplayInputsBuildResult {
+        inputs: OptionsExpressionReplayInputs {
+            parent_artifact_id,
+            normalized_req,
+            signal_manifest,
+            dataset,
+            options_dataset_hash,
+        },
+        timing: replay_timing,
     })
+}
+
+fn build_options_expression_replay_inputs(
+    req: OptionsExpressionRunRequest,
+    app_local_data_dir: &std::path::Path,
+) -> Result<OptionsExpressionReplayInputs, String> {
+    Ok(build_options_expression_replay_inputs_with_timing(req, app_local_data_dir)?.inputs)
 }
 
 fn run_options_expression_blocking_impl(
@@ -1221,12 +1436,12 @@ fn analyze_options_expression_feasibility_blocking_impl(
 ) -> Result<AnalyzeOptionsExpressionFeasibilityResponse, String> {
     let preview_start = std::time::Instant::now();
     let replay_start = std::time::Instant::now();
-    let replay = build_options_expression_replay_inputs(req, app_local_data_dir)?;
+    let replay = build_options_expression_replay_inputs_with_timing(req, app_local_data_dir)?;
     let replay_build_ms = replay_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let report = analyze_options_expression_feasibility_blocking(
-        replay.normalized_req,
-        replay.signal_manifest.as_ref(),
-        replay.dataset.as_ref(),
+        replay.inputs.normalized_req,
+        replay.inputs.signal_manifest.as_ref(),
+        replay.inputs.dataset.as_ref(),
     )?;
     let total_preview_ms = preview_start
         .elapsed()
@@ -1236,6 +1451,7 @@ fn analyze_options_expression_feasibility_blocking_impl(
     Ok(AnalyzeOptionsExpressionFeasibilityResponse {
         replay_build_ms,
         total_preview_ms,
+        replay_build_timing: Some(replay.timing),
         report,
     })
 }
@@ -1613,9 +1829,10 @@ mod tests {
             OptionsTupleSpec,
         },
         OptionsEvaluationSplit, OptionsExpressionArtifactV1, OptionsExpressionDiagnostics,
-        OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionTupleResult,
-        OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1, SignalSide,
-        OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_SIGNAL_MANIFEST_VERSION,
+        OptionsExpressionFeasibilityReport, OptionsExpressionMetrics, OptionsExpressionRunRequest,
+        OptionsExpressionTupleResult, OptionsPriceSemantics, OptionsSignalEvent,
+        OptionsSignalEventManifestV1, SignalSide, OPTIONS_EXPRESSION_ARTIFACT_VERSION,
+        OPTIONS_SIGNAL_MANIFEST_VERSION,
     };
 
     fn temp_app_local_data_dir(test_name: &str) -> std::path::PathBuf {
@@ -1852,6 +2069,60 @@ mod tests {
         }
     }
 
+    fn sample_feasibility_report() -> OptionsExpressionFeasibilityReport {
+        OptionsExpressionFeasibilityReport {
+            diagnostics: OptionsExpressionDiagnostics {
+                parent_artifact_path: "artifact.json".to_string(),
+                options_dataset_id: "dataset".to_string(),
+                root_symbol: "SPY".to_string(),
+                total_events: 10,
+                bullish_events: 10,
+                bearish_events: 0,
+                search_events: 6,
+                holdout_events: 2,
+                sealed_test_events: 2,
+                dataset_contracts: 3,
+                dataset_rows: 42,
+                coverage_start: None,
+                coverage_end: None,
+            },
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            best_available_backend: "cpu_reference".to_string(),
+            auto_backend_decision: Default::default(),
+            compiled_tuple_count: 1,
+            per_event_candidate_slots: 1,
+            per_candidate_exit_summaries: 1,
+            candidate_slot_count: 1,
+            compiled_candidate_count: 1,
+            candidate_density: 1.0,
+            invalid_slot_count: 0,
+            invalid_slot_rate: 0.0,
+            baseline_exit_summary_count: 1,
+            baseline_compiled_exit_summary_count: 1,
+            baseline_exit_summary_density: 1.0,
+            conservative_exit_summary_count: 1,
+            conservative_compiled_exit_summary_count: 1,
+            conservative_exit_summary_density: 1.0,
+            harsher_exit_summary_count: 1,
+            harsher_compiled_exit_summary_count: 1,
+            harsher_exit_summary_density: 1.0,
+            projected_event_tuple_evaluations: 1,
+            structural_cache_bytes_estimate: 0,
+            baseline_summary_bytes_estimate: 0,
+            conservative_summary_bytes_estimate: 0,
+            harsher_summary_bytes_estimate: 0,
+            timings: Default::default(),
+            event_coverage: Default::default(),
+            overlap_window: Default::default(),
+            split_invalid_reasons: Default::default(),
+            coverage_adequacy: Default::default(),
+            cache_stats: Default::default(),
+            invalid_reasons: Vec::new(),
+            axis_coverage: Default::default(),
+        }
+    }
+
     #[test]
     fn signal_manifest_replay_cache_round_trips_to_disk() {
         let app_local_data_dir = temp_app_local_data_dir("signal_manifest_cache_round_trip");
@@ -1875,6 +2146,105 @@ mod tests {
         assert_eq!(loaded.events[0].event_id, "evt-1");
 
         let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn options_dataset_replay_cache_round_trips_to_disk() {
+        let app_local_data_dir = temp_app_local_data_dir("options_dataset_cache_round_trip");
+        let dataset_id = "spy_dataset";
+        let cache_key = "manifest-stamp|rows-stamp";
+        let options_dataset_hash = "dataset_hash";
+        let dataset = sample_replay_dataset(dataset_id, OptionsPriceSemantics::MinuteAggregate);
+
+        persist_options_dataset_replay_cache(
+            &app_local_data_dir,
+            dataset_id,
+            cache_key,
+            options_dataset_hash,
+            &dataset,
+        )
+        .expect("persist cache");
+        let (loaded_hash, loaded_dataset) =
+            load_options_dataset_replay_cache(&app_local_data_dir, dataset_id, cache_key)
+                .expect("load cache")
+                .expect("cached dataset");
+
+        assert_eq!(loaded_hash, options_dataset_hash);
+        assert_eq!(loaded_dataset.manifest.options_dataset_id, dataset_id);
+        assert_eq!(
+            loaded_dataset.manifest.price_semantics,
+            OptionsPriceSemantics::MinuteAggregate
+        );
+        assert_eq!(
+            loaded_dataset.manifest.row_count,
+            dataset.manifest.row_count
+        );
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn options_dataset_replay_cache_ignores_version_mismatch() {
+        let app_local_data_dir = temp_app_local_data_dir("options_dataset_cache_version_mismatch");
+        let dataset_id = "spy_dataset";
+        let cache_key = "manifest-stamp|rows-stamp";
+        let path = options_dataset_replay_cache_path(&app_local_data_dir, dataset_id, cache_key)
+            .expect("cache path");
+        let stale_payload = json!({
+            "version": OPTIONS_DATASET_REPLAY_CACHE_VERSION + 1,
+            "options_dataset_hash": "dataset_hash",
+            "dataset": sample_replay_dataset(dataset_id, OptionsPriceSemantics::MinuteAggregate),
+        });
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&stale_payload).expect("serialize stale payload"),
+        )
+        .expect("write stale cache");
+
+        let loaded = load_options_dataset_replay_cache(&app_local_data_dir, dataset_id, cache_key)
+            .expect("load cache");
+        assert!(loaded.is_none());
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn analyze_feasibility_response_serializes_replay_build_timing_presence_and_absence() {
+        let with_timing = AnalyzeOptionsExpressionFeasibilityResponse {
+            replay_build_ms: 12,
+            total_preview_ms: 34,
+            replay_build_timing: Some(OptionsExpressionReplayBuildTimingBreakdown {
+                total_us: 12_000,
+                options_dataset_persisted_cache_hit: true,
+                options_dataset_csv_load_us: 0,
+                ..Default::default()
+            }),
+            report: sample_feasibility_report(),
+        };
+        let with_timing_json = serde_json::to_value(&with_timing).expect("serialize response");
+        assert_eq!(with_timing_json["replay_build_ms"], 12);
+        assert_eq!(with_timing_json["total_preview_ms"], 34);
+        assert_eq!(
+            with_timing_json["replay_build_timing"]["options_dataset_persisted_cache_hit"],
+            true
+        );
+        assert_eq!(
+            with_timing_json["replay_build_timing"]["options_dataset_csv_load_us"],
+            0
+        );
+
+        let without_timing = AnalyzeOptionsExpressionFeasibilityResponse {
+            replay_build_ms: 12,
+            total_preview_ms: 34,
+            replay_build_timing: None,
+            report: sample_feasibility_report(),
+        };
+        let without_timing_json =
+            serde_json::to_value(&without_timing).expect("serialize response");
+        let object = without_timing_json
+            .as_object()
+            .expect("response serialized as object");
+        assert!(!object.contains_key("replay_build_timing"));
     }
 
     #[test]

@@ -926,6 +926,79 @@ fn render_markdown_summary(output: &FeasibilityHarnessOutput) -> String {
             }
         );
     }
+    if let Some(replay_timing) = output.response.replay_build_timing.as_ref() {
+        let _ = writeln!(&mut out);
+        let _ = writeln!(&mut out, "## Replay/build timing");
+        let _ = writeln!(
+            &mut out,
+            "- Total replay/build: {}",
+            format_millis_from_us(replay_timing.total_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Parent artifact validation: {}",
+            format_millis_from_us(replay_timing.parent_artifact_validation_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Source resolution: {}",
+            format_millis_from_us(replay_timing.source_resolution_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Parent-signal process cache lookup: {} (hit: `{}`)",
+            format_millis_from_us(replay_timing.parent_signal_process_cache_lookup_us),
+            replay_timing.parent_signal_process_cache_hit
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Persisted signal-manifest cache lookup: {} (hit: `{}`)",
+            format_millis_from_us(replay_timing.persisted_signal_manifest_cache_lookup_us),
+            replay_timing.persisted_signal_manifest_cache_hit
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Candle replay load/resample: {}",
+            format_millis_from_us(replay_timing.candle_replay_load_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Parent replay + drilldown: {}",
+            format_millis_from_us(replay_timing.parent_replay_and_drilldown_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Signal-manifest materialization: {}",
+            format_millis_from_us(replay_timing.signal_manifest_materialization_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Options dataset manifest validation: {}",
+            format_millis_from_us(replay_timing.options_dataset_manifest_validation_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Options dataset process cache lookup: {} (hit: `{}`)",
+            format_millis_from_us(replay_timing.options_dataset_process_cache_lookup_us),
+            replay_timing.options_dataset_process_cache_hit
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Persisted options dataset cache lookup: {} (hit: `{}`)",
+            format_millis_from_us(replay_timing.options_dataset_persisted_cache_lookup_us),
+            replay_timing.options_dataset_persisted_cache_hit
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Options dataset CSV hash/load: {}",
+            format_millis_from_us(replay_timing.options_dataset_csv_load_us)
+        );
+        let _ = writeln!(
+            &mut out,
+            "- Request normalization: {}",
+            format_millis_from_us(replay_timing.request_normalization_us)
+        );
+    }
     let _ = writeln!(&mut out);
     let _ = writeln!(&mut out, "## Phase 0.5 gates");
     let _ = writeln!(

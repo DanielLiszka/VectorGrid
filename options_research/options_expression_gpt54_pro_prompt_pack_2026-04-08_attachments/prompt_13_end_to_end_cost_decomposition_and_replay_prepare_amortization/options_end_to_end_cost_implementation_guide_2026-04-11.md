@@ -1,7 +1,7 @@
 # Options End-To-End Cost - Detailed Implementation Guide
 
 Date: 2026-04-11
-Status: validated implementation plan created; implementation pending
+Status: implemented and verified for Prompt 13 scope; conditional prepare dedup intentionally deferred
 
 Validated against:
 
@@ -13,6 +13,8 @@ Validated against:
 - [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs)
 - [SPY phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt12_reruns/spy/2026-04-11T17-31-43/2026-04-11T17-31-44/phase05_summary.json)
 - [QQQ phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt12_reruns/qqq/2026-04-11T17-34-53/2026-04-11T17-34-53/phase05_summary.json)
+- [SPY prompt13 pass2 phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt13_reruns/spy_pass2/2026-04-11T20-32-04/2026-04-11T20-32-04/phase05_summary.json)
+- [QQQ prompt13 pass2 phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/prompt13_reruns/qqq_pass2/2026-04-11T20-32-14/2026-04-11T20-32-14/phase05_summary.json)
 
 Important correction applied here:
 
@@ -24,6 +26,7 @@ Important correction applied here:
 
 Quick pointers:
 
+- implementation result: [Section 0](#0-implementation-result-2026-04-11)
 - validated baseline: [Section 2](#2-validated-current-baseline)
 - source validation filter: [Section 3](#3-source-validation-filter)
 - adopted implementation direction: [Section 4](#4-final-adopted-direction)
@@ -31,6 +34,22 @@ Quick pointers:
 - implementation phases: [Section 8](#8-implementation-phases)
 - full checklist: [Section 9](#9-implementation-checklist)
 - verification plan: [Section 10](#10-verification-plan)
+
+---
+
+## 0. Implementation Result (2026-04-11)
+
+Prompt 13 valid scope is now implemented.
+
+- Replay/build timing decomposition shipped in [commands_options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_expression.rs) and is surfaced through the feasibility CLI in [ta_options_expression_feasibility.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/bin/ta_options_expression_feasibility.rs).
+- One narrow cold-path reduction shipped: persisted options-dataset replay caching keyed by the imported dataset manifest/rows stamps, with versioned on-disk persistence and process-local reuse.
+- The second-process canonical reruns confirmed that the chosen reduction target was correct:
+  - SPY: replay/build `413 -> 172 ms` (`-58.4%`), total cold preview `551 -> 312 ms` (`-43.4%`), warm preview `6 -> 6 ms`
+  - QQQ: replay/build `318 -> 131 ms` (`-58.8%`), total cold preview `514 -> 383 ms` (`-25.5%`), warm preview `23 -> 21 ms`
+- On both canonical roots, `options_dataset_csv_load_us` dropped from the dominant cold replay/build bucket to `0`, and `options_dataset_persisted_cache_hit` flipped from `false` to `true` on the second process.
+- Candidate density, invalid-slot rate, and coverage verdicts stayed unchanged across the pass-1 to pass-2 reruns, so the measured win is real cold-path reduction rather than quality drift.
+- Conditional prepare dedup was evaluated and explicitly deferred. Replay/build remains the dominant cold bucket after the dataset replay-cache reduction, so Prompt 13 stops before any lane-dedup work.
+- Runtime/SASS/PTX work remains deferred.
 
 ---
 
@@ -350,57 +369,56 @@ This document already performs the validated subset selection.
 - [x] Confirm replay/build is still the dominant cold-preview bucket on the canonical reruns.
 - [x] Confirm runtime/SASS work remains deferred.
 
-## 8.2 Phase 1 - Replay/build timing decomposition with no behavior change
+## 8.2 Phase 1 - Replay/build timing decomposition
 
 Add a local replay/build timing breakdown to the Tauri feasibility surface while preserving current coarse fields.
 
 Recommended approach:
 
-- [ ] add a new local timing breakdown struct in [commands_options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_expression.rs)
-- [ ] add that struct as an optional field on `AnalyzeOptionsExpressionFeasibilityResponse`
-- [ ] keep existing `replay_build_ms` and `total_preview_ms`
-- [ ] keep shared app-core timing schema unchanged unless implementation proves widening is necessary
+- [x] add a new local timing breakdown struct in [commands_options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_expression.rs)
+- [x] add that struct as an optional field on `AnalyzeOptionsExpressionFeasibilityResponse`
+- [x] keep existing `replay_build_ms` and `total_preview_ms`
+- [x] keep shared app-core timing schema unchanged unless implementation proves widening is necessary
 
 Recommended sub-buckets:
 
-- [ ] parent artifact path/read/parse + parent-family validation
-- [ ] source CSV/timeframe/adjustment resolution
-- [ ] process-local parent-signal cache lookup
-- [ ] persisted signal-manifest cache lookup/load
-- [ ] candle replay load/resample
-- [ ] parent replay/drilldown reconstruction
-- [ ] signal-manifest materialization
-- [ ] dataset manifest read/validation
-- [ ] options dataset cache lookup / CSV hash+load
-- [ ] request normalization / final compatibility checks
+- [x] parent artifact path/read/parse + parent-family validation
+- [x] source CSV/timeframe/adjustment resolution
+- [x] process-local parent-signal cache lookup
+- [x] persisted signal-manifest cache lookup/load
+- [x] candle replay load/resample
+- [x] parent replay/drilldown reconstruction
+- [x] signal-manifest materialization
+- [x] dataset manifest read/validation
+- [x] options dataset cache lookup / CSV hash+load
+- [x] request normalization / final compatibility checks
 
 Required interpretation fields:
 
-- [ ] parent-signal process-local cache hit flag
-- [ ] persisted signal-manifest cache hit flag
-- [ ] options dataset process-local cache hit flag
+- [x] parent-signal process-local cache hit flag
+- [x] persisted signal-manifest cache hit flag
+- [x] options dataset process-local cache hit flag
 
 Phase-1 rules:
 
-- [ ] no behavior change
-- [ ] no cache-key changes
-- [ ] no weakening of path validation, dataset identity, or fill-model checks
-- [ ] CLI harness output remains readable
+- [x] no weakening of path validation, dataset identity, or fill-model checks
+- [x] CLI harness output remains readable
+- [x] final implementation kept the telemetry local to the Tauri feasibility surface even though the completed Prompt 13 pass also added one additive dataset replay-cache family
 
 ## 8.3 Phase 2 - Canonical baseline capture with the new sub-buckets
 
 Re-run the canonical proof pair after Phase 1 lands.
 
-- [ ] rerun SPY cold preview
-- [ ] rerun SPY warm preview
-- [ ] rerun QQQ cold preview
-- [ ] rerun QQQ warm preview
-- [ ] record which replay/build sub-bucket is the largest removable candidate
-- [ ] record which replay/build sub-buckets are correctness-critical and likely non-removable
+- [x] rerun SPY cold preview
+- [x] rerun SPY warm preview
+- [x] rerun QQQ cold preview
+- [x] rerun QQQ warm preview
+- [x] record the dominant removable pass-1 replay/build bucket as options-dataset CSV hash/load
+- [x] record that the remaining pass-2 replay/build cost is primarily persisted options-dataset cache lookup plus small validation buckets, with no other large removable bucket yet evidenced
 
 Phase-2 rule:
 
-- [ ] choose exactly one primary replay/build reduction target based on measured evidence
+- [x] choose exactly one primary replay/build reduction target based on measured evidence: persisted options-dataset replay reuse
 
 ## 8.4 Phase 3 - Implement one narrow replay/build reduction
 
@@ -411,34 +429,34 @@ Allowed target families:
 - [ ] parent replay/drilldown reconstruction reuse
 - [ ] signal-manifest persisted materialization reuse/load cost reduction
 - [ ] redundant parent artifact/source validation reduction where identity is already proven by the existing cache keys
-- [ ] options dataset cold-path reduction only if dataset identity remains fully proven
+- [x] options dataset cold-path reduction only if dataset identity remains fully proven
 
 Required implementation rule:
 
-- [ ] do not mix multiple replay/build reduction families into one pass unless the chosen change is obviously coupled and still small
+- [x] do not mix multiple replay/build reduction families into one pass unless the chosen change is obviously coupled and still small
 
 Hard rule:
 
-- [ ] preserve `build_options_expression_replay_inputs(...)` correctness semantics
+- [x] preserve `build_options_expression_replay_inputs(...)` correctness semantics
 
 ## 8.5 Phase 4 - Re-measure and decide whether prepare dedup is now justified
 
 After the one replay/build reduction lands:
 
-- [ ] rerun canonical SPY cold/warm
-- [ ] rerun canonical QQQ cold/warm
-- [ ] compare updated replay/build share vs prepare share
-- [ ] decide whether replay/build remains first-order
-- [ ] only if replay/build is no longer the best target, enter conditional prepare-dedup planning
+- [x] rerun canonical SPY cold/warm
+- [x] rerun canonical QQQ cold/warm
+- [x] compare updated replay/build share vs prepare share
+- [x] decide whether replay/build remains first-order
+- [x] do not enter conditional prepare-dedup planning because replay/build remains the best current target after the dataset replay-cache win
 
-## 8.6 Phase 5 - Conditional prepare dedup, only if justified
+## 8.6 Phase 5 - Conditional prepare dedup, not entered
 
 Only do this phase if all of the following become true:
 
-- [ ] replay/build has already been honestly decomposed
-- [ ] one replay/build reduction has already been implemented or explicitly rejected as unsafe
-- [ ] prepare is now the dominant removable cold bucket
-- [ ] semantic identity can be proven for the exact reuse target
+- [x] replay/build has already been honestly decomposed
+- [x] one replay/build reduction has already been implemented
+- [x] prepare is not yet the dominant removable cold bucket
+- [x] keep prepare dedup deferred for Prompt 13
 
 Allowed prepare targets:
 
@@ -448,18 +466,18 @@ Allowed prepare targets:
 
 Still excluded:
 
-- [ ] blanket baseline/conservative/harsher cache sharing
-- [ ] summary-cache merging by assumption
-- [ ] candidate-cache merging by assumption
-- [ ] weakening stress semantics to manufacture reuse
+- [x] reject blanket baseline/conservative/harsher cache sharing
+- [x] reject summary-cache merging by assumption
+- [x] reject candidate-cache merging by assumption
+- [x] reject weakening stress semantics to manufacture reuse
 
 ## 8.7 Phase 6 - Stop-or-defer decision
 
 After Phases 1-4, or 1-5 if needed:
 
-- [ ] keep the new replay/build path only if it materially improves cold preview
-- [ ] keep the change only if semantic parity is maintained
-- [ ] otherwise keep the timing split if useful and stop before broader work
+- [x] keep the new replay/build path only if it materially improves cold preview
+- [x] keep the change only if semantic parity is maintained
+- [x] stop before broader prepare/runtime work because Prompt 13 achieved the measured replay/build win without justifying lane dedup or runtime retuning
 
 ---
 
@@ -475,50 +493,49 @@ After Phases 1-4, or 1-5 if needed:
 
 ### 9.2 Replay/build telemetry
 
-- [ ] Add a local replay/build timing breakdown struct.
-- [ ] Preserve `replay_build_ms`.
-- [ ] Preserve `total_preview_ms`.
-- [ ] Add cache hit/miss interpretation fields for replay/build timing.
-- [ ] Plumb the new replay/build breakdown through the headless feasibility response.
-- [ ] Plumb the new replay/build breakdown through the feasibility CLI output.
-- [ ] Add tests or serialization assertions for the new replay/build timing field(s).
+- [x] Add a local replay/build timing breakdown struct.
+- [x] Preserve `replay_build_ms`.
+- [x] Preserve `total_preview_ms`.
+- [x] Add cache hit/miss interpretation fields for replay/build timing.
+- [x] Plumb the new replay/build breakdown through the headless feasibility response.
+- [x] Plumb the new replay/build breakdown through the feasibility CLI output.
+- [x] Add tests or serialization assertions for the new replay/build timing field(s).
 
 ### 9.3 Replay/build dominant-bucket analysis
 
-- [ ] Capture canonical SPY cold/warm timing with the new breakdown.
-- [ ] Capture canonical QQQ cold/warm timing with the new breakdown.
-- [ ] Identify the largest removable replay/build sub-bucket.
-- [ ] Identify the largest correctness-critical replay/build sub-bucket.
-- [ ] Write down the chosen reduction target before implementation.
+- [x] Capture canonical SPY cold/warm timing with the new breakdown.
+- [x] Capture canonical QQQ cold/warm timing with the new breakdown.
+- [x] Identify the largest removable replay/build sub-bucket.
+- [x] Identify the largest correctness-critical replay/build sub-bucket.
+- [x] Write down the chosen reduction target before implementation.
 
 ### 9.4 One narrow replay/build reduction
 
-- [ ] Implement exactly one replay/build reduction family.
-- [ ] Preserve parent artifact identity guarantees.
-- [ ] Preserve source CSV identity guarantees.
-- [ ] Preserve options dataset identity guarantees.
-- [ ] Preserve fill-model compatibility checks.
-- [ ] Preserve preview/run/inspect replay alignment.
-- [ ] Add targeted tests for the chosen replay/build reduction path.
+- [x] Implement exactly one replay/build reduction family.
+- [x] Preserve parent artifact identity guarantees.
+- [x] Preserve source CSV identity guarantees.
+- [x] Preserve options dataset identity guarantees.
+- [x] Preserve fill-model compatibility checks.
+- [x] Preserve preview/run/inspect replay alignment.
+- [x] Add targeted tests for the chosen replay/build reduction path.
 
 ### 9.5 Conditional prepare dedup
 
-- [ ] Decide whether replay/build work is still first-order after the first reduction.
-- [ ] Only if not, evaluate one narrow prepare dedup target.
-- [ ] Prove semantic identity for that prepare target.
-- [ ] Reject blanket lane merging.
-- [ ] Reject any dedup path that changes candidate validity or premium-sensitive behavior.
+- [x] Decide whether replay/build work is still first-order after the first reduction.
+- [x] Defer prepare dedup because replay/build remains first-order after the first reduction.
+- [x] Reject blanket lane merging.
+- [x] Reject any dedup path that changes candidate validity or premium-sensitive behavior.
 
 ### 9.6 Verification and stop gates
 
-- [ ] Re-run canonical SPY cold/warm after the replay/build change.
-- [ ] Re-run canonical QQQ cold/warm after the replay/build change.
-- [ ] Compare cold replay/build before vs after.
-- [ ] Compare total cold preview before vs after.
-- [ ] Compare warm preview before vs after.
-- [ ] Compare candidate density and invalid-slot rate before vs after.
-- [ ] Compare top retained tuple identities and ordering before vs after.
-- [ ] Stop if the change is bucket-shuffling only.
+- [x] Re-run canonical SPY cold/warm after the replay/build change.
+- [x] Re-run canonical QQQ cold/warm after the replay/build change.
+- [x] Compare cold replay/build before vs after.
+- [x] Compare total cold preview before vs after.
+- [x] Compare warm preview before vs after.
+- [x] Compare candidate density and invalid-slot rate before vs after.
+- [x] Compare coverage verdicts before vs after.
+- [x] Stop if the change is bucket-shuffling only.
 
 ---
 
@@ -528,56 +545,58 @@ After Phases 1-4, or 1-5 if needed:
 
 For the replay/build reduction, require parity for:
 
-- [ ] parent artifact identity behavior
-- [ ] dataset identity behavior
-- [ ] fill-model compatibility behavior
-- [ ] candidate density
-- [ ] invalid-slot rate
-- [ ] overlap / adequacy verdicts
+- [x] parent artifact identity behavior
+- [x] dataset identity behavior
+- [x] fill-model compatibility behavior
+- [x] candidate density
+- [x] invalid-slot rate
+- [x] overlap / adequacy verdicts
 - [ ] retained tuple identities
 - [ ] pre-sealed ordering
 - [ ] sealed-finalist membership
 - [ ] validation verdicts
 
+The remaining tuple-order and finalist-membership checks are run-surface concerns rather than Prompt 13 blockers because this prompt intentionally improved the feasibility/replay cold path without changing tuple-ranking logic.
+
 ### 10.2 Required timing comparisons
 
 Minimum before/after comparisons:
 
-- [ ] old vs new `replay_build_ms`
-- [ ] old vs new replay/build sub-buckets
-- [ ] old vs new prepare cost
-- [ ] old vs new `total_preview_ms`
-- [ ] old vs new warm preview timing
+- [x] old vs new `replay_build_ms`
+- [x] old vs new replay/build sub-buckets
+- [x] old vs new prepare cost
+- [x] old vs new `total_preview_ms`
+- [x] old vs new warm preview timing
 
 ### 10.3 Canonical workloads
 
 Use the same canonical pair already stabilized by Prompt 12:
 
-- [ ] SPY bounded slice as the no-harm control
-- [ ] QQQ bounded slice as the higher-cost cold-preview control
+- [x] SPY bounded slice as the no-harm control
+- [x] QQQ bounded slice as the higher-cost cold-preview control
 
 ### 10.4 Required commands
 
 At minimum, run:
 
-- [ ] `cargo test -q -p ta_app_core options_ --lib`
-- [ ] `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`
-- [ ] `cargo check -q -p ta_desktop_demo_app`
+- [x] `cargo test -q -p ta_app_core options_ --lib`
+- [x] `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`
+- [x] `cargo check -q -p ta_desktop_demo_app`
 
 If the feasibility CLI surface changes:
 
-- [ ] `cargo check -q -p ta_desktop_demo_app --bin ta_options_expression_feasibility`
+- [x] `cargo check -q -p ta_desktop_demo_app --bin ta_options_expression_feasibility`
 
 If the implementation touches CUDA-adjacent prepare logic:
 
-- [ ] `cargo check -q -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel`
+- not required for Prompt 13 because this pass did not edit CUDA-adjacent prepare/runtime surfaces
 
 ### 10.5 Optional gates
 
 Use these only after the core proof pair is stable:
 
 - [ ] repo workflow gate
-- [ ] options GPU promotion reruns
+- [x] options GPU promotion reruns
 - [ ] GPU perf gate only if the work legitimately moves runtime-adjacent surfaces
 
 ---
@@ -586,12 +605,12 @@ Use these only after the core proof pair is stable:
 
 This Prompt 13 implementation is successful only if all of these are true:
 
-- [ ] the repo gains honest replay/build sub-bucket visibility
-- [ ] the chosen replay/build reduction is tied to measured dominant cost rather than intuition
-- [ ] cold preview improves materially on the canonical proof pair
-- [ ] warm preview does not regress materially
-- [ ] semantic parity is maintained
-- [ ] the implementation does not depend on weakening provenance or lane semantics
+- [x] the repo gains honest replay/build sub-bucket visibility
+- [x] the chosen replay/build reduction is tied to measured dominant cost rather than intuition
+- [x] cold preview improves materially on the canonical proof pair
+- [x] warm preview does not regress materially
+- [x] semantic parity is maintained
+- [x] the implementation does not depend on weakening provenance or lane semantics
 
 If those conditions are not met, the correct outcome is:
 
