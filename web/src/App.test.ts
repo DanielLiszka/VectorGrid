@@ -11,7 +11,6 @@ const APP_STUBS = {
   DesktopTitlebar: { template: '<div data-stub="DesktopTitlebar" />' },
   GlobalShortcutBridge: { template: '<div data-stub="GlobalShortcutBridge" />' },
   RunFooterPanel: { template: '<div data-stub="RunFooterPanel" />' },
-  StartupAnimationOverlay: { template: '<div data-stub="StartupAnimationOverlay" />' },
   VueWorkspaceShell: { template: '<div data-stub="VueWorkspaceShell" />' },
   AdvancedWorkspacePanel: { template: '<div data-stub="AdvancedWorkspacePanel" />' },
   AnalysisContextDock: { template: '<div data-stub="AnalysisContextDock" />' },
@@ -49,7 +48,7 @@ describe('App root shell', () => {
     document.body.innerHTML = ''
   })
 
-  it('mounts the root shell surfaces with startup overlay wiring in place', async () => {
+  it('mounts the root shell surfaces without the startup overlay', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
 
@@ -62,7 +61,6 @@ describe('App root shell', () => {
     })
     await flushApp()
 
-    expect(document.querySelector('[data-stub="StartupAnimationOverlay"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="DesktopTitlebar"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="VueWorkspaceShell"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="CommandPaletteOverlay"]')).not.toBeNull()

@@ -7,6 +7,7 @@ import { computeConfigFingerprint } from '../utils/core/artifactIdentity'
 import { buildDatasetMetaForArtifact } from '../utils/core/datasetMeta'
 import { openPathWithRevealFallback } from '../utils/openPath'
 import { formatUiCount, formatUtcDateFromUnixMs } from '../utils/uiFormat'
+import { measureValidationReportPerf, recordValidationReportPerf } from './validationReportPerf'
 
 interface PolygonCrossDatasetResponse {
   csv_path?: unknown
@@ -176,6 +177,8 @@ interface SaveRunArtifactResponse {
 
 interface SaveReportXlsxResponse {
   path?: unknown
+  artifact_updated?: unknown
+  artifact_update_warning?: unknown
 }
 
 interface ReportPayload {
@@ -240,6 +243,14 @@ interface PersistValidationArtifactResult {
 interface ReportXlsxExportResult {
   statusLine: string
   reportXlsxPath: string
+  artifactUpdated: boolean
+  artifactUpdateWarning: string
+}
+
+interface ReportXlsxExportPrefs {
+  autoReveal: boolean
+  maxRows: number | null
+  trigger: 'auto' | 'manual'
 }
 
 interface VueStoreFieldBinding {
@@ -1901,46 +1912,64 @@ async function persistValidationArtifact(
   const mlSignal = currentRun?.mlSignal ?? null
   const optimizationMetricSurface = currentRun?.optimizationMetricSurface ?? null
   const configFingerprint = computeConfigFingerprint(runReq, validationReq)
-  const artifact: Record<string, unknown> = {
-    version: 1,
-    kind: 'vectorgrid_run_artifact',
-    ts,
-    config_fingerprint: configFingerprint,
-    run: { req: runReq, res: runRes },
-    validation: { req: validationReq, res: validationRes },
-    report_xlsx_path: reportXlsxPath,
-    data: { csv_path: csvPath },
-    dataset_meta: datasetMeta,
-    ml_signal: mlSignal,
-    optimization_metric_surface: optimizationMetricSurface,
-    tags
-  }
-  let path = normalizeText(currentRun?.artifactPath)
-  let persistenceWarning = ''
-  try {
-    const saved = (await invokeCommand('save_run_artifact', {
-      artifact
-    })) as SaveRunArtifactResponse
-    const next = normalizeText(saved?.path)
-    if (next) path = next
-  } catch (error) {
-    const detail = normalizeText(error)
-    persistenceWarning = detail
-      ? `Validation artifact persistence failed: ${detail}`
-      : 'Validation artifact persistence failed.'
-  }
 
-  return {
-    path,
-    ts,
-    csvPath,
-    reportXlsxPath,
-    datasetMeta,
-    mlSignal,
-    optimizationMetricSurface,
-    tags,
-    persistenceWarning,
-  }
+  return measureValidationReportPerf(
+    'validationService.persistValidationArtifactMs',
+    async () => {
+      const artifact: Record<string, unknown> = {
+        version: 1,
+        kind: 'vectorgrid_run_artifact',
+        ts,
+        config_fingerprint: configFingerprint,
+        run: { req: runReq, res: runRes },
+        validation: { req: validationReq, res: validationRes },
+        report_xlsx_path: reportXlsxPath,
+        data: { csv_path: csvPath },
+        dataset_meta: datasetMeta,
+        ml_signal: mlSignal,
+        optimization_metric_surface: optimizationMetricSurface,
+        tags
+      }
+      let path = normalizeText(currentRun?.artifactPath)
+      let persistenceWarning = ''
+      try {
+        const saveArgs: Record<string, unknown> = { artifact }
+        if (normalizeText(currentRun?.artifactPath)) {
+          saveArgs.existing_path = normalizeText(currentRun?.artifactPath)
+        }
+        const saved = (await invokeCommand('save_run_artifact', saveArgs)) as SaveRunArtifactResponse
+        const next = normalizeText(saved?.path)
+        if (next) path = next
+      } catch (error) {
+        const detail = normalizeText(error)
+        persistenceWarning = detail
+          ? `Validation artifact persistence failed: ${detail}`
+          : 'Validation artifact persistence failed.'
+      }
+
+      return {
+        path,
+        ts,
+        csvPath,
+        reportXlsxPath,
+        datasetMeta,
+        mlSignal,
+        optimizationMetricSurface,
+        tags,
+        persistenceWarning,
+      }
+    },
+    {
+      meta: {
+        hasExistingArtifactPath: !!normalizeText(currentRun?.artifactPath),
+        hasReportXlsxPath: !!reportXlsxPath,
+      },
+      onSuccessMeta: (result) => ({
+        persistedPathReturned: !!normalizeText(result.path),
+        persistenceWarning: !!normalizeText(result.persistenceWarning),
+      }),
+    },
+  )
 }
 
 function applyVueValidationArtifacts(
@@ -2113,8 +2142,26 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
 
   try {
     const commandStartedAt = nowMs()
-    const validationRes = await invokeCommand(command, { req: validationReq })
+    const validationRes = await measureValidationReportPerf(
+      'validationService.validationCommandMs',
+      async () => invokeCommand(command, { req: validationReq }),
+      {
+        meta: {
+          command,
+          autoExport: readValidationExportPrefs().autoExport,
+        },
+        onSuccessMeta: (result) => {
+          const row = asRecord(result)
+          const candidates = Array.isArray(row?.candidates) ? row.candidates.length : 0
+          return {
+            reportedRuntimeMs: Number(row?.runtime_ms ?? 0),
+            candidateCount: candidates,
+          }
+        },
+      },
+    )
     const commandMs = Math.max(0, nowMs() - commandStartedAt)
+    const reportedRuntimeMs = Number(asRecord(validationRes)?.runtime_ms ?? 0)
     const validationMeta = buildValidationMetaText(validationRes, validationReq)
     const validationReoptMeta = buildValidationReoptMetaText(validationRes)
     const executionSummary = buildValidationExecutionSummary(validationRes, validationReq)
@@ -2141,7 +2188,24 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
         validationRes
       })
       try {
-        const exportResult = await exportReportXlsxInternal(report, readValidationExportPrefs())
+        const exportPrefs = readValidationExportPrefs()
+        const exportResult = await measureValidationReportPerf(
+          'validationService.autoExportReportXlsxMs',
+          async () => exportReportXlsxInternal(report, {
+            autoReveal: exportPrefs.autoReveal,
+            maxRows: exportPrefs.maxRows,
+            trigger: 'auto',
+          }),
+          {
+            meta: {
+              autoReveal: exportPrefs.autoReveal,
+              maxRows: exportPrefs.maxRows,
+            },
+            onSuccessMeta: (result) => ({
+              returnedPath: !!normalizeText(result.reportXlsxPath),
+            }),
+          },
+        )
         autoExportStatus = exportResult.statusLine
         reportXlsxPath = exportResult.reportXlsxPath
       } catch (error) {
@@ -2156,6 +2220,14 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
 
     applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
     const endToEndMs = Math.max(0, nowMs() - validationStartedAt)
+    recordValidationReportPerf('validationService.runValidationEndToEndMs', endToEndMs, {
+      command,
+      autoExport,
+      commandMs,
+      reportedRuntimeMs: Number.isFinite(reportedRuntimeMs) ? reportedRuntimeMs : null,
+      returnedReportXlsxPath: !!reportXlsxPath,
+      persistenceWarning: !!normalizeText(persisted.persistenceWarning),
+    })
     const statusLine = formatValidationStatus(
       commandMs,
       endToEndMs,
@@ -2496,82 +2568,208 @@ export async function exportReportJson(): Promise<void> {
 
 async function exportReportXlsxInternal(
   report: ReportPayload,
-  prefs: { autoReveal: boolean; maxRows: number | null },
+  prefs: ReportXlsxExportPrefs,
 ): Promise<ReportXlsxExportResult> {
   const ts = normalizeText(report.ts) || new Date().toISOString()
   const validationReq = asRecord(report.validation?.req ?? null)
   const validationRes = report.validation?.res ?? null
   const currentRun = readWorkflowRunArtifactFromStore()
   const currentValidation = readWorkflowValidationArtifactFromStore()
+  let exportBranch = 'direct'
+  let usedFallbackBuild = false
 
-  if (!validationReq || validationRes == null) {
-    const stage3Path = readLatestMetaReportPath()
-    if (!stage3Path) {
-      return {
-        statusLine: 'Run validation first to export report XLSX (or run Meta Analysis to open Stage 3 XLSX).',
-        reportXlsxPath: ''
-      }
-    }
-    const opened = await openPathWithRevealFallback(stage3Path)
-    if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
-      await invokeCommand('reveal_path', { path: stage3Path }).catch(() => undefined)
-    }
-    return {
-      statusLine: `Opened Stage 3 XLSX report: ${stage3Path}`,
-      reportXlsxPath: ''
-    }
-  }
-
-  let path = ''
-  try {
-    const artifactPath = normalizePath(currentRun?.artifactPath ?? '')
-    const canUseArtifactExport =
-      !!artifactPath
-      && currentValidation?.req === validationReq
-      && currentValidation?.res === validationRes
-    const saved = (await invokeCommand(
-      canUseArtifactExport ? 'save_report_xlsx_from_artifact' : 'save_report_xlsx',
-      canUseArtifactExport
-        ? {
-            path: artifactPath,
-            max_rows: prefs.maxRows
+  return measureValidationReportPerf(
+    'validationService.exportReportXlsxTotalMs',
+    async () => {
+      if (!validationReq || validationRes == null) {
+        exportBranch = 'stage3_meta'
+        const stage3Path = readLatestMetaReportPath()
+        if (!stage3Path) {
+          return {
+            statusLine: 'Run validation first to export report XLSX (or run Meta Analysis to open Stage 3 XLSX).',
+            reportXlsxPath: '',
+            artifactUpdated: false,
+            artifactUpdateWarning: '',
           }
-        : {
-            report,
-            max_rows: prefs.maxRows
-          }
-    )) as SaveReportXlsxResponse
-    path = normalizeText(saved?.path)
-  } catch (saveError) {
-    try {
-      const base64 = await invokeCommand('build_report_xlsx', {
-        report,
-        max_rows: prefs.maxRows
-      })
-      const downloaded = downloadBase64(`vectorgrid_report_${ts}.xlsx`, String(base64 || ''), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-      return {
-        statusLine: downloaded ? 'Exported XLSX report as a file download.' : 'Built XLSX report (download unavailable in this environment).',
-        reportXlsxPath: ''
+        }
+        const opened = await measureValidationReportPerf(
+          'validationService.exportReportXlsxOpenMs',
+          async () => openPathWithRevealFallback(stage3Path),
+          {
+            meta: {
+              branch: exportBranch,
+              trigger: prefs.trigger,
+            },
+            onSuccessMeta: (result) => ({
+              openedWith: normalizeText(result.openedWith),
+            }),
+          },
+        )
+        if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
+          await measureValidationReportPerf(
+            'validationService.exportReportXlsxRevealMs',
+            async () => invokeCommand('reveal_path', { path: stage3Path }),
+            {
+              meta: {
+                branch: exportBranch,
+                trigger: prefs.trigger,
+              },
+            },
+          ).catch(() => undefined)
+        }
+        return {
+          statusLine: `Opened Stage 3 XLSX report: ${stage3Path}`,
+          reportXlsxPath: '',
+          artifactUpdated: false,
+          artifactUpdateWarning: '',
+        }
       }
-    } catch (fallbackError) {
-      throw new Error(`Failed to export XLSX report: ${String(saveError)} | fallback failed: ${String(fallbackError)}`)
-    }
-  }
 
-  if (!path) {
-    return {
-      statusLine: 'Saved XLSX report, but no path was returned.',
-      reportXlsxPath: ''
-    }
-  }
+      let path = ''
+      let artifactUpdated = false
+      let artifactUpdateWarning = ''
+      try {
+        const artifactPath = normalizePath(currentRun?.artifactPath ?? '')
+        const canUseArtifactExport =
+          !!artifactPath
+          && currentValidation?.req === validationReq
+          && currentValidation?.res === validationRes
+        exportBranch = canUseArtifactExport ? 'artifact' : 'direct'
+        const saved = (await measureValidationReportPerf(
+          'validationService.exportReportXlsxSaveMs',
+          async () => invokeCommand(
+            canUseArtifactExport ? 'save_report_xlsx_from_artifact' : 'save_report_xlsx',
+            canUseArtifactExport
+              ? {
+                  path: artifactPath,
+                  max_rows: prefs.maxRows
+                }
+              : {
+                  report,
+                  max_rows: prefs.maxRows
+                },
+          ) as Promise<SaveReportXlsxResponse>,
+          {
+            meta: {
+              branch: exportBranch,
+              trigger: prefs.trigger,
+              maxRows: prefs.maxRows,
+            },
+            onSuccessMeta: (result) => ({
+              returnedPath: !!normalizeText(result?.path),
+            }),
+          },
+        )) as SaveReportXlsxResponse
+        path = normalizeText(saved?.path)
+        artifactUpdated = normalizeBoolean(saved?.artifact_updated)
+        artifactUpdateWarning = normalizeText(saved?.artifact_update_warning)
+      } catch (saveError) {
+        usedFallbackBuild = true
+        exportBranch = 'fallback_build'
+        try {
+          const base64 = await measureValidationReportPerf(
+            'validationService.exportReportXlsxFallbackBuildMs',
+            async () => invokeCommand('build_report_xlsx', {
+              report,
+              max_rows: prefs.maxRows
+            }),
+            {
+              meta: {
+                branch: exportBranch,
+                trigger: prefs.trigger,
+                maxRows: prefs.maxRows,
+              },
+            },
+          )
+          const downloaded = downloadBase64(`vectorgrid_report_${ts}.xlsx`, String(base64 || ''), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+          return {
+            statusLine: downloaded ? 'Exported XLSX report as a file download.' : 'Built XLSX report (download unavailable in this environment).',
+            reportXlsxPath: '',
+            artifactUpdated: false,
+            artifactUpdateWarning: '',
+          }
+        } catch (fallbackError) {
+          throw new Error(`Failed to export XLSX report: ${String(saveError)} | fallback failed: ${String(fallbackError)}`)
+        }
+      }
 
-  const opened = await openPathWithRevealFallback(path)
-  if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
-    await invokeCommand('reveal_path', { path }).catch(() => undefined)
-  }
+      if (!path) {
+        return {
+          statusLine: 'Saved XLSX report, but no path was returned.',
+          reportXlsxPath: '',
+          artifactUpdated: false,
+          artifactUpdateWarning,
+        }
+      }
+
+      const opened = await measureValidationReportPerf(
+        'validationService.exportReportXlsxOpenMs',
+        async () => openPathWithRevealFallback(path),
+        {
+          meta: {
+            branch: exportBranch,
+            trigger: prefs.trigger,
+          },
+          onSuccessMeta: (result) => ({
+            openedWith: normalizeText(result.openedWith),
+          }),
+        },
+      )
+      if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
+        await measureValidationReportPerf(
+          'validationService.exportReportXlsxRevealMs',
+          async () => invokeCommand('reveal_path', { path }),
+          {
+            meta: {
+              branch: exportBranch,
+              trigger: prefs.trigger,
+            },
+          },
+        ).catch(() => undefined)
+      }
+      return {
+        statusLine: `Saved XLSX report: ${path}`,
+        reportXlsxPath: path,
+        artifactUpdated,
+        artifactUpdateWarning,
+      }
+    },
+    {
+      meta: {
+        trigger: prefs.trigger,
+        autoReveal: prefs.autoReveal,
+        maxRows: prefs.maxRows,
+      },
+      onSuccessMeta: (result) => ({
+        branch: exportBranch,
+        usedFallbackBuild,
+        returnedPath: !!normalizeText(result.reportXlsxPath),
+        artifactUpdated: result.artifactUpdated,
+        artifactUpdateWarning: !!normalizeText(result.artifactUpdateWarning),
+      }),
+      onErrorMeta: () => ({
+        branch: exportBranch,
+        usedFallbackBuild,
+      }),
+    },
+  )
+}
+
+function buildPersistedValidationArtifactFromCurrentRun(
+  reportXlsxPath: string,
+): PersistValidationArtifactResult | null {
+  const currentRun = readWorkflowRunArtifactFromStore()
+  if (!currentRun) return null
   return {
-    statusLine: `Saved XLSX report: ${path}`,
-    reportXlsxPath: path
+    path: currentRun.artifactPath,
+    ts: normalizeText(currentRun.ts) || new Date().toISOString(),
+    csvPath: currentRun.csvPath,
+    reportXlsxPath: normalizeText(reportXlsxPath),
+    datasetMeta: currentRun.datasetMeta,
+    mlSignal: currentRun.mlSignal,
+    optimizationMetricSurface: currentRun.optimizationMetricSurface,
+    tags: currentRun.tags,
+    persistenceWarning: '',
   }
 }
 
@@ -2581,17 +2779,33 @@ export async function exportReportXlsx(): Promise<void> {
   const runRes = report.run?.res ?? null
   const validationReq = asRecord(report.validation?.req ?? null)
   const validationRes = report.validation?.res ?? null
-  const result = await exportReportXlsxInternal(report, readValidationExportPrefs())
+  const exportPrefs = readValidationExportPrefs()
+  const result = await exportReportXlsxInternal(report, {
+    autoReveal: exportPrefs.autoReveal,
+    maxRows: exportPrefs.maxRows,
+    trigger: 'manual',
+  })
   let statusLine = result.statusLine
   if (runReq && runRes != null && validationReq && validationRes != null && result.reportXlsxPath) {
-    const persisted = await persistValidationArtifact(runReq, runRes, validationReq, validationRes, {
-      reportXlsxPath: result.reportXlsxPath,
-    })
-    applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
-    statusLine = [result.statusLine, persisted.persistenceWarning]
-      .map((part) => normalizeText(part))
-      .filter((part) => part.length > 0)
-      .join(' • ')
+    if (result.artifactUpdated) {
+      const persisted = buildPersistedValidationArtifactFromCurrentRun(result.reportXlsxPath)
+      if (persisted) {
+        applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
+      }
+      statusLine = [result.statusLine, result.artifactUpdateWarning]
+        .map((part) => normalizeText(part))
+        .filter((part) => part.length > 0)
+        .join(' • ')
+    } else {
+      const persisted = await persistValidationArtifact(runReq, runRes, validationReq, validationRes, {
+        reportXlsxPath: result.reportXlsxPath,
+      })
+      applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
+      statusLine = [result.statusLine, result.artifactUpdateWarning, persisted.persistenceWarning]
+        .map((part) => normalizeText(part))
+        .filter((part) => part.length > 0)
+        .join(' • ')
+    }
   }
   patchValidationStoreState({ statusLine })
 }

@@ -1,4 +1,5 @@
 const DEFAULT_COMMAND_RESULTS = {
+  load_latest_run_artifact_hydration: null,
   load_latest_run_artifact_summary: null,
 }
 

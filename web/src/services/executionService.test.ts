@@ -10,13 +10,17 @@ import {
 import {
   canonicalSymbol,
   clearKeys,
+  clearStoredExecutionCredentialsSecurely,
+  getStoredExecutionCredentialStatus,
   loadPersistedExecutionKeys,
+  migrateLegacyStoredExecutionKeysToSecureStorage,
   parseRunnerEvent,
   parsePolygonLiveStatusEvent,
   refreshOrders,
   refreshStatuses,
   runOnce,
   startRunner,
+  storeExecutionCredentialsSecurely,
   subscribeExecutionRuntimeEvents,
   testConnection,
 } from './executionService'
@@ -138,6 +142,7 @@ describe('executionService', () => {
     })
 
     const result = await clearKeys()
+    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_clear_api_credentials')
     expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
     expect(result.statusLine).toContain('Cleared execution API keys')
     expect(result.outputPreview).toBe('-')
@@ -145,6 +150,115 @@ describe('executionService', () => {
     expect(result.runnerActive).toBeUndefined()
     expect(result.liveStatusHint).toBeUndefined()
     expect(result.runnerStatusHint).toBeUndefined()
+  })
+
+  it('reads secure credential storage status without secret readback', async () => {
+    invokeCommandMock.mockResolvedValue({
+      remember_available: true,
+      has_api_key: true,
+      has_api_secret: true,
+      has_credentials: true,
+      state: 'stored',
+      storage_backend: 'keyring',
+    })
+
+    const status = await getStoredExecutionCredentialStatus()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_get_credential_status')
+    expect(status).toEqual({
+      rememberAvailable: true,
+      hasApiKey: true,
+      hasApiSecret: true,
+      hasCredentials: true,
+      state: 'stored',
+      storageBackend: 'keyring',
+      message: '',
+    })
+  })
+
+  it('stores execution credentials through the secure backend command path', async () => {
+    invokeCommandMock.mockResolvedValue({
+      remember_available: true,
+      has_api_key: true,
+      has_api_secret: true,
+      has_credentials: true,
+      state: 'stored',
+      storage_backend: 'keyring',
+    })
+
+    const status = await storeExecutionCredentialsSecurely('key_1', 'secret_1')
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_set_api_credentials', {
+      req: { api_key: 'key_1', api_secret: 'secret_1' },
+    })
+    expect(status.state).toBe('stored')
+    expect(status.hasCredentials).toBe(true)
+  })
+
+  it('clears secure execution credentials through the backend command path', async () => {
+    invokeCommandMock.mockResolvedValue({
+      remember_available: true,
+      has_api_key: false,
+      has_api_secret: false,
+      has_credentials: false,
+      state: 'missing',
+      storage_backend: 'keyring',
+    })
+
+    const status = await clearStoredExecutionCredentialsSecurely()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_clear_api_credentials')
+    expect(status).toEqual({
+      rememberAvailable: true,
+      hasApiKey: false,
+      hasApiSecret: false,
+      hasCredentials: false,
+      state: 'missing',
+      storageBackend: 'keyring',
+      message: '',
+    })
+  })
+
+  it('migrates legacy stored execution keys into secure storage and clears the legacy payload after success', async () => {
+    const removeItem = vi.fn()
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' })),
+      setItem: vi.fn(),
+      removeItem,
+    })
+    invokeCommandMock.mockResolvedValue({
+      remember_available: true,
+      has_api_key: true,
+      has_api_secret: true,
+      has_credentials: true,
+      state: 'stored',
+      storage_backend: 'keyring',
+    })
+
+    const status = await migrateLegacyStoredExecutionKeysToSecureStorage()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_set_api_credentials', {
+      req: { api_key: 'legacy_key', api_secret: 'legacy_secret' },
+    })
+    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
+    expect(status.state).toBe('stored')
+    expect(status.hasCredentials).toBe(true)
+  })
+
+  it('keeps the legacy payload when secure migration fails', async () => {
+    const removeItem = vi.fn()
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' })),
+      setItem: vi.fn(),
+      removeItem,
+    })
+    invokeCommandMock.mockRejectedValue(new Error('Secure storage unavailable'))
+
+    await expect(migrateLegacyStoredExecutionKeysToSecureStorage()).rejects.toThrow(
+      'Secure storage unavailable',
+    )
+
+    expect(removeItem).not.toHaveBeenCalled()
   })
 
   it('tests connection through direct tauri command path', async () => {

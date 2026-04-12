@@ -7,6 +7,8 @@ use tauri::Manager;
 pub struct SaveReportXlsxResponse {
     pub path: String,
     pub bytes: usize,
+    pub artifact_updated: bool,
+    pub artifact_update_warning: String,
 }
 
 #[tauri::command]
@@ -248,14 +250,20 @@ mod tests {
         let handle = app.handle().clone();
         let ts = unique_suffix("save_report");
 
-        let SaveReportXlsxResponse { path, bytes } =
-            save_report_xlsx_with_app(minimal_report(&ts), Some(1), handle.clone())
-                .await
-                .expect("async save");
+        let SaveReportXlsxResponse {
+            path,
+            bytes,
+            artifact_updated,
+            artifact_update_warning,
+        } = save_report_xlsx_with_app(minimal_report(&ts), Some(1), handle.clone())
+            .await
+            .expect("async save");
         assert!(Path::new(&path).is_file());
         assert!(path.contains("reports"));
         assert!(path.ends_with(".xlsx"));
         assert!(bytes > 0);
+        assert!(!artifact_updated);
+        assert!(artifact_update_warning.is_empty());
         assert!(path.contains(&ts.replace(':', "-")));
 
         let base = handle
@@ -295,6 +303,18 @@ mod tests {
         assert!(Path::new(&saved.path).is_file());
         assert!(saved.path.contains("reports"));
         assert!(saved.bytes > 0);
+        assert!(saved.artifact_updated);
+        assert!(saved.artifact_update_warning.is_empty());
+
+        let updated_artifact = std::fs::read_to_string(&artifact_path).expect("read artifact");
+        let updated_artifact: Value =
+            serde_json::from_str(&updated_artifact).expect("parse artifact");
+        assert_eq!(
+            updated_artifact
+                .get("report_xlsx_path")
+                .and_then(Value::as_str),
+            Some(saved.path.as_str())
+        );
     }
 
     #[test]

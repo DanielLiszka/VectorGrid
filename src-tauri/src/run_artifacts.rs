@@ -261,6 +261,13 @@ pub struct WorkflowArtifactsHydrationPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LatestRunArtifactHydrationResponse {
+    pub summary: RunArtifactSummary,
+    pub hydration: WorkflowArtifactsHydrationPayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunArtifactDetailResponse {
     pub ts: String,
     pub artifact_path: String,
@@ -420,6 +427,28 @@ fn run_artifact_path<R: tauri::Runtime>(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_run", ts, "json")
+}
+
+fn existing_run_artifact_target_path<R: tauri::Runtime>(
+    existing_path: &str,
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
+    let trimmed = existing_path.trim();
+    if trimmed.is_empty() {
+        return Err("existing artifact path is empty".to_string());
+    }
+
+    let path = PathBuf::from(trimmed);
+    let dir = runs_dir(app)?;
+    let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "artifact path is missing a parent directory".to_string())?;
+    let parent = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
+    if !parent.starts_with(&dir) {
+        return Err("path is outside app runs dir".to_string());
+    }
+    Ok(path)
 }
 
 fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
@@ -728,8 +757,12 @@ fn normalize_dataset_meta(ds: &mut serde_json::Map<String, Value>, csv_path: &st
 pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
     mut artifact: Value,
     app: tauri::AppHandle<R>,
+    existing_path: Option<String>,
 ) -> Result<SaveRunArtifactResponse, String> {
-    let path = run_artifact_path(&artifact, &app)?;
+    let path = existing_path
+        .as_deref()
+        .and_then(|value| existing_run_artifact_target_path(value, &app).ok())
+        .unwrap_or(run_artifact_path(&artifact, &app)?);
 
     // Best-effort enrichment for reproducibility and batch "skip completed" correctness.
     if let Value::Object(root) = &mut artifact {
@@ -2011,6 +2044,24 @@ pub(super) fn load_latest_run_artifact_summary_blocking<R: tauri::Runtime>(
     ))
 }
 
+pub(super) fn load_latest_run_artifact_hydration_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Option<LatestRunArtifactHydrationResponse>, String> {
+    let Some(entry) = load_latest_run_artifact_entry_blocking(&app)? else {
+        return Ok(None);
+    };
+    let summary = build_run_artifact_summary(&entry.path, entry.bytes, &entry.value)
+        .ok_or_else(|| "latest run artifact is not a supported run artifact".to_string())?;
+    let hydration = build_workflow_artifacts_hydration_payload(
+        entry.path.to_string_lossy().as_ref(),
+        &entry.value,
+    )?;
+    Ok(Some(LatestRunArtifactHydrationResponse {
+        summary,
+        hydration,
+    }))
+}
+
 pub(super) fn load_run_artifact_detail_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
@@ -2218,10 +2269,17 @@ pub(super) fn compute_config_fingerprint_from_artifact(artifact: &Value) -> Stri
     format!("cfg1-fnv1a64-{hex}")
 }
 
-pub(super) fn list_run_artifacts_blocking(
-    app: tauri::AppHandle,
+pub(super) fn list_run_artifacts_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<Vec<RunArtifactSummary>, String> {
-    Ok(list_artifact_library_blocking(app)?.runs)
+    let mut runs = Vec::new();
+    for entry in scan_artifact_library(&app)? {
+        if let Some(summary) = build_run_artifact_summary(&entry.path, entry.bytes, &entry.value) {
+            runs.push(summary);
+        }
+    }
+    runs.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    Ok(runs)
 }
 
 pub(super) fn list_meta_artifacts_blocking(
@@ -2321,12 +2379,14 @@ mod tests {
         ensure_path_is_within_dir, extract_artifact_lineage_from_artifact,
         extract_route_provenance_from_artifact, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
-        is_run_artifact_file_name, is_run_artifact_kind, load_latest_run_artifact_summary_blocking,
-        load_run_artifact_detail_blocking, normalize_dataset_meta,
-        open_runs_dir_blocking_with_revealer, prune_old_meta_artifacts_blocking,
-        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
-        resolve_run_artifact_timeframe, runs_dir, save_run_artifact_blocking,
-        suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
+        is_run_artifact_file_name, is_run_artifact_kind, list_run_artifacts_blocking,
+        load_artifact_value_checked_blocking, load_latest_run_artifact_hydration_blocking,
+        load_latest_run_artifact_summary_blocking, load_run_artifact_detail_blocking,
+        normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
+        prune_old_meta_artifacts_blocking, resolve_run_artifact_csv_path,
+        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
+        save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
+        update_artifact_tags_blocking,
     };
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
@@ -3413,9 +3473,9 @@ mod tests {
         let handle = app.handle().clone();
         let ts = unique_token("same_ts_save");
 
-        let first = save_run_artifact_blocking(minimal_run_artifact(&ts), handle.clone())
+        let first = save_run_artifact_blocking(minimal_run_artifact(&ts), handle.clone(), None)
             .expect("first save");
-        let second = save_run_artifact_blocking(minimal_run_artifact(&ts), handle.clone())
+        let second = save_run_artifact_blocking(minimal_run_artifact(&ts), handle.clone(), None)
             .expect("second save");
 
         assert_ne!(first.path, second.path);
@@ -3452,7 +3512,7 @@ mod tests {
             }
         });
 
-        let saved = save_run_artifact_blocking(artifact, handle).expect("save artifact");
+        let saved = save_run_artifact_blocking(artifact, handle, None).expect("save artifact");
         let raw = std::fs::read_to_string(&saved.path).expect("read saved artifact");
         let saved_value: Value = serde_json::from_str(&raw).expect("parse saved artifact");
 
@@ -3483,15 +3543,57 @@ mod tests {
     }
 
     #[test]
+    fn save_run_artifact_blocking_overwrites_existing_path_when_provided() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("overwrite_existing_artifact");
+
+        let saved = save_run_artifact_blocking(minimal_run_artifact(&ts), handle.clone(), None)
+            .expect("initial save");
+
+        let mut updated = minimal_run_artifact(&ts);
+        if let Some(root) = updated.as_object_mut() {
+            root.insert(
+                "report_xlsx_path".to_string(),
+                Value::String("C:/reports/updated.xlsx".to_string()),
+            );
+        }
+
+        let overwritten =
+            save_run_artifact_blocking(updated, handle.clone(), Some(saved.path.clone()))
+                .expect("overwrite existing artifact");
+
+        assert_eq!(overwritten.path, saved.path);
+        let dir = runs_dir(&handle).expect("runs dir");
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .expect("runs dir entries")
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(files.len(), 1);
+
+        let persisted =
+            load_artifact_value_checked_blocking(saved.path.clone(), handle).expect("load saved");
+        assert_eq!(
+            persisted.get("report_xlsx_path").and_then(Value::as_str),
+            Some("C:/reports/updated.xlsx")
+        );
+    }
+
+    #[test]
     fn load_latest_run_artifact_summary_prefers_latest_run_file_without_scanning_meta_history() {
         let app = build_mock_app();
         let handle = app.handle().clone();
 
-        save_run_artifact_blocking(minimal_run_artifact("2026-04-10T10:00:00Z"), handle.clone())
-            .expect("save older run");
+        save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T10:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save older run");
         let latest = save_run_artifact_blocking(
             minimal_run_artifact("2026-04-10T12:00:00Z"),
             handle.clone(),
+            None,
         )
         .expect("save latest run");
         let newer_meta =
@@ -3544,6 +3646,121 @@ mod tests {
         let summary = load_latest_run_artifact_summary_blocking(handle).expect("latest summary");
 
         assert!(summary.is_none());
+    }
+
+    #[test]
+    fn load_latest_run_artifact_hydration_prefers_latest_run_file_without_scanning_meta_history() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T10:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save older run");
+        let latest = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save latest run");
+        let newer_meta =
+            suggest_meta_artifact_path("2026-04-10T13:00:00Z", &handle).expect("meta path");
+        std::fs::write(
+            &newer_meta,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_meta_selection",
+                "ts": "2026-04-10T13:00:00Z",
+            }))
+            .expect("meta json"),
+        )
+        .expect("write newer meta");
+
+        let response = load_latest_run_artifact_hydration_blocking(handle)
+            .expect("latest hydration")
+            .expect("response should exist");
+
+        assert_eq!(response.summary.ts, "2026-04-10T12:00:00Z");
+        assert_eq!(response.summary.path, latest.path);
+        assert_eq!(response.hydration.current_run.artifact_path, latest.path);
+    }
+
+    #[test]
+    fn load_latest_run_artifact_hydration_falls_back_to_full_scan_for_nonstandard_run_filenames() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let legacy_path = runs_dir(&handle)
+            .expect("runs dir")
+            .join("legacy_latest.json");
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec_pretty(&minimal_run_artifact("2026-04-10T14:00:00Z"))
+                .expect("artifact json"),
+        )
+        .expect("write legacy-named run artifact");
+
+        let response = load_latest_run_artifact_hydration_blocking(handle)
+            .expect("latest hydration")
+            .expect("response should exist");
+
+        assert_eq!(response.summary.ts, "2026-04-10T14:00:00Z");
+        assert_eq!(
+            response.summary.path,
+            legacy_path.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            response.hydration.current_run.artifact_path,
+            legacy_path.to_string_lossy().to_string()
+        );
+    }
+
+    #[test]
+    fn load_latest_run_artifact_hydration_returns_none_when_no_run_artifacts_exist() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        let response =
+            load_latest_run_artifact_hydration_blocking(handle).expect("latest hydration");
+
+        assert!(response.is_none());
+    }
+
+    #[test]
+    fn list_run_artifacts_blocking_returns_only_run_summaries_from_mixed_library() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        let older = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T10:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save older run");
+        let newer = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save newer run");
+        let meta_path =
+            suggest_meta_artifact_path("2026-04-10T13:00:00Z", &handle).expect("meta path");
+        std::fs::write(
+            &meta_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_meta_selection",
+                "ts": "2026-04-10T13:00:00Z",
+            }))
+            .expect("meta json"),
+        )
+        .expect("write meta artifact");
+
+        let runs = list_run_artifacts_blocking(handle).expect("run summaries");
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].path, newer.path);
+        assert_eq!(runs[1].path, older.path);
+        assert!(runs.iter().all(|entry| entry.kind.contains("run_artifact")));
     }
 
     #[test]

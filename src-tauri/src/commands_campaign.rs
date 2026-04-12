@@ -3062,7 +3062,7 @@ fn run_research_campaign_blocking_with_mode(
                 None,
             );
             let save_started = std::time::Instant::now();
-            match run_artifacts::save_run_artifact_blocking(optimize_artifact, app.clone()) {
+            match run_artifacts::save_run_artifact_blocking(optimize_artifact, app.clone(), None) {
                 Ok(saved) => {
                     optimize_artifact_save_ms = Some(save_started.elapsed().as_secs_f64() * 1000.0);
                     saved.path
@@ -3501,7 +3501,8 @@ fn run_research_campaign_blocking_with_mode(
             Some(&validation_res_value),
         );
         artifact_path =
-            match run_artifacts::save_run_artifact_blocking(validation_artifact, app.clone()) {
+            match run_artifacts::save_run_artifact_blocking(validation_artifact, app.clone(), None)
+            {
                 Ok(saved) => saved.path,
                 Err(error) => {
                     counts.failed = counts.failed.saturating_add(1);

@@ -13,6 +13,11 @@ import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { useDataStore } from '../stores/dataStore'
 import { readStorageString } from '../utils/storage'
 import { useWorkflowStore } from '../stores/workflowStore'
+import {
+  artifactHistoryPerfNow,
+  measureArtifactHistoryPerf,
+  recordArtifactHistoryPerf,
+} from './artifactHistoryPerf'
 import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
 
 const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])
@@ -69,13 +74,47 @@ export function applyWorkflowBootstrapFromStorage(options: WorkflowBootstrapOpti
 
   const pinia = resolveRuntimePinia()
   if (!pinia) return Promise.resolve()
+  const restoreShellStateStartedAt = artifactHistoryPerfNow()
   const includeDeferredData = options.includeDeferredData !== false
-  const startupDataPromise = useDataStore(pinia).hydrateStartupState({ includeDeferred: includeDeferredData })
+  const startupDataPromise = measureArtifactHistoryPerf(
+    'workflowBootstrap.startupDataHydrationMs',
+    () => useDataStore(pinia).hydrateStartupState({ includeDeferred: includeDeferredData }),
+    {
+      meta: { includeDeferredData },
+    },
+  )
   void startupDataPromise
-    .then(() => syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime'))
+    .then(() =>
+      measureArtifactHistoryPerf(
+        'workflowBootstrap.latestRunSyncMs',
+        () => syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime'),
+        {
+          meta: { source: 'legacy-runtime' },
+          onSuccessMeta: (synced) => ({ synced }),
+        },
+      ),
+    )
     .catch(() => undefined)
 
-  if (!state.mode && !state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab && !state.splitFraction) {
+  const restoredState = !!(
+    state.mode ||
+    state.workspace ||
+    state.workflow ||
+    state.workflowStep ||
+    state.controlsTab ||
+    state.resultsTab ||
+    state.aggregateTab ||
+    state.splitFraction
+  )
+
+  if (!restoredState) {
+    recordArtifactHistoryPerf(
+      'workflowBootstrap.restoreShellStateMs',
+      artifactHistoryPerfNow() - restoreShellStateStartedAt,
+      {
+        restoredState: false,
+      },
+    )
     return startupDataPromise
   }
   const store = useWorkflowStore(pinia)
@@ -121,5 +160,20 @@ export function applyWorkflowBootstrapFromStorage(options: WorkflowBootstrapOpti
     store.setSplitFraction(Number(state.splitFraction), { persist: false })
   }
 
+  recordArtifactHistoryPerf(
+    'workflowBootstrap.restoreShellStateMs',
+    artifactHistoryPerfNow() - restoreShellStateStartedAt,
+    {
+      restoredState: true,
+      mode: state.mode || null,
+      workspace: state.workspace || null,
+      workflow: state.workflow || null,
+      workflowStep: state.workflowStep || null,
+      controlsTab: state.controlsTab || null,
+      resultsTab: state.resultsTab || null,
+      aggregateTab: state.aggregateTab || null,
+      splitFraction: state.splitFraction || null,
+    },
+  )
   return startupDataPromise
 }

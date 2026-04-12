@@ -40,6 +40,10 @@ import {
   runMlSignalPolicySweep,
   runMlSignalValidation,
 } from "./mlSignalService";
+import {
+  clearArtifactHistoryPerfEntries,
+  readArtifactHistoryPerfEntries,
+} from "./artifactHistoryPerf";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => undefined),
@@ -143,6 +147,7 @@ describe("historyService", () => {
     setActivePinia(pinia);
     bindRuntimePinia(pinia);
     vi.clearAllMocks();
+    clearArtifactHistoryPerfEntries();
     installStorageHarness();
     loadDataCsvMock.mockResolvedValue({
       path: "C:/data/aapl.csv",
@@ -395,6 +400,19 @@ describe("historyService", () => {
     expect(artifacts.currentRun?.tags).toEqual(["holdout", "1m"]);
     expect(artifacts.currentValidation?.ts).toBe("2026-02-25T00:00:00Z");
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalled();
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "historyService.loadSavedRunHydrationMs",
+          meta: expect.objectContaining({
+            path: "C:/runs/run1.json",
+            hasRun: true,
+            hasValidation: true,
+            outcome: "ok",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("loads MlSignal saved run artifact without routing into optimizer analysis refresh", async () => {
@@ -791,20 +809,29 @@ describe("historyService", () => {
     const summary = await refreshSavedRuns();
 
     expect(invokeCommandMock).toHaveBeenCalledWith("list_run_artifacts");
-    expect(summary).toEqual({
-      runs: [
-        {
-          ts: "2026-02-25T00:00:00Z",
-          path: "C:/runs/run1.json",
-          bytes: 2048,
-          strategyKind: "DoubleMA",
-          hasValidation: true,
-          reportXlsxPath: "C:/runs/run1.xlsx",
-          csvPath: "C:/data/aapl.csv",
-          tags: ["aapl", "1m"],
-        },
-      ],
+    expect(summary.runs).toHaveLength(1);
+    expect(summary.runs[0]).toMatchObject({
+      ts: "2026-02-25T00:00:00Z",
+      path: "C:/runs/run1.json",
+      bytes: 2048,
+      strategyKind: "DoubleMA",
+      hasValidation: true,
+      reportXlsxPath: "C:/runs/run1.xlsx",
+      csvPath: "C:/data/aapl.csv",
+      tags: ["aapl", "1m"],
     });
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "historyService.refreshSavedRunsMs",
+          meta: expect.objectContaining({
+            runCount: 1,
+            validationCount: 1,
+            outcome: "ok",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("saves saved-run tags via direct command", async () => {
@@ -866,7 +893,7 @@ describe("historyService", () => {
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
-    expect(detail).toEqual({
+    expect(detail).toMatchObject({
       strategyKind: "CompositeMo",
       timeframe: "5m",
       csvPath: "C:/data/msft.csv",
@@ -899,6 +926,19 @@ describe("historyService", () => {
         "starting equity: 10000",
       ].join("\n"),
     });
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "historyService.loadSavedRunDetailMs",
+          meta: expect.objectContaining({
+            path: "C:/runs/run1.json",
+            hasValidation: true,
+            strategyKind: "CompositeMo",
+            outcome: "ok",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("loads MlSignal saved-run detail with policy summary", async () => {
@@ -933,7 +973,7 @@ describe("historyService", () => {
 
     const detail = await loadSavedRunDetail(" C:/runs/ml_signal.json ");
 
-    expect(detail).toEqual({
+    expect(detail).toMatchObject({
       strategyKind: "MlSignal",
       timeframe: "1d",
       csvPath: "C:/data/spy.csv",

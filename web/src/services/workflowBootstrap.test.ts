@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { applyWorkflowBootstrapFromStorage, readWorkflowBootstrapState } from './workflowBootstrap'
+import { clearArtifactHistoryPerfEntries, readArtifactHistoryPerfEntries } from './artifactHistoryPerf'
 import { useDataStore } from '../stores/dataStore'
 import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useWorkflowStore } from '../stores/workflowStore'
@@ -45,6 +46,7 @@ describe('workflow bootstrap service', () => {
     bindRuntimePinia(pinia)
     installStorage({})
     vi.clearAllMocks()
+    clearArtifactHistoryPerfEntries()
     hydrateStartupStateSpy = vi
       .spyOn(useDataStore(pinia), 'hydrateStartupState')
       .mockResolvedValue(undefined)
@@ -133,6 +135,12 @@ describe('workflow bootstrap service', () => {
     expect(store.controlsTab).toBe('data')
     expect(store.resultsTab).toBe('history')
     expect(store.aggregateTab).toBe('batch')
+    expect(readArtifactHistoryPerfEntries().map((entry) => entry.name)).toEqual(
+      expect.arrayContaining([
+        'workflowBootstrap.restoreShellStateMs',
+        'workflowBootstrap.startupDataHydrationMs',
+      ]),
+    )
   })
 
   it('applies workspace bootstrap when workflow value is absent', async () => {
@@ -288,6 +296,17 @@ describe('workflow bootstrap service', () => {
     deferred.resolve()
     await bootstrapPromise
     expect(settled).toBe(true)
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'workflowBootstrap.startupDataHydrationMs',
+          meta: expect.objectContaining({
+            includeDeferredData: false,
+            outcome: 'ok',
+          }),
+        }),
+      ]),
+    )
   })
 
   it('schedules latest-run artifact sync after startup hydration without blocking bootstrap readiness', async () => {
@@ -308,11 +327,22 @@ describe('workflow bootstrap service', () => {
     deferred.resolve()
     await bootstrapPromise
     await Promise.resolve()
-
     expect(settled).toBe(true)
     expect(syncWorkflowArtifactsFromLegacyRuntimeMock).toHaveBeenCalledWith('legacy-runtime')
-
     artifactSyncDeferred.resolve(false)
+    await Promise.resolve()
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'workflowBootstrap.latestRunSyncMs',
+          meta: expect.objectContaining({
+            source: 'legacy-runtime',
+            synced: false,
+            outcome: 'ok',
+          }),
+        }),
+      ]),
+    )
   })
 
   it('propagates startup hydration failures so boot can surface them', async () => {

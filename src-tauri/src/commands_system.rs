@@ -42,6 +42,12 @@ pub fn get_gpu_status() -> Result<GpuStatus, String> {
 }
 
 #[tauri::command]
+pub fn exit_application(app: tauri::AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn set_window_effect(
     effect: Option<String>,
     dark: Option<bool>,

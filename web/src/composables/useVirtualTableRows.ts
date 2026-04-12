@@ -7,14 +7,15 @@ export interface VirtualTableRow<T> {
   row: T
 }
 
-interface UseVirtualTableRowsOptions {
+interface UseVirtualTableRowsOptions<T> {
   rowHeightPx?: number
   overscan?: number
+  getItemKey?: (index: number, row: T) => string | number
 }
 
 export function useVirtualTableRows<T>(
-  rows: Ref<T[]>,
-  options: UseVirtualTableRowsOptions = {},
+  rows: Ref<readonly T[]>,
+  options: UseVirtualTableRowsOptions<T> = {},
 ): {
   scrollElementRef: Ref<HTMLElement | null>
   virtualRows: Ref<VirtualTableRow<T>[]>
@@ -22,7 +23,7 @@ export function useVirtualTableRows<T>(
   bottomSpacerPx: Ref<number>
   scrollToTop: () => void
 } {
-  const { rowHeightPx = 28, overscan = 12 } = options
+  const { rowHeightPx = 28, overscan = 12, getItemKey } = options
   const scrollElementRef = ref<HTMLElement | null>(null)
 
   const virtualizer = useVirtualizer<HTMLElement, HTMLTableRowElement>(
@@ -31,7 +32,10 @@ export function useVirtualTableRows<T>(
       getScrollElement: () => scrollElementRef.value,
       estimateSize: () => rowHeightPx,
       overscan,
-      getItemKey: (index: number) => index,
+      getItemKey: (index: number) => {
+        const row = rows.value[index]
+        return row !== undefined && typeof getItemKey === 'function' ? getItemKey(index, row) : index
+      },
     })),
   )
 

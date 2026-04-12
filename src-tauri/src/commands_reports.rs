@@ -92,6 +92,8 @@ pub(crate) fn save_report_xlsx_for_base(
     Ok(SaveReportXlsxResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
+        artifact_updated: false,
+        artifact_update_warning: String::new(),
     })
 }
 
@@ -219,9 +221,32 @@ pub(crate) fn save_report_xlsx_from_artifact_blocking(
     max_rows: Option<u32>,
     app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<SaveReportXlsxResponse, String> {
-    let artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
+    let artifact_path = path.clone();
+    let mut artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
     let report = build_validation_report_from_artifact(&artifact)?;
-    save_report_xlsx_blocking(report, max_rows, app)
+    let mut saved = save_report_xlsx_blocking(report, max_rows, app.clone())?;
+
+    if let Some(root) = artifact.as_object_mut() {
+        root.insert(
+            "report_xlsx_path".to_string(),
+            Value::String(saved.path.clone()),
+        );
+        match run_artifacts::save_run_artifact_blocking(artifact, app, Some(artifact_path)) {
+            Ok(_) => {
+                saved.artifact_updated = true;
+            }
+            Err(error) => {
+                saved.artifact_update_warning =
+                    format!("artifact report path persistence failed: {error}");
+            }
+        }
+    } else {
+        saved.artifact_update_warning =
+            "artifact report path persistence failed: artifact payload is not an object"
+                .to_string();
+    }
+
+    Ok(saved)
 }
 
 // Legacy/reference builder kept only for workbook-history comparison and staged

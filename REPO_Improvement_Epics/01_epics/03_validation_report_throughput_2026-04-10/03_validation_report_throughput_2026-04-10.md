@@ -1,6 +1,6 @@
 # Validation And Report Throughput Plan
 
-Last updated: 2026-04-10
+Last updated: 2026-04-11
 
 ## Purpose
 
@@ -132,16 +132,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the representative validation scenarios and report/export variants to measure, including route family, cross mode, finalist-cap behavior, omitted-module behavior, and auto-export posture.
-- [ ] Record pre-change timings for command runtime, command-side cross/aux compute, report build/export branch, open/reveal, and save/persist phases separately.
-- [ ] Identify the dominant throughput bottleneck on the selected scenarios before changing implementation.
-- [ ] Keep GPU fallback reasons and backend-used reporting explicit if validation route behavior changes.
-- [ ] Preserve workbook sheet, chart, route/fallback summary, and compatibility behavior unless a narrower follow-up doc widens scope.
-- [ ] Preserve artifact/report truth for validation req/res, `report_xlsx_path`, dataset metadata, route provenance, lineage, `config_fingerprint`, and optimization metric surface.
-- [ ] Add or strengthen tests around the chosen throughput bottleneck area.
-- [ ] Reuse the existing parity, workbook builder, and route/fallback checks as non-negotiable regression gates.
-- [ ] Define rollback conditions if a throughput optimization materially harms clarity, maintainability, or parity evidence.
-- [ ] Record any required cross-doc sync in first-tier validation/report/perf docs if timing boundaries or operator expectations change.
+- [x] Define the representative validation scenarios and report/export variants to measure, including route family, cross mode, finalist-cap behavior, omitted-module behavior, and auto-export posture.
+- [x] Record pre-change timings for command runtime, command-side cross/aux compute, report build/export branch, open/reveal, and save/persist phases separately.
+- [x] Identify the dominant throughput bottleneck on the selected scenarios before changing implementation.
+- [x] Keep GPU fallback reasons and backend-used reporting explicit if validation route behavior changes.
+- [x] Preserve workbook sheet, chart, route/fallback summary, and compatibility behavior unless a narrower follow-up doc widens scope.
+- [x] Preserve artifact/report truth for validation req/res, `report_xlsx_path`, dataset metadata, route provenance, lineage, `config_fingerprint`, and optimization metric surface.
+- [x] Add or strengthen tests around the chosen throughput bottleneck area.
+- [x] Reuse the existing parity, workbook builder, and route/fallback checks as non-negotiable regression gates.
+- [x] Define rollback conditions if a throughput optimization materially harms clarity, maintainability, or parity evidence.
+- [x] Record any required cross-doc sync in first-tier validation/report/perf docs if timing boundaries or operator expectations change.
 
 ## Verification Plan
 
@@ -162,6 +162,58 @@ Public-repo quality focus:
 - keep compute-only evidence and user-visible end-to-end evidence separate in the closure record
 - prefer route-specific validation improvements over broad CUDA reopenings when only a subset of supported scenarios benefits
 - do not widen this epic into artifact-library scale or general startup work except where report persistence directly dominates the measured path
+
+## Execution Notes
+
+- Closed as a bounded validation/report throughput epic rather than a backend-validation rewrite:
+  - phase timing boundaries are now explicit in the frontend validation/export owner instead of being buried inside one coarse status number
+  - artifact persistence no longer creates timestamp-suffixed duplicate run artifacts when the current validation run already has an artifact path
+  - manual artifact-backed report export no longer pays a second frontend-driven artifact rewrite when the backend successfully persists the updated `report_xlsx_path`
+- Representative scenario contract used for this epic:
+  - direct validation command timing
+  - auto-export branch timing
+  - manual artifact-backed XLSX export timing
+  - fallback workbook-build timing when direct save fails
+  - artifact persistence timing for validation runs that mutate `report_xlsx_path`
+  - existing parity-pack and workflow-gate scenarios retained as regression evidence for workbook and end-to-end behavior
+- Timing ownership landed in `validationService.ts` through the new `validationReportPerf` helper:
+  - `validationService.validationCommandMs`
+  - `validationService.autoExportReportXlsxMs`
+  - `validationService.persistValidationArtifactMs`
+  - `validationService.runValidationEndToEndMs`
+  - `validationService.exportReportXlsxTotalMs`
+  - `validationService.exportReportXlsxSaveMs`
+  - `validationService.exportReportXlsxFallbackBuildMs`
+  - `validationService.exportReportXlsxOpenMs`
+  - `validationService.exportReportXlsxRevealMs`
+  - the timing helper now also installs a browser debug bridge at `window.__VTA_VALIDATION_REPORT_PERF__` through `main.ts`
+- Dominant bottlenecks and safe fixes chosen for this epic:
+  - phase visibility was too coarse, so the first slice added explicit timing separation without changing workbook semantics
+  - validation artifact persistence was doing unnecessary path churn, so `save_run_artifact` now supports overwrite-at-existing-path for the active run artifact
+  - manual artifact-backed XLSX export was doing redundant artifact persistence after the backend already had the artifact in hand, so `save_report_xlsx_from_artifact` now updates `report_xlsx_path` directly and the frontend skips the second artifact save only when that backend update succeeds
+- Artifact/report truth remained compatibility-frozen:
+  - workbook sheet and chart behavior were left unchanged
+  - `report_xlsx_path`, dataset metadata, route provenance, lineage, `config_fingerprint`, and optimization metric surface continue to persist on the run artifact
+  - if backend-side artifact-path persistence during manual export ever fails, the frontend still falls back to the existing artifact-save path rather than silently weakening truth
+- Measured closure evidence:
+  - `target/workflow_regression_summary.json` after `scripts/run_workflow_gate.ps1 -Mode candidate` stayed within budget:
+    - runtime `256 ms` versus baseline `229 ms` passed the current `50%` regression gate
+    - validate stage `132 ms` versus baseline `119 ms` passed the current `100%` regression gate
+  - `node scripts/run_output_parity_check.mjs` remained green after a fresh `ta_headless_validate` workbook build
+  - `cargo test -p ta_desktop_demo_app validation_report_ --lib` remained green, preserving workbook-contract evidence
+- Cross-doc sync was not required in the first-tier tree because operator-visible validation/report semantics did not widen and the changed timing boundaries stayed local to the current validation/report owner
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app save_report_xlsx_from_artifact_async_writes_report_from_runs_dir --lib`
+  - `cargo test -p ta_desktop_demo_app save_run_artifact_blocking_ --lib`
+  - `cargo test -p ta_desktop_demo_app validation_report_ --lib`
+  - `npm.cmd --prefix web run test -- src/main.test.ts src/services/validationReportPerf.test.ts src/services/validationService.test.ts`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run build`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `node scripts/run_output_parity_check.mjs`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_workflow_gate.ps1 -Mode candidate`
 
 ## Related Docs
 

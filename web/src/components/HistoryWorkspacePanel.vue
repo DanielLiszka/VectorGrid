@@ -11,9 +11,14 @@ import { storeToRefs } from "pinia";
 import { useDebounceFn } from "@vueuse/core";
 import { useShellMount } from "../composables/useShellMount";
 import { useUiReadiness } from "../composables/useUiReadiness";
+import { useVirtualTableRows } from "../composables/useVirtualTableRows";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { emptyArtifactLibraryIllustration } from "../utils/appSvgAssets";
+import {
+  formatRouteProvenanceCompact,
+  type RouteProvenanceSummary,
+} from "../utils/core/runArtifactReview";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
@@ -90,7 +95,7 @@ interface SavedRunListEntry {
   hasValidation: boolean;
   reportXlsxPath: string;
   csvPath: string;
-  routeProvenance?: { actualRoute?: string; realizedRoute?: string } | null;
+  routeProvenance?: RouteProvenanceSummary | null;
   tags: string[];
 }
 
@@ -142,6 +147,17 @@ const visibleSessionRuns = computed<SessionRunListEntry[]>(() =>
 const visibleSavedRuns = computed<SavedRunListEntry[]>(() =>
   savedRunsVisible.value as SavedRunListEntry[],
 );
+const {
+  scrollElementRef: savedRunsScrollElementRef,
+  virtualRows: virtualSavedRunRows,
+  topSpacerPx: savedRunsTopSpacerPx,
+  bottomSpacerPx: savedRunsBottomSpacerPx,
+  scrollToTop: scrollSavedRunsToTop,
+} = useVirtualTableRows(visibleSavedRuns, {
+  rowHeightPx: 84,
+  overscan: 8,
+  getItemKey: (_index, row) => String(row.path || _index).trim() || _index,
+})
 const historySummaryChips = computed(() => {
   const chips = [`${visibleSessionRuns.value.length} session runs`, `${savedRunCount.value} saved runs`];
   if (String(savedRunDetailTitle.value || "").trim().length > 0) {
@@ -174,6 +190,11 @@ function sessionRunMeta(entry: SessionRunListEntry): string {
   const backend = String(entry.backend || "").trim() || "unknown backend";
   const pairs = Math.max(0, Math.floor(Number(entry.pairs || 0)));
   return `${backend} · ${pairs} pairs`;
+}
+
+function savedRunRouteSummary(entry: SavedRunListEntry): string {
+  const summary = formatRouteProvenanceCompact(entry.routeProvenance ?? null);
+  return summary === "-" ? "" : summary;
 }
 
 watch(
@@ -370,6 +391,7 @@ function onRunListKeydown(event: KeyboardEvent): void {
 onMounted(async () => {
   await nextTick();
   historyStore.refreshSessionHistory();
+  scrollSavedRunsToTop();
 });
 
 onBeforeUnmount(() => {
@@ -567,53 +589,62 @@ onBeforeUnmount(() => {
           </div>
           <ul
             v-if="visibleSavedRuns.length"
+            ref="savedRunsScrollElementRef"
             class="runList savedRunList overflowShadowY surfaceWorking"
+            :class="{ historyVirtualListViewport: true }"
             aria-label="Saved run artifacts"
           >
             <li
-              v-for="entry in visibleSavedRuns"
-              :key="`saved_run_${entry.path}`"
+              v-if="savedRunsTopSpacerPx > 0"
+              class="runListSpacer"
+              aria-hidden="true"
+              :style="{ height: `${savedRunsTopSpacerPx}px` }"
+            ></li>
+            <li
+              v-for="virtualRow in virtualSavedRunRows"
+              :key="`saved_run_${virtualRow.row.path}`"
               class="runListItem"
             >
               <button
                 type="button"
                 class="runListButton"
-                :class="{ active: savedValue === entry.path }"
-                :aria-pressed="savedValue === entry.path"
-                @click="onSavedSelect(entry.path)"
+                data-saved-run="1"
+                :class="{ active: savedValue === virtualRow.row.path }"
+                :aria-pressed="savedValue === virtualRow.row.path"
+                :aria-posinset="virtualRow.index + 1"
+                :aria-setsize="visibleSavedRuns.length"
+                @click="onSavedSelect(virtualRow.row.path)"
                 @keydown="onRunListKeydown"
               >
                 <div class="runListPrimary">
                   <span class="mono">{{
-                    entry.ts || basename(entry.path) || "Saved run"
+                    virtualRow.row.ts || basename(virtualRow.row.path) || "Saved run"
                   }}</span>
-                  <span class="pill">{{ entry.strategyKind || "Unknown" }}</span>
+                  <span class="pill">{{ virtualRow.row.strategyKind || "Unknown" }}</span>
                 </div>
                 <div class="runListSecondary panelMuted">
-                  {{ basename(entry.csvPath) || "Dataset unavailable" }}
-                  <span v-if="formatBytesCompact(entry.bytes)">
-                    · {{ formatBytesCompact(entry.bytes) }}
+                  {{ basename(virtualRow.row.csvPath) || "Dataset unavailable" }}
+                  <span v-if="formatBytesCompact(virtualRow.row.bytes)">
+                    · {{ formatBytesCompact(virtualRow.row.bytes) }}
                   </span>
                 </div>
                 <div class="pillRow">
-                  <span class="pill" :class="{ good: entry.hasValidation }">
-                    {{ entry.hasValidation ? "validation" : "no validation" }}
+                  <span class="pill" :class="{ good: virtualRow.row.hasValidation }">
+                    {{ virtualRow.row.hasValidation ? "validation" : "no validation" }}
                   </span>
-                  <span class="pill" :class="{ good: !!entry.reportXlsxPath }">
-                    {{ entry.reportXlsxPath ? "xlsx" : "artifact only" }}
+                  <span class="pill" :class="{ good: !!virtualRow.row.reportXlsxPath }">
+                    {{ virtualRow.row.reportXlsxPath ? "xlsx" : "artifact only" }}
                   </span>
                   <span
-                    v-if="entry.routeProvenance?.realizedRoute || entry.routeProvenance?.actualRoute"
-                    class="pill subtle"
+                    v-if="savedRunRouteSummary(virtualRow.row)"
+                    class="pill subtle routePill"
+                    :title="savedRunRouteSummary(virtualRow.row)"
                   >
-                    {{
-                      entry.routeProvenance?.realizedRoute ||
-                      entry.routeProvenance?.actualRoute
-                    }}
+                    {{ savedRunRouteSummary(virtualRow.row) }}
                   </span>
                   <span
-                    v-for="tag in entry.tags.slice(0, 3)"
-                    :key="`saved_tag_${entry.path}_${tag}`"
+                    v-for="tag in virtualRow.row.tags.slice(0, 3)"
+                    :key="`saved_tag_${virtualRow.row.path}_${tag}`"
                     class="pill subtle"
                   >
                     {{ tag }}
@@ -621,6 +652,12 @@ onBeforeUnmount(() => {
                 </div>
               </button>
             </li>
+            <li
+              v-if="savedRunsBottomSpacerPx > 0"
+              class="runListSpacer"
+              aria-hidden="true"
+              :style="{ height: `${savedRunsBottomSpacerPx}px` }"
+            ></li>
           </ul>
           <div v-else class="listEmpty panelMuted">
             No saved runs match the current filters.
@@ -964,8 +1001,17 @@ onBeforeUnmount(() => {
   max-height: 320px;
 }
 
+.historyVirtualListViewport {
+  max-height: clamp(18rem, 42vh, 20rem);
+}
+
 .runListItem + .runListItem {
   border-top: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+}
+
+.runListSpacer {
+  pointer-events: none;
+  border-top: none !important;
 }
 
 .runListButton {
@@ -1032,6 +1078,14 @@ onBeforeUnmount(() => {
 
 .pill.subtle {
   color: var(--muted);
+}
+
+.routePill {
+  max-width: 100%;
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .listEmpty {

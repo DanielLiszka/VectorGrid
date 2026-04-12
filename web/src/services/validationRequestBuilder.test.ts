@@ -535,8 +535,8 @@ describe('validationRequestBuilder', () => {
   )
 
   it.each([
-    ['CompositeTrend', { backend: 'CpuOnly' }, 'CPU route expected (CompositeTrend)'],
-    ['RegimeHybrid', { backend: 'CpuOnly' }, 'CPU route expected (RegimeHybrid)'],
+    ['CompositeTrend', { backend: 'CpuOnly' }, 'expected CPU route (CompositeTrend)'],
+    ['RegimeHybrid', { backend: 'CpuOnly' }, 'expected CPU route (RegimeHybrid)'],
     ['BreakoutMomentum', { backend: 'GpuOnly', device_id: 0 }, 'expected CpuOnly fallback for fixed-candidate validation (BreakoutMomentum)'],
   ] as const)(
     'keeps strategy-specific route wording for %s when validation cannot stay on the GPU main route',
@@ -602,7 +602,7 @@ describe('validationRequestBuilder', () => {
       })
 
       const summary = buildValidationCapabilitySummary(req)
-      expect(summary.routeSummary).toContain('CpuOnly requested | CPU route expected')
+      expect(summary.routeSummary).toContain('CpuOnly requested | expected CPU route')
       expect(summary.routeSummary).toContain(strategy_kind)
       expect(summary.moduleSummary).toContain(`CPU route (${strategy_kind}):`)
       expect(summary.warningSummary).toBe('none')
@@ -618,7 +618,7 @@ describe('validationRequestBuilder', () => {
         ma_source: 'close',
         fast_ma_types: ['ema'],
         slow_ma_types: ['sma'],
-        strategy: { fee_bps: 1.0 },
+        strategy: { fee_bps: 1.0, breakout_use_adx: true },
       },
       currentRunRes: { ok: true },
       topRows: [
@@ -638,6 +638,109 @@ describe('validationRequestBuilder', () => {
     expect(summary.routeSummary).toContain('GpuHybridKernel requested')
     expect(summary.routeSummary).toContain('expected GPU hybrid main route')
     expect(summary.moduleSummary).toContain('Expected GPU hybrid route')
+  })
+
+  it('surfaces Auto CompositeTrend ADX-off validation previews as kernel-route expectations', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeTrend',
+        data_id: 'composite-trend-auto-kernel',
+        backend: { backend: 'Auto', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['sma'],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 12,
+            slow_len: 48,
+          },
+        },
+      ],
+      candidates: '4',
+    })
+
+    req.candidates[0]!.strategy = { trend_quality_use_adx: false }
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain(
+      'Auto requested | expected GPU kernel main route (CompositeTrend) when available',
+    )
+    expect(summary.moduleSummary).toContain(
+      'Expected GPU kernel route (CompositeTrend) when available',
+    )
+  })
+
+  it('keeps Auto CompositeTrend ADX-on validation previews on kernel-route expectations until backend auto validation supports hybrid routing', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeTrend',
+        data_id: 'composite-trend-auto-hybrid',
+        backend: { backend: 'Auto', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['sma'],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 12,
+            slow_len: 48,
+          },
+        },
+      ],
+      candidates: '4',
+    })
+
+    req.candidates[0]!.strategy = { trend_quality_use_adx: true }
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain(
+      'Auto requested | expected GPU kernel main route (CompositeTrend) when available',
+    )
+    expect(summary.moduleSummary).toContain(
+      'Expected GPU kernel route (CompositeTrend) when available',
+    )
+  })
+
+  it('reroutes explicit GpuKernel BreakoutMomentum ADX-on validation previews to the hybrid route', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'BreakoutMomentum',
+        data_id: 'breakout-explicit-kernel-reroute',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['sma'],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 13,
+            slow_len: 55,
+          },
+        },
+      ],
+      candidates: '4',
+    })
+
+    req.candidates[0]!.strategy = { breakout_use_adx: true }
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain(
+      'GpuKernel requested | expected GPU hybrid main route (BreakoutMomentum)',
+    )
+    expect(summary.moduleSummary).toContain('Expected GPU hybrid route (BreakoutMomentum)')
   })
 
   it('rejects DynamicDoubleMa validation requests until dynamic IR replay is implemented', () => {

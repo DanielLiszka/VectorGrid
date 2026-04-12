@@ -23,6 +23,16 @@ interface ExecutionStoredKeysPayload {
   api_secret?: unknown
 }
 
+interface ExecutionStoredCredentialStatusResponse {
+  remember_available?: unknown
+  has_api_key?: unknown
+  has_api_secret?: unknown
+  has_credentials?: unknown
+  state?: unknown
+  storage_backend?: unknown
+  message?: unknown
+}
+
 interface ExecutionRiskPayload {
   stop_loss_pct: number | null
   take_profit_pct: number | null
@@ -174,6 +184,16 @@ export interface ExecutionActionResult {
   runnerActive?: boolean
   liveSymbol?: string
   liveDelayed?: boolean
+}
+
+export interface ExecutionStoredCredentialStatus {
+  rememberAvailable: boolean
+  hasApiKey: boolean
+  hasApiSecret: boolean
+  hasCredentials: boolean
+  state: 'missing' | 'stored' | 'incomplete' | 'unavailable'
+  storageBackend: string
+  message: string
 }
 
 export interface ParsedLiveStatus {
@@ -509,6 +529,24 @@ function parseStoredExecutionKeys(raw: unknown): { apiKey: string; apiSecret: st
   return {
     apiKey: text(payload.api_key),
     apiSecret: text(payload.api_secret),
+  }
+}
+
+function parseStoredExecutionCredentialStatus(raw: unknown): ExecutionStoredCredentialStatus {
+  const row = isRecord(raw) ? (raw as ExecutionStoredCredentialStatusResponse) : {}
+  const stateRaw = text(row.state).toLowerCase()
+  const state =
+    stateRaw === 'stored' || stateRaw === 'incomplete' || stateRaw === 'unavailable'
+      ? (stateRaw as ExecutionStoredCredentialStatus['state'])
+      : 'missing'
+  return {
+    rememberAvailable: !!row.remember_available,
+    hasApiKey: !!row.has_api_key,
+    hasApiSecret: !!row.has_api_secret,
+    hasCredentials: !!row.has_credentials,
+    state,
+    storageBackend: text(row.storage_backend),
+    message: text(row.message),
   }
 }
 
@@ -873,7 +911,60 @@ export async function refreshStatuses(): Promise<ExecutionActionResult> {
   }
 }
 
+export async function getStoredExecutionCredentialStatus(): Promise<ExecutionStoredCredentialStatus> {
+  return parseStoredExecutionCredentialStatus(await invokeCommand('alpaca_get_credential_status'))
+}
+
+export async function storeExecutionCredentialsSecurely(
+  apiKey: string,
+  apiSecret: string,
+): Promise<ExecutionStoredCredentialStatus> {
+  return parseStoredExecutionCredentialStatus(
+    await invokeCommand('alpaca_set_api_credentials', {
+      req: { api_key: text(apiKey), api_secret: text(apiSecret) },
+    }),
+  )
+}
+
+export async function clearStoredExecutionCredentialsSecurely(): Promise<ExecutionStoredCredentialStatus> {
+  return parseStoredExecutionCredentialStatus(await invokeCommand('alpaca_clear_api_credentials'))
+}
+
+export async function migrateLegacyStoredExecutionKeysToSecureStorage(): Promise<ExecutionStoredCredentialStatus> {
+  const legacy = loadPersistedExecutionKeys()
+  const legacyKey = text(legacy.apiKey)
+  const legacySecret = text(legacy.apiSecret)
+  if (!legacyKey && !legacySecret) {
+    return getStoredExecutionCredentialStatus()
+  }
+  if (!legacyKey || !legacySecret) {
+    return {
+      rememberAvailable: false,
+      hasApiKey: !!legacyKey,
+      hasApiSecret: !!legacySecret,
+      hasCredentials: false,
+      state: 'incomplete',
+      storageBackend: '',
+      message: 'Legacy stored execution credentials are incomplete.',
+    }
+  }
+  const status = await storeExecutionCredentialsSecurely(legacyKey, legacySecret)
+  if (status.hasCredentials) {
+    try {
+      removeStorageKey(EXEC_KEYS_STORAGE_KEY)
+    } catch {
+      // best-effort cleanup only after verified secure write
+    }
+  }
+  return status
+}
+
 export async function clearKeys(): Promise<ExecutionActionResult> {
+  try {
+    await clearStoredExecutionCredentialsSecurely()
+  } catch {
+    // best-effort secure-store cleanup during the transition to backend-owned secrets
+  }
   try {
     removeStorageKey(EXEC_KEYS_STORAGE_KEY)
   } catch {

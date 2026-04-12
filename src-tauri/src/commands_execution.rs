@@ -81,6 +81,34 @@ pub struct TestAlpacaConnectionResponse {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct SetAlpacaApiCredentialsRequest {
+    pub api_key: String,
+    pub api_secret: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlpacaCredentialStorageState {
+    Missing,
+    Stored,
+    Incomplete,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AlpacaCredentialStorageStatus {
+    pub remember_available: bool,
+    pub has_api_key: bool,
+    pub has_api_secret: bool,
+    pub has_credentials: bool,
+    pub state: AlpacaCredentialStorageState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct GetLiveExecutionSnapshotRequest {
     pub mode: LiveExecutionMode,
     #[serde(default)]
@@ -183,6 +211,8 @@ const RUNNER_CANCELLED_ERR: &str = "__live_execution_runner_cancelled__";
 const ALPACA_CONNECT_TIMEOUT_MS: u64 = 3_000;
 const ALPACA_REQUEST_TIMEOUT_MS: u64 = 12_000;
 const ALPACA_IDLE_POOL_TIMEOUT_SECS: u64 = 90;
+const ALPACA_KEYRING_API_KEY_USERNAME: &str = "alpaca_execution_api_key";
+const ALPACA_KEYRING_API_SECRET_USERNAME: &str = "alpaca_execution_api_secret";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LiveExecutionRunnerConfig {
@@ -568,6 +598,149 @@ fn build_alpaca_headers(api_key: &str, api_secret: &str) -> Result<HeaderMap, St
         HeaderValue::from_str(api_secret).map_err(|e| format!("invalid API secret header: {e}"))?,
     );
     Ok(headers)
+}
+
+fn alpaca_keyring_service_name(app_identifier: &str) -> String {
+    let id = app_identifier.trim();
+    if id.is_empty() {
+        "vectorgrid.alpaca.execution".to_string()
+    } else {
+        format!("{id}.alpaca.execution")
+    }
+}
+
+fn build_alpaca_credential_storage_status(
+    remember_available: bool,
+    has_api_key: bool,
+    has_api_secret: bool,
+    message: Option<String>,
+) -> AlpacaCredentialStorageStatus {
+    let state = if !remember_available {
+        AlpacaCredentialStorageState::Unavailable
+    } else if has_api_key && has_api_secret {
+        AlpacaCredentialStorageState::Stored
+    } else if has_api_key || has_api_secret {
+        AlpacaCredentialStorageState::Incomplete
+    } else {
+        AlpacaCredentialStorageState::Missing
+    };
+    AlpacaCredentialStorageStatus {
+        remember_available,
+        has_api_key,
+        has_api_secret,
+        has_credentials: has_api_key && has_api_secret,
+        state,
+        storage_backend: remember_available.then(|| "keyring".to_string()),
+        message,
+    }
+}
+
+fn read_keyring_trimmed(entry: &keyring::Entry) -> Option<String> {
+    entry.get_password().ok().and_then(|raw| {
+        let trimmed = raw.trim().to_string();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+fn alpaca_keyring_entries(
+    app_identifier: &str,
+) -> Result<(keyring::Entry, keyring::Entry), String> {
+    let service = alpaca_keyring_service_name(app_identifier);
+    let key_entry = keyring::Entry::new(&service, ALPACA_KEYRING_API_KEY_USERNAME)
+        .map_err(|e| format!("failed to initialize Alpaca API key secure storage: {e}"))?;
+    let secret_entry = keyring::Entry::new(&service, ALPACA_KEYRING_API_SECRET_USERNAME)
+        .map_err(|e| format!("failed to initialize Alpaca API secret secure storage: {e}"))?;
+    Ok((key_entry, secret_entry))
+}
+
+fn alpaca_credential_storage_status_for_app(app_identifier: &str) -> AlpacaCredentialStorageStatus {
+    let Ok((key_entry, secret_entry)) = alpaca_keyring_entries(app_identifier) else {
+        return build_alpaca_credential_storage_status(
+            false,
+            false,
+            false,
+            Some("Secure credential storage is unavailable on this system.".to_string()),
+        );
+    };
+    let has_api_key = read_keyring_trimmed(&key_entry).is_some();
+    let has_api_secret = read_keyring_trimmed(&secret_entry).is_some();
+    build_alpaca_credential_storage_status(true, has_api_key, has_api_secret, None)
+}
+
+fn store_alpaca_api_credentials(
+    app_identifier: &str,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<AlpacaCredentialStorageStatus, String> {
+    let key = api_key.trim();
+    let secret = api_secret.trim();
+    if key.is_empty() || secret.is_empty() {
+        return Err("Both Alpaca API key and secret are required.".to_string());
+    }
+    let (key_entry, secret_entry) = alpaca_keyring_entries(app_identifier)?;
+    key_entry
+        .set_password(key)
+        .map_err(|e| format!("failed to store Alpaca API key securely: {e}"))?;
+    if let Err(error) = secret_entry.set_password(secret) {
+        let _ = key_entry.delete_credential();
+        return Err(format!(
+            "failed to store Alpaca API secret securely: {error}"
+        ));
+    }
+    let status = alpaca_credential_storage_status_for_app(app_identifier);
+    if !status.has_credentials {
+        return Err("secure storage write could not be verified".to_string());
+    }
+    Ok(status)
+}
+
+fn clear_alpaca_api_credentials_for_app(app_identifier: &str) -> AlpacaCredentialStorageStatus {
+    if let Ok((key_entry, secret_entry)) = alpaca_keyring_entries(app_identifier) {
+        let _ = key_entry.delete_credential();
+        let _ = secret_entry.delete_credential();
+    }
+    alpaca_credential_storage_status_for_app(app_identifier)
+}
+
+fn normalize_alpaca_typed_override(
+    api_key: &str,
+    api_secret: &str,
+) -> Result<Option<(String, String)>, String> {
+    let key = api_key.trim();
+    let secret = api_secret.trim();
+    if key.is_empty() && secret.is_empty() {
+        return Ok(None);
+    }
+    if key.is_empty() || secret.is_empty() {
+        return Err(
+            "Both alpaca_api_key and alpaca_api_secret are required when using typed overrides."
+                .to_string(),
+        );
+    }
+    Ok(Some((key.to_string(), secret.to_string())))
+}
+
+fn resolve_alpaca_credentials_for_app(
+    app_identifier: &str,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<Option<(String, String)>, String> {
+    if let Some(override_pair) = normalize_alpaca_typed_override(api_key, api_secret)? {
+        return Ok(Some(override_pair));
+    }
+    let Ok((key_entry, secret_entry)) = alpaca_keyring_entries(app_identifier) else {
+        return Ok(None);
+    };
+    let stored_key = read_keyring_trimmed(&key_entry);
+    let stored_secret = read_keyring_trimmed(&secret_entry);
+    match (stored_key, stored_secret) {
+        (Some(key), Some(secret)) => Ok(Some((key, secret))),
+        (None, None) => Ok(None),
+        _ => Err(
+            "Stored Alpaca credentials are incomplete. Clear them and save a complete key pair."
+                .to_string(),
+        ),
+    }
 }
 
 fn alpaca_client() -> Result<&'static Client, String> {
@@ -1037,9 +1210,22 @@ fn execute_strategy_signal_blocking(
 
 #[tauri::command]
 pub async fn execute_strategy_signal_once(
-    req: ExecuteStrategySignalRequest,
+    mut req: ExecuteStrategySignalRequest,
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<ExecuteStrategySignalResponse, String> {
+    if !req.dry_run {
+        let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
+            &app.config().identifier,
+            &req.alpaca_api_key,
+            &req.alpaca_api_secret,
+        )?
+        .ok_or_else(|| {
+            "alpaca_api_key and alpaca_api_secret are required unless dry_run=true".to_string()
+        })?;
+        req.alpaca_api_key = api_key;
+        req.alpaca_api_secret = api_secret;
+    }
     let (req, symbol, qty) = normalize_execute_request(req)?;
     let data_id = strategy_data_id(&req.strategy).to_string();
     let candles = state.get_candles(&data_id)?;
@@ -1052,10 +1238,22 @@ pub async fn execute_strategy_signal_once(
 
 #[tauri::command]
 pub async fn start_live_execution_runner(
-    req: ExecuteStrategySignalRequest,
+    mut req: ExecuteStrategySignalRequest,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<LiveExecutionRunnerStatus, String> {
+    if !req.dry_run {
+        let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
+            &app.config().identifier,
+            &req.alpaca_api_key,
+            &req.alpaca_api_secret,
+        )?
+        .ok_or_else(|| {
+            "alpaca_api_key and alpaca_api_secret are required unless dry_run=true".to_string()
+        })?;
+        req.alpaca_api_key = api_key;
+        req.alpaca_api_secret = api_secret;
+    }
     let (req, symbol, qty) = normalize_execute_request(req)?;
     let data_id = strategy_data_id(&req.strategy).trim().to_string();
     if data_id.is_empty() {
@@ -1400,14 +1598,34 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
 }
 
 #[tauri::command]
+pub fn alpaca_get_credential_status(app: tauri::AppHandle) -> AlpacaCredentialStorageStatus {
+    alpaca_credential_storage_status_for_app(&app.config().identifier)
+}
+
+#[tauri::command]
+pub fn alpaca_set_api_credentials(
+    req: SetAlpacaApiCredentialsRequest,
+    app: tauri::AppHandle,
+) -> Result<AlpacaCredentialStorageStatus, String> {
+    store_alpaca_api_credentials(&app.config().identifier, &req.api_key, &req.api_secret)
+}
+
+#[tauri::command]
+pub fn alpaca_clear_api_credentials(app: tauri::AppHandle) -> AlpacaCredentialStorageStatus {
+    clear_alpaca_api_credentials_for_app(&app.config().identifier)
+}
+
+#[tauri::command]
 pub async fn test_alpaca_connection(
     req: TestAlpacaConnectionRequest,
+    app: tauri::AppHandle,
 ) -> Result<TestAlpacaConnectionResponse, String> {
-    let api_key = req.alpaca_api_key.trim().to_string();
-    let api_secret = req.alpaca_api_secret.trim().to_string();
-    if api_key.is_empty() || api_secret.is_empty() {
-        return Err("alpaca_api_key and alpaca_api_secret are required".to_string());
-    }
+    let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
+        &app.config().identifier,
+        &req.alpaca_api_key,
+        &req.alpaca_api_secret,
+    )?
+    .ok_or_else(|| "alpaca_api_key and alpaca_api_secret are required".to_string())?;
     let mode = req.mode;
     tauri::async_runtime::spawn_blocking(move || {
         let client = alpaca_client()?;
@@ -1430,12 +1648,14 @@ pub async fn test_alpaca_connection(
 #[tauri::command]
 pub async fn get_live_execution_snapshot(
     req: GetLiveExecutionSnapshotRequest,
+    app: tauri::AppHandle,
 ) -> Result<GetLiveExecutionSnapshotResponse, String> {
-    let api_key = req.alpaca_api_key.trim().to_string();
-    let api_secret = req.alpaca_api_secret.trim().to_string();
-    if api_key.is_empty() || api_secret.is_empty() {
-        return Err("alpaca_api_key and alpaca_api_secret are required".to_string());
-    }
+    let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
+        &app.config().identifier,
+        &req.alpaca_api_key,
+        &req.alpaca_api_secret,
+    )?
+    .ok_or_else(|| "alpaca_api_key and alpaca_api_secret are required".to_string())?;
 
     let mode = req.mode;
     let symbol = canonical_symbol_key(&req.symbol);
@@ -1521,6 +1741,70 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use ta_app_core::{DoubleMaDrilldownRequest, DoubleMaParamsResolved};
     use ta_strategies::double_ma::StrategyConfig;
+
+    #[test]
+    fn alpaca_keyring_service_name_scopes_to_app_identifier() {
+        assert_eq!(
+            alpaca_keyring_service_name("dev.vectoralpha.vectorgrid"),
+            "dev.vectoralpha.vectorgrid.alpaca.execution"
+        );
+        assert_eq!(
+            alpaca_keyring_service_name(""),
+            "vectorgrid.alpaca.execution"
+        );
+    }
+
+    #[test]
+    fn alpaca_credential_storage_status_tracks_presence_bits() {
+        let missing = build_alpaca_credential_storage_status(true, false, false, None);
+        assert_eq!(missing.state, AlpacaCredentialStorageState::Missing);
+        assert!(!missing.has_credentials);
+        assert_eq!(missing.storage_backend.as_deref(), Some("keyring"));
+
+        let incomplete = build_alpaca_credential_storage_status(true, true, false, None);
+        assert_eq!(incomplete.state, AlpacaCredentialStorageState::Incomplete);
+        assert!(!incomplete.has_credentials);
+
+        let stored = build_alpaca_credential_storage_status(true, true, true, None);
+        assert_eq!(stored.state, AlpacaCredentialStorageState::Stored);
+        assert!(stored.has_credentials);
+
+        let unavailable = build_alpaca_credential_storage_status(
+            false,
+            false,
+            false,
+            Some("Secure credential storage is unavailable on this system.".to_string()),
+        );
+        assert_eq!(unavailable.state, AlpacaCredentialStorageState::Unavailable);
+        assert!(!unavailable.remember_available);
+        assert!(unavailable.storage_backend.is_none());
+        assert_eq!(
+            unavailable.message.as_deref(),
+            Some("Secure credential storage is unavailable on this system.")
+        );
+    }
+
+    #[test]
+    fn store_alpaca_api_credentials_rejects_empty_values_before_secure_storage() {
+        let err = store_alpaca_api_credentials("dev.vectoralpha.vectorgrid.test", "", "secret")
+            .expect_err("empty api key should fail");
+        assert!(err.contains("Both Alpaca API key and secret are required."));
+    }
+
+    #[test]
+    fn normalize_alpaca_typed_override_rejects_partial_pairs() {
+        let err = normalize_alpaca_typed_override("key_only", "")
+            .expect_err("partial override should fail");
+        assert!(err.contains("Both alpaca_api_key and alpaca_api_secret are required"));
+        assert_eq!(
+            normalize_alpaca_typed_override("key", "secret").expect("full override"),
+            Some(("key".to_string(), "secret".to_string()))
+        );
+        assert_eq!(
+            normalize_alpaca_typed_override("", "").expect("blank override"),
+            None
+        );
+    }
 
     fn runner_test_guard() -> &'static Mutex<()> {
         static RUNNER_TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();

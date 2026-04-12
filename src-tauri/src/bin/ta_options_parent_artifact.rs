@@ -345,7 +345,7 @@ fn main() -> Result<(), String> {
         "tags": ["options-parent", "phase05"],
     });
 
-    let saved = tauri::async_runtime::block_on(save_run_artifact(artifact, app_handle))?;
+    let saved = tauri::async_runtime::block_on(save_run_artifact(artifact, None, app_handle))?;
     let output = CliOutput {
         app_local_data_dir: resolved_app_local_data_dir.to_string_lossy().to_string(),
         artifact_path: saved.path,

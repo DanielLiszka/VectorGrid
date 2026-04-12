@@ -6,6 +6,9 @@ const virtualMockState = vi.hoisted(() => ({
   totalSize: 0,
   measureCalls: 0,
   scrollCalls: [] as number[],
+  latestOptions: null as null | {
+    getItemKey?: (index: number) => string | number
+  },
 }))
 
 const resizeObserverState = vi.hoisted(() => ({
@@ -13,18 +16,21 @@ const resizeObserverState = vi.hoisted(() => ({
 }))
 
 vi.mock('@tanstack/vue-virtual', () => ({
-  useVirtualizer: () => ({
-    value: {
-      getVirtualItems: () => virtualMockState.virtualItems,
-      getTotalSize: () => virtualMockState.totalSize,
-      measure: () => {
-        virtualMockState.measureCalls += 1
+  useVirtualizer: (options: { value?: { getItemKey?: (index: number) => string | number } }) => {
+    virtualMockState.latestOptions = options?.value ?? null
+    return {
+      value: {
+        getVirtualItems: () => virtualMockState.virtualItems,
+        getTotalSize: () => virtualMockState.totalSize,
+        measure: () => {
+          virtualMockState.measureCalls += 1
+        },
+        scrollToOffset: (offset: number) => {
+          virtualMockState.scrollCalls.push(offset)
+        },
       },
-      scrollToOffset: (offset: number) => {
-        virtualMockState.scrollCalls.push(offset)
-      },
-    },
-  }),
+    }
+  },
 }))
 
 vi.mock('@vueuse/core', () => ({
@@ -44,6 +50,7 @@ describe('useVirtualTableRows', () => {
     virtualMockState.totalSize = 0
     virtualMockState.measureCalls = 0
     virtualMockState.scrollCalls = []
+    virtualMockState.latestOptions = null
     resizeObserverState.trigger = null
   })
 
@@ -79,6 +86,18 @@ describe('useVirtualTableRows', () => {
 
     rows.value = [row0, row1, row2]
     expect(table.virtualRows.value[0]?.row).toBe(initialRowRef)
+  })
+
+  it('uses a caller-provided stable row key when supplied', () => {
+    virtualMockState.virtualItems = [{ index: 0, start: 0, end: 28 }]
+    virtualMockState.totalSize = 28
+
+    const getItemKey = vi.fn((index: number, row: { id: string }) => `${row.id}:${index}`)
+    const rows = ref([{ id: 'saved_run_a' }])
+    useVirtualTableRows(rows, { getItemKey })
+
+    expect(virtualMockState.latestOptions?.getItemKey?.(0)).toBe('saved_run_a:0')
+    expect(getItemKey).toHaveBeenCalledWith(0, rows.value[0])
   })
 
   it('handles empty virtual windows and supports scrollToTop', () => {

@@ -1,4 +1,8 @@
-import { isCompositeProfileKind } from '../strategies/compositeProfileGpuPolicy'
+import {
+  isCompositeProfileKind,
+  normalizeCompositeRequestedBackend,
+  resolveCompositeProfileRoute,
+} from '../strategies/compositeProfileGpuPolicy'
 
 interface ValidationRowLike {
   params?: unknown
@@ -192,6 +196,12 @@ function num(value: unknown, fallback: number): number {
 
 function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
+}
+
+function normalizeBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  const text = normalizeText(value).toLowerCase()
+  return text === 'true' || text === '1' || text === 'yes' || text === 'on'
 }
 
 function normalizeObjectiveKindToken(value: unknown): ValidationObjectiveKind | null {
@@ -654,6 +664,58 @@ function titleCaseBackend(backend: ValidationRequestPayload['backend']['backend'
   }
 }
 
+function resolveCompositeDoubleLikeRoutePreview(
+  req: ValidationRequestPayload,
+  kind: string,
+  backend: ValidationRequestPayload['backend']['backend'],
+) {
+  if (!isCompositeProfileKind(kind)) return null
+  const strategy = asRecord(req.candidates[0]?.strategy)
+  return resolveCompositeProfileRoute(
+    kind,
+    normalizeCompositeRequestedBackend(backend),
+    {
+      trendUseAdx: normalizeBoolean(strategy?.trend_quality_use_adx),
+      breakoutUseAdx: normalizeBoolean(strategy?.breakout_use_adx),
+    },
+  )
+}
+
+function compositeDoubleLikeExpectedRouteText(
+  req: ValidationRequestPayload,
+  kind: string,
+  backend: ValidationRequestPayload['backend']['backend'],
+  mode: 'requested' | 'auto',
+): { routeSummary: string; moduleSummaryPrefix: string } | null {
+  const route = resolveCompositeDoubleLikeRoutePreview(req, kind, backend)
+  if (!route) return null
+
+  const routeDescriptor = route.targetBackend === 'GpuHybridKernel'
+    ? 'GPU hybrid main route'
+    : route.targetBackend === 'GpuKernel'
+      ? 'GPU kernel main route'
+      : 'CPU route'
+  const moduleRouteDescriptor = route.targetBackend === 'GpuHybridKernel'
+    ? 'Expected GPU hybrid route'
+    : route.targetBackend === 'GpuKernel'
+      ? 'Expected GPU kernel route'
+      : 'CPU route'
+  const suffix = mode === 'auto' ? ' when available' : ''
+  const autoRouteDescriptor = 'GPU kernel main route'
+  const autoModuleRouteDescriptor = 'Expected GPU kernel route'
+
+  return {
+    routeSummary:
+      mode === 'auto'
+        ? `Auto requested | expected ${autoRouteDescriptor} (${kind})${suffix}`
+        : `${titleCaseBackend(backend)} requested | expected ${routeDescriptor} (${kind})`,
+    moduleSummaryPrefix:
+      mode === 'auto'
+        ? `${autoModuleRouteDescriptor} (${kind})${suffix}`
+        : `${moduleRouteDescriptor} (${kind})${suffix}`,
+  }
+}
+
 function describeEnabledModules(req: ValidationRequestPayload): string[] {
   const enabled: string[] = ['base reruns', 'hard gates']
   if (req.walk_forward) enabled.push('walk-forward')
@@ -853,6 +915,9 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
   const strategyKind = normalizeStrategyKindRaw(req?.validation_context?.strategy_kind)
   const isDoubleLike = isDoubleLikeKind(strategyKind)
   const compositeDoubleLikeKind = isCompositeProfileKind(strategyKind) ? strategyKind : null
+  const compositeDoubleLikeRoute = compositeDoubleLikeKind
+    ? resolveCompositeDoubleLikeRoutePreview(req, compositeDoubleLikeKind, req.backend?.backend || 'CpuOnly')
+    : null
   const backend = req.backend?.backend || 'CpuOnly'
   const crossMode = normalizeText(req.cross_ticker?.mode)
   const crossDatasets = Array.isArray(req.cross_ticker?.datasets) ? req.cross_ticker.datasets.length : 0
@@ -871,12 +936,16 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
 
   if (isDoubleLike) {
     if (backend === 'CpuOnly') {
-      routeSummary = compositeDoubleLikeKind
-        ? `CpuOnly requested | CPU route expected (${compositeDoubleLikeKind})`
-        : 'CpuOnly requested | CPU validation route expected'
-      moduleSummary = compositeDoubleLikeKind
-        ? `CPU route (${compositeDoubleLikeKind}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
-        : `CPU route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+      routeSummary = compositeDoubleLikeRoute
+        ? compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'requested')?.routeSummary ?? `CpuOnly requested | CPU route expected (${compositeDoubleLikeKind})`
+        : compositeDoubleLikeKind
+          ? `CpuOnly requested | CPU route expected (${compositeDoubleLikeKind})`
+          : 'CpuOnly requested | CPU validation route expected'
+      moduleSummary = compositeDoubleLikeRoute
+        ? `${compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'requested')?.moduleSummaryPrefix ?? `CPU route (${compositeDoubleLikeKind})`}: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+        : compositeDoubleLikeKind
+          ? `CPU route (${compositeDoubleLikeKind}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
+          : `CPU route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` + ${auxCpu.join(' + ')}` : ''}`
       categorySummary = buildValidationCategorySummaryForMode(req, 'cpu')
     } else if (backend === 'GpuOnly') {
       routeSummary = compositeDoubleLikeKind
@@ -888,28 +957,40 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
       categorySummary = buildValidationCategorySummaryForMode(req, 'cpu')
       warningNotes.push('GpuOnly is not supported for fixed-candidate Double-MA validation; use GpuKernel, GpuHybridKernel, or Auto.')
     } else if (backend === 'GpuHybridKernel') {
-      routeSummary = compositeDoubleLikeKind
-        ? `GpuHybridKernel requested | expected GPU hybrid main route (${compositeDoubleLikeKind})`
-        : 'GpuHybridKernel requested | expected GPU main route (GpuKernel-compatible)'
-      moduleSummary = compositeDoubleLikeKind
-        ? `Expected GPU hybrid route (${compositeDoubleLikeKind}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
-        : `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+      routeSummary = compositeDoubleLikeRoute
+        ? compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'requested')?.routeSummary ?? `GpuHybridKernel requested | expected GPU hybrid main route (${compositeDoubleLikeKind})`
+        : compositeDoubleLikeKind
+          ? `GpuHybridKernel requested | expected GPU hybrid main route (${compositeDoubleLikeKind})`
+          : 'GpuHybridKernel requested | expected GPU main route (GpuKernel-compatible)'
+      moduleSummary = compositeDoubleLikeRoute
+        ? `${compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'requested')?.moduleSummaryPrefix ?? `Expected GPU hybrid route (${compositeDoubleLikeKind})`}: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+        : compositeDoubleLikeKind
+          ? `Expected GPU hybrid route (${compositeDoubleLikeKind}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+          : `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
       categorySummary = buildValidationCategorySummaryForMode(req, 'double_gpu')
     } else if (backend === 'GpuKernel') {
-      routeSummary = compositeDoubleLikeKind
-        ? `GpuKernel requested | expected GPU kernel main route (${compositeDoubleLikeKind})`
-        : 'GpuKernel requested | expected GPU main route'
-      moduleSummary = compositeDoubleLikeKind
-        ? `Expected GPU kernel route (${compositeDoubleLikeKind}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
-        : `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+      routeSummary = compositeDoubleLikeRoute
+        ? compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'requested')?.routeSummary ?? `GpuKernel requested | expected GPU kernel main route (${compositeDoubleLikeKind})`
+        : compositeDoubleLikeKind
+          ? `GpuKernel requested | expected GPU kernel main route (${compositeDoubleLikeKind})`
+          : 'GpuKernel requested | expected GPU main route'
+      moduleSummary = compositeDoubleLikeRoute
+        ? `${compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'requested')?.moduleSummaryPrefix ?? `Expected GPU kernel route (${compositeDoubleLikeKind})`}: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+        : compositeDoubleLikeKind
+          ? `Expected GPU kernel route (${compositeDoubleLikeKind}): ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+          : `GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
       categorySummary = buildValidationCategorySummaryForMode(req, 'double_gpu')
     } else {
-      routeSummary = compositeDoubleLikeKind
-        ? `Auto requested | expected GPU main route (${compositeDoubleLikeKind}) when available`
-        : 'Auto requested | expected GPU main route when available'
-      moduleSummary = compositeDoubleLikeKind
-        ? `Expected GPU route (${compositeDoubleLikeKind}) when available: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
-        : `Expected GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+      routeSummary = compositeDoubleLikeRoute
+        ? compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'auto')?.routeSummary ?? `Auto requested | expected GPU main route (${compositeDoubleLikeKind}) when available`
+        : compositeDoubleLikeKind
+          ? `Auto requested | expected GPU main route (${compositeDoubleLikeKind}) when available`
+          : 'Auto requested | expected GPU main route when available'
+      moduleSummary = compositeDoubleLikeRoute
+        ? `${compositeDoubleLikeExpectedRouteText(req, compositeDoubleLikeKind!, backend, 'auto')?.moduleSummaryPrefix ?? `Expected GPU route (${compositeDoubleLikeKind}) when available`}: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+        : compositeDoubleLikeKind
+          ? `Expected GPU route (${compositeDoubleLikeKind}) when available: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
+          : `Expected GPU main route: ${enabledMain.join(' + ')}${auxCpu.length > 0 ? ` | auxiliary CPU tails: ${auxCpu.join(' + ')}` : ''}`
       categorySummary = buildValidationCategorySummaryForMode(req, 'double_gpu')
     }
 

@@ -8,6 +8,7 @@ export interface MockTauriOptions {
 
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
 const DEFAULT_COMMAND_RESULTS: Record<string, unknown> = {
+  load_latest_run_artifact_hydration: null,
   load_latest_run_artifact_summary: null,
 }
 

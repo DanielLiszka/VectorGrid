@@ -1,6 +1,6 @@
 # GPT-5.4 Pro Prompt Pack For Options-Expression Research
 
-Last revised: 2026-04-08
+Last revised: 2026-04-11
 
 Purpose: a trimmed, implementation-oriented prompt pack for handing the remaining worthwhile `options_expression` full-GPU research questions to a stronger model such as GPT-5.4 Pro.
 
@@ -12,7 +12,7 @@ Current repo evidence already says:
 - supported parent families already include `DoubleMa`, `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum`
 - supported structure families already include `long_single`, `debit_vertical`, and `long_pair`
 - the compiled-tensor GPU scorer path is real, benchmarked, and already usable on bounded canonical workloads
-- two bounded provider-backed aggregate slices (`SPY` DTE7 and `QQQ` DTE7) now clear the live auto-GPU gates in code
+- the compiled-tensor GPU path is now auto-selectable on the bounded provider-backed SPY/QQQ slices, but the stronger promotion-gate story is still mixed after Prompt 13: QQQ clears, SPY still does not
 - the remaining uncertainty is mostly about next-step ROI inside the current full-GPU lane, especially the GPU/CPU finalist boundary, not about whether the feature exists at all
 
 ## How To Use This Pack
@@ -473,7 +473,8 @@ Treat them as a decision tree, not as independent parallel work:
 - do not run Prompt 2 and Prompt 3 as equal-priority first-pass prompts at the same time
 - do not run Prompt 12 in parallel with Prompt 1; Prompt 12 is for the narrower GPU/CPU finalist-boundary question after Prompt 1
 - do not run Prompt 13 in parallel with Prompt 1; Prompt 13 is for the narrower end-to-end cost-decomposition question after Prompt 1
-- do not run Prompt 14 before Prompt 13; Prompt 14 is only for the narrower CUDA-runtime / kernel / SASS micro-architecture question after cost decomposition says that layer is worth pursuing
+- do not run Prompt 14 before Prompt 13; Prompt 14 is only for the narrower CUDA-runtime / kernel / SASS micro-architecture question after cost decomposition
+- current default after the completed Prompt 13 lane is still to defer Prompt 14 unless you explicitly want a falsification audit of whether SPY's remaining miss is actually runtime-bound
 
 ### B. Scope-Depth Prompts
 
@@ -524,7 +525,7 @@ If the actual goal is to maximize CUDA/GPU usage and performance inside the exis
 1. Prompt 1
 2. Prompt 13
 3. Prompt 12
-4. Prompt 14 only if Prompt 13 says runtime micro-architecture is the real next bottleneck
+4. Prompt 14 only as an optional falsification audit after Prompt 13; the default is still to defer runtime/SASS work unless the new evidence says otherwise
 5. Prompt 9
 6. Prompt 10 and/or Prompt 11
 7. Prompt 2 or Prompt 3 only if Prompt 1 says density or product-promotion policy is still the real blocker
@@ -536,7 +537,7 @@ Why this order:
 - Prompt 1 decides whether there is any real full-GPU productization work left at all
 - Prompt 13 asks where the next performance dollar actually belongs once GPU scoring is already viable: replay build, preparation/cache amortization, lane duplication, or runtime micro-architecture
 - Prompt 12 targets the biggest current unresolved runtime boundary in code: GPU broad ranking versus CPU finalist exactification and embedded validation replay
-- Prompt 14 is deliberately later because SASS-level or micro-architecture work is only worth it if the kernel/runtime layer is actually first-order after Prompt 13
+- Prompt 14 is deliberately later because SASS-level or micro-architecture work is only worth it if the kernel/runtime layer is actually first-order after Prompt 13, and the completed Prompt 13 pass still leans against that
 - Prompt 9 asks what additional useful work can be added by enriching small per-tuple aggregate state rather than by replaying more paths on CPU
 - Prompt 10 and Prompt 11 become more valuable after Prompt 9 clarifies what extra low-cost state is actually plausible
 - Prompt 5 and Prompt 6 are still useful, but they are more product/reporting-oriented than CUDA-first
@@ -549,7 +550,7 @@ If you want the lowest-confusion workflow, do this:
 
 1. run Prompt 1
 2. if needed, run Prompt 13 or Prompt 12 or Prompt 2 or Prompt 3
-3. run Prompt 14 only if Prompt 13 says the CUDA runtime / kernel layer is the real next target
+3. run Prompt 14 only if you want an explicit measure-first audit of whether the CUDA runtime / kernel layer is actually the remaining target after Prompt 13
 4. if needed, run Prompt 9
 5. then run Prompt 10 or Prompt 11 if the remaining question is mathematical rather than architectural
 6. then run one or two relevant scope-depth prompts from Prompts 4-8
@@ -2376,7 +2377,9 @@ This prompt exists for one narrow reason:
 
 sometimes the remaining performance question really is inside the CUDA runtime or kernel layer, but sometimes SASS-level curiosity is just a distraction from larger replay/build or CPU-bound costs.
 
-For the current options workflow, that means this prompt should only be used after Prompt 13 if the evidence says the next meaningful bottleneck is actually in:
+For the current options workflow, Prompt 13 is now completed baseline work and its current implementation guide still says runtime/SASS work remains deferred.
+
+That means this prompt should now be used only as a falsification audit after Prompt 13 if you want to test whether the remaining issue is actually in:
 
 - kernel launch shape
 - tuple chunking
@@ -2385,7 +2388,7 @@ For the current options workflow, that means this prompt should only be used aft
 - memory access pattern
 - or PTX/SASS-level code generation quality
 
-If the current end-to-end bottleneck is still replay/build, preparation, or CPU finalist work, this prompt should be able to say “do not spend time on SASS now.”
+If the current end-to-end bottleneck is still replay/build, preparation, density/quality, or CPU finalist work, this prompt should be able to say “do not spend time on SASS now.”
 
 ### Attach These Files
 
@@ -2393,17 +2396,21 @@ Required:
 
 - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `options_research/options_expression_gpt54_pro_prompt_pack_2026-04-08_attachments/prompt_13_end_to_end_cost_decomposition_and_replay_prepare_amortization/options_end_to_end_cost_implementation_guide_2026-04-11.md`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
 - `crates/app_core/src/kernels/options_expression.cu`
 - `crates/app_core/src/options_types.rs`
+- `src-tauri/src/commands_options_expression.rs`
 - `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
-- `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json`
-- `output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json`
+- `output/prompt13_reruns/spy_pass2/2026-04-11T20-32-04/2026-04-11T20-32-04/phase05_summary.json`
+- `output/prompt13_reruns/qqq_pass2/2026-04-11T20-32-14/2026-04-11T20-32-14/phase05_summary.json`
 - `scripts/run_gpu_perf_gate.ps1`
 
 Optional:
 
+- `output/prompt13_reruns/spy_pass1/2026-04-11T20-28-45/2026-04-11T20-28-45/phase05_summary.json`
+- `output/prompt13_reruns/qqq_pass1/2026-04-11T20-28-45/2026-04-11T20-28-45/phase05_summary.json`
 - `ARCHITECTURE_NOTES.md`
 - `RELEASE.md`
 
@@ -2441,9 +2448,12 @@ Constraints:
 - stay inside the current options optimization + embedded validation workflow
 - do not recommend generic CUDA heroics
 - do not recommend SASS work unless the attached evidence makes it genuinely high-ROI
+- treat Prompt 13 as completed baseline work, not as an open implementation question
+- use the Prompt 13 pass-2 reruns as the authoritative current cost snapshot unless the older attached artifact is needed for kernel-shape context
 - keep CPU fallback and correctness intact
 - keep the current artifact-driven workflow intact
 - if current evidence is insufficient for a SASS-level decision, say so explicitly
+- explicitly state whether SPY's remaining promotion-gate miss is runtime-bound, density/quality-bound, finalist-boundary-bound, or simply not diagnosable from the attached evidence
 - distinguish clearly between:
   - implement-now runtime work
   - measure-first profiling work
@@ -2461,6 +2471,7 @@ Deliverables:
 6. Identify concrete code touch points by file and symbol.
 7. Define the exact profiling evidence required before any SASS-level implementation work should begin.
 8. State explicit stop conditions that would make the repo reject SASS-level work for the current options lane.
+9. State whether Prompt 14 should lead to implementation now, a measure-first profiling doc only, or no further action.
 
 Be repo-specific and skeptical. Treat “assembly-level tuning” as guilty until proven valuable.
 ```

@@ -44,10 +44,10 @@ pub use commands_analysis::{
 pub use commands_artifacts::{
     delete_run_artifact, list_artifact_library, list_meta_artifacts, list_ml_policy_eval_artifacts,
     list_run_artifacts, list_stage4_artifacts, list_stage5_artifacts,
-    load_latest_run_artifact_summary, load_meta_artifact_replay,
-    load_ml_policy_eval_artifact_replay, load_run_artifact, load_run_artifact_detail,
-    load_run_artifact_hydration, load_stage5_artifact_replay, open_runs_dir, save_batch_summary,
-    save_run_artifact, update_artifact_tags,
+    load_latest_run_artifact_hydration, load_latest_run_artifact_summary,
+    load_meta_artifact_replay, load_ml_policy_eval_artifact_replay, load_run_artifact,
+    load_run_artifact_detail, load_run_artifact_hydration, load_stage5_artifact_replay,
+    open_runs_dir, save_batch_summary, save_run_artifact, update_artifact_tags,
 };
 pub use commands_campaign::{
     preload_research_campaign_dataset_pack_headless, run_research_campaign,
@@ -76,13 +76,15 @@ pub use commands_dynamic::{
     DynamicStrategyConstantBitsResponse,
 };
 pub use commands_execution::{
+    alpaca_clear_api_credentials, alpaca_get_credential_status, alpaca_set_api_credentials,
     execute_strategy_signal_once, get_live_execution_snapshot, live_execution_runner_status,
     start_live_execution_runner, stop_live_execution_runner, test_alpaca_connection,
-    ExecuteStrategySignalRequest, ExecuteStrategySignalResponse, GetLiveExecutionSnapshotRequest,
+    AlpacaCredentialStorageState, AlpacaCredentialStorageStatus, ExecuteStrategySignalRequest,
+    ExecuteStrategySignalResponse, GetLiveExecutionSnapshotRequest,
     GetLiveExecutionSnapshotResponse, LiveExecutionMode, LiveExecutionRunnerConfig,
     LiveExecutionRunnerStatus, LiveOrderSnapshot, LivePositionSnapshot, LiveRiskOverride,
-    LiveStrategySpec, StopLiveExecutionRunnerResponse, TestAlpacaConnectionRequest,
-    TestAlpacaConnectionResponse,
+    LiveStrategySpec, SetAlpacaApiCredentialsRequest, StopLiveExecutionRunnerResponse,
+    TestAlpacaConnectionRequest, TestAlpacaConnectionResponse,
 };
 pub use commands_meta::{
     apply_ml_confidence_model, delete_ml_confidence_model, evaluate_ml_confidence_policy,
@@ -131,7 +133,7 @@ pub use commands_reports_api::{
     build_report_xlsx, build_validation_shortlist_csv, open_path, open_reports_dir, reveal_path,
     save_report_xlsx, save_report_xlsx_from_artifact, SaveReportXlsxResponse,
 };
-pub use commands_system::{get_gpu_status, set_window_effect, GpuStatus};
+pub use commands_system::{exit_application, get_gpu_status, set_window_effect, GpuStatus};
 #[allow(unused_imports)]
 pub(crate) use commands_validation::apply_cross_ticker_validation;
 pub use commands_validation::{
@@ -139,10 +141,11 @@ pub use commands_validation::{
     run_double_ma_validation, PriceBar,
 };
 pub use run_artifacts::{
-    ArtifactLibrarySnapshot, MetaArtifactReplayResponse, MetaArtifactSummary,
-    MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary, RunArtifactDetailResponse,
-    RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse, Stage4ArtifactSummary,
-    Stage5ArtifactReplayResponse, Stage5ArtifactSummary, WorkflowArtifactsHydrationPayload,
+    ArtifactLibrarySnapshot, LatestRunArtifactHydrationResponse, MetaArtifactReplayResponse,
+    MetaArtifactSummary, MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary,
+    RunArtifactDetailResponse, RunArtifactSummary, SaveBatchSummaryResponse,
+    SaveRunArtifactResponse, Stage4ArtifactSummary, Stage5ArtifactReplayResponse,
+    Stage5ArtifactSummary, WorkflowArtifactsHydrationPayload,
 };
 
 pub use ta_app_core::{

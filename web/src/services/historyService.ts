@@ -15,6 +15,7 @@ import {
   useWorkflowArtifactsStore,
 } from "../stores/workflowArtifactsStore";
 import { resolveRuntimePinia } from "../stores/runtimePinia";
+import { measureArtifactHistoryPerf } from "./artifactHistoryPerf";
 import { openPathWithRevealFallback } from "../utils/openPath";
 import { useAdvancedStore } from "../stores/advancedStore";
 import { useAnalysisStore } from "../stores/analysisStore";
@@ -972,16 +973,28 @@ async function loadRunArtifactHydration(
 ): Promise<{ path: string; payload: RunArtifactHydrationResponse }> {
   const nextPath = normalizePath(path);
   if (!nextPath) throw new Error("Select a saved run first.");
-  const raw = (await invokeCommand("load_run_artifact_hydration", {
-    path: nextPath,
-  })) as RunArtifactHydrationResponse;
-  return {
-    path: nextPath,
-    payload:
-      raw && typeof raw === "object"
-        ? raw
-        : ({} as RunArtifactHydrationResponse),
-  };
+  return measureArtifactHistoryPerf(
+    "historyService.loadSavedRunHydrationMs",
+    async () => {
+      const raw = (await invokeCommand("load_run_artifact_hydration", {
+        path: nextPath,
+      })) as RunArtifactHydrationResponse;
+      return {
+        path: nextPath,
+        payload:
+          raw && typeof raw === "object"
+            ? raw
+            : ({} as RunArtifactHydrationResponse),
+      };
+    },
+    {
+      meta: { path: nextPath },
+      onSuccessMeta: (result) => ({
+        hasRun: !!asRecord(result.payload.currentRun),
+        hasValidation: !!asRecord(result.payload.currentValidation),
+      }),
+    },
+  );
 }
 
 async function loadRunArtifactDetailRecord(
@@ -989,16 +1002,28 @@ async function loadRunArtifactDetailRecord(
 ): Promise<{ path: string; detail: RunArtifactDetailResponse }> {
   const nextPath = normalizePath(path);
   if (!nextPath) throw new Error("Missing run artifact path.");
-  const raw = (await invokeCommand("load_run_artifact_detail", {
-    path: nextPath,
-  })) as RunArtifactDetailResponse;
-  return {
-    path: nextPath,
-    detail:
-      raw && typeof raw === "object"
-        ? raw
-        : ({} as RunArtifactDetailResponse),
-  };
+  return measureArtifactHistoryPerf(
+    "historyService.loadSavedRunDetailMs",
+    async () => {
+      const raw = (await invokeCommand("load_run_artifact_detail", {
+        path: nextPath,
+      })) as RunArtifactDetailResponse;
+      return {
+        path: nextPath,
+        detail:
+          raw && typeof raw === "object"
+            ? raw
+            : ({} as RunArtifactDetailResponse),
+      };
+    },
+    {
+      meta: { path: nextPath },
+      onSuccessMeta: (result) => ({
+        hasValidation: !!result.detail.hasValidation,
+        strategyKind: normalizeText(result.detail.strategyKind),
+      }),
+    },
+  );
 }
 
 export async function applySession(ts: string): Promise<void> {
@@ -1093,45 +1118,56 @@ export async function saveSavedRunTags(
 }
 
 export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary> {
-  const rows = (await invokeCommand("list_run_artifacts")) as unknown;
-  const list = Array.isArray(rows) ? rows : [];
-  const runs: HistorySavedRunSummary[] = [];
+  return measureArtifactHistoryPerf(
+    "historyService.refreshSavedRunsMs",
+    async () => {
+      const rows = (await invokeCommand("list_run_artifacts")) as unknown;
+      const list = Array.isArray(rows) ? rows : [];
+      const runs: HistorySavedRunSummary[] = [];
 
-  for (const entry of list) {
-    const row = (
-      entry && typeof entry === "object" ? entry : {}
-    ) as RunArtifactSummaryResponse;
-    const path = normalizeText(row.path);
-    if (!path) continue;
+      for (const entry of list) {
+        const row = (
+          entry && typeof entry === "object" ? entry : {}
+        ) as RunArtifactSummaryResponse;
+        const path = normalizeText(row.path);
+        if (!path) continue;
 
-    const bytes = Number(row.bytes);
-    runs.push({
-      ts: normalizeText(row.ts),
-      path,
-      bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
-      strategyKind: normalizeText(row.strategy_kind),
-      configFingerprint: normalizeText(row.config_fingerprint),
-      configFingerprintVersion: normalizeOptionalNumber(
-        row.config_fingerprint_version,
-      ),
-      hasValidation: !!row.has_validation,
-      reportXlsxPath: normalizeText(row.report_xlsx_path),
-      csvPath: normalizeText(row.csv_path),
-      timeframe: normalizeText(row.timeframe),
-      baseTimeframe: normalizeText(row.base_timeframe),
-      derivedTimeframe: normalizeText(row.derived_timeframe),
-      resampleApplied:
-        row.resample_applied == null
-          ? null
-          : parseBooleanLike(row.resample_applied),
-      sourceContentFingerprint: normalizeText(row.source_content_fingerprint),
-      routeProvenance: parseRouteProvenance(row.route_provenance),
-      lineage: parseArtifactLineage(row.lineage),
-      tags: normalizeStringList(row.tags),
-    });
-  }
+        const bytes = Number(row.bytes);
+        runs.push({
+          ts: normalizeText(row.ts),
+          path,
+          bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
+          strategyKind: normalizeText(row.strategy_kind),
+          configFingerprint: normalizeText(row.config_fingerprint),
+          configFingerprintVersion: normalizeOptionalNumber(
+            row.config_fingerprint_version,
+          ),
+          hasValidation: !!row.has_validation,
+          reportXlsxPath: normalizeText(row.report_xlsx_path),
+          csvPath: normalizeText(row.csv_path),
+          timeframe: normalizeText(row.timeframe),
+          baseTimeframe: normalizeText(row.base_timeframe),
+          derivedTimeframe: normalizeText(row.derived_timeframe),
+          resampleApplied:
+            row.resample_applied == null
+              ? null
+              : parseBooleanLike(row.resample_applied),
+          sourceContentFingerprint: normalizeText(row.source_content_fingerprint),
+          routeProvenance: parseRouteProvenance(row.route_provenance),
+          lineage: parseArtifactLineage(row.lineage),
+          tags: normalizeStringList(row.tags),
+        });
+      }
 
-  return { runs };
+      return { runs };
+    },
+    {
+      onSuccessMeta: (summary) => ({
+        runCount: summary.runs.length,
+        validationCount: summary.runs.filter((run) => run.hasValidation).length,
+      }),
+    },
+  );
 }
 
 export async function openRunsDir(): Promise<void> {

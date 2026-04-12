@@ -6,6 +6,7 @@ import {
 } from '../stores/workflowArtifactsStore'
 import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { refreshAnalysisFromWorkflowRun } from './analysisService'
+import { measureArtifactHistoryPerf } from './artifactHistoryPerf'
 
 type WorkflowArtifactsSource = 'legacy-runtime' | 'vue'
 
@@ -61,13 +62,49 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
   source: WorkflowArtifactsSource = 'vue',
 ): Promise<boolean> {
   try {
-    const latestRaw = (await invokeCommand('load_latest_run_artifact_summary')) as unknown
+    const currentIdentity = readLatestWorkflowRunIdentitySnapshot()
+    if (!currentIdentity) {
+      return await measureArtifactHistoryPerf(
+        'workflowArtifactsSync.latestRunFastPathMs',
+        async () => {
+          const latestHydrationRaw = (await invokeCommand('load_latest_run_artifact_hydration')) as unknown
+          const latestHydration = asRecord(latestHydrationRaw)
+          const payload = asRecord(latestHydration?.hydration)
+          if (!payload) return false
+
+          const applied = applyWorkflowArtifactsPayload(payload, source)
+          const meaningfullyApplied = applied.runChanged || applied.validationChanged
+          if (meaningfullyApplied) refreshAnalysisFromWorkflowRun()
+          return meaningfullyApplied
+        },
+        {
+          meta: {
+            source,
+            hasCurrentIdentity: false,
+          },
+          onSuccessMeta: (synced) => ({ synced }),
+        },
+      )
+    }
+
+    const latestRaw = (await measureArtifactHistoryPerf(
+      'workflowArtifactsSync.latestRunSummaryCheckMs',
+      () => invokeCommand('load_latest_run_artifact_summary'),
+      {
+        meta: {
+          source,
+          hasCurrentIdentity: true,
+        },
+        onSuccessMeta: (raw) => ({
+          hasLatestPath: !!normalizeText(asRecord(raw)?.path),
+        }),
+      },
+    )) as unknown
     const latest = asRecord(latestRaw)
     const latestPath = normalizeText(latest?.path)
     const latestTs = normalizeText(latest?.ts)
     if (!latest || !latestPath) return false
 
-    const currentIdentity = readLatestWorkflowRunIdentitySnapshot()
     const canSkipLoad = !!(
       currentIdentity &&
       currentIdentity.artifactPath === latestPath &&
@@ -80,9 +117,19 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
       return false
     }
 
-    const payloadRaw = (await invokeCommand('load_run_artifact_hydration', {
-      path: latestPath,
-    })) as unknown
+    const payloadRaw = (await measureArtifactHistoryPerf(
+      'workflowArtifactsSync.latestRunRehydrationMs',
+      () =>
+        invokeCommand('load_run_artifact_hydration', {
+          path: latestPath,
+        }),
+      {
+        meta: {
+          source,
+          path: latestPath,
+        },
+      },
+    )) as unknown
     const payload = asRecord(payloadRaw)
     if (!payload) return false
 

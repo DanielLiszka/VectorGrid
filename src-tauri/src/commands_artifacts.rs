@@ -1,18 +1,20 @@
 use super::run_artifacts::{
-    self, ArtifactLibrarySnapshot, MetaArtifactReplayResponse, MetaArtifactSummary,
-    MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary, RunArtifactDetailResponse,
-    RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse, Stage4ArtifactSummary,
-    Stage5ArtifactReplayResponse, Stage5ArtifactSummary, WorkflowArtifactsHydrationPayload,
+    self, ArtifactLibrarySnapshot, LatestRunArtifactHydrationResponse, MetaArtifactReplayResponse,
+    MetaArtifactSummary, MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary,
+    RunArtifactDetailResponse, RunArtifactSummary, SaveBatchSummaryResponse,
+    SaveRunArtifactResponse, Stage4ArtifactSummary, Stage5ArtifactReplayResponse,
+    Stage5ArtifactSummary, WorkflowArtifactsHydrationPayload,
 };
 use serde_json::Value;
 
 #[tauri::command]
 pub async fn save_run_artifact(
     artifact: Value,
+    existing_path: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<SaveRunArtifactResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        run_artifacts::save_run_artifact_blocking(artifact, app)
+        run_artifacts::save_run_artifact_blocking(artifact, app, existing_path)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -43,6 +45,17 @@ pub async fn load_latest_run_artifact_summary(
 ) -> Result<Option<RunArtifactSummary>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         run_artifacts::load_latest_run_artifact_summary_blocking(app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_latest_run_artifact_hydration(
+    app: tauri::AppHandle,
+) -> Result<Option<LatestRunArtifactHydrationResponse>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_latest_run_artifact_hydration_blocking(app)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -39,6 +39,7 @@ const stableSmokeSpecs = [
   './e2e/desktop/specs/desktop-task-center.spec.ts',
   './e2e/desktop/specs/desktop-settings-diagnostics.spec.ts',
   './e2e/desktop/specs/desktop-titlebar-native-controls.spec.ts',
+  './e2e/desktop/specs/desktop-app-close.spec.ts',
 ]
 const geometrySmokeSpec = './e2e/desktop/specs/desktop-window-geometry.spec.ts'
 

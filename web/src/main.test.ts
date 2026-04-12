@@ -48,6 +48,8 @@ vi.mock('./utils/storage', async () => {
 })
 
 import { startVectorGridApp } from './main'
+import { clearArtifactHistoryPerfEntries, readArtifactHistoryPerfEntries } from './services/artifactHistoryPerf'
+import { clearValidationReportPerfEntries } from './services/validationReportPerf'
 import { initializeDesktopProductization } from './services/desktopProductization'
 import { applyWorkflowBootstrapFromStorage } from './services/workflowBootstrap'
 
@@ -56,6 +58,10 @@ describe('startVectorGridApp', () => {
     document.body.innerHTML = ''
     bindRuntimePinia(null)
     vi.clearAllMocks()
+    clearArtifactHistoryPerfEntries()
+    clearValidationReportPerfEntries()
+    delete window.__VTA_ARTIFACT_HISTORY_PERF__
+    delete window.__VTA_VALIDATION_REPORT_PERF__
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
@@ -93,6 +99,10 @@ describe('startVectorGridApp', () => {
 
     expect(vi.mocked(applyWorkflowBootstrapFromStorage)).toHaveBeenCalledWith({ includeDeferredData: false })
     expect(vi.mocked(initializeDesktopProductization)).toHaveBeenCalled()
+    expect(window.__VTA_ARTIFACT_HISTORY_PERF__?.readEntries().map((entry) => entry.name)).toEqual(
+      expect.arrayContaining(['main.firstPaintWaitMs', 'main.desktopInitializationMs', 'main.bootToReadyMs']),
+    )
+    expect(window.__VTA_VALIDATION_REPORT_PERF__?.readEntries()).toEqual([])
   })
 
   it('waits for critical workflow bootstrap hydration before marking the runtime ready', async () => {
@@ -127,6 +137,9 @@ describe('startVectorGridApp', () => {
     expect(runtimeStore.bootPhase).toBe('ready')
     expect(runtimeStore.bootStage).toBe(BOOT_STAGES.FRONTEND_RUNTIME_READY)
     expect(settled).toBe(true)
+    expect(readArtifactHistoryPerfEntries().map((entry) => entry.name)).toEqual(
+      expect.arrayContaining(['main.firstPaintWaitMs', 'main.desktopInitializationMs', 'main.bootToReadyMs']),
+    )
   })
 
   it('records a recoverable desktop startup warning but still reaches ready', async () => {
@@ -162,5 +175,12 @@ describe('startVectorGridApp', () => {
     expect(runtimeStore.bootPhase).toBe('error')
     expect(runtimeStore.bootStage).toBe(BOOT_STAGES.FRONTEND_RUNTIME_FAILED)
     expect(runtimeStore.bootError).toContain('Dataset bootstrap failed')
+    expect(readArtifactHistoryPerfEntries()[0]).toMatchObject({
+      name: 'main.bootToReadyMs',
+      meta: expect.objectContaining({
+        outcome: 'error',
+        bootStage: BOOT_STAGES.RESTORING_WORKSPACE_STATE,
+      }),
+    })
   })
 })

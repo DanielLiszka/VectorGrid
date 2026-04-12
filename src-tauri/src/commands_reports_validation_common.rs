@@ -928,6 +928,93 @@ fn is_double_like_strategy(strategy_kind: &str) -> bool {
     )
 }
 
+fn is_composite_double_like_strategy(strategy_kind: &str) -> bool {
+    matches!(
+        strategy_kind.trim(),
+        "CompositeTrend" | "RegimeHybrid" | "BreakoutMomentum"
+    )
+}
+
+fn normalize_boolish_json(value: Option<&Value>) -> bool {
+    match value {
+        Some(value) if value.is_boolean() => value.as_bool().unwrap_or(false),
+        Some(value) => {
+            let text = normalize_text(value.as_str()).to_ascii_lowercase();
+            matches!(text.as_str(), "true" | "1" | "yes" | "on")
+        }
+        None => false,
+    }
+}
+
+fn composite_double_like_expected_route_text(
+    strategy_kind: &str,
+    validation_req: &Value,
+    backend: &str,
+    mode: &str,
+) -> Option<(String, String)> {
+    if !is_composite_double_like_strategy(strategy_kind) {
+        return None;
+    }
+
+    let requested_backend = match backend {
+        "CpuOnly" => "CpuOnly",
+        "Auto" => "Auto",
+        "GpuOnly" | "GpuHybridKernel" | "GpuKernel" => "GpuKernel",
+        _ => "Auto",
+    };
+    let strategy = validation_req
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .and_then(|row| row.get("strategy"));
+    let trend_use_adx =
+        normalize_boolish_json(strategy.and_then(|row| row.get("trend_quality_use_adx")));
+    let breakout_use_adx =
+        normalize_boolish_json(strategy.and_then(|row| row.get("breakout_use_adx")));
+
+    let target_backend = if requested_backend == "CpuOnly" {
+        "CpuOnly"
+    } else if strategy_kind == "RegimeHybrid" {
+        "GpuHybridKernel"
+    } else if strategy_kind == "CompositeTrend" && trend_use_adx {
+        "GpuHybridKernel"
+    } else if strategy_kind == "BreakoutMomentum" && breakout_use_adx {
+        "GpuHybridKernel"
+    } else {
+        "GpuKernel"
+    };
+
+    let route_descriptor = match target_backend {
+        "GpuHybridKernel" => "GPU hybrid main route",
+        "GpuKernel" => "GPU kernel main route",
+        _ => "CPU route",
+    };
+    let module_route_descriptor = match target_backend {
+        "GpuHybridKernel" => "Expected GPU hybrid route",
+        "GpuKernel" => "Expected GPU kernel route",
+        _ => "CPU route",
+    };
+    let suffix = if mode == "auto" {
+        " when available"
+    } else {
+        ""
+    };
+    let auto_route_descriptor = "GPU kernel main route";
+    let auto_module_route_descriptor = "Expected GPU kernel route";
+    let route_summary = if mode == "auto" {
+        format!("Auto requested | expected {auto_route_descriptor} ({strategy_kind}){suffix}")
+    } else {
+        format!("{backend} requested | expected {route_descriptor} ({strategy_kind})")
+    };
+    let module_summary_prefix = if mode == "auto" {
+        format!("{auto_module_route_descriptor} ({strategy_kind}){suffix}")
+    } else {
+        format!("{module_route_descriptor} ({strategy_kind}){suffix}")
+    };
+
+    Some((route_summary, module_summary_prefix))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct PlateauGroupKey {
     profile_kind: String,
@@ -1877,13 +1964,28 @@ fn build_expected_execution_summary(
     let mut fallback_summary = "-".to_string();
     let mut route_note_summary = "-".to_string();
     let is_double_like = is_double_like_strategy(strategy_kind);
+    let composite_double_like_route = composite_double_like_expected_route_text(
+        strategy_kind,
+        validation_req,
+        backend,
+        "requested",
+    );
 
     if is_double_like {
         match backend {
             "CpuOnly" => {
-                route_summary = "CpuOnly requested | CPU validation route expected".to_string();
+                route_summary = composite_double_like_route
+                    .as_ref()
+                    .map(|(route, _)| route.clone())
+                    .unwrap_or_else(|| {
+                        "CpuOnly requested | CPU validation route expected".to_string()
+                    });
                 module_summary = format!(
-                    "CPU route: {}{}",
+                    "{}: {}{}",
+                    composite_double_like_route
+                        .as_ref()
+                        .map(|(_, module)| module.as_str())
+                        .unwrap_or("CPU route"),
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
@@ -1893,11 +1995,21 @@ fn build_expected_execution_summary(
                 );
             }
             "GpuOnly" => {
-                route_summary =
+                route_summary = if is_composite_double_like_strategy(strategy_kind) {
+                    format!(
+                        "GpuOnly requested | expected CpuOnly fallback for fixed-candidate validation ({strategy_kind})"
+                    )
+                } else {
                     "GpuOnly requested | expected CpuOnly fallback for fixed-candidate validation"
-                        .to_string();
+                        .to_string()
+                };
                 module_summary = format!(
-                    "Expected CPU fallback route: {}{}",
+                    "{}: {}{}",
+                    if is_composite_double_like_strategy(strategy_kind) {
+                        format!("Expected CPU fallback route ({strategy_kind})")
+                    } else {
+                        "Expected CPU fallback route".to_string()
+                    },
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
@@ -1908,11 +2020,19 @@ fn build_expected_execution_summary(
                 fallback_summary = "GpuOnly is not supported for fixed-candidate Double-MA validation; use GpuKernel, GpuHybridKernel, or Auto.".to_string();
             }
             "GpuHybridKernel" => {
-                route_summary =
-                    "GpuHybridKernel requested | expected GPU main route (GpuKernel-compatible)"
-                        .to_string();
+                route_summary = composite_double_like_route
+                    .as_ref()
+                    .map(|(route, _)| route.clone())
+                    .unwrap_or_else(|| {
+                        "GpuHybridKernel requested | expected GPU main route (GpuKernel-compatible)"
+                            .to_string()
+                    });
                 module_summary = format!(
-                    "GPU main route: {}{}",
+                    "{}: {}{}",
+                    composite_double_like_route
+                        .as_ref()
+                        .map(|(_, module)| module.as_str())
+                        .unwrap_or("GPU main route"),
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
@@ -1922,9 +2042,16 @@ fn build_expected_execution_summary(
                 );
             }
             "GpuKernel" => {
-                route_summary = "GpuKernel requested | expected GPU main route".to_string();
+                route_summary = composite_double_like_route
+                    .as_ref()
+                    .map(|(route, _)| route.clone())
+                    .unwrap_or_else(|| "GpuKernel requested | expected GPU main route".to_string());
                 module_summary = format!(
-                    "GPU main route: {}{}",
+                    "{}: {}{}",
+                    composite_double_like_route
+                        .as_ref()
+                        .map(|(_, module)| module.as_str())
+                        .unwrap_or("GPU main route"),
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
@@ -1934,10 +2061,24 @@ fn build_expected_execution_summary(
                 );
             }
             _ => {
-                route_summary =
-                    "Auto requested | expected GPU main route when available".to_string();
+                let auto_composite_double_like_route = composite_double_like_expected_route_text(
+                    strategy_kind,
+                    validation_req,
+                    backend,
+                    "auto",
+                );
+                route_summary = auto_composite_double_like_route
+                    .as_ref()
+                    .map(|(route, _)| route.clone())
+                    .unwrap_or_else(|| {
+                        "Auto requested | expected GPU main route when available".to_string()
+                    });
                 module_summary = format!(
-                    "Expected GPU main route: {}{}",
+                    "{}: {}{}",
+                    auto_composite_double_like_route
+                        .as_ref()
+                        .map(|(_, module)| module.as_str())
+                        .unwrap_or("Expected GPU main route"),
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
@@ -2689,5 +2830,94 @@ mod tests {
         assert!(summary.route_note_summary.contains(
             "Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU."
         ));
+    }
+
+    #[test]
+    fn composite_trend_auto_expected_summary_stays_on_kernel_wording_even_with_adx() {
+        let kernel_req = json!({
+            "backend": { "backend": "Auto" },
+            "candidates": [
+                {
+                    "strategy": {
+                        "trend_quality_use_adx": false
+                    }
+                }
+            ]
+        });
+        let hybrid_req = json!({
+            "backend": { "backend": "Auto" },
+            "candidates": [
+                {
+                    "strategy": {
+                        "trend_quality_use_adx": true
+                    }
+                }
+            ]
+        });
+
+        let kernel_summary = build_expected_execution_summary("CompositeTrend", Some(&kernel_req));
+        assert!(kernel_summary
+            .route_summary
+            .contains("expected GPU kernel main route (CompositeTrend) when available"));
+        assert!(kernel_summary
+            .module_summary
+            .contains("Expected GPU kernel route (CompositeTrend) when available:"));
+
+        let hybrid_summary = build_expected_execution_summary("CompositeTrend", Some(&hybrid_req));
+        assert!(hybrid_summary
+            .route_summary
+            .contains("expected GPU kernel main route (CompositeTrend) when available"));
+        assert!(hybrid_summary
+            .module_summary
+            .contains("Expected GPU kernel route (CompositeTrend) when available:"));
+    }
+
+    #[test]
+    fn breakout_momentum_expected_summary_reroutes_explicit_kernel_request_when_adx_is_on() {
+        let req = json!({
+            "backend": { "backend": "GpuKernel" },
+            "candidates": [
+                {
+                    "strategy": {
+                        "breakout_use_adx": true
+                    }
+                }
+            ]
+        });
+
+        let summary = build_expected_execution_summary("BreakoutMomentum", Some(&req));
+        assert!(summary
+            .route_summary
+            .contains("GpuKernel requested | expected GPU hybrid main route (BreakoutMomentum)"));
+        assert!(summary
+            .module_summary
+            .contains("Expected GPU hybrid route (BreakoutMomentum):"));
+    }
+
+    #[test]
+    fn composite_double_like_cpu_and_gpuonly_expected_summaries_keep_strategy_labels() {
+        let cpu_req = json!({
+            "backend": { "backend": "CpuOnly" }
+        });
+        let gpu_only_req = json!({
+            "backend": { "backend": "GpuOnly" }
+        });
+
+        let cpu_summary = build_expected_execution_summary("CompositeTrend", Some(&cpu_req));
+        assert!(cpu_summary
+            .route_summary
+            .contains("CpuOnly requested | expected CPU route (CompositeTrend)"));
+        assert!(cpu_summary
+            .module_summary
+            .contains("CPU route (CompositeTrend):"));
+
+        let gpu_only_summary =
+            build_expected_execution_summary("BreakoutMomentum", Some(&gpu_only_req));
+        assert!(gpu_only_summary.route_summary.contains(
+            "GpuOnly requested | expected CpuOnly fallback for fixed-candidate validation (BreakoutMomentum)"
+        ));
+        assert!(gpu_only_summary
+            .module_summary
+            .contains("Expected CPU fallback route (BreakoutMomentum):"));
     }
 }

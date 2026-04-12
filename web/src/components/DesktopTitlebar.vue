@@ -12,7 +12,7 @@ import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { type TrackedTask, shouldGuardDesktopCloseForTask, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
-import { tauriRuntimeAvailable } from '../tauri/invoke'
+import { invokeCommand, tauriRuntimeAvailable } from '../tauri/invoke'
 import {
   WORKSPACE_SUBTITLES,
   mlSignalPrimaryActionForStep,
@@ -185,8 +185,11 @@ async function toggleMaximizeWindow(): Promise<void> {
 }
 
 async function requestClose(): Promise<void> {
-  if (!desktopWindow) return
-  await desktopWindow.destroy().catch(() => desktopWindow.close().catch(() => undefined))
+  if (!desktopRuntimeAvailable) return
+  await invokeCommand('exit_application').catch(async () => {
+    if (!desktopWindow) return
+    await desktopWindow.destroy().catch(() => desktopWindow.close().catch(() => undefined))
+  })
 }
 
 async function closeWindow(): Promise<void> {

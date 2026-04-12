@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
+  clearValidationReportPerfEntries,
+  readValidationReportPerfEntries,
+} from './validationReportPerf'
+import {
   crossRefresh,
   exportReportJson,
   exportReportXlsx,
@@ -102,11 +106,15 @@ function installDefaultInvokeCommandMock(): void {
     if (command === 'save_report_xlsx') {
       return {
         path: 'runs/vectorgrid_report_validation_test.xlsx',
+        artifact_updated: false,
+        artifact_update_warning: '',
       }
     }
     if (command === 'save_report_xlsx_from_artifact') {
       return {
         path: 'runs/vectorgrid_report_validation_test.xlsx',
+        artifact_updated: true,
+        artifact_update_warning: '',
       }
     }
     if (command === 'build_report_xlsx') {
@@ -143,6 +151,7 @@ describe('validationService', () => {
     useWorkflowArtifactsStore(pinia).clearArtifacts()
     vi.clearAllMocks()
     installDefaultInvokeCommandMock()
+    clearValidationReportPerfEntries()
     if (typeof window !== 'undefined') {
       window.__VTA_LEGACY_BOOTED__ = false
     }
@@ -2015,6 +2024,28 @@ describe('validationService', () => {
     expect(String(validationState.statusLine || '')).toMatch(
       /^Validation completed in \d+ms end-to-end \(\d+ms command\)\. Saved XLSX report: runs\/vectorgrid_report_validation_test\.xlsx$/,
     )
+    const perfEntries = readValidationReportPerfEntries()
+    expect(perfEntries.find((entry) => entry.name === 'validationService.validationCommandMs')?.meta).toMatchObject({
+      command: 'run_double_ma_validation',
+      outcome: 'ok',
+    })
+    expect(perfEntries.find((entry) => entry.name === 'validationService.autoExportReportXlsxMs')?.meta).toMatchObject({
+      returnedPath: true,
+      outcome: 'ok',
+    })
+    expect(perfEntries.find((entry) => entry.name === 'validationService.exportReportXlsxSaveMs')?.meta).toMatchObject({
+      branch: 'direct',
+      outcome: 'ok',
+    })
+    expect(perfEntries.find((entry) => entry.name === 'validationService.persistValidationArtifactMs')?.meta).toMatchObject({
+      persistedPathReturned: true,
+      outcome: 'ok',
+    })
+    expect(perfEntries.find((entry) => entry.name === 'validationService.runValidationEndToEndMs')?.meta).toMatchObject({
+      command: 'run_double_ma_validation',
+      autoExport: true,
+      returnedReportXlsxPath: true,
+    })
   })
 
   it('reuses artifact-backed dataset metadata when persisting validation artifacts', async () => {
@@ -2086,7 +2117,7 @@ describe('validationService', () => {
 
     const saveCall = invokeCommandMock.mock.calls.find(([command]) => command === 'save_run_artifact')
     const artifact = (saveCall?.[1] as { artifact?: Record<string, unknown> } | undefined)?.artifact
-      expect(artifact?.dataset_meta).toMatchObject({
+    expect(artifact?.dataset_meta).toMatchObject({
         csv_path: 'C:/data/AAPL.csv',
         timeframe: '1h',
         base_timeframe: '1m',
@@ -2568,6 +2599,18 @@ describe('validationService', () => {
     expect(String(validationState.statusLine || '')).toContain('Validation completed in')
     expect(String(validationState.statusLine || '')).toContain('Auto-export XLSX failed')
     expect(String(validationState.statusLine || '')).toContain('save failed')
+    const perfEntries = readValidationReportPerfEntries()
+    expect(perfEntries.find((entry) => entry.name === 'validationService.exportReportXlsxFallbackBuildMs')?.meta).toMatchObject({
+      branch: 'fallback_build',
+      outcome: 'error',
+    })
+    expect(perfEntries.find((entry) => entry.name === 'validationService.autoExportReportXlsxMs')?.meta).toMatchObject({
+      outcome: 'error',
+    })
+    expect(perfEntries.find((entry) => entry.name === 'validationService.runValidationEndToEndMs')?.meta).toMatchObject({
+      autoExport: true,
+      returnedReportXlsxPath: false,
+    })
   })
 
   it('keeps validation successful when artifact persistence fails', async () => {
@@ -2656,6 +2699,10 @@ describe('validationService', () => {
     expect(
       invokeCommandMock.mock.calls.filter(([command]) => command === 'save_run_artifact'),
     ).toHaveLength(1)
+    const saveCall = invokeCommandMock.mock.calls.find(([command]) => command === 'save_run_artifact')
+    expect(saveCall?.[1]).toMatchObject({
+      existing_path: 'runs/vectorgrid_existing_validation_test.json',
+    })
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
     expect(String(validationState.statusLine || '')).toContain('Validation completed in')
@@ -3035,6 +3082,9 @@ describe('validationService', () => {
       path: 'runs/vectorgrid_run_validation_test.json',
       max_rows: null,
     })
+    expect(
+      invokeCommandMock.mock.calls.filter(([command]) => command === 'save_run_artifact')
+    ).toHaveLength(0)
     expect(invokeCommandMock).toHaveBeenCalledWith('open_reports_dir')
   })
 
@@ -3115,6 +3165,24 @@ describe('validationService', () => {
       max_rows: 9,
     })
     expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
+    expect(
+      invokeCommandMock.mock.calls.filter(([command]) => command === 'save_run_artifact')
+    ).toHaveLength(0)
+    const workflowStore = useWorkflowArtifactsStore(pinia)
+    expect(workflowStore.currentRun?.reportXlsxPath).toBe('runs/vectorgrid_report_validation_test.xlsx')
+    const perfEntries = readValidationReportPerfEntries()
+    expect(perfEntries.find((entry) => entry.name === 'validationService.exportReportXlsxSaveMs')?.meta).toMatchObject({
+      branch: 'artifact',
+      trigger: 'manual',
+      outcome: 'ok',
+    })
+    expect(perfEntries.find((entry) => entry.name === 'validationService.exportReportXlsxTotalMs')?.meta).toMatchObject({
+      branch: 'artifact',
+      trigger: 'manual',
+      returnedPath: true,
+      artifactUpdated: true,
+      outcome: 'ok',
+    })
   })
 
   it('keeps CompositeMo Pareto artifacts on pareto-frontier admission and artifact-backed XLSX export', async () => {
@@ -3154,7 +3222,11 @@ describe('validationService', () => {
         return { path: 'runs/vectorgrid_run_validation_composite_mo_pareto.json', bytes: 196 }
       }
       if (command === 'save_report_xlsx_from_artifact') {
-        return { path: 'runs/vectorgrid_report_validation_composite_mo_pareto.xlsx' }
+        return {
+          path: 'runs/vectorgrid_report_validation_composite_mo_pareto.xlsx',
+          artifact_updated: true,
+          artifact_update_warning: '',
+        }
       }
       if (command === 'open_path' || command === 'reveal_path') {
         return true
@@ -3237,6 +3309,9 @@ describe('validationService', () => {
       max_rows: 5,
     })
     expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
+    expect(
+      invokeCommandMock.mock.calls.filter(([command]) => command === 'save_run_artifact')
+    ).toHaveLength(1)
   })
 
   it('preserves Stage 3 meta XLSX fallback with a single reveal when open_path fails', async () => {

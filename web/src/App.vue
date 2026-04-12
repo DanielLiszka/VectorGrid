@@ -5,7 +5,6 @@ import AppRuntimeBanner from './components/AppRuntimeBanner.vue'
 import DesktopTitlebar from './components/DesktopTitlebar.vue'
 import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
 import RunFooterPanel from './components/RunFooterPanel.vue'
-import StartupAnimationOverlay from './components/StartupAnimationOverlay.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
 import { useWorkflowStore } from './stores/workflowStore'
 import {
@@ -126,7 +125,6 @@ mountWhenActive('overview', () => overviewPanelActive.value)
 </script>
 
 <template>
-  <StartupAnimationOverlay />
   <DesktopTitlebar />
   <VueWorkspaceShell />
   <CommandPaletteOverlay />

@@ -1,6 +1,6 @@
 # Dense Results And History Scalability Plan
 
-Last updated: 2026-04-10
+Last updated: 2026-04-11
 
 ## Purpose
 
@@ -133,17 +133,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the dense fixtures and target row counts for Top, Validation, and History surfaces, including the source of each fixture and any wide-table pressure.
-- [ ] Record current responsiveness and scroll-host ownership before changing implementation.
-- [ ] Standardize which element owns scrolling and height constraints for each dense panel or state explicitly why a panel remains intentionally different.
-- [ ] Record the per-surface contract for Top, Validation, History, and Overview: role model, preserved state, scroll owner, and required proof.
-- [ ] Reuse the existing virtual-row pattern where it is already proven instead of inventing new table mechanics per panel.
-- [ ] Strengthen component tests so they validate real viewport ownership and not only synthetic row skipping.
-- [ ] Add browser proof for scroll-host ownership and visible-row truth on every changed dense interaction family.
-- [ ] Verify keyboard navigation, focus restoration, and screen-reader-visible structure after virtualization or layout changes, and require stable row identity before claiming focus-restoration guarantees across reorder/filter changes.
-- [ ] Keep preserved state behaviorally unchanged per surface: Top review state, Validation column posture, History search/selection state, and Overview review context unless explicitly widened.
-- [ ] Record rollback conditions if a dense-surface optimization makes debugging, visible-row truth, or accessibility materially worse.
-- [ ] Record any required cross-doc sync in first-tier shell/results/history docs if operator behavior changes.
+- [x] Define the dense fixtures and target row counts for Top, Validation, and History surfaces, including the source of each fixture and any wide-table pressure.
+- [x] Record current responsiveness and scroll-host ownership before changing implementation.
+- [x] Standardize which element owns scrolling and height constraints for each dense panel or state explicitly why a panel remains intentionally different.
+- [x] Record the per-surface contract for Top, Validation, History, and Overview: role model, preserved state, scroll owner, and required proof.
+- [x] Reuse the existing virtual-row pattern where it is already proven instead of inventing new table mechanics per panel.
+- [x] Strengthen component tests so they validate real viewport ownership and not only synthetic row skipping.
+- [x] Add browser proof for scroll-host ownership and visible-row truth on every changed dense interaction family.
+- [x] Verify keyboard navigation, focus restoration, and screen-reader-visible structure after virtualization or layout changes, and require stable row identity before claiming focus-restoration guarantees across reorder/filter changes.
+- [x] Keep preserved state behaviorally unchanged per surface: Top review state, Validation column posture, History search/selection state, and Overview review context unless explicitly widened.
+- [x] Record rollback conditions if a dense-surface optimization makes debugging, visible-row truth, or accessibility materially worse.
+- [x] Record any required cross-doc sync in first-tier shell/results/history docs if operator behavior changes.
 
 ## Verification Plan
 
@@ -163,6 +163,63 @@ Public-repo quality focus:
 - if `useHeadlessMatrixTable.ts` or `useVirtualTableRows.ts` changes, regression-check Meta and Execution even when they are not primary implementation targets
 - keep the current dense surfaces functional for smaller datasets even if a large-load optimization is later rolled back
 - do not widen this epic into artifact-library backend indexing except where that load directly shapes visible dense-surface behavior
+
+## Execution Notes
+
+- Closed as a bounded dense-history slice rather than a broad table rewrite:
+  - `TopWorkspacePanel.vue` and `ValidationWorkspacePanel.vue` already had explicit owned virtualization contracts and retained their existing targeted component proofs
+  - `OverviewWorkspacePanel.vue` remains intentionally different and was not forced into the matrix-table virtualization contract
+  - the remaining material dense-surface gap was the saved-run library inside `HistoryWorkspacePanel.vue`
+- Per-surface contract at closure:
+  - Top Results:
+    - role model: dense ranked matrix review
+    - scroll owner: existing virtual table viewport inside the panel
+    - preserved state: selection, compare tray, keyboard navigation, and column posture remain unchanged
+    - required proof retained: `TopWorkspacePanel.test.ts`
+  - Validation Results:
+    - role model: dense validation matrix review
+    - scroll owner: existing `virtualTableViewport`
+    - preserved state: validation column posture and row review context remain unchanged
+    - required proof retained: `ValidationWorkspacePanel.virtualization.test.ts`
+  - History:
+    - role model: dense saved-run/library list with search, reopen, and selection semantics
+    - scroll owner: new `historyVirtualListViewport` on the saved-run `<ul>`
+    - preserved state: search/filter behavior, selected-run state, and reopen semantics remain unchanged
+    - required proof added: `HistoryWorkspacePanel.virtualization.test.ts` and `history-dense-library-ux.spec.ts`
+  - Overview:
+    - role model: winner/baseline review
+    - scroll owner: unchanged panel/shell flow
+    - preserved state: review context unchanged
+    - required proof retained: existing `OverviewWorkspacePanel.test.ts`
+- Implementation details landed for the changed dense interaction family:
+  - `useVirtualTableRows.ts` now accepts an optional caller-owned `getItemKey` so virtual rows can preserve stable identity when a surface has a real artifact path or row id
+  - `HistoryWorkspacePanel.vue` now binds saved-run virtualization to an owned `historyVirtualListViewport` with `max-height: clamp(18rem, 42vh, 20rem)`, `rowHeightPx: 84`, and `overscan: 8`
+  - the saved-run list now renders top/bottom spacer rows, `aria-posinset`, and `aria-setsize`, and it resets the owned scroll host on mount through the shared helper
+- Representative dense fixtures and proofs used for closure:
+  - Top retained its current targeted virtual-window proof in `TopWorkspacePanel.test.ts`
+  - Validation retained its current 4-row virtual-window proof in `ValidationWorkspacePanel.virtualization.test.ts`
+  - History component proof used a 4-row saved-run fixture and verified that only the virtual window rows render, with spacer heights of `84 px` and `168 px`
+  - History browser proof used a 180-run saved-library fixture and verified:
+    - the saved-run list owns scrolling through `historyVirtualListViewport`
+    - an early timestamp is visible before scroll while a far-later timestamp is absent
+    - the later timestamp appears after scrolling the owned viewport
+    - rendered saved-run buttons stay less than the full 180-row fixture before and after scroll
+- Accessibility and focus posture at closure:
+  - the changed History surface kept native button rows rather than introducing a new roving-tabindex model
+  - stable row identity is now available through `getItemKey`, keyed by saved-run `path`
+  - `aria-posinset` / `aria-setsize` are now explicit on saved-run rows
+  - `npm.cmd --prefix web run a11y:smoke` remained green after the change
+- Rollback trigger for this epic:
+  - if the owned History viewport makes selected-run truth, reopen debugging, or button accessibility harder to reason about than the pre-change list, revert the History virtualization slice and preserve the unchanged Top/Validation contracts
+- Cross-doc sync was not required in the first-tier tree because operator-visible behavior did not widen and the dense-surface change stayed local to History plus the shared virtual-row helper
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/composables/useVirtualTableRows.test.ts src/components/HistoryWorkspacePanel.virtualization.test.ts src/components/HistoryWorkspacePanel.test.ts src/components/TopWorkspacePanel.test.ts src/components/ValidationWorkspacePanel.virtualization.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run build`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run baseline:ui`
 
 ## Related Docs
 

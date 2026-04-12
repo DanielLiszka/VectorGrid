@@ -22,6 +22,7 @@ const isFocusedMock = vi.fn(async () => true)
 const onResizedMock = vi.fn(async () => () => {})
 const onFocusChangedMock = vi.fn(async () => () => {})
 const onCloseRequestedMock = vi.fn(async () => () => {})
+const invokeCommandMock = vi.fn(async (_command: string, _args?: unknown) => undefined)
 
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
@@ -40,6 +41,7 @@ vi.mock('@tauri-apps/api/window', () => ({
 
 vi.mock('../tauri/invoke', () => ({
   tauriRuntimeAvailable: () => true,
+  invokeCommand: (command: string, args?: unknown) => invokeCommandMock(command, args),
 }))
 
 describe('DesktopTitlebar', () => {
@@ -59,6 +61,7 @@ describe('DesktopTitlebar', () => {
     onResizedMock.mockClear()
     onFocusChangedMock.mockClear()
     onCloseRequestedMock.mockClear()
+    invokeCommandMock.mockClear()
   })
 
   it('surfaces current workspace and keeps the titlebar free of dataset and task chips', () => {
@@ -145,7 +148,8 @@ describe('DesktopTitlebar', () => {
 
     expect(minimizeMock).toHaveBeenCalledTimes(1)
     expect(toggleMaximizeMock).toHaveBeenCalled()
-    expect(destroyMock).toHaveBeenCalledTimes(1)
+    expect(invokeCommandMock).toHaveBeenCalledWith('exit_application', undefined)
+    expect(destroyMock).not.toHaveBeenCalled()
   })
 
   it('guards close when the live runner is active', async () => {
@@ -167,7 +171,8 @@ describe('DesktopTitlebar', () => {
     await wrapper.get('.confirmationDialogActions button:last-child').trigger('click')
     await nextTick()
 
-    expect(destroyMock).toHaveBeenCalledTimes(1)
+    expect(invokeCommandMock).toHaveBeenCalledWith('exit_application', undefined)
+    expect(destroyMock).not.toHaveBeenCalled()
   })
 
   it('guards native close requests while tracked work is active', async () => {

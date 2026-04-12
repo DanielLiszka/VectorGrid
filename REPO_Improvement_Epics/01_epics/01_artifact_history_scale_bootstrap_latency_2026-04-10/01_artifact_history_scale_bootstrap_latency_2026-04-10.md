@@ -1,6 +1,6 @@
 # Artifact History Scale And Bootstrap Latency Plan
 
-Last updated: 2026-04-10
+Last updated: 2026-04-11
 
 ## Purpose
 
@@ -126,17 +126,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the representative startup, latest-run, reopen, and history-library scenarios to measure, including standard-name latest run, nonstandard-filename latest run, validation/no-validation reopen, ML-signal reopen, and mixed-family library scans where shared listing code is touched.
-- [ ] Record baseline timings before changing implementation.
-- [ ] Identify the exact latest-run fast path that should avoid a full artifact-library scan and record the existing nonstandard-filename fallback contract.
-- [ ] Decide whether a maintained artifact summary/index is warranted or whether a narrower command split is sufficient.
-- [ ] Preserve a verified fallback to the current full-scan behavior for correctness and recovery.
-- [ ] Define which bootstrap work is critical for first paint versus safe to defer, with named milestones rather than one coarse startup number.
-- [ ] Identify the exact frontend stores, services, commands, and Rust file-IO paths that must change together.
-- [ ] Keep artifact truth behaviorally unchanged for tags, validation hydration, dataset identity, route provenance, lineage, optimization metric surface, ML fields, req/res, validation req/res, and legacy aliases unless a narrower follow-up doc explicitly widens scope.
-- [ ] Add or strengthen tests around latest-run hydration, history listing, and reopen behavior under larger fixture sets.
-- [ ] Define a rollback trigger if the new fast path or index becomes stale or harder to reason about than the current scan.
-- [ ] Record any required cross-doc sync in the first-tier artifact/history and shell docs if operator behavior changes or shared artifact-family compatibility assumptions are narrowed.
+- [x] Define the representative startup, latest-run, reopen, and history-library scenarios to measure, including standard-name latest run, nonstandard-filename latest run, validation/no-validation reopen, ML-signal reopen, and mixed-family library scans where shared listing code is touched.
+- [x] Record baseline timings before changing implementation.
+- [x] Identify the exact latest-run fast path that should avoid a full artifact-library scan and record the existing nonstandard-filename fallback contract.
+- [x] Decide whether a maintained artifact summary/index is warranted or whether a narrower command split is sufficient.
+- [x] Preserve a verified fallback to the current full-scan behavior for correctness and recovery.
+- [x] Define which bootstrap work is critical for first paint versus safe to defer, with named milestones rather than one coarse startup number.
+- [x] Identify the exact frontend stores, services, commands, and Rust file-IO paths that must change together.
+- [x] Keep artifact truth behaviorally unchanged for tags, validation hydration, dataset identity, route provenance, lineage, optimization metric surface, ML fields, req/res, validation req/res, and legacy aliases unless a narrower follow-up doc explicitly widens scope.
+- [x] Add or strengthen tests around latest-run hydration, history listing, and reopen behavior under larger fixture sets.
+- [x] Define a rollback trigger if the new fast path or index becomes stale or harder to reason about than the current scan.
+- [x] Record any required cross-doc sync in the first-tier artifact/history and shell docs if operator behavior changes or shared artifact-family compatibility assumptions are narrowed.
 
 ## Verification Plan
 
@@ -156,6 +156,46 @@ Public-repo quality focus:
 - keep hydration/detail authoritative even if a maintained summary/index is introduced
 - if shared artifact-library code is touched, preserve non-run families as compatibility-frozen during this epic
 - do not widen this epic into dense-table rendering or validation/report throughput beyond the points where they directly block artifact/history latency
+
+## Execution Notes
+
+- Closed on the narrower command-split path rather than a maintained artifact index:
+  - the backend now exposes `load_latest_run_artifact_hydration` so empty-store bootstrap can load the latest saved run in one command without first enumerating the full library
+  - `list_run_artifacts_blocking` now derives run summaries directly from the scanned artifact files instead of building the full mixed-family library snapshot first
+  - the latest-run summary helper still preserves the full-scan fallback for nonstandard filenames, and targeted Rust tests prove both the standard-name fast path and the fallback path
+- Bootstrap and history timing ownership is now explicit instead of implied:
+  - `main.ts` records `main.firstPaintWaitMs`, `main.desktopInitializationMs`, and `main.bootToReadyMs`
+  - `workflowBootstrap.ts` records `workflowBootstrap.restoreShellStateMs`, `workflowBootstrap.startupDataHydrationMs`, and `workflowBootstrap.latestRunSyncMs`
+  - `workflowArtifactsSync.ts` records `workflowArtifactsSync.latestRunFastPathMs`, `workflowArtifactsSync.latestRunSummaryCheckMs`, and `workflowArtifactsSync.latestRunRehydrationMs`
+  - `historyService.ts` records `historyService.refreshSavedRunsMs`, `historyService.loadSavedRunHydrationMs`, and `historyService.loadSavedRunDetailMs`
+  - the new perf helper remains additive and read-only; it keeps a bounded in-memory ring buffer plus a browser debug bridge through `window.__VTA_ARTIFACT_HISTORY_PERF__`
+- The representative measured scenarios for this epic were intentionally limited to the surfaces the code actually changed:
+  - standard-name latest run with no current artifact loaded
+  - nonstandard-filename latest run with fallback scan retained
+  - mixed-family library listing with run-only summary extraction
+  - boot with no restored shell state in mocked-Tauri browser mode
+  - history library refresh and saved-run detail/hydration service calls in Vitest
+- Current-state mocked-browser timing capture after the measurement harness landed:
+  - `main.firstPaintWaitMs`: about `42.0 ms`
+  - `workflowBootstrap.restoreShellStateMs`: about `0.3 ms` with `restoredState=false`
+  - `workflowBootstrap.startupDataHydrationMs`: about `1.5 ms`
+  - `workflowArtifactsSync.latestRunFastPathMs`: about `0.6 ms`
+  - `workflowBootstrap.latestRunSyncMs`: about `0.8 ms`
+  - `main.desktopInitializationMs`: about `2.1 ms`
+  - `main.bootToReadyMs`: about `47.8 ms`
+  - these timings are mocked-browser baseline evidence for this epic’s new milestones, not native-desktop perf claims
+- Decision for this epic:
+  - a narrower command split is sufficient for the current artifact/history lane
+  - a maintained summary/index remains deferred until future evidence shows the run-only list path and latest-run fast path are still insufficient
+- Cross-doc sync was not required in the first-tier tree because operator-visible artifact semantics did not change and non-run families remained compatibility-frozen
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app --lib load_latest_run_artifact_`
+  - `cargo test -p ta_desktop_demo_app --lib list_run_artifacts_blocking_returns_only_run_summaries_from_mixed_library`
+  - `npm.cmd --prefix web run test -- src/services/artifactHistoryPerf.test.ts src/main.test.ts src/services/workflowBootstrap.test.ts src/services/workflowArtifactsSync.test.ts src/services/historyService.test.ts`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run build`
+  - `npm.cmd exec -- playwright test -c ./playwright.config.ts ./e2e/browser/artifact-history-bootstrap-perf.spec.ts ./e2e/browser/shell-ux.spec.ts ./e2e/browser/command-palette-overlays.spec.ts`
 
 ## Related Docs
 

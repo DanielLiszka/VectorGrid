@@ -1,11 +1,23 @@
 // @vitest-environment jsdom
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { nextTick } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import HistoryWorkspacePanel from "./HistoryWorkspacePanel.vue";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+
+vi.mock("../composables/useVirtualTableRows", () => ({
+  useVirtualTableRows: (rows: { value: unknown[] }) => ({
+    scrollElementRef: ref(null),
+    virtualRows: computed(() =>
+      rows.value.map((row, index) => ({ index, row })),
+    ),
+    topSpacerPx: computed(() => 0),
+    bottomSpacerPx: computed(() => 0),
+    scrollToTop: vi.fn(),
+  }),
+}));
 
 describe("HistoryWorkspacePanel", () => {
   let pinia: ReturnType<typeof createPinia>;
@@ -229,6 +241,52 @@ describe("HistoryWorkspacePanel", () => {
       new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
     );
     expect(document.activeElement).toBe(savedButtons[0]);
+  });
+
+  it("renders compact route provenance details in saved-run list rows", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+    history.savedRunsVisible = [
+      {
+        ts: "2026-03-21T10:00:00Z",
+        path: "C:/runs/a.json",
+        bytes: 1024,
+        strategyKind: "CompositeTrend",
+        hasValidation: true,
+        reportXlsxPath: "C:/runs/a.xlsx",
+        csvPath: "C:/data/a.csv",
+        routeProvenance: {
+          requestedRoute: "Auto",
+          resolvedRoute: "Auto->GpuKernel",
+          realizedRoute: "GpuKernel",
+          routeChanged: true,
+          fallbackReason: "GPU validation runtime not implemented yet; using CPU validation.",
+        },
+        tags: ["a"],
+      },
+    ];
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const routePill = document.querySelector(
+      'ul[aria-label="Saved run artifacts"] .routePill',
+    ) as HTMLElement | null;
+    expect(routePill).not.toBeNull();
+    expect(routePill?.textContent || "").toContain("requested=Auto");
+    expect(routePill?.textContent || "").toContain("resolved=Auto->GpuKernel");
+    expect(routePill?.textContent || "").toContain("actual=GpuKernel");
+    expect(routePill?.textContent || "").toContain("fallback=GPU validation runtime not implemented yet; using CPU validation.");
+    expect(routePill?.getAttribute("title") || "").toContain("requested=Auto");
   });
 
   it("keeps the options follow-up panel mounted from History detail for supported parent runs", async () => {

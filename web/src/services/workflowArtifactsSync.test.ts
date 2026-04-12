@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
 import { bindRuntimePinia } from '../stores/runtimePinia'
 import { refreshAnalysisFromWorkflowRun } from './analysisService'
+import { clearArtifactHistoryPerfEntries, readArtifactHistoryPerfEntries } from './artifactHistoryPerf'
 import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 
@@ -25,35 +26,35 @@ describe('workflowArtifactsSync', () => {
     bindRuntimePinia(pinia)
     useWorkflowArtifactsStore(pinia).clearArtifacts()
     vi.clearAllMocks()
+    clearArtifactHistoryPerfEntries()
   })
 
   it('hydrates workflow artifact store from latest saved run artifact', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_summary') {
+      if (command === 'load_latest_run_artifact_hydration') {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          path: 'C:/runs/run.json',
-          report_xlsx_path: 'C:/runs/report.xlsx',
-          csv_path: 'C:/data/sample.csv',
-          tags: ['alpha'],
-        }
-      }
-
-      if (command === 'load_run_artifact_hydration') {
-        return {
-          currentRun: {
+          summary: {
             ts: '2026-02-25T12:00:00Z',
-            artifact_path: 'C:/runs/run.json',
+            path: 'C:/runs/run.json',
             report_xlsx_path: 'C:/runs/report.xlsx',
             csv_path: 'C:/data/sample.csv',
             tags: ['alpha'],
-            req: { strategy_kind: 'DoubleMa' },
-            res: { rows: 1 },
           },
-          currentValidation: {
-            ts: '2026-02-25T12:00:00Z',
-            req: { candidates: 32 },
-            res: { rows: [] },
+          hydration: {
+            currentRun: {
+              ts: '2026-02-25T12:00:00Z',
+              artifact_path: 'C:/runs/run.json',
+              report_xlsx_path: 'C:/runs/report.xlsx',
+              csv_path: 'C:/data/sample.csv',
+              tags: ['alpha'],
+              req: { strategy_kind: 'DoubleMa' },
+              res: { rows: 1 },
+            },
+            currentValidation: {
+              ts: '2026-02-25T12:00:00Z',
+              req: { candidates: 32 },
+              res: { rows: [] },
+            },
           },
         }
       }
@@ -69,50 +70,62 @@ describe('workflowArtifactsSync', () => {
     expect(store.currentValidation?.ts).toBe('2026-02-25T12:00:00Z')
     expect(store.source).toBe('legacy-runtime')
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
+    expect(invokeCommandMock).toHaveBeenCalledTimes(1)
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_hydration')
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'workflowArtifactsSync.latestRunFastPathMs',
+          meta: expect.objectContaining({
+            source: 'legacy-runtime',
+            hasCurrentIdentity: false,
+            synced: true,
+            outcome: 'ok',
+          }),
+        }),
+      ]),
+    )
   })
 
   it('preserves dataset metadata, tags, ml signal, and metric surface when hydrating the latest artifact', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_summary') {
+      if (command === 'load_latest_run_artifact_hydration') {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          path: 'C:/runs/run.json',
-          report_xlsx_path: 'C:/runs/report.xlsx',
-          csv_path: 'C:/data/sample.csv',
-          tags: ['alpha', 'beta'],
-        }
-      }
-
-      if (command === 'load_run_artifact_hydration') {
-        return {
-          currentRun: {
+          summary: {
             ts: '2026-02-25T12:00:00Z',
-            artifact_path: 'C:/runs/run.json',
+            path: 'C:/runs/run.json',
             report_xlsx_path: 'C:/runs/report.xlsx',
             csv_path: 'C:/data/sample.csv',
-            dataset_meta: {
-              csv_path: 'C:/data/sample.csv',
-              timeframe: '15m',
-              base_timeframe: '1m',
-              derived_timeframe: '15m',
-              resample_applied: true,
-            },
-            ml_signal: {
-              stage: 'stage5',
-              bundle_id: 'bundle-1',
-              score_cache_path: 'C:/runs/score_cache.json',
-            },
-            optimization_metric_surface: {
-              surface: 'trade22',
-              fields: ['pnl', 'sharpe'],
-            },
             tags: ['alpha', 'beta'],
-            req: { strategy_kind: 'CompositeTrend' },
-            res: { rows: 1 },
           },
-          currentValidation: null,
+          hydration: {
+            currentRun: {
+              ts: '2026-02-25T12:00:00Z',
+              artifact_path: 'C:/runs/run.json',
+              report_xlsx_path: 'C:/runs/report.xlsx',
+              csv_path: 'C:/data/sample.csv',
+              dataset_meta: {
+                csv_path: 'C:/data/sample.csv',
+                timeframe: '15m',
+                base_timeframe: '1m',
+                derived_timeframe: '15m',
+                resample_applied: true,
+              },
+              ml_signal: {
+                stage: 'stage5',
+                bundle_id: 'bundle-1',
+                score_cache_path: 'C:/runs/score_cache.json',
+              },
+              optimization_metric_surface: {
+                surface: 'trade22',
+                fields: ['pnl', 'sharpe'],
+              },
+              tags: ['alpha', 'beta'],
+              req: { strategy_kind: 'CompositeTrend' },
+              res: { rows: 1 },
+            },
+            currentValidation: null,
+          },
         }
       }
 
@@ -149,7 +162,7 @@ describe('workflowArtifactsSync', () => {
     const synced = await syncWorkflowArtifactsFromLegacyRuntime('vue')
 
     expect(synced).toBe(false)
-    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_summary')
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_hydration')
   })
 
   it('returns false when invoke throws', async () => {
@@ -232,6 +245,27 @@ describe('workflowArtifactsSync', () => {
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
+    expect(readArtifactHistoryPerfEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'workflowArtifactsSync.latestRunSummaryCheckMs',
+          meta: expect.objectContaining({
+            source: 'vue',
+            hasCurrentIdentity: true,
+            hasLatestPath: true,
+            outcome: 'ok',
+          }),
+        }),
+        expect.objectContaining({
+          name: 'workflowArtifactsSync.latestRunRehydrationMs',
+          meta: expect.objectContaining({
+            source: 'vue',
+            path: 'C:/runs/run.json',
+            outcome: 'ok',
+          }),
+        }),
+      ]),
+    )
   })
 
   it('reloads same-path same-ts artifacts when summary tags or report paths changed', async () => {
@@ -295,13 +329,7 @@ describe('workflowArtifactsSync', () => {
 
   it('returns false when the hydration payload is malformed', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_summary') {
-        return {
-          ts: '2026-02-25T12:00:00Z',
-          path: 'C:/runs/run.json',
-        }
-      }
-      if (command === 'load_run_artifact_hydration') {
+      if (command === 'load_latest_run_artifact_hydration') {
         return 'invalid-payload'
       }
       return undefined
