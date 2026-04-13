@@ -123,4 +123,29 @@ describe('App root shell', () => {
     await flushApp()
     expect(document.querySelector('[data-stub="ExecutionWorkspacePanel"]')).not.toBeNull()
   })
+
+  it('keeps the execution panel mounted after the live workspace has been visited', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+
+    mount(App, {
+      global: {
+        plugins: [pinia],
+        stubs: APP_STUBS,
+      },
+      attachTo: document.body,
+    })
+    await flushApp()
+
+    expect(document.querySelector('[data-stub="ExecutionWorkspacePanel"]')).toBeNull()
+
+    workflowStore.selectWorkspace('live', undefined, { persist: false })
+    await flushApp()
+    expect(document.querySelector('[data-stub="ExecutionWorkspacePanel"]')).not.toBeNull()
+
+    workflowStore.selectWorkspace('workflow', undefined, { persist: false })
+    await flushApp()
+    expect(document.querySelector('[data-stub="ExecutionWorkspacePanel"]')).not.toBeNull()
+  })
 })

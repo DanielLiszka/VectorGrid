@@ -102,10 +102,11 @@ const heatmapPanelActive = computed(() => activeResultsTab.value === 'heatmap' &
 const metaPanelActive = computed(() => activeResultsTab.value === 'meta' && (!mlSignalModeActive.value || currentWorkspace.value !== 'workflow'))
 const debugPanelActive = computed(() => activeResultsTab.value === 'debug')
 
-type LazyPanelKey = 'data' | 'optimize' | 'overview'
+type LazyPanelKey = 'data' | 'live' | 'optimize' | 'overview'
 
 const mountedPanels = reactive<Record<LazyPanelKey, boolean>>({
   data: false,
+  live: false,
   optimize: false,
   overview: false,
 })
@@ -121,6 +122,7 @@ function mountWhenActive(panel: LazyPanelKey, source: () => boolean): void {
 }
 
 mountWhenActive('data', () => dataPanelActive.value)
+mountWhenActive('live', () => liveWorkspaceActive.value)
 mountWhenActive('optimize', () => optimizePanelActive.value)
 mountWhenActive('overview', () => overviewPanelActive.value)
 </script>
@@ -137,7 +139,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <DataWorkspacePanel v-if="mountedPanels.data" />
   <DebugWorkspacePanel v-if="debugPanelActive" />
   <DrillWorkspacePanel v-if="drillPanelActive" />
-  <ExecutionWorkspacePanel v-if="liveWorkspaceActive" />
+  <ExecutionWorkspacePanel v-if="mountedPanels.live" />
   <HeatmapWorkspacePanel v-if="heatmapPanelActive" />
   <HistoryContextDock v-if="historyPanelActive" />
   <HistoryWorkspacePanel v-if="historyPanelActive" />
