@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{hash_map::DefaultHasher, BTreeSet};
 use std::hash::{Hash, Hasher};
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
@@ -191,7 +192,238 @@ struct OptionsExpressionReplayInputsBuildResult {
 struct PersistedOptionsDatasetReplayCacheV1 {
     version: u32,
     options_dataset_hash: String,
-    dataset: ta_app_core::ImportedOptionsDataset,
+    dataset: PersistedImportedOptionsDatasetV1,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedImportedOptionsDatasetV1 {
+    manifest: PersistedOptionsDatasetManifestV1,
+    #[serde(default)]
+    contracts: Vec<PersistedOptionsContractSeriesV1>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedOptionsDatasetManifestV1 {
+    version: u32,
+    options_dataset_id: String,
+    root_symbol: String,
+    provider_name: String,
+    provider_source_surface: String,
+    #[serde(default)]
+    provider_entitlement_profile: Option<String>,
+    quote_resolution: String,
+    price_semantics: OptionsPriceSemantics,
+    calendar_id: String,
+    timezone: String,
+    coverage_start: i64,
+    coverage_end: i64,
+    normalization_version: u32,
+    quote_semantics_version: u32,
+    corporate_action_mapping_version: u32,
+    contract_reference_source: String,
+    #[serde(default)]
+    contract_reference_as_of_utc: Option<String>,
+    underlier_reference_source: String,
+    dataset_path: String,
+    row_count: usize,
+    contract_count: usize,
+    #[serde(default)]
+    aggregate_price_field: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedOptionsContractSeriesV1 {
+    root_symbol: String,
+    contract_id: String,
+    option_type: ta_app_core::options_types::OptionType,
+    expiration_date: String,
+    expiration_timestamp_ms: i64,
+    strike: f64,
+    multiplier: f64,
+    #[serde(default)]
+    rows: Vec<PersistedOptionsPriceRowV1>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedOptionsPriceRowV1 {
+    timestamp_ms: i64,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    underlying_price: f64,
+    #[serde(default)]
+    bid: Option<f64>,
+    #[serde(default)]
+    ask: Option<f64>,
+    #[serde(default)]
+    mid: Option<f64>,
+    #[serde(default)]
+    volume: Option<f64>,
+    #[serde(default)]
+    open_interest: Option<f64>,
+    #[serde(default)]
+    quote_age_ms: Option<i64>,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+impl From<&ta_app_core::ImportedOptionsDataset> for PersistedImportedOptionsDatasetV1 {
+    fn from(dataset: &ta_app_core::ImportedOptionsDataset) -> Self {
+        Self {
+            manifest: PersistedOptionsDatasetManifestV1::from(&dataset.manifest),
+            contracts: dataset
+                .contracts
+                .iter()
+                .map(PersistedOptionsContractSeriesV1::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<PersistedImportedOptionsDatasetV1> for ta_app_core::ImportedOptionsDataset {
+    fn from(dataset: PersistedImportedOptionsDatasetV1) -> Self {
+        Self {
+            manifest: dataset.manifest.into(),
+            contracts: dataset.contracts.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&ta_app_core::options_types::OptionsDatasetManifestV1>
+    for PersistedOptionsDatasetManifestV1
+{
+    fn from(manifest: &ta_app_core::options_types::OptionsDatasetManifestV1) -> Self {
+        Self {
+            version: manifest.version,
+            options_dataset_id: manifest.options_dataset_id.clone(),
+            root_symbol: manifest.root_symbol.clone(),
+            provider_name: manifest.provider_name.clone(),
+            provider_source_surface: manifest.provider_source_surface.clone(),
+            provider_entitlement_profile: manifest.provider_entitlement_profile.clone(),
+            quote_resolution: manifest.quote_resolution.clone(),
+            price_semantics: manifest.price_semantics,
+            calendar_id: manifest.calendar_id.clone(),
+            timezone: manifest.timezone.clone(),
+            coverage_start: manifest.coverage_start,
+            coverage_end: manifest.coverage_end,
+            normalization_version: manifest.normalization_version,
+            quote_semantics_version: manifest.quote_semantics_version,
+            corporate_action_mapping_version: manifest.corporate_action_mapping_version,
+            contract_reference_source: manifest.contract_reference_source.clone(),
+            contract_reference_as_of_utc: manifest.contract_reference_as_of_utc.clone(),
+            underlier_reference_source: manifest.underlier_reference_source.clone(),
+            dataset_path: manifest.dataset_path.clone(),
+            row_count: manifest.row_count,
+            contract_count: manifest.contract_count,
+            aggregate_price_field: manifest.aggregate_price_field.clone(),
+        }
+    }
+}
+
+impl From<PersistedOptionsDatasetManifestV1>
+    for ta_app_core::options_types::OptionsDatasetManifestV1
+{
+    fn from(manifest: PersistedOptionsDatasetManifestV1) -> Self {
+        Self {
+            version: manifest.version,
+            options_dataset_id: manifest.options_dataset_id,
+            root_symbol: manifest.root_symbol,
+            provider_name: manifest.provider_name,
+            provider_source_surface: manifest.provider_source_surface,
+            provider_entitlement_profile: manifest.provider_entitlement_profile,
+            quote_resolution: manifest.quote_resolution,
+            price_semantics: manifest.price_semantics,
+            calendar_id: manifest.calendar_id,
+            timezone: manifest.timezone,
+            coverage_start: manifest.coverage_start,
+            coverage_end: manifest.coverage_end,
+            normalization_version: manifest.normalization_version,
+            quote_semantics_version: manifest.quote_semantics_version,
+            corporate_action_mapping_version: manifest.corporate_action_mapping_version,
+            contract_reference_source: manifest.contract_reference_source,
+            contract_reference_as_of_utc: manifest.contract_reference_as_of_utc,
+            underlier_reference_source: manifest.underlier_reference_source,
+            dataset_path: manifest.dataset_path,
+            row_count: manifest.row_count,
+            contract_count: manifest.contract_count,
+            aggregate_price_field: manifest.aggregate_price_field,
+        }
+    }
+}
+
+impl From<&ta_app_core::options_types::OptionsContractSeries> for PersistedOptionsContractSeriesV1 {
+    fn from(series: &ta_app_core::options_types::OptionsContractSeries) -> Self {
+        Self {
+            root_symbol: series.root_symbol.clone(),
+            contract_id: series.contract_id.clone(),
+            option_type: series.option_type,
+            expiration_date: series.expiration_date.clone(),
+            expiration_timestamp_ms: series.expiration_timestamp_ms,
+            strike: series.strike,
+            multiplier: series.multiplier,
+            rows: series
+                .rows
+                .iter()
+                .map(PersistedOptionsPriceRowV1::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<PersistedOptionsContractSeriesV1> for ta_app_core::options_types::OptionsContractSeries {
+    fn from(series: PersistedOptionsContractSeriesV1) -> Self {
+        Self {
+            root_symbol: series.root_symbol,
+            contract_id: series.contract_id,
+            option_type: series.option_type,
+            expiration_date: series.expiration_date,
+            expiration_timestamp_ms: series.expiration_timestamp_ms,
+            strike: series.strike,
+            multiplier: series.multiplier,
+            rows: series.rows.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&ta_app_core::options_types::OptionsPriceRow> for PersistedOptionsPriceRowV1 {
+    fn from(row: &ta_app_core::options_types::OptionsPriceRow) -> Self {
+        Self {
+            timestamp_ms: row.timestamp_ms,
+            open: row.open,
+            high: row.high,
+            low: row.low,
+            close: row.close,
+            underlying_price: row.underlying_price,
+            bid: row.bid,
+            ask: row.ask,
+            mid: row.mid,
+            volume: row.volume,
+            open_interest: row.open_interest,
+            quote_age_ms: row.quote_age_ms,
+            session_id: row.session_id.clone(),
+        }
+    }
+}
+
+impl From<PersistedOptionsPriceRowV1> for ta_app_core::options_types::OptionsPriceRow {
+    fn from(row: PersistedOptionsPriceRowV1) -> Self {
+        Self {
+            timestamp_ms: row.timestamp_ms,
+            open: row.open,
+            high: row.high,
+            low: row.low,
+            close: row.close,
+            underlying_price: row.underlying_price,
+            bid: row.bid,
+            ask: row.ask,
+            mid: row.mid,
+            volume: row.volume,
+            open_interest: row.open_interest,
+            quote_age_ms: row.quote_age_ms,
+            session_id: row.session_id,
+        }
+    }
 }
 
 fn parent_signal_cache() -> &'static Mutex<Vec<CachedParentSignalReplay>> {
@@ -531,6 +763,25 @@ fn options_dataset_replay_cache_path(
         safe_dataset
     };
     Ok(dir.join(format!(
+        "vectorgrid_options_dataset_{}_{}.bin",
+        stem,
+        cache_key_digest(cache_key)
+    )))
+}
+
+fn options_dataset_replay_cache_legacy_json_path(
+    app_local_data_dir: &std::path::Path,
+    dataset_id: &str,
+    cache_key: &str,
+) -> Result<std::path::PathBuf, String> {
+    let dir = options_dataset_replay_cache_dir(app_local_data_dir)?;
+    let safe_dataset = sanitize_dataset_id_component(dataset_id);
+    let stem = if safe_dataset.is_empty() {
+        "dataset".to_string()
+    } else {
+        safe_dataset
+    };
+    Ok(dir.join(format!(
         "vectorgrid_options_dataset_{}_{}.json",
         stem,
         cache_key_digest(cache_key)
@@ -597,28 +848,67 @@ fn load_options_dataset_replay_cache(
     cache_key: &str,
 ) -> Result<Option<(String, ta_app_core::ImportedOptionsDataset)>, String> {
     let path = options_dataset_replay_cache_path(app_local_data_dir, dataset_id, cache_key)?;
-    if !path.is_file() {
+    let dir = options_dataset_replay_cache_dir(app_local_data_dir)?;
+    let mut invalidate_binary_cache = false;
+
+    if path.is_file() {
+        ensure_path_is_within_dir(&path, &dir)?;
+        let file = std::fs::File::open(&path).map_err(|e| {
+            format!(
+                "failed to open cached options dataset {}: {e}",
+                path.display()
+            )
+        })?;
+        let reader = BufReader::new(file);
+        match bincode::deserialize_from::<_, PersistedOptionsDatasetReplayCacheV1>(reader) {
+            Ok(cached) => {
+                if cached.version != OPTIONS_DATASET_REPLAY_CACHE_VERSION {
+                    invalidate_binary_cache = true;
+                } else {
+                    return Ok(Some((cached.options_dataset_hash, cached.dataset.into())));
+                }
+            }
+            Err(_) => {
+                invalidate_binary_cache = true;
+            }
+        }
+    }
+
+    let legacy_path =
+        options_dataset_replay_cache_legacy_json_path(app_local_data_dir, dataset_id, cache_key)?;
+    if !legacy_path.is_file() {
+        if invalidate_binary_cache {
+            let _ = std::fs::remove_file(&path);
+        }
         return Ok(None);
     }
-    let dir = options_dataset_replay_cache_dir(app_local_data_dir)?;
-    ensure_path_is_within_dir(&path, &dir)?;
-    let bytes = std::fs::read(&path).map_err(|e| {
+    ensure_path_is_within_dir(&legacy_path, &dir)?;
+    let bytes = std::fs::read(&legacy_path).map_err(|e| {
         format!(
             "failed to read cached options dataset {}: {e}",
-            path.display()
+            legacy_path.display()
         )
     })?;
     let cached =
         serde_json::from_slice::<PersistedOptionsDatasetReplayCacheV1>(&bytes).map_err(|e| {
             format!(
                 "failed to deserialize cached options dataset {}: {e}",
-                path.display()
+                legacy_path.display()
             )
         })?;
     if cached.version != OPTIONS_DATASET_REPLAY_CACHE_VERSION {
         return Ok(None);
     }
-    Ok(Some((cached.options_dataset_hash, cached.dataset)))
+    let options_dataset_hash = cached.options_dataset_hash;
+    let dataset: ta_app_core::ImportedOptionsDataset = cached.dataset.into();
+    persist_options_dataset_replay_cache(
+        app_local_data_dir,
+        dataset_id,
+        cache_key,
+        &options_dataset_hash,
+        &dataset,
+    )?;
+    Ok(Some((options_dataset_hash, dataset)))
 }
 
 fn persist_options_dataset_replay_cache(
@@ -640,11 +930,16 @@ fn persist_options_dataset_replay_cache(
     let payload = PersistedOptionsDatasetReplayCacheV1 {
         version: OPTIONS_DATASET_REPLAY_CACHE_VERSION,
         options_dataset_hash: options_dataset_hash.to_string(),
-        dataset: dataset.clone(),
+        dataset: dataset.into(),
     };
-    let bytes = serde_json::to_vec(&payload)
-        .map_err(|e| format!("failed to serialize cached options dataset: {e}"))?;
-    std::fs::write(&path, bytes).map_err(|e| {
+    let file = std::fs::File::create(&path).map_err(|e| {
+        format!(
+            "failed to create cached options dataset {}: {e}",
+            path.display()
+        )
+    })?;
+    let writer = BufWriter::new(file);
+    bincode::serialize_into(writer, &payload).map_err(|e| {
         format!(
             "failed to write cached options dataset {}: {e}",
             path.display()
@@ -1133,9 +1428,12 @@ fn build_options_expression_replay_inputs_with_timing(
     req: OptionsExpressionRunRequest,
     app_local_data_dir: &std::path::Path,
 ) -> Result<OptionsExpressionReplayInputsBuildResult, String> {
+    let _nvtx_scope = ta_app_core::nvtx::scope("engine", "options_replay_build_total");
     let total_start = std::time::Instant::now();
     let mut replay_timing = OptionsExpressionReplayBuildTimingBreakdown::default();
 
+    let _parent_artifact_scope =
+        ta_app_core::nvtx::scope("engine", "options_parent_artifact_validation");
     let parent_artifact_start = std::time::Instant::now();
     let runs_dir = runs_dir(app_local_data_dir)?;
     let parent_artifact_path = std::path::Path::new(req.parent_artifact_path.trim());
@@ -1172,6 +1470,7 @@ fn build_options_expression_replay_inputs_with_timing(
     }
     replay_timing.parent_artifact_validation_us = saturating_elapsed_us(parent_artifact_start);
 
+    let _source_resolution_scope = ta_app_core::nvtx::scope("engine", "options_source_resolution");
     let source_resolution_start = std::time::Instant::now();
     let csv_path = resolve_csv_path(&artifact);
     if csv_path.trim().is_empty() {
@@ -1196,6 +1495,8 @@ fn build_options_expression_replay_inputs_with_timing(
     );
     replay_timing.source_resolution_us = saturating_elapsed_us(source_resolution_start);
 
+    let _parent_signal_process_cache_scope =
+        ta_app_core::nvtx::scope("engine", "options_parent_signal_process_cache_lookup");
     let parent_signal_process_cache_start = std::time::Instant::now();
     let process_cached_parent = load_parent_signal_cache_entry(&parent_cache_key);
     replay_timing.parent_signal_process_cache_lookup_us =
@@ -1206,6 +1507,10 @@ fn build_options_expression_replay_inputs_with_timing(
             replay_timing.parent_signal_process_cache_hit = true;
             (cached_parent_artifact_id, cached_manifest)
         } else {
+            let _persisted_signal_manifest_scope = ta_app_core::nvtx::scope(
+                "engine",
+                "options_persisted_signal_manifest_cache_lookup",
+            );
             let persisted_signal_manifest_start = std::time::Instant::now();
             let persisted_manifest = load_signal_manifest_replay_cache(
                 app_local_data_dir,
@@ -1224,11 +1529,15 @@ fn build_options_expression_replay_inputs_with_timing(
                 });
                 (parent_artifact_id, signal_manifest)
             } else {
+                let _candle_replay_scope =
+                    ta_app_core::nvtx::scope("engine", "options_candle_replay_load");
                 let candle_replay_start = std::time::Instant::now();
                 let (candles, source_identity, source_content_fingerprint) =
                     load_replayed_candles(app_local_data_dir, &artifact, &csv_path, &timeframe)?;
                 replay_timing.candle_replay_load_us = saturating_elapsed_us(candle_replay_start);
 
+                let _parent_replay_scope =
+                    ta_app_core::nvtx::scope("engine", "options_parent_replay_and_drilldown");
                 let parent_replay_and_drilldown_start = std::time::Instant::now();
                 let source_dataset_identity_hash =
                     build_source_dataset_identity_hash(source_csv_path, source_identity);
@@ -1243,6 +1552,8 @@ fn build_options_expression_replay_inputs_with_timing(
                 replay_timing.parent_replay_and_drilldown_us =
                     saturating_elapsed_us(parent_replay_and_drilldown_start);
 
+                let _signal_manifest_materialization_scope =
+                    ta_app_core::nvtx::scope("engine", "options_signal_manifest_materialization");
                 let signal_manifest_materialization_start = std::time::Instant::now();
                 let signal_manifest = Arc::new(build_supported_options_parent_signal_manifest(
                     replay.family,
@@ -1276,6 +1587,8 @@ fn build_options_expression_replay_inputs_with_timing(
             }
         };
 
+    let _dataset_manifest_validation_scope =
+        ta_app_core::nvtx::scope("engine", "options_dataset_manifest_validation");
     let dataset_manifest_validation_start = std::time::Instant::now();
     let datasets_dir = options_datasets_dir(app_local_data_dir)?;
     let dataset_id = sanitize_dataset_id(req.options_dataset_id.trim())?;
@@ -1320,6 +1633,8 @@ fn build_options_expression_replay_inputs_with_timing(
         file_cache_stamp(&manifest_path)?,
         file_cache_stamp(&dataset_rows_path)?
     );
+    let _options_dataset_process_cache_scope =
+        ta_app_core::nvtx::scope("engine", "options_dataset_process_cache_lookup");
     let options_dataset_process_cache_start = std::time::Instant::now();
     let process_cached_dataset = load_options_dataset_cache_entry(&dataset_cache_key);
     replay_timing.options_dataset_process_cache_lookup_us =
@@ -1331,6 +1646,8 @@ fn build_options_expression_replay_inputs_with_timing(
         replay_timing.options_dataset_process_cache_hit = true;
         (cached_hash, cached_dataset)
     } else {
+        let _options_dataset_persisted_cache_scope =
+            ta_app_core::nvtx::scope("engine", "options_dataset_persisted_cache_lookup");
         let options_dataset_persisted_cache_start = std::time::Instant::now();
         let persisted_dataset =
             load_options_dataset_replay_cache(app_local_data_dir, &dataset_id, &dataset_cache_key)?;
@@ -1346,6 +1663,8 @@ fn build_options_expression_replay_inputs_with_timing(
             });
             (cached_hash, dataset)
         } else {
+            let _options_dataset_csv_load_scope =
+                ta_app_core::nvtx::scope("engine", "options_dataset_csv_load");
             let options_dataset_csv_load_start = std::time::Instant::now();
             let options_dataset_hash =
                 data_cache::content_fingerprint_for_source(&dataset_rows_path)?;
@@ -1370,6 +1689,8 @@ fn build_options_expression_replay_inputs_with_timing(
         }
     };
 
+    let _request_normalization_scope =
+        ta_app_core::nvtx::scope("engine", "options_request_normalization");
     let request_normalization_start = std::time::Instant::now();
     let mut normalized_req = req;
     normalized_req.options_dataset_id = dataset_id;
@@ -1399,6 +1720,7 @@ fn run_options_expression_blocking_impl(
     req: OptionsExpressionRunRequest,
     app_local_data_dir: &std::path::Path,
 ) -> Result<RunOptionsExpressionResponse, String> {
+    let _nvtx_scope = ta_app_core::nvtx::scope("engine", "options_expression_run_total");
     let replay = build_options_expression_replay_inputs(req, app_local_data_dir)?;
     let result = run_options_expression_blocking(
         replay.normalized_req.clone(),
@@ -1434,6 +1756,7 @@ fn analyze_options_expression_feasibility_blocking_impl(
     req: OptionsExpressionRunRequest,
     app_local_data_dir: &std::path::Path,
 ) -> Result<AnalyzeOptionsExpressionFeasibilityResponse, String> {
+    let _nvtx_scope = ta_app_core::nvtx::scope("engine", "options_expression_feasibility_total");
     let preview_start = std::time::Instant::now();
     let replay_start = std::time::Instant::now();
     let replay = build_options_expression_replay_inputs_with_timing(req, app_local_data_dir)?;
@@ -1615,6 +1938,7 @@ pub async fn run_options_expression(
 ) -> Result<RunOptionsExpressionResponse, String> {
     let _run_guard = state.try_begin_run()?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _nvtx_scope = ta_app_core::nvtx::scope("engine", "tauri_options_expression_request");
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
         run_options_expression_blocking_impl(req, &app_local_data_dir)
     })
@@ -1628,6 +1952,8 @@ pub async fn analyze_options_expression_feasibility(
     app: tauri::AppHandle,
 ) -> Result<AnalyzeOptionsExpressionFeasibilityResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _nvtx_scope =
+            ta_app_core::nvtx::scope("engine", "tauri_options_expression_feasibility_request");
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
         analyze_options_expression_feasibility_blocking_impl(req, &app_local_data_dir)
     })
@@ -1824,9 +2150,9 @@ mod tests {
     use serde_json::json;
     use ta_app_core::{
         options_types::{
-            ImportedOptionsDataset, OptionsDatasetManifestV1, OptionsExpressionValidationVerdict,
-            OptionsFillModelFamily, OptionsMoneynessBucket, OptionsStructureFamily,
-            OptionsTupleSpec,
+            ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
+            OptionsExpressionValidationVerdict, OptionsFillModelFamily, OptionsMoneynessBucket,
+            OptionsPriceRow, OptionsStructureFamily, OptionsTupleSpec,
         },
         OptionsEvaluationSplit, OptionsExpressionArtifactV1, OptionsExpressionDiagnostics,
         OptionsExpressionFeasibilityReport, OptionsExpressionMetrics, OptionsExpressionRunRequest,
@@ -2179,6 +2505,51 @@ mod tests {
             loaded_dataset.manifest.row_count,
             dataset.manifest.row_count
         );
+        assert_eq!(loaded_dataset.contracts.len(), 1);
+        assert_eq!(loaded_dataset.contracts[0].rows.len(), 2);
+        assert_eq!(loaded_dataset.contracts[0].rows[0].quote_age_ms, None);
+        assert_eq!(
+            loaded_dataset.contracts[0].rows[1].session_id.as_deref(),
+            Some("2026-04-03-rth")
+        );
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn options_dataset_replay_cache_loads_legacy_json_payload() {
+        let app_local_data_dir = temp_app_local_data_dir("options_dataset_cache_legacy_json");
+        let dataset_id = "spy_dataset";
+        let cache_key = "manifest-stamp|rows-stamp";
+        let path = options_dataset_replay_cache_legacy_json_path(
+            &app_local_data_dir,
+            dataset_id,
+            cache_key,
+        )
+        .expect("legacy cache path");
+        let binary_path =
+            options_dataset_replay_cache_path(&app_local_data_dir, dataset_id, cache_key)
+                .expect("binary cache path");
+        let dataset = sample_replay_dataset(dataset_id, OptionsPriceSemantics::MinuteAggregate);
+        let payload = PersistedOptionsDatasetReplayCacheV1 {
+            version: OPTIONS_DATASET_REPLAY_CACHE_VERSION,
+            options_dataset_hash: "dataset_hash".to_string(),
+            dataset: (&dataset).into(),
+        };
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&payload).expect("serialize legacy payload"),
+        )
+        .expect("write legacy cache");
+
+        let (loaded_hash, loaded_dataset) =
+            load_options_dataset_replay_cache(&app_local_data_dir, dataset_id, cache_key)
+                .expect("load cache")
+                .expect("cached dataset");
+
+        assert_eq!(loaded_hash, "dataset_hash");
+        assert_eq!(loaded_dataset.manifest.options_dataset_id, dataset_id);
+        assert!(binary_path.is_file());
 
         let _ = std::fs::remove_dir_all(app_local_data_dir);
     }
@@ -2190,20 +2561,64 @@ mod tests {
         let cache_key = "manifest-stamp|rows-stamp";
         let path = options_dataset_replay_cache_path(&app_local_data_dir, dataset_id, cache_key)
             .expect("cache path");
-        let stale_payload = json!({
-            "version": OPTIONS_DATASET_REPLAY_CACHE_VERSION + 1,
-            "options_dataset_hash": "dataset_hash",
-            "dataset": sample_replay_dataset(dataset_id, OptionsPriceSemantics::MinuteAggregate),
-        });
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&stale_payload).expect("serialize stale payload"),
-        )
-        .expect("write stale cache");
+        let stale_payload = PersistedOptionsDatasetReplayCacheV1 {
+            version: OPTIONS_DATASET_REPLAY_CACHE_VERSION + 1,
+            options_dataset_hash: "dataset_hash".to_string(),
+            dataset: (&sample_replay_dataset(dataset_id, OptionsPriceSemantics::MinuteAggregate))
+                .into(),
+        };
+        let file = std::fs::File::create(&path).expect("create stale cache");
+        let writer = BufWriter::new(file);
+        bincode::serialize_into(writer, &stale_payload).expect("serialize stale payload");
 
         let loaded = load_options_dataset_replay_cache(&app_local_data_dir, dataset_id, cache_key)
             .expect("load cache");
         assert!(loaded.is_none());
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn options_dataset_replay_cache_ignores_corrupt_binary_and_uses_legacy_json() {
+        let app_local_data_dir = temp_app_local_data_dir("options_dataset_cache_corrupt_binary");
+        let dataset_id = "spy_dataset";
+        let cache_key = "manifest-stamp|rows-stamp";
+        let binary_path =
+            options_dataset_replay_cache_path(&app_local_data_dir, dataset_id, cache_key)
+                .expect("binary cache path");
+        let legacy_path = options_dataset_replay_cache_legacy_json_path(
+            &app_local_data_dir,
+            dataset_id,
+            cache_key,
+        )
+        .expect("legacy cache path");
+        let dataset = sample_replay_dataset(dataset_id, OptionsPriceSemantics::MinuteAggregate);
+        let payload = PersistedOptionsDatasetReplayCacheV1 {
+            version: OPTIONS_DATASET_REPLAY_CACHE_VERSION,
+            options_dataset_hash: "dataset_hash".to_string(),
+            dataset: (&dataset).into(),
+        };
+        std::fs::write(&binary_path, [0x01, 0x02, 0x03, 0x04]).expect("write corrupt binary");
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec(&payload).expect("serialize legacy payload"),
+        )
+        .expect("write legacy cache");
+
+        let (loaded_hash, loaded_dataset) =
+            load_options_dataset_replay_cache(&app_local_data_dir, dataset_id, cache_key)
+                .expect("load cache")
+                .expect("cached dataset");
+
+        assert_eq!(loaded_hash, "dataset_hash");
+        assert_eq!(loaded_dataset.manifest.options_dataset_id, dataset_id);
+        assert_eq!(loaded_dataset.contracts.len(), 1);
+
+        let reread = load_options_dataset_replay_cache(&app_local_data_dir, dataset_id, cache_key)
+            .expect("reload cache")
+            .expect("cached dataset after rewrite");
+        assert_eq!(reread.0, "dataset_hash");
+        assert_eq!(reread.1.contracts[0].rows.len(), 2);
 
         let _ = std::fs::remove_dir_all(app_local_data_dir);
     }
@@ -2819,7 +3234,7 @@ mod tests {
                 underlier_reference_source: "underlier_dataset".to_string(),
                 dataset_path: "C:/options/spy.csv".to_string(),
                 row_count: 2,
-                contract_count: 0,
+                contract_count: 1,
                 aggregate_price_field: if matches!(
                     price_semantics,
                     OptionsPriceSemantics::MinuteAggregate
@@ -2829,7 +3244,47 @@ mod tests {
                     None
                 },
             },
-            contracts: Vec::new(),
+            contracts: vec![OptionsContractSeries {
+                root_symbol: "SPY".to_string(),
+                contract_id: "SPY-2026-04-03-C-645".to_string(),
+                option_type: OptionType::Call,
+                expiration_date: "2026-04-03".to_string(),
+                expiration_timestamp_ms: 1_775_210_400_000,
+                strike: 645.0,
+                multiplier: 100.0,
+                rows: vec![
+                    OptionsPriceRow {
+                        timestamp_ms: 1_775_191_200_000,
+                        open: 2.1,
+                        high: 2.4,
+                        low: 1.9,
+                        close: 2.2,
+                        underlying_price: 643.5,
+                        bid: Some(2.0),
+                        ask: Some(2.4),
+                        mid: Some(2.2),
+                        volume: Some(150.0),
+                        open_interest: Some(1_250.0),
+                        quote_age_ms: None,
+                        session_id: None,
+                    },
+                    OptionsPriceRow {
+                        timestamp_ms: 1_775_191_260_000,
+                        open: 2.2,
+                        high: 2.6,
+                        low: 2.1,
+                        close: 2.5,
+                        underlying_price: 644.1,
+                        bid: None,
+                        ask: None,
+                        mid: None,
+                        volume: None,
+                        open_interest: None,
+                        quote_age_ms: Some(90_000),
+                        session_id: Some("2026-04-03-rth".to_string()),
+                    },
+                ],
+            }],
         }
     }
 

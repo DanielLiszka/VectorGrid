@@ -6,6 +6,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use ta_app_core::options_types::OptionsExpressionFeasibilityEventCoverage;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use ta_app_core::prewarm_options_expression_gpu_runtime;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use ta_app_core::preferred_cuda_device_id_result;
 use ta_app_core::{
     scan_options_dataset_manifests, OptionsCandidateInvalidReason, OptionsDatasetManifestV1,
     OptionsExitTemplateFamily, OptionsExpressionBackendPreference, OptionsExpressionDiagnostics,
@@ -63,6 +67,9 @@ struct Cli {
 
     #[arg(long, default_value_t = false)]
     compare_backends: bool,
+
+    #[arg(long, default_value_t = false)]
+    prewarm_gpu_runtime: bool,
 
     #[arg(long, default_value_t = 1)]
     benchmark_iterations: usize,
@@ -311,6 +318,22 @@ fn format_millis_from_us(us: u64) -> String {
     } else {
         format!("{:.3}", us as f64 / 1_000.0)
     }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn maybe_prewarm_gpu_runtime(enabled: bool) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+    match preferred_cuda_device_id_result()? {
+        Some(device_id) => prewarm_options_expression_gpu_runtime(device_id),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn maybe_prewarm_gpu_runtime(_enabled: bool) -> Result<(), String> {
+    Ok(())
 }
 
 fn accelerated_backend_target(
@@ -1575,6 +1598,7 @@ fn main() -> Result<(), String> {
     };
     let request = build_request(&cli, &artifact_path, &dataset_manifest.options_dataset_id)?;
     let benchmark_iterations = cli.benchmark_iterations.max(1);
+    maybe_prewarm_gpu_runtime(cli.prewarm_gpu_runtime)?;
     let response = analyze_options_expression_feasibility_blocking_headless(
         request.clone(),
         &resolved_app_local_data_dir,

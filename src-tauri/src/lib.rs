@@ -55,6 +55,26 @@ pub fn run_tauri() {
                 return Err(error.into());
             }
 
+            #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+            std::thread::spawn(|| match ta_app_core::preferred_cuda_device_id_result() {
+                Ok(Some(device_id)) => {
+                    if let Err(error) = ta_app_core::prewarm_options_expression_gpu_runtime(device_id)
+                    {
+                        log::warn!(
+                            "options-expression GPU runtime prewarm failed for device {device_id}: {error}"
+                        );
+                    } else {
+                        log::info!(
+                            "options-expression GPU runtime prewarmed for device {device_id}"
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    log::warn!("options-expression GPU runtime prewarm skipped: {error}");
+                }
+            });
+
             log::info!("main window initialized");
 
             Ok(())
