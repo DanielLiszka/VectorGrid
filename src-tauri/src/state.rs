@@ -220,7 +220,8 @@ impl AppState {
 
         let outcome =
             data_cache::load_or_build_with_identity(pathbuf, app_cache_dir, source_identity)?;
-        let candles = outcome.candles;
+        let mut candles = outcome.candles;
+        normalize_timestamps_to_millis(&mut candles.timestamp)?;
         let meta = build_price_data_meta(
             &candles,
             infer_timeframe_label(&candles.timestamp),
@@ -1011,6 +1012,48 @@ mod state_residency_tests {
         p
     }
 
+    fn write_relative_seconds_csv(path: &Path, len: usize) {
+        let mut out = String::from("timestamp,open,high,low,close,volume\n");
+        for i in 0..len {
+            let base = 100.0 + (i as f64) * 0.01;
+            out.push_str(&format!(
+                "{i},{base},{},{},{},1000\n",
+                base + 0.1,
+                base - 0.1,
+                base + 0.05
+            ));
+        }
+        std::fs::write(path, out).expect("write relative seconds csv");
+    }
+
+    #[test]
+    fn load_normalizes_second_based_csv_timestamps_to_millis() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_load_normalize_seconds");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("relative_seconds.csv");
+        write_relative_seconds_csv(&csv, 1_800);
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load relative seconds csv");
+        let candles = state.get_candles(&load.id).expect("loaded candles");
+
+        assert_eq!(candles.timestamp[0], 0);
+        assert_eq!(candles.timestamp[1], 1_000);
+        assert_eq!(candles.timestamp[2], 2_000);
+        assert_eq!(load.meta.timeframe.as_deref(), Some("1s"));
+        assert_eq!(load.meta.max_ts, 1_799_000);
+
+        let resampled = state
+            .resample_loaded_data(&load.id, "15m")
+            .expect("resample 15m");
+        assert_eq!(resampled.meta.len, 2);
+    }
+
     #[test]
     fn load_replaces_prior_dataset_and_discards_prior_derived_cache() {
         let _env_guard = residency_env_lock().lock().expect("lock env");
@@ -1428,12 +1471,22 @@ fn min_max_ts(ts: &[i64]) -> (i64, i64) {
     (min, max)
 }
 
-fn timestamp_uses_millis(ts: i64) -> bool {
-    ts.abs() >= 1_000_000_000_000
+const MIN_EPOCH_SECONDS: i64 = 315_532_800; // 1980-01-01T00:00:00Z
+const MIN_EPOCH_MILLIS: i64 = MIN_EPOCH_SECONDS * 1000;
+
+fn max_abs_ts(ts: &[i64]) -> i64 {
+    let mut max_abs = 0i64;
+    for &value in ts {
+        let abs = value.saturating_abs();
+        if abs > max_abs {
+            max_abs = abs;
+        }
+    }
+    max_abs
 }
 
-fn infer_timeframe_label(ts: &[i64]) -> Option<String> {
-    if ts.len() < 3 {
+fn positive_median_delta(ts: &[i64]) -> Option<i64> {
+    if ts.len() < 2 {
         return None;
     }
 
@@ -1449,13 +1502,47 @@ fn infer_timeframe_label(ts: &[i64]) -> Option<String> {
         return None;
     }
     deltas.sort_unstable();
-    let median = deltas[deltas.len() / 2];
+    Some(deltas[deltas.len() / 2])
+}
 
-    // Heuristic: Polygon data uses ms epoch, many CSVs use seconds. Treat "big" deltas as ms.
-    let sec = if median >= 10_000 {
-        (median as f64 / 1000.0).round() as i64
-    } else {
+fn timestamp_uses_millis(ts: i64) -> bool {
+    ts.abs() >= 1_000_000_000_000
+}
+
+fn timestamps_look_like_seconds(ts: &[i64]) -> bool {
+    let max_abs = max_abs_ts(ts);
+    if max_abs >= MIN_EPOCH_MILLIS {
+        return false;
+    }
+    if max_abs >= MIN_EPOCH_SECONDS {
+        return true;
+    }
+    positive_median_delta(ts).is_some_and(|median| median < 1_000)
+}
+
+fn normalize_timestamps_to_millis(ts: &mut [i64]) -> Result<(), String> {
+    if !timestamps_look_like_seconds(ts) {
+        return Ok(());
+    }
+    for value in ts.iter_mut() {
+        *value = value
+            .checked_mul(1_000)
+            .ok_or_else(|| "timestamp normalization overflowed i64".to_string())?;
+    }
+    Ok(())
+}
+
+fn infer_timeframe_label(ts: &[i64]) -> Option<String> {
+    if ts.len() < 3 {
+        return None;
+    }
+
+    let median = positive_median_delta(ts)?;
+
+    let sec = if timestamps_look_like_seconds(ts) {
         median
+    } else {
+        (median as f64 / 1000.0).round() as i64
     };
     if sec <= 0 {
         return None;

@@ -6,6 +6,7 @@ pub mod settings;
 pub mod state;
 
 use commands::*;
+use log::LevelFilter;
 use state::AppState;
 use state::BackgroundTaskState;
 use tauri_plugin_log::{Target, TargetKind};
@@ -15,6 +16,14 @@ pub fn run_tauri() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
+                .level_for(
+                    "tao::platform_impl::platform::event_loop::runner",
+                    LevelFilter::Error,
+                )
+                .level_for(
+                    "tao::platform_impl::windows::event_loop::runner",
+                    LevelFilter::Error,
+                )
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir { file_name: None }),
