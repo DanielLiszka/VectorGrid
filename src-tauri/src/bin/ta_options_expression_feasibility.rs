@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use ta_app_core::options_types::OptionsExpressionFeasibilityEventCoverage;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use ta_app_core::prewarm_options_expression_gpu_runtime;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use ta_app_core::preferred_cuda_device_id_result;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use ta_app_core::prewarm_options_expression_gpu_runtime;
 use ta_app_core::{
     scan_options_dataset_manifests, OptionsCandidateInvalidReason, OptionsDatasetManifestV1,
     OptionsExitTemplateFamily, OptionsExpressionBackendPreference, OptionsExpressionDiagnostics,
