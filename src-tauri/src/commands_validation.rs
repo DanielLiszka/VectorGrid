@@ -266,8 +266,9 @@ where
         .map(|c| c.params().clone())
         .collect();
 
-    let mut accs: Vec<validation_common::CrossTickerAcc> =
-        vec![validation_common::CrossTickerAcc::default(); total_candidates];
+    let mut accs: Vec<validation_common::CrossTickerAcc> = (0..total_candidates)
+        .map(|_| validation_common::CrossTickerAcc::with_capacity(cross_cfg.datasets.len()))
+        .collect();
     let mut datasets_meta: Vec<ta_app_core::CrossTickerDatasetMeta> =
         Vec::with_capacity(cross_cfg.datasets.len());
 

@@ -172,6 +172,12 @@ const MAX_HISTORY = 80;
 const MAX_EVENTS = 160;
 const MAX_TIMELINE = 300;
 const MAX_TOASTS = 8;
+const TOAST_AUTO_DISMISS_MS: Record<TaskToastItem["level"], number> = {
+  info: 3500,
+  success: 4500,
+  warn: 0,
+  error: 0,
+};
 const PROGRESS_UPDATE_INTERVAL_MS = 120;
 const POLYGON_BAR_EVENT_INTERVAL_MS = 1000;
 const RUNNER_EVENT_INTERVAL_MS = 200;
@@ -194,6 +200,7 @@ let lastPolygonStatusAt = 0;
 let lastPolygonStatusSignature = "";
 let hydratedFromStorage = false;
 const commandLabelCache = new Map<string, string>();
+const toastDismissTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const PROGRESS_ELIGIBLE_COMMANDS = new Set<TauriCommand>([
   "run_double_ma_optimization",
@@ -230,6 +237,26 @@ const EXTRA_TRACKED_COMMANDS = new Set<TauriCommand>([
 export const TRACKED_TAURI_COMMANDS = new Set<TauriCommand>([
   ...PROGRESS_ELIGIBLE_COMMANDS,
   ...EXTRA_TRACKED_COMMANDS,
+]);
+
+const SUCCESS_TOAST_COMMANDS = new Set<TauriCommand>([
+  "run_double_ma_optimization",
+  "run_composite_cpu_optimization",
+  "run_composite_mo_optimization",
+  "run_double_ma_validation",
+  "run_composite_validation",
+  "run_meta_selection",
+  "run_meta_stage4_experimental",
+  "run_meta_stage5_ml_confidence",
+  "run_research_campaign",
+  "export_ml_signal_dataset",
+  "generate_ml_signal_score_cache",
+  "run_ml_signal_validation",
+  "run_ml_signal_policy_sweep",
+  "polygon_download_1m_and_load",
+  "train_ml_confidence_model",
+  "apply_ml_confidence_model",
+  "evaluate_ml_confidence_policy",
 ]);
 
 const CANCEL_COMMAND_BY_COMMAND: Partial<Record<TauriCommand, TauriCommand>> = {
@@ -294,6 +321,47 @@ function clampToasts(items: TaskToastItem[]): TaskToastItem[] {
   return items.slice(0, MAX_TOASTS);
 }
 
+function toastAutoDismissMs(level: TaskToastItem["level"]): number {
+  return TOAST_AUTO_DISMISS_MS[level] ?? 0;
+}
+
+function clearToastDismissTimer(id: string): void {
+  const handle = toastDismissTimers.get(id);
+  if (!handle) return;
+  globalThis.clearTimeout(handle);
+  toastDismissTimers.delete(id);
+}
+
+function clearAllToastDismissTimers(): void {
+  for (const id of Array.from(toastDismissTimers.keys())) {
+    clearToastDismissTimer(id);
+  }
+}
+
+function toastIsExpired(toast: TaskToastItem, now = Date.now()): boolean {
+  const ttlMs = toastAutoDismissMs(toast.level);
+  return ttlMs > 0 && now - Number(toast.atUnixMs || 0) >= ttlMs;
+}
+
+function scheduleToastAutoDismiss(toast: TaskToastItem): void {
+  clearToastDismissTimer(toast.id);
+  const ttlMs = toastAutoDismissMs(toast.level);
+  if (ttlMs <= 0) return;
+  const remainingMs = Math.max(
+    1,
+    ttlMs - Math.max(0, Date.now() - Number(toast.atUnixMs || 0)),
+  );
+  const handle = globalThis.setTimeout(() => {
+    toastDismissTimers.delete(toast.id);
+    dismissToast(toast.id);
+  }, remainingMs);
+  toastDismissTimers.set(toast.id, handle);
+}
+
+function shouldToastOnTaskSuccess(command: string): boolean {
+  return isTauriCommand(command) && SUCCESS_TOAST_COMMANDS.has(command);
+}
+
 function hydrateStoreFromDisk(st: TaskState): void {
   if (hydratedFromStorage) return;
   hydratedFromStorage = true;
@@ -309,11 +377,15 @@ function hydrateStoreFromDisk(st: TaskState): void {
   st.timeline = clampTimeline(
     Array.isArray(payload.timeline) ? payload.timeline : [],
   );
+  clearAllToastDismissTimers();
   st.toasts = clampToasts(
     Array.isArray((payload as Partial<PersistedTaskCenterV2>).toasts)
       ? (payload as PersistedTaskCenterV2).toasts
       : [],
-  );
+  ).filter((toast) => !toastIsExpired(toast));
+  for (const toast of st.toasts) {
+    scheduleToastAutoDismiss(toast);
+  }
   const last = st.history[0];
   if (!last) st.centerStatus = "idle";
   else if (last.status === "success") st.centerStatus = "success";
@@ -437,16 +509,21 @@ function pushToast(
   const st = taskStoreSingleton();
   const atUnixMs = Date.now();
   nextToastSeq += 1;
-  st.toasts.unshift({
+  const toast: TaskToastItem = {
     id: `toast_${atUnixMs}_${nextToastSeq}`,
     atUnixMs,
     source,
     message,
     level,
-  });
+  };
+  st.toasts.unshift(toast);
   if (st.toasts.length > MAX_TOASTS) {
-    st.toasts.splice(MAX_TOASTS);
+    const removed = st.toasts.splice(MAX_TOASTS);
+    for (const item of removed) {
+      clearToastDismissTimer(item.id);
+    }
   }
+  scheduleToastAutoDismiss(toast);
   schedulePersistTaskCenter();
 }
 
@@ -520,6 +597,7 @@ export function dismissToast(id: string): void {
   const st = taskStoreSingleton();
   const targetId = String(id || "").trim();
   if (!targetId) return;
+  clearToastDismissTimer(targetId);
   const index = st.toasts.findIndex((toast) => toast.id === targetId);
   if (index >= 0) {
     st.toasts.splice(index, 1);
@@ -790,7 +868,9 @@ export function completeTrackedCommand(id: string): void {
     "success",
     task.id,
   );
-  pushToast(task.command, `${task.label} completed.`, "success");
+  if (shouldToastOnTaskSuccess(task.command)) {
+    pushToast(task.command, `${task.label} completed.`, "success");
+  }
   refreshCenterStatus();
 }
 
@@ -1038,6 +1118,7 @@ export function resetTaskStoreForTests(): void {
   lastPolygonStatusAt = 0;
   lastPolygonStatusSignature = "";
   commandLabelCache.clear();
+  clearAllToastDismissTimers();
   cancelPersistTaskCenterDebounce();
   const pinia = resolveRuntimePinia();
   if (pinia) {

@@ -1643,7 +1643,7 @@ describe('validationRequestBuilder', () => {
     expect(summary.routeSummary).toContain('expected GPU composite route (VCET)')
     expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates')
     expect(summary.categorySummary).not.toContain('GPU main + CPU tail:')
-    expect(summary.warningSummary).toContain('Walk-forward and reopt walk-forward currently use the generic validation path')
+    expect(summary.warningSummary).toContain('VCET GPU validation now supports the current fixed-candidate validation module stack on the GpuKernel route')
   })
 
   it('treats Carm Auto composite validation as CPU-preferred in previews', () => {

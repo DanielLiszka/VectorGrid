@@ -761,6 +761,10 @@ pub struct OptionsExpressionStagingStats {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct OptionsExpressionFeasibilityTimingStats {
+    #[serde(default)]
+    pub prepare_ms: u64,
+    #[serde(default)]
+    pub prepare_us: u64,
     pub tuple_compile_ms: u64,
     pub baseline_candidate_compile_ms: u64,
     pub baseline_exit_summary_compile_ms: u64,
@@ -768,9 +772,17 @@ pub struct OptionsExpressionFeasibilityTimingStats {
     pub conservative_exit_summary_compile_ms: u64,
     pub harsher_candidate_compile_ms: u64,
     pub harsher_exit_summary_compile_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device_resolution_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device_resolution_us: Option<u64>,
     pub cpu_ranking_ms: u64,
     #[serde(default)]
     pub cpu_ranking_us: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_plan_probe_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_plan_probe_us: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_ranking_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -807,6 +819,10 @@ pub struct OptionsExpressionFeasibilityTimingStats {
     pub gpu_sealed_extreme_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_sealed_extreme_us: Option<u64>,
+    #[serde(default)]
+    pub report_finalize_ms: u64,
+    #[serde(default)]
+    pub report_finalize_us: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_speedup_vs_cpu: Option<f64>,
 }
@@ -1196,6 +1212,12 @@ mod tests {
     #[test]
     fn feasibility_timing_stats_default_prompt12_fields_to_none_and_omit_serialization() {
         let timings = OptionsExpressionFeasibilityTimingStats::default();
+        assert_eq!(timings.prepare_ms, 0);
+        assert_eq!(timings.prepare_us, 0);
+        assert_eq!(timings.gpu_device_resolution_ms, None);
+        assert_eq!(timings.gpu_device_resolution_us, None);
+        assert_eq!(timings.gpu_plan_probe_ms, None);
+        assert_eq!(timings.gpu_plan_probe_us, None);
         assert_eq!(timings.gpu_exactify_summary_overwrite_ms, None);
         assert_eq!(timings.gpu_exactify_summary_overwrite_us, None);
         assert_eq!(timings.gpu_exactify_enrichment_ms, None);
@@ -1206,8 +1228,14 @@ mod tests {
         assert_eq!(timings.gpu_sealed_non_extreme_us, None);
         assert_eq!(timings.gpu_sealed_extreme_ms, None);
         assert_eq!(timings.gpu_sealed_extreme_us, None);
+        assert_eq!(timings.report_finalize_ms, 0);
+        assert_eq!(timings.report_finalize_us, 0);
 
         let value = serde_json::to_value(&timings).expect("serialize timings");
+        assert!(value.get("gpu_device_resolution_ms").is_none());
+        assert!(value.get("gpu_device_resolution_us").is_none());
+        assert!(value.get("gpu_plan_probe_ms").is_none());
+        assert!(value.get("gpu_plan_probe_us").is_none());
         assert!(value.get("gpu_exactify_summary_overwrite_ms").is_none());
         assert!(value.get("gpu_exactify_summary_overwrite_us").is_none());
         assert!(value.get("gpu_exactify_enrichment_ms").is_none());

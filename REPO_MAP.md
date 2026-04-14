@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-04-10
+Last updated: 2026-04-13
 
 ## Purpose
 
@@ -20,33 +20,11 @@ Do not treat this as the full implementation spec. Use it together with:
 - `README.md` for product framing and benchmark posture
 - `ARCHITECTURE_NOTES.md` for backend/runtime notes
 - `RELEASE.md` for build/release/PTX packaging notes
-- `CONTRIBUTING.md` for public contribution scope, verification expectations, and docs-sync rules
-- `SUPPORT.md` for support boundaries and issue-routing guidance
-- `SECURITY.md` for vulnerability-reporting posture
-- `LICENSE` for Apache 2.0 reuse terms
 - `web/README.md` for frontend runtime notes
-- `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
-- `Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
-- `Frontend Review/Unfinished/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan, completed phases, and open checklist
-- `Frontend Review/desktop_e2e_testing_plan_2026-03-29.md` for the Windows-first `WebdriverIO + tauri-driver` desktop smoke implementation spec, implemented harness status, and current verification notes
-- `Frontend Review/testing_layer_expansion_plan_2026-03-30.md` for the implemented testing-layer expansion record covering frontend `mockIPC`, Rust mock-runtime coverage, and narrow desktop smoke hardening after the first-wave WDIO harness
-- `Frontend Review/desktop_capability_inventory_2026-03-28.md` for the current desktop capability/window-label inventory
-- `Frontend Review/desktop_plugin_inventory_2026-03-28.md` for the adopted/deferred desktop plugin record
-- `Frontend Review/Unfinished/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase
-- `Frontend Review/workstation_behavior_plan_2026-03-28.md` for the completed workstation UX implementation record (perspectives, compare workflows, provenance, stale-state cues, density, bundle discipline)
-- `Frontend Review/existing_stack_utilization_plan_2026-03-28.md` for the current open plan to get more product value out of the stack already installed in `web/package.json` and the adopted desktop plugins
-- `Frontend Review/startup_animation_plan_2026-03-30.md` for the implemented first-wave in-window startup animation record, verification notes, and remaining optional follow-ups using the existing VectorAlpha brand assets
-- `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md` for the deferred plan to split `MlSignal` into a discrete user mode while keeping the conventional optimization workflow as the default shell mode
-- `Frontend Review/svg_generation_prompts_2026-03-28.md` for the paste-ready GPT-5.4 Pro prompts used to generate the proposed custom SVG asset set
 - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md` for the current shipped-slice options-expression tracker, current checklist, and repo-fit implementation status
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md` for the refocused future roadmap that is now limited to improving the existing options optimization + embedded validation workflow
-- `options_research/options_expression_overlap_quality_hardening_implementation_guide_2026-04-08.md` for the current execution guide covering overlap-quality hardening, adequacy reporting, conditional default-profile clamps, and verification gates inside the existing options workflow
-- `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md` for the current Prompt 2 follow-up execution guide covering the one-factor `event_chronological` versus `session_chronological` split-assignment ablation, fixed SPY/QQQ sign-off pair, and reject/defer/promote checklist
-- `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md` for the current Prompt 4 follow-up execution guide covering realism-lane semantic lock-in, aggregate-only provider-download scope freeze, and quote-aware versus derived-mid clarity hardening
-- `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md` for the current Prompt 5 follow-up execution guide covering retained-leader/disagreement summary hardening for artifact list, compare, and reopened summary surfaces without widening hot-path GPU state
-- `options_research/options_expression_support_aware_validation_semantics_implementation_guide_2026-04-10.md` for the current Prompt 6 follow-up execution guide covering support-aware tuple verdict semantics, reopened-artifact truth refresh, and compact validation support cues inside the existing options workflow
-- `CUDA kernel review/rtcore_barrier_validation_experiment_implementation_plan_2026-04-10.md` for the repo-grounded RT-core experiment guide scoped to validation-side intrabar barrier resolution, with viability gates and checklist
-- `CUDA kernel review/tensorcore_alma_indicator_prep_experiment_implementation_plan_2026-04-10.md` for the repo-grounded Tensor Core experiment guide scoped to ALMA indicator preparation behind the existing `vector-ta` VRAM MA interface, with viability gates and checklist
+
+Dated planning and implementation notes under `Frontend Review/`, `options_research/`, and `CUDA kernel review/` are optional background only. Do not open them by default unless this map routes you there for the exact task you are doing.
 
 ## How To Use This Map
 
@@ -87,10 +65,6 @@ Open these first before broad search:
 - `README.md`
 - `ARCHITECTURE_NOTES.md`
 - `RELEASE.md`
-- `CONTRIBUTING.md`
-- `SUPPORT.md`
-- `SECURITY.md`
-- `LICENSE`
 - `web/README.md`
 - `src-tauri/src/lib.rs`
 - `src-tauri/tauri.conf.json`
@@ -115,16 +89,9 @@ Open these first before broad search:
 
 If the task is about the current options backtest optimization / embedded validation lane, open these first before broad search:
 
-- planning / tracking
+- current planning / scope
   - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
   - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
-  - `options_research/options_expression_overlap_quality_hardening_implementation_guide_2026-04-08.md`
-  - `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md`
-  - `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md`
-  - `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md`
-  - `options_research/options_expression_support_aware_validation_semantics_implementation_guide_2026-04-10.md`
-  - `options_research/options_expression_gpt54_pro_prompt_pack_2026-04-08_attachments/prompt_07_stress_family_expansion_constraints/options_stress_scope_freeze_implementation_guide_2026-04-10.md`
-  - `options_research/options_expression_gpt54_pro_prompt_pack_2026-04-08_attachments/prompt_08_bounded_structure_family_expansion_or_freeze/options_structure_scope_freeze_implementation_guide_2026-04-10.md`
 - frontend host / request shaping
   - `web/src/components/OptionsExpressionPanel.vue`
   - `web/src/stores/optionsExpressionStore.ts`
@@ -143,6 +110,8 @@ If the task is about the current options backtest optimization / embedded valida
   - `web/src/components/OptionsExpressionPanel.test.ts`
   - `web/src/stores/optionsExpressionStore.test.ts`
   - `web/src/services/optionsExpressionService.test.ts`
+
+Use dated options implementation guides under `options_research/` only as secondary context when you are touching one of those exact hardening lanes and the current code/tests are not enough.
 
 ## Top-Level Workspace Map
 
@@ -976,7 +945,7 @@ Read these smaller files first:
 ### Validation layers
 
 - `crates/app_core/src/double_ma_validate.rs`
-  - Double-MA family validation entry and fixed-candidate GPU gating
+  - Double-MA family validation entry, fixed-candidate GPU gating, and TrendQuality ADX-off CPU-fallback policy for parity safety
 - `crates/app_core/src/composite_validate.rs`
   - strategy-local validation adapter/orchestrator for advanced strategies
 - `crates/app_core/src/validation_core.rs`
@@ -1084,7 +1053,7 @@ Current policy boundaries:
 
 | Kind | High-level indicator/features | Optimize route | Validation notes |
 | --- | --- | --- | --- |
-| `DoubleMa` | fast/slow MA pairs, optional `halftrend_filter` | `Auto`, `CpuOnly`, `GpuOnly`, `GpuHybridKernel`, `GpuKernel` | fixed-candidate validation can use CPU or GPU main route; `GpuOnly` falls back to CPU |
+| `DoubleMa` | fast/slow MA pairs, optional `halftrend_filter` | `Auto`, `CpuOnly`, `GpuOnly`, `GpuHybridKernel`, `GpuKernel` | fixed-candidate validation can use CPU or GPU main route; `GpuOnly` falls back to CPU, and TrendQuality requests without ADX confirmation currently fall back to CPU on `GpuKernel`/`Auto` fixed-candidate validation |
 | `DynamicDoubleMa` | constrained `strategy_ir` builder over static profiles/indicator kinds | previewed against strategy-plan backend, then runs through normal Double-MA path | no separate validator; resolves into normal runtime flow |
 | `Pit` | EFI, VOSC, CFO | Double-MA family backends | double-like GPU main route; requires OHLCV |
 | `Set` | linear-reg angle, efficiency ratio, chop | Double-MA family backends | double-like GPU main route; requires high/low |
@@ -1092,7 +1061,7 @@ Current policy boundaries:
 | `Orc` | RSI, stochastic fast K/D, Williams %R | Double-MA family backends | double-like GPU main route; requires high/low |
 | `Marrt` | thin Double-MA variant, mostly `long_only=false` preset | Double-MA family backends | double-like GPU main route; MA whitelist limited to `sma`, `ema`, `alma`, `wma`, `zlema`, `vwma` |
 | `Vfct` | OBV smoothing + MFI confirmation | Double-MA family backends | double-like GPU main route; requires high/low/volume; trend MAs currently `vwma` only |
-| `CompositeTrend` | trend-quality regime with linear-reg angle, BB width, optional ROC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation |
+| `CompositeTrend` | trend-quality regime with linear-reg angle, BB width, optional ROC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; TrendQuality-without-ADX fixed-candidate validation currently falls back to CPU on `GpuKernel`/`Auto` because the exact-combo GPU validation path is not parity-safe there |
 | `RegimeHybrid` | trend-quality regime plus ADX enter/exit and mean-reversion thresholds | routed through Double-MA; current target `GpuHybridKernel`, CPU fallback | treated as double-like fixed-candidate validation |
 | `BreakoutMomentum` | Bollinger breakout, MACD, CMO, ADOSC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; requires high/low/volume |
 
@@ -1104,6 +1073,7 @@ Current policy boundaries:
   - execution then re-enters the normal Double-MA optimizer path
   - fixed-candidate validation replay is still intentionally unsupported
 - `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` are routed Double-MA family members, not `CompositeCpu` members
+- generic Double-MA TrendQuality requests without ADX confirmation, including `CompositeTrend`, currently fall back to `CpuOnly` on `GpuKernel`/`Auto` fixed-candidate validation until the exact-combo GPU parity issue is repaired
 - the canonical code surfaces for this family are:
   - `crates/app_core/src/double_ma.rs`
   - `crates/app_core/src/double_ma_validate.rs`
@@ -1121,15 +1091,15 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
 | --- | --- | --- | --- |
 | `CompositeCpu` | fast/slow MA core plus HalfTrend, MACZ, OTT, `CompositeSignalMode` | CPU and `GpuKernel` route exist | GPU validation needs uniform HalfTrend params across finalists or can fall back to CPU |
 | `Asr` | TTM squeeze, squeeze momentum, linear-reg angle, ER filter, z-score, Kaufman overlays | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU on measured workloads |
-| `Vcc` | TTM squeeze, squeeze momentum, TTM trend, optional momentum-acceleration gating | CPU and `GpuKernel` | mixed validation route; CPU-reference signal prep with exact CPU-series metrics |
+| `Vcc` | TTM squeeze, squeeze momentum, TTM trend, optional momentum-acceleration gating | CPU and `GpuKernel` | mixed validation route; CPU-reference signal prep still matters, but `GpuKernel` now uses dedicated GPU walk-forward and reopt walk-forward helpers |
 | `Vemr` | z-score, Bollinger bands, ATR stop | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU |
 | `Rocb` | Donchian/channel breakout plus ATR risk overlay | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU |
-| `Vcet` | VIDYA trend-state plus Chandelier Exit | CPU and `GpuKernel` | main fixed-candidate GPU route exists; walk-forward/reopt/perturb/bootstrap remain CPU-tail |
-| `Mkcs` | standard-deviation compression plus Donchian breakout | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU |
-| `Kqsr` | KDJ, stochastic RSI, IFT-RSI, QQE, PRB | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU; requires OHLC |
-| `Carm` | Coppock, AO, ROCR, APO, OTTO HOTT/LOTT | CPU and `GpuKernel` | mixed validation route; `Auto` currently prefers CPU |
-| `Kvdf` | Keltner, VWAP, DTI, DevStop, FVG trailing-stop logic | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU; requires high/low/close/volume |
-| `Cdmc` | DPO, correlation cycle, MAMA/FAMA, decycler, phase threshold | CPU and `GpuKernel` | mixed validation route; current measured policy is more GPU-favorable than CARM |
+| `Vcet` | VIDYA trend-state plus Chandelier Exit | CPU and `GpuKernel` | main fixed-candidate GPU route exists; current runtime tests cover walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap on `GpuKernel` |
+| `Mkcs` | standard-deviation compression plus Donchian breakout | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU |
+| `Kqsr` | KDJ, stochastic RSI, IFT-RSI, QQE, PRB | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires OHLC |
+| `Carm` | Coppock, AO, ROCR, APO, OTTO HOTT/LOTT | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, `Auto` still prefers CPU, and the dedicated GPU walk-forward/reopt helpers are not yet safe to dispatch |
+| `Kvdf` | Keltner, VWAP, DTI, DevStop, FVG trailing-stop logic | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires high/low/close/volume |
+| `Cdmc` | DPO, correlation cycle, MAMA/FAMA, decycler, phase threshold | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, current measured policy is more GPU-favorable than CARM, but dedicated GPU walk-forward/reopt helpers still need parity repair before dispatch |
 
 #### Standalone profile cluster truth anchors
 
@@ -1148,8 +1118,8 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
     - `web/src/services/validationRequestBuilder.test.ts`
 - Cluster A validation posture to keep truthful across preview, post-run summaries, and report export:
   - `Asr`, `Vemr`, and `Rocb` currently keep `Auto` CPU-preferred on measured validation workloads
-  - `Vcc` keeps a mixed validation route with CPU-reference signal prep and exact CPU-series metrics
-  - `Vcet` keeps the main fixed-candidate GPU validation route, but walk-forward, reopt walk-forward, perturb, and bootstrap remain CPU-tail work
+  - `Vcc` keeps a mixed validation route with CPU-reference signal prep, but `GpuKernel` now has dedicated GPU walk-forward and reopt walk-forward coverage
+  - `Vcet` now has runtime-tested `GpuKernel` coverage for walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap; keep preview/report surfaces aligned to that broader support
 
 - Cluster B membership is fixed today:
   - `Mkcs`
@@ -1165,8 +1135,9 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
     - `web/src/utils/strategyOptimizationCapabilities.test.ts`
     - `web/src/services/validationRequestBuilder.test.ts`
 - Cluster B validation posture to keep truthful across preview, post-run summaries, and report export:
-  - `Mkcs`, `Kqsr`, `Carm`, and `Kvdf` currently keep `Auto` CPU-preferred or CPU-fallback-sensitive validation policies
+  - `Mkcs`, `Kqsr`, `Carm`, and `Kvdf` currently keep `Auto` CPU-preferred or CPU-fallback-sensitive validation policies even though the main validation module stack is already present on the active route
   - `Cdmc` keeps the mixed validation route where current measured policy is more GPU-favorable than `Carm`, while still using CPU-reference signal prep for exact CPU-series validation metrics
+  - Cluster B parity is now mostly about composite `cross_ticker` scope, narrower aux analytics versus the `DoubleMa` baseline, and helper-route exactness for `Carm`/`Cdmc`, not about missing core validation modules
 
 #### CompositeCpu / CompositeMo truth anchors
 
@@ -1201,10 +1172,12 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
     - `mode`
     - `ma_pairs`
 - Composite validation matrix to keep in sync across preview builders, post-run summaries, and workbook export:
-  - `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the fixed-candidate Double-MA validation path in `crates/app_core/src/double_ma_validate.rs`
+  - `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the fixed-candidate Double-MA validation path in `crates/app_core/src/double_ma_validate.rs`, but TrendQuality-without-ADX `GpuKernel`/`Auto` requests currently preserve parity by falling back to CPU for that fixed-candidate path
   - plain `CompositeCpu` can keep the GPU fixed-candidate validation route only when finalist sets remain compatible with the current HalfTrend-uniformity constraints
   - `CompositeMo` remains CPU-preferred for validation; current GPU fixed-candidate support is intentionally limited to plain `CompositeCpu` hard-gate candidates
   - standalone profile Cluster A and Cluster B families validate through `run_composite_validation` with family-specific route notes that must stay aligned with `web/src/services/validationRequestBuilder.ts`, `web/src/services/validationService.ts`, and `src-tauri/tests/validation_xlsx_report_tests.rs`
+  - composite-family `cross_ticker` reruns already preserve CSCV/PBO and hard-gate thresholds for preserved finalists, but they do not yet rerun the full walk-forward, reopt walk-forward, SPA, perturb, or bootstrap stack
+  - composite-family aux analytics currently expose `regime_slice_robustness` and `friction_stress`; `entry_margin_fragility`, `underwater_duration`, `checkpoint_robustness`, and `benchmark_slice_summary` remain Double-MA-only parity gaps
 
 ### Strategy-local owners and GPU companions
 

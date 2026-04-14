@@ -92,7 +92,12 @@ pub use ta_strategies::double_ma::DoubleMaCurves;
 pub use ta_strategies::records::{TradeRecord, TradeRecords};
 
 pub use csv_compat::read_candles_from_csv_compat;
-pub use cuda_device::{preferred_cuda_device, preferred_cuda_device_id, PreferredCudaDevice};
+pub use cuda_device::{
+    preferred_cuda_device, preferred_cuda_device_id, preferred_cuda_device_id_result,
+    PreferredCudaDevice,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub use options_expression_gpu::prewarm_options_expression_gpu_runtime;
 pub use timeframe::{parse_timeframe_label, resample_candles, TimeframeSpec};
 
 pub use double_ma::{

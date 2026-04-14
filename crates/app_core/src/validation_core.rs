@@ -33,15 +33,14 @@ where
     )?;
 
     let mut out: Vec<C> = Vec::with_capacity(tmp.len());
-    let mut start_ts: Vec<usize> = Vec::with_capacity(tmp.len());
     let mut sample_obs: Vec<usize> = Vec::with_capacity(tmp.len());
+    let mut common_start_t = 0usize;
     for (cand, st, obs) in tmp {
         out.push(cand);
-        start_ts.push(st);
+        common_start_t = common_start_t.max(st);
         sample_obs.push(obs.max(2));
     }
 
-    let common_start_t = start_ts.into_iter().max().unwrap_or(0);
     let cscv_pbo = crate::validation_pipeline::finalize_with_probability_and_optional_cscv(
         &mut out,
         &sample_obs,

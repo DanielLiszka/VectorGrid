@@ -30,7 +30,7 @@ async function ensureVisibleHeatmap(): Promise<void> {
   }
 }
 
-watch([visible, mountReady], async ([nextVisible, nextReady]) => {
+watch([visible, mountReady, updatedAtUnixMs], async ([nextVisible, nextReady]) => {
   if (!nextVisible || !nextReady) return
   await ensureVisibleHeatmap()
 }, { immediate: true })

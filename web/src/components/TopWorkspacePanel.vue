@@ -363,6 +363,7 @@ function sortStateToAria(sort: TopColumn['sort']): 'ascending' | 'descending' | 
 
 function clickTopRow(index: number): void {
   if (!Number.isInteger(index) || index < 0) return
+  workflowStore.selectResultsTab('drill')
   analysisStore.selectTopRow(index)
 }
 

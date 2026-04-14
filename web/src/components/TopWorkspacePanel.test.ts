@@ -275,6 +275,38 @@ describe('TopWorkspacePanel', () => {
     expect(selectionStatus?.textContent).toContain('3.4')
   })
 
+  it('opens drilldown when a ranked row is selected from the table', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 2
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      { selected: false, cells: [{ text: 'row 1', className: 'left', title: 'row 1' }] },
+      { selected: false, cells: [{ text: 'row 2', className: 'left', title: 'row 2' }] },
+    ]
+    const selectRowSpy = vi.spyOn(analysisStore, 'selectTopRow').mockImplementation(() => undefined)
+    const resultsSpy = vi.spyOn(workflowStore, 'selectResultsTab')
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const rows = Array.from(document.querySelectorAll<HTMLTableRowElement>('tr[data-top-row="1"]'))
+    rows[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    expect(resultsSpy).toHaveBeenCalledWith('drill')
+    expect(selectRowSpy).toHaveBeenCalledWith(1)
+  })
+
   it('pins shortlist candidates into the compare tray', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

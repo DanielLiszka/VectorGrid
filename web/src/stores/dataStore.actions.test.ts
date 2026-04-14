@@ -554,6 +554,29 @@ describe("data store actions", () => {
     );
   });
 
+  it("renders relative-timestamp datasets without epoch date placeholders", async () => {
+    loadCsvMock.mockResolvedValueOnce({
+      ...defaultLoadResult,
+      path: "C:/tmp/benchmark.csv",
+      dataId: "data-relative",
+      meta: {
+        ...defaultLoadResult.meta,
+        minTs: 0,
+        maxTs: 199_999_000,
+        timeframe: "1s",
+      },
+    });
+
+    const store = useDataStore();
+    store.loadCsv("C:/tmp/benchmark.csv");
+    await flushAsync();
+
+    expect(store.datasetRange).toContain("1s");
+    expect(store.datasetRange).toContain("relative 0ms");
+    expect(store.datasetRange).not.toContain("1970");
+    expect(store.dataTimeframeHint).toContain("Relative timeline detected");
+  });
+
   it("dispatches market-data directory and sample actions through data service", async () => {
     const store = useDataStore();
     store.browseCsv();

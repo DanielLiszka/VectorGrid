@@ -1,4 +1,5 @@
 export const ANALYSIS_DOCK_OPEN_STORAGE_KEY = 'VTA_ANALYSIS_DOCK_OPEN_V1'
+export const OPTIMIZE_DOCK_OPEN_STORAGE_KEY = 'VTA_OPTIMIZE_DOCK_OPEN_V1'
 
 interface ShellDockState {
   mode?: unknown

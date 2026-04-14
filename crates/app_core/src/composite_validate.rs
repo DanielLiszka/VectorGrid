@@ -8789,6 +8789,9 @@ fn compute_cdmc_gpu_walk_forward_stats_batch(
         let mut sharpes = Vec::new();
         let mut dds = Vec::new();
         let mut pnls = Vec::new();
+        let mut downside_ratios = Vec::new();
+        let mut ulcers = Vec::new();
+        let mut martins = Vec::new();
         let mut trades = Vec::new();
         let mut t0 = usize::try_from(combo_start_t[idx]).unwrap_or(0);
         while t0 + 2 <= n {
@@ -8816,6 +8819,13 @@ fn compute_cdmc_gpu_walk_forward_stats_batch(
             sharpes.push(metric.sharpe);
             dds.push(metric.max_dd);
             pnls.push(metric.pnl);
+            if let Some(ratio) =
+                crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric)
+            {
+                downside_ratios.push(ratio);
+            }
+            ulcers.push(metric.ulcer_index);
+            martins.push(metric.martin_ratio);
             let desired = &desired_row_major[idx * n..(idx + 1) * n];
             trades.push(count_trade_events_from_desired_window(
                 desired, t0, end, strategy,
@@ -8825,8 +8835,14 @@ fn compute_cdmc_gpu_walk_forward_stats_batch(
             }
             t0 = t0.saturating_add(step);
         }
-        out.push(summarize_walk_forward_metric_samples(
-            sharpes, dds, pnls, trades,
+        out.push(summarize_walk_forward_metric_samples_full(
+            sharpes,
+            dds,
+            pnls,
+            downside_ratios,
+            ulcers,
+            martins,
+            trades,
         ));
     }
     Ok(out)
@@ -9577,10 +9593,21 @@ where
         CompositeValidationFamily::Vemr => {
             compute_vemr_gpu_walk_forward_stats_for_candidate(req, candles, params, cfg).map(Some)
         }
-        CompositeValidationFamily::Vcc
-        | CompositeValidationFamily::Vcet
-        | CompositeValidationFamily::Carm
-        | CompositeValidationFamily::Cdmc => {
+        CompositeValidationFamily::Vcc => {
+            compute_vcc_gpu_walk_forward_stats_for_candidate(req, candles, params, cfg).map(Some)
+        }
+        CompositeValidationFamily::Vcet => {
+            let series = build_series()?;
+            Ok(Some(
+                crate::validation_pipeline::compute_walk_forward_stats(
+                    series_n(&series),
+                    series_start_t(&series),
+                    cfg,
+                    |t0, end| eval_metrics_window(&series, t0, end),
+                ),
+            ))
+        }
+        CompositeValidationFamily::Carm | CompositeValidationFamily::Cdmc => {
             let series = build_series()?;
             Ok(Some(
                 crate::validation_pipeline::compute_walk_forward_stats(
@@ -9693,8 +9720,14 @@ fn compute_composite_gpu_reopt_walk_forward_for_family(
                 cfg,
             )
         }
-        CompositeValidationFamily::Vcc
-        | CompositeValidationFamily::Vcet
+        CompositeValidationFamily::Vcc => compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
+            req,
+            candles,
+            finalist_params,
+            finalist_start_ts,
+            cfg,
+        ),
+        CompositeValidationFamily::Vcet
         | CompositeValidationFamily::Carm
         | CompositeValidationFamily::Cdmc => {
             let finalist_series = build_composite_finalist_series(
@@ -24286,6 +24319,79 @@ mod tests {
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_gpu_walk_forward_helper_populates_drawdown_risk_metrics() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "cdmc-gpu-walk-forward-helper".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![cdmc_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 187,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu cdmc walk_forward helper baseline");
+        let gpu_eval = try_prepare_cdmc_gpu_fixed_candidate_validation(
+            &mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+        )
+        .expect("gpu cdmc walk_forward helper prep");
+
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_eval
+            .walk_forward_stats
+            .as_ref()
+            .and_then(|stats| stats.first())
+            .expect("gpu helper walk_forward");
+        assert_eq!(cpu_wf.windows, gpu_wf.windows);
+        assert!(
+            cpu_wf.downside_vol_ratio_median.is_finite() && cpu_wf.downside_vol_ratio_median > 0.0
+        );
+        assert!(
+            gpu_wf.downside_vol_ratio_median.is_finite() && gpu_wf.downside_vol_ratio_median > 0.0
+        );
+        assert!(cpu_wf.ulcer_index_median.is_finite() && cpu_wf.ulcer_index_median > 0.0);
+        assert!(gpu_wf.ulcer_index_median.is_finite() && gpu_wf.ulcer_index_median > 0.0);
+        assert!(cpu_wf.ulcer_index_worst.is_finite() && cpu_wf.ulcer_index_worst > 0.0);
+        assert!(gpu_wf.ulcer_index_worst.is_finite() && gpu_wf.ulcer_index_worst > 0.0);
+        assert!(cpu_wf.martin_ratio_median.is_finite() && cpu_wf.martin_ratio_median != 0.0);
+        assert!(gpu_wf.martin_ratio_median.is_finite() && gpu_wf.martin_ratio_median != 0.0);
+        assert!(cpu_wf.martin_ratio_worst.is_finite() && cpu_wf.martin_ratio_worst != 0.0);
+        assert!(gpu_wf.martin_ratio_worst.is_finite() && gpu_wf.martin_ratio_worst != 0.0);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

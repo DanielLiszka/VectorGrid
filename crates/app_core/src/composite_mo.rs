@@ -1228,9 +1228,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         if let (Some(fast_range), Some(slow_range)) = (fast_range, slow_range) {
             let resolved_device_id = match cfg.device_id {
                 Some(device_id) => Some(device_id),
-                None => crate::preferred_cuda_device()
-                    .map_err(|err| format!("failed to resolve preferred CUDA device: {err}"))?
-                    .map(|device| device.device_id),
+                None => crate::preferred_cuda_device_id_result()
+                    .map_err(|err| format!("failed to resolve preferred CUDA device: {err}"))?,
             };
             let device_id = resolved_device_id.unwrap_or(0);
             let prescan_started = std::time::Instant::now();

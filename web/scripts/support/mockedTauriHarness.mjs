@@ -49,8 +49,9 @@ export async function installMockedTauri(context, options = {}) {
 
     try {
       if (hold) {
-        localStorage.setItem(holdKey, '1')
+        sessionStorage.setItem(holdKey, '1')
       } else {
+        sessionStorage.removeItem(holdKey)
         localStorage.removeItem(holdKey)
       }
     } catch {

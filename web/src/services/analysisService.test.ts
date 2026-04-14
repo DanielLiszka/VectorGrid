@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { invokeCommand } from "../tauri/invoke";
 import { bindRuntimePinia } from "../stores/runtimePinia";
 import {
+  __analysisTestUtils,
   clearBaseline,
   clearTopFilters,
   drillClearTradeSelection,
@@ -41,6 +42,27 @@ vi.mock("../tauri/invoke", () => ({
       },
     },
   })),
+}));
+
+const createChartMock = vi.fn();
+const addSeriesMock = vi.fn();
+const addCandlestickSeriesMock = vi.fn();
+const setSeriesDataMock = vi.fn();
+const fitContentMock = vi.fn();
+const removeChartMock = vi.fn();
+const applyChartOptionsMock = vi.fn();
+const subscribeClickMock = vi.fn();
+const unsubscribeClickMock = vi.fn();
+const createSeriesMarkersMock = vi.fn();
+const setMarkersMock = vi.fn();
+let lastChartClickHandler: ((param: unknown) => void) | null = null;
+
+vi.mock("lightweight-charts", () => ({
+  CandlestickSeries: {},
+  LineSeries: {},
+  HistogramSeries: {},
+  createChart: (...args: unknown[]) => createChartMock(...args),
+  createSeriesMarkers: (...args: unknown[]) => createSeriesMarkersMock(...args),
 }));
 
 const invokeCommandMock = vi.mocked(invokeCommand);
@@ -89,17 +111,19 @@ function mountDrillDom(): void {
     <div id="drillWrapVue" style="display:none;"></div>
     <div id="drillMetaVue">-</div>
     <div id="drillStatusVue">-</div>
+    <div id="drillTvChartVue"></div>
+    <div id="drillTvChartMetaVue">-</div>
     <canvas id="equityCanvasVue" width="1024" height="160"></canvas>
     <canvas id="drawdownCanvasVue" width="1024" height="160"></canvas>
     <div id="tradeStatsWrapVue" style="display:none;"></div>
     <div id="tradeStatsVue">-</div>
-    <tbody id="tradeTableBodyVue"></tbody>
+    <table><tbody id="tradeTableBodyVue"></tbody></table>
     <div id="stabilityWrapVue" style="display:none;"></div>
     <div id="stabilityStatusVue">-</div>
     <div id="stabilityMetaVue">-</div>
     <div id="rejectMetaVue">-</div>
     <div id="stabilityTableWrapVue" style="display:none;"></div>
-    <tbody id="stabilityTableBodyVue"></tbody>
+    <table><tbody id="stabilityTableBodyVue"></tbody></table>
   `;
 }
 
@@ -150,7 +174,52 @@ describe("analysis service", () => {
           }) as never,
       );
     }
-    invalidateAnalysisExecutionCaches()
+    lastChartClickHandler = null;
+    setSeriesDataMock.mockReset();
+    fitContentMock.mockReset();
+    removeChartMock.mockReset();
+    applyChartOptionsMock.mockReset();
+    subscribeClickMock.mockReset();
+    unsubscribeClickMock.mockReset();
+    setMarkersMock.mockReset();
+    addSeriesMock.mockReset();
+    addCandlestickSeriesMock.mockReset();
+    createChartMock.mockReset();
+    createSeriesMarkersMock.mockReset();
+    addSeriesMock.mockImplementation(() => ({
+      setData: setSeriesDataMock,
+    }));
+    addCandlestickSeriesMock.mockImplementation(() => ({
+      setData: setSeriesDataMock,
+    }));
+    subscribeClickMock.mockImplementation(
+      (handler: (param: unknown) => void) => {
+        lastChartClickHandler = handler;
+      },
+    );
+    unsubscribeClickMock.mockImplementation(
+      (handler: (param: unknown) => void) => {
+        if (lastChartClickHandler === handler) lastChartClickHandler = null;
+      },
+    );
+    createChartMock.mockImplementation(() => ({
+      addSeries: addSeriesMock,
+      addCandlestickSeries: addCandlestickSeriesMock,
+      timeScale: () => ({ fitContent: fitContentMock }),
+      applyOptions: applyChartOptionsMock,
+      subscribeClick: subscribeClickMock,
+      unsubscribeClick: unsubscribeClickMock,
+      remove: removeChartMock,
+    }));
+    createSeriesMarkersMock.mockImplementation(() => ({
+      setMarkers: setMarkersMock,
+    }));
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    invalidateAnalysisExecutionCaches();
     invokeCommandMock.mockResolvedValue({
       ts: "2026-02-26T11:59:00.000Z",
       run: {
@@ -349,6 +418,121 @@ describe("analysis service", () => {
       }),
     );
     expect(store.topTableRows[1]?.selected).toBe(true);
+  });
+
+  it("builds drill trade markers from drilldown trades and syncs trade focus to the drill table", async () => {
+    mountDrillDom();
+    const drillCurves = {
+      equity: { start_t: 1, end_t: 4, bins: 2, minmax: [1, 1.02, 1.01, 1.05] },
+      drawdown: { start_t: 1, end_t: 4, bins: 2, minmax: [0, -0.01, -0.02, -0.01] },
+      trades: [
+        { entry_t: 1, exit_t: 2, direction: 1, pnl: 0.03, bars: 1, open: false },
+        { entry_t: 3, exit_t: 4, direction: -1, pnl: -0.01, bars: 1, open: false },
+      ],
+      trade_stats: {
+        closed_trades: 2,
+        open_trades: 0,
+        wins: 1,
+        losses: 1,
+        win_rate: 0.5,
+        avg_win: 0.03,
+        avg_loss: -0.01,
+        profit_factor: 3,
+        expectancy: 0.01,
+      },
+      indicator_bars: [
+        { time: 1_744_500_000, from_index: 1, to_index: 1, fast: 100.2, slow: 100.0 },
+        { time: 1_744_500_060, from_index: 2, to_index: 2, fast: 100.5, slow: 100.1 },
+        { time: 1_744_500_120, from_index: 3, to_index: 3, fast: 100.3, slow: 100.2 },
+        { time: 1_744_500_180, from_index: 4, to_index: 4, fast: 100.1, slow: 100.25 },
+      ],
+    };
+    const drillBars = [
+      { time: 1_744_500_000, open: 100, high: 101, low: 99.8, close: 100.6, fromIndex: 1, toIndex: 1, volume: 0 },
+      { time: 1_744_500_060, open: 100.6, high: 101.2, low: 100.3, close: 101.0, fromIndex: 2, toIndex: 2, volume: 0 },
+      { time: 1_744_500_120, open: 101.0, high: 101.1, low: 100.2, close: 100.4, fromIndex: 3, toIndex: 3, volume: 0 },
+      { time: 1_744_500_180, open: 100.4, high: 100.8, low: 99.9, close: 100.0, fromIndex: 4, toIndex: 4, volume: 0 },
+    ];
+    const markers = __analysisTestUtils.buildDrillTradeMarkers(
+      drillCurves,
+      drillBars,
+    );
+    expect(markers.some((marker) => marker.id === "trade-0-entry" && marker.text === "L1")).toBe(true);
+    expect(markers.some((marker) => marker.id === "trade-0-exit")).toBe(true);
+    expect(markers.some((marker) => marker.id === "trade-1-entry" && marker.text === "S2")).toBe(true);
+
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-drill-markers",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        strategy: {},
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.2, sharpe: 1.2, max_dd: 0.1, trades: 2, exposure: 0.5 },
+          ],
+        ],
+      },
+    });
+    refreshTopTableFromWorkflowRun();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return drillCurves as never;
+      }
+      if (command === "compute_double_ma_local_stability") {
+        return {
+          base: {
+            fast_len: 7,
+            slow_len: 30,
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") {
+        return drillBars.map((bar) => ({
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          from_index: bar.fromIndex,
+          to_index: bar.toIndex,
+        })) as never;
+      }
+      return undefined as never;
+    });
+
+    await selectTopRow(0);
+
+    expect(document.querySelectorAll("#tradeTableBodyVue tr[data-trade-idx]").length).toBe(2);
+    expect(__analysisTestUtils.selectDrillTradeByIndex(1)).toBe(true);
+
+    const selectedRow = document.querySelector<HTMLTableRowElement>(
+      '#tradeTableBodyVue tr[data-trade-idx="1"]',
+    );
+    expect(selectedRow?.classList.contains("selected")).toBe(true);
+    const selectedMarkers = __analysisTestUtils.buildDrillTradeMarkers(
+      drillCurves,
+      drillBars,
+    );
+    expect(selectedMarkers.find((marker) => marker.id === "trade-1-entry")?.size).toBe(1.4);
   });
 
   it("omits drill-only fields and propagates DoubleMa score_mode in local stability requests", async () => {

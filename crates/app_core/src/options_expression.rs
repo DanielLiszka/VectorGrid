@@ -28,8 +28,9 @@ use std::time::Instant;
 use crate::cuda_device::preferred_cuda_device_id;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_expression_gpu::{
-    inspect_options_expression_gpu_plan, score_options_expression_tensors_gpu_multi_range,
-    score_options_expression_tensors_gpu_range, OptionsGpuRuntimeCacheUsage,
+    inspect_options_expression_gpu_combined_plan, inspect_options_expression_gpu_plan,
+    score_options_expression_tensors_gpu_multi_range, score_options_expression_tensors_gpu_range,
+    score_options_expression_tensors_gpu_search_holdout_stress, OptionsGpuRuntimeCacheUsage,
     OptionsGpuTupleAggregate,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -100,7 +101,9 @@ fn current_preferred_cuda_device_id() -> Option<u32> {
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn inspect_gpu_plan_for_feasibility(
     device_id: u32,
-    inputs: &GpuFlatScoreInputs,
+    baseline_inputs: &GpuFlatScoreInputs,
+    conservative_inputs: Option<&GpuFlatScoreInputs>,
+    harsher_inputs: Option<&GpuFlatScoreInputs>,
 ) -> Result<OptionsGpuRuntimeCacheUsage, String> {
     #[cfg(test)]
     {
@@ -112,7 +115,21 @@ fn inspect_gpu_plan_for_feasibility(
             return Err(reason);
         }
     }
-    inspect_options_expression_gpu_plan(device_id, inputs)
+    if options_gpu_combined_scoring_enabled() {
+        if let (Some(conservative_inputs), Some(harsher_inputs)) =
+            (conservative_inputs, harsher_inputs)
+        {
+            if let Ok(usage) = inspect_options_expression_gpu_combined_plan(
+                device_id,
+                baseline_inputs,
+                conservative_inputs,
+                harsher_inputs,
+            ) {
+                return Ok(usage);
+            }
+        }
+    }
+    inspect_options_expression_gpu_plan(device_id, baseline_inputs)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +181,7 @@ struct DetailedTradeOutcome {
 }
 
 impl DetailedTradeOutcome {
+    #[cfg(test)]
     fn summary(&self) -> TradeOutcome {
         TradeOutcome {
             pnl_per_contract: self.pnl_per_contract,
@@ -1421,6 +1439,217 @@ fn evaluate_trade_detail(
     })
 }
 
+// Summary-cache compilation only needs PnL/premium/return, not the full path replay payload.
+// Keep this logic semantically aligned with evaluate_trade_detail; tests enforce parity.
+fn evaluate_trade_summary(
+    event: &OptionsSignalEvent,
+    tuple: &OptionsTupleSpec,
+    candidate: SelectedCandidate,
+    index: &IndexedOptionsDataset<'_>,
+    price_semantics: OptionsPriceSemantics,
+    stress_mode: AggregateStressMode,
+) -> Option<TradeOutcome> {
+    let contract = index.contract(candidate.primary_leg.contract_index);
+    let contract_rows = &contract.rows;
+    let entry_row = contract_rows.get(candidate.primary_leg.entry_index)?;
+    let companion_contract = candidate
+        .companion_leg
+        .map(|leg| index.contract(leg.contract_index));
+    let companion_rows = companion_contract.map(|contract| contract.rows.as_slice());
+    let companion_entry_row = match (candidate.companion_leg, companion_rows) {
+        (Some(leg), Some(rows)) => rows.get(leg.entry_index),
+        _ => None,
+    };
+    let (_, _, net_entry_price) = position_entry_prices(
+        tuple.structure_family,
+        entry_row,
+        companion_entry_row,
+        price_semantics,
+        tuple.fill_model,
+        stress_mode,
+    )?;
+    if !net_entry_price.is_finite() || net_entry_price <= 0.0 {
+        return None;
+    }
+    let premium_paid = net_entry_price * contract.multiplier;
+    let target_price = tuple
+        .target_return
+        .map(|pct| net_entry_price * (1.0 + pct.max(0.0)));
+    let stop_price = tuple
+        .stop_return
+        .map(|pct| net_entry_price * (1.0 - pct.max(0.0)));
+    let forced_expiry_cutoff = contract.expiration_timestamp_ms.saturating_sub(MINUTE_MS);
+    let requested_cutoff = match tuple.exit_template {
+        OptionsExitTemplateFamily::FixedHold | OptionsExitTemplateFamily::FixedHoldOrTargetStop => {
+            resolve_fixed_hold_cutoff(entry_row.timestamp_ms, tuple)
+        }
+        OptionsExitTemplateFamily::EndOfDayOrTargetStop => {
+            resolve_eod_cutoff(contract_rows, candidate.primary_leg.entry_index)
+        }
+        OptionsExitTemplateFamily::BaseExitOrTargetStop => event
+            .base_exit_timestamp
+            .unwrap_or_else(|| resolve_fixed_hold_cutoff(entry_row.timestamp_ms, tuple)),
+    };
+    let cutoff_timestamp_ms = requested_cutoff.min(forced_expiry_cutoff);
+
+    if let (Some(companion_leg), Some(companion_rows)) = (candidate.companion_leg, companion_rows) {
+        let mut primary_index = candidate.primary_leg.entry_index;
+        let mut companion_index = companion_leg.entry_index;
+        let mut final_pair: Option<(usize, usize)> = None;
+        while primary_index < contract_rows.len() && companion_index < companion_rows.len() {
+            let primary_row = contract_rows.get(primary_index)?;
+            let companion_row = companion_rows.get(companion_index)?;
+            match primary_row.timestamp_ms.cmp(&companion_row.timestamp_ms) {
+                Ordering::Less => {
+                    primary_index += 1;
+                    continue;
+                }
+                Ordering::Greater => {
+                    companion_index += 1;
+                    continue;
+                }
+                Ordering::Equal => {
+                    let timestamp_ms = primary_row.timestamp_ms;
+                    if timestamp_ms > cutoff_timestamp_ms {
+                        final_pair = Some((primary_index, companion_index));
+                        break;
+                    }
+                    if timestamp_ms > entry_row.timestamp_ms {
+                        let (option_high, option_low) = position_path_range_for_rows(
+                            tuple.structure_family,
+                            primary_row,
+                            Some(companion_row),
+                            price_semantics,
+                            tuple.fill_model,
+                            stress_mode,
+                        )?;
+                        let target_hit = target_price
+                            .map(|target| option_high >= target)
+                            .unwrap_or(false);
+                        let stop_hit = stop_price.map(|stop| option_low <= stop).unwrap_or(false);
+                        if stop_hit || target_hit {
+                            let exit_price = match (stop_hit, stop_price, target_price) {
+                                (true, Some(stop), _) => stop,
+                                (false, _, Some(target)) => target,
+                                _ => {
+                                    let (_, _, fallback_exit_price) = position_exit_prices(
+                                        tuple.structure_family,
+                                        primary_row,
+                                        Some(companion_row),
+                                        price_semantics,
+                                        tuple.fill_model,
+                                        stress_mode,
+                                    )?;
+                                    if stop_hit {
+                                        stop_price.unwrap_or(fallback_exit_price)
+                                    } else {
+                                        target_price.unwrap_or(fallback_exit_price)
+                                    }
+                                }
+                            };
+                            let pnl_per_contract =
+                                (exit_price - net_entry_price) * contract.multiplier;
+                            return Some(TradeOutcome {
+                                pnl_per_contract,
+                                premium_paid,
+                                return_on_premium: pnl_per_contract / premium_paid,
+                            });
+                        }
+                    }
+                    if timestamp_ms == cutoff_timestamp_ms {
+                        final_pair = Some((primary_index, companion_index));
+                        break;
+                    }
+                    primary_index += 1;
+                    companion_index += 1;
+                }
+            }
+        }
+
+        let (exit_primary_index, exit_companion_index) = final_pair?;
+        let exit_primary_row = contract_rows.get(exit_primary_index)?;
+        let exit_companion_row = companion_rows.get(exit_companion_index)?;
+        let (_, _, net_exit_price) = position_exit_prices(
+            tuple.structure_family,
+            exit_primary_row,
+            Some(exit_companion_row),
+            price_semantics,
+            tuple.fill_model,
+            stress_mode,
+        )?;
+        let pnl_per_contract = (net_exit_price - net_entry_price) * contract.multiplier;
+        return Some(TradeOutcome {
+            pnl_per_contract,
+            premium_paid,
+            return_on_premium: pnl_per_contract / premium_paid,
+        });
+    }
+
+    let cutoff_index = find_cutoff_index(
+        contract_rows,
+        candidate.primary_leg.entry_index,
+        cutoff_timestamp_ms,
+    )?;
+    for idx in (candidate.primary_leg.entry_index + 1)..=cutoff_index {
+        let row = contract_rows.get(idx)?;
+        let (option_high, option_low) = position_path_range_for_rows(
+            tuple.structure_family,
+            row,
+            None,
+            price_semantics,
+            tuple.fill_model,
+            stress_mode,
+        )?;
+        let target_hit = target_price
+            .map(|target| option_high >= target)
+            .unwrap_or(false);
+        let stop_hit = stop_price.map(|stop| option_low <= stop).unwrap_or(false);
+        if stop_hit || target_hit {
+            let exit_price = match (stop_hit, stop_price, target_price) {
+                (true, Some(stop), _) => stop,
+                (false, _, Some(target)) => target,
+                _ => {
+                    let (_, _, fallback_exit_price) = position_exit_prices(
+                        tuple.structure_family,
+                        row,
+                        None,
+                        price_semantics,
+                        tuple.fill_model,
+                        stress_mode,
+                    )?;
+                    if stop_hit {
+                        stop_price.unwrap_or(fallback_exit_price)
+                    } else {
+                        target_price.unwrap_or(fallback_exit_price)
+                    }
+                }
+            };
+            let pnl_per_contract = (exit_price - net_entry_price) * contract.multiplier;
+            return Some(TradeOutcome {
+                pnl_per_contract,
+                premium_paid,
+                return_on_premium: pnl_per_contract / premium_paid,
+            });
+        }
+    }
+
+    let exit_row = contract_rows.get(cutoff_index)?;
+    let (_, _, net_exit_price) = position_exit_prices(
+        tuple.structure_family,
+        exit_row,
+        None,
+        price_semantics,
+        tuple.fill_model,
+        stress_mode,
+    )?;
+    let pnl_per_contract = (net_exit_price - net_entry_price) * contract.multiplier;
+    Some(TradeOutcome {
+        pnl_per_contract,
+        premium_paid,
+        return_on_premium: pnl_per_contract / premium_paid,
+    })
+}
+
 fn median(mut values: Vec<f64>) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -2148,6 +2377,17 @@ fn runtime_auto_backend_decision(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn options_gpu_combined_scoring_enabled() -> bool {
+    std::env::var("VECTORGRID_OPTIONS_GPU_DISABLE_COMBINED_SCORING")
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !(normalized == "1" || normalized == "true" || normalized == "yes")
+        })
+        .unwrap_or(true)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn push_unique_gpu_note(target: &mut Vec<String>, note: impl Into<String>) {
     let note = note.into();
     if !target.iter().any(|existing| existing == &note) {
@@ -2264,6 +2504,7 @@ fn prepare_options_expression_run(
     signal_manifest: &OptionsSignalEventManifestV1,
     dataset: &ImportedOptionsDataset,
 ) -> Result<PreparedOptionsExpressionRun, String> {
+    let _nvtx_scope = crate::nvtx::scope("engine", "options_prepare");
     validate_fill_model(dataset.manifest.price_semantics, req.fill_model)?;
     if !dataset
         .manifest
@@ -2284,11 +2525,13 @@ fn prepare_options_expression_run(
     )?;
     let candidate_axis = CandidateAxis::from_request(req)?;
     let exit_axis = ExitAxis::from_request(req)?;
-    let tuple_compile_start = Instant::now();
-    let compiled_tuples = compile_tuple_grid(&candidate_axis, &exit_axis);
-    let tuple_compile_ms = elapsed_ms(tuple_compile_start);
+    let (compiled_tuples, tuple_compile_ms) = {
+        let _tuple_compile_scope = crate::nvtx::scope("engine", "options_tuple_compile");
+        let tuple_compile_start = Instant::now();
+        let compiled_tuples = compile_tuple_grid(&candidate_axis, &exit_axis);
+        (compiled_tuples, elapsed_ms(tuple_compile_start))
+    };
     let mut cache_stats = OptionsExpressionFeasibilityCacheStats::default();
-    let baseline_candidate_start = Instant::now();
     let baseline_candidate_key = structural_candidate_cache_key(
         signal_manifest,
         dataset,
@@ -2297,20 +2540,26 @@ fn prepare_options_expression_run(
         &req.filters,
         AggregateStressMode::Baseline,
     );
-    let baseline_candidate_lookup = get_or_build_structural_candidate_cache(
-        signal_manifest,
-        &events,
-        dataset,
-        candidate_axis.clone(),
-        req.fill_model,
-        &req.filters,
-        AggregateStressMode::Baseline,
-        &mut cache_stats,
-    );
-    let baseline_candidate_compile_ms = if baseline_candidate_lookup.hit {
-        0
-    } else {
-        elapsed_ms(baseline_candidate_start)
+    let (baseline_candidate_lookup, baseline_candidate_compile_ms) = {
+        let _baseline_candidate_scope =
+            crate::nvtx::scope("engine", "options_prepare_baseline_candidates");
+        let baseline_candidate_start = Instant::now();
+        let baseline_candidate_lookup = get_or_build_structural_candidate_cache(
+            signal_manifest,
+            &events,
+            dataset,
+            candidate_axis.clone(),
+            req.fill_model,
+            &req.filters,
+            AggregateStressMode::Baseline,
+            &mut cache_stats,
+        );
+        let baseline_candidate_compile_ms = if baseline_candidate_lookup.hit {
+            0
+        } else {
+            elapsed_ms(baseline_candidate_start)
+        };
+        (baseline_candidate_lookup, baseline_candidate_compile_ms)
     };
     let baseline_candidate_cache = baseline_candidate_lookup.value;
     let baseline_exit_summary_start = Instant::now();
@@ -2331,7 +2580,6 @@ fn prepare_options_expression_run(
         elapsed_ms(baseline_exit_summary_start)
     };
     let baseline_exit_summary_cache = baseline_exit_summary_lookup.value;
-    let conservative_candidate_start = Instant::now();
     let conservative_candidate_key = structural_candidate_cache_key(
         signal_manifest,
         dataset,
@@ -2340,20 +2588,29 @@ fn prepare_options_expression_run(
         &req.filters,
         AggregateStressMode::Conservative,
     );
-    let conservative_candidate_lookup = get_or_build_structural_candidate_cache(
-        signal_manifest,
-        &events,
-        dataset,
-        candidate_axis.clone(),
-        req.fill_model,
-        &req.filters,
-        AggregateStressMode::Conservative,
-        &mut cache_stats,
-    );
-    let conservative_candidate_compile_ms = if conservative_candidate_lookup.hit {
-        0
-    } else {
-        elapsed_ms(conservative_candidate_start)
+    let (conservative_candidate_lookup, conservative_candidate_compile_ms) = {
+        let _conservative_candidate_scope =
+            crate::nvtx::scope("engine", "options_prepare_conservative_candidates");
+        let conservative_candidate_start = Instant::now();
+        let conservative_candidate_lookup = get_or_build_structural_candidate_cache(
+            signal_manifest,
+            &events,
+            dataset,
+            candidate_axis.clone(),
+            req.fill_model,
+            &req.filters,
+            AggregateStressMode::Conservative,
+            &mut cache_stats,
+        );
+        let conservative_candidate_compile_ms = if conservative_candidate_lookup.hit {
+            0
+        } else {
+            elapsed_ms(conservative_candidate_start)
+        };
+        (
+            conservative_candidate_lookup,
+            conservative_candidate_compile_ms,
+        )
     };
     let conservative_candidate_cache = conservative_candidate_lookup.value;
     let conservative_exit_summary_start = Instant::now();
@@ -2375,7 +2632,6 @@ fn prepare_options_expression_run(
         elapsed_ms(conservative_exit_summary_start)
     };
     let conservative_exit_summary_cache = conservative_exit_summary_lookup.value;
-    let harsher_candidate_start = Instant::now();
     let harsher_candidate_key = structural_candidate_cache_key(
         signal_manifest,
         dataset,
@@ -2384,20 +2640,26 @@ fn prepare_options_expression_run(
         &req.filters,
         AggregateStressMode::Harsher,
     );
-    let harsher_candidate_lookup = get_or_build_structural_candidate_cache(
-        signal_manifest,
-        &events,
-        dataset,
-        candidate_axis,
-        req.fill_model,
-        &req.filters,
-        AggregateStressMode::Harsher,
-        &mut cache_stats,
-    );
-    let harsher_candidate_compile_ms = if harsher_candidate_lookup.hit {
-        0
-    } else {
-        elapsed_ms(harsher_candidate_start)
+    let (harsher_candidate_lookup, harsher_candidate_compile_ms) = {
+        let _harsher_candidate_scope =
+            crate::nvtx::scope("engine", "options_prepare_harsher_candidates");
+        let harsher_candidate_start = Instant::now();
+        let harsher_candidate_lookup = get_or_build_structural_candidate_cache(
+            signal_manifest,
+            &events,
+            dataset,
+            candidate_axis,
+            req.fill_model,
+            &req.filters,
+            AggregateStressMode::Harsher,
+            &mut cache_stats,
+        );
+        let harsher_candidate_compile_ms = if harsher_candidate_lookup.hit {
+            0
+        } else {
+            elapsed_ms(harsher_candidate_start)
+        };
+        (harsher_candidate_lookup, harsher_candidate_compile_ms)
     };
     let harsher_candidate_cache = harsher_candidate_lookup.value;
     let harsher_exit_summary_start = Instant::now();
@@ -2485,6 +2747,8 @@ fn prepare_options_expression_run(
     };
     let overlap_window = build_overlap_window_summary(&events, &diagnostics, dataset);
     let timings = OptionsExpressionFeasibilityTimingStats {
+        prepare_ms: 0,
+        prepare_us: 0,
         tuple_compile_ms,
         baseline_candidate_compile_ms,
         baseline_exit_summary_compile_ms,
@@ -2492,8 +2756,12 @@ fn prepare_options_expression_run(
         conservative_exit_summary_compile_ms,
         harsher_candidate_compile_ms,
         harsher_exit_summary_compile_ms,
+        gpu_device_resolution_ms: None,
+        gpu_device_resolution_us: None,
         cpu_ranking_ms: 0,
         cpu_ranking_us: 0,
+        gpu_plan_probe_ms: None,
+        gpu_plan_probe_us: None,
         gpu_ranking_ms: None,
         gpu_ranking_us: None,
         gpu_tensor_score_ms: None,
@@ -2512,6 +2780,8 @@ fn prepare_options_expression_run(
         gpu_sealed_non_extreme_us: None,
         gpu_sealed_extreme_ms: None,
         gpu_sealed_extreme_us: None,
+        report_finalize_ms: 0,
+        report_finalize_us: 0,
         gpu_speedup_vs_cpu: None,
     };
 
@@ -2824,19 +3094,30 @@ fn exactify_ranked_results(
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
 ) -> ExactifyTimingBreakdown {
+    let _nvtx_scope = crate::nvtx::scope("engine", "options_exactify_total");
     let total_start = Instant::now();
 
-    let summary_overwrite_start = Instant::now();
-    exactify_retained_summary_metrics(prepared, ranked_results);
-    let summary_overwrite_us = elapsed_us(summary_overwrite_start);
+    let summary_overwrite_us = {
+        let _summary_overwrite_scope =
+            crate::nvtx::scope("engine", "options_exactify_summary_overwrite");
+        let summary_overwrite_start = Instant::now();
+        exactify_retained_summary_metrics(prepared, ranked_results);
+        elapsed_us(summary_overwrite_start)
+    };
 
-    let enrichment_start = Instant::now();
-    exactify_retained_summary_enrichment(prepared, ranked_results);
-    let enrichment_us = elapsed_us(enrichment_start);
+    let enrichment_us = {
+        let _enrichment_scope = crate::nvtx::scope("engine", "options_exactify_enrichment");
+        let enrichment_start = Instant::now();
+        exactify_retained_summary_enrichment(prepared, ranked_results);
+        elapsed_us(enrichment_start)
+    };
 
-    let extreme_start = Instant::now();
-    exactify_retained_extreme_stress_metrics(prepared, dataset, ranked_results);
-    let extreme_us = elapsed_us(extreme_start);
+    let extreme_us = {
+        let _extreme_scope = crate::nvtx::scope("engine", "options_exactify_extreme");
+        let extreme_start = Instant::now();
+        exactify_retained_extreme_stress_metrics(prepared, dataset, ranked_results);
+        elapsed_us(extreme_start)
+    };
 
     recompute_retained_robust_scores(ranked_results);
     refresh_validation_verdicts(ranked_results);
@@ -2855,57 +3136,64 @@ fn apply_sealed_finalist_stage(
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
 ) -> SealedStageTimingBreakdown {
+    let _nvtx_scope = crate::nvtx::scope("engine", "options_sealed_stage_total");
     let total_start = Instant::now();
-    let non_extreme_start = Instant::now();
-    sort_ranked_results(ranked_results);
-    resequence_pre_sealed_ranks(ranked_results);
     let sealed_test_events = prepared.diagnostics.sealed_test_events;
     let sealed_finalist_count = if sealed_test_events > 0 {
         req.sealed_finalist_count.max(1).min(ranked_results.len())
     } else {
         0
     };
-    for ranked in ranked_results.iter_mut().take(sealed_finalist_count) {
-        ranked.result.sealed_finalist = true;
-        ranked.result.sealed_evaluation_metrics = Some(evaluate_compiled_tuple_for_split(
-            &ranked.compiled,
-            &prepared.events,
-            OptionsEvaluationSplit::SealedTest,
-            &prepared.baseline_candidate_cache,
-            &prepared.baseline_exit_summary_cache,
-        ));
-        ranked.result.sealed_stress_metrics = Some(evaluate_compiled_tuple_for_split(
-            &ranked.compiled,
-            &prepared.events,
-            OptionsEvaluationSplit::SealedTest,
-            &prepared.conservative_candidate_cache,
-            &prepared.conservative_exit_summary_cache,
-        ));
-        ranked.result.sealed_harsher_stress_metrics = Some(evaluate_compiled_tuple_for_split(
-            &ranked.compiled,
-            &prepared.events,
-            OptionsEvaluationSplit::SealedTest,
-            &prepared.harsher_candidate_cache,
-            &prepared.harsher_exit_summary_cache,
-        ));
-    }
-    let non_extreme_us = elapsed_us(non_extreme_start);
+    let non_extreme_us = {
+        let _non_extreme_scope = crate::nvtx::scope("engine", "options_sealed_stage_non_extreme");
+        let non_extreme_start = Instant::now();
+        sort_ranked_results(ranked_results);
+        resequence_pre_sealed_ranks(ranked_results);
+        for ranked in ranked_results.iter_mut().take(sealed_finalist_count) {
+            ranked.result.sealed_finalist = true;
+            ranked.result.sealed_evaluation_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            ));
+            ranked.result.sealed_stress_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &prepared.conservative_candidate_cache,
+                &prepared.conservative_exit_summary_cache,
+            ));
+            ranked.result.sealed_harsher_stress_metrics = Some(evaluate_compiled_tuple_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &prepared.harsher_candidate_cache,
+                &prepared.harsher_exit_summary_cache,
+            ));
+        }
+        elapsed_us(non_extreme_start)
+    };
 
-    let extreme_start = Instant::now();
-    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
-    for ranked in ranked_results.iter_mut().take(sealed_finalist_count) {
-        ranked.result.sealed_extreme_stress_metrics = Some(evaluate_exact_stress_for_split(
-            &ranked.compiled,
-            &prepared.events,
-            OptionsEvaluationSplit::SealedTest,
-            &index,
-            &prepared.baseline_candidate_cache,
-            dataset.manifest.price_semantics,
-            AggregateStressMode::Extreme,
-        ));
-    }
-    assign_sealed_final_ranks(ranked_results);
-    let extreme_us = elapsed_us(extreme_start);
+    let extreme_us = {
+        let _extreme_scope = crate::nvtx::scope("engine", "options_sealed_stage_extreme");
+        let extreme_start = Instant::now();
+        let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
+        for ranked in ranked_results.iter_mut().take(sealed_finalist_count) {
+            ranked.result.sealed_extreme_stress_metrics = Some(evaluate_exact_stress_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &index,
+                &prepared.baseline_candidate_cache,
+                dataset.manifest.price_semantics,
+                AggregateStressMode::Extreme,
+            ));
+        }
+        assign_sealed_final_ranks(ranked_results);
+        elapsed_us(extreme_start)
+    };
 
     SealedStageTimingBreakdown {
         total_us: elapsed_us(total_start),
@@ -2990,41 +3278,119 @@ mod gpu_scoring {
         }
     }
 
-    pub(super) fn rank_compiled_tuples_gpu(
-        req: &OptionsExpressionRunRequest,
-        prepared: &PreparedOptionsExpressionRun,
-        dataset: &ImportedOptionsDataset,
-    ) -> Result<Option<GpuRankedTuplePass>, String> {
-        if matches!(
-            req.backend_preference,
-            OptionsExpressionBackendPreference::CpuReference
-        ) {
-            return Ok(None);
+    fn expectancy_per_premium_from_gpu_aggregate(aggregate: OptionsGpuTupleAggregate) -> f64 {
+        let total_premium = aggregate.total_premium as f64;
+        if total_premium > 0.0 {
+            aggregate.total_pnl as f64 / total_premium
+        } else {
+            0.0
         }
-        let Some(device_id) = current_preferred_cuda_device_id() else {
-            if matches!(
-                req.backend_preference,
-                OptionsExpressionBackendPreference::GpuCompiledTensor
-            ) {
-                return Err(
-                    "CUDA device unavailable for required GPU options-expression scorer"
-                        .to_string(),
-                );
-            }
-            return Ok(None);
-        };
-        let search_event_count = split_event_count(prepared, OptionsEvaluationSplit::Search);
-        let holdout_events = prepared.diagnostics.holdout_events;
-        let holdout_event_count = split_event_count(prepared, OptionsEvaluationSplit::Holdout);
-        let search_event_range = split_event_range(prepared, OptionsEvaluationSplit::Search);
-        let holdout_event_range = split_event_range(prepared, OptionsEvaluationSplit::Holdout);
+    }
 
+    fn compare_gpu_shortlist_indices(
+        left_index: usize,
+        right_index: usize,
+        robust_scores: &[f64],
+        search_aggregates: &[OptionsGpuTupleAggregate],
+    ) -> Ordering {
+        robust_scores[right_index]
+            .partial_cmp(&robust_scores[left_index])
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                let right_expectancy = expectancy_per_premium_from_gpu_aggregate(
+                    search_aggregates
+                        .get(right_index)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+                let left_expectancy = expectancy_per_premium_from_gpu_aggregate(
+                    search_aggregates
+                        .get(left_index)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+                right_expectancy
+                    .partial_cmp(&left_expectancy)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| left_index.cmp(&right_index))
+    }
+
+    fn build_ranked_result_from_gpu_aggregates(
+        compiled_tuple: &CompiledTupleSpec,
+        search_aggregate: OptionsGpuTupleAggregate,
+        holdout_aggregate: Option<OptionsGpuTupleAggregate>,
+        stress_aggregate: Option<OptionsGpuTupleAggregate>,
+        harsher_aggregate: Option<OptionsGpuTupleAggregate>,
+        search_event_count: usize,
+        holdout_event_count: usize,
+        holdout_events: usize,
+    ) -> RankedCompiledTuple {
+        let selection_metrics =
+            metrics_from_aggregate(aggregate_from_gpu(search_aggregate, search_event_count));
+        let holdout_metrics = holdout_aggregate.map(|aggregate| {
+            metrics_from_aggregate(aggregate_from_gpu(aggregate, holdout_event_count))
+        });
+        let stress_metrics = stress_aggregate.map(|aggregate| {
+            metrics_from_aggregate(aggregate_from_gpu(aggregate, holdout_event_count))
+        });
+        let harsher_stress_metrics = harsher_aggregate.map(|aggregate| {
+            metrics_from_aggregate(aggregate_from_gpu(aggregate, holdout_event_count))
+        });
+        let robust = robust_score(
+            &selection_metrics,
+            holdout_metrics.as_ref(),
+            None,
+            stress_metrics.as_ref(),
+            harsher_stress_metrics.as_ref(),
+            None,
+        );
+
+        RankedCompiledTuple {
+            compiled: compiled_tuple.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled_tuple.tuple.clone(),
+                pre_sealed_rank: 0,
+                sealed_finalist: false,
+                sealed_final_rank: 0,
+                selection_metrics,
+                holdout_metrics,
+                sealed_evaluation_metrics: None,
+                stress_metrics,
+                sealed_stress_metrics: None,
+                harsher_stress_metrics,
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
+                robust_score: robust,
+            },
+            retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
+        }
+    }
+
+    fn score_gpu_lanes_legacy(
+        device_id: u32,
+        prepared: &PreparedOptionsExpressionRun,
+        search_event_range: (usize, usize),
+        holdout_event_range: (usize, usize),
+    ) -> Result<
+        (
+            Vec<OptionsGpuTupleAggregate>,
+            Option<Vec<OptionsGpuTupleAggregate>>,
+            Option<Vec<OptionsGpuTupleAggregate>>,
+            Option<Vec<OptionsGpuTupleAggregate>>,
+            Option<Vec<f64>>,
+            OptionsGpuRuntimeCacheUsage,
+        ),
+        String,
+    > {
+        let holdout_events = prepared.diagnostics.holdout_events;
         let baseline_target_ranges = if holdout_events > 0 {
             vec![search_event_range, holdout_event_range]
         } else {
             vec![search_event_range]
         };
-        let tensor_score_start = Instant::now();
         let baseline_tensor_run = score_options_expression_tensors_gpu_multi_range(
             device_id,
             &baseline_target_ranges,
@@ -3078,74 +3444,208 @@ mod gpu_scoring {
         } else {
             None
         };
+
+        Ok((
+            search_aggregates,
+            holdout_aggregates,
+            stress_aggregates,
+            harsher_aggregates,
+            None,
+            gpu_cache_usage,
+        ))
+    }
+
+    pub(super) fn rank_compiled_tuples_gpu_with_device(
+        req: &OptionsExpressionRunRequest,
+        prepared: &PreparedOptionsExpressionRun,
+        dataset: &ImportedOptionsDataset,
+        resolved_device_id: Option<u32>,
+    ) -> Result<Option<GpuRankedTuplePass>, String> {
+        let _nvtx_scope = crate::nvtx::scope("engine", "options_gpu_rank_total");
+        if matches!(
+            req.backend_preference,
+            OptionsExpressionBackendPreference::CpuReference
+        ) {
+            return Ok(None);
+        }
+        let Some(device_id) = resolved_device_id else {
+            if matches!(
+                req.backend_preference,
+                OptionsExpressionBackendPreference::GpuCompiledTensor
+            ) {
+                return Err(
+                    "CUDA device unavailable for required GPU options-expression scorer"
+                        .to_string(),
+                );
+            }
+            return Ok(None);
+        };
+        let search_event_count = split_event_count(prepared, OptionsEvaluationSplit::Search);
+        let holdout_events = prepared.diagnostics.holdout_events;
+        let holdout_event_count = split_event_count(prepared, OptionsEvaluationSplit::Holdout);
+        let search_event_range = split_event_range(prepared, OptionsEvaluationSplit::Search);
+        let holdout_event_range = split_event_range(prepared, OptionsEvaluationSplit::Holdout);
+
+        let _tensor_score_scope = crate::nvtx::scope("engine", "options_gpu_tensor_score");
+        let tensor_score_start = Instant::now();
+        let (
+            search_aggregates,
+            holdout_aggregates,
+            stress_aggregates,
+            harsher_aggregates,
+            device_robust_scores,
+            gpu_cache_usage,
+        ) = if holdout_events > 0 && options_gpu_combined_scoring_enabled() {
+            match score_options_expression_tensors_gpu_search_holdout_stress(
+                device_id,
+                search_event_range.1,
+                holdout_event_range.1,
+                &prepared.baseline_gpu_inputs,
+                &prepared.conservative_gpu_inputs,
+                &prepared.harsher_gpu_inputs,
+            ) {
+                Ok(combined_run) => (
+                    combined_run.search_aggregates,
+                    Some(combined_run.holdout_aggregates),
+                    Some(combined_run.conservative_holdout_aggregates),
+                    Some(combined_run.harsher_holdout_aggregates),
+                    Some(combined_run.robust_scores),
+                    combined_run.cache_usage,
+                ),
+                Err(_) => score_gpu_lanes_legacy(
+                    device_id,
+                    prepared,
+                    search_event_range,
+                    holdout_event_range,
+                )?,
+            }
+        } else {
+            score_gpu_lanes_legacy(device_id, prepared, search_event_range, holdout_event_range)?
+        };
         let tensor_score_us = elapsed_us(tensor_score_start);
 
-        let mut ranked_results: Vec<RankedCompiledTuple> = Vec::new();
-        for (tuple_index, compiled_tuple) in prepared.compiled_tuples.iter().enumerate() {
-            let selection_metrics = metrics_from_aggregate(aggregate_from_gpu(
-                search_aggregates
+        let mut ranked_results: Vec<RankedCompiledTuple> = if let Some(robust_scores) =
+            device_robust_scores
+                .as_ref()
+                .filter(|scores| scores.len() == prepared.compiled_tuples.len())
+        {
+            let _shortlist_scope = crate::nvtx::scope("engine", "options_gpu_host_shortlist");
+            let mut shortlisted_indices: Vec<usize> =
+                Vec::with_capacity(prepared.compiled_tuples.len());
+            for tuple_index in 0..prepared.compiled_tuples.len() {
+                let search_aggregate = search_aggregates
                     .get(tuple_index)
                     .copied()
-                    .unwrap_or_default(),
-                search_event_count,
-            ));
-            if let Some(min_valid_trades) = req.min_valid_trades {
-                if selection_metrics.valid_trades < min_valid_trades {
-                    continue;
+                    .unwrap_or_default();
+                if let Some(min_valid_trades) = req.min_valid_trades {
+                    if (search_aggregate.valid_trades as usize) < min_valid_trades {
+                        continue;
+                    }
                 }
+                shortlisted_indices.push(tuple_index);
             }
-            let holdout_metrics = holdout_aggregates.as_ref().map(|aggregates| {
-                metrics_from_aggregate(aggregate_from_gpu(
-                    aggregates.get(tuple_index).copied().unwrap_or_default(),
-                    holdout_event_count,
-                ))
+            shortlisted_indices.sort_by(|left, right| {
+                compare_gpu_shortlist_indices(*left, *right, robust_scores, &search_aggregates)
             });
-            let stress_metrics = stress_aggregates.as_ref().map(|aggregates| {
-                metrics_from_aggregate(aggregate_from_gpu(
-                    aggregates.get(tuple_index).copied().unwrap_or_default(),
-                    holdout_event_count,
-                ))
-            });
-            let harsher_stress_metrics = harsher_aggregates.as_ref().map(|aggregates| {
-                metrics_from_aggregate(aggregate_from_gpu(
-                    aggregates.get(tuple_index).copied().unwrap_or_default(),
-                    holdout_event_count,
-                ))
-            });
-            let robust = robust_score(
-                &selection_metrics,
-                holdout_metrics.as_ref(),
-                None,
-                stress_metrics.as_ref(),
-                harsher_stress_metrics.as_ref(),
-                None,
-            );
-            ranked_results.push(RankedCompiledTuple {
-                compiled: compiled_tuple.clone(),
-                result: OptionsExpressionTupleResult {
-                    tuple: compiled_tuple.tuple.clone(),
-                    pre_sealed_rank: 0,
-                    sealed_finalist: false,
-                    sealed_final_rank: 0,
-                    selection_metrics,
-                    holdout_metrics,
-                    sealed_evaluation_metrics: None,
-                    stress_metrics,
-                    sealed_stress_metrics: None,
-                    harsher_stress_metrics,
-                    sealed_harsher_stress_metrics: None,
-                    extreme_stress_metrics: None,
-                    sealed_extreme_stress_metrics: None,
-                    validation_verdict: Default::default(),
-                    robust_score: robust,
-                },
-                retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
-            });
-        }
+            shortlisted_indices.truncate(req.top_k.max(1).min(shortlisted_indices.len()));
 
-        sort_ranked_results(&mut ranked_results);
-        resequence_pre_sealed_ranks(&mut ranked_results);
-        ranked_results.truncate(req.top_k.max(1));
+            let _materialize_scope =
+                crate::nvtx::scope("engine", "options_gpu_host_materialize_topk");
+            let mut ranked = Vec::with_capacity(shortlisted_indices.len());
+            for tuple_index in shortlisted_indices {
+                let compiled_tuple = &prepared.compiled_tuples[tuple_index];
+                ranked.push(build_ranked_result_from_gpu_aggregates(
+                    compiled_tuple,
+                    search_aggregates
+                        .get(tuple_index)
+                        .copied()
+                        .unwrap_or_default(),
+                    holdout_aggregates
+                        .as_ref()
+                        .map(|aggregates| aggregates.get(tuple_index).copied().unwrap_or_default()),
+                    stress_aggregates
+                        .as_ref()
+                        .map(|aggregates| aggregates.get(tuple_index).copied().unwrap_or_default()),
+                    harsher_aggregates
+                        .as_ref()
+                        .map(|aggregates| aggregates.get(tuple_index).copied().unwrap_or_default()),
+                    search_event_count,
+                    holdout_event_count,
+                    holdout_events,
+                ));
+            }
+            ranked
+        } else {
+            let _materialize_scope =
+                crate::nvtx::scope("engine", "options_gpu_host_materialize_full");
+            let mut ranked = Vec::new();
+            for (tuple_index, compiled_tuple) in prepared.compiled_tuples.iter().enumerate() {
+                let selection_metrics = metrics_from_aggregate(aggregate_from_gpu(
+                    search_aggregates
+                        .get(tuple_index)
+                        .copied()
+                        .unwrap_or_default(),
+                    search_event_count,
+                ));
+                if let Some(min_valid_trades) = req.min_valid_trades {
+                    if selection_metrics.valid_trades < min_valid_trades {
+                        continue;
+                    }
+                }
+                let holdout_metrics = holdout_aggregates.as_ref().map(|aggregates| {
+                    metrics_from_aggregate(aggregate_from_gpu(
+                        aggregates.get(tuple_index).copied().unwrap_or_default(),
+                        holdout_event_count,
+                    ))
+                });
+                let stress_metrics = stress_aggregates.as_ref().map(|aggregates| {
+                    metrics_from_aggregate(aggregate_from_gpu(
+                        aggregates.get(tuple_index).copied().unwrap_or_default(),
+                        holdout_event_count,
+                    ))
+                });
+                let harsher_stress_metrics = harsher_aggregates.as_ref().map(|aggregates| {
+                    metrics_from_aggregate(aggregate_from_gpu(
+                        aggregates.get(tuple_index).copied().unwrap_or_default(),
+                        holdout_event_count,
+                    ))
+                });
+                let robust = robust_score(
+                    &selection_metrics,
+                    holdout_metrics.as_ref(),
+                    None,
+                    stress_metrics.as_ref(),
+                    harsher_stress_metrics.as_ref(),
+                    None,
+                );
+                ranked.push(RankedCompiledTuple {
+                    compiled: compiled_tuple.clone(),
+                    result: OptionsExpressionTupleResult {
+                        tuple: compiled_tuple.tuple.clone(),
+                        pre_sealed_rank: 0,
+                        sealed_finalist: false,
+                        sealed_final_rank: 0,
+                        selection_metrics,
+                        holdout_metrics,
+                        sealed_evaluation_metrics: None,
+                        stress_metrics,
+                        sealed_stress_metrics: None,
+                        harsher_stress_metrics,
+                        sealed_harsher_stress_metrics: None,
+                        extreme_stress_metrics: None,
+                        sealed_extreme_stress_metrics: None,
+                        validation_verdict: Default::default(),
+                        robust_score: robust,
+                    },
+                    retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
+                });
+            }
+
+            sort_ranked_results(&mut ranked);
+            resequence_pre_sealed_ranks(&mut ranked);
+            ranked.truncate(req.top_k.max(1));
+            ranked
+        };
         let (exactify, sealed_stage) =
             finalize_ranked_results(req, prepared, dataset, &mut ranked_results);
         Ok(Some(GpuRankedTuplePass {
@@ -3164,10 +3664,11 @@ mod gpu_scoring {
         }))
     }
 
-    pub(super) fn gpu_ranking_stats(
+    pub(super) fn gpu_ranking_stats_with_device(
         req: &OptionsExpressionRunRequest,
         prepared: &PreparedOptionsExpressionRun,
         dataset: &ImportedOptionsDataset,
+        resolved_device_id: Option<u32>,
     ) -> Result<Option<GpuRankingExecutionStats>, String> {
         if matches!(
             req.backend_preference,
@@ -3175,7 +3676,7 @@ mod gpu_scoring {
         ) {
             return Ok(None);
         }
-        let Some(_) = current_preferred_cuda_device_id() else {
+        let Some(_) = resolved_device_id else {
             if matches!(
                 req.backend_preference,
                 OptionsExpressionBackendPreference::GpuCompiledTensor
@@ -3187,7 +3688,9 @@ mod gpu_scoring {
             }
             return Ok(None);
         };
-        if let Some(result) = rank_compiled_tuples_gpu(req, prepared, dataset)? {
+        if let Some(result) =
+            rank_compiled_tuples_gpu_with_device(req, prepared, dataset, resolved_device_id)?
+        {
             Ok(Some(result.stats))
         } else {
             Ok(None)
@@ -3200,6 +3703,7 @@ fn rank_compiled_tuples_cpu(
     prepared: &PreparedOptionsExpressionRun,
     dataset: &ImportedOptionsDataset,
 ) -> Vec<RankedCompiledTuple> {
+    let _nvtx_scope = crate::nvtx::scope("engine", "options_cpu_rank_total");
     let holdout_events = prepared.diagnostics.holdout_events;
     let mut ranked_results: Vec<RankedCompiledTuple> = Vec::new();
     for compiled_tuple in &prepared.compiled_tuples {
@@ -3283,7 +3787,8 @@ fn rank_compiled_tuples(
 ) -> Result<RankedTuplePass, String> {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
-        let gpu_available = current_preferred_cuda_device_id().is_some();
+        let resolved_device_id = current_preferred_cuda_device_id();
+        let gpu_available = resolved_device_id.is_some();
         let should_attempt_gpu = match req.backend_preference {
             OptionsExpressionBackendPreference::CpuReference => false,
             OptionsExpressionBackendPreference::GpuCompiledTensor => true,
@@ -3292,7 +3797,12 @@ fn rank_compiled_tuples(
             }
         };
         if should_attempt_gpu {
-            match gpu_scoring::rank_compiled_tuples_gpu(req, prepared, dataset) {
+            match gpu_scoring::rank_compiled_tuples_gpu_with_device(
+                req,
+                prepared,
+                dataset,
+                resolved_device_id,
+            ) {
                 Ok(Some(gpu_ranked)) => {
                     return Ok(RankedTuplePass {
                         ranked: gpu_ranked.ranked_results,
@@ -3388,6 +3898,228 @@ fn compile_exit_summary_cache(
     axis: ExitAxis,
     stress_mode: AggregateStressMode,
 ) -> ExitSummaryCache {
+    fn trade_outcome_from_prices(
+        net_entry_price: f64,
+        net_exit_price: f64,
+        premium_paid: f64,
+        multiplier: f64,
+    ) -> TradeOutcome {
+        let pnl_per_contract = (net_exit_price - net_entry_price) * multiplier;
+        TradeOutcome {
+            pnl_per_contract,
+            premium_paid,
+            return_on_premium: pnl_per_contract / premium_paid,
+        }
+    }
+
+    fn finalize_long_single_hold_at_row(
+        candidate_outcomes: &mut [Option<TradeOutcome>],
+        hold_index: usize,
+        per_hold: usize,
+        row: &OptionsPriceRow,
+        net_entry_price: f64,
+        premium_paid: f64,
+        multiplier: f64,
+        price_semantics: OptionsPriceSemantics,
+        fill_model: OptionsFillModelFamily,
+        stress_mode: AggregateStressMode,
+    ) -> Option<()> {
+        let (_, _, net_exit_price) = position_exit_prices(
+            OptionsStructureFamily::LongSingle,
+            row,
+            None,
+            price_semantics,
+            fill_model,
+            stress_mode,
+        )?;
+        let cutoff_outcome =
+            trade_outcome_from_prices(net_entry_price, net_exit_price, premium_paid, multiplier);
+        let hold_start = hold_index * per_hold;
+        for slot in candidate_outcomes[hold_start..(hold_start + per_hold)].iter_mut() {
+            if slot.is_none() {
+                *slot = Some(cutoff_outcome.clone());
+            }
+        }
+        Some(())
+    }
+
+    fn compile_long_single_candidate_outcomes(
+        candidate_outcomes: &mut [Option<TradeOutcome>],
+        event: &OptionsSignalEvent,
+        contract: &OptionsContractSeries,
+        entry_index: usize,
+        axis: &ExitAxis,
+        price_semantics: OptionsPriceSemantics,
+        stress_mode: AggregateStressMode,
+    ) -> Option<()> {
+        let contract_rows = &contract.rows;
+        let entry_row = contract_rows.get(entry_index)?;
+        let (_, _, net_entry_price) = position_entry_prices(
+            OptionsStructureFamily::LongSingle,
+            entry_row,
+            None,
+            price_semantics,
+            axis.fill_model,
+            stress_mode,
+        )?;
+        if !net_entry_price.is_finite() || net_entry_price <= 0.0 {
+            return None;
+        }
+        let premium_paid = net_entry_price * contract.multiplier;
+        let target_prices: Vec<Option<f64>> = axis
+            .target_values
+            .iter()
+            .copied()
+            .map(|target| target.map(|pct| net_entry_price * (1.0 + pct.max(0.0))))
+            .collect();
+        let stop_prices: Vec<Option<f64>> = axis
+            .stop_values
+            .iter()
+            .copied()
+            .map(|stop| stop.map(|pct| net_entry_price * (1.0 - pct.max(0.0))))
+            .collect();
+        let per_hold = target_prices.len() * stop_prices.len();
+        debug_assert_eq!(candidate_outcomes.len(), axis.hold_minutes.len() * per_hold);
+        let forced_expiry_cutoff = contract.expiration_timestamp_ms.saturating_sub(MINUTE_MS);
+        let mut hold_cutoffs = Vec::with_capacity(axis.hold_minutes.len());
+        let mut max_cutoff_index = entry_index;
+        for (hold_index, hold_minutes) in axis.hold_minutes.iter().copied().enumerate() {
+            let requested_cutoff = match axis.exit_template {
+                OptionsExitTemplateFamily::FixedHold
+                | OptionsExitTemplateFamily::FixedHoldOrTargetStop => {
+                    entry_row.timestamp_ms + i64::from(hold_minutes) * MINUTE_MS
+                }
+                OptionsExitTemplateFamily::EndOfDayOrTargetStop => {
+                    resolve_eod_cutoff(contract_rows, entry_index)
+                }
+                OptionsExitTemplateFamily::BaseExitOrTargetStop => {
+                    event.base_exit_timestamp.unwrap_or_else(|| {
+                        entry_row.timestamp_ms + i64::from(hold_minutes) * MINUTE_MS
+                    })
+                }
+            };
+            let cutoff_timestamp_ms = requested_cutoff.min(forced_expiry_cutoff);
+            if let Some(cutoff_index) =
+                find_cutoff_index(contract_rows, entry_index, cutoff_timestamp_ms)
+            {
+                max_cutoff_index = max_cutoff_index.max(cutoff_index);
+                hold_cutoffs.push((cutoff_index, hold_index));
+            }
+        }
+        hold_cutoffs
+            .sort_unstable_by_key(|(cutoff_index, hold_index)| (*cutoff_index, *hold_index));
+
+        let stop_count = stop_prices.len();
+        let mut next_cutoff = 0usize;
+        while next_cutoff < hold_cutoffs.len() && hold_cutoffs[next_cutoff].0 == entry_index {
+            finalize_long_single_hold_at_row(
+                candidate_outcomes,
+                hold_cutoffs[next_cutoff].1,
+                per_hold,
+                entry_row,
+                net_entry_price,
+                premium_paid,
+                contract.multiplier,
+                price_semantics,
+                axis.fill_model,
+                stress_mode,
+            )?;
+            next_cutoff += 1;
+        }
+        if next_cutoff == hold_cutoffs.len() {
+            return Some(());
+        }
+
+        for idx in (entry_index + 1)..=max_cutoff_index {
+            let row = contract_rows.get(idx)?;
+            let (option_high, option_low) = position_path_range_for_rows(
+                OptionsStructureFamily::LongSingle,
+                row,
+                None,
+                price_semantics,
+                axis.fill_model,
+                stress_mode,
+            )?;
+            let target_hits: Vec<bool> = target_prices
+                .iter()
+                .map(|target| target.map(|price| option_high >= price).unwrap_or(false))
+                .collect();
+            let stop_hits: Vec<bool> = stop_prices
+                .iter()
+                .map(|stop| stop.map(|price| option_low <= price).unwrap_or(false))
+                .collect();
+            if !target_hits.iter().any(|hit| *hit) && !stop_hits.iter().any(|hit| *hit) {
+                while next_cutoff < hold_cutoffs.len() && hold_cutoffs[next_cutoff].0 == idx {
+                    finalize_long_single_hold_at_row(
+                        candidate_outcomes,
+                        hold_cutoffs[next_cutoff].1,
+                        per_hold,
+                        row,
+                        net_entry_price,
+                        premium_paid,
+                        contract.multiplier,
+                        price_semantics,
+                        axis.fill_model,
+                        stress_mode,
+                    )?;
+                    next_cutoff += 1;
+                }
+                if next_cutoff == hold_cutoffs.len() {
+                    break;
+                }
+                continue;
+            }
+
+            for &(_, hold_index) in hold_cutoffs.iter().skip(next_cutoff) {
+                let hold_start = hold_index * per_hold;
+                for (target_index, target_hit) in target_hits.iter().copied().enumerate() {
+                    for (stop_index, stop_hit) in stop_hits.iter().copied().enumerate() {
+                        if !stop_hit && !target_hit {
+                            continue;
+                        }
+                        let local_index = target_index * stop_count + stop_index;
+                        let slot = &mut candidate_outcomes[hold_start + local_index];
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let net_exit_price = if stop_hit {
+                            stop_prices[stop_index].expect("stop hit requires stop threshold")
+                        } else {
+                            target_prices[target_index]
+                                .expect("target hit requires target threshold")
+                        };
+                        *slot = Some(trade_outcome_from_prices(
+                            net_entry_price,
+                            net_exit_price,
+                            premium_paid,
+                            contract.multiplier,
+                        ));
+                    }
+                }
+            }
+
+            while next_cutoff < hold_cutoffs.len() && hold_cutoffs[next_cutoff].0 == idx {
+                finalize_long_single_hold_at_row(
+                    candidate_outcomes,
+                    hold_cutoffs[next_cutoff].1,
+                    per_hold,
+                    row,
+                    net_entry_price,
+                    premium_paid,
+                    contract.multiplier,
+                    price_semantics,
+                    axis.fill_model,
+                    stress_mode,
+                )?;
+                next_cutoff += 1;
+            }
+            if next_cutoff == hold_cutoffs.len() {
+                break;
+            }
+        }
+        Some(())
+    }
+
     let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
     let outcome_count = candidate_cache.slots.len() * axis.summary_count_per_candidate();
     let mut outcomes = vec![None; outcome_count];
@@ -3411,20 +4143,40 @@ fn compile_exit_summary_cache(
                     ) else {
                         continue;
                     };
+                    let candidate_start = axis.summary_index(candidate_slot_index, 0, 0, 0);
+                    let candidate_len = axis.summary_count_per_candidate();
+                    let candidate_outcomes =
+                        &mut outcomes[candidate_start..(candidate_start + candidate_len)];
+                    if matches!(
+                        candidate_cache.axis.structure_family,
+                        OptionsStructureFamily::LongSingle
+                    ) {
+                        let contract = index.contract(candidate.primary_leg.contract_index);
+                        let _ = compile_long_single_candidate_outcomes(
+                            candidate_outcomes,
+                            event,
+                            contract,
+                            candidate.primary_leg.entry_index,
+                            &axis,
+                            dataset.manifest.price_semantics,
+                            stress_mode,
+                        );
+                        continue;
+                    }
                     for (hold_index, hold_minutes) in axis.hold_minutes.iter().copied().enumerate()
                     {
+                        let hold_start =
+                            hold_index * axis.target_values.len() * axis.stop_values.len();
+                        let hold_outcomes = &mut candidate_outcomes[hold_start
+                            ..(hold_start + axis.target_values.len() * axis.stop_values.len())];
                         for (target_index, target_return) in
                             axis.target_values.iter().copied().enumerate()
                         {
                             for (stop_index, stop_return) in
                                 axis.stop_values.iter().copied().enumerate()
                             {
-                                let summary_index = axis.summary_index(
-                                    candidate_slot_index,
-                                    hold_index,
-                                    target_index,
-                                    stop_index,
-                                );
+                                let local_index =
+                                    target_index * axis.stop_values.len() + stop_index;
                                 let eval_tuple = OptionsTupleSpec {
                                     structure_family: candidate_cache.axis.structure_family,
                                     delay_minutes: 0,
@@ -3436,15 +4188,14 @@ fn compile_exit_summary_cache(
                                     exit_template: axis.exit_template,
                                     fill_model: axis.fill_model,
                                 };
-                                outcomes[summary_index] = evaluate_trade_detail(
+                                hold_outcomes[local_index] = evaluate_trade_summary(
                                     event,
                                     &eval_tuple,
                                     candidate,
                                     &index,
                                     dataset.manifest.price_semantics,
                                     stress_mode,
-                                )
-                                .map(|detail| detail.summary());
+                                );
                             }
                         }
                     }
@@ -3627,7 +4378,7 @@ fn evaluate_exact_stress_for_split(
         ) else {
             continue;
         };
-        if let Some(outcome) = evaluate_trade_detail(
+        if let Some(outcome) = evaluate_trade_summary(
             event,
             &tuple.tuple,
             candidate,
@@ -3635,7 +4386,7 @@ fn evaluate_exact_stress_for_split(
             price_semantics,
             stress_mode,
         ) {
-            outcomes.push(outcome.summary());
+            outcomes.push(outcome);
         }
     }
     compute_metrics(split_event_count, &outcomes)
@@ -4473,8 +5224,10 @@ pub fn run_options_expression_blocking(
     signal_manifest: &OptionsSignalEventManifestV1,
     dataset: &ImportedOptionsDataset,
 ) -> Result<OptionsExpressionRunResult, String> {
+    let _nvtx_scope = crate::nvtx::scope("engine", "options_engine_run_total");
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
     let ranked_pass = rank_compiled_tuples(&req, &prepared, dataset)?;
+    let _result_scope = crate::nvtx::scope("engine", "options_result_finalize");
     let event_coverage = build_event_coverage_summary(&prepared);
     let split_invalid_reasons =
         build_split_invalid_reason_summary(&prepared.events, &prepared.baseline_candidate_cache);
@@ -4510,29 +5263,54 @@ pub fn analyze_options_expression_feasibility_blocking(
     signal_manifest: &OptionsSignalEventManifestV1,
     dataset: &ImportedOptionsDataset,
 ) -> Result<OptionsExpressionFeasibilityReport, String> {
+    let _nvtx_scope = crate::nvtx::scope("engine", "options_engine_feasibility_total");
+    let prepare_start = Instant::now();
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
-    let rank_start = Instant::now();
-    let _ = rank_compiled_tuples_cpu(&req, &prepared, dataset);
-    let cpu_ranking_us = elapsed_us(rank_start);
-    let cpu_ranking_ms = cpu_ranking_us / 1_000;
+    let prepare_us = elapsed_us(prepare_start);
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    let (resolved_gpu_device_id, gpu_device_resolution_us) = {
+        let resolve_start = Instant::now();
+        let device_id = current_preferred_cuda_device_id();
+        (device_id, Some(elapsed_us(resolve_start)))
+    };
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    let gpu_device_resolution_us: Option<u64> = None;
+    let (cpu_ranking_us, cpu_ranking_ms) = {
+        let _cpu_rank_scope = crate::nvtx::scope("engine", "options_feasibility_cpu_rank");
+        let rank_start = Instant::now();
+        let _ = rank_compiled_tuples_cpu(&req, &prepared, dataset);
+        let cpu_ranking_us = elapsed_us(rank_start);
+        (cpu_ranking_us, cpu_ranking_us / 1_000)
+    };
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let mut gpu_probe_error: Option<String> = None;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    let gpu_plan_usage = if let Some(device_id) = current_preferred_cuda_device_id() {
-        match inspect_gpu_plan_for_feasibility(device_id, &prepared.baseline_gpu_inputs) {
+    let (gpu_plan_usage, gpu_plan_probe_us) = if let Some(device_id) = resolved_gpu_device_id {
+        let _gpu_plan_scope = crate::nvtx::scope("engine", "options_feasibility_gpu_plan_probe");
+        let probe_start = Instant::now();
+        let usage = match inspect_gpu_plan_for_feasibility(
+            device_id,
+            &prepared.baseline_gpu_inputs,
+            (prepared.diagnostics.holdout_events > 0).then_some(&prepared.conservative_gpu_inputs),
+            (prepared.diagnostics.holdout_events > 0).then_some(&prepared.harsher_gpu_inputs),
+        ) {
             Ok(usage) => Some(usage),
             Err(err) => {
                 gpu_probe_error = Some(err);
                 None
             }
-        }
+        };
+        (usage, Some(elapsed_us(probe_start)))
     } else {
-        None
+        (None, None)
     };
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    let gpu_plan_probe_us: Option<u64> = None;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let mut gpu_ranking_error: Option<String> = None;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let (gpu_ranking_stats, gpu_ranking_us, gpu_ranking_ms) = {
+        let _gpu_rank_scope = crate::nvtx::scope("engine", "options_feasibility_gpu_rank_probe");
         let stats = if gpu_probe_error.is_some()
             && !matches!(
                 req.backend_preference,
@@ -4540,7 +5318,12 @@ pub fn analyze_options_expression_feasibility_blocking(
             ) {
             None
         } else {
-            match gpu_scoring::gpu_ranking_stats(&req, &prepared, dataset) {
+            match gpu_scoring::gpu_ranking_stats_with_device(
+                &req,
+                &prepared,
+                dataset,
+                resolved_gpu_device_id,
+            ) {
                 Ok(stats) => stats,
                 Err(err)
                     if matches!(
@@ -4564,6 +5347,7 @@ pub fn analyze_options_expression_feasibility_blocking(
     let gpu_ranking_us: Option<u64> = None;
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let gpu_ranking_ms: Option<u64> = None;
+    let report_finalize_start = Instant::now();
     let candidate_slot_count = prepared.staging.candidate_slot_count;
     let compiled_candidate_count = prepared.staging.compiled_candidate_count;
     let invalid_slot_count = candidate_slot_count.saturating_sub(compiled_candidate_count);
@@ -4589,8 +5373,14 @@ pub fn analyze_options_expression_feasibility_blocking(
         .filter(|entry| entry.is_some())
         .count();
     let mut timings = prepared.timings.clone();
+    timings.prepare_us = prepare_us;
+    timings.prepare_ms = prepare_us / 1_000;
+    timings.gpu_device_resolution_us = gpu_device_resolution_us;
+    timings.gpu_device_resolution_ms = gpu_device_resolution_us.map(|value| value / 1_000);
     timings.cpu_ranking_ms = cpu_ranking_ms;
     timings.cpu_ranking_us = cpu_ranking_us;
+    timings.gpu_plan_probe_us = gpu_plan_probe_us;
+    timings.gpu_plan_probe_ms = gpu_plan_probe_us.map(|value| value / 1_000);
     timings.gpu_ranking_ms = gpu_ranking_ms;
     timings.gpu_ranking_us = gpu_ranking_us;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -4733,22 +5523,30 @@ pub fn analyze_options_expression_feasibility_blocking(
         &invalid_reasons,
     );
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    let gpu_available = current_preferred_cuda_device_id().is_some();
+    let gpu_available = resolved_gpu_device_id.is_some();
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let gpu_available = false;
-    let mut auto_backend_decision = runtime_auto_backend_decision(&prepared, gpu_available);
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    if let Some(err) = gpu_probe_error.as_ref().or(gpu_ranking_error.as_ref()) {
-        auto_backend_decision.recommended_backend = "cpu_reference".to_string();
-        auto_backend_decision.gpu_eligible = false;
-        push_unique_gpu_note(
-            &mut auto_backend_decision.reasons,
-            format!("GPU scorer planning/runtime failed and CPU fallback was used: {err}"),
-        );
-    }
+    let auto_backend_decision = {
+        let mut decision = runtime_auto_backend_decision(&prepared, gpu_available);
+        if let Some(err) = gpu_probe_error.as_ref().or(gpu_ranking_error.as_ref()) {
+            decision.recommended_backend = "cpu_reference".to_string();
+            decision.gpu_eligible = false;
+            push_unique_gpu_note(
+                &mut decision.reasons,
+                format!("GPU scorer planning/runtime failed and CPU fallback was used: {err}"),
+            );
+        }
+        decision
+    };
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    let auto_backend_decision = runtime_auto_backend_decision(&prepared, gpu_available);
     let best_available_backend =
         measured_best_available_backend(cpu_ranking_us, gpu_ranking_us).to_string();
     let projected_event_tuple_evaluations = projected_event_tuple_evaluations(&prepared);
+    let report_finalize_us = elapsed_us(report_finalize_start);
+    timings.report_finalize_us = report_finalize_us;
+    timings.report_finalize_ms = report_finalize_us / 1_000;
 
     Ok(OptionsExpressionFeasibilityReport {
         diagnostics: prepared.diagnostics,
@@ -4975,6 +5773,32 @@ mod tests {
         OptionsStaticFilterBundle, OptionsStructureFamily,
     };
     use crate::test_support::lock_test_env;
+    use std::sync::atomic::AtomicUsize;
+
+    fn next_isolated_cache_test_suffix() -> usize {
+        static NEXT: AtomicUsize = AtomicUsize::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn isolate_cache_test_fixtures(
+        req: &mut OptionsExpressionRunRequest,
+        manifest: &mut OptionsSignalEventManifestV1,
+        dataset: &mut ImportedOptionsDataset,
+        label: &str,
+    ) {
+        let suffix = next_isolated_cache_test_suffix();
+        let dataset_id = format!("spy_{label}_{suffix}");
+        req.options_dataset_id = dataset_id.clone();
+        req.parent_artifact_path = format!("C:/runs/{dataset_id}.json");
+        manifest.manifest_id = format!("{dataset_id}_manifest");
+        manifest.parent_artifact_id = format!("{dataset_id}_artifact");
+        manifest.source_dataset_identity_hash = format!("{dataset_id}_source_dataset");
+        manifest.source_content_fingerprint = format!("{dataset_id}_source_fingerprint");
+        manifest.dataset_hash = format!("{dataset_id}_signal_dataset_hash");
+        manifest.runtime_dataset_id = Some(dataset_id.clone());
+        dataset.manifest.options_dataset_id = dataset_id.clone();
+        dataset.manifest.dataset_path = format!("mem://{dataset_id}");
+    }
 
     #[allow(dead_code)]
     fn metrics_with_values(
@@ -5077,6 +5901,27 @@ mod tests {
             "{context}: total_pnl_per_contract left={} right={}",
             left.total_pnl_per_contract,
             right.total_pnl_per_contract
+        );
+    }
+
+    fn assert_trade_outcome_close(left: &TradeOutcome, right: &TradeOutcome, context: &str) {
+        assert!(
+            (left.pnl_per_contract - right.pnl_per_contract).abs() < 1e-12,
+            "{context}: pnl_per_contract left={} right={}",
+            left.pnl_per_contract,
+            right.pnl_per_contract
+        );
+        assert!(
+            (left.premium_paid - right.premium_paid).abs() < 1e-12,
+            "{context}: premium_paid left={} right={}",
+            left.premium_paid,
+            right.premium_paid
+        );
+        assert!(
+            (left.return_on_premium - right.return_on_premium).abs() < 1e-12,
+            "{context}: return_on_premium left={} right={}",
+            left.return_on_premium,
+            right.return_on_premium
         );
     }
 
@@ -5236,6 +6081,23 @@ mod tests {
             total_premium_paid,
             sum_return_on_premium,
             sumsq_return_on_premium,
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn aggregate_metrics_from_gpu(
+        aggregate: OptionsGpuTupleAggregate,
+        split_event_count: usize,
+    ) -> TupleAggregateMetrics {
+        let valid_trades = aggregate.valid_trades as usize;
+        TupleAggregateMetrics {
+            valid_trades,
+            invalid_events: split_event_count.saturating_sub(valid_trades),
+            win_count: aggregate.wins as usize,
+            total_pnl_per_contract: aggregate.total_pnl as f64,
+            total_premium_paid: aggregate.total_premium as f64,
+            sum_return_on_premium: aggregate.sum_return_on_premium as f64,
+            sumsq_return_on_premium: aggregate.sumsq_return_on_premium as f64,
         }
     }
 
@@ -5970,6 +6832,303 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_trade_summary_matches_detail_summary_across_structures_and_stress_modes() {
+        let dataset = test_dataset();
+        let manifest = test_manifest();
+        let events = assign_splits(
+            &manifest,
+            0.5,
+            0.25,
+            OptionsSplitAssignmentMode::EventChronological,
+        )
+        .expect("events");
+        let index = IndexedOptionsDataset::from_dataset(&dataset, &dataset.manifest.root_symbol);
+        let structures = [
+            OptionsStructureFamily::LongSingle,
+            OptionsStructureFamily::DebitVertical,
+            OptionsStructureFamily::LongPair,
+        ];
+        let stress_modes = [
+            AggregateStressMode::Baseline,
+            AggregateStressMode::Conservative,
+            AggregateStressMode::Harsher,
+            AggregateStressMode::Extreme,
+        ];
+
+        for structure_family in structures {
+            for stress_mode in stress_modes {
+                for (exit_template, target_return_buckets, stop_return_buckets, case_label) in [
+                    (
+                        OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+                        vec![0.25],
+                        vec![0.25],
+                        "target_stop",
+                    ),
+                    (
+                        OptionsExitTemplateFamily::FixedHold,
+                        Vec::new(),
+                        Vec::new(),
+                        "fixed_hold",
+                    ),
+                ] {
+                    let req = OptionsExpressionRunRequest {
+                        parent_artifact_path: "C:/runs/a.json".to_string(),
+                        parent_candidate_index: None,
+                        options_dataset_id: "spy".to_string(),
+                        structure_family,
+                        backend_preference:
+                            crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+                        delay_minutes: vec![0],
+                        dte_buckets: vec![1],
+                        moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+                        hold_minutes: vec![1],
+                        target_return_buckets,
+                        stop_return_buckets,
+                        exit_template,
+                        fill_model: OptionsFillModelFamily::AggregateResearch,
+                        filters: OptionsStaticFilterBundle::default(),
+                        top_k: 1,
+                        min_valid_trades: None,
+                        split_ratio_search: 0.5,
+                        split_ratio_holdout: 0.25,
+                        split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+                        sealed_finalist_count: 1,
+                    };
+                    let candidate_axis = CandidateAxis::from_request(&req).expect("candidate axis");
+                    let exit_axis = ExitAxis::from_request(&req).expect("exit axis");
+                    let candidate_cache = compile_structural_candidate_cache(
+                        &events,
+                        &dataset,
+                        candidate_axis,
+                        req.fill_model,
+                        &req.filters,
+                        stress_mode,
+                    );
+                    let mut matched = 0usize;
+                    for (event_index, event) in events.iter().enumerate() {
+                        let Some(candidate) = candidate_cache.candidate(event_index, 0, 0, 0)
+                        else {
+                            continue;
+                        };
+                        matched += 1;
+                        for hold_minutes in exit_axis.hold_minutes.iter().copied() {
+                            for target_return in exit_axis.target_values.iter().copied() {
+                                for stop_return in exit_axis.stop_values.iter().copied() {
+                                    let eval_tuple = OptionsTupleSpec {
+                                        structure_family,
+                                        delay_minutes: 0,
+                                        dte_days: 1,
+                                        moneyness_bucket: OptionsMoneynessBucket::Atm,
+                                        hold_minutes,
+                                        target_return,
+                                        stop_return,
+                                        exit_template,
+                                        fill_model: req.fill_model,
+                                    };
+                                    let summary = evaluate_trade_summary(
+                                        event,
+                                        &eval_tuple,
+                                        candidate,
+                                        &index,
+                                        dataset.manifest.price_semantics,
+                                        stress_mode,
+                                    );
+                                    let detail = evaluate_trade_detail(
+                                        event,
+                                        &eval_tuple,
+                                        candidate,
+                                        &index,
+                                        dataset.manifest.price_semantics,
+                                        stress_mode,
+                                    )
+                                    .map(|outcome| outcome.summary());
+                                    match (summary.as_ref(), detail.as_ref()) {
+                                        (Some(summary), Some(detail)) => assert_trade_outcome_close(
+                                            summary,
+                                            detail,
+                                            &format!(
+                                                "{structure_family:?}/{stress_mode:?}/{case_label}/event={}",
+                                                event.event_id
+                                            ),
+                                        ),
+                                        (None, None) => {}
+                                        (left, right) => panic!(
+                                            "summary/detail mismatch for {structure_family:?}/{stress_mode:?}/{case_label}/event={}: summary_present={} detail_present={}",
+                                            event.event_id,
+                                            left.is_some(),
+                                            right.is_some()
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    assert!(
+                        matched > 0,
+                        "expected at least one valid candidate for {structure_family:?}/{stress_mode:?}/{case_label}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compile_exit_summary_cache_matches_per_summary_oracle_for_long_single() {
+        let mut dataset = test_dataset();
+        for contract in &mut dataset.contracts {
+            let mut extra_row = contract.rows.last().expect("last row").clone();
+            extra_row.timestamp_ms += MINUTE_MS;
+            extra_row.open = extra_row.close;
+            extra_row.high = extra_row.close + 0.05;
+            extra_row.low = (extra_row.close - 0.05).max(0.0);
+            extra_row.close += 0.02;
+            extra_row.underlying_price += 0.25;
+            contract.rows.push(extra_row);
+        }
+        dataset.manifest.row_count = dataset
+            .contracts
+            .iter()
+            .map(|contract| contract.rows.len())
+            .sum();
+        let manifest = test_manifest();
+        let events = assign_splits(
+            &manifest,
+            0.5,
+            0.25,
+            OptionsSplitAssignmentMode::EventChronological,
+        )
+        .expect("events");
+        let index = IndexedOptionsDataset::from_dataset(&dataset, &dataset.manifest.root_symbol);
+        let stress_modes = [
+            AggregateStressMode::Baseline,
+            AggregateStressMode::Conservative,
+            AggregateStressMode::Harsher,
+            AggregateStressMode::Extreme,
+        ];
+
+        for stress_mode in stress_modes {
+            for (exit_template, target_return_buckets, stop_return_buckets, case_label) in [
+                (
+                    OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+                    vec![0.25],
+                    vec![0.25],
+                    "target_stop",
+                ),
+                (
+                    OptionsExitTemplateFamily::FixedHold,
+                    Vec::new(),
+                    Vec::new(),
+                    "fixed_hold",
+                ),
+            ] {
+                let req = OptionsExpressionRunRequest {
+                    parent_artifact_path: "C:/runs/a.json".to_string(),
+                    parent_candidate_index: None,
+                    options_dataset_id: "spy".to_string(),
+                    structure_family: OptionsStructureFamily::LongSingle,
+                    backend_preference:
+                        crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+                    delay_minutes: vec![0],
+                    dte_buckets: vec![1],
+                    moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+                    hold_minutes: vec![1, 2],
+                    target_return_buckets,
+                    stop_return_buckets,
+                    exit_template,
+                    fill_model: OptionsFillModelFamily::AggregateResearch,
+                    filters: OptionsStaticFilterBundle::default(),
+                    top_k: 1,
+                    min_valid_trades: None,
+                    split_ratio_search: 0.5,
+                    split_ratio_holdout: 0.25,
+                    split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+                    sealed_finalist_count: 1,
+                };
+                let candidate_axis = CandidateAxis::from_request(&req).expect("candidate axis");
+                let exit_axis = ExitAxis::from_request(&req).expect("exit axis");
+                let candidate_cache = compile_structural_candidate_cache(
+                    &events,
+                    &dataset,
+                    candidate_axis,
+                    req.fill_model,
+                    &req.filters,
+                    stress_mode,
+                );
+                let exit_cache = compile_exit_summary_cache(
+                    &events,
+                    &dataset,
+                    &candidate_cache,
+                    exit_axis.clone(),
+                    stress_mode,
+                );
+                for (event_index, event) in events.iter().enumerate() {
+                    let Some(candidate) = candidate_cache.candidate(event_index, 0, 0, 0) else {
+                        continue;
+                    };
+                    let candidate_slot_index =
+                        candidate_cache.candidate_slot_index(event_index, 0, 0, 0);
+                    for (hold_index, hold_minutes) in
+                        exit_axis.hold_minutes.iter().copied().enumerate()
+                    {
+                        for (target_index, target_return) in
+                            exit_axis.target_values.iter().copied().enumerate()
+                        {
+                            for (stop_index, stop_return) in
+                                exit_axis.stop_values.iter().copied().enumerate()
+                            {
+                                let eval_tuple = OptionsTupleSpec {
+                                    structure_family: OptionsStructureFamily::LongSingle,
+                                    delay_minutes: 0,
+                                    dte_days: 1,
+                                    moneyness_bucket: OptionsMoneynessBucket::Atm,
+                                    hold_minutes,
+                                    target_return,
+                                    stop_return,
+                                    exit_template,
+                                    fill_model: req.fill_model,
+                                };
+                                let cached = exit_cache
+                                    .outcome(
+                                        candidate_slot_index,
+                                        hold_index,
+                                        target_index,
+                                        stop_index,
+                                    )
+                                    .cloned();
+                                let oracle = evaluate_trade_summary(
+                                    event,
+                                    &eval_tuple,
+                                    candidate,
+                                    &index,
+                                    dataset.manifest.price_semantics,
+                                    stress_mode,
+                                );
+                                match (cached.as_ref(), oracle.as_ref()) {
+                                    (Some(cached), Some(oracle)) => assert_trade_outcome_close(
+                                        cached,
+                                        oracle,
+                                        &format!(
+                                            "{stress_mode:?}/{case_label}/event={}",
+                                            event.event_id
+                                        ),
+                                    ),
+                                    (None, None) => {}
+                                    (left, right) => panic!(
+                                        "cache/oracle mismatch for {stress_mode:?}/{case_label}/event={}: cached_present={} oracle_present={}",
+                                        event.event_id,
+                                        left.is_some(),
+                                        right.is_some()
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn session_chronological_split_assignment_groups_whole_sessions() {
         let mut manifest = test_manifest();
         let template = manifest.events[0].clone();
@@ -6016,6 +7175,228 @@ mod tests {
                 ("day3_b".to_string(), OptionsEvaluationSplit::SealedTest),
             ]
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn fused_gpu_search_holdout_stress_aggregates_match_exact_cpu_aggregates() {
+        let _env = lock_test_env();
+        reset_options_expression_prepare_caches();
+        let Some(device_id) = current_preferred_cuda_device_id() else {
+            return;
+        };
+
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0, 1],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
+            hold_minutes: vec![1, 2],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        };
+        let dataset = test_dataset();
+        let manifest = test_manifest();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let search_end = prepared.diagnostics.search_events;
+        let holdout_end = search_end + prepared.diagnostics.holdout_events;
+        assert!(prepared.diagnostics.holdout_events > 0);
+
+        let run = score_options_expression_tensors_gpu_search_holdout_stress(
+            device_id,
+            search_end,
+            holdout_end,
+            &prepared.baseline_gpu_inputs,
+            &prepared.conservative_gpu_inputs,
+            &prepared.harsher_gpu_inputs,
+        )
+        .expect("combined gpu scoring");
+        assert_eq!(run.search_aggregates.len(), prepared.compiled_tuples.len());
+        assert_eq!(run.holdout_aggregates.len(), prepared.compiled_tuples.len());
+        assert_eq!(
+            run.conservative_holdout_aggregates.len(),
+            prepared.compiled_tuples.len()
+        );
+        assert_eq!(
+            run.harsher_holdout_aggregates.len(),
+            prepared.compiled_tuples.len()
+        );
+        assert_eq!(run.robust_scores.len(), prepared.compiled_tuples.len());
+
+        for (tuple_index, compiled) in prepared.compiled_tuples.iter().enumerate() {
+            let exact_search = exact_aggregate_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Search,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            );
+            let exact_holdout = exact_aggregate_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            );
+            let exact_conservative = exact_aggregate_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.conservative_candidate_cache,
+                &prepared.conservative_exit_summary_cache,
+            );
+            let exact_harsher = exact_aggregate_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.harsher_candidate_cache,
+                &prepared.harsher_exit_summary_cache,
+            );
+            let gpu_search =
+                aggregate_metrics_from_gpu(run.search_aggregates[tuple_index], search_end);
+            let gpu_holdout = aggregate_metrics_from_gpu(
+                run.holdout_aggregates[tuple_index],
+                prepared.diagnostics.holdout_events,
+            );
+            let gpu_conservative = aggregate_metrics_from_gpu(
+                run.conservative_holdout_aggregates[tuple_index],
+                prepared.diagnostics.holdout_events,
+            );
+            let gpu_harsher = aggregate_metrics_from_gpu(
+                run.harsher_holdout_aggregates[tuple_index],
+                prepared.diagnostics.holdout_events,
+            );
+
+            let lanes = [
+                ("search", gpu_search, exact_search),
+                ("holdout", gpu_holdout, exact_holdout),
+                ("conservative", gpu_conservative, exact_conservative),
+                ("harsher", gpu_harsher, exact_harsher),
+            ];
+            for (label, gpu, exact) in lanes {
+                assert_eq!(gpu.valid_trades, exact.valid_trades, "{label} valid trades");
+                assert_eq!(
+                    gpu.invalid_events, exact.invalid_events,
+                    "{label} invalid events"
+                );
+                assert_eq!(gpu.win_count, exact.win_count, "{label} wins");
+                assert!(
+                    (gpu.total_pnl_per_contract - exact.total_pnl_per_contract).abs() < 1e-6,
+                    "{label} total pnl"
+                );
+                assert!(
+                    (gpu.total_premium_paid - exact.total_premium_paid).abs() < 1e-6,
+                    "{label} total premium"
+                );
+                assert!(
+                    (gpu.sum_return_on_premium - exact.sum_return_on_premium).abs() < 1e-6,
+                    "{label} sum return on premium"
+                );
+                assert!(
+                    (gpu.sumsq_return_on_premium - exact.sumsq_return_on_premium).abs() < 1e-6,
+                    "{label} sumsq return on premium"
+                );
+            }
+
+            let exact_search_metrics = metrics_from_aggregate(exact_search);
+            let exact_holdout_metrics = metrics_from_aggregate(exact_holdout);
+            let exact_conservative_metrics = metrics_from_aggregate(exact_conservative);
+            let exact_harsher_metrics = metrics_from_aggregate(exact_harsher);
+            let expected_robust = robust_score(
+                &exact_search_metrics,
+                Some(&exact_holdout_metrics),
+                None,
+                Some(&exact_conservative_metrics),
+                Some(&exact_harsher_metrics),
+                None,
+            );
+            assert!(
+                (run.robust_scores[tuple_index] - expected_robust).abs() < 1e-9,
+                "robust score"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_combined_ranking_matches_cpu_topk_on_small_surface() {
+        let _env = lock_test_env();
+        reset_options_expression_prepare_caches();
+        let Some(device_id) = current_preferred_cuda_device_id() else {
+            return;
+        };
+        std::env::remove_var("VECTORGRID_OPTIONS_GPU_DISABLE_COMBINED_SCORING");
+
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0, 1],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
+            hold_minutes: vec![1, 2],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        };
+        let dataset = test_dataset();
+        let manifest = test_manifest();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let gpu_ranked = gpu_scoring::rank_compiled_tuples_gpu_with_device(
+            &req,
+            &prepared,
+            &dataset,
+            Some(device_id),
+        )
+        .expect("gpu ranking")
+        .expect("gpu ranked results");
+        let cpu_ranked = rank_compiled_tuples_cpu(&req, &prepared, &dataset);
+
+        assert_eq!(gpu_ranked.ranked_results.len(), cpu_ranked.len());
+        for (gpu_row, cpu_row) in gpu_ranked.ranked_results.iter().zip(cpu_ranked.iter()) {
+            assert_eq!(gpu_row.result.tuple, cpu_row.result.tuple);
+            assert_eq!(
+                gpu_row.result.pre_sealed_rank,
+                cpu_row.result.pre_sealed_rank
+            );
+            assert_eq!(
+                gpu_row.result.sealed_finalist,
+                cpu_row.result.sealed_finalist
+            );
+            assert_eq!(
+                gpu_row.result.sealed_final_rank,
+                cpu_row.result.sealed_final_rank
+            );
+            assert!(
+                (gpu_row.result.robust_score - cpu_row.result.robust_score).abs() < 1e-9,
+                "robust score parity"
+            );
+        }
     }
 
     #[test]
@@ -6237,7 +7618,7 @@ mod tests {
     fn options_expression_prepare_cache_distinguishes_shifted_manifest_events() {
         let _env = lock_test_env();
         reset_options_expression_prepare_caches();
-        let req = OptionsExpressionRunRequest {
+        let mut req = OptionsExpressionRunRequest {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
@@ -6259,17 +7640,25 @@ mod tests {
             split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
             sealed_finalist_count: 2,
         };
+        let mut baseline_manifest = test_manifest();
+        let mut dataset = test_dataset();
+        isolate_cache_test_fixtures(
+            &mut req,
+            &mut baseline_manifest,
+            &mut dataset,
+            "prepare_cache_shifted_manifest",
+        );
 
         let baseline = analyze_options_expression_feasibility_blocking(
             req.clone(),
-            &test_manifest(),
-            &test_dataset(),
+            &baseline_manifest,
+            &dataset,
         )
         .expect("baseline report");
         assert_eq!(baseline.event_coverage.search_events_with_candidates, 1);
         assert_eq!(baseline.cache_stats.structural_cache_hits, 0);
 
-        let mut shifted_manifest = test_manifest();
+        let mut shifted_manifest = baseline_manifest.clone();
         for event in &mut shifted_manifest.events {
             event.decision_timestamp += 14 * DAY_MS;
             event.earliest_tradable_timestamp += 14 * DAY_MS;
@@ -6278,12 +7667,9 @@ mod tests {
             event.base_exit_timestamp = event.base_exit_timestamp.map(|value| value + 14 * DAY_MS);
         }
 
-        let shifted = analyze_options_expression_feasibility_blocking(
-            req,
-            &shifted_manifest,
-            &test_dataset(),
-        )
-        .expect("shifted report");
+        let shifted =
+            analyze_options_expression_feasibility_blocking(req, &shifted_manifest, &dataset)
+                .expect("shifted report");
 
         assert_eq!(shifted.overlap_window.search_events_in_dataset_window, 0);
         assert_eq!(shifted.event_coverage.search_events_with_candidates, 0);
@@ -6295,7 +7681,7 @@ mod tests {
     fn options_expression_feasibility_report_tracks_cache_reuse_on_warm_preview() {
         let _env = lock_test_env();
         reset_options_expression_prepare_caches();
-        let req = OptionsExpressionRunRequest {
+        let mut req = OptionsExpressionRunRequest {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
@@ -6317,16 +7703,20 @@ mod tests {
             split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
             sealed_finalist_count: 2,
         };
+        let mut manifest = test_manifest();
+        let mut dataset = test_dataset();
+        isolate_cache_test_fixtures(
+            &mut req,
+            &mut manifest,
+            &mut dataset,
+            "warm_preview_cache_reuse",
+        );
 
-        let cold = analyze_options_expression_feasibility_blocking(
-            req.clone(),
-            &test_manifest(),
-            &test_dataset(),
-        )
-        .expect("cold report");
-        let warm =
-            analyze_options_expression_feasibility_blocking(req, &test_manifest(), &test_dataset())
-                .expect("warm report");
+        let cold =
+            analyze_options_expression_feasibility_blocking(req.clone(), &manifest, &dataset)
+                .expect("cold report");
+        let warm = analyze_options_expression_feasibility_blocking(req, &manifest, &dataset)
+            .expect("warm report");
 
         assert_eq!(cold.cache_stats.structural_cache_hits, 0);
         assert_eq!(cold.cache_stats.summary_cache_hits, 0);

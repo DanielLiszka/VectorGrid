@@ -145,9 +145,7 @@ impl Backend {
     }
 
     pub fn with_preferred_cuda_device(self) -> Result<Self, String> {
-        self.with_resolved_preferred_cuda_device(
-            crate::preferred_cuda_device().map(|device| device.map(|row| row.device_id)),
-        )
+        self.with_resolved_preferred_cuda_device(crate::preferred_cuda_device_id_result())
     }
 }
 
@@ -22254,6 +22252,50 @@ mod tests {
             directions > 0,
             "orc regime should include directional states"
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn trend_quality_uploaded_regime_matches_cpu_regime_small() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let candles = make_trending_candles(512);
+        let strategy = trend_quality_strategy_for_kernel();
+        let cpu_regime = compute_combined_regime_filter(&candles, "close", &strategy, None)
+            .expect("compute cpu trend-quality regime")
+            .expect("trend-quality regime enabled");
+        let first_valid = cpu_regime
+            .iter()
+            .position(|v| v.is_finite())
+            .unwrap_or(cpu_regime.len());
+        let regime_f32: Vec<f32> = cpu_regime
+            .iter()
+            .map(|&v| if v.is_nan() { f32::NAN } else { v as f32 })
+            .collect();
+        let device_regime =
+            crate::gpu_backtest_kernel::upload_host_regime_filter(0, &regime_f32, first_valid)
+                .expect("upload trend-quality regime");
+        let device_values =
+            crate::gpu_backtest_kernel::download_device_regime_filter(0, &device_regime)
+                .expect("download device trend-quality regime");
+
+        assert_eq!(cpu_regime.len(), device_values.len());
+        for (idx, (cpu, gpu)) in cpu_regime.iter().zip(device_values.iter()).enumerate() {
+            if cpu.is_nan() {
+                assert!(
+                    gpu.is_nan(),
+                    "expected NaN at idx={idx}, got {gpu} from device regime"
+                );
+            } else {
+                assert!(
+                    (*cpu - (*gpu as f64)).abs() <= 1e-6,
+                    "cpu/device trend-quality regime mismatch at idx={idx}: cpu={cpu} gpu={gpu}"
+                );
+            }
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

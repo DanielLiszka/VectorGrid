@@ -54,6 +54,7 @@ describe('StartupAnimationOverlay', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     localStorage.clear()
+    sessionStorage.clear()
     document.body.innerHTML = ''
     stubMatchMedia(false)
     pinia = createPinia()
@@ -184,7 +185,7 @@ describe('StartupAnimationOverlay', () => {
   })
 
   it('honors the debug hold flag until the operator skips', async () => {
-    localStorage.setItem('VTA_STARTUP_OVERLAY_HOLD', '1')
+    sessionStorage.setItem('VTA_STARTUP_OVERLAY_HOLD', '1')
     const runtimeStore = useRuntimeStore(pinia)
     runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
 
@@ -203,6 +204,30 @@ describe('StartupAnimationOverlay', () => {
 
     await wrapper.find('.startupSkipButton').trigger('click')
     await nextTick()
+    await flushTimers(EXIT_MS)
+    expect(document.querySelector('#startupAnimationOverlay')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('clears the stale persisted hold flag so ready can release the overlay', async () => {
+    localStorage.setItem('VTA_STARTUP_OVERLAY_HOLD', '1')
+    const runtimeStore = useRuntimeStore(pinia)
+    runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
+
+    const wrapper = mount(StartupAnimationOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    expect(localStorage.getItem('VTA_STARTUP_OVERLAY_HOLD')).toBeNull()
+
+    runtimeStore.markReady()
+    await nextTick()
+    await flushTimers(MIN_VISIBLE_MS)
+
+    expect(document.querySelector('#startupAnimationOverlay')?.getAttribute('data-stage')).toBe('exiting')
     await flushTimers(EXIT_MS)
     expect(document.querySelector('#startupAnimationOverlay')).toBeNull()
 

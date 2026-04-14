@@ -119,7 +119,16 @@ fn validation_supports_gpu_fixed_candidates(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn gpu_validation_strategy_blocker(_strategy: &StrategyConfig) -> Option<String> {
+fn gpu_validation_strategy_blocker(backend: &Backend, strategy: &StrategyConfig) -> Option<String> {
+    let uses_unsafe_trend_quality_gpu_kernel = strategy.uses_trend_quality_filter()
+        && !strategy.trend_quality_use_adx()
+        && matches!(backend, Backend::GpuKernel { .. } | Backend::Auto { .. });
+    if uses_unsafe_trend_quality_gpu_kernel {
+        return Some(
+            "GPU fixed-candidate validation currently falls back to CPU for TrendQuality requests without ADX confirmation because the exact-combo GpuKernel validation path is not parity-safe on that route."
+                .to_string(),
+        );
+    }
     None
 }
 
@@ -835,7 +844,7 @@ fn prepare_gpu_validation_plan(
     let first_slow_params = first.slow_ma_params.as_ref().or(slow_ma_params_req);
     let first_strategy = &first.strategy;
     let first_halftrend = &first.halftrend_filter;
-    if let Some(reason) = gpu_validation_strategy_blocker(first_strategy) {
+    if let Some(reason) = gpu_validation_strategy_blocker(&req.backend, first_strategy) {
         return Err(reason);
     }
 
@@ -5806,7 +5815,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_kernel_matches_cpu_metrics_trend_quality_adx_off() {
+    fn double_ma_validation_gpu_kernel_trend_quality_adx_off_falls_back_to_cpu() {
         let candles = make_trending_candles_with_slope(4096, 0.07);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -5906,8 +5915,13 @@ mod tests {
         )
         .expect("gpu validation");
 
-        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
-        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Cpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(gpu_res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("TrendQuality requests without ADX confirmation"));
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
@@ -5915,6 +5929,68 @@ mod tests {
             assert!((cpu.in_sample.max_dd - gpu.in_sample.max_dd).abs() < 1e-5);
             assert_eq!(cpu.track_record_bars, gpu.track_record_bars);
         }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_auto_trend_quality_adx_off_falls_back_to_cpu() {
+        let candles = make_trending_candles_with_slope(4096, 0.07);
+        let cancel = AtomicBool::new(false);
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            ..StrategyConfig::default()
+        };
+        let req = DoubleMaValidationRequest {
+            data_id: "auto-composite-trend".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy,
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            spa: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            seed: 1,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("auto trend-quality validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("TrendQuality requests without ADX confirmation"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -6039,7 +6115,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_kernel_walk_forward_matches_cpu_trend_quality_adx_off() {
+    fn double_ma_validation_gpu_kernel_walk_forward_trend_quality_adx_off_falls_back_to_cpu() {
         let candles = make_trending_candles_with_slope(4096, 0.07);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -6143,18 +6219,53 @@ mod tests {
         )
         .expect("gpu walk_forward validation");
 
-        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
-        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Cpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(gpu_res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("TrendQuality requests without ADX confirmation"));
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             let cpu_wf = cpu.walk_forward.as_ref().expect("cpu walk_forward");
             let gpu_wf = gpu.walk_forward.as_ref().expect("gpu walk_forward");
             assert_eq!(cpu_wf.windows, gpu_wf.windows);
-            assert!((cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 5e-2);
-            assert!((cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 5e-2);
-            assert!((cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-5);
-            assert!((cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-5);
-            assert!((cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3);
-            assert!((cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3);
+            assert!(
+                (cpu_wf.sharpe_median - gpu_wf.sharpe_median).abs() < 5e-2,
+                "cpu sharpe_median={} gpu sharpe_median={}",
+                cpu_wf.sharpe_median,
+                gpu_wf.sharpe_median
+            );
+            assert!(
+                (cpu_wf.sharpe_worst - gpu_wf.sharpe_worst).abs() < 5e-2,
+                "cpu sharpe_worst={} gpu sharpe_worst={}",
+                cpu_wf.sharpe_worst,
+                gpu_wf.sharpe_worst
+            );
+            assert!(
+                (cpu_wf.max_dd_median - gpu_wf.max_dd_median).abs() < 1e-5,
+                "cpu max_dd_median={} gpu max_dd_median={}",
+                cpu_wf.max_dd_median,
+                gpu_wf.max_dd_median
+            );
+            assert!(
+                (cpu_wf.max_dd_worst - gpu_wf.max_dd_worst).abs() < 1e-5,
+                "cpu max_dd_worst={} gpu max_dd_worst={}",
+                cpu_wf.max_dd_worst,
+                gpu_wf.max_dd_worst
+            );
+            assert!(
+                (cpu_wf.pnl_median - gpu_wf.pnl_median).abs() < 1e-3,
+                "cpu pnl_median={} gpu pnl_median={}",
+                cpu_wf.pnl_median,
+                gpu_wf.pnl_median
+            );
+            assert!(
+                (cpu_wf.pnl_worst - gpu_wf.pnl_worst).abs() < 1e-3,
+                "cpu pnl_worst={} gpu pnl_worst={}",
+                cpu_wf.pnl_worst,
+                gpu_wf.pnl_worst
+            );
             assert_eq!(cpu_wf.trades_median, gpu_wf.trades_median);
             assert_eq!(cpu_wf.trades_worst, gpu_wf.trades_worst);
         }

@@ -143,6 +143,7 @@ fn build_options_expression_artifacts() {
     let kernel = Path::new("src/kernels/options_expression.cu");
     let prebuilt = Path::new("src/kernels/options_expression.prebuilt.ptx");
     let ptx_out = out_dir.join("options_expression.ptx");
+    let cubin_out = out_dir.join("options_expression.sm_89.cubin");
 
     let use_prebuilt = matches!(env::var("VECTORBT_USE_PREBUILT_PTX"), Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true"));
     let require_nvcc = matches!(env::var("VECTORBT_REQUIRE_NVCC"), Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true"));
@@ -163,6 +164,7 @@ fn build_options_expression_artifacts() {
             prebuilt.display(),
             ptx_out.display()
         );
+        write_empty_file(&cubin_out);
         return;
     }
 
@@ -180,6 +182,7 @@ fn build_options_expression_artifacts() {
                 prebuilt.display(),
                 ptx_out.display()
             );
+            write_empty_file(&cubin_out);
             return;
         }
         panic!(
@@ -218,12 +221,14 @@ fn build_options_expression_artifacts() {
                 prebuilt.display(),
                 ptx_out.display()
             );
+            write_empty_file(&cubin_out);
             return;
         }
         panic!("nvcc failed for options-expression kernel");
     }
 
     validate_ptx_contains_symbols(&ptx_out, REQUIRED_OPTIONS_EXPRESSION_SYMBOLS);
+    build_sm89_cubin_best_effort(&nvcc, kernel, &cubin_out);
 }
 
 fn validate_ptx_contains_symbols(path: &Path, required_symbols: &[&str]) {

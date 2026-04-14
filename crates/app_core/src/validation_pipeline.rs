@@ -7,7 +7,7 @@ use crate::iterative_sim::{
     ValidationEngine,
 };
 use crate::progress::ProgressSink;
-use crate::stats_common::{median, median_u32, quantile, worst_max, worst_min, worst_min_u32};
+use crate::stats_common::{worst_max, worst_min, worst_min_u32};
 use crate::validation_shared::{
     PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
     ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
@@ -298,39 +298,46 @@ pub fn compute_probability_metrics<C: ValidationPostCandidate>(
 }
 
 pub fn mark_robust_pareto<C: ValidationPostCandidate>(out: &mut [C]) {
-    for i in 0..out.len() {
-        let base_i = out[i]
-            .iterative_in_sample_metrics()
-            .unwrap_or_else(|| out[i].in_sample_metrics());
-        let wf_i = out[i].walk_forward_stats();
-        let score_i = robust_score_from_metrics(base_i, wf_i);
-        let ulcer_i = wf_i
-            .map(|stats| finite_or(stats.ulcer_index_worst, base_i.ulcer_index))
-            .unwrap_or(base_i.ulcer_index);
-        let dd_i = wf_i
-            .map(|stats| finite_or(stats.max_dd_worst, base_i.max_dd))
-            .unwrap_or(base_i.max_dd);
+    #[derive(Clone, Copy)]
+    struct RobustParetoPoint {
+        score: f64,
+        ulcer: f64,
+        dd: f64,
+    }
 
+    let points: Vec<RobustParetoPoint> = out
+        .iter()
+        .map(|cand| {
+            let base = cand
+                .iterative_in_sample_metrics()
+                .unwrap_or_else(|| cand.in_sample_metrics());
+            let walk_forward = cand.walk_forward_stats();
+            RobustParetoPoint {
+                score: robust_score_from_metrics(base, walk_forward),
+                ulcer: walk_forward
+                    .map(|stats| finite_or(stats.ulcer_index_worst, base.ulcer_index))
+                    .unwrap_or(base.ulcer_index),
+                dd: walk_forward
+                    .map(|stats| finite_or(stats.max_dd_worst, base.max_dd))
+                    .unwrap_or(base.max_dd),
+            }
+        })
+        .collect();
+
+    for i in 0..out.len() {
+        let point_i = points[i];
         let mut dominated = false;
         for j in 0..out.len() {
             if i == j {
                 continue;
             }
-            let base_j = out[j]
-                .iterative_in_sample_metrics()
-                .unwrap_or_else(|| out[j].in_sample_metrics());
-            let wf_j = out[j].walk_forward_stats();
-            let score_j = robust_score_from_metrics(base_j, wf_j);
-            let ulcer_j = wf_j
-                .map(|stats| finite_or(stats.ulcer_index_worst, base_j.ulcer_index))
-                .unwrap_or(base_j.ulcer_index);
-            let dd_j = wf_j
-                .map(|stats| finite_or(stats.max_dd_worst, base_j.max_dd))
-                .unwrap_or(base_j.max_dd);
-            if score_j >= score_i
-                && ulcer_j <= ulcer_i
-                && dd_j <= dd_i
-                && (score_j > score_i || ulcer_j < ulcer_i || dd_j < dd_i)
+            let point_j = points[j];
+            if point_j.score >= point_i.score
+                && point_j.ulcer <= point_i.ulcer
+                && point_j.dd <= point_i.dd
+                && (point_j.score > point_i.score
+                    || point_j.ulcer < point_i.ulcer
+                    || point_j.dd < point_i.dd)
             {
                 dominated = true;
                 break;
@@ -608,6 +615,56 @@ where
         .collect::<Result<Vec<_>, String>>()
 }
 
+fn estimated_window_count(n: usize, start_t: usize, window: usize, step: usize) -> usize {
+    if n < 3 || start_t + 2 > n {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut t0 = start_t;
+    while t0 + 2 <= n {
+        let end = t0.saturating_add(window).min(n);
+        if end <= t0 + 1 {
+            break;
+        }
+        count = count.saturating_add(1);
+        if end == n {
+            break;
+        }
+        t0 = t0.saturating_add(step);
+    }
+    count
+}
+
+fn quantile_index(len: usize, q: f64) -> usize {
+    let qq = q.clamp(0.0, 1.0);
+    (qq * (len.saturating_sub(1) as f64)).round() as usize
+}
+
+fn select_quantile_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    if values.len() == 1 {
+        return values[0];
+    }
+    let idx = quantile_index(values.len(), q).min(values.len() - 1);
+    let (_, nth, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    *nth
+}
+
+fn select_median_in_place(values: &mut [f64]) -> f64 {
+    select_quantile_in_place(values, 0.5)
+}
+
+fn select_median_u32_in_place(values: &mut [u32]) -> u32 {
+    if values.is_empty() {
+        return 0;
+    }
+    let idx = values.len() / 2;
+    let (_, nth, _) = values.select_nth_unstable(idx);
+    *nth
+}
+
 pub fn compute_walk_forward_stats<F>(
     n: usize,
     start_t: usize,
@@ -619,14 +676,15 @@ where
 {
     let window = cfg.window_bars.max(64);
     let step = cfg.step_bars.max(1);
+    let estimated_windows = estimated_window_count(n, start_t, window, step);
 
-    let mut sharpes: Vec<f64> = Vec::new();
-    let mut dds: Vec<f64> = Vec::new();
-    let mut pnls: Vec<f64> = Vec::new();
-    let mut downside_ratios: Vec<f64> = Vec::new();
-    let mut ulcers: Vec<f64> = Vec::new();
-    let mut martins: Vec<f64> = Vec::new();
-    let mut trades: Vec<u32> = Vec::new();
+    let mut sharpes: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut dds: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut pnls: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut downside_ratios: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut ulcers: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut martins: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut trades: Vec<u32> = Vec::with_capacity(estimated_windows);
 
     let mut t0 = start_t;
     while t0 + 2 <= n {
@@ -650,29 +708,30 @@ where
         t0 = t0.saturating_add(step);
     }
 
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-    downside_ratios.sort_by(|a, b| a.total_cmp(b));
-    ulcers.sort_by(|a, b| a.total_cmp(b));
-    martins.sort_by(|a, b| a.total_cmp(b));
+    let sharpe_worst = worst_min(&sharpes);
+    let max_dd_worst = worst_max(&dds);
+    let pnl_worst = worst_min(&pnls);
+    let downside_vol_ratio_worst = worst_max(&downside_ratios);
+    let ulcer_index_worst = worst_max(&ulcers);
+    let martin_ratio_worst = worst_min(&martins);
+    let trades_worst = worst_min_u32(&trades);
 
     WalkForwardStats {
         windows: sharpes.len(),
-        sharpe_median: median(&sharpes),
-        sharpe_worst: worst_min(&sharpes),
-        max_dd_median: median(&dds),
-        max_dd_worst: worst_max(&dds),
-        pnl_median: median(&pnls),
-        pnl_worst: worst_min(&pnls),
-        downside_vol_ratio_median: median(&downside_ratios),
-        downside_vol_ratio_worst: worst_max(&downside_ratios),
-        ulcer_index_median: median(&ulcers),
-        ulcer_index_worst: worst_max(&ulcers),
-        martin_ratio_median: median(&martins),
-        martin_ratio_worst: worst_min(&martins),
-        trades_median: median_u32(&trades),
-        trades_worst: worst_min_u32(&trades),
+        sharpe_median: select_median_in_place(&mut sharpes),
+        sharpe_worst,
+        max_dd_median: select_median_in_place(&mut dds),
+        max_dd_worst,
+        pnl_median: select_median_in_place(&mut pnls),
+        pnl_worst,
+        downside_vol_ratio_median: select_median_in_place(&mut downside_ratios),
+        downside_vol_ratio_worst,
+        ulcer_index_median: select_median_in_place(&mut ulcers),
+        ulcer_index_worst,
+        martin_ratio_median: select_median_in_place(&mut martins),
+        martin_ratio_worst,
+        trades_median: select_median_u32_in_place(&mut trades),
+        trades_worst,
     }
 }
 
@@ -749,6 +808,21 @@ fn normalized_param_drift_from_key_text(left: &str, right: &str) -> f64 {
     }
 }
 
+fn normalized_param_drift_from_parsed_key_values(
+    left_key: &str,
+    right_key: &str,
+    left: Option<&JsonValue>,
+    right: Option<&JsonValue>,
+) -> f64 {
+    if left_key == right_key {
+        return 0.0;
+    }
+    match (left, right) {
+        (Some(left), Some(right)) => normalized_json_drift_value(left, right),
+        _ => normalized_param_drift_from_key_text(left_key, right_key),
+    }
+}
+
 pub fn compute_reopt_walk_forward_stats<P, FStart, FEval, FKey>(
     candidates: &[P],
     n: usize,
@@ -776,18 +850,24 @@ where
         .min(n.saturating_sub(2));
     let window = cfg.window_bars.max(64);
     let step = cfg.step_bars.max(1);
+    let estimated_windows = estimated_window_count(n, common_start_t, window, step);
+    let finalist_keys: Vec<String> = finalists.iter().map(&mut candidate_key).collect();
+    let finalist_key_values: Vec<Option<JsonValue>> = finalist_keys
+        .iter()
+        .map(|key| serde_json::from_str::<JsonValue>(key).ok())
+        .collect();
 
-    let mut train_scores: Vec<f64> = Vec::new();
-    let mut sharpes: Vec<f64> = Vec::new();
-    let mut dds: Vec<f64> = Vec::new();
-    let mut pnls: Vec<f64> = Vec::new();
-    let mut ulcers: Vec<f64> = Vec::new();
-    let mut martins: Vec<f64> = Vec::new();
-    let mut trades: Vec<u32> = Vec::new();
-    let mut winner_keys: Vec<String> = Vec::new();
-    let mut window_stats: Vec<ReoptWalkForwardWindowStats> = Vec::new();
-    let mut pnl_efficiencies: Vec<f64> = Vec::new();
-    let mut sharpe_efficiencies: Vec<f64> = Vec::new();
+    let mut train_scores: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut sharpes: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut dds: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut pnls: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut ulcers: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut martins: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut trades: Vec<u32> = Vec::with_capacity(estimated_windows);
+    let mut winner_indices: Vec<usize> = Vec::with_capacity(estimated_windows);
+    let mut window_stats: Vec<ReoptWalkForwardWindowStats> = Vec::with_capacity(estimated_windows);
+    let mut pnl_efficiencies: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut sharpe_efficiencies: Vec<f64> = Vec::with_capacity(estimated_windows);
     let mut positive_forward_pnl = 0usize;
 
     let mut t0 = common_start_t;
@@ -820,7 +900,7 @@ where
         let winner = &finalists[best_idx];
         let train_metrics = best_train_metrics.expect("reopt winner train metrics");
         let forward = eval_metrics_window(winner, train_end, test_end);
-        let winner_key = candidate_key(winner);
+        let winner_key = finalist_keys[best_idx].clone();
         let pnl_efficiency = if train_metrics.pnl.is_finite() && train_metrics.pnl.abs() > 1e-12 {
             Some(forward.pnl / train_metrics.pnl)
         } else {
@@ -849,7 +929,7 @@ where
         if let Some(value) = sharpe_efficiency.filter(|value| value.is_finite()) {
             sharpe_efficiencies.push(value);
         }
-        winner_keys.push(winner_key.clone());
+        winner_indices.push(best_idx);
         window_stats.push(ReoptWalkForwardWindowStats {
             train_start: t0,
             train_end,
@@ -880,31 +960,35 @@ where
         return None;
     }
 
-    train_scores.sort_by(|a, b| a.total_cmp(b));
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-    ulcers.sort_by(|a, b| a.total_cmp(b));
-    martins.sort_by(|a, b| a.total_cmp(b));
-    pnl_efficiencies.sort_by(|a, b| a.total_cmp(b));
-    sharpe_efficiencies.sort_by(|a, b| a.total_cmp(b));
+    let forward_sharpe_worst = worst_min(&sharpes);
+    let forward_max_dd_worst = worst_max(&dds);
+    let forward_pnl_worst = worst_min(&pnls);
+    let forward_ulcer_index_worst = worst_max(&ulcers);
+    let forward_martin_ratio_worst = worst_min(&martins);
+    let forward_trades_worst = worst_min_u32(&trades);
+    let pnl_eff_worst = worst_min(&pnl_efficiencies);
+    let sharpe_eff_worst = worst_min(&sharpe_efficiencies);
 
-    let mut winner_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut winner_counts = vec![0usize; finalists.len()];
     let mut winner_changes = 0usize;
-    let mut prev_key: Option<&str> = None;
-    let mut drift_values: Vec<f64> = Vec::new();
-    for key in &winner_keys {
-        *winner_counts.entry(key.clone()).or_insert(0) += 1;
-        if let Some(prev) = prev_key {
-            if prev != key {
+    let mut prev_idx: Option<usize> = None;
+    let mut drift_values: Vec<f64> = Vec::with_capacity(winner_indices.len().saturating_sub(1));
+    for &winner_idx in &winner_indices {
+        winner_counts[winner_idx] = winner_counts[winner_idx].saturating_add(1);
+        if let Some(prev) = prev_idx {
+            if prev != winner_idx {
                 winner_changes = winner_changes.saturating_add(1);
             }
-            drift_values.push(normalized_param_drift_from_key_text(prev, key));
+            drift_values.push(normalized_param_drift_from_parsed_key_values(
+                &finalist_keys[prev],
+                &finalist_keys[winner_idx],
+                finalist_key_values[prev].as_ref(),
+                finalist_key_values[winner_idx].as_ref(),
+            ));
         }
-        prev_key = Some(key.as_str());
+        prev_idx = Some(winner_idx);
     }
-    let max_winner_count = winner_counts.values().copied().max().unwrap_or(0);
+    let max_winner_count = winner_counts.iter().copied().max().unwrap_or(0);
     let drift_mean = if drift_values.is_empty() {
         0.0
     } else {
@@ -916,60 +1000,64 @@ where
     } else {
         Some(sharpe_efficiencies.iter().sum::<f64>() / sharpe_efficiencies.len() as f64)
     };
+    let winner_sequence: Vec<String> = winner_indices
+        .iter()
+        .map(|&winner_idx| finalist_keys[winner_idx].clone())
+        .collect();
 
     Some(ReoptWalkForwardStats {
-        windows: winner_keys.len(),
+        windows: winner_indices.len(),
         top_n_candidates,
-        unique_winners: winner_counts.len(),
+        unique_winners: winner_counts.iter().filter(|&&count| count > 0).count(),
         winner_changes,
-        dominant_winner_frac: if winner_keys.is_empty() {
+        dominant_winner_frac: if winner_indices.is_empty() {
             0.0
         } else {
-            max_winner_count as f64 / winner_keys.len() as f64
+            max_winner_count as f64 / winner_indices.len() as f64
         },
         winner_param_drift_mean: drift_mean,
         winner_param_drift_max: drift_max,
-        train_score_median: median(&train_scores),
-        forward_positive_pnl_frac: if winner_keys.is_empty() {
+        train_score_median: select_median_in_place(&mut train_scores),
+        forward_positive_pnl_frac: if winner_sequence.is_empty() {
             0.0
         } else {
-            positive_forward_pnl as f64 / winner_keys.len() as f64
+            positive_forward_pnl as f64 / winner_sequence.len() as f64
         },
-        forward_sharpe_median: median(&sharpes),
-        forward_sharpe_worst: worst_min(&sharpes),
-        forward_max_dd_median: median(&dds),
-        forward_max_dd_worst: worst_max(&dds),
-        forward_pnl_median: median(&pnls),
-        forward_pnl_worst: worst_min(&pnls),
-        forward_ulcer_index_median: median(&ulcers),
-        forward_ulcer_index_worst: worst_max(&ulcers),
-        forward_martin_ratio_median: median(&martins),
-        forward_martin_ratio_worst: worst_min(&martins),
-        forward_trades_median: median_u32(&trades),
-        forward_trades_worst: worst_min_u32(&trades),
+        forward_sharpe_median: select_median_in_place(&mut sharpes),
+        forward_sharpe_worst,
+        forward_max_dd_median: select_median_in_place(&mut dds),
+        forward_max_dd_worst,
+        forward_pnl_median: select_median_in_place(&mut pnls),
+        forward_pnl_worst,
+        forward_ulcer_index_median: select_median_in_place(&mut ulcers),
+        forward_ulcer_index_worst,
+        forward_martin_ratio_median: select_median_in_place(&mut martins),
+        forward_martin_ratio_worst,
+        forward_trades_median: select_median_u32_in_place(&mut trades),
+        forward_trades_worst,
         window_pnl_efficiency_median: if pnl_efficiencies.is_empty() {
             None
         } else {
-            Some(median(&pnl_efficiencies))
+            Some(select_median_in_place(&mut pnl_efficiencies))
         },
         window_pnl_efficiency_worst: if pnl_efficiencies.is_empty() {
             None
         } else {
-            Some(worst_min(&pnl_efficiencies))
+            Some(pnl_eff_worst)
         },
         window_sharpe_efficiency_median: if sharpe_efficiencies.is_empty() {
             None
         } else {
-            Some(median(&sharpe_efficiencies))
+            Some(select_median_in_place(&mut sharpe_efficiencies))
         },
         window_sharpe_efficiency_worst: if sharpe_efficiencies.is_empty() {
             None
         } else {
-            Some(worst_min(&sharpe_efficiencies))
+            Some(sharpe_eff_worst)
         },
         window_sharpe_efficiency_std: sharpe_eff_mean
             .map(|mean| sample_std(&sharpe_efficiencies, mean)),
-        winner_sequence: winner_keys,
+        winner_sequence,
         window_stats,
     })
 }
@@ -1040,9 +1128,15 @@ where
         return Ok(None);
     }
 
-    let mut sharpes: Vec<f64> = Vec::with_capacity(iters);
-    let mut dds: Vec<f64> = Vec::with_capacity(iters);
-    let mut pnls: Vec<f64> = Vec::with_capacity(iters);
+    let mut sharpe_sum = 0.0_f64;
+    let mut sharpe_count = 0usize;
+    let mut sharpe_worst = f64::INFINITY;
+    let mut dd_sum = 0.0_f64;
+    let mut dd_count = 0usize;
+    let mut dd_worst = f64::NEG_INFINITY;
+    let mut pnl_sum = 0.0_f64;
+    let mut pnl_count = 0usize;
+    let mut pnl_worst = f64::INFINITY;
     let mut pnl_pos: usize = 0;
 
     for _ in 0..iters {
@@ -1054,14 +1148,55 @@ where
         if m.pnl > 0.0 {
             pnl_pos += 1;
         }
-        sharpes.push(m.sharpe);
-        dds.push(m.max_dd);
-        pnls.push(m.pnl);
+        if m.sharpe.is_finite() {
+            sharpe_sum += m.sharpe;
+            sharpe_count = sharpe_count.saturating_add(1);
+        }
+        sharpe_worst = sharpe_worst.min(m.sharpe);
+        if m.max_dd.is_finite() {
+            dd_sum += m.max_dd;
+            dd_count = dd_count.saturating_add(1);
+        }
+        dd_worst = dd_worst.max(m.max_dd);
+        if m.pnl.is_finite() {
+            pnl_sum += m.pnl;
+            pnl_count = pnl_count.saturating_add(1);
+        }
+        pnl_worst = pnl_worst.min(m.pnl);
     }
 
-    Ok(Some(summarize_perturb_stats(
-        cfg, iters, &sharpes, &dds, &pnls, pnl_pos,
-    )))
+    Ok(Some(PerturbStats {
+        iterations: iters,
+        pct_min: cfg.pct_min,
+        pct_max: cfg.pct_max,
+        sharpe_mean: if sharpe_count > 0 {
+            sharpe_sum / sharpe_count as f64
+        } else {
+            0.0
+        },
+        sharpe_worst: if sharpe_worst.is_finite() {
+            sharpe_worst
+        } else {
+            0.0
+        },
+        max_dd_mean: if dd_count > 0 {
+            dd_sum / dd_count as f64
+        } else {
+            0.0
+        },
+        max_dd_worst: if dd_worst.is_finite() { dd_worst } else { 0.0 },
+        pnl_mean: if pnl_count > 0 {
+            pnl_sum / pnl_count as f64
+        } else {
+            0.0
+        },
+        pnl_worst: if pnl_worst.is_finite() {
+            pnl_worst
+        } else {
+            0.0
+        },
+        pnl_positive_frac: pnl_pos as f64 / iters as f64,
+    }))
 }
 
 pub fn compute_trade_bootstrap_stats(
@@ -1118,18 +1253,21 @@ pub fn compute_trade_bootstrap_stats(
         pnls.push(pnl);
         dds.push(max_dd);
     }
-    pnls.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
+    let pnl_p05 = select_quantile_in_place(&mut pnls, 0.05);
+    let pnl_p50 = select_quantile_in_place(&mut pnls, 0.5);
+    let pnl_p95 = select_quantile_in_place(&mut pnls, 0.95);
+    let max_dd_p50 = select_quantile_in_place(&mut dds, 0.5);
+    let max_dd_p95 = select_quantile_in_place(&mut dds, 0.95);
     if cfg.stationary_mean_block_len == Some(0) {
         return TradeBootstrapStats {
             simulations,
             trade_count,
             prob_pnl_positive: pos as f64 / simulations as f64,
-            pnl_p05: quantile(&pnls, 0.05),
-            pnl_p50: quantile(&pnls, 0.5),
-            pnl_p95: quantile(&pnls, 0.95),
-            max_dd_p50: quantile(&dds, 0.5),
-            max_dd_p95: quantile(&dds, 0.95),
+            pnl_p05,
+            pnl_p50,
+            pnl_p95,
+            max_dd_p50,
+            max_dd_p95,
             stationary_mean_block_len: None,
             stationary_prob_pnl_positive: None,
             stationary_pnl_p05: None,
@@ -1170,24 +1308,27 @@ pub fn compute_trade_bootstrap_stats(
         stationary_pnls.push(pnl);
         stationary_dds.push(max_dd);
     }
-    stationary_pnls.sort_by(|a, b| a.total_cmp(b));
-    stationary_dds.sort_by(|a, b| a.total_cmp(b));
+    let stationary_pnl_p05 = select_quantile_in_place(&mut stationary_pnls, 0.05);
+    let stationary_pnl_p50 = select_quantile_in_place(&mut stationary_pnls, 0.5);
+    let stationary_pnl_p95 = select_quantile_in_place(&mut stationary_pnls, 0.95);
+    let stationary_max_dd_p50 = select_quantile_in_place(&mut stationary_dds, 0.5);
+    let stationary_max_dd_p95 = select_quantile_in_place(&mut stationary_dds, 0.95);
     TradeBootstrapStats {
         simulations,
         trade_count,
         prob_pnl_positive: pos as f64 / simulations as f64,
-        pnl_p05: quantile(&pnls, 0.05),
-        pnl_p50: quantile(&pnls, 0.5),
-        pnl_p95: quantile(&pnls, 0.95),
-        max_dd_p50: quantile(&dds, 0.5),
-        max_dd_p95: quantile(&dds, 0.95),
+        pnl_p05,
+        pnl_p50,
+        pnl_p95,
+        max_dd_p50,
+        max_dd_p95,
         stationary_mean_block_len: Some(stationary_mean_block_len),
         stationary_prob_pnl_positive: Some(stationary_pos as f64 / simulations as f64),
-        stationary_pnl_p05: Some(quantile(&stationary_pnls, 0.05)),
-        stationary_pnl_p50: Some(quantile(&stationary_pnls, 0.5)),
-        stationary_pnl_p95: Some(quantile(&stationary_pnls, 0.95)),
-        stationary_max_dd_p50: Some(quantile(&stationary_dds, 0.5)),
-        stationary_max_dd_p95: Some(quantile(&stationary_dds, 0.95)),
+        stationary_pnl_p05: Some(stationary_pnl_p05),
+        stationary_pnl_p50: Some(stationary_pnl_p50),
+        stationary_pnl_p95: Some(stationary_pnl_p95),
+        stationary_max_dd_p50: Some(stationary_max_dd_p50),
+        stationary_max_dd_p95: Some(stationary_max_dd_p95),
     }
 }
 
@@ -1683,6 +1824,194 @@ mod tests {
         compute_probability_metrics(&mut out, &[120]);
         assert_eq!(out[0].track_record_bars, 120);
         assert!(out[0].min_track_record_length_bars.is_some());
+    }
+
+    #[test]
+    fn mark_robust_pareto_uses_same_dominance_rules_with_walk_forward_data() {
+        let mut out = vec![
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.5,
+                    max_dd: 0.18,
+                    ulcer_index: 0.10,
+                    martin_ratio: 0.9,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 0.0,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.0,
+                    max_dd: 0.20,
+                    ulcer_index: 0.14,
+                    martin_ratio: 0.7,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 0.0,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.1,
+                    max_dd: 0.24,
+                    ulcer_index: 0.20,
+                    martin_ratio: 0.6,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 0.0,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+        ];
+
+        mark_robust_pareto(&mut out);
+
+        assert!(
+            out[0].robust_pareto,
+            "best candidate should remain on Pareto frontier"
+        );
+        assert!(
+            !out[1].robust_pareto,
+            "dominated candidate should be excluded"
+        );
+        assert!(
+            !out[2].robust_pareto,
+            "clearly weaker candidate should be excluded"
+        );
+    }
+
+    #[test]
+    fn normalized_param_drift_from_parsed_key_values_matches_text_path() {
+        let left = r#"{"fast":8,"nested":{"alpha":1.0,"beta":true}}"#;
+        let right = r#"{"fast":13,"nested":{"alpha":1.5,"beta":true}}"#;
+        let left_value = serde_json::from_str::<JsonValue>(left).expect("left json");
+        let right_value = serde_json::from_str::<JsonValue>(right).expect("right json");
+
+        let text = normalized_param_drift_from_key_text(left, right);
+        let parsed = normalized_param_drift_from_parsed_key_values(
+            left,
+            right,
+            Some(&left_value),
+            Some(&right_value),
+        );
+
+        assert!((text - parsed).abs() < 1e-12);
+    }
+
+    #[test]
+    fn select_quantile_in_place_matches_sorted_quantile() {
+        let values = vec![3.0, f64::NAN, -1.0, 2.5, 7.0, 2.5];
+        for q in [0.05, 0.5, 0.95] {
+            let mut unsorted = values.clone();
+            let mut sorted = values.clone();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            let expected = crate::stats_common::quantile(&sorted, q);
+            let actual = select_quantile_in_place(&mut unsorted, q);
+            assert!(
+                expected.to_bits() == actual.to_bits(),
+                "q={q} expected={expected:?} actual={actual:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn select_median_u32_in_place_matches_sorted_path() {
+        let mut values = vec![9_u32, 2, 4, 2, 7, 1, 6];
+        let expected = crate::stats_common::median_u32(&values);
+        let actual = select_median_u32_in_place(&mut values);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn compute_perturb_stats_matches_summary_function() {
+        let cfg = PerturbConfig {
+            iterations: 4,
+            pct_min: -0.1,
+            pct_max: 0.1,
+            flip_bool_prob: 0.0,
+        };
+        let cancel = AtomicBool::new(false);
+        let expected_metrics = vec![
+            Metrics {
+                sharpe: 1.0,
+                max_dd: 0.20,
+                pnl: 0.10,
+                ..Metrics::default()
+            },
+            Metrics {
+                sharpe: 0.5,
+                max_dd: 0.30,
+                pnl: -0.05,
+                ..Metrics::default()
+            },
+            Metrics {
+                sharpe: 1.5,
+                max_dd: 0.10,
+                pnl: 0.20,
+                ..Metrics::default()
+            },
+            Metrics {
+                sharpe: -0.25,
+                max_dd: 0.40,
+                pnl: 0.00,
+                ..Metrics::default()
+            },
+        ];
+
+        let expected_sharpes: Vec<f64> = expected_metrics.iter().map(|m| m.sharpe).collect();
+        let expected_dds: Vec<f64> = expected_metrics.iter().map(|m| m.max_dd).collect();
+        let expected_pnls: Vec<f64> = expected_metrics.iter().map(|m| m.pnl).collect();
+        let expected_pnl_pos = expected_metrics.iter().filter(|m| m.pnl > 0.0).count();
+        let expected = summarize_perturb_stats(
+            &cfg,
+            cfg.iterations,
+            &expected_sharpes,
+            &expected_dds,
+            &expected_pnls,
+            expected_pnl_pos,
+        );
+
+        let mut idx = 0usize;
+        let mut rng = StdRng::seed_from_u64(7);
+        let actual = compute_perturb_stats(
+            &0usize,
+            &cfg,
+            &cancel,
+            &mut rng,
+            |base, _, _| *base,
+            |_| {
+                let metric = expected_metrics
+                    .get(idx)
+                    .cloned()
+                    .expect("expected perturb metric");
+                idx = idx.saturating_add(1);
+                Ok(metric)
+            },
+        )
+        .expect("perturb stats")
+        .expect("perturb stats present");
+
+        let expected = serde_json::to_value(expected).expect("serialize expected");
+        let actual = serde_json::to_value(actual).expect("serialize actual");
+        assert_eq!(actual, expected);
     }
 
     #[test]

@@ -140,6 +140,34 @@ function normalizeUnixToDateText(value: number): string {
   return formatUtcDateFromUnixMs(ms);
 }
 
+const RELATIVE_TIME_AXIS_EPOCH_CUTOFF_MS = 315_532_800_000; // 1980-01-01T00:00:00Z
+
+function isRelativeTimeAxis(meta: DataLoadResult["meta"] | null): boolean {
+  const row = meta && typeof meta === "object" ? meta : null;
+  if (!row) return false;
+  const minAbs = Math.abs(Number(row.minTs) || 0);
+  const maxAbs = Math.abs(Number(row.maxTs) || 0);
+  const largest = Math.max(minAbs, maxAbs);
+  return largest > 0 && largest < RELATIVE_TIME_AXIS_EPOCH_CUTOFF_MS;
+}
+
+function formatRelativeDurationText(valueMs: number): string {
+  const ms = Math.max(0, Math.floor(Number(valueMs) || 0));
+  if (ms < 1_000) return `${ms}ms`;
+
+  const totalSeconds = Math.floor(ms / 1_000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0 || parts.length > 0) parts.push(`${hours}h`);
+  if (minutes > 0 || parts.length > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
 function datasetRangeText(
   meta: DataLoadResult["meta"] | null,
   timeframe: string,
@@ -147,10 +175,16 @@ function datasetRangeText(
   const row = meta && typeof meta === "object" ? meta : null;
   if (!row) return "—";
   const tf = String(timeframe || row.timeframe || "").trim();
-  const minTs = normalizeUnixToDateText(Number(row.minTs));
-  const maxTs = normalizeUnixToDateText(Number(row.maxTs));
   const parts: string[] = [];
   if (tf) parts.push(tf);
+  if (isRelativeTimeAxis(row)) {
+    parts.push(
+      `relative ${formatRelativeDurationText(Number(row.minTs))} → ${formatRelativeDurationText(Number(row.maxTs))}`,
+    );
+    return parts.join(" • ");
+  }
+  const minTs = normalizeUnixToDateText(Number(row.minTs));
+  const maxTs = normalizeUnixToDateText(Number(row.maxTs));
   if (minTs !== "—" || maxTs !== "—") parts.push(`${minTs} → ${maxTs}`);
   return parts.length ? parts.join(" • ") : "—";
 }
@@ -241,15 +275,19 @@ function timeframeHintText(
   baseTimeframe: string,
   currentTimeframe: string,
   hasBase: boolean,
+  relativeTimeAxis = false,
 ): string {
   if (!hasBase) return "Load a dataset to enable timeframe resampling.";
   const baseLabel = String(baseTimeframe || "").trim() || "unknown";
   const effective = String(currentTimeframe || "").trim() || baseLabel;
   const derived = !!baseTimeframe && !!effective && baseLabel !== effective;
+  const axisNote = relativeTimeAxis
+    ? " Relative timeline detected; calendar dates are unavailable."
+    : "";
   if (derived) {
-    return `Using ${effective} derived from base ${baseLabel} (no extra downloads). Periods are in candles.`;
+    return `Using ${effective} derived from base ${baseLabel} (no extra downloads). Periods are in candles.${axisNote}`;
   }
-  return `Base timeframe: ${baseLabel}. Choose a higher timeframe to derive candles (no extra downloads). Periods are in candles.`;
+  return `Base timeframe: ${baseLabel}. Choose a higher timeframe to derive candles (no extra downloads). Periods are in candles.${axisNote}`;
 }
 
 function markVueUpdate(state: DataState): void {
@@ -1167,6 +1205,7 @@ export const useDataStore = defineStore("data", {
         baseTf,
         effectiveTf,
         hasLoadedDataset(this.baseDataId || this.dataId),
+        isRelativeTimeAxis(baseMeta),
       );
       this.canApplyTimeframe = hasLoadedDataset(this.baseDataId || this.dataId);
       this.statusLine =
@@ -1200,7 +1239,12 @@ export const useDataStore = defineStore("data", {
       this.dataFields = dataFieldList(baseMeta);
       this.dataFieldHint = dataFieldHint(baseMeta);
       this.dataTimeframe = "";
-      this.dataTimeframeHint = timeframeHintText(baseTf, baseTf, true);
+      this.dataTimeframeHint = timeframeHintText(
+        baseTf,
+        baseTf,
+        true,
+        isRelativeTimeAxis(baseMeta),
+      );
       this.canApplyTimeframe = true;
       this.statusLine = baseTf
         ? `Using base timeframe (${baseTf}).`

@@ -1953,8 +1953,10 @@ describe('validationService', () => {
     })
 
     const summary = previewValidationExecutionSummaryFromStores()
-    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates + cscv_pbo + spa')
-    expect(summary.categorySummary).toContain('GPU main + CPU tail: walk_forward + reopt_walk_forward + perturb + trade_bootstrap')
+    expect(summary.categorySummary).toContain(
+      'GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap',
+    )
+    expect(summary.categorySummary).not.toContain('GPU main + CPU tail:')
   })
 
   it('reports validation timing truthfully and persists auto-export artifacts once', async () => {

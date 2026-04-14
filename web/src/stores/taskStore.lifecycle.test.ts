@@ -156,6 +156,7 @@ describe('task-store lifecycle smoke', () => {
   })
 
   it('hydrates persisted task-center payloads including bounded toasts', () => {
+    const now = Date.now()
     globalThis.window.localStorage.setItem(
       TASK_TIMELINE_STORAGE_KEY,
       JSON.stringify({
@@ -180,7 +181,7 @@ describe('task-store lifecycle smoke', () => {
         })),
         toasts: Array.from({ length: 10 }, (_, index) => ({
           id: `toast_${index + 1}`,
-          atUnixMs: 1_700_000_000_000 + index,
+          atUnixMs: now + index,
           source: 'run_double_ma_optimization',
           message: `Toast ${index + 1}`,
           level: 'success',
@@ -261,5 +262,34 @@ describe('task-store lifecycle smoke', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('auto-dismisses success toasts after a short timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const taskId = beginTrackedCommand('run_double_ma_optimization')
+      completeTrackedCommand(taskId)
+
+      const store = useTaskStore(pinia)
+      expect(store.toasts).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(4600)
+
+      expect(store.toasts).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not surface a success toast for drilldown micro-operations', () => {
+    const taskId = beginTrackedCommand('compute_double_ma_drilldown')
+    completeTrackedCommand(taskId)
+
+    const store = useTaskStore(pinia)
+    expect(store.history[0]).toMatchObject({
+      command: 'compute_double_ma_drilldown',
+      status: 'success',
+    })
+    expect(store.toasts).toHaveLength(0)
   })
 })

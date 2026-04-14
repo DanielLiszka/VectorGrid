@@ -1,7 +1,6 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::OnceLock;
 
-#[cfg(not(all(target_os = "windows", feature = "nvtx-profiling")))]
 use libloading::Library;
 
 const NVTX_ENV: &str = "VECTORBT_ENABLE_NVTX";
@@ -221,6 +220,10 @@ fn should_mirror_default_range(domain: Domain, name: &str) -> bool {
                 | "double_ma_optimization"
                 | "double_ma_opt_total"
                 | "tauri_double_ma_request"
+                | "options_expression_run_total"
+                | "options_expression_feasibility_total"
+                | "tauri_options_expression_request"
+                | "tauri_options_expression_feasibility_request"
         )
 }
 
@@ -246,38 +249,10 @@ fn create_domain(name: &[u8]) -> Option<usize> {
     }
 }
 
-#[cfg(all(target_os = "windows", feature = "nvtx-profiling"))]
-#[link(name = "nvToolsExt64_1", kind = "raw-dylib")]
-extern "system" {
-    fn nvtxDomainCreateA(name: *const c_char) -> NvtxDomainHandle;
-    fn nvtxDomainRangePushEx(
-        domain: NvtxDomainHandle,
-        event_attr: *const NvtxEventAttributes,
-    ) -> c_int;
-    fn nvtxDomainRangePop(domain: NvtxDomainHandle) -> c_int;
-    fn nvtxRangePushA(message: *const c_char) -> c_int;
-    fn nvtxRangePushEx(event_attr: *const NvtxEventAttributes) -> c_int;
-    fn nvtxRangePop() -> c_int;
-}
-
-#[cfg(all(target_os = "windows", feature = "nvtx-profiling"))]
-fn api() -> Option<NvtxApi> {
-    Some(NvtxApi {
-        domain_create_a: Some(nvtxDomainCreateA),
-        domain_range_push_ex: Some(nvtxDomainRangePushEx),
-        domain_range_pop: Some(nvtxDomainRangePop),
-        range_push_a: nvtxRangePushA,
-        range_push_ex: nvtxRangePushEx,
-        range_pop: nvtxRangePop,
-    })
-}
-
-#[cfg(not(all(target_os = "windows", feature = "nvtx-profiling")))]
 fn api() -> Option<NvtxApi> {
     *NVTX_API.get_or_init(|| unsafe { try_load_api() })
 }
 
-#[cfg(not(all(target_os = "windows", feature = "nvtx-profiling")))]
 unsafe fn try_load_api() -> Option<NvtxApi> {
     for candidate in library_candidates() {
         let Ok(lib) = Library::new(candidate) else {
@@ -325,7 +300,6 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
     None
 }
 
-#[cfg(not(all(target_os = "windows", feature = "nvtx-profiling")))]
 unsafe fn load_symbol<T: Copy>(lib: &Library, name: &[u8]) -> Option<T> {
     let symbol = lib.get::<T>(name).ok()?;
     Some(*symbol)
@@ -341,13 +315,10 @@ fn env_flag_enabled(name: &str, default_enabled: bool) -> bool {
     }
 }
 
-#[cfg(not(all(target_os = "windows", feature = "nvtx-profiling")))]
 fn library_candidates() -> Vec<String> {
     let mut candidates = Vec::new();
     #[cfg(target_os = "windows")]
     {
-        candidates.push("nvToolsExt64_1.dll".to_string());
-        candidates.push("nvToolsExt.dll".to_string());
         if let Some(program_files) = std::env::var_os("ProgramFiles") {
             let path = std::path::PathBuf::from(program_files)
                 .join("NVIDIA Corporation")
@@ -366,6 +337,8 @@ fn library_candidates() -> Vec<String> {
                 .join("nvToolsExt64_1.dll");
             candidates.push(path.to_string_lossy().into_owned());
         }
+        candidates.push("nvToolsExt64_1.dll".to_string());
+        candidates.push("nvToolsExt.dll".to_string());
     }
     #[cfg(target_os = "linux")]
     {
@@ -375,7 +348,6 @@ fn library_candidates() -> Vec<String> {
     candidates
 }
 
-#[cfg(not(all(target_os = "windows", feature = "nvtx-profiling")))]
 static NVTX_API: OnceLock<Option<NvtxApi>> = OnceLock::new();
 static ENGINE_DOMAIN: OnceLock<Option<usize>> = OnceLock::new();
 static KERNEL_DOMAIN: OnceLock<Option<usize>> = OnceLock::new();
@@ -387,10 +359,51 @@ fn default_color(name: &str) -> u32 {
         | "double_ma_opt_total"
         | "tauri_double_ma_request" => color::STEADY_ITERATION,
         "prepare_inputs" | "route_resolve" => color::PREPARE_INPUTS,
+        "options_replay_build_total"
+        | "options_parent_artifact_validation"
+        | "options_source_resolution"
+        | "options_parent_signal_process_cache_lookup"
+        | "options_persisted_signal_manifest_cache_lookup"
+        | "options_candle_replay_load"
+        | "options_parent_replay_and_drilldown"
+        | "options_signal_manifest_materialization"
+        | "options_dataset_manifest_validation"
+        | "options_dataset_process_cache_lookup"
+        | "options_dataset_persisted_cache_lookup"
+        | "options_dataset_csv_load"
+        | "options_request_normalization"
+        | "options_prepare"
+        | "options_tuple_compile"
+        | "options_prepare_baseline_candidates"
+        | "options_prepare_baseline_exit_summaries"
+        | "options_prepare_conservative_candidates"
+        | "options_prepare_conservative_exit_summaries"
+        | "options_prepare_harsher_candidates"
+        | "options_prepare_harsher_exit_summaries" => color::PREPARE_INPUTS,
         "backend_result_build" | "build_result" | "result_finalize" | "host_finalize" => {
             color::BUILD_RESULT
         }
         "gpu_kernel_route" | "gpu_kernel_dispatch" | "backend_execute" => color::BACKEND_EXECUTE,
+        "options_expression_run_total"
+        | "options_expression_feasibility_total"
+        | "tauri_options_expression_request"
+        | "tauri_options_expression_feasibility_request"
+        | "options_engine_run_total"
+        | "options_engine_feasibility_total"
+        | "options_gpu_rank_total"
+        | "options_gpu_tensor_score"
+        | "options_feasibility_cpu_rank"
+        | "options_feasibility_gpu_plan_probe"
+        | "options_feasibility_gpu_rank_probe"
+        | "options_cpu_rank_total" => color::BACKEND_EXECUTE,
+        "options_exactify_total"
+        | "options_exactify_summary_overwrite"
+        | "options_exactify_enrichment"
+        | "options_exactify_extreme"
+        | "options_sealed_stage_total"
+        | "options_sealed_stage_non_extreme"
+        | "options_sealed_stage_extreme"
+        | "options_result_finalize" => color::BUILD_RESULT,
         "hybrid_plan" => color::HYBRID_PLAN,
         "hybrid_prepare" => color::HYBRID_PREPARE,
         "hybrid_transfer" => color::HYBRID_TRANSFER,
@@ -430,6 +443,16 @@ mod tests {
         assert_eq!(
             fallback_default_range_name(Domain::Engine, "tauri_double_ma_request").as_deref(),
             Some("tauri_double_ma_request")
+        );
+        assert_eq!(
+            fallback_default_range_name(Domain::Engine, "options_expression_feasibility_total")
+                .as_deref(),
+            Some("options_expression_feasibility_total")
+        );
+        assert_eq!(
+            fallback_default_range_name(Domain::Engine, "tauri_options_expression_request")
+                .as_deref(),
+            Some("tauri_options_expression_request")
         );
     }
 

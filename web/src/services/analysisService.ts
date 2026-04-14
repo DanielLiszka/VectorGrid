@@ -211,6 +211,7 @@ interface DrillTvChartContext {
   slow: any;
   halftrend: any;
   macz: any;
+  markerApi: any;
 }
 
 interface DrillTvRenderPayload {
@@ -228,6 +229,7 @@ interface DrillTvRenderPayload {
   halftrendData: Array<{ time: number; value: number }>;
   maczData: Array<{ time: number; value: number; color?: string }>;
   trades: number;
+  markerCount: number;
 }
 
 interface CacheLoadResult<T> {
@@ -294,8 +296,12 @@ let drillTvFastSeries: any = null;
 let drillTvSlowSeries: any = null;
 let drillTvHalftrendSeries: any = null;
 let drillTvMaczSeries: any = null;
+let drillTvMarkerApi: any = null;
+let drillTvClickHandler: ((param: unknown) => void) | null = null;
 let drillTvRenderFrame = 0;
 let drillTvPendingPayload: DrillTvRenderPayload | null = null;
+let drillTvMarkerCurves: unknown | null = null;
+let drillTvMarkerBars: DrillPriceBar[] | null = null;
 let heatmapHoverCell: { col: number; row: number } | null = null;
 let drillRenderState: DrillRenderState | null = null;
 let heatmapRenderState: HeatmapRenderState | null = null;
@@ -3677,6 +3683,8 @@ export function invalidateAnalysisExecutionCaches(): void {
   drillSelectedTradeIdx = -1;
   drillTradesRangeStart = 0;
   drillSeq = (drillSeq + 1) >>> 0;
+  drillTvModulePromise = null;
+  disposeDrillTvChartDom();
   hideHeatmapTooltip();
 }
 
@@ -4020,6 +4028,33 @@ function clearDrillTradeSelectionDom(): boolean {
   return true;
 }
 
+function syncDrillTvTradeMarkers(): void {
+  if (!drillTvMarkerApi || typeof drillTvMarkerApi.setMarkers !== "function") {
+    return;
+  }
+  const markers = buildDrillTradeMarkers(drillTvMarkerCurves, drillTvMarkerBars);
+  try {
+    drillTvMarkerApi.setMarkers(markers);
+  } catch {}
+}
+
+function selectDrillTradeByIndex(tradeIdxRaw: unknown): boolean {
+  const body = drillTradeTableBody();
+  if (!body) return false;
+  const tradeIdx = Math.floor(num(tradeIdxRaw, NaN));
+  if (!Number.isFinite(tradeIdx) || tradeIdx < 0) return false;
+  const row = body.querySelector<HTMLTableRowElement>(
+    `tr[data-trade-idx="${tradeIdx}"]`,
+  );
+  if (!row) return false;
+  const rows = body.querySelectorAll<HTMLTableRowElement>("tr.selected");
+  for (const rowEl of rows) rowEl.classList.remove("selected");
+  row.classList.add("selected");
+  drillSelectedTradeIdx = tradeIdx;
+  syncDrillTvTradeMarkers();
+  return true;
+}
+
 function renderStabilityFilterChecklist(
   metricsRaw: Record<string, unknown>,
   filters: TopFilterValues,
@@ -4236,6 +4271,22 @@ async function loadDrillTvModule(): Promise<any | null> {
 
 function disposeDrillTvChartDom(): void {
   cancelDrillTvRenderFrame();
+  const chartRef = drillTvRuntime.chartRef.value;
+  if (
+    chartRef &&
+    drillTvClickHandler &&
+    typeof (chartRef as { unsubscribeClick?: (handler: (param: unknown) => void) => void }).unsubscribeClick ===
+      "function"
+  ) {
+    try {
+      (
+        chartRef as {
+          unsubscribeClick: (handler: (param: unknown) => void) => void;
+        }
+      ).unsubscribeClick(drillTvClickHandler);
+    } catch {}
+  }
+  drillTvClickHandler = null;
   drillTvRuntime.dispose((chart) => {
     if (!chart || typeof chart.remove !== "function") return;
     chart.remove();
@@ -4245,6 +4296,9 @@ function disposeDrillTvChartDom(): void {
   drillTvSlowSeries = null;
   drillTvHalftrendSeries = null;
   drillTvMaczSeries = null;
+  drillTvMarkerApi = null;
+  drillTvMarkerCurves = null;
+  drillTvMarkerBars = null;
 }
 
 function cancelDrillTvRenderFrame(): void {
@@ -4288,6 +4342,11 @@ function flushDrillTvRenderFrame(): void {
   setSeriesData(ctx.slow, payload.slowData);
   setSeriesData(ctx.halftrend, payload.halftrendData);
   setSeriesData(ctx.macz, payload.maczData);
+  if (ctx.markerApi && typeof ctx.markerApi.setMarkers === "function") {
+    try {
+      ctx.markerApi.setMarkers(buildDrillTradeMarkers(drillTvMarkerCurves, drillTvMarkerBars));
+    } catch {}
+  }
 
   try {
     const ts = ctx.chart.timeScale && ctx.chart.timeScale();
@@ -4296,7 +4355,7 @@ function flushDrillTvRenderFrame(): void {
 
   const meta = byIds<HTMLElement>(["drillTvChartMetaVue", "drillTvChartMeta"]);
   if (meta) {
-    meta.textContent = `candles=${payload.candleData.length} fast=${payload.fastData.length} slow=${payload.slowData.length} trades=${payload.trades}`;
+    meta.textContent = `candles=${payload.candleData.length} fast=${payload.fastData.length} slow=${payload.slowData.length} trades=${payload.trades} markers=${payload.markerCount}`;
   }
 }
 
@@ -4326,6 +4385,13 @@ function clearDrillTvChartDom(
   clearSeries(drillTvSlowSeries);
   clearSeries(drillTvHalftrendSeries);
   clearSeries(drillTvMaczSeries);
+  if (drillTvMarkerApi && typeof drillTvMarkerApi.setMarkers === "function") {
+    try {
+      drillTvMarkerApi.setMarkers([]);
+    } catch {}
+  }
+  drillTvMarkerCurves = null;
+  drillTvMarkerBars = null;
 }
 
 async function ensureDrillTvChartDom(): Promise<DrillTvChartContext | null> {
@@ -4344,6 +4410,7 @@ async function ensureDrillTvChartDom(): Promise<DrillTvChartContext | null> {
       slow: drillTvSlowSeries,
       halftrend: drillTvHalftrendSeries,
       macz: drillTvMaczSeries,
+      markerApi: drillTvMarkerApi,
     };
   }
   const chartModule = await loadDrillTvModule();
@@ -4412,6 +4479,10 @@ async function ensureDrillTvChartDom(): Promise<DrillTvChartContext | null> {
     if (typeof chartAny.remove === "function") chartAny.remove();
     return null;
   }
+  const markerApi =
+    typeof chartModule.createSeriesMarkers === "function" && candle
+      ? chartModule.createSeriesMarkers(candle, [])
+      : null;
 
   const fastOpts = {
     color: "rgba(14, 165, 233, 0.95)",
@@ -4479,8 +4550,22 @@ async function ensureDrillTvChartDom(): Promise<DrillTvChartContext | null> {
   drillTvSlowSeries = markRawEntity(slow);
   drillTvHalftrendSeries = markRawEntity(halftrend);
   drillTvMaczSeries = markRawEntity(macz);
+  drillTvMarkerApi = markRawEntity(markerApi);
   drillTvRuntime.setHost(host);
   drillTvRuntime.setChart(chartAny);
+  if (typeof chartAny.subscribeClick === "function") {
+    drillTvClickHandler = (param: unknown) => {
+      const markerId = text(
+        asRecord(param).hoveredObjectId ?? asRecord(param).hoveredMarkerId,
+      );
+      const match = /^trade-(\d+)(?:-(?:entry|exit))?$/u.exec(markerId);
+      if (!match) return;
+      selectDrillTradeByIndex(Number(match[1]));
+    };
+    try {
+      chartAny.subscribeClick(drillTvClickHandler);
+    } catch {}
+  }
   drillTvRuntime.observeHostResize((rect) => {
     const chartRef = drillTvRuntime.chartRef.value;
     if (!chartRef || typeof chartRef.applyOptions !== "function") return;
@@ -4500,6 +4585,7 @@ async function ensureDrillTvChartDom(): Promise<DrillTvChartContext | null> {
     slow: drillTvSlowSeries,
     halftrend: drillTvHalftrendSeries,
     macz: drillTvMaczSeries,
+    markerApi: drillTvMarkerApi,
   };
 }
 
@@ -4572,6 +4658,8 @@ async function renderDrillTvChartDom(
     clearDrillTvChartDom("No valid OHLC bars available for chart rendering.");
     return;
   }
+  drillTvMarkerCurves = curvesRaw;
+  drillTvMarkerBars = bars;
   const ctx = await ensureDrillTvChartDom();
   if (!ctx || seq !== drillSeq) return;
   const candleData = bars.map((b) => ({
@@ -4625,6 +4713,7 @@ async function renderDrillTvChartDom(
     halftrendData,
     maczData,
     trades: Array.isArray(curves.trades) ? curves.trades.length : 0,
+    markerCount: buildDrillTradeMarkers(curves, bars).length,
   });
 }
 
@@ -4759,6 +4848,64 @@ function mapTradeIndexToChartTime(
   return Math.abs(x - left.toIndex) <= Math.abs(right.fromIndex - x)
     ? left.time
     : right.time;
+}
+
+function buildDrillTradeMarkers(
+  curvesRaw: unknown,
+  barsRaw: DrillPriceBar[] | null | undefined,
+): Array<Record<string, unknown>> {
+  const curves = asRecord(curvesRaw);
+  const trades = Array.isArray(curves.trades)
+    ? curves.trades.map((trade) => asRecord(trade))
+    : [];
+  if (!trades.length) return [];
+  const markers: Array<Record<string, unknown>> = [];
+  for (let tradeIdx = 0; tradeIdx < trades.length; tradeIdx += 1) {
+    const trade = trades[tradeIdx] || {};
+    const direction = num(trade.direction, 0);
+    const isLong = direction > 0;
+    const isShort = direction < 0;
+    if (!isLong && !isShort) continue;
+    const selected = tradeIdx === drillSelectedTradeIdx;
+    const entryTime = mapTradeIndexToChartTime(trade.entry_t, barsRaw);
+    if (Number.isFinite(entryTime ?? Number.NaN)) {
+      markers.push({
+        id: `trade-${tradeIdx}-entry`,
+        time: entryTime,
+        position: isLong ? "belowBar" : "aboveBar",
+        shape: isLong ? "arrowUp" : "arrowDown",
+        color: selected
+          ? isLong
+            ? "rgba(34, 197, 94, 1)"
+            : "rgba(248, 113, 113, 1)"
+          : isLong
+            ? "rgba(22, 163, 74, 0.95)"
+            : "rgba(225, 29, 72, 0.95)",
+        size: selected ? 1.4 : 1,
+        text: `${isLong ? "L" : "S"}${tradeIdx + 1}`,
+      });
+    }
+
+    const open = !!trade.open;
+    const exitT = num(trade.exit_t, NaN);
+    const exitTime =
+      !open && Number.isFinite(exitT)
+        ? mapTradeIndexToChartTime(exitT, barsRaw)
+        : null;
+    if (Number.isFinite(exitTime ?? Number.NaN)) {
+      markers.push({
+        id: `trade-${tradeIdx}-exit`,
+        time: exitTime,
+        position: "inBar",
+        shape: "circle",
+        color: selected
+          ? "rgba(250, 204, 21, 0.98)"
+          : "rgba(148, 163, 184, 0.9)",
+        size: selected ? 1.2 : 0.8,
+      });
+    }
+  }
+  return markers;
 }
 
 function formatUtcTimeFromSec(secRaw: unknown): string {
@@ -4946,10 +5093,12 @@ function renderTradesDom(
       tr.appendChild(td);
     }
     tr.addEventListener("click", () => {
-      const rows = body.querySelectorAll("tr.selected");
-      for (const rowEl of rows) rowEl.classList.remove("selected");
-      tr.classList.add("selected");
-      drillSelectedTradeIdx = tradeIdx;
+      if (!selectDrillTradeByIndex(tradeIdx)) {
+        const rows = body.querySelectorAll("tr.selected");
+        for (const rowEl of rows) rowEl.classList.remove("selected");
+        tr.classList.add("selected");
+        drillSelectedTradeIdx = tradeIdx;
+      }
     });
     body.appendChild(tr);
   }
@@ -5534,6 +5683,7 @@ export async function drillClearTradeSelection(): Promise<void> {
     return;
   }
   if (clearDrillTradeSelectionDom()) {
+    syncDrillTvTradeMarkers();
     setStatus(readAnalysisStore(), "Cleared trade selection.");
     return;
   }
@@ -5557,3 +5707,9 @@ export async function drillNextTrade(): Promise<void> {
   }
   setStatus(readAnalysisStore(), "No next trade.");
 }
+
+export const __analysisTestUtils = {
+  buildDrillTradeMarkers,
+  mapTradeIndexToChartTime,
+  selectDrillTradeByIndex,
+};

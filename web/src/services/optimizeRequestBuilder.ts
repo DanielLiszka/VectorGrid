@@ -409,6 +409,26 @@ function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function requireMinimumCandleCount(
+  meta: unknown,
+  minimum: number,
+  workflowLabel: string,
+): Record<string, unknown> {
+  if (!meta || typeof meta !== "object") throw new Error("Load CSV first.");
+  const record = meta as Record<string, unknown>;
+  const len = Number(record.len);
+  if (Number.isFinite(len) && len >= 0 && len < minimum) {
+    const barCount = Math.floor(len);
+    const timeframe = normalizeText(record.timeframe);
+    const candleLabel = barCount === 1 ? "candle" : "candles";
+    const timeframeNote = timeframe ? ` at ${timeframe}` : "";
+    throw new Error(
+      `Loaded dataset has ${barCount} ${candleLabel}${timeframeNote}. ${workflowLabel} needs at least ${minimum} candles. Load more data or switch back to the base timeframe.`,
+    );
+  }
+  return record;
+}
+
 function normalizeDoubleMaScoreMode(value: unknown): string | null {
   const raw = normalizeText(value);
   if (!raw) return null;
@@ -2125,6 +2145,11 @@ export function buildDoubleMaOptimizationRequest(
 
   const dataId = normalizeText(inputs.context?.data_id);
   if (!dataId) throw new Error("Load CSV first (missing data id).");
+  const meta = requireMinimumCandleCount(
+    inputs.context?.current_data_meta ?? null,
+    2,
+    "Optimization",
+  );
 
   const fast: [number, number, number] = [
     Number(inputs.fastStart),
@@ -2167,27 +2192,19 @@ export function buildDoubleMaOptimizationRequest(
 
   const maSource = normalizeText(inputs.maSource || "close") || "close";
   validateCandleFieldRequirements(
-    inputs.context?.current_data_meta ?? null,
+    meta,
     fastMaType,
     slowMaType,
     maSource,
   );
   if (kind === "Set") {
-    const meta = inputs.context?.current_data_meta;
-    const record =
-      meta && typeof meta === "object"
-        ? (meta as Record<string, unknown>)
-        : null;
+    const record = meta;
     if (!record?.has_high || !record?.has_low) {
       throw new Error("SET requires high and low candle fields.");
     }
   }
   if (kind === "Pit") {
-    const meta = inputs.context?.current_data_meta;
-    const record =
-      meta && typeof meta === "object"
-        ? (meta as Record<string, unknown>)
-        : null;
+    const record = meta;
     if (
       !record?.has_open ||
       !record?.has_high ||
@@ -2200,21 +2217,13 @@ export function buildDoubleMaOptimizationRequest(
     }
   }
   if (kind === "Vfct") {
-    const meta = inputs.context?.current_data_meta;
-    const record =
-      meta && typeof meta === "object"
-        ? (meta as Record<string, unknown>)
-        : null;
+    const record = meta;
     if (!record?.has_high || !record?.has_low || !record?.has_volume) {
       throw new Error("VFCT requires high, low, and volume candle fields.");
     }
   }
   if (kind === "CompositeTrend") {
-    const meta = inputs.context?.current_data_meta;
-    const record =
-      meta && typeof meta === "object"
-        ? (meta as Record<string, unknown>)
-        : null;
+    const record = meta;
     const trendUseAdx = normalizeBoolean(inputs.trendUseAdx);
     if (trendUseAdx && (!record?.has_high || !record?.has_low)) {
       throw new Error(
@@ -2223,21 +2232,13 @@ export function buildDoubleMaOptimizationRequest(
     }
   }
   if (kind === "RegimeHybrid") {
-    const meta = inputs.context?.current_data_meta;
-    const record =
-      meta && typeof meta === "object"
-        ? (meta as Record<string, unknown>)
-        : null;
+    const record = meta;
     if (!record?.has_high || !record?.has_low) {
       throw new Error("RegimeHybrid requires high and low candle fields.");
     }
   }
   if (kind === "BreakoutMomentum") {
-    const meta = inputs.context?.current_data_meta;
-    const record =
-      meta && typeof meta === "object"
-        ? (meta as Record<string, unknown>)
-        : null;
+    const record = meta;
     if (!record?.has_high || !record?.has_low || !record?.has_volume) {
       throw new Error(
         "BreakoutMomentum requires high, low, and volume candle fields.",
@@ -2678,9 +2679,11 @@ export function buildCompositeCpuOptimizationRequest(
   const dataId = normalizeText(inputs.context?.data_id);
   if (!dataId) throw new Error("Load CSV first (missing data id).");
 
-  const meta = inputs.context?.current_data_meta;
-  if (!meta || typeof meta !== "object") throw new Error("Load CSV first.");
-  const dataMeta = meta as Record<string, unknown>;
+  const dataMeta = requireMinimumCandleCount(
+    inputs.context?.current_data_meta ?? null,
+    2,
+    "Optimization",
+  );
   const hasOpen = !!dataMeta.has_open;
   const hasHigh = !!dataMeta.has_high;
   const hasLow = !!dataMeta.has_low;
@@ -3385,9 +3388,11 @@ export function buildCompositeMoOptimizationRequest(
   const dataId = normalizeText(inputs.context?.data_id);
   if (!dataId) throw new Error("Load CSV first (missing data id).");
 
-  const meta = inputs.context?.current_data_meta;
-  if (!meta || typeof meta !== "object") throw new Error("Load CSV first.");
-  const dataMeta = meta as Record<string, unknown>;
+  const dataMeta = requireMinimumCandleCount(
+    inputs.context?.current_data_meta ?? null,
+    2,
+    "Optimization",
+  );
   if (!dataMeta.has_high || !dataMeta.has_low) {
     throw new Error(
       "Composite strategy requires high/low candle fields. Load a CSV with high+low columns.",
@@ -3427,7 +3432,7 @@ export function buildCompositeMoOptimizationRequest(
   }
 
   const maSource = normalizeText(inputs.maSource || "close") || "close";
-  validateCandleFieldRequirements(meta, fastMaType, slowMaType, maSource);
+  validateCandleFieldRequirements(dataMeta, fastMaType, slowMaType, maSource);
 
   const common = parseCommonStrategyConfigFields(inputs);
   const baseStrategy = buildStrategyConfigFromInputs(

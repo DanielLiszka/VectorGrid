@@ -16,6 +16,18 @@ pub struct CrossTickerAcc {
     pub pnl_pos: usize,
 }
 
+impl CrossTickerAcc {
+    pub fn with_capacity(datasets: usize) -> Self {
+        Self {
+            sharpes: Vec::with_capacity(datasets),
+            dds: Vec::with_capacity(datasets),
+            pnls: Vec::with_capacity(datasets),
+            trades: Vec::with_capacity(datasets),
+            pnl_pos: 0,
+        }
+    }
+}
+
 pub trait CrossTickerCandidate {
     type Params: Serialize;
 
@@ -285,6 +297,12 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
     candidates: &mut [C],
     mut accs: Vec<CrossTickerAcc>,
 ) {
+    #[derive(Clone, Copy)]
+    struct CrossTickerParetoPoint {
+        sharpe_median: f64,
+        max_dd_worst: f64,
+    }
+
     for (i, cand) in candidates.iter_mut().enumerate() {
         let Some(acc) = accs.get_mut(i) else {
             continue;
@@ -325,23 +343,33 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
         }
     }
 
+    let pareto_points: Vec<Option<CrossTickerParetoPoint>> = candidates
+        .iter()
+        .map(|cand| {
+            cand.cross_ticker().map(|stats| CrossTickerParetoPoint {
+                sharpe_median: stats.sharpe_median,
+                max_dd_worst: stats.max_dd_worst,
+            })
+        })
+        .collect();
+
     for i in 0..candidates.len() {
-        let Some(si) = candidates[i].cross_ticker() else {
+        let Some(point_i) = pareto_points[i] else {
             continue;
         };
-        let xi = si.sharpe_median;
-        let yi = si.max_dd_worst;
         let mut dominated = false;
         for j in 0..candidates.len() {
             if i == j {
                 continue;
             }
-            let Some(sj) = candidates[j].cross_ticker() else {
+            let Some(point_j) = pareto_points[j] else {
                 continue;
             };
-            let xj = sj.sharpe_median;
-            let yj = sj.max_dd_worst;
-            if xj >= xi && yj <= yi && (xj > xi || yj < yi) {
+            if point_j.sharpe_median >= point_i.sharpe_median
+                && point_j.max_dd_worst <= point_i.max_dd_worst
+                && (point_j.sharpe_median > point_i.sharpe_median
+                    || point_j.max_dd_worst < point_i.max_dd_worst)
+            {
                 dominated = true;
                 break;
             }

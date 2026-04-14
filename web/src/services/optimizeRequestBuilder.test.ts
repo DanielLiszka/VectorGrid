@@ -101,6 +101,27 @@ describe("optimizeRequestBuilder", () => {
     expect(req).toBeNull();
   });
 
+  it("rejects DoubleMa optimization when the active dataset has fewer than two candles", () => {
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-too-short",
+          current_data_meta: { has_close: true, len: 1, timeframe: "1d" },
+        },
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+      }),
+    ).toThrow(/Loaded dataset has 1 candle at 1d\. Optimization needs at least 2 candles\./i);
+  });
+
   it("builds extended DoubleMa constraints when provided", () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {
@@ -3583,6 +3604,35 @@ describe("optimizeRequestBuilder", () => {
     expect(req).toBeNull();
   });
 
+  it("rejects CompositeCpu optimization when the active dataset has fewer than two candles", () => {
+    expect(() =>
+      buildCompositeCpuOptimizationRequest({
+        context: {
+          strategy_kind: "CompositeCpu",
+          data_id: "data-composite-too-short",
+          current_data_meta: {
+            has_open: true,
+            has_high: true,
+            has_low: true,
+            has_close: true,
+            has_volume: true,
+            len: 0,
+            timeframe: "5m",
+          },
+        },
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+      }),
+    ).toThrow(/Loaded dataset has 0 candles at 5m\. Optimization needs at least 2 candles\./i);
+  });
+
   function baseCompositeMoInputs(): Parameters<
     typeof buildCompositeMoOptimizationRequest
   >[0] {
@@ -3996,5 +4046,26 @@ describe("optimizeRequestBuilder", () => {
       slowMaType: "ema",
     });
     expect(req).toBeNull();
+  });
+
+  it("rejects CompositeMo optimization when the active dataset has fewer than two candles", () => {
+    expect(() =>
+      buildCompositeMoOptimizationRequest({
+        ...baseCompositeMoInputs(),
+        context: {
+          strategy_kind: "CompositeMo",
+          data_id: "data-mo-too-short",
+          current_data_meta: {
+            has_open: true,
+            has_high: true,
+            has_low: true,
+            has_close: true,
+            has_volume: true,
+            len: 1,
+            timeframe: "1h",
+          },
+        },
+      }),
+    ).toThrow(/Loaded dataset has 1 candle at 1h\. Optimization needs at least 2 candles\./i);
   });
 });

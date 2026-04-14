@@ -13,6 +13,8 @@ param(
   [int]$SealedFinalistCount = 5,
   [int]$WarmRepeats = 1,
   [int]$BenchmarkIterations = 3,
+  [string[]]$RequestArgs = @(),
+  [switch]$PrewarmGpuRuntime,
   [switch]$Cuda,
   [switch]$CompareBackends,
   [switch]$RunFull,
@@ -132,6 +134,12 @@ if ($ImportCsv) {
 }
 if ($ImportRootSymbol) {
   $cargoArgs += @("--import-root-symbol", $ImportRootSymbol)
+}
+if ($RequestArgs -and $RequestArgs.Count -gt 0) {
+  $cargoArgs += $RequestArgs
+}
+if ($PrewarmGpuRuntime) {
+  $cargoArgs += "--prewarm-gpu-runtime"
 }
 if ($CompareBackends) {
   $cargoArgs += "--compare-backends"

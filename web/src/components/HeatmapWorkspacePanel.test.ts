@@ -81,6 +81,28 @@ describe('HeatmapWorkspacePanel', () => {
     expect(exportSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('refreshes the visible heatmap again when analysis data changes in-place', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('heatmap', { persist: false })
+
+    mount(HeatmapWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalledTimes(1)
+
+    analysisStore.updatedAtUnixMs = 1_700_000_000_000
+    await flushPanel()
+
+    expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps an explicit Review Top results handoff', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

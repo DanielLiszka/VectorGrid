@@ -13,6 +13,7 @@ param(
   [int]$SealedFinalistCount = 10,
   [int]$WarmRepeats = 1,
   [int]$BenchmarkIterations = 5,
+  [string[]]$RequestArgs = @(),
   [double]$PreviewWallSpeedupGate = 1.0,
   [switch]$InspectTop
 )
@@ -84,6 +85,9 @@ if ($ImportCsv) {
 }
 if ($ImportRootSymbol) {
   $phase05Args += @("-ImportRootSymbol", $ImportRootSymbol)
+}
+if ($RequestArgs -and $RequestArgs.Count -gt 0) {
+  $phase05Args += @("-RequestArgs") + $RequestArgs
 }
 if ($InspectTop) {
   $phase05Args += "-InspectTop"

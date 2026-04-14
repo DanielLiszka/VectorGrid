@@ -57,12 +57,13 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
 
     if (hold) {
       try {
-        localStorage.setItem(holdKey, '1')
+        sessionStorage.setItem(holdKey, '1')
       } catch {
         // ignore storage failures in mocked browser harness
       }
     } else {
       try {
+        sessionStorage.removeItem(holdKey)
         localStorage.removeItem(holdKey)
       } catch {
         // ignore storage failures in mocked browser harness
