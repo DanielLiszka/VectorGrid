@@ -1,15 +1,16 @@
 use crate::asr::{
     build_asr_desired_positions, clear_asr_route_diagnostics, compute_asr_fast_signals,
     compute_asr_kaufman_stops, compute_asr_slow_signals, compute_asr_start_t,
-    eval_asr_curves_from_desired, eval_asr_metrics_from_desired,
-    eval_asr_metrics_window_from_desired, resolve_asr_periods, take_asr_route_diagnostics,
-    validate_asr_params, AsrFastSignals, AsrKaufmanStops, AsrSlowSignals, AsrStrategyParams,
+    eval_asr_curves_from_desired, eval_asr_metrics_window_from_desired, resolve_asr_periods,
+    take_asr_route_diagnostics, validate_asr_params, AsrFastSignals, AsrKaufmanStops,
+    AsrSlowSignals, AsrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::asr::{
     compute_asr_er_sweep_cuda_device, compute_asr_kaufman_stops_cuda_device,
     compute_asr_linearreg_angle_sweep_cuda_device, compute_asr_squeeze_momentum_sweep_cuda_device,
     compute_asr_ttm_squeeze_sweep_cuda_device, compute_asr_zscore_sweep_cuda_device,
+    eval_asr_metrics_from_desired,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::asr_gpu_kernel::{
@@ -167,6 +168,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ta_strategies::composite_cpu::CompositeSignalMode;
@@ -324,11 +327,8 @@ fn resolve_validation_backend_runtime(
     }
 }
 
-fn clear_validation_strategy_route_diagnostics(candidates: &[CompositeParams]) {
-    let Some(first) = candidates.first() else {
-        return;
-    };
-    match composite_validation_family(first) {
+fn clear_validation_strategy_route_diagnostics_for_family(family: CompositeValidationFamily) {
+    match family {
         CompositeValidationFamily::Asr => clear_asr_route_diagnostics(),
         CompositeValidationFamily::Vcc => clear_vcc_route_diagnostics(),
         CompositeValidationFamily::Vemr => clear_vemr_route_diagnostics(),
@@ -339,11 +339,10 @@ fn clear_validation_strategy_route_diagnostics(candidates: &[CompositeParams]) {
     }
 }
 
-fn take_validation_strategy_route_diagnostics(
-    candidates: &[CompositeParams],
+fn take_validation_strategy_route_diagnostics_for_family(
+    family: CompositeValidationFamily,
 ) -> Option<Vec<String>> {
-    let first = candidates.first()?;
-    match composite_validation_family(first) {
+    match family {
         CompositeValidationFamily::Asr => take_asr_route_diagnostics(),
         CompositeValidationFamily::Vcc => take_vcc_route_diagnostics(),
         CompositeValidationFamily::Vemr => take_vemr_route_diagnostics(),
@@ -351,6 +350,51 @@ fn take_validation_strategy_route_diagnostics(
         CompositeValidationFamily::Kqsr => take_kqsr_route_diagnostics(),
         CompositeValidationFamily::Kvdf => take_kvdf_route_diagnostics(),
         _ => None,
+    }
+}
+
+fn validation_strategy_route_diagnostic_families(
+    candidates: &[CompositeParams],
+) -> Vec<CompositeValidationFamily> {
+    let ordered = [
+        CompositeValidationFamily::Asr,
+        CompositeValidationFamily::Vcc,
+        CompositeValidationFamily::Vemr,
+        CompositeValidationFamily::Vcet,
+        CompositeValidationFamily::Kqsr,
+        CompositeValidationFamily::Kvdf,
+    ];
+    let mut families = Vec::new();
+    for family in ordered {
+        if candidates
+            .iter()
+            .any(|candidate| composite_validation_family(candidate) == family)
+        {
+            families.push(family);
+        }
+    }
+    families
+}
+
+fn clear_validation_strategy_route_diagnostics(candidates: &[CompositeParams]) {
+    for family in validation_strategy_route_diagnostic_families(candidates) {
+        clear_validation_strategy_route_diagnostics_for_family(family);
+    }
+}
+
+fn take_validation_strategy_route_diagnostics(
+    candidates: &[CompositeParams],
+) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for family in validation_strategy_route_diagnostic_families(candidates) {
+        if let Some(mut diag) = take_validation_strategy_route_diagnostics_for_family(family) {
+            out.append(&mut diag);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 
@@ -408,6 +452,66 @@ struct GpuCompositeFixedCandidateValidationEval {
     backend_used: BackendUsed,
     backend_route: Option<String>,
     backend_fallback_reason: Option<String>,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn collect_reopt_metric_ranges(
+    start_ts: &[usize],
+    n: usize,
+    cfg: &ReoptWalkForwardConfigOptional,
+) -> Vec<(usize, usize)> {
+    let common_start_t = start_ts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .min(n.saturating_sub(2));
+    let window = cfg.window_bars.max(64);
+    let step = cfg.step_bars.max(1);
+    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut t0 = common_start_t;
+    while t0 + 2 < n {
+        let train_end = t0.saturating_add(window).min(n);
+        if train_end <= t0 + 1 {
+            break;
+        }
+        let test_end = train_end.saturating_add(step).min(n);
+        if test_end <= train_end + 1 {
+            break;
+        }
+        ranges.insert((t0, train_end));
+        ranges.insert((train_end, test_end));
+        if test_end == n {
+            break;
+        }
+        t0 = t0.saturating_add(step);
+    }
+    ranges.into_iter().collect()
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn ensure_gpu_reopt_metrics_complete<K, F>(
+    range_metrics: &HashMap<(usize, usize), HashMap<K, Metrics>>,
+    ranges: &[(usize, usize)],
+    keys: &[K],
+    mut missing_message: F,
+) -> Result<(), String>
+where
+    K: Eq + Hash,
+    F: FnMut(&K, usize, usize) -> String,
+{
+    for &(start, end) in ranges {
+        for key in keys {
+            let present = range_metrics
+                .get(&(start, end))
+                .map(|metrics| metrics.contains_key(key))
+                .unwrap_or(false);
+            if !present {
+                return Err(missing_message(key, start, end));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -782,37 +886,6 @@ fn summarize_walk_forward_metric_samples(
         Vec::new(),
         trades,
     )
-}
-
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn count_trade_events_from_desired_window(
-    desired_pos: &[i32],
-    start_t: usize,
-    end_t: usize,
-    strategy: &StrategyConfig,
-) -> u32 {
-    let end_t = end_t.min(desired_pos.len());
-    if start_t >= end_t {
-        return 0;
-    }
-    let mut pos = 0i32;
-    let mut trades = 0u32;
-    for &desired in &desired_pos[start_t..end_t] {
-        let desired = desired.clamp(-1, 1);
-        if desired != pos {
-            if pos == 0 || desired == 0 {
-                trades = trades.saturating_add(1);
-                pos = desired;
-            } else if !strategy.allow_flip {
-                trades = trades.saturating_add(1);
-                pos = 0;
-            } else {
-                trades = trades.saturating_add(2);
-                pos = desired;
-            }
-        }
-    }
-    trades
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -1438,40 +1511,16 @@ fn compute_base_composite_gpu_reopt_walk_forward_stats(
     }
 
     let n = candles.close.len();
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
 
+    let finalist_pairs: Vec<(u16, u16)> =
+        finalist_entries.iter().map(|(_, pair, _)| *pair).collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<(u16, u16), Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let metric_map = base_composite_gpu_metric_map(
             req,
             candles,
@@ -1482,6 +1531,17 @@ fn compute_base_composite_gpu_reopt_walk_forward_stats(
         )?;
         range_metrics.insert((start, end), metric_map);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &finalist_pairs,
+        |pair, start, end| {
+            format!(
+                "missing GPU base composite reopt metrics for pair ({}, {}) in range {}..{}",
+                pair.0, pair.1, start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -1493,12 +1553,7 @@ fn compute_base_composite_gpu_reopt_walk_forward_stats(
                 .get(&(start, end))
                 .and_then(|m| m.get(pair))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing GPU base composite reopt metrics for pair ({}, {}) in range {}..{}",
-                        pair.0, pair.1, start, end
-                    )
-                })
+                .expect("GPU base composite reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -1983,32 +2038,7 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
         kaufman_short_row: kaufman.short.device_ptr,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -2019,7 +2049,7 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let end_i =
             i32::try_from(end).map_err(|_| "ASR GPU reopt end_t exceeds i32 range".to_string())?;
         let slice_start: Vec<i32> = combo_start_t
@@ -2050,6 +2080,12 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| format!("missing ASR GPU reopt metrics for range {}..{}", start, end),
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -2061,9 +2097,7 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!("missing ASR GPU reopt metrics for range {}..{}", start, end)
-                })
+                .expect("ASR GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -2939,32 +2973,7 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         breakout_stride: upper_sweep.matrix.cols,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -2975,7 +2984,7 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -3006,6 +3015,17 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| {
+            format!(
+                "missing MKCS GPU reopt metrics for range {}..{}",
+                start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -3017,12 +3037,7 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing MKCS GPU reopt metrics for range {}..{}",
-                        start, end
-                    )
-                })
+                .expect("MKCS GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -3446,32 +3461,7 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         atr_stride: atr_sweep.matrix.cols,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -3482,7 +3472,7 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -3513,6 +3503,17 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| {
+            format!(
+                "missing ROCB GPU reopt metrics for range {}..{}",
+                start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -3524,12 +3525,7 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing ROCB GPU reopt metrics for range {}..{}",
-                        start, end
-                    )
-                })
+                .expect("ROCB GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -4680,32 +4676,7 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         atr_stride: atr_sweep.matrix.cols,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -4716,7 +4687,7 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -4758,6 +4729,17 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| {
+            format!(
+                "missing VEMR GPU reopt metrics for range {}..{}",
+                start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -4769,12 +4751,7 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing VEMR GPU reopt metrics for range {}..{}",
-                        start, end
-                    )
-                })
+                .expect("VEMR GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -5755,32 +5732,7 @@ fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
         trend_host_row_major: Some(&trend_host_row_major),
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -5791,7 +5743,7 @@ fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let metric_start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -5823,6 +5775,12 @@ fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| format!("missing VCC GPU reopt metrics for range {}..{}", start, end),
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -5834,9 +5792,7 @@ fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!("missing VCC GPU reopt metrics for range {}..{}", start, end)
-                })
+                .expect("VCC GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -6928,32 +6884,7 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
         prb_lower_row_major_ptr: d_prb_lower.buffer().as_device_ptr().as_raw() as u64,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -6964,7 +6895,7 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -6995,6 +6926,17 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| {
+            format!(
+                "missing KQSR GPU reopt metrics for range {}..{}",
+                start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -7006,12 +6948,7 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing KQSR GPU reopt metrics for range {}..{}",
-                        start, end
-                    )
-                })
+                .expect("KQSR GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -7021,100 +6958,23 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn compute_carm_gpu_walk_forward_stats_batch(
-    signals: &CarmGpuDeviceSignalMatrices<'_>,
-    fast_row_index: &[i32],
-    otto_row_index: &[i32],
+    candles: &vector_ta::utilities::data_loader::Candles,
+    lr: &[f64],
     combo_start_t: &[i32],
     desired_row_major: &[i32],
     strategy: &StrategyConfig,
-    carm: &CarmStrategyParams,
-    device_id: u32,
     cfg: &WalkForwardConfigOptional,
 ) -> Result<Vec<WalkForwardStats>, String> {
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let n = signals.cols;
-    let inactive_start = n.saturating_sub(2);
-    let inactive_start_i = i32::try_from(inactive_start)
-        .map_err(|_| "CARM GPU walk_forward inactive start exceeds i32 range".to_string())?;
-    let inactive_end_i = i32::try_from(n)
-        .map_err(|_| "CARM GPU walk_forward inactive end exceeds i32 range".to_string())?;
-    let mut current_t0: Vec<Option<usize>> = combo_start_t
-        .iter()
-        .map(|&st| Some(usize::try_from(st).unwrap_or(0)))
-        .collect();
-    let mut sharpes: Vec<Vec<f64>> = vec![Vec::new(); fast_row_index.len()];
-    let mut dds: Vec<Vec<f64>> = vec![Vec::new(); fast_row_index.len()];
-    let mut pnls: Vec<Vec<f64>> = vec![Vec::new(); fast_row_index.len()];
-    let mut trades: Vec<Vec<u32>> = vec![Vec::new(); fast_row_index.len()];
-
-    loop {
-        let mut any_active = false;
-        let mut active_mask = vec![false; fast_row_index.len()];
-        let mut next_t0 = current_t0.clone();
-        let mut start_vec = Vec::with_capacity(fast_row_index.len());
-        let mut end_vec = Vec::with_capacity(fast_row_index.len());
-
-        for idx in 0..fast_row_index.len() {
-            if let Some(t0) = current_t0[idx] {
-                let end = t0.saturating_add(window).min(n);
-                if t0 + 2 <= n && end > t0 + 1 {
-                    any_active = true;
-                    active_mask[idx] = true;
-                    start_vec.push(i32::try_from(t0).map_err(|_| {
-                        "CARM GPU walk_forward start_t exceeds i32 range".to_string()
-                    })?);
-                    end_vec.push(i32::try_from(end).map_err(|_| {
-                        "CARM GPU walk_forward end_t exceeds i32 range".to_string()
-                    })?);
-                    next_t0[idx] = if end == n {
-                        None
-                    } else {
-                        Some(t0.saturating_add(step))
-                    };
-                    continue;
-                }
-            }
-            start_vec.push(inactive_start_i);
-            end_vec.push(inactive_end_i);
-            next_t0[idx] = None;
-        }
-
-        if !any_active {
-            break;
-        }
-
-        let combos = CarmGpuComboBatch {
-            fast_row_index,
-            otto_row_index,
-            start_t: &start_vec,
-            end_t: &end_vec,
-        };
-        let metrics =
-            eval_carm_metrics_gpu_kernel_device_rows(device_id, signals, &combos, strategy, carm)?;
-        for (idx, metric) in metrics.into_iter().enumerate() {
-            if active_mask[idx] {
-                let start = usize::try_from(start_vec[idx]).unwrap_or(0);
-                let end = usize::try_from(end_vec[idx]).unwrap_or(n);
-                let desired = &desired_row_major[idx * n..(idx + 1) * n];
-                sharpes[idx].push(metric.sharpe);
-                dds[idx].push(metric.max_dd);
-                pnls[idx].push(metric.pnl);
-                trades[idx].push(count_trade_events_from_desired_window(
-                    desired, start, end, strategy,
-                ));
-            }
-        }
-        current_t0 = next_t0;
-    }
-
-    let mut out = Vec::with_capacity(fast_row_index.len());
-    for idx in 0..fast_row_index.len() {
-        out.push(summarize_walk_forward_metric_samples(
-            std::mem::take(&mut sharpes[idx]),
-            std::mem::take(&mut dds[idx]),
-            std::mem::take(&mut pnls[idx]),
-            std::mem::take(&mut trades[idx]),
+    let n = candles.close.len();
+    let candidate_count = combo_start_t.len();
+    let mut out = Vec::with_capacity(candidate_count);
+    for idx in 0..candidate_count {
+        let desired = &desired_row_major[idx * n..(idx + 1) * n];
+        out.push(crate::validation_pipeline::compute_walk_forward_stats(
+            n,
+            usize::try_from(combo_start_t[idx]).unwrap_or(0),
+            cfg,
+            |t0, end| eval_asr_metrics_window_from_desired(candles, lr, desired, t0, end, strategy),
         ));
     }
     Ok(out)
@@ -7490,14 +7350,11 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
     let metrics = exact_metrics;
     let walk_forward_stats = if let Some(walk_cfg) = req.walk_forward.as_ref() {
         Some(compute_carm_gpu_walk_forward_stats_batch(
-            &signals,
-            &combo_fast_row_idx,
-            &combo_otto_row_idx,
+            candles,
+            &lr,
             &combo_start_t,
             &desired_row_major,
             &first.strategy,
-            first_carm,
-            device_id,
             walk_cfg,
         )?)
     } else {
@@ -7794,32 +7651,7 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
         otto_stride: n,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -7830,7 +7662,7 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -7861,6 +7693,17 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| {
+            format!(
+                "missing CARM GPU reopt metrics for range {}..{}",
+                start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -7872,12 +7715,7 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing CARM GPU reopt metrics for range {}..{}",
-                        start, end
-                    )
-                })
+                .expect("CARM GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -8290,32 +8128,7 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
         fast_stride: n,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -8326,7 +8139,7 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -8358,6 +8171,17 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| {
+            format!(
+                "missing KVDF GPU reopt metrics for range {}..{}",
+                start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -8369,12 +8193,7 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing KVDF GPU reopt metrics for range {}..{}",
-                        start, end
-                    )
-                })
+                .expect("KVDF GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -8770,79 +8589,23 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn compute_cdmc_gpu_walk_forward_stats_batch(
-    signals: &CdmcGpuDeviceSignalMatrices<'_>,
-    dpo_row_index: &[i32],
-    cycle_row_index: &[i32],
-    decycler_row_index: &[i32],
+    candles: &vector_ta::utilities::data_loader::Candles,
+    lr: &[f64],
     combo_start_t: &[i32],
     desired_row_major: &[i32],
     strategy: &StrategyConfig,
-    cdmc: &CdmcStrategyParams,
-    device_id: u32,
     cfg: &WalkForwardConfigOptional,
 ) -> Result<Vec<WalkForwardStats>, String> {
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let n = signals.cols;
-    let mut out = Vec::with_capacity(dpo_row_index.len());
-    for idx in 0..dpo_row_index.len() {
-        let mut sharpes = Vec::new();
-        let mut dds = Vec::new();
-        let mut pnls = Vec::new();
-        let mut downside_ratios = Vec::new();
-        let mut ulcers = Vec::new();
-        let mut martins = Vec::new();
-        let mut trades = Vec::new();
-        let mut t0 = usize::try_from(combo_start_t[idx]).unwrap_or(0);
-        while t0 + 2 <= n {
-            let end = t0.saturating_add(window).min(n);
-            if end <= t0 + 1 {
-                break;
-            }
-            let start_i = i32::try_from(t0)
-                .map_err(|_| "CDMC GPU walk_forward start_t exceeds i32 range".to_string())?;
-            let end_i = i32::try_from(end)
-                .map_err(|_| "CDMC GPU walk_forward end_t exceeds i32 range".to_string())?;
-            let combos = CdmcGpuComboBatch {
-                dpo_row_index: &dpo_row_index[idx..idx + 1],
-                cycle_row_index: &cycle_row_index[idx..idx + 1],
-                decycler_row_index: &decycler_row_index[idx..idx + 1],
-                start_t: &[start_i],
-                end_t: &[end_i],
-            };
-            let metric = eval_cdmc_metrics_gpu_kernel_device_rows(
-                device_id, signals, &combos, strategy, cdmc,
-            )?
-            .into_iter()
-            .next()
-            .ok_or_else(|| "CDMC GPU walk_forward returned no metrics".to_string())?;
-            sharpes.push(metric.sharpe);
-            dds.push(metric.max_dd);
-            pnls.push(metric.pnl);
-            if let Some(ratio) =
-                crate::validation_pipeline::downside_vol_ratio_from_metrics(&metric)
-            {
-                downside_ratios.push(ratio);
-            }
-            ulcers.push(metric.ulcer_index);
-            martins.push(metric.martin_ratio);
-            let desired = &desired_row_major[idx * n..(idx + 1) * n];
-            trades.push(count_trade_events_from_desired_window(
-                desired, t0, end, strategy,
-            ));
-            if end == n {
-                break;
-            }
-            t0 = t0.saturating_add(step);
-        }
-        out.push(summarize_walk_forward_metric_samples_full(
-            sharpes,
-            dds,
-            pnls,
-            downside_ratios,
-            ulcers,
-            martins,
-            trades,
+    let n = candles.close.len();
+    let candidate_count = combo_start_t.len();
+    let mut out = Vec::with_capacity(candidate_count);
+    for idx in 0..candidate_count {
+        let desired = &desired_row_major[idx * n..(idx + 1) * n];
+        out.push(crate::validation_pipeline::compute_walk_forward_stats(
+            n,
+            usize::try_from(combo_start_t[idx]).unwrap_or(0),
+            cfg,
+            |t0, end| eval_asr_metrics_window_from_desired(candles, lr, desired, t0, end, strategy),
         ));
     }
     Ok(out)
@@ -9106,32 +8869,7 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
         decycler_stride: n,
     };
 
-    let common_start_t = finalist_start_ts
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .min(n.saturating_sub(2));
-    let window = cfg.window_bars.max(64);
-    let step = cfg.step_bars.max(1);
-    let mut ranges: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut t0 = common_start_t;
-    while t0 + 2 < n {
-        let train_end = t0.saturating_add(window).min(n);
-        if train_end <= t0 + 1 {
-            break;
-        }
-        let test_end = train_end.saturating_add(step).min(n);
-        if test_end <= train_end + 1 {
-            break;
-        }
-        ranges.insert((t0, train_end));
-        ranges.insert((train_end, test_end));
-        if test_end == n {
-            break;
-        }
-        t0 = t0.saturating_add(step);
-    }
+    let ranges = collect_reopt_metric_ranges(&finalist_start_ts, n, cfg);
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -9142,7 +8880,7 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
         .collect();
     let mut range_metrics: HashMap<(usize, usize), HashMap<Vec<u8>, Metrics>> =
         HashMap::with_capacity(ranges.len());
-    for (start, end) in ranges {
+    for &(start, end) in &ranges {
         let start_vec: Vec<i32> = combo_start_t
             .iter()
             .map(|&st| {
@@ -9174,6 +8912,17 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
         }
         range_metrics.insert((start, end), keyed);
     }
+    ensure_gpu_reopt_metrics_complete(
+        &range_metrics,
+        &ranges,
+        &candidate_keys,
+        |_, start, end| {
+            format!(
+                "missing CDMC GPU reopt metrics for range {}..{}",
+                start, end
+            )
+        },
+    )?;
 
     crate::validation_pipeline::compute_reopt_walk_forward_stats(
         &finalist_entries,
@@ -9185,12 +8934,7 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
                 .get(&(start, end))
                 .and_then(|m| m.get(key))
                 .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing CDMC GPU reopt metrics for range {}..{}",
-                        start, end
-                    )
-                })
+                .expect("CDMC GPU reopt metrics were prevalidated")
         },
         |(key, _, _)| key.clone(),
     )
@@ -9418,15 +9162,11 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
     let metrics = exact_metrics;
     let walk_forward_stats = if let Some(walk_cfg) = req.walk_forward.as_ref() {
         Some(compute_cdmc_gpu_walk_forward_stats_batch(
-            &signals,
-            &combo_dpo_row_idx,
-            &combo_cycle_row_idx,
-            &combo_decycler_row_idx,
+            candles,
+            &lr,
             &combo_start_t,
             &desired_row_major,
             &first.strategy,
-            first_cdmc,
-            device_id,
             walk_cfg,
         )?)
     } else {
@@ -9607,17 +9347,10 @@ where
                 ),
             ))
         }
-        CompositeValidationFamily::Carm | CompositeValidationFamily::Cdmc => {
-            let series = build_series()?;
-            Ok(Some(
-                crate::validation_pipeline::compute_walk_forward_stats(
-                    series_n(&series),
-                    series_start_t(&series),
-                    cfg,
-                    |t0, end| eval_metrics_window(&series, t0, end),
-                ),
-            ))
-        }
+        CompositeValidationFamily::Carm | CompositeValidationFamily::Cdmc => Ok(gpu_eval
+            .walk_forward_stats
+            .as_ref()
+            .and_then(|stats| stats.get(idx).cloned())),
         _ => Ok(gpu_eval
             .walk_forward_stats
             .as_ref()
@@ -9758,6 +9491,13 @@ fn compute_composite_gpu_reopt_walk_forward_for_family(
     }
 }
 
+/// Single-ticker composite validation request accepted by the app-core backend.
+///
+/// Compatibility notes:
+/// - `max_candidates == 0` is normalized to the default limit.
+/// - Candidate lists longer than `max_candidates` are truncated in input order.
+/// - `cross_ticker` and `validation_context` are accepted for DTO compatibility,
+///   but wrapper-owned orchestration is not executed directly by this app-core path.
 #[derive(Clone, Debug, Deserialize)]
 pub struct CompositeValidationRequest {
     pub data_id: String,
@@ -9928,6 +9668,10 @@ pub struct CompositeValidationResult {
     pub backend_route: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
+    /// Best-effort strategy-routing telemetry collected during validation setup.
+    ///
+    /// These diagnostics do not prove the ultimately realized backend execution
+    /// path for every phase.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route_diagnostics: Option<Vec<String>>,
     pub candidates: Vec<CompositeValidationCandidateResult>,
@@ -9935,6 +9679,9 @@ pub struct CompositeValidationResult {
     pub reopt_walk_forward: Option<ReoptWalkForwardStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spa: Option<SpaValidationStats>,
+    /// Wrapper-owned cross-ticker summary output.
+    ///
+    /// The current app-core single-ticker path leaves this as `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker: Option<CrossTickerValidationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -12381,7 +12128,12 @@ fn compute_gpu_perturb_stats_for_composite_candidate(
             validation_context: None,
         };
 
-        let metric = if pp.vcet.is_some() || pp.carm.is_some() || pp.cdmc.is_some() {
+        let metric = if pp.asr.is_some()
+            || pp.vemr.is_some()
+            || pp.vcet.is_some()
+            || pp.carm.is_some()
+            || pp.cdmc.is_some()
+        {
             let s2 = build_candidate_series(
                 candles,
                 lr,
@@ -12447,6 +12199,12 @@ pub fn run_composite_validation_blocking_with_candles(
     )
 }
 
+/// Runs app-core composite validation over one candle series with the requested aux work mask.
+///
+/// This entrypoint normalizes `max_candidates`, truncates over-limit candidate
+/// lists in input order, and executes only the single-ticker validation work
+/// owned by app-core. Wrapper-owned artifact hydration, cross-ticker
+/// orchestration, and `validation_context` enforcement remain out of scope here.
 pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
     mut req: CompositeValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -13938,6 +13696,31 @@ mod tests {
             low.push(l);
             close.push(c);
             vol.push(1_000.0 + (x / 5.0).sin().abs() * 250.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn make_bench_synth_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+
+        let mut px = 100.0f64;
+        for i in 0..len {
+            ts.push(i as i64);
+            let drift = 0.00005;
+            let noise = (i as f64 * 0.017).sin() * 0.001;
+            px *= 1.0 + drift + noise;
+
+            open.push(px);
+            high.push(px * 1.001);
+            low.push(px * 0.999);
+            close.push(px);
+            vol.push(1_000.0);
         }
 
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
@@ -21206,6 +20989,41 @@ mod tests {
         }
     }
 
+    fn make_mkcs_bench_candidates(n: usize) -> Vec<CompositeParams> {
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let i_u16 = i as u16;
+            let fast_len = 8u16.saturating_add(i_u16 % 12);
+            let slow_len = fast_len.saturating_add(24);
+            out.push(CompositeParams {
+                fast_ma_type: "ema".to_string(),
+                slow_ma_type: "ema".to_string(),
+                fast_len,
+                slow_len,
+                halftrend: HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                },
+                asr: None,
+                vcc: None,
+                vemr: None,
+                rocb: None,
+                vcet: None,
+                mkcs: Some(MkcsStrategyParams::default()),
+                kqsr: None,
+                carm: None,
+                kvdf: None,
+                cdmc: None,
+                macz: MaczGateParams::default(),
+                ott: OttGateParams::default(),
+                signal_mode: CompositeSignalMode::HardGate,
+                strategy: StrategyConfig::default(),
+            });
+        }
+        out
+    }
+
     fn kqsr_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "ema".to_string(),
@@ -22690,6 +22508,186 @@ mod tests {
         assert!(matches!(res.backend_used, BackendUsed::Gpu));
         assert_eq!(res.backend_route.as_deref(), Some("Auto->GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn asr_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "asr-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                asr_validation_test_candidate(8, 24),
+                asr_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 263,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("asr auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for ASR"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "vemr-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                vemr_validation_test_candidate(8, 24),
+                vemr_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 264,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("vemr auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for VEMR"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn rocb_validation_auto_prefers_cpu_route_on_current_policy() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "rocb-auto-cpu-policy".to_string(),
+            backend: Backend::Auto { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                rocb_validation_test_candidate(8, 24),
+                rocb_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 768,
+                step_bars: 384,
+                top_n_candidates: 2,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 32,
+                threshold: 0.0,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 265,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("rocb auto cpu policy validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Auto composite validation currently prefers CpuOnly for ROCB"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -24323,6 +24321,84 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn carm_gpu_walk_forward_helper_populates_drawdown_risk_metrics() {
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let mk = |backend: Backend| CompositeValidationRequest {
+            data_id: "carm-gpu-walk-forward-helper".to_string(),
+            backend,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![carm_test_candidate(10, 30)],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 512,
+                step_bars: 256,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 188,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let cpu_res = run_composite_validation_blocking_with_candles(
+            mk(Backend::CpuOnly),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cpu carm walk_forward helper baseline");
+        let gpu_eval = try_prepare_carm_gpu_fixed_candidate_validation(
+            &mk(Backend::GpuKernel { device_id: 0 }),
+            &candles,
+        )
+        .expect("gpu carm walk_forward helper prep");
+
+        let cpu_wf = cpu_res.candidates[0]
+            .walk_forward
+            .as_ref()
+            .expect("cpu walk_forward");
+        let gpu_wf = gpu_eval
+            .walk_forward_stats
+            .as_ref()
+            .and_then(|stats| stats.first())
+            .expect("gpu helper walk_forward");
+        assert_eq!(cpu_wf.windows, gpu_wf.windows);
+        assert!(
+            cpu_wf.downside_vol_ratio_median.is_finite() && cpu_wf.downside_vol_ratio_median > 0.0
+        );
+        assert!(
+            gpu_wf.downside_vol_ratio_median.is_finite() && gpu_wf.downside_vol_ratio_median > 0.0
+        );
+        assert!((cpu_wf.downside_vol_ratio_median - gpu_wf.downside_vol_ratio_median).abs() < 1e-4);
+        assert!(cpu_wf.ulcer_index_median.is_finite() && cpu_wf.ulcer_index_median > 0.0);
+        assert!(gpu_wf.ulcer_index_median.is_finite() && gpu_wf.ulcer_index_median > 0.0);
+        assert!((cpu_wf.ulcer_index_median - gpu_wf.ulcer_index_median).abs() < 1e-4);
+        assert!(cpu_wf.ulcer_index_worst.is_finite() && cpu_wf.ulcer_index_worst > 0.0);
+        assert!(gpu_wf.ulcer_index_worst.is_finite() && gpu_wf.ulcer_index_worst > 0.0);
+        assert!((cpu_wf.ulcer_index_worst - gpu_wf.ulcer_index_worst).abs() < 1e-4);
+        assert!(cpu_wf.martin_ratio_median.is_finite() && cpu_wf.martin_ratio_median != 0.0);
+        assert!(gpu_wf.martin_ratio_median.is_finite() && gpu_wf.martin_ratio_median != 0.0);
+        assert!((cpu_wf.martin_ratio_median - gpu_wf.martin_ratio_median).abs() < 1e-4);
+        assert!(cpu_wf.martin_ratio_worst.is_finite() && cpu_wf.martin_ratio_worst != 0.0);
+        assert!(gpu_wf.martin_ratio_worst.is_finite() && gpu_wf.martin_ratio_worst != 0.0);
+        assert!((cpu_wf.martin_ratio_worst - gpu_wf.martin_ratio_worst).abs() < 1e-4);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn cdmc_gpu_walk_forward_helper_populates_drawdown_risk_metrics() {
         let candles = make_noisy_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -25233,6 +25309,81 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    #[ignore = "long-running bench-shape diagnostic for Mkcs GPU route stability"]
+    fn mkcs_validation_gpu_kernel_bench_shape_100k32_keeps_gpu_route() {
+        let candles = make_bench_synth_candles(100_000);
+        let cancel = AtomicBool::new(false);
+        let candidates = make_mkcs_bench_candidates(32);
+        let req = CompositeValidationRequest {
+            data_id: "bench-gpu-mkcs-test".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates,
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 10_000,
+                step_bars: 10_000,
+            }),
+            reopt_walk_forward: Some(ReoptWalkForwardConfigOptional {
+                window_bars: 15_000,
+                step_bars: 10_000,
+                top_n_candidates: 4,
+            }),
+            spa: Some(SpaConfigOptional {
+                slices: 6,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 6,
+                max_combinations: 64,
+                threshold: 0.0,
+            }),
+            seed: 321,
+            max_candidates: 32,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("mkcs bench-shape validation");
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "backend_used={:?} route={:?} fallback={:?}",
+            res.backend_used,
+            res.backend_route,
+            res.backend_fallback_reason
+        );
+        assert_eq!(
+            res.backend_route.as_deref(),
+            Some("GpuKernel"),
+            "backend_used={:?} route={:?} fallback={:?}",
+            res.backend_used,
+            res.backend_route,
+            res.backend_fallback_reason
+        );
+        assert!(
+            res.backend_fallback_reason.is_none(),
+            "backend_used={:?} route={:?} fallback={:?}",
+            res.backend_used,
+            res.backend_route,
+            res.backend_fallback_reason
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn mkcs_validation_gpu_kernel_matches_cpu_metrics() {
         let candles = make_noisy_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -25662,6 +25813,26 @@ mod tests {
         assert!((cpu_bs.max_dd_p95 - gpu_bs.max_dd_p95).abs() < 1e-12);
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn asr_validation_gpu_kernel_perturb_matches_cpu() {
+        assert_single_candidate_gpu_perturb_matches_cpu(
+            "asr-gpu-perturb",
+            asr_validation_test_candidate(8, 24),
+            55,
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_validation_gpu_kernel_perturb_matches_cpu() {
+        assert_single_candidate_gpu_perturb_matches_cpu(
+            "vemr-gpu-perturb",
+            vemr_validation_test_candidate(8, 24),
+            56,
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

@@ -418,6 +418,54 @@ fn normalize_timeframe_label(raw: &str) -> String {
     s0
 }
 
+fn normalize_ml_confidence_scope(scope: MlConfidenceScope) -> Result<MlConfidenceScope, String> {
+    let timeframe = normalize_timeframe_label(&scope.timeframe);
+    if timeframe.is_empty() {
+        return Err("timeframe is required (e.g. '1m')".to_string());
+    }
+    let strategy_kind = scope.strategy_kind.trim().to_string();
+    if strategy_kind.is_empty() {
+        return Err("strategy_kind is required".to_string());
+    }
+    Ok(MlConfidenceScope {
+        strategy_kind,
+        timeframe,
+    })
+}
+
+fn validate_training_rows(rows: &[DatasetRow]) -> Result<(), String> {
+    let expected_width = FEATURE_NAMES.len();
+    for (idx, row) in rows.iter().enumerate() {
+        if row.x.len() != expected_width {
+            return Err(format!(
+                "row {idx} ({}) has {} features; expected {expected_width} ({})",
+                row.group_id,
+                row.x.len(),
+                FEATURE_NAMES.join(", ")
+            ));
+        }
+        if let Some((feature_index, value)) = row
+            .x
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(format!(
+                "row {idx} ({}) has non-finite feature '{}' at index {feature_index}: {value}",
+                row.group_id, FEATURE_NAMES[feature_index]
+            ));
+        }
+        if !row.y.is_finite() {
+            return Err(format!(
+                "row {idx} ({}) has non-finite target value: {}",
+                row.group_id, row.y
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn extract_meta_scope(meta: &Value) -> Option<(String, String)> {
     let strat = meta
         .pointer("/req/strategy_kind")
@@ -1425,6 +1473,8 @@ fn train_ml_confidence_model_from_rows_inner(
     build: DatasetBuildSummary,
     mut warnings: Vec<String>,
 ) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
+    validate_training_rows(rows)?;
+
     let target_used = match build.target {
         MlConfidenceTargetResolved::HoldoutGate => MlConfidenceTarget::HoldoutGate,
         MlConfidenceTargetResolved::HoldoutDatasetPass => MlConfidenceTarget::HoldoutDatasetPass,
@@ -1565,6 +1615,23 @@ fn train_ml_confidence_model_from_rows_inner(
 
     let eval_auc = cv_auc.unwrap_or(train_auc);
     let eval_brier = cv_brier_cal.or(cv_brier).unwrap_or(train_brier);
+    if cv_auc.is_none() {
+        warnings.push(
+            "Evaluation evidence used train AUC because cross-validation AUC was unavailable."
+                .to_string(),
+        );
+    }
+    if cv_brier_cal.is_none() && cv_brier.is_none() {
+        warnings.push(
+            "Evaluation evidence used train Brier and calibration bins because cross-validation predictions were unavailable."
+                .to_string(),
+        );
+    } else if cv_brier_cal.is_none() && calibration.is_some() {
+        warnings.push(
+            "Calibration was retained, but calibrated cross-validation Brier was unavailable; train calibration evidence remains informational only."
+                .to_string(),
+        );
+    }
     let mut healthy = true;
     if eval_auc < 0.55 {
         healthy = false;
@@ -1645,17 +1712,7 @@ pub fn train_ml_confidence_model_from_rows(
     newest_meta_ts_used: Option<String>,
     warnings: Vec<String>,
 ) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
-    let timeframe = normalize_timeframe_label(&scope.timeframe);
-    if timeframe.is_empty() {
-        return Err("timeframe is required (e.g. '1m')".to_string());
-    }
-    if scope.strategy_kind.trim().is_empty() {
-        return Err("strategy_kind is required".to_string());
-    }
-    let scope = MlConfidenceScope {
-        strategy_kind: scope.strategy_kind.trim().to_string(),
-        timeframe,
-    };
+    let scope = normalize_ml_confidence_scope(scope)?;
 
     let build = DatasetBuildSummary {
         used_meta: meta_artifacts_used,
@@ -1676,6 +1733,19 @@ pub fn train_ml_confidence_model_from_prepared_rows(
     cfg: MlConfidenceTrainConfig,
     prefix_len: Option<usize>,
 ) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
+    let scope = normalize_ml_confidence_scope(scope)?;
+    let prepared_scope = normalize_ml_confidence_scope(prepared.scope.clone())?;
+    if scope.strategy_kind != prepared_scope.strategy_kind
+        || scope.timeframe != prepared_scope.timeframe
+    {
+        return Err(format!(
+            "prepared rows scope mismatch: requested {}/{} but prepared rows are {}/{}",
+            scope.strategy_kind,
+            scope.timeframe,
+            prepared_scope.strategy_kind,
+            prepared_scope.timeframe
+        ));
+    }
     let effective_prefix = prefix_len
         .unwrap_or(prepared.artifacts.len())
         .min(prepared.artifacts.len());
@@ -1690,17 +1760,7 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
     meta_artifacts: &[Value],
     cfg: MlConfidenceTrainConfig,
 ) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
-    let timeframe = normalize_timeframe_label(&scope.timeframe);
-    if timeframe.is_empty() {
-        return Err("timeframe is required (e.g. '1m')".to_string());
-    }
-    if scope.strategy_kind.trim().is_empty() {
-        return Err("strategy_kind is required".to_string());
-    }
-    let scope = MlConfidenceScope {
-        strategy_kind: scope.strategy_kind.trim().to_string(),
-        timeframe,
-    };
+    let scope = normalize_ml_confidence_scope(scope)?;
     let prepared =
         prepare_ml_confidence_rows_from_meta_artifacts(&scope, meta_artifacts, &cfg.label);
     train_ml_confidence_model_from_prepared_rows(scope, &prepared, cfg, None)
@@ -1748,6 +1808,28 @@ pub fn predict_ml_confidence_for_group(model: &MlConfidenceModel, group: &Value)
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn build_manual_rows(rows: usize, groups: usize) -> Vec<MlConfidenceDatasetRow> {
+        let group_count = groups.max(1);
+        (0..rows)
+            .map(|idx| {
+                let positive = idx % 2 == 0;
+                MlConfidenceDatasetRow {
+                    group_id: format!("group-{:03}", idx % group_count),
+                    x: vec![
+                        32.0 + idx as f64,
+                        if positive { 0.78 } else { 0.24 },
+                        if positive { 0.12 } else { -0.08 },
+                        if positive { 0.18 } else { -0.03 },
+                        if positive { 0.22 } else { 0.58 },
+                        if positive { 0.09 } else { -0.06 },
+                        if positive { 0.21 } else { -0.19 },
+                    ],
+                    y: if positive { 1.0 } else { 0.0 },
+                }
+            })
+            .collect()
+    }
 
     fn mixed_history_scope_cfg_and_artifacts(
     ) -> (MlConfidenceScope, MlConfidenceTrainConfig, Vec<Value>) {
@@ -2036,6 +2118,124 @@ mod tests {
             dataset_metrics.newest_meta_ts_used.as_deref(),
             Some("2026-03-02T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn raw_training_normalizes_equivalent_scope_timeframes() {
+        let rows = build_manual_rows(30, 3);
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "60s".to_string(),
+        };
+        let (model, metrics) = train_ml_confidence_model_from_rows(
+            scope,
+            &rows,
+            MlConfidenceTrainConfig::default(),
+            MlConfidenceTarget::HoldoutGate,
+            0,
+            None,
+            Vec::new(),
+        )
+        .expect("raw training with equivalent timeframe label");
+        assert_eq!(model.scope.timeframe, "1m");
+        assert_eq!(metrics.rows, 30);
+    }
+
+    #[test]
+    fn prepared_rows_scope_mismatch_is_rejected() {
+        let (scope, cfg, metas) = mixed_history_scope_cfg_and_artifacts();
+        let prepared = prepare_ml_confidence_rows_from_meta_artifacts(&scope, &metas, &cfg.label);
+        let mismatch_scope = MlConfidenceScope {
+            strategy_kind: "OtherStrategy".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let err =
+            train_ml_confidence_model_from_prepared_rows(mismatch_scope, &prepared, cfg, None)
+                .expect_err("prepared scope mismatch should fail");
+        assert!(err.contains("prepared rows scope mismatch"));
+    }
+
+    #[test]
+    fn raw_training_rejects_feature_width_mismatch() {
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let mut rows = build_manual_rows(30, 3);
+        rows[0].x.pop();
+
+        let err = train_ml_confidence_model_from_rows(
+            scope,
+            &rows,
+            MlConfidenceTrainConfig::default(),
+            MlConfidenceTarget::HoldoutGate,
+            0,
+            None,
+            Vec::new(),
+        )
+        .expect_err("feature width mismatch should fail");
+        assert!(err.contains("expected 7"));
+    }
+
+    #[test]
+    fn raw_training_rejects_non_finite_feature_values() {
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let mut rows = build_manual_rows(30, 3);
+        rows[0].x[2] = f64::INFINITY;
+
+        let err = train_ml_confidence_model_from_rows(
+            scope,
+            &rows,
+            MlConfidenceTrainConfig::default(),
+            MlConfidenceTarget::HoldoutGate,
+            0,
+            None,
+            Vec::new(),
+        )
+        .expect_err("non-finite feature should fail");
+        assert!(err.contains("non-finite feature"));
+    }
+
+    #[test]
+    fn train_only_evidence_warnings_are_explicit_when_cv_is_unavailable() {
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let rows = build_manual_rows(30, 1);
+        let (model, metrics) = train_ml_confidence_model_from_rows(
+            scope,
+            &rows,
+            MlConfidenceTrainConfig::default(),
+            MlConfidenceTarget::HoldoutGate,
+            0,
+            None,
+            Vec::new(),
+        )
+        .expect("train-only evidence training");
+
+        assert!(metrics.cv_auc.is_none());
+        assert!(metrics.cv_brier.is_none());
+        assert!(metrics
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("train AUC")));
+        assert!(metrics
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("train Brier and calibration bins")));
+        let meta = model.meta.expect("model metadata");
+        assert!(meta
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("train AUC")));
+        assert!(meta
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("train Brier and calibration bins")));
     }
 
     #[test]

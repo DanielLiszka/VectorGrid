@@ -2501,6 +2501,13 @@ pub(crate) fn probe_uploaded_gpu_strategy_program(
     })
 }
 
+/// Device-resident preuploaded state for the Double-MA dynamic GPU path.
+///
+/// The uploaded buffers are specific to the originating CUDA device and the
+/// executable fingerprint captured at upload time. Uploading freezes matrix
+/// geometry and combo-to-dense-pair mapping, but execution still runs through
+/// the current fixed executor family rather than a fully general uploaded
+/// predicate-program runtime.
 pub struct UploadedDoubleMaDynamicProgramBatch {
     d_lr: DeviceBuffer<f32>,
     d_ret1: DeviceBuffer<f32>,
@@ -2607,6 +2614,49 @@ fn dynamic_program_executable_fingerprint_hex(handle: &StrategyHandle) -> Result
         .ok_or_else(|| "strategy handle missing GPU program ABI".to_string())
 }
 
+fn validate_uploaded_double_ma_dynamic_program_batch_geometry(
+    lr_len: usize,
+    stride: usize,
+    fast_rows: usize,
+    slow_rows: usize,
+    combo_count: usize,
+    first_valid: usize,
+) -> Result<(), String> {
+    if first_valid >= lr_len {
+        return Err(format!(
+            "dynamic gpu batch first_valid {first_valid} must be < lr len {lr_len}"
+        ));
+    }
+    if stride != lr_len {
+        return Err(format!(
+            "dynamic gpu batch matrix stride {stride} must match lr len {lr_len}"
+        ));
+    }
+    if stride > i32::MAX as usize || lr_len > i32::MAX as usize {
+        return Err("dynamic gpu batch dimensions exceed i32 kernel limits".to_string());
+    }
+    if fast_rows > i32::MAX as usize
+        || slow_rows > i32::MAX as usize
+        || combo_count > i32::MAX as usize
+    {
+        return Err(
+            "dynamic gpu batch period rows or combo count exceed i32 kernel limits".to_string(),
+        );
+    }
+    let dense_pair_grid = fast_rows
+        .checked_mul(slow_rows)
+        .ok_or_else(|| "dynamic gpu batch dense pair grid exceeds i32 kernel limits".to_string())?;
+    if dense_pair_grid > i32::MAX as usize {
+        return Err("dynamic gpu batch dense pair grid exceeds i32 kernel limits".to_string());
+    }
+    Ok(())
+}
+
+/// Uploads a device-resident Double-MA dynamic batch for a single CUDA device.
+///
+/// The row-major MA matrices must have widths that exactly match `lr.len()`,
+/// `first_valid` must point inside that return series, and the uploaded geometry
+/// must fit the kernel-facing `i32` argument shape.
 pub fn upload_double_ma_dynamic_program_batch(
     lr: &[f32],
     fast_row_major: &[f32],
@@ -2651,9 +2701,14 @@ pub fn upload_double_ma_dynamic_program_batch(
             slow_periods.len()
         ));
     }
-    if stride > i32::MAX as usize || lr.len() > i32::MAX as usize {
-        return Err("dynamic gpu batch dimensions exceed i32 kernel limits".to_string());
-    }
+    validate_uploaded_double_ma_dynamic_program_batch_geometry(
+        lr.len(),
+        stride,
+        fast_rows,
+        slow_rows,
+        combos.len(),
+        first_valid,
+    )?;
     let fast_tm = transpose_row_major_to_tm_f32(fast_row_major, fast_rows, stride);
     let slow_tm = transpose_row_major_to_tm_f32(slow_row_major, slow_rows, stride);
     let ret1 = simple_returns_from_log_returns_f32(lr);
@@ -10168,10 +10223,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         let mut s_off = 0i32;
                         let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                        let mut regime_ptr = d_regime
-                            .as_ref()
-                            .map(|d| d.as_device_ptr().as_raw())
-                            .unwrap_or(0);
+                        let mut regime_ptr = d_regime_ptr.unwrap_or(0);
                         let mut use_regime_i = regime_use;
                         let mut use_regime_hybrid_i = regime_use_hybrid;
                         let mut regime_entry = regime_entry_rel;
@@ -16085,9 +16137,10 @@ mod tests {
         search_rows_use_log_space, shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
         should_use_score_first_topk_mode, upload_double_ma_dynamic_program_batch,
-        EffectiveSampleScoreContext, FixedContractDispatchKind, FixedContractKernelFlavor,
-        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
-        STRAT_SIGNED_EXPOSURE, TRADE_METRICS_COUNT,
+        validate_uploaded_double_ma_dynamic_program_batch_geometry, EffectiveSampleScoreContext,
+        FixedContractDispatchKind, FixedContractKernelFlavor, ShortlistConfidenceMode,
+        ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, STRAT_SIGNED_EXPOSURE,
+        TRADE_METRICS_COUNT,
     };
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
@@ -18738,6 +18791,42 @@ mod tests {
             gpu.net_exposure,
             cpu_metrics.net_exposure
         );
+    }
+
+    #[test]
+    fn uploaded_dynamic_double_ma_geometry_rejects_first_valid_past_return_series() {
+        let err = validate_uploaded_double_ma_dynamic_program_batch_geometry(32, 32, 2, 2, 3, 32)
+            .expect_err("first_valid at lr len should be rejected");
+        assert!(err.contains("first_valid 32"));
+        assert!(err.contains("lr len 32"));
+    }
+
+    #[test]
+    fn uploaded_dynamic_double_ma_geometry_rejects_matrix_width_mismatch() {
+        let err = validate_uploaded_double_ma_dynamic_program_batch_geometry(32, 31, 2, 2, 3, 4)
+            .expect_err("matrix width mismatch should be rejected");
+        assert!(err.contains("stride 31"));
+        assert!(err.contains("lr len 32"));
+    }
+
+    #[test]
+    fn uploaded_dynamic_double_ma_geometry_rejects_i32_overflowing_counts() {
+        let err = validate_uploaded_double_ma_dynamic_program_batch_geometry(
+            64,
+            64,
+            i32::MAX as usize + 1,
+            2,
+            3,
+            4,
+        )
+        .expect_err("overflowing period rows should be rejected");
+        assert!(err.contains("i32 kernel limits"));
+
+        let err = validate_uploaded_double_ma_dynamic_program_batch_geometry(
+            64, 64, 50_000, 50_000, 3, 4,
+        )
+        .expect_err("overflowing dense pair grid should be rejected");
+        assert!(err.contains("dense pair grid"));
     }
 
     #[test]

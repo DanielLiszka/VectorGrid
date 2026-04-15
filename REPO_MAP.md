@@ -1055,12 +1055,12 @@ Current policy boundaries:
 | --- | --- | --- | --- |
 | `DoubleMa` | fast/slow MA pairs, optional `halftrend_filter` | `Auto`, `CpuOnly`, `GpuOnly`, `GpuHybridKernel`, `GpuKernel` | fixed-candidate validation can use CPU or GPU main route; `GpuOnly` falls back to CPU, and TrendQuality requests without ADX confirmation currently fall back to CPU on `GpuKernel`/`Auto` fixed-candidate validation |
 | `DynamicDoubleMa` | constrained `strategy_ir` builder over static profiles/indicator kinds | previewed against strategy-plan backend, then runs through normal Double-MA path | no separate validator; resolves into normal runtime flow |
-| `Pit` | EFI, VOSC, CFO | Double-MA family backends | double-like GPU main route; requires OHLCV |
+| `Pit` | EFI, VOSC, CFO | Double-MA family backends | double-like GPU main route; requires OHLCV, and the native device-regime path is still under investigation during long CUDA sweeps even though validation coverage is inherited through the shared Double-MA engine |
 | `Set` | linear-reg angle, efficiency ratio, chop | Double-MA family backends | double-like GPU main route; requires high/low |
 | `Mts` | ROC, momentum, PPO | Double-MA family backends | double-like GPU main route |
 | `Orc` | RSI, stochastic fast K/D, Williams %R | Double-MA family backends | double-like GPU main route; requires high/low |
-| `Marrt` | thin Double-MA variant, mostly `long_only=false` preset | Double-MA family backends | double-like GPU main route; MA whitelist limited to `sma`, `ema`, `alma`, `wma`, `zlema`, `vwma` |
-| `Vfct` | OBV smoothing + MFI confirmation | Double-MA family backends | double-like GPU main route; requires high/low/volume; trend MAs currently `vwma` only |
+| `Marrt` | thin Double-MA variant, mostly `long_only=false` preset | Double-MA family backends | double-like GPU main route; current MA whitelist is a product/request-builder constraint (`sma`, `ema`, `alma`, `wma`, `zlema`, `vwma`) rather than a separate validator feature gap |
+| `Vfct` | OBV smoothing + MFI confirmation | Double-MA family backends | double-like GPU main route; requires high/low/volume, and current trend-MA `vwma`-only posture is a product/request-builder constraint rather than a separate validator feature gap |
 | `CompositeTrend` | trend-quality regime with linear-reg angle, BB width, optional ROC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; TrendQuality-without-ADX fixed-candidate validation currently falls back to CPU on `GpuKernel`/`Auto` because the exact-combo GPU validation path is not parity-safe there |
 | `RegimeHybrid` | trend-quality regime plus ADX enter/exit and mean-reversion thresholds | routed through Double-MA; current target `GpuHybridKernel`, CPU fallback | treated as double-like fixed-candidate validation |
 | `BreakoutMomentum` | Bollinger breakout, MACD, CMO, ADOSC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; requires high/low/volume |
@@ -1074,6 +1074,7 @@ Current policy boundaries:
   - fixed-candidate validation replay is still intentionally unsupported
 - `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` are routed Double-MA family members, not `CompositeCpu` members
 - generic Double-MA TrendQuality requests without ADX confirmation, including `CompositeTrend`, currently fall back to `CpuOnly` on `GpuKernel`/`Auto` fixed-candidate validation until the exact-combo GPU parity issue is repaired
+- `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, and `Vfct` inherit the full Double-MA validation stack; the real caveats on current repo posture are generic Double-MA route limits plus candle-field or product-surface restrictions, not missing validation modules
 - the canonical code surfaces for this family are:
   - `crates/app_core/src/double_ma.rs`
   - `crates/app_core/src/double_ma_validate.rs`
@@ -1089,7 +1090,7 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
 
 | Kind | High-level indicator/features | Optimize route | Validation notes |
 | --- | --- | --- | --- |
-| `CompositeCpu` | fast/slow MA core plus HalfTrend, MACZ, OTT, `CompositeSignalMode` | CPU and `GpuKernel` route exist | GPU validation needs uniform HalfTrend params across finalists or can fall back to CPU |
+| `CompositeCpu` | fast/slow MA core plus HalfTrend, MACZ, OTT, `CompositeSignalMode` | CPU and `GpuKernel` route exist | CPU-side validation coverage is broad; GPU fixed-candidate validation is only eligible for plain base-composite `HardGate` finalists with uniform HalfTrend/MACZ/OTT/strategy/MA contracts, vectorized engine, and no inline `cross_ticker` |
 | `Asr` | TTM squeeze, squeeze momentum, linear-reg angle, ER filter, z-score, Kaufman overlays | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU on measured workloads |
 | `Vcc` | TTM squeeze, squeeze momentum, TTM trend, optional momentum-acceleration gating | CPU and `GpuKernel` | mixed validation route; CPU-reference signal prep still matters, but `GpuKernel` now uses dedicated GPU walk-forward and reopt walk-forward helpers |
 | `Vemr` | z-score, Bollinger bands, ATR stop | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU |
@@ -1097,9 +1098,9 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
 | `Vcet` | VIDYA trend-state plus Chandelier Exit | CPU and `GpuKernel` | main fixed-candidate GPU route exists; current runtime tests cover walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap on `GpuKernel` |
 | `Mkcs` | standard-deviation compression plus Donchian breakout | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU |
 | `Kqsr` | KDJ, stochastic RSI, IFT-RSI, QQE, PRB | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires OHLC |
-| `Carm` | Coppock, AO, ROCR, APO, OTTO HOTT/LOTT | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, `Auto` still prefers CPU, and the dedicated GPU walk-forward/reopt helpers are not yet safe to dispatch |
+| `Carm` | Coppock, AO, ROCR, APO, OTTO HOTT/LOTT | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, `Auto` still prefers CPU, and fixed-candidate `GpuKernel` walk-forward parity is now locked through exact desired-series window metrics while reopt stays on the generic exact-series path |
 | `Kvdf` | Keltner, VWAP, DTI, DevStop, FVG trailing-stop logic | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires high/low/close/volume |
-| `Cdmc` | DPO, correlation cycle, MAMA/FAMA, decycler, phase threshold | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, current measured policy is more GPU-favorable than CARM, but dedicated GPU walk-forward/reopt helpers still need parity repair before dispatch |
+| `Cdmc` | DPO, correlation cycle, MAMA/FAMA, decycler, phase threshold | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, current measured policy is more GPU-favorable than CARM, and fixed-candidate `GpuKernel` walk-forward parity is now locked through exact desired-series window metrics while reopt stays on the generic exact-series path |
 
 #### Standalone profile cluster truth anchors
 
@@ -1137,7 +1138,8 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
 - Cluster B validation posture to keep truthful across preview, post-run summaries, and report export:
   - `Mkcs`, `Kqsr`, `Carm`, and `Kvdf` currently keep `Auto` CPU-preferred or CPU-fallback-sensitive validation policies even though the main validation module stack is already present on the active route
   - `Cdmc` keeps the mixed validation route where current measured policy is more GPU-favorable than `Carm`, while still using CPU-reference signal prep for exact CPU-series validation metrics
-  - Cluster B parity is now mostly about composite `cross_ticker` scope, narrower aux analytics versus the `DoubleMa` baseline, and helper-route exactness for `Carm`/`Cdmc`, not about missing core validation modules
+  - current `composite_validation_workflow` evidence on the shared 50k/8 `wf_reopt_cscv_spa` surface still measures `Carm` materially cheaper than `Cdmc`, so route policy and runtime cost ranking are not the same thing
+  - Cluster B parity is now mostly about composite `cross_ticker` scope, narrower aux analytics versus the `DoubleMa` baseline, and measured mixed-route policy truth, not about missing core validation modules
 
 #### CompositeCpu / CompositeMo truth anchors
 
@@ -1160,7 +1162,7 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
   - explicit sampler families (`Nsga2`, `Random`, `Tpe`, `Qmc`)
   - optional stage-0 GPU prescan narrowing
   - bounded exact-grid collapse for tiny discrete spaces
-  - CPU-preferred validation, with current GPU fixed-candidate limits only for plain `CompositeCpu` hard-gate candidates
+  - CPU-preferred validation, with current GPU fixed-candidate eligibility tied to the same plain base-composite `HardGate` contract as `CompositeCpu`, not to a strict `CompositeMo`-specific provenance blocker
   - an explicit prescan contract owned by `web/src/services/optimizeRequestBuilder.ts` and `crates/app_core/src/composite_mo.rs`:
     - `top_k`
     - `window`
@@ -1173,8 +1175,8 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
     - `ma_pairs`
 - Composite validation matrix to keep in sync across preview builders, post-run summaries, and workbook export:
   - `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the fixed-candidate Double-MA validation path in `crates/app_core/src/double_ma_validate.rs`, but TrendQuality-without-ADX `GpuKernel`/`Auto` requests currently preserve parity by falling back to CPU for that fixed-candidate path
-  - plain `CompositeCpu` can keep the GPU fixed-candidate validation route only when finalist sets remain compatible with the current HalfTrend-uniformity constraints
-  - `CompositeMo` remains CPU-preferred for validation; current GPU fixed-candidate support is intentionally limited to plain `CompositeCpu` hard-gate candidates
+  - plain `CompositeCpu` can keep the GPU fixed-candidate validation route only when finalist sets remain compatible with the current plain-base eligibility contract: `HardGate`, uniform strategy/indicator settings, vectorized engine, and no inline `cross_ticker`
+  - `CompositeMo` remains CPU-preferred for validation, but the current GPU limit is candidate-shape-based plain-base eligibility rather than a separate `CompositeMo`-only blocker
   - standalone profile Cluster A and Cluster B families validate through `run_composite_validation` with family-specific route notes that must stay aligned with `web/src/services/validationRequestBuilder.ts`, `web/src/services/validationService.ts`, and `src-tauri/tests/validation_xlsx_report_tests.rs`
   - composite-family `cross_ticker` reruns already preserve CSCV/PBO and hard-gate thresholds for preserved finalists, but they do not yet rerun the full walk-forward, reopt walk-forward, SPA, perturb, or bootstrap stack
   - composite-family aux analytics currently expose `regime_slice_robustness` and `friction_stress`; `entry_margin_fragility`, `underwater_duration`, `checkpoint_robustness`, and `benchmark_slice_summary` remain Double-MA-only parity gaps
@@ -1209,10 +1211,10 @@ These are the fastest high-level reads for kernel-ready or representative config
   - separate multi-objective sampler/search-space flow
   - optional GPU prescan via Double-MA backend seeding
   - not a normal Top-K/grid optimizer
-  - validation is CPU-preferred; fixed-candidate GPU validation currently only supports plain `CompositeCpu` hard-gate candidates
+  - validation is CPU-preferred; current GPU fixed-candidate eligibility is candidate-shape-based plain-base support rather than a distinct `CompositeMo`-only provenance gate
 - `MlSignal`
   - separate research workflow for dataset export, external score import, validation, and policy sweep
-  - dedicated CPU research path
+  - dedicated CPU research path; score-cache validation is a separate iterative-replay boundary and policy sweep is a separate timing surface over axis expansion plus the same replay core
   - artifact-oriented outputs rather than heatmaps/export-all grids
 
 ### Important caveats
@@ -1726,7 +1728,7 @@ Notes:
 - `profile_gpu_dynamic_runner.rs`
   - gate-backed only through `scripts/run_gpu_perf_gate.ps1`; `--emit-json` cache-attribution output is currently supplemental evidence
 - `ml_signal_workflow.rs` and `ml_signal_validation.rs`
-  - supplemental MlSignal timing surfaces; not current perf-gate authority
+  - current MlSignal timing evidence owners; use `ml_signal_validation_single_candidate` for score-cache validation and `ml_signal_policy_sweep_small` for sweep cost until a dedicated workflow gate exists
 - `e2e_workflow_ml.rs`
   - Stage 5 ML confidence plus CompositeCpu/meta/holdout workflow evidence, not the primary MlSignal perf-authority surface
 - `real_data_fidelity_audit.rs`

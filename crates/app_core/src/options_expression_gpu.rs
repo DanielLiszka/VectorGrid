@@ -206,6 +206,110 @@ fn combined_outcome_tensor_device_bytes(inputs: &[&GpuFlatScoreInputs]) -> usize
         .sum()
 }
 
+fn distinct_shared_input_lane_count(inputs: &[&GpuFlatScoreInputs]) -> usize {
+    inputs
+        .iter()
+        .map(|input| input.shared_key.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+fn validate_shared_input_chunk_layout(
+    candidate_slot_stride: usize,
+    summary_stride: usize,
+    tuple_candidate_offsets: &[u32],
+    tuple_summary_offsets: &[u32],
+    tuple_start: usize,
+    tuple_end: usize,
+) -> Result<(), String> {
+    if tuple_candidate_offsets.len() != tuple_summary_offsets.len() {
+        return Err("GPU options-expression tuple offset lengths do not match".to_string());
+    }
+    let candidate_offsets = tuple_candidate_offsets
+        .get(tuple_start..tuple_end)
+        .ok_or_else(|| "GPU options-expression tuple chunk is out of bounds".to_string())?;
+    let summary_offsets = tuple_summary_offsets
+        .get(tuple_start..tuple_end)
+        .ok_or_else(|| "GPU options-expression tuple chunk is out of bounds".to_string())?;
+    if candidate_offsets.len() != summary_offsets.len() {
+        return Err("GPU options-expression tuple chunk lengths do not match".to_string());
+    }
+    let tuple_count = candidate_offsets.len();
+    u32::try_from(tuple_count).map_err(|_| "tuple_count exceeds u32::MAX".to_string())?;
+    u32::try_from(candidate_slot_stride)
+        .map_err(|_| "candidate_slot_stride exceeds u32::MAX".to_string())?;
+    u32::try_from(summary_stride).map_err(|_| "summary_stride exceeds u32::MAX".to_string())?;
+    Ok(())
+}
+
+fn validate_outcome_tensor_layout(
+    outcome_valid: &[u8],
+    outcome_pnl: &[f32],
+    outcome_premium: &[f32],
+) -> Result<(), String> {
+    if outcome_valid.len() != outcome_pnl.len() || outcome_valid.len() != outcome_premium.len() {
+        return Err("GPU options-expression outcome tensor lengths do not match".to_string());
+    }
+    Ok(())
+}
+
+fn validate_score_inputs(inputs: &GpuFlatScoreInputs) -> Result<(), String> {
+    validate_shared_input_chunk_layout(
+        inputs.candidate_slot_stride,
+        inputs.summary_stride,
+        &inputs.tuple_candidate_offsets,
+        &inputs.tuple_summary_offsets,
+        0,
+        inputs.tuple_candidate_offsets.len(),
+    )?;
+    validate_outcome_tensor_layout(
+        &inputs.outcome_valid,
+        &inputs.outcome_pnl,
+        &inputs.outcome_premium,
+    )?;
+    Ok(())
+}
+
+fn validate_event_ranges(
+    event_ranges: &[(usize, usize)],
+    event_count: usize,
+) -> Result<(), String> {
+    for &(event_start, event_end) in event_ranges {
+        if event_start >= event_end {
+            return Err(format!(
+                "GPU options-expression event range start {event_start} must be < end {event_end}"
+            ));
+        }
+        if event_end > event_count {
+            return Err(format!(
+                "GPU options-expression event range end {event_end} exceeds outcome tensor length {event_count}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_combined_search_holdout_bounds(
+    search_end: usize,
+    holdout_end: usize,
+    event_count: usize,
+) -> Result<(), String> {
+    if search_end == 0 {
+        return Err("GPU options-expression combined scorer requires search_end > 0".to_string());
+    }
+    if search_end >= holdout_end {
+        return Err(format!(
+            "GPU options-expression combined scorer requires search_end ({search_end}) < holdout_end ({holdout_end})"
+        ));
+    }
+    if holdout_end > event_count {
+        return Err(format!(
+            "GPU options-expression combined scorer holdout_end {holdout_end} exceeds outcome tensor length {event_count}"
+        ));
+    }
+    Ok(())
+}
+
 fn usable_memory_bytes_from_free(free_memory_bytes: u64) -> u64 {
     let usable = free_memory_bytes.saturating_sub(GPU_TUPLE_CHUNK_MEMORY_HEADROOM_BYTES);
     if usable > 0 {
@@ -383,7 +487,11 @@ impl OptionsGpuChunkPlan {
                 conservative_inputs,
                 harsher_inputs,
             ]),
-            3,
+            distinct_shared_input_lane_count(&[
+                baseline_inputs,
+                conservative_inputs,
+                harsher_inputs,
+            ]),
             4,
             size_of::<f64>(),
         )
@@ -399,9 +507,14 @@ impl UploadedSharedInputs {
         tuple_start: usize,
         tuple_end: usize,
     ) -> Result<Self, String> {
-        if tuple_candidate_offsets.len() != tuple_summary_offsets.len() {
-            return Err("GPU options-expression tuple offset lengths do not match".to_string());
-        }
+        validate_shared_input_chunk_layout(
+            candidate_slot_stride,
+            summary_stride,
+            tuple_candidate_offsets,
+            tuple_summary_offsets,
+            tuple_start,
+            tuple_end,
+        )?;
         let candidate_offsets = tuple_candidate_offsets
             .get(tuple_start..tuple_end)
             .ok_or_else(|| "GPU options-expression tuple chunk is out of bounds".to_string())?;
@@ -438,10 +551,7 @@ impl UploadedOutcomeInputs {
         outcome_pnl: &[f32],
         outcome_premium: &[f32],
     ) -> Result<Self, String> {
-        if outcome_valid.len() != outcome_pnl.len() || outcome_valid.len() != outcome_premium.len()
-        {
-            return Err("GPU options-expression outcome tensor lengths do not match".to_string());
-        }
+        validate_outcome_tensor_layout(outcome_valid, outcome_pnl, outcome_premium)?;
 
         Ok(Self {
             d_outcome_valid: DeviceBuffer::from_slice(outcome_valid).map_err(|e| e.to_string())?,
@@ -707,9 +817,8 @@ impl OptionsExpressionGpuRuntime {
     ) -> Result<OptionsGpuTensorRun, String> {
         self.set_current()?;
         let mut cache_usage = OptionsGpuRuntimeCacheUsage::default();
-        if inputs.tuple_candidate_offsets.len() != inputs.tuple_summary_offsets.len() {
-            return Err("GPU options-expression tuple offset lengths do not match".to_string());
-        }
+        validate_score_inputs(inputs)?;
+        validate_event_ranges(event_ranges, inputs.outcome_valid.len())?;
         let tuple_count = inputs.tuple_candidate_offsets.len();
         let free_memory_bytes = mem_get_info().ok().map(|(free, _total)| free as u64);
         let chunk_plan = OptionsGpuChunkPlan::for_inputs(
@@ -821,21 +930,28 @@ impl OptionsExpressionGpuRuntime {
         harsher_inputs: &GpuFlatScoreInputs,
     ) -> Result<OptionsGpuCombinedTensorRun, String> {
         self.set_current()?;
-        if baseline_inputs.tuple_candidate_offsets.len()
-            != baseline_inputs.tuple_summary_offsets.len()
-            || conservative_inputs.tuple_candidate_offsets.len()
-                != conservative_inputs.tuple_summary_offsets.len()
-            || harsher_inputs.tuple_candidate_offsets.len()
-                != harsher_inputs.tuple_summary_offsets.len()
-        {
-            return Err("GPU options-expression tuple offset lengths do not match".to_string());
-        }
+        validate_score_inputs(baseline_inputs)?;
+        validate_score_inputs(conservative_inputs)?;
+        validate_score_inputs(harsher_inputs)?;
         let tuple_count = baseline_inputs.tuple_candidate_offsets.len();
         if conservative_inputs.tuple_candidate_offsets.len() != tuple_count
             || harsher_inputs.tuple_candidate_offsets.len() != tuple_count
         {
             return Err("GPU options-expression combined scorer requires identical tuple counts across lanes".to_string());
         }
+        if conservative_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
+            || harsher_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
+        {
+            return Err(
+                "GPU options-expression combined scorer requires identical outcome tensor lengths across lanes"
+                    .to_string(),
+            );
+        }
+        validate_combined_search_holdout_bounds(
+            search_end,
+            holdout_end,
+            baseline_inputs.outcome_valid.len(),
+        )?;
         let search_end_u32 =
             u32::try_from(search_end).map_err(|_| "search_end exceeds u32::MAX".to_string())?;
         let holdout_end_u32 =
@@ -1017,9 +1133,7 @@ impl OptionsExpressionGpuRuntime {
         inputs: &GpuFlatScoreInputs,
     ) -> Result<OptionsGpuRuntimeCacheUsage, String> {
         self.set_current()?;
-        if inputs.tuple_candidate_offsets.len() != inputs.tuple_summary_offsets.len() {
-            return Err("GPU options-expression tuple offset lengths do not match".to_string());
-        }
+        validate_score_inputs(inputs)?;
         let tuple_count = inputs.tuple_candidate_offsets.len();
         let free_memory_bytes = mem_get_info().ok().map(|(free, _total)| free as u64);
         let chunk_plan = OptionsGpuChunkPlan::for_inputs(
@@ -1054,11 +1168,22 @@ impl OptionsExpressionGpuRuntime {
         harsher_inputs: &GpuFlatScoreInputs,
     ) -> Result<OptionsGpuRuntimeCacheUsage, String> {
         self.set_current()?;
+        validate_score_inputs(baseline_inputs)?;
+        validate_score_inputs(conservative_inputs)?;
+        validate_score_inputs(harsher_inputs)?;
         let tuple_count = baseline_inputs.tuple_candidate_offsets.len();
         if conservative_inputs.tuple_candidate_offsets.len() != tuple_count
             || harsher_inputs.tuple_candidate_offsets.len() != tuple_count
         {
             return Err("GPU options-expression combined scorer requires identical tuple counts across lanes".to_string());
+        }
+        if conservative_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
+            || harsher_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
+        {
+            return Err(
+                "GPU options-expression combined scorer requires identical outcome tensor lengths across lanes"
+                    .to_string(),
+            );
         }
         let free_memory_bytes = mem_get_info().ok().map(|(free, _total)| free as u64);
         let chunk_plan = OptionsGpuChunkPlan::for_combined_inputs(
@@ -1120,7 +1245,7 @@ fn with_runtime<T>(
     let runtime = {
         let mut runtimes = options_expression_gpu_runtime_store()
             .lock()
-            .expect("options expression gpu runtime store poisoned");
+            .map_err(|_| "options expression gpu runtime store poisoned".to_string())?;
         if let Some(runtime) = runtimes.get(&device_id) {
             Arc::clone(runtime)
         } else {
@@ -1131,7 +1256,7 @@ fn with_runtime<T>(
     };
     let mut runtime = runtime
         .lock()
-        .expect("options expression gpu runtime poisoned");
+        .map_err(|_| format!("options expression gpu runtime poisoned for device {device_id}"))?;
     runtime.set_current()?;
     f(&mut runtime)
 }
@@ -1378,6 +1503,79 @@ mod tests {
             shared_key: "shared".to_string(),
             outcome_key: "outcome".to_string(),
         }
+    }
+
+    #[test]
+    fn score_input_validation_rejects_outcome_tensor_length_mismatch() {
+        let mut inputs = sample_inputs(8);
+        inputs.outcome_premium.pop();
+
+        let err = validate_score_inputs(&inputs).expect_err("outcome mismatch should be rejected");
+        assert!(err.contains("outcome tensor lengths do not match"));
+    }
+
+    #[test]
+    fn event_range_validation_rejects_invalid_ranges() {
+        let err = validate_event_ranges(&[(3, 3)], 8).expect_err("empty range should fail");
+        assert!(err.contains("must be < end"));
+
+        let err = validate_event_ranges(&[(0, 9)], 8).expect_err("out-of-bounds range should fail");
+        assert!(err.contains("exceeds outcome tensor length 8"));
+    }
+
+    #[test]
+    fn combined_search_holdout_bounds_validation_rejects_bad_ordering() {
+        let err = validate_combined_search_holdout_bounds(0, 4, 8)
+            .expect_err("zero search_end should fail");
+        assert!(err.contains("search_end > 0"));
+
+        let err =
+            validate_combined_search_holdout_bounds(4, 4, 8).expect_err("equal bounds should fail");
+        assert!(err.contains("search_end (4) < holdout_end (4)"));
+
+        let err = validate_combined_search_holdout_bounds(3, 9, 8)
+            .expect_err("holdout end past tensor length should fail");
+        assert!(err.contains("exceeds outcome tensor length 8"));
+    }
+
+    #[test]
+    fn combined_chunk_plan_counts_only_distinct_shared_input_layouts() {
+        let baseline = sample_inputs(128);
+        let conservative_same = sample_inputs(128);
+        let mut harsher_distinct = sample_inputs(128);
+        harsher_distinct.shared_key = "shared_other".to_string();
+
+        let one_lane_plan = OptionsGpuChunkPlan::for_combined_inputs(
+            128,
+            8 * 1024 * 1024 * 1024,
+            Some(8 * 1024 * 1024 * 1024),
+            &baseline,
+            &baseline,
+            &baseline,
+        )
+        .expect("combined plan with one distinct shared layout");
+        let two_lane_plan = OptionsGpuChunkPlan::for_combined_inputs(
+            128,
+            8 * 1024 * 1024 * 1024,
+            Some(8 * 1024 * 1024 * 1024),
+            &baseline,
+            &conservative_same,
+            &harsher_distinct,
+        )
+        .expect("combined plan with two distinct shared layouts");
+
+        assert!(
+            two_lane_plan.gpu_shared_input_bytes_per_chunk
+                > one_lane_plan.gpu_shared_input_bytes_per_chunk
+        );
+        assert_eq!(
+            distinct_shared_input_lane_count(&[&baseline, &baseline, &baseline]),
+            1
+        );
+        assert_eq!(
+            distinct_shared_input_lane_count(&[&baseline, &conservative_same, &harsher_distinct]),
+            2
+        );
     }
 
     #[test]

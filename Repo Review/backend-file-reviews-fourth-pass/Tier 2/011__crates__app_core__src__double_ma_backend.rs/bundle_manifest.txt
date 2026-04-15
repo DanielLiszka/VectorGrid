@@ -1,0 +1,20 @@
+Tier: Tier 2
+Tier rationale: document-only, but shared contract/default surface
+Source file: crates/app_core/src/double_ma_backend.rs
+Third-pass bucket: Document only
+Second-pass bucket: Document only
+
+Primary files:
+- source__crates__app_core__src__double_ma_backend.rs <= crates/app_core/src/double_ma_backend.rs
+- review__third_pass.md <= Repo Review/backend-file-reviews-third-pass/crates/app_core/src/double_ma_backend.rs.review.md
+- review__second_pass.md <= Repo Review/backend-file-reviews-second-pass/crates/app_core/src/double_ma_backend.rs.review.md
+- review__first_pass.md <= Repo Review/backend-file-reviews/crates/app_core/src/double_ma_backend.rs.review.md
+
+Repo guidance:
+- context__AGENTS.md <= AGENTS.md
+- context__REPO_MAP.md <= REPO_MAP.md
+
+Additional context files:
+- context__01__crates__app_core__src__lib.rs <= crates/app_core/src/lib.rs
+- context__02__crates__app_core__src__double_ma.rs <= crates/app_core/src/double_ma.rs
+- context__03__crates__app_core__src__double_ma_validate.rs <= crates/app_core/src/double_ma_validate.rs

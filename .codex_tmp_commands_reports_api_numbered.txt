@@ -1,0 +1,373 @@
+   1:use super::commands_reports;
+   2:use serde::Serialize;
+   3:use serde_json::Value;
+   4:use tauri::Manager;
+   5:
+   6:#[derive(Debug, Clone, Serialize)]
+   7:pub struct SaveReportXlsxResponse {
+   8:    pub path: String,
+   9:    pub bytes: usize,
+  10:    pub artifact_updated: bool,
+  11:    pub artifact_update_warning: String,
+  12:}
+  13:
+  14:#[tauri::command]
+  15:pub async fn build_report_xlsx(report: Value, max_rows: Option<u32>) -> Result<String, String> {
+  16:    tauri::async_runtime::spawn_blocking(move || {
+  17:        commands_reports::build_report_xlsx_blocking(report, max_rows)
+  18:    })
+  19:    .await
+  20:    .map_err(|e| e.to_string())?
+  21:}
+  22:
+  23:#[tauri::command]
+  24:pub async fn build_validation_shortlist_csv(validation_res: Value) -> Result<String, String> {
+  25:    tauri::async_runtime::spawn_blocking(move || {
+  26:        commands_reports::build_validation_shortlist_csv_blocking(validation_res)
+  27:    })
+  28:    .await
+  29:    .map_err(|e| e.to_string())?
+  30:}
+  31:
+  32:#[tauri::command]
+  33:pub async fn save_report_xlsx(
+  34:    report: Value,
+  35:    max_rows: Option<u32>,
+  36:    app: tauri::AppHandle,
+  37:) -> Result<SaveReportXlsxResponse, String> {
+  38:    save_report_xlsx_with_app(report, max_rows, app).await
+  39:}
+  40:
+  41:async fn save_report_xlsx_with_app<R: tauri::Runtime>(
+  42:    report: Value,
+  43:    max_rows: Option<u32>,
+  44:    app: tauri::AppHandle<R>,
+  45:) -> Result<SaveReportXlsxResponse, String> {
+  46:    tauri::async_runtime::spawn_blocking(move || {
+  47:        commands_reports::save_report_xlsx_blocking(report, max_rows, app)
+  48:    })
+  49:    .await
+  50:    .map_err(|e| e.to_string())?
+  51:}
+  52:
+  53:#[tauri::command]
+  54:pub async fn save_report_xlsx_from_artifact(
+  55:    path: String,
+  56:    max_rows: Option<u32>,
+  57:    app: tauri::AppHandle,
+  58:) -> Result<SaveReportXlsxResponse, String> {
+  59:    save_report_xlsx_from_artifact_with_app(path, max_rows, app).await
+  60:}
+  61:
+  62:async fn save_report_xlsx_from_artifact_with_app<R: tauri::Runtime>(
+  63:    path: String,
+  64:    max_rows: Option<u32>,
+  65:    app: tauri::AppHandle<R>,
+  66:) -> Result<SaveReportXlsxResponse, String> {
+  67:    tauri::async_runtime::spawn_blocking(move || {
+  68:        commands_reports::save_report_xlsx_from_artifact_blocking(path, max_rows, app)
+  69:    })
+  70:    .await
+  71:    .map_err(|e| e.to_string())?
+  72:}
+  73:
+  74:#[tauri::command]
+  75:pub async fn open_reports_dir(app: tauri::AppHandle) -> Result<String, String> {
+  76:    open_reports_dir_with_app(app).await
+  77:}
+  78:
+  79:async fn open_reports_dir_with_app<R: tauri::Runtime>(
+  80:    app: tauri::AppHandle<R>,
+  81:) -> Result<String, String> {
+  82:    tauri::async_runtime::spawn_blocking(move || open_reports_dir_blocking(app))
+  83:        .await
+  84:        .map_err(|e| e.to_string())?
+  85:}
+  86:
+  87:fn open_reports_dir_blocking_with_revealer<R: tauri::Runtime, F>(
+  88:    app: tauri::AppHandle<R>,
+  89:    reveal: F,
+  90:) -> Result<String, String>
+  91:where
+  92:    F: FnOnce(String) -> Result<(), String>,
+  93:{
+  94:    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+  95:    let dir = commands_reports::reports_dir_for_base(&base)?;
+  96:    let dir_string = dir.to_string_lossy().to_string();
+  97:    reveal(dir_string.clone())?;
+  98:    Ok(dir_string)
+  99:}
+ 100:
+ 101:fn open_reports_dir_blocking<R: tauri::Runtime>(
+ 102:    app: tauri::AppHandle<R>,
+ 103:) -> Result<String, String> {
+ 104:    open_reports_dir_blocking_with_revealer(app, commands_reports::reveal_path_blocking)
+ 105:}
+ 106:
+ 107:#[tauri::command]
+ 108:pub async fn reveal_path(path: String) -> Result<(), String> {
+ 109:    tauri::async_runtime::spawn_blocking(move || commands_reports::reveal_path_blocking(path))
+ 110:        .await
+ 111:        .map_err(|e| e.to_string())?
+ 112:}
+ 113:
+ 114:#[tauri::command]
+ 115:pub async fn open_path(path: String) -> Result<(), String> {
+ 116:    tauri::async_runtime::spawn_blocking(move || commands_reports::open_path_blocking(path))
+ 117:        .await
+ 118:        .map_err(|e| e.to_string())?
+ 119:}
+ 120:
+ 121:#[cfg(test)]
+ 122:mod tests {
+ 123:    use super::*;
+ 124:    use crate::state::{AppState, BackgroundTaskState};
+ 125:    use serde_json::{json, Value};
+ 126:    use std::path::Path;
+ 127:
+ 128:    fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+ 129:        tauri::test::mock_builder()
+ 130:            .manage(AppState::default())
+ 131:            .manage(BackgroundTaskState::default())
+ 132:            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+ 133:            .expect("failed to build tauri mock app")
+ 134:    }
+ 135:
+ 136:    fn unique_suffix(prefix: &str) -> String {
+ 137:        let nanos = std::time::SystemTime::now()
+ 138:            .duration_since(std::time::UNIX_EPOCH)
+ 139:            .unwrap_or_default()
+ 140:            .as_nanos();
+ 141:        format!("{prefix}_{nanos}")
+ 142:    }
+ 143:
+ 144:    fn minimal_report(ts: &str) -> Value {
+ 145:        json!({
+ 146:          "version": 1,
+ 147:          "kind": "vectorgrid_report",
+ 148:          "ts": ts,
+ 149:          "validation": {
+ 150:            "res": {
+ 151:              "data_id": "test",
+ 152:              "candidates": [
+ 153:                {
+ 154:                  "params": {
+ 155:                    "fast_ma_type": "sma",
+ 156:                    "fast_len": 9,
+ 157:                    "slow_ma_type": "ema",
+ 158:                    "slow_len": 21
+ 159:                  },
+ 160:                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+ 161:                  "robust_score": 1.23,
+ 162:                  "robust_pareto": true
+ 163:                }
+ 164:              ]
+ 165:            }
+ 166:          }
+ 167:        })
+ 168:    }
+ 169:
+ 170:    fn minimal_validation_result() -> Value {
+ 171:        json!({
+ 172:          "data_id": "test",
+ 173:          "candidates": [
+ 174:            {
+ 175:              "params": {
+ 176:                "fast_ma_type": "sma",
+ 177:                "fast_len": 9,
+ 178:                "slow_ma_type": "ema",
+ 179:                "slow_len": 21
+ 180:              },
+ 181:              "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+ 182:              "robust_score": 1.23,
+ 183:              "robust_pareto": true
+ 184:            }
+ 185:          ]
+ 186:        })
+ 187:    }
+ 188:
+ 189:    fn minimal_artifact(ts: &str) -> Value {
+ 190:        json!({
+ 191:          "kind": "vectorgrid_run_artifact",
+ 192:          "ts": ts,
+ 193:          "dataset_meta": {
+ 194:            "csv_path": "C:/data/AAPL.csv",
+ 195:            "timeframe": "1h",
+ 196:            "label": "AAPL artifact",
+ 197:            "symbol": "AAPL"
+ 198:          },
+ 199:          "run": {
+ 200:            "req": { "strategy_kind": "DoubleMa" },
+ 201:            "res": { "top": [] }
+ 202:          },
+ 203:          "validation": {
+ 204:            "req": { "candidates": [] },
+ 205:            "res": {
+ 206:              "data_id": "artifact-test",
+ 207:              "candidates": [
+ 208:                {
+ 209:                  "params": {
+ 210:                    "fast_ma_type": "sma",
+ 211:                    "fast_len": 9,
+ 212:                    "slow_ma_type": "ema",
+ 213:                    "slow_len": 21
+ 214:                  },
+ 215:                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+ 216:                  "robust_score": 1.23,
+ 217:                  "robust_pareto": true
+ 218:                }
+ 219:              ]
+ 220:            }
+ 221:          }
+ 222:        })
+ 223:    }
+ 224:
+ 225:    #[tokio::test(flavor = "multi_thread")]
+ 226:    async fn build_report_xlsx_async_matches_blocking_builder() {
+ 227:        let report = minimal_report(&unique_suffix("build_report"));
+ 228:        let wrapped = build_report_xlsx(report.clone(), Some(1))
+ 229:            .await
+ 230:            .expect("async xlsx");
+ 231:        let direct =
+ 232:            commands_reports::build_report_xlsx_blocking(report, Some(1)).expect("blocking xlsx");
+ 233:        assert_eq!(wrapped, direct);
+ 234:    }
+ 235:
+ 236:    #[tokio::test(flavor = "multi_thread")]
+ 237:    async fn build_validation_shortlist_csv_async_matches_blocking_builder() {
+ 238:        let validation_res = minimal_validation_result();
+ 239:        let wrapped = build_validation_shortlist_csv(validation_res.clone())
+ 240:            .await
+ 241:            .expect("async csv");
+ 242:        let direct = commands_reports::build_validation_shortlist_csv_blocking(validation_res)
+ 243:            .expect("blocking csv");
+ 244:        assert_eq!(wrapped, direct);
+ 245:    }
+ 246:
+ 247:    #[tokio::test(flavor = "multi_thread")]
+ 248:    async fn save_report_xlsx_async_writes_under_app_local_reports_dir() {
+ 249:        let app = build_mock_app();
+ 250:        let handle = app.handle().clone();
+ 251:        let ts = unique_suffix("save_report");
+ 252:
+ 253:        let SaveReportXlsxResponse {
+ 254:            path,
+ 255:            bytes,
+ 256:            artifact_updated,
+ 257:            artifact_update_warning,
+ 258:        } = save_report_xlsx_with_app(minimal_report(&ts), Some(1), handle.clone())
+ 259:            .await
+ 260:            .expect("async save");
+ 261:        assert!(Path::new(&path).is_file());
+ 262:        assert!(path.contains("reports"));
+ 263:        assert!(path.ends_with(".xlsx"));
+ 264:        assert!(bytes > 0);
+ 265:        assert!(!artifact_updated);
+ 266:        assert!(artifact_update_warning.is_empty());
+ 267:        assert!(path.contains(&ts.replace(':', "-")));
+ 268:
+ 269:        let base = handle
+ 270:            .path()
+ 271:            .app_local_data_dir()
+ 272:            .expect("app local data dir");
+ 273:        assert!(Path::new(&path).starts_with(base.join("reports")));
+ 274:    }
+ 275:
+ 276:    #[tokio::test(flavor = "multi_thread")]
+ 277:    async fn save_report_xlsx_from_artifact_async_writes_report_from_runs_dir() {
+ 278:        let app = build_mock_app();
+ 279:        let handle = app.handle().clone();
+ 280:        let base = handle
+ 281:            .path()
+ 282:            .app_local_data_dir()
+ 283:            .expect("app local data dir");
+ 284:        let runs_dir = base.join("runs");
+ 285:        std::fs::create_dir_all(&runs_dir).expect("runs dir");
+ 286:
+ 287:        let ts = unique_suffix("artifact");
+ 288:        let artifact_path = runs_dir.join(format!("vectorgrid_run_{ts}.json"));
+ 289:        std::fs::write(
+ 290:            &artifact_path,
+ 291:            serde_json::to_vec_pretty(&minimal_artifact(&ts)).expect("artifact json"),
+ 292:        )
+ 293:        .expect("write artifact");
+ 294:
+ 295:        let saved = save_report_xlsx_from_artifact_with_app(
+ 296:            artifact_path.to_string_lossy().to_string(),
+ 297:            Some(1),
+ 298:            handle.clone(),
+ 299:        )
+ 300:        .await
+ 301:        .expect("artifact-backed save");
+ 302:
+ 303:        assert!(Path::new(&saved.path).is_file());
+ 304:        assert!(saved.path.contains("reports"));
+ 305:        assert!(saved.bytes > 0);
+ 306:        assert!(saved.artifact_updated);
+ 307:        assert!(saved.artifact_update_warning.is_empty());
+ 308:
+ 309:        let updated_artifact = std::fs::read_to_string(&artifact_path).expect("read artifact");
+ 310:        let updated_artifact: Value =
+ 311:            serde_json::from_str(&updated_artifact).expect("parse artifact");
+ 312:        assert_eq!(
+ 313:            updated_artifact
+ 314:                .get("report_xlsx_path")
+ 315:                .and_then(Value::as_str),
+ 316:            Some(saved.path.as_str())
+ 317:        );
+ 318:    }
+ 319:
+ 320:    #[test]
+ 321:    fn open_reports_dir_blocking_with_revealer_creates_reports_dir_and_returns_it() {
+ 322:        let app = build_mock_app();
+ 323:        let handle = app.handle().clone();
+ 324:        let mut revealed = None;
+ 325:
+ 326:        let opened = open_reports_dir_blocking_with_revealer(handle.clone(), |path| {
+ 327:            revealed = Some(path);
+ 328:            Ok(())
+ 329:        })
+ 330:        .expect("open reports dir");
+ 331:
+ 332:        assert_eq!(revealed, Some(opened.clone()));
+ 333:        assert!(Path::new(&opened).is_dir());
+ 334:        let base = handle
+ 335:            .path()
+ 336:            .app_local_data_dir()
+ 337:            .expect("app local data dir");
+ 338:        assert!(Path::new(&opened).starts_with(base.join("reports")));
+ 339:    }
+ 340:
+ 341:    #[tokio::test(flavor = "multi_thread")]
+ 342:    async fn open_reports_dir_with_app_async_creates_reports_dir() {
+ 343:        let app = build_mock_app();
+ 344:        let handle = app.handle().clone();
+ 345:
+ 346:        let opened = open_reports_dir_with_app(handle.clone())
+ 347:            .await
+ 348:            .expect("open reports dir");
+ 349:
+ 350:        assert!(Path::new(&opened).is_dir());
+ 351:        let base = handle
+ 352:            .path()
+ 353:            .app_local_data_dir()
+ 354:            .expect("app local data dir");
+ 355:        assert!(Path::new(&opened).starts_with(base.join("reports")));
+ 356:    }
+ 357:
+ 358:    #[tokio::test(flavor = "multi_thread")]
+ 359:    async fn open_path_async_surfaces_missing_path_errors() {
+ 360:        let err = open_path("C:/definitely-missing/nonexistent-report.xlsx".to_string())
+ 361:            .await
+ 362:            .expect_err("missing path");
+ 363:        assert!(err.contains("path does not exist"));
+ 364:    }
+ 365:
+ 366:    #[tokio::test(flavor = "multi_thread")]
+ 367:    async fn reveal_path_async_surfaces_missing_path_errors() {
+ 368:        let err = reveal_path("C:/definitely-missing/nonexistent-report.xlsx".to_string())
+ 369:            .await
+ 370:            .expect_err("missing path");
+ 371:        assert!(err.contains("path does not exist"));
+ 372:    }
+ 373:}

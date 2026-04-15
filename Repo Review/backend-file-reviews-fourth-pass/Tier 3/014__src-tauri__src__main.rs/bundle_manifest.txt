@@ -1,0 +1,20 @@
+Tier: Tier 3
+Tier rationale: accept-as-is packet
+Source file: src-tauri/src/main.rs
+Third-pass bucket: Accept as-is
+Second-pass bucket: Accept as-is
+
+Primary files:
+- source__src-tauri__src__main.rs <= src-tauri/src/main.rs
+- review__third_pass.md <= Repo Review/backend-file-reviews-third-pass/src-tauri/src/main.rs.review.md
+- review__second_pass.md <= Repo Review/backend-file-reviews-second-pass/src-tauri/src/main.rs.review.md
+- review__first_pass.md <= Repo Review/backend-file-reviews/src-tauri/src/main.rs.review.md
+
+Repo guidance:
+- context__AGENTS.md <= AGENTS.md
+- context__REPO_MAP.md <= REPO_MAP.md
+
+Additional context files:
+- context__01__src-tauri__src__lib.rs <= src-tauri/src/lib.rs
+- context__02__src-tauri__src__commands.rs <= src-tauri/src/commands.rs
+- context__03__src-tauri__src__state.rs <= src-tauri/src/state.rs

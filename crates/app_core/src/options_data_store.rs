@@ -74,7 +74,12 @@ fn normalize_header_name(raw: &str) -> String {
 fn header_index(headers: &StringRecord) -> Result<HeaderIndex, String> {
     let mut by_name: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, header) in headers.iter().enumerate() {
-        by_name.insert(normalize_header_name(header), idx);
+        let normalized = normalize_header_name(header);
+        if let Some(existing_idx) = by_name.insert(normalized.clone(), idx) {
+            return Err(format!(
+                "normalized options CSV contains duplicate column '{normalized}' at indexes {existing_idx} and {idx}"
+            ));
+        }
     }
     let require = |name: &str| {
         by_name
@@ -288,6 +293,53 @@ fn parse_row(
     })
 }
 
+fn has_any_quote_fields(row: &OptionsPriceRow) -> bool {
+    row.bid.is_some() || row.ask.is_some() || row.mid.is_some()
+}
+
+fn ensure_series_metadata_matches(
+    series: &OptionsContractSeries,
+    row: &NormalizedCsvRow,
+) -> Result<(), String> {
+    if series.root_symbol != row.root_symbol {
+        return Err(format!(
+            "contract '{}' root_symbol mismatch: existing '{}' vs '{}'",
+            row.contract_id, series.root_symbol, row.root_symbol
+        ));
+    }
+    if series.option_type != row.option_type {
+        return Err(format!(
+            "contract '{}' option_type mismatch: existing '{:?}' vs '{:?}'",
+            row.contract_id, series.option_type, row.option_type
+        ));
+    }
+    if series.expiration_date != row.expiration_date {
+        return Err(format!(
+            "contract '{}' expiration_date mismatch: existing '{}' vs '{}'",
+            row.contract_id, series.expiration_date, row.expiration_date
+        ));
+    }
+    if series.expiration_timestamp_ms != row.expiration_timestamp_ms {
+        return Err(format!(
+            "contract '{}' expiration_timestamp_ms mismatch: existing {} vs {}",
+            row.contract_id, series.expiration_timestamp_ms, row.expiration_timestamp_ms
+        ));
+    }
+    if series.strike.to_bits() != row.strike.to_bits() {
+        return Err(format!(
+            "contract '{}' strike mismatch: existing {} vs {}",
+            row.contract_id, series.strike, row.strike
+        ));
+    }
+    if series.multiplier.to_bits() != row.multiplier.to_bits() {
+        return Err(format!(
+            "contract '{}' multiplier mismatch: existing {} vs {}",
+            row.contract_id, series.multiplier, row.multiplier
+        ));
+    }
+    Ok(())
+}
+
 pub fn load_imported_options_dataset_from_csv(
     req: &ImportedOptionsDatasetCsvBuildRequest,
 ) -> Result<ImportedOptionsDataset, String> {
@@ -320,7 +372,6 @@ pub fn load_imported_options_dataset_from_csv(
 
     let mut grouped: BTreeMap<String, OptionsContractSeries> = BTreeMap::new();
     let mut row_count = 0usize;
-    let mut rows_with_quote_fields = 0usize;
     let mut coverage_start: Option<i64> = None;
     let mut coverage_end: Option<i64> = None;
     let mut inferred_root_symbol: Option<String> = explicit_root_symbol.map(normalize_root_symbol);
@@ -329,9 +380,6 @@ pub fn load_imported_options_dataset_from_csv(
         let record =
             result.map_err(|e| format!("failed to read normalized options CSV row: {e}"))?;
         let row = parse_row(&record, &header, explicit_root_symbol)?;
-        if row.row.bid.is_some() || row.row.ask.is_some() || row.row.mid.is_some() {
-            rows_with_quote_fields += 1;
-        }
         if let Some(current) = inferred_root_symbol.as_ref() {
             if current != &row.root_symbol {
                 return Err(format!(
@@ -351,19 +399,24 @@ pub fn load_imported_options_dataset_from_csv(
             *end = row.row.timestamp_ms;
         }
         row_count += 1;
-        grouped
-            .entry(row.contract_id.clone())
-            .and_modify(|series| series.rows.push(row.row.clone()))
-            .or_insert_with(|| OptionsContractSeries {
-                root_symbol: row.root_symbol.clone(),
-                contract_id: row.contract_id,
-                option_type: row.option_type,
-                expiration_date: row.expiration_date,
-                expiration_timestamp_ms: row.expiration_timestamp_ms,
-                strike: row.strike,
-                multiplier: row.multiplier,
-                rows: vec![row.row],
-            });
+        if let Some(series) = grouped.get_mut(&row.contract_id) {
+            ensure_series_metadata_matches(series, &row)?;
+            series.rows.push(row.row.clone());
+        } else {
+            grouped.insert(
+                row.contract_id.clone(),
+                OptionsContractSeries {
+                    root_symbol: row.root_symbol.clone(),
+                    contract_id: row.contract_id,
+                    option_type: row.option_type,
+                    expiration_date: row.expiration_date,
+                    expiration_timestamp_ms: row.expiration_timestamp_ms,
+                    strike: row.strike,
+                    multiplier: row.multiplier,
+                    rows: vec![row.row],
+                },
+            );
+        }
     }
 
     if row_count == 0 {
@@ -384,12 +437,6 @@ pub fn load_imported_options_dataset_from_csv(
                     .to_string(),
             );
         }
-        if rows_with_quote_fields == 0 {
-            return Err(
-                "top_of_book_quote datasets require at least one populated quote-side row"
-                    .to_string(),
-            );
-        }
     }
 
     let mut contracts: Vec<OptionsContractSeries> = grouped.into_values().collect();
@@ -400,6 +447,20 @@ pub fn load_imported_options_dataset_from_csv(
         contract
             .rows
             .dedup_by(|a, b| a.timestamp_ms == b.timestamp_ms);
+    }
+
+    if matches!(req.price_semantics, OptionsPriceSemantics::TopOfBookQuote) {
+        let retained_rows_with_quote_fields = contracts
+            .iter()
+            .flat_map(|contract| contract.rows.iter())
+            .filter(|row| has_any_quote_fields(row))
+            .count();
+        if retained_rows_with_quote_fields == 0 {
+            return Err(
+                "top_of_book_quote datasets require at least one retained quote-side row after timestamp dedup"
+                    .to_string(),
+            );
+        }
     }
 
     let manifest = OptionsDatasetManifestV1 {
@@ -439,12 +500,21 @@ pub fn read_options_dataset_manifest(path: &Path) -> Result<OptionsDatasetManife
             path.display()
         )
     })?;
-    serde_json::from_slice::<OptionsDatasetManifestV1>(&bytes).map_err(|e| {
+    let manifest = serde_json::from_slice::<OptionsDatasetManifestV1>(&bytes).map_err(|e| {
         format!(
             "failed to parse options dataset manifest {}: {e}",
             path.display()
         )
-    })
+    })?;
+    if manifest.version != OPTIONS_DATASET_MANIFEST_VERSION {
+        return Err(format!(
+            "unsupported options dataset manifest version {} at {} (expected {})",
+            manifest.version,
+            path.display(),
+            OPTIONS_DATASET_MANIFEST_VERSION
+        ));
+    }
+    Ok(manifest)
 }
 
 pub fn write_options_dataset_manifest(
@@ -531,6 +601,32 @@ mod tests {
             "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160000000,2.0,2.3,1.9,2.1,498.0,1000,2000\n"
         );
         std::fs::write(path, data).expect("write mislabeled quote dataset csv");
+    }
+
+    fn write_dataset_with_duplicate_normalized_headers(path: &Path) {
+        let data = concat!(
+            "root symbol,root-symbol,contract_id,option_type,expiration_timestamp_ms,strike,timestamp_ms,open,high,low,close,underlying_price\n",
+            "SPY,SPY,SPY_C_001,call,1775779200000,500,1775160000000,2.0,2.3,1.9,2.1,498.0\n"
+        );
+        std::fs::write(path, data).expect("write dataset with duplicate normalized headers");
+    }
+
+    fn write_dataset_with_conflicting_contract_metadata(path: &Path) {
+        let data = concat!(
+            "root_symbol,contract_id,option_type,expiration_date,expiration_timestamp_ms,strike,multiplier,timestamp_ms,open,high,low,close,underlying_price\n",
+            "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160000000,2.0,2.3,1.9,2.1,498.0\n",
+            "SPY,SPY_C_001,call,2026-04-10,1775779200000,505,100,1775160060000,2.1,2.4,2.0,2.2,498.5\n"
+        );
+        std::fs::write(path, data).expect("write dataset with conflicting contract metadata");
+    }
+
+    fn write_quote_dataset_where_only_dropped_duplicates_have_quotes(path: &Path) {
+        let data = concat!(
+            "root_symbol,contract_id,option_type,expiration_date,expiration_timestamp_ms,strike,multiplier,timestamp_ms,open,high,low,close,underlying_price,bid,ask,mid\n",
+            "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160000000,2.0,2.3,1.9,2.1,498.0,,,\n",
+            "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160000000,2.0,2.3,1.9,2.1,498.0,2.0,2.2,2.1\n"
+        );
+        std::fs::write(path, data).expect("write quote dataset with dropped duplicate quote row");
     }
 
     #[test]
@@ -677,5 +773,130 @@ mod tests {
 
         let error = load_imported_options_dataset_from_csv(&req).expect_err("should reject");
         assert!(error.contains("top_of_book_quote datasets require at least one quote-side column"));
+    }
+
+    #[test]
+    fn load_dataset_rejects_duplicate_normalized_headers() {
+        let temp = make_temp_dir("options_dataset_duplicate_headers");
+        let csv_path = temp.join("duplicate_headers.csv");
+        write_dataset_with_duplicate_normalized_headers(&csv_path);
+        let req = ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: "spy_duplicate_headers".to_string(),
+            dataset_path: csv_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "massive".to_string(),
+            provider_source_surface: "minute_aggregate".to_string(),
+            provider_entitlement_profile: None,
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: None,
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: Some("close".to_string()),
+        };
+
+        let error = load_imported_options_dataset_from_csv(&req)
+            .expect_err("should reject duplicate normalized headers");
+        assert!(error.contains("duplicate column 'root_symbol'"));
+    }
+
+    #[test]
+    fn load_dataset_rejects_conflicting_contract_metadata_on_append() {
+        let temp = make_temp_dir("options_dataset_conflicting_metadata");
+        let csv_path = temp.join("conflicting_metadata.csv");
+        write_dataset_with_conflicting_contract_metadata(&csv_path);
+        let req = ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: "spy_conflicting_contract".to_string(),
+            dataset_path: csv_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "massive".to_string(),
+            provider_source_surface: "minute_aggregate".to_string(),
+            provider_entitlement_profile: None,
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: None,
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: Some("close".to_string()),
+        };
+
+        let error = load_imported_options_dataset_from_csv(&req)
+            .expect_err("should reject conflicting contract metadata");
+        assert!(error.contains("contract 'SPY_C_001' strike mismatch"));
+    }
+
+    #[test]
+    fn read_manifest_rejects_unsupported_version() {
+        let temp = make_temp_dir("options_manifest_version");
+        let manifest_path = temp.join("manifest.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "version": 99,
+  "options_dataset_id": "spy_v99",
+  "root_symbol": "SPY",
+  "provider_name": "massive",
+  "provider_source_surface": "minute_aggregate",
+  "quote_resolution": "1m",
+  "price_semantics": "minute_aggregate",
+  "calendar_id": "market_hours_utc",
+  "timezone": "UTC",
+  "coverage_start": 1775160000000,
+  "coverage_end": 1775160060000,
+  "normalization_version": 1,
+  "quote_semantics_version": 1,
+  "corporate_action_mapping_version": 1,
+  "contract_reference_source": "massive_contract_reference",
+  "underlier_reference_source": "underlying_dataset",
+  "dataset_path": "C:/tmp/normalized.csv",
+  "row_count": 2,
+  "contract_count": 1
+}"#,
+        )
+        .expect("write manifest");
+
+        let error = read_options_dataset_manifest(&manifest_path)
+            .expect_err("should reject unsupported version");
+        assert!(error.contains("unsupported options dataset manifest version 99"));
+    }
+
+    #[test]
+    fn load_quote_dataset_rejects_when_only_dropped_duplicates_have_quote_fields() {
+        let temp = make_temp_dir("options_dataset_quote_after_dedup");
+        let csv_path = temp.join("quote_after_dedup.csv");
+        write_quote_dataset_where_only_dropped_duplicates_have_quotes(&csv_path);
+        let req = ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: "spy_quote_after_dedup".to_string(),
+            dataset_path: csv_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "massive".to_string(),
+            provider_source_surface: "top_of_book_quote".to_string(),
+            provider_entitlement_profile: Some("options_business".to_string()),
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::TopOfBookQuote,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: Some("2026-04-05T00:00:00Z".to_string()),
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: None,
+        };
+
+        let error = load_imported_options_dataset_from_csv(&req)
+            .expect_err("should reject after retained-row quote validation");
+        assert!(error.contains("retained quote-side row after timestamp dedup"));
     }
 }

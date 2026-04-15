@@ -794,6 +794,26 @@ fn position_exit_prices(
     }
 }
 
+fn fallback_companion_entry_price_for_structure(
+    structure_family: OptionsStructureFamily,
+    companion_row: &OptionsPriceRow,
+    price_semantics: OptionsPriceSemantics,
+    fill_model: OptionsFillModelFamily,
+) -> Option<f64> {
+    match structure_family {
+        OptionsStructureFamily::LongSingle => None,
+        OptionsStructureFamily::DebitVertical => option_exit_price_for_row(
+            companion_row,
+            price_semantics,
+            fill_model,
+            AggregateStressMode::Baseline,
+        ),
+        OptionsStructureFamily::LongPair => {
+            option_entry_price_for_row(companion_row, price_semantics, fill_model)
+        }
+    }
+}
+
 fn option_path_range_for_row(
     row: &OptionsPriceRow,
     price_semantics: OptionsPriceSemantics,
@@ -4495,11 +4515,11 @@ fn build_event_detail_row(
         .companion_leg
         .and_then(|leg| companion_contract?.rows.get(leg.entry_index))
         .and_then(|row| {
-            option_exit_price_for_row(
+            fallback_companion_entry_price_for_structure(
+                compiled_tuple.tuple.structure_family,
                 row,
                 index.dataset.manifest.price_semantics,
                 compiled_tuple.tuple.fill_model,
-                AggregateStressMode::Baseline,
             )
         });
     let detail = evaluate_trade_detail(
@@ -4524,7 +4544,7 @@ fn build_event_detail_row(
         .map(|value| value.entry_underlier_price)
         .or_else(|| entry_row.map(|row| row.underlying_price));
     let entry_lag_minutes =
-        entry_timestamp.map(|ts| ts.saturating_sub(event.earliest_tradable_timestamp) / MINUTE_MS);
+        entry_timestamp.map(|ts| ts.saturating_sub(requested_entry_timestamp) / MINUTE_MS);
     let minutes_to_expiry_at_entry =
         entry_timestamp.map(|ts| contract.expiration_timestamp_ms.saturating_sub(ts) / MINUTE_MS);
     let realized_hold_minutes = detail.as_ref().map(|value| {
@@ -4579,6 +4599,12 @@ fn build_event_detail_row(
     }
 }
 
+/// Builds inspection-only event path points from raw contract bar data.
+///
+/// This path visualization intentionally uses the underlying option-row
+/// open/high/low/close values, netted by structure family when a companion leg
+/// is present. It is not a quote-aware fill replay and does not reapply the
+/// entry/exit pricing model used by ranking.
 fn build_event_path_points(
     structure_family: OptionsStructureFamily,
     primary_contract: &OptionsContractSeries,
@@ -5219,6 +5245,11 @@ fn build_coverage_adequacy_summary(
     }
 }
 
+/// Runs the full blocking options-expression workflow for the current request.
+///
+/// This entrypoint prepares candidates, ranks the compiled tuples, and then
+/// finalizes result summaries using the same live split fallback semantics the
+/// ranking path used during execution.
 pub fn run_options_expression_blocking(
     req: OptionsExpressionRunRequest,
     signal_manifest: &OptionsSignalEventManifestV1,
@@ -5627,6 +5658,12 @@ fn elapsed_us(start: Instant) -> u64 {
     start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
+/// Re-runs prepare plus ranking and returns event-level inspection rows for the
+/// currently ranked tuple at `tuple_index`.
+///
+/// `tuple_index` is relative to the current ranked output, not a stable tuple
+/// identity across different requests or reruns. Inspection rows replay the
+/// baseline lane only.
 pub fn inspect_options_expression_tuple_blocking(
     req: OptionsExpressionRunRequest,
     tuple_index: usize,
@@ -5684,6 +5721,11 @@ pub fn inspect_options_expression_tuple_blocking(
     })
 }
 
+/// Re-runs prepare plus ranking and returns raw-bar path points for one event in
+/// the currently ranked tuple at `tuple_index`.
+///
+/// `tuple_index` is current-rank-relative. Path inspection remains a baseline
+/// lane, raw-bar visualization rather than a quote-aware fill replay.
 pub fn inspect_options_expression_event_path_blocking(
     req: OptionsExpressionRunRequest,
     tuple_index: usize,
@@ -8799,6 +8841,85 @@ mod tests {
             assert!(missing_row.candidate_invalid_reason.is_some());
         }
         assert!(inspection.rows.iter().all(|row| !row.event_id.is_empty()));
+    }
+
+    #[test]
+    fn tuple_inspection_entry_lag_is_relative_to_requested_entry_timestamp() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference:
+                crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            delay_minutes: vec![1],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+
+        let inspection =
+            inspect_options_expression_tuple_blocking(req, 0, &test_manifest(), &test_dataset())
+                .expect("inspection");
+        let first_row = inspection.rows.first().expect("first row");
+        assert_eq!(
+            first_row.requested_entry_timestamp,
+            first_row.earliest_tradable_timestamp + MINUTE_MS
+        );
+        assert_eq!(
+            first_row.entry_timestamp,
+            Some(first_row.requested_entry_timestamp)
+        );
+        assert_eq!(first_row.entry_lag_minutes, Some(0));
+    }
+
+    #[test]
+    fn fallback_companion_entry_price_respects_structure_family() {
+        let row = OptionsPriceRow {
+            timestamp_ms: 1,
+            open: 1.0,
+            high: 1.2,
+            low: 0.8,
+            close: 1.1,
+            underlying_price: 100.0,
+            bid: Some(0.9),
+            ask: Some(1.3),
+            mid: Some(1.1),
+            volume: Some(10.0),
+            open_interest: Some(20.0),
+            quote_age_ms: Some(0),
+            session_id: Some("session".to_string()),
+        };
+
+        assert_eq!(
+            fallback_companion_entry_price_for_structure(
+                OptionsStructureFamily::DebitVertical,
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative,
+            ),
+            Some(0.9)
+        );
+        assert_eq!(
+            fallback_companion_entry_price_for_structure(
+                OptionsStructureFamily::LongPair,
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative,
+            ),
+            Some(1.3)
+        );
     }
 
     #[test]

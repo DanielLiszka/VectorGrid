@@ -135,6 +135,7 @@ pub struct CdmcPeriodSweepDevice {
 
 #[cfg(feature = "cuda")]
 impl CdmcPeriodSweepDevice {
+    /// Returns the device-row index for an exact period inside the current sweep.
     pub fn row_index_for_period(&self, period: u16) -> Option<usize> {
         if self.period_step == 0 || period < self.period_start || period > self.period_end {
             return None;
@@ -147,6 +148,12 @@ impl CdmcPeriodSweepDevice {
         (idx < self.matrix.rows).then_some(idx)
     }
 
+    /// Returns the current conservative warmup estimate used by existing sweep consumers.
+    ///
+    /// This helper is intentionally documented as inexact. DPO, Correlation
+    /// Cycle `angle`, Correlation Cycle `state`, and Decycler do not share the
+    /// same exact warmup contract, so this compatibility helper should not be
+    /// treated as a precise output-validity boundary for every sweep family.
     pub fn first_valid_for_period(&self, period: u16) -> usize {
         usize::from(period.saturating_sub(1))
     }
@@ -262,6 +269,26 @@ fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
 }
 
+#[cfg(feature = "cuda")]
+fn note_cdmc_gpu_fallback(label: &str, err: &dyn std::fmt::Display) {
+    static DPO_WARNED: OnceLock<()> = OnceLock::new();
+    static CORRELATION_CYCLE_WARNED: OnceLock<()> = OnceLock::new();
+    static MAMA_WARNED: OnceLock<()> = OnceLock::new();
+    static DECYCLER_WARNED: OnceLock<()> = OnceLock::new();
+
+    let warned = match label {
+        "dpo" => &DPO_WARNED,
+        "correlation_cycle" => &CORRELATION_CYCLE_WARNED,
+        "mama_pair" => &MAMA_WARNED,
+        "decycler" => &DECYCLER_WARNED,
+        _ => return,
+    };
+
+    if warned.set(()).is_ok() {
+        eprintln!("CDMC GPU-preferred path fell back to CPU for {label}: {err}");
+    }
+}
+
 fn cdmc_indicator_ids() -> Result<&'static CdmcIndicatorIds, String> {
     static IDS: OnceLock<Result<CdmcIndicatorIds, String>> = OnceLock::new();
     IDS.get_or_init(|| {
@@ -319,7 +346,19 @@ fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
         }
     }
 
-    Ok(descriptor.outputs[0].id.clone())
+    if descriptor.outputs.len() == 1 {
+        return Ok(descriptor.outputs[0].id.clone());
+    }
+
+    Err(format!(
+        "CDMC indicator '{indicator_id}' output mismatch; available outputs: {}",
+        descriptor
+            .outputs
+            .iter()
+            .map(|out| out.id.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<String, String> {
@@ -644,8 +683,9 @@ fn compute_indicator_f64(
                     Kernel::Auto,
                     vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
                 );
-                if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                match out {
+                    Ok(values) => return cuda_series_to_f64(values),
+                    Err(err) => note_cdmc_gpu_fallback(indicator_id, &err),
                 }
             }
         }
@@ -685,14 +725,15 @@ fn compute_mama_pair_f64(
                 let n = prepared.source().len();
                 let mut mama = vec![f32::NAN; n];
                 let mut fama = vec![f32::NAN; n];
-                if cuda
-                    .mama_batch_into_host_f32(prepared.source(), &sweep, &mut mama, &mut fama)
-                    .is_ok()
+                match cuda.mama_batch_into_host_f32(prepared.source(), &sweep, &mut mama, &mut fama)
                 {
-                    return Ok((
-                        mama.into_iter().map(|v| v as f64).collect(),
-                        fama.into_iter().map(|v| v as f64).collect(),
-                    ));
+                    Ok(_) => {
+                        return Ok((
+                            mama.into_iter().map(|v| v as f64).collect(),
+                            fama.into_iter().map(|v| v as f64).collect(),
+                        ));
+                    }
+                    Err(err) => note_cdmc_gpu_fallback("mama_pair", &err),
                 }
             }
         }
@@ -741,8 +782,9 @@ fn compute_decycler_f64(
                     Kernel::Auto,
                     vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
                 );
-                if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                match out {
+                    Ok(values) => return cuda_series_to_f64(values),
+                    Err(err) => note_cdmc_gpu_fallback("decycler", &err),
                 }
             }
         }
@@ -1036,6 +1078,63 @@ mod tests {
         let desired = build_cdmc_desired_positions(&close, &signals, 1, &strategy, &cfg);
         assert_eq!(desired[2], 1);
         assert_eq!(desired[5], 0);
+    }
+
+    #[test]
+    fn resolve_cdmc_periods_normalizes_against_strategy_lengths_and_floor() {
+        let cfg = CdmcStrategyParams {
+            dpo_period: 1,
+            correlation_cycle_period: 1,
+            decycler_period: 1,
+            ..CdmcStrategyParams::default()
+        };
+        let periods = resolve_cdmc_periods(&cfg, 12, 34);
+        assert_eq!(periods.dpo, 12);
+        assert_eq!(periods.correlation_cycle, 34);
+        assert_eq!(periods.decycler, 34);
+    }
+
+    #[test]
+    fn phase_threshold_is_effectively_magnitude_only() {
+        let close = vec![100.0, 100.4, 101.2, 102.0, 101.4, 100.5, 99.8];
+        let signals = CdmcSignals {
+            dpo: vec![f64::NAN, -0.3, 0.2, 0.7, 0.4, -0.2, -0.6],
+            cycle_angle: vec![f64::NAN, -5.0, 8.0, 12.0, 6.0, -8.0, -14.0],
+            cycle_state: vec![f64::NAN, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0],
+            mama: vec![f64::NAN, 99.8, 100.9, 101.8, 101.7, 100.7, 99.9],
+            fama: vec![f64::NAN, 100.0, 100.5, 101.0, 101.3, 101.0, 100.4],
+            decycler: vec![f64::NAN, 99.9, 100.4, 101.0, 101.2, 100.8, 100.1],
+            first_valid: 1,
+        };
+        let strategy = StrategyConfig::default();
+        let positive = build_cdmc_desired_positions(
+            &close,
+            &signals,
+            1,
+            &strategy,
+            &CdmcStrategyParams {
+                phase_threshold: 8.0,
+                ..CdmcStrategyParams::default()
+            },
+        );
+        let negative = build_cdmc_desired_positions(
+            &close,
+            &signals,
+            1,
+            &strategy,
+            &CdmcStrategyParams {
+                phase_threshold: -8.0,
+                ..CdmcStrategyParams::default()
+            },
+        );
+        assert_eq!(positive, negative);
+    }
+
+    #[test]
+    fn resolve_output_id_rejects_unresolved_multi_output_indicators() {
+        let err = resolve_output_id("correlation_cycle", &["does_not_exist"])
+            .expect_err("multi-output mismatch should not silently bind the first output");
+        assert!(err.contains("available outputs"));
     }
 
     #[cfg(feature = "cuda")]

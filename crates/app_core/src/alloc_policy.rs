@@ -1,4 +1,4 @@
-use std::mem::{self, MaybeUninit};
+use std::mem::MaybeUninit;
 
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
 const DEBUG_F64_POISON_BITS: u64 = 0x1111_1111_1111_1111;
@@ -11,15 +11,6 @@ const DEBUG_I32_POISON_BITS: i32 = 0x1111_1111u32 as i32;
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
 const DEBUG_F32_MATRIX_POISON_BITS: u32 = 0x3333_3333;
 
-#[inline(always)]
-fn assume_init_vec<T>(mut buf: Vec<MaybeUninit<T>>) -> Vec<T> {
-    let ptr = buf.as_mut_ptr() as *mut T;
-    let cap = buf.capacity();
-    let len = buf.len();
-    mem::forget(buf);
-    unsafe { Vec::from_raw_parts(ptr, len, cap) }
-}
-
 #[cfg_attr(any(debug_assertions, test), allow(dead_code))]
 #[inline(always)]
 fn reserve_for_uninit_resize<T>(buf: &mut Vec<T>, len: usize) {
@@ -29,77 +20,108 @@ fn reserve_for_uninit_resize<T>(buf: &mut Vec<T>, len: usize) {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-#[inline(always)]
-pub(crate) fn alloc_uninit_copy<T: Copy>(len: usize) -> Vec<T> {
-    let mut buf: Vec<MaybeUninit<T>> = Vec::with_capacity(len);
-    unsafe {
-        // SAFETY: callers must ensure all elements are fully written before any read.
-        buf.set_len(len);
-    }
-    assume_init_vec(buf)
+#[cfg_attr(debug_assertions, allow(dead_code))]
+pub(crate) trait ScalarScratchInit: Copy {
+    const RELEASE_INIT: Self;
+
+    #[cfg(debug_assertions)]
+    const DEBUG_POISON: Self;
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+impl ScalarScratchInit for f32 {
+    const RELEASE_INIT: Self = 0.0;
+
+    #[cfg(debug_assertions)]
+    const DEBUG_POISON: Self = f32::from_bits(DEBUG_F32_POISON_BITS);
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+impl ScalarScratchInit for i32 {
+    const RELEASE_INIT: Self = 0;
+
+    #[cfg(debug_assertions)]
+    const DEBUG_POISON: Self = DEBUG_I32_POISON_BITS;
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+/// Compatibility helper for GPU-adjacent scalar scratch buffers.
+///
+/// The name is preserved to avoid cross-file churn, but this helper no longer
+/// exposes uninitialized `Vec<T>` storage. If a call site truly needs
+/// `MaybeUninit`, it should keep that storage local until every element has been
+/// written and only then expose a typed view.
+#[inline(always)]
+pub(crate) fn alloc_uninit_copy<T: ScalarScratchInit>(len: usize) -> Vec<T> {
+    #[cfg(not(debug_assertions))]
+    {
+        vec![T::RELEASE_INIT; len]
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        vec![T::DEBUG_POISON; len]
+    }
+}
+
+/// Returns an `f64` scratch buffer whose warm prefix is defined immediately.
+///
+/// The helper name is preserved for compatibility, but the full visible range
+/// is now initialized in release builds so the returned `Vec<f64>` never
+/// exposes uninitialized elements.
 #[inline(always)]
 pub(crate) fn alloc_f64_with_prefix_uninit_tail(len: usize, warm: usize, prefix: f64) -> Vec<f64> {
     let warm = warm.min(len);
-    let mut buf: Vec<MaybeUninit<f64>> = Vec::with_capacity(len);
-
-    #[cfg(not(debug_assertions))]
-    unsafe {
-        // SAFETY: the tail is intentionally left uninitialized for overwrite-heavy paths.
-        buf.set_len(len);
-    }
+    let mut buf = vec![prefix; len];
 
     #[cfg(debug_assertions)]
     {
-        for _ in 0..len {
-            buf.push(MaybeUninit::new(f64::from_bits(DEBUG_F64_POISON_BITS)));
+        for value in &mut buf {
+            *value = f64::from_bits(DEBUG_F64_POISON_BITS);
         }
     }
 
     for i in 0..warm {
-        buf[i].write(prefix);
+        buf[i] = prefix;
     }
 
-    assume_init_vec(buf)
+    buf
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
+/// Returns an `f32` scratch buffer whose warm prefix is defined immediately.
+///
+/// The helper name is preserved for compatibility, but the full visible range
+/// is now initialized in release builds so the returned `Vec<f32>` never
+/// exposes uninitialized elements.
 #[inline(always)]
 pub(crate) fn alloc_f32_with_prefix_uninit_tail(len: usize, warm: usize, prefix: f32) -> Vec<f32> {
     let warm = warm.min(len);
-    let mut buf: Vec<MaybeUninit<f32>> = Vec::with_capacity(len);
-
-    #[cfg(not(debug_assertions))]
-    unsafe {
-        // SAFETY: the tail is intentionally left uninitialized for overwrite-heavy paths.
-        buf.set_len(len);
-    }
+    let mut buf = vec![prefix; len];
 
     #[cfg(debug_assertions)]
     {
-        for _ in 0..len {
-            buf.push(MaybeUninit::new(f32::from_bits(DEBUG_F32_POISON_BITS)));
+        for value in &mut buf {
+            *value = f32::from_bits(DEBUG_F32_POISON_BITS);
         }
     }
 
     for i in 0..warm {
-        buf[i].write(prefix);
+        buf[i] = prefix;
     }
 
-    assume_init_vec(buf)
+    buf
 }
 
+/// Returns a scalar scratch buffer without exposing uninitialized `f64` ranges.
+///
+/// The release branch uses a defined fill value for safety. Callers should
+/// still overwrite the buffer before relying on semantic contents.
 #[inline(always)]
 pub(crate) fn alloc_uninit_f64(len: usize) -> Vec<f64> {
     #[cfg(not(debug_assertions))]
     {
-        let mut buf: Vec<MaybeUninit<f64>> = Vec::with_capacity(len);
-        unsafe {
-            // SAFETY: callers must fully initialize each element before any read.
-            buf.set_len(len);
-        }
-        assume_init_vec(buf)
+        vec![0.0; len]
     }
 
     #[cfg(debug_assertions)]
@@ -108,16 +130,15 @@ pub(crate) fn alloc_uninit_f64(len: usize) -> Vec<f64> {
     }
 }
 
+/// Returns a scalar scratch buffer without exposing uninitialized `f32` ranges.
+///
+/// The release branch uses a defined fill value for safety. Callers should
+/// still overwrite the buffer before relying on semantic contents.
 #[inline(always)]
 pub(crate) fn alloc_uninit_f32(len: usize) -> Vec<f32> {
     #[cfg(not(debug_assertions))]
     {
-        let mut buf: Vec<MaybeUninit<f32>> = Vec::with_capacity(len);
-        unsafe {
-            // SAFETY: callers must fully initialize each element before any read.
-            buf.set_len(len);
-        }
-        assume_init_vec(buf)
+        vec![0.0; len]
     }
 
     #[cfg(debug_assertions)]
@@ -135,10 +156,7 @@ pub(crate) fn resize_uninit_f32(buf: &mut Vec<f32>, len: usize) {
     #[cfg(not(debug_assertions))]
     {
         reserve_for_uninit_resize(buf, len);
-        unsafe {
-            // SAFETY: callers must fully initialize each element before any read.
-            buf.set_len(len);
-        }
+        buf.resize(len, 0.0);
     }
 
     #[cfg(debug_assertions)]
@@ -153,10 +171,7 @@ pub(crate) fn resize_uninit_f64(buf: &mut Vec<f64>, len: usize) {
     #[cfg(not(debug_assertions))]
     {
         reserve_for_uninit_resize(buf, len);
-        unsafe {
-            // SAFETY: callers must fully initialize each element before any read.
-            buf.set_len(len);
-        }
+        buf.resize(len, 0.0);
     }
 
     #[cfg(debug_assertions)]
@@ -171,10 +186,7 @@ pub(crate) fn resize_uninit_i32(buf: &mut Vec<i32>, len: usize) {
     #[cfg(not(debug_assertions))]
     {
         reserve_for_uninit_resize(buf, len);
-        unsafe {
-            // SAFETY: callers must fully initialize each element before any read.
-            buf.set_len(len);
-        }
+        buf.resize(len, 0);
     }
 
     #[cfg(debug_assertions)]
@@ -311,6 +323,8 @@ pub(crate) fn init_matrix_prefixes_f32(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    use super::alloc_uninit_copy;
     use super::{
         alloc_f32_with_prefix_uninit_tail, alloc_f64_with_prefix_uninit_tail, alloc_uninit_f32,
         alloc_uninit_f64, init_matrix_prefixes_f32, init_matrix_prefixes_f64,
@@ -391,6 +405,56 @@ mod tests {
         resize_uninit_f64(&mut values, 5);
         values.copy_from_slice(&[3.0, 4.0, 5.0, 6.0, 7.0]);
         assert_eq!(values, vec![3.0, 4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_scalar_allocators_return_defined_values() {
+        assert_eq!(alloc_uninit_f64(3), vec![0.0, 0.0, 0.0]);
+        assert_eq!(alloc_uninit_f32(2), vec![0.0, 0.0]);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_prefix_allocators_initialize_the_full_visible_range() {
+        assert_eq!(
+            alloc_f64_with_prefix_uninit_tail(4, 1, 7.5),
+            vec![7.5, 7.5, 7.5, 7.5]
+        );
+        assert_eq!(
+            alloc_f32_with_prefix_uninit_tail(3, 2, 2.5),
+            vec![2.5, 2.5, 2.5]
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_resize_helpers_initialize_new_scalar_tail_values() {
+        let mut values_f32 = vec![1.0, 2.0];
+        resize_uninit_f32(&mut values_f32, 5);
+        assert_eq!(values_f32, vec![1.0, 2.0, 0.0, 0.0, 0.0]);
+
+        let mut values_f64 = vec![1.0, 2.0];
+        resize_uninit_f64(&mut values_f64, 4);
+        assert_eq!(values_f64, vec![1.0, 2.0, 0.0, 0.0]);
+
+        let mut values_i32 = vec![1, 2];
+        resize_uninit_i32(&mut values_i32, 5);
+        assert_eq!(values_i32, vec![1, 2, 0, 0, 0]);
+    }
+
+    #[cfg(all(
+        not(debug_assertions),
+        feature = "cuda",
+        feature = "cuda-backtest-kernel"
+    ))]
+    #[test]
+    fn release_alloc_uninit_copy_is_limited_to_supported_scalar_types() {
+        let values_f32: Vec<f32> = alloc_uninit_copy(3);
+        assert_eq!(values_f32, vec![0.0, 0.0, 0.0]);
+
+        let values_i32: Vec<i32> = alloc_uninit_copy(4);
+        assert_eq!(values_i32, vec![0, 0, 0, 0]);
     }
 
     #[test]

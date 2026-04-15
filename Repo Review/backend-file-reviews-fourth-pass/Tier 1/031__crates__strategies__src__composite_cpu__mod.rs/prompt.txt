@@ -1,0 +1,71 @@
+Final adversarial GPT-5.4 Pro review bundle
+
+Target source path: crates/strategies/src/composite_cpu/mod.rs
+Tier: Tier 1
+Current third-pass bucket: Larger refactor but defer
+Tier rationale: current packet is larger-refactor/defer
+
+Files in this bundle
+- Primary source file: `source__crates__strategies__src__composite_cpu__mod.rs`
+- Primary current review packet: `review__third_pass.md`
+- Prior review history: `review__second_pass.md`, `review__first_pass.md`
+- Repo guidance: `context__AGENTS.md`, `context__REPO_MAP.md`
+- Additional local context: `context__01__crates__strategies__src__lib.rs`, `context__02__crates__app_core__src__composite_cpu.rs`, `context__03__crates__app_core__src__composite_validate.rs`
+
+Review instructions
+1. Read the source file and the current third-pass review packet first.
+2. Use the earlier review history only to understand how the packet evolved; do not anchor on it if the live source disagrees.
+3. Use the repo guidance and local context files only as needed to validate contracts and avoid regression-prone recommendations.
+4. Do not restate the current packet. Challenge it.
+5. Identify anything the current packet still missed.
+6. Identify any claims that are overstated, weakly supported, or likely to cause regressions if implemented.
+7. Separate your conclusions into:
+   - safe-now hardening
+   - larger redesign still deferred
+8. If the current action bucket is wrong, say so and explain why.
+9. Be conservative: preserve current behavior unless a bug or contract weakness is clear.
+10. Call out performance, compatibility, IPC, persistence, GPU ABI, or validation risks explicitly when they matter.
+
+Tier-specific focus
+Pressure-test whether the current packet is right to defer to larger redesign, or whether a safer bounded hardening step exists that the packet missed.
+
+Required response format
+Produce your response as a standalone Markdown document suitable to save as a fourth-pass review file.
+
+Use this exact high-level structure:
+- Title: `# Fourth-Pass Review: <source file>`
+- Metadata header with these fields:
+  - Review date
+  - Source file
+  - First-pass packet
+  - Second-pass packet
+  - Third-pass packet
+  - Third-pass action bucket
+  - Fourth-pass action bucket
+  - Packet status: Reviewed
+- Sections:
+  - Why This File Got A Fourth Pass
+  - Fourth-Pass Research Log
+  - What Fourth Pass Sharpened
+  - Implementation Priority
+  - Verification If Changed
+  - Regression And Feature-Preservation Constraints
+  - Fourth-Pass Conclusion
+
+Inside that Markdown document, you must:
+- explicitly say whether the current third-pass bucket should stand or change
+- identify what the current third-pass packet got right
+- identify what it missed, underweighted, or overstated
+- separate safe-now hardening from larger redesign still deferred
+- call out any recommendation that would risk regressions if implemented
+- stay conservative and evidence-backed
+
+Do not answer with notes, bullets only, or a casual review memo. Answer with the full fourth-pass Markdown review document.
+
+Expected content requirements
+- Bucket assessment
+- Findings the current packet missed
+- Claims in the current packet that are too weak or too strong
+- Safe-now hardening
+- Larger redesign still deferred
+- Regression risks of acting on your recommendations

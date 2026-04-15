@@ -1,0 +1,244 @@
+   1:use super::commands_reports_validation_common::build_model_from_validation_res;
+   2:use serde_json::Value;
+   3:
+   4:fn csv_escape(v: &str) -> String {
+   5:    if v.contains(',') || v.contains('"') || v.contains('\n') || v.contains('\r') {
+   6:        format!("\"{}\"", v.replace('"', "\"\""))
+   7:    } else {
+   8:        v.to_string()
+   9:    }
+  10:}
+  11:
+  12:pub(crate) fn build_validation_shortlist_csv_blocking(
+  13:    validation_res: Value,
+  14:) -> Result<String, String> {
+  15:    build_validation_shortlist_csv_text(&validation_res)
+  16:}
+  17:
+  18:pub(super) fn build_validation_shortlist_csv_text(
+  19:    validation_res: &Value,
+  20:) -> Result<String, String> {
+  21:    let model = build_model_from_validation_res(validation_res, Some(4096))?;
+  22:    let rows = if !model.shortlist_rows.is_empty() {
+  23:        model.shortlist_rows
+  24:    } else {
+  25:        model.all_rows
+  26:    };
+  27:
+  28:    if rows.is_empty() {
+  29:        return Err("validation_res has no candidates".to_string());
+  30:    }
+  31:
+  32:    let mut lines: Vec<String> = Vec::with_capacity(rows.len().saturating_add(1));
+  33:    lines.push("rank,approval_label,approval_reason,hard_gate_passed,legacy_shortlisted,profile_kind,params_summary,robust_score,psr,dsr,track_record_bars,min_track_record_length_bars,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,wf_sharpe_median,wf_dd_worst,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_metric_p50,cross_score,cross_pareto,bootstrap_prob_pnl_positive,perturb_pnl_mean,warning_flags,fail_reasons,params_json".to_string());
+  34:
+  35:    for row in rows {
+  36:        lines.push(format!(
+  37:            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+  38:            row.rank,
+  39:            csv_escape(&row.approval_label),
+  40:            csv_escape(&row.approval_reason),
+  41:            row.hard_gate_passed
+  42:                .map(|x| x.to_string())
+  43:                .unwrap_or_else(|| "".to_string()),
+  44:            if row.legacy_shortlisted { 1 } else { 0 },
+  45:            csv_escape(&row.profile_kind),
+  46:            csv_escape(&row.params_summary),
+  47:            row.robust_score,
+  48:            row.psr
+  49:                .map(|x| x.to_string())
+  50:                .unwrap_or_else(|| "".to_string()),
+  51:            row.dsr
+  52:                .map(|x| x.to_string())
+  53:                .unwrap_or_else(|| "".to_string()),
+  54:            row.track_record_bars
+  55:                .map(|x| x.to_string())
+  56:                .unwrap_or_else(|| "".to_string()),
+  57:            row.min_track_record_length_bars
+  58:                .map(|x| x.to_string())
+  59:                .unwrap_or_else(|| "".to_string()),
+  60:            row.pnl,
+  61:            row.sharpe,
+  62:            row.max_dd,
+  63:            row.trades,
+  64:            row.wf_sharpe_median
+  65:                .map(|x| x.to_string())
+  66:                .unwrap_or_else(|| "".to_string()),
+  67:            row.wf_dd_worst
+  68:                .map(|x| x.to_string())
+  69:                .unwrap_or_else(|| "".to_string()),
+  70:            row.cscv_selected_frac
+  71:                .map(|x| x.to_string())
+  72:                .unwrap_or_else(|| "".to_string()),
+  73:            row.cscv_oos_rank_frac_p50
+  74:                .map(|x| x.to_string())
+  75:                .unwrap_or_else(|| "".to_string()),
+  76:            row.cscv_oos_metric_p50
+  77:                .map(|x| x.to_string())
+  78:                .unwrap_or_else(|| "".to_string()),
+  79:            row.cross_score
+  80:                .map(|x| x.to_string())
+  81:                .unwrap_or_else(|| "".to_string()),
+  82:            if row.cross_pareto { 1 } else { 0 },
+  83:            row.bootstrap_prob_pnl_positive
+  84:                .map(|x| x.to_string())
+  85:                .unwrap_or_else(|| "".to_string()),
+  86:            row.perturb_pnl_mean
+  87:                .map(|x| x.to_string())
+  88:                .unwrap_or_else(|| "".to_string()),
+  89:            csv_escape(&row.warning_flags),
+  90:            csv_escape(&row.fail_reasons),
+  91:            csv_escape(&row.params_json),
+  92:        ));
+  93:    }
+  94:
+  95:    Ok(lines.join("\n"))
+  96:}
+  97:
+  98:#[cfg(test)]
+  99:mod tests {
+ 100:    use super::*;
+ 101:    use serde_json::json;
+ 102:
+ 103:    fn parse_csv_fields(line: &str) -> Vec<String> {
+ 104:        let mut out = Vec::new();
+ 105:        let mut current = String::new();
+ 106:        let mut chars = line.chars().peekable();
+ 107:        let mut in_quotes = false;
+ 108:
+ 109:        while let Some(ch) = chars.next() {
+ 110:            match ch {
+ 111:                '"' if in_quotes => {
+ 112:                    if matches!(chars.peek(), Some('"')) {
+ 113:                        current.push('"');
+ 114:                        let _ = chars.next();
+ 115:                    } else {
+ 116:                        in_quotes = false;
+ 117:                    }
+ 118:                }
+ 119:                '"' => in_quotes = true,
+ 120:                ',' if !in_quotes => {
+ 121:                    out.push(current);
+ 122:                    current = String::new();
+ 123:                }
+ 124:                _ => current.push(ch),
+ 125:            }
+ 126:        }
+ 127:
+ 128:        out.push(current);
+ 129:        out
+ 130:    }
+ 131:
+ 132:    #[test]
+ 133:    fn csv_escape_quotes_commas_and_newlines() {
+ 134:        assert_eq!(csv_escape("plain"), "plain");
+ 135:        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+ 136:        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+ 137:        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+ 138:    }
+ 139:
+ 140:    #[test]
+ 141:    fn shortlist_csv_falls_back_to_all_rows_and_preserves_explanatory_fields() {
+ 142:        let validation_res = json!({
+ 143:          "data_id": "test",
+ 144:          "candidates": [
+ 145:            {
+ 146:              "params": { "profile": "alpha", "note": "comma,value" },
+ 147:              "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+ 148:              "robust_score": 1.23,
+ 149:              "validation_verdict": {
+ 150:                "passed": true,
+ 151:                "warning_flags": ["review,needs-check"],
+ 152:                "fail_reasons": []
+ 153:              }
+ 154:            },
+ 155:            {
+ 156:              "params": { "profile": "beta", "note": "\"quoted\"" },
+ 157:              "in_sample": { "pnl": 0.5, "sharpe": 1.5, "max_dd": 0.4, "trades": 8 },
+ 158:              "robust_score": 0.95,
+ 159:              "validation_verdict": {
+ 160:                "passed": false,
+ 161:                "warning_flags": [],
+ 162:                "fail_reasons": ["gate_failed"]
+ 163:              }
+ 164:            }
+ 165:          ]
+ 166:        });
+ 167:
+ 168:        let csv = build_validation_shortlist_csv_text(&validation_res).expect("csv");
+ 169:        let lines: Vec<&str> = csv.lines().collect();
+ 170:        assert_eq!(lines.len(), 3, "expected header plus both fallback rows");
+ 171:
+ 172:        let header_fields = parse_csv_fields(lines[0]);
+ 173:        let row_a = parse_csv_fields(lines[1]);
+ 174:        let row_b = parse_csv_fields(lines[2]);
+ 175:
+ 176:        assert_eq!(header_fields.len(), 28);
+ 177:        assert_eq!(row_a.len(), 28);
+ 178:        assert_eq!(row_b.len(), 28);
+ 179:        assert_eq!(row_a[1], "review");
+ 180:        assert_eq!(row_a[25], "review,needs-check");
+ 181:        assert_eq!(row_a[26], "");
+ 182:        assert_eq!(row_b[1], "rejected");
+ 183:        assert_eq!(row_b[26], "gate_failed");
+ 184:        assert_eq!(
+ 185:            row_b[27],
+ 186:            "{\"note\":\"\\\"quoted\\\"\",\"profile\":\"beta\"}"
+ 187:        );
+ 188:    }
+ 189:
+ 190:    #[test]
+ 191:    fn shortlist_csv_header_contract_stays_stable() {
+ 192:        let validation_res = json!({
+ 193:          "data_id": "test",
+ 194:          "candidates": [{
+ 195:            "params": { "fast_len": 10, "slow_len": 40 },
+ 196:            "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+ 197:            "robust_score": 1.23,
+ 198:            "validation_verdict": {
+ 199:              "passed": true,
+ 200:              "warning_flags": ["warn"],
+ 201:              "fail_reasons": []
+ 202:            }
+ 203:          }]
+ 204:        });
+ 205:
+ 206:        let csv = build_validation_shortlist_csv_text(&validation_res).expect("csv");
+ 207:        let lines: Vec<&str> = csv.lines().collect();
+ 208:        let header_fields = parse_csv_fields(lines[0]);
+ 209:
+ 210:        assert_eq!(
+ 211:            header_fields,
+ 212:            vec![
+ 213:                "rank",
+ 214:                "approval_label",
+ 215:                "approval_reason",
+ 216:                "hard_gate_passed",
+ 217:                "legacy_shortlisted",
+ 218:                "profile_kind",
+ 219:                "params_summary",
+ 220:                "robust_score",
+ 221:                "psr",
+ 222:                "dsr",
+ 223:                "track_record_bars",
+ 224:                "min_track_record_length_bars",
+ 225:                "in_sample_pnl",
+ 226:                "in_sample_sharpe",
+ 227:                "in_sample_max_dd",
+ 228:                "in_sample_trades",
+ 229:                "wf_sharpe_median",
+ 230:                "wf_dd_worst",
+ 231:                "cscv_selected_frac",
+ 232:                "cscv_oos_rank_frac_p50",
+ 233:                "cscv_oos_metric_p50",
+ 234:                "cross_score",
+ 235:                "cross_pareto",
+ 236:                "bootstrap_prob_pnl_positive",
+ 237:                "perturb_pnl_mean",
+ 238:                "warning_flags",
+ 239:                "fail_reasons",
+ 240:                "params_json",
+ 241:            ]
+ 242:        );
+ 243:    }
+ 244:}

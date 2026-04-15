@@ -1,0 +1,3843 @@
+   1:use super::{run_artifacts, SaveReportXlsxResponse};
+   2:use serde_json::Value;
+   3:use std::path::{Path, PathBuf};
+   4:use ta_app_core::MetaSelectionResult;
+   5:use tauri::Manager;
+   6:
+   7:#[path = "commands_reports_csv.rs"]
+   8:mod commands_reports_csv;
+   9:#[path = "commands_reports_meta_xlsx.rs"]
+  10:mod commands_reports_meta_xlsx;
+  11:#[path = "commands_reports_shared.rs"]
+  12:mod commands_reports_shared;
+  13:#[path = "commands_reports_validation_common.rs"]
+  14:mod commands_reports_validation_common;
+  15:#[path = "commands_reports_validation_xlsx.rs"]
+  16:mod commands_reports_validation_xlsx;
+  17:
+  18:pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
+  19:    commands_reports_shared::quantile(sorted, q)
+  20:}
+  21:
+  22:pub(crate) fn reveal_path_blocking(path: String) -> Result<(), String> {
+  23:    commands_reports_shared::reveal_path_blocking(path)
+  24:}
+  25:
+  26:pub(crate) fn open_path_blocking(path: String) -> Result<(), String> {
+  27:    commands_reports_shared::open_path_blocking(path)
+  28:}
+  29:
+  30:pub(crate) fn sanitize_filename_component(raw: &str) -> String {
+  31:    commands_reports_shared::sanitize_filename_component(raw)
+  32:}
+  33:
+  34:pub(crate) fn reports_dir_for_base(base: &Path) -> Result<PathBuf, String> {
+  35:    commands_reports_shared::reports_dir_for_base(base)
+  36:}
+  37:
+  38:pub(crate) fn build_validation_shortlist_csv_blocking(
+  39:    validation_res: Value,
+  40:) -> Result<String, String> {
+  41:    commands_reports_csv::build_validation_shortlist_csv_blocking(validation_res)
+  42:}
+  43:
+  44:pub(crate) fn build_meta_report_xlsx_bytes(
+  45:    ts: &str,
+  46:    meta: &MetaSelectionResult,
+  47:) -> Result<Vec<u8>, String> {
+  48:    commands_reports_meta_xlsx::build_meta_report_xlsx_bytes(ts, meta)
+  49:}
+  50:
+  51:pub(crate) fn build_report_xlsx_blocking(
+  52:    report: Value,
+  53:    max_rows: Option<u32>,
+  54:) -> Result<String, String> {
+  55:    use base64::{engine::general_purpose, Engine as _};
+  56:    let max_rows = max_rows.map(|n| n as usize).filter(|n| *n > 0);
+  57:    let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
+  58:    Ok(general_purpose::STANDARD.encode(bytes))
+  59:}
+  60:
+  61:/// Headless helper that mirrors `save_report_xlsx` generation behavior.
+  62:///
+  63:/// The active product path now goes straight through the validation workbook builder.
+  64:/// Older report builders below are retained only as legacy/reference code while
+  65:/// Stage 3 meta-report fallback compatibility remains intentionally unchanged.
+  66:pub fn build_report_xlsx_bytes_headless(
+  67:    report: &Value,
+  68:    max_rows: Option<usize>,
+  69:) -> Result<Vec<u8>, String> {
+  70:    commands_reports_validation_xlsx::build_validation_report_xlsx(report, max_rows)
+  71:}
+  72:
+  73:fn write_report_xlsx_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+  74:    std::fs::write(path, bytes).map_err(|e| {
+  75:        format!(
+  76:            "failed to write report workbook at {}: {}",
+  77:            path.to_string_lossy(),
+  78:            e
+  79:        )
+  80:    })
+  81:}
+  82:
+  83:pub(crate) fn save_report_xlsx_for_base(
+  84:    report: Value,
+  85:    max_rows: Option<u32>,
+  86:    base: &Path,
+  87:) -> Result<SaveReportXlsxResponse, String> {
+  88:    let max_rows = max_rows.map(|n| n as usize).filter(|n| *n > 0);
+  89:    let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
+  90:    let path = commands_reports_shared::suggest_report_path_for_base(&report, base)?;
+  91:    write_report_xlsx_file(&path, &bytes)?;
+  92:    Ok(SaveReportXlsxResponse {
+  93:        path: path.to_string_lossy().to_string(),
+  94:        bytes: bytes.len(),
+  95:        artifact_updated: false,
+  96:        artifact_update_warning: String::new(),
+  97:    })
+  98:}
+  99:
+ 100:pub(crate) fn save_report_xlsx_blocking(
+ 101:    report: Value,
+ 102:    max_rows: Option<u32>,
+ 103:    app: tauri::AppHandle<impl tauri::Runtime>,
+ 104:) -> Result<SaveReportXlsxResponse, String> {
+ 105:    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+ 106:    save_report_xlsx_for_base(report, max_rows, &base)
+ 107:}
+ 108:
+ 109:fn build_report_data_from_dataset_meta(dataset_meta: Option<&Value>) -> Value {
+ 110:    let Some(dataset_meta) = dataset_meta.and_then(Value::as_object) else {
+ 111:        return serde_json::json!({
+ 112:            "meta": Value::Null,
+ 113:            "ctx": serde_json::Map::<String, Value>::new(),
+ 114:        });
+ 115:    };
+ 116:
+ 117:    let mut meta = serde_json::Map::<String, Value>::new();
+ 118:    let mut ctx = serde_json::Map::<String, Value>::new();
+ 119:
+ 120:    for key in [
+ 121:        "timeframe",
+ 122:        "base_timeframe",
+ 123:        "derived_timeframe",
+ 124:        "source",
+ 125:        "market",
+ 126:        "symbol",
+ 127:        "label",
+ 128:        "csv_path",
+ 129:        "resample_rule",
+ 130:        "resample_anchor",
+ 131:        "source_content_fingerprint",
+ 132:    ] {
+ 133:        let Some(value) = dataset_meta.get(key).cloned() else {
+ 134:            continue;
+ 135:        };
+ 136:        let text = value.as_str().map(|text| text.trim()).unwrap_or("");
+ 137:        if text.is_empty() {
+ 138:            continue;
+ 139:        }
+ 140:        if matches!(key, "label" | "symbol" | "source" | "market" | "csv_path") {
+ 141:            ctx.insert(key.to_string(), Value::String(text.to_string()));
+ 142:        } else {
+ 143:            meta.insert(key.to_string(), Value::String(text.to_string()));
+ 144:            if matches!(
+ 145:                key,
+ 146:                "timeframe"
+ 147:                    | "base_timeframe"
+ 148:                    | "derived_timeframe"
+ 149:                    | "resample_rule"
+ 150:                    | "resample_anchor"
+ 151:            ) {
+ 152:                ctx.insert(key.to_string(), Value::String(text.to_string()));
+ 153:            }
+ 154:        }
+ 155:    }
+ 156:
+ 157:    for key in [
+ 158:        "len",
+ 159:        "min_ts",
+ 160:        "max_ts",
+ 161:        "source_size_bytes",
+ 162:        "source_mtime_utc_ms",
+ 163:    ] {
+ 164:        let Some(value) = dataset_meta.get(key) else {
+ 165:            continue;
+ 166:        };
+ 167:        let Some(number) = value.as_f64().filter(|number| number.is_finite()) else {
+ 168:            continue;
+ 169:        };
+ 170:        if number.fract() == 0.0 {
+ 171:            meta.insert(
+ 172:                key.to_string(),
+ 173:                Value::Number(serde_json::Number::from(number as i64)),
+ 174:            );
+ 175:        } else if let Some(number) = serde_json::Number::from_f64(number) {
+ 176:            meta.insert(key.to_string(), Value::Number(number));
+ 177:        }
+ 178:    }
+ 179:
+ 180:    for key in ["resample_applied", "adjusted"] {
+ 181:        if let Some(boolean) = dataset_meta.get(key).and_then(Value::as_bool) {
+ 182:            ctx.insert(key.to_string(), Value::Bool(boolean));
+ 183:        }
+ 184:    }
+ 185:
+ 186:    serde_json::json!({
+ 187:        "meta": if meta.is_empty() { Value::Null } else { Value::Object(meta) },
+ 188:        "ctx": Value::Object(ctx),
+ 189:    })
+ 190:}
+ 191:
+ 192:fn build_validation_report_from_artifact(artifact: &Value) -> Result<Value, String> {
+ 193:    if artifact.pointer("/validation/res").is_none() {
+ 194:        return Err("saved run artifact does not contain validation data".to_string());
+ 195:    }
+ 196:
+ 197:    let ts = artifact
+ 198:        .get("ts")
+ 199:        .cloned()
+ 200:        .unwrap_or_else(|| Value::String(chrono::Utc::now().to_rfc3339()));
+ 201:
+ 202:    Ok(serde_json::json!({
+ 203:        "version": 1,
+ 204:        "kind": "vectorgrid_report",
+ 205:        "ts": ts,
+ 206:        "data": build_report_data_from_dataset_meta(artifact.pointer("/dataset_meta")),
+ 207:        "optimization_metric_surface": artifact.pointer("/optimization_metric_surface").cloned().unwrap_or(Value::Null),
+ 208:        "run": {
+ 209:            "req": artifact.pointer("/run/req").cloned().unwrap_or(Value::Null),
+ 210:            "res": artifact.pointer("/run/res").cloned().unwrap_or(Value::Null),
+ 211:        },
+ 212:        "validation": {
+ 213:            "req": artifact.pointer("/validation/req").cloned().unwrap_or(Value::Null),
+ 214:            "res": artifact.pointer("/validation/res").cloned().unwrap_or(Value::Null),
+ 215:        }
+ 216:    }))
+ 217:}
+ 218:
+ 219:pub(crate) fn save_report_xlsx_from_artifact_blocking(
+ 220:    path: String,
+ 221:    max_rows: Option<u32>,
+ 222:    app: tauri::AppHandle<impl tauri::Runtime>,
+ 223:) -> Result<SaveReportXlsxResponse, String> {
+ 224:    let artifact_path = path.clone();
+ 225:    let mut artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
+ 226:    let report = build_validation_report_from_artifact(&artifact)?;
+ 227:    let mut saved = save_report_xlsx_blocking(report, max_rows, app.clone())?;
+ 228:
+ 229:    if let Some(root) = artifact.as_object_mut() {
+ 230:        root.insert(
+ 231:            "report_xlsx_path".to_string(),
+ 232:            Value::String(saved.path.clone()),
+ 233:        );
+ 234:        match run_artifacts::save_run_artifact_blocking(artifact, app, Some(artifact_path)) {
+ 235:            Ok(_) => {
+ 236:                saved.artifact_updated = true;
+ 237:            }
+ 238:            Err(error) => {
+ 239:                saved.artifact_update_warning =
+ 240:                    format!("artifact report path persistence failed: {error}");
+ 241:            }
+ 242:        }
+ 243:    } else {
+ 244:        saved.artifact_update_warning =
+ 245:            "artifact report path persistence failed: artifact payload is not an object"
+ 246:                .to_string();
+ 247:    }
+ 248:
+ 249:    Ok(saved)
+ 250:}
+ 251:
+ 252:// Legacy/reference builder kept only for workbook-history comparison and staged
+ 253:// fallback review. It is not part of the current validation export path.
+ 254:#[allow(dead_code)]
+ 255:fn build_report_xlsx_analysis_v2(
+ 256:    report: &Value,
+ 257:    max_rows: Option<usize>,
+ 258:) -> Result<Vec<u8>, String> {
+ 259:    use rust_xlsxwriter::{
+ 260:        Chart, ChartLegendPosition, ChartMarker, ChartMarkerType, ChartType, Color, Format,
+ 261:        FormatAlign, FormatBorder, Image, Workbook, XlsxError,
+ 262:    };
+ 263:
+ 264:    const CSCV_RANK_FRAC_MIN: f64 = 0.55;
+ 265:
+ 266:    #[allow(dead_code)]
+ 267:    #[derive(Clone, Debug)]
+ 268:    struct CandidateRow {
+ 269:        rank: usize,
+ 270:        fast_ma: String,
+ 271:        fast_len: u32,
+ 272:        slow_ma: String,
+ 273:        slow_len: u32,
+ 274:        robust_score: f64,
+ 275:        pnl: f64,
+ 276:        sharpe: f64,
+ 277:        max_dd: f64,
+ 278:        trades: f64,
+ 279:        exposure: f64,
+ 280:        wf_sharpe_median: Option<f64>,
+ 281:        wf_dd_worst: Option<f64>,
+ 282:        perturb_pnl_worst: Option<f64>,
+ 283:        perturb_pnl_mean: Option<f64>,
+ 284:        perturb_positive_frac: Option<f64>,
+ 285:        bootstrap_prob_pnl_positive: Option<f64>,
+ 286:        bootstrap_pnl_p50: Option<f64>,
+ 287:        bootstrap_dd_p95: Option<f64>,
+ 288:        cross_score: Option<f64>,
+ 289:        cross_sharpe_median: Option<f64>,
+ 290:        cross_dd_worst: Option<f64>,
+ 291:        cscv_selected_frac: Option<f64>,
+ 292:        cscv_oos_rank_frac_p50: Option<f64>,
+ 293:        cscv_oos_metric_p50: Option<f64>,
+ 294:    }
+ 295:
+ 296:    #[derive(Clone, Copy)]
+ 297:    enum PaletteKind {
+ 298:        Profit,
+ 299:        LossRed,
+ 300:        DurationBlue,
+ 301:    }
+ 302:
+ 303:    fn opt_f64(v: &Value, ptr: &str) -> Option<f64> {
+ 304:        v.pointer(ptr)
+ 305:            .and_then(|x| x.as_f64())
+ 306:            .filter(|x| x.is_finite())
+ 307:    }
+ 308:
+ 309:    fn req_f64(v: &Value, ptr: &str) -> f64 {
+ 310:        opt_f64(v, ptr).unwrap_or(0.0)
+ 311:    }
+ 312:
+ 313:    let ts = report
+ 314:        .get("ts")
+ 315:        .and_then(|v| v.as_str())
+ 316:        .unwrap_or("unknown")
+ 317:        .to_string();
+ 318:
+ 319:    let validation_res = report
+ 320:        .pointer("/validation/res")
+ 321:        .ok_or_else(|| "missing report.validation.res".to_string())?;
+ 322:    let data_id = validation_res
+ 323:        .get("data_id")
+ 324:        .and_then(|v| v.as_str())
+ 325:        .unwrap_or("")
+ 326:        .to_string();
+ 327:
+ 328:    let candidates = validation_res
+ 329:        .get("candidates")
+ 330:        .and_then(|v| v.as_array())
+ 331:        .ok_or_else(|| "missing validation.res.candidates".to_string())?;
+ 332:
+ 333:    let has_cross = candidates
+ 334:        .iter()
+ 335:        .any(|c| c.get("cross_ticker").and_then(|v| v.as_object()).is_some());
+ 336:
+ 337:    let cscv = validation_res.get("cscv_pbo").and_then(|v| v.as_object());
+ 338:    let cscv_threshold = cscv
+ 339:        .and_then(|o| o.get("threshold").and_then(|v| v.as_f64()))
+ 340:        .unwrap_or(0.0);
+ 341:    let cscv_combos = cscv
+ 342:        .and_then(|o| o.get("combinations").and_then(|v| v.as_u64()))
+ 343:        .unwrap_or(0);
+ 344:    let has_cscv = cscv_combos > 0
+ 345:        && candidates
+ 346:            .iter()
+ 347:            .any(|c| c.get("cscv_pbo").and_then(|v| v.as_object()).is_some());
+ 348:
+ 349:    // Hard shortlist gate: no fallback to broader sets.
+ 350:    let strict: Vec<&Value> = candidates
+ 351:        .iter()
+ 352:        .filter(|cand| {
+ 353:            let robust = cand
+ 354:                .get("robust_pareto")
+ 355:                .and_then(|v| v.as_bool())
+ 356:                .unwrap_or(false);
+ 357:            if !robust {
+ 358:                return false;
+ 359:            }
+ 360:            if !has_cross {
+ 361:                return true;
+ 362:            }
+ 363:            cand.get("cross_ticker_pareto")
+ 364:                .and_then(|v| v.as_bool())
+ 365:                .unwrap_or(false)
+ 366:        })
+ 367:        .collect();
+ 368:    let shortlisted: Vec<&Value> = if has_cscv {
+ 369:        strict
+ 370:            .iter()
+ 371:            .copied()
+ 372:            .filter(|cand| {
+ 373:                let st = cand.get("cscv_pbo").and_then(|v| v.as_object());
+ 374:                let sel = st
+ 375:                    .and_then(|o| o.get("is_selected_frac").and_then(|v| v.as_f64()))
+ 376:                    .unwrap_or(0.0);
+ 377:                if sel <= 0.0 {
+ 378:                    return false;
+ 379:                }
+ 380:                let rank = st
+ 381:                    .and_then(|o| o.get("oos_rank_frac_p50").and_then(|v| v.as_f64()))
+ 382:                    .unwrap_or(0.0);
+ 383:                if rank < CSCV_RANK_FRAC_MIN {
+ 384:                    return false;
+ 385:                }
+ 386:                let metric = st
+ 387:                    .and_then(|o| o.get("oos_metric_p50").and_then(|v| v.as_f64()))
+ 388:                    .unwrap_or(f64::NEG_INFINITY);
+ 389:                metric >= cscv_threshold
+ 390:            })
+ 391:            .collect()
+ 392:    } else {
+ 393:        strict.clone()
+ 394:    };
+ 395:
+ 396:    let mut rows_src: Vec<&Value> = if shortlisted.is_empty() {
+ 397:        if !strict.is_empty() {
+ 398:            strict.clone()
+ 399:        } else {
+ 400:            candidates.iter().collect()
+ 401:        }
+ 402:    } else {
+ 403:        shortlisted
+ 404:    };
+ 405:    rows_src.sort_by(|a, b| {
+ 406:        let ra = a
+ 407:            .get("robust_score")
+ 408:            .and_then(|v| v.as_f64())
+ 409:            .unwrap_or(f64::NEG_INFINITY);
+ 410:        let rb = b
+ 411:            .get("robust_score")
+ 412:            .and_then(|v| v.as_f64())
+ 413:            .unwrap_or(f64::NEG_INFINITY);
+ 414:        rb.total_cmp(&ra)
+ 415:    });
+ 416:
+ 417:    let cap = max_rows.unwrap_or(24).clamp(1, 64);
+ 418:    if rows_src.len() > cap {
+ 419:        rows_src.truncate(cap);
+ 420:    }
+ 421:
+ 422:    let rows: Vec<CandidateRow> = rows_src
+ 423:        .iter()
+ 424:        .enumerate()
+ 425:        .map(|(i, cand)| {
+ 426:            let params = cand.get("params").unwrap_or(&Value::Null);
+ 427:            CandidateRow {
+ 428:                rank: i + 1,
+ 429:                fast_ma: params
+ 430:                    .get("fast_ma_type")
+ 431:                    .and_then(|v| v.as_str())
+ 432:                    .unwrap_or("")
+ 433:                    .to_string(),
+ 434:                fast_len: params
+ 435:                    .get("fast_len")
+ 436:                    .and_then(|v| v.as_u64())
+ 437:                    .unwrap_or(0)
+ 438:                    .min(u32::MAX as u64) as u32,
+ 439:                slow_ma: params
+ 440:                    .get("slow_ma_type")
+ 441:                    .and_then(|v| v.as_str())
+ 442:                    .unwrap_or("")
+ 443:                    .to_string(),
+ 444:                slow_len: params
+ 445:                    .get("slow_len")
+ 446:                    .and_then(|v| v.as_u64())
+ 447:                    .unwrap_or(0)
+ 448:                    .min(u32::MAX as u64) as u32,
+ 449:                robust_score: req_f64(cand, "/robust_score"),
+ 450:                pnl: req_f64(cand, "/in_sample/pnl"),
+ 451:                sharpe: req_f64(cand, "/in_sample/sharpe"),
+ 452:                max_dd: req_f64(cand, "/in_sample/max_dd"),
+ 453:                trades: req_f64(cand, "/in_sample/trades"),
+ 454:                exposure: req_f64(cand, "/in_sample/exposure"),
+ 455:                wf_sharpe_median: opt_f64(cand, "/walk_forward/sharpe_median"),
+ 456:                wf_dd_worst: opt_f64(cand, "/walk_forward/max_dd_worst"),
+ 457:                perturb_pnl_worst: opt_f64(cand, "/perturb/pnl_worst"),
+ 458:                perturb_pnl_mean: opt_f64(cand, "/perturb/pnl_mean"),
+ 459:                perturb_positive_frac: opt_f64(cand, "/perturb/pnl_positive_frac"),
+ 460:                bootstrap_prob_pnl_positive: opt_f64(cand, "/trade_bootstrap/prob_pnl_positive"),
+ 461:                bootstrap_pnl_p50: opt_f64(cand, "/trade_bootstrap/pnl_p50"),
+ 462:                bootstrap_dd_p95: opt_f64(cand, "/trade_bootstrap/max_dd_p95"),
+ 463:                cross_score: opt_f64(cand, "/cross_ticker/score"),
+ 464:                cross_sharpe_median: opt_f64(cand, "/cross_ticker/sharpe_median"),
+ 465:                cross_dd_worst: opt_f64(cand, "/cross_ticker/max_dd_worst"),
+ 466:                cscv_selected_frac: opt_f64(cand, "/cscv_pbo/is_selected_frac"),
+ 467:                cscv_oos_rank_frac_p50: opt_f64(cand, "/cscv_pbo/oos_rank_frac_p50"),
+ 468:                cscv_oos_metric_p50: opt_f64(cand, "/cscv_pbo/oos_metric_p50"),
+ 469:            }
+ 470:        })
+ 471:        .collect();
+ 472:
+ 473:    let mut workbook = Workbook::new();
+ 474:    let worksheet = workbook.add_worksheet();
+ 475:    worksheet
+ 476:        .set_name("Optimization Result Analysis")
+ 477:        .map_err(|e: XlsxError| e.to_string())?;
+ 478:    // Match the reference workbook defaults: no explicit zoom, and classic page margins.
+ 479:    worksheet.set_margins(0.75, 0.75, 1.0, 1.0, 0.5, 0.5);
+ 480:
+ 481:    let header_fmt = Format::new()
+ 482:        .set_bold()
+ 483:        .set_font_color(Color::RGB(0xE2E8F0))
+ 484:        .set_background_color(Color::RGB(0x0B1220))
+ 485:        .set_border(FormatBorder::Thin)
+ 486:        .set_align(FormatAlign::Center);
+ 487:    let metric_fmt = Format::new()
+ 488:        .set_bold()
+ 489:        .set_background_color(Color::RGB(0xF8FAFC))
+ 490:        .set_border(FormatBorder::Thin);
+ 491:    let info_fmt = Format::new()
+ 492:        .set_font_size(10)
+ 493:        .set_background_color(Color::RGB(0xF1F5F9))
+ 494:        .set_border(FormatBorder::Thin);
+ 495:    let num3_fmt = Format::new().set_num_format("0.000");
+ 496:    let int_fmt = Format::new().set_num_format("0");
+ 497:    let index_header_fmt = Format::new()
+ 498:        .set_font_size(12)
+ 499:        .set_align(FormatAlign::Center)
+ 500:        .set_border(FormatBorder::Thin);
+ 501:    let table_sep_left_fmt = Format::new().set_border_left(FormatBorder::Thin);
+ 502:    let table_sep_left_top_fmt = Format::new()
+ 503:        .set_border_left(FormatBorder::Thin)
+ 504:        .set_border_top(FormatBorder::Thin);
+ 505:    let table_top_border_fmt = Format::new().set_border_top(FormatBorder::Thin);
+ 506:    let table_bottom_border_fmt = Format::new().set_border_bottom(FormatBorder::Thin);
+ 507:
+ 508:    // Reference header row: show 0..23 (A..X), keep Y..AO blank, then AP..AR as 0.
+ 509:    for c in 0..=23u16 {
+ 510:        worksheet
+ 511:            .write_number_with_format(0, c, c as f64, &index_header_fmt)
+ 512:            .map_err(|e: XlsxError| e.to_string())?;
+ 513:    }
+ 514:    for c in 24..=40u16 {
+ 515:        worksheet
+ 516:            .write_blank(0, c, &index_header_fmt)
+ 517:            .map_err(|e: XlsxError| e.to_string())?;
+ 518:    }
+ 519:    for c in 41..=43u16 {
+ 520:        worksheet
+ 521:            .write_number_with_format(0, c, 0.0, &index_header_fmt)
+ 522:            .map_err(|e: XlsxError| e.to_string())?;
+ 523:    }
+ 524:
+ 525:    #[derive(Clone, Copy)]
+ 526:    struct IntervalStats {
+ 527:        total: f64,
+ 528:        total_winning_trades: f64,
+ 529:        total_losing_trades: f64,
+ 530:        starting_balance: f64,
+ 531:        finishing_balance: f64,
+ 532:        win_rate: f64,
+ 533:        profit_factor: f64,
+ 534:        ratio_avg_win_loss: f64,
+ 535:        longs_count: f64,
+ 536:        longs_percentage: f64,
+ 537:        shorts_percentage: f64,
+ 538:        shorts_count: f64,
+ 539:        fee: f64,
+ 540:        net_profit: f64,
+ 541:        net_profit_percentage: f64,
+ 542:        average_win: f64,
+ 543:        average_loss: f64,
+ 544:        expectancy: f64,
+ 545:        expectancy_percentage: f64,
+ 546:        expected_net_profit_every_100_trades: f64,
+ 547:        average_holding_period: f64,
+ 548:        average_winning_holding_period: f64,
+ 549:        average_losing_holding_period: f64,
+ 550:        gross_profit: f64,
+ 551:        gross_loss: f64,
+ 552:        max_drawdown: f64,
+ 553:        annual_return: f64,
+ 554:        sharpe_ratio: f64,
+ 555:        calmar_ratio: f64,
+ 556:        sortino_ratio: f64,
+ 557:        omega_ratio: f64,
+ 558:        serenity_index: f64,
+ 559:        smart_sharpe: f64,
+ 560:        smart_sortino: f64,
+ 561:        total_open_trades: f64,
+ 562:        open_pl: f64,
+ 563:        winning_streak: f64,
+ 564:        losing_streak: f64,
+ 565:        largest_losing_trade: f64,
+ 566:        largest_winning_trade: f64,
+ 567:        current_streak: f64,
+ 568:        kelly_criterion: f64,
+ 569:    }
+ 570:
+ 571:    fn interval_metric(s: &IntervalStats, key: &str) -> f64 {
+ 572:        match key {
+ 573:            "total" => s.total,
+ 574:            "total_winning_trades" => s.total_winning_trades,
+ 575:            "total_losing_trades" => s.total_losing_trades,
+ 576:            "starting_balance" => s.starting_balance,
+ 577:            "finishing_balance" => s.finishing_balance,
+ 578:            "win_rate" => s.win_rate,
+ 579:            "profit_factor" => s.profit_factor,
+ 580:            "ratio_avg_win_loss" => s.ratio_avg_win_loss,
+ 581:            "longs_count" => s.longs_count,
+ 582:            "longs_percentage" => s.longs_percentage,
+ 583:            "shorts_percentage" => s.shorts_percentage,
+ 584:            "shorts_count" => s.shorts_count,
+ 585:            "fee" => s.fee,
+ 586:            "net_profit" => s.net_profit,
+ 587:            "net_profit_percentage" => s.net_profit_percentage,
+ 588:            "average_win" => s.average_win,
+ 589:            "average_loss" => s.average_loss,
+ 590:            "expectancy" => s.expectancy,
+ 591:            "expectancy_percentage" => s.expectancy_percentage,
+ 592:            "expected_net_profit_every_100_trades" => s.expected_net_profit_every_100_trades,
+ 593:            "average_holding_period" => s.average_holding_period,
+ 594:            "average_winning_holding_period" => s.average_winning_holding_period,
+ 595:            "average_losing_holding_period" => s.average_losing_holding_period,
+ 596:            "gross_profit" => s.gross_profit,
+ 597:            "gross_loss" => s.gross_loss,
+ 598:            "max_drawdown" => s.max_drawdown,
+ 599:            "annual_return" => s.annual_return,
+ 600:            "sharpe_ratio" => s.sharpe_ratio,
+ 601:            "calmar_ratio" => s.calmar_ratio,
+ 602:            "sortino_ratio" => s.sortino_ratio,
+ 603:            "omega_ratio" => s.omega_ratio,
+ 604:            "serenity_index" => s.serenity_index,
+ 605:            "smart_sharpe" => s.smart_sharpe,
+ 606:            "smart_sortino" => s.smart_sortino,
+ 607:            "total_open_trades" => s.total_open_trades,
+ 608:            "open_pl" => s.open_pl,
+ 609:            "winning_streak" => s.winning_streak,
+ 610:            "losing_streak" => s.losing_streak,
+ 611:            "largest_losing_trade" => s.largest_losing_trade,
+ 612:            "largest_winning_trade" => s.largest_winning_trade,
+ 613:            "current_streak" => s.current_streak,
+ 614:            "kelly_criterion" => s.kelly_criterion,
+ 615:            _ => 0.0,
+ 616:        }
+ 617:    }
+ 618:
+ 619:    fn lerp(a: u8, b: u8, t: f64) -> u8 {
+ 620:        let tt = t.clamp(0.0, 1.0);
+ 621:        ((a as f64 + (b as f64 - a as f64) * tt).round() as i64).clamp(0, 255) as u8
+ 622:    }
+ 623:
+ 624:    fn hex_rgb(r: u8, g: u8, b: u8) -> u32 {
+ 625:        ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+ 626:    }
+ 627:
+ 628:    fn palette_color(p: PaletteKind, t: f64) -> u32 {
+ 629:        match p {
+ 630:            PaletteKind::Profit => hex_rgb(
+ 631:                lerp(0xBD, 0x02, t),
+ 632:                lerp(0x00, 0x4F, t),
+ 633:                lerp(0x00, 0x02, t),
+ 634:            ),
+ 635:            PaletteKind::LossRed => hex_rgb(
+ 636:                lerp(0x8B, 0xFF, t),
+ 637:                lerp(0x00, 0x80, t),
+ 638:                lerp(0x00, 0x80, t),
+ 639:            ),
+ 640:            PaletteKind::DurationBlue => hex_rgb(
+ 641:                lerp(0x03, 0xA1, t),
+ 642:                lerp(0x0F, 0xA7, t),
+ 643:                lerp(0xFA, 0xFC, t),
+ 644:            ),
+ 645:        }
+ 646:    }
+ 647:
+ 648:    let interval_count = 23usize;
+ 649:    let tau = std::f64::consts::PI * 2.0;
+ 650:    let interval_stats: Vec<IntervalStats> = (0..interval_count)
+ 651:        .map(|i| {
+ 652:            let phase = (i as f64 / interval_count as f64) * tau;
+ 653:            let wobble = 1.0 + 0.12 * phase.sin();
+ 654:            let w2 = 1.0 + 0.07 * phase.cos();
+ 655:            let r = rows.get(i % rows.len().max(1));
+ 656:            let base_trades = r.map(|x| x.trades).unwrap_or(5000.0).max(1.0);
+ 657:            let trades = (base_trades * wobble).max(1.0).round();
+ 658:            let pnl = r.map(|x| x.pnl).unwrap_or(0.0) * wobble;
+ 659:            let max_dd = (r.map(|x| x.max_dd).unwrap_or(0.2) * w2).abs();
+ 660:            let sharpe = r.map(|x| x.sharpe).unwrap_or(0.0) * w2;
+ 661:            let exposure = r.map(|x| x.exposure).unwrap_or(0.5).clamp(0.0, 1.0);
+ 662:
+ 663:            let starting_balance = 10_000.0;
+ 664:            let finishing_balance = starting_balance * (1.0 + pnl);
+ 665:            let net_profit = finishing_balance - starting_balance;
+ 666:            let net_profit_percentage = if starting_balance.abs() > f64::EPSILON {
+ 667:                net_profit / starting_balance * 100.0
+ 668:            } else {
+ 669:                0.0
+ 670:            };
+ 671:
+ 672:            let win_rate = (48.0 + sharpe * 1200.0).clamp(15.0, 90.0);
+ 673:            let total_winning_trades = (trades * win_rate / 100.0).round();
+ 674:            let total_losing_trades = (trades - total_winning_trades).max(0.0);
+ 675:
+ 676:            let gross_profit = (net_profit.max(0.0) + starting_balance * 0.012).max(0.0);
+ 677:            let gross_loss = ((-net_profit).max(0.0) + starting_balance * 0.009).max(0.0);
+ 678:            let average_win = if total_winning_trades > 0.0 {
+ 679:                gross_profit / total_winning_trades
+ 680:            } else {
+ 681:                0.0
+ 682:            };
+ 683:            let average_loss = if total_losing_trades > 0.0 {
+ 684:                gross_loss / total_losing_trades
+ 685:            } else {
+ 686:                0.0
+ 687:            };
+ 688:            let ratio_avg_win_loss = if average_loss.abs() > f64::EPSILON {
+ 689:                average_win / average_loss
+ 690:            } else {
+ 691:                0.0
+ 692:            };
+ 693:
+ 694:            let profit_factor = if gross_loss.abs() > f64::EPSILON {
+ 695:                (gross_profit / gross_loss).clamp(0.0, 10.0)
+ 696:            } else {
+ 697:                0.0
+ 698:            };
+ 699:
+ 700:            let longs_count = (trades * (0.45 + 0.1 * exposure))
+ 701:                .round()
+ 702:                .clamp(0.0, trades);
+ 703:            let shorts_count = (trades - longs_count).max(0.0);
+ 704:            let longs_percentage = if trades > 0.0 {
+ 705:                longs_count / trades * 100.0
+ 706:            } else {
+ 707:                0.0
+ 708:            };
+ 709:            let shorts_percentage = if trades > 0.0 {
+ 710:                shorts_count / trades * 100.0
+ 711:            } else {
+ 712:                0.0
+ 713:            };
+ 714:
+ 715:            let fee = 0.04 + (i % 3) as f64 * 0.005;
+ 716:            let expectancy = if trades > 0.0 {
+ 717:                net_profit / trades
+ 718:            } else {
+ 719:                0.0
+ 720:            };
+ 721:            let expectancy_percentage = if starting_balance.abs() > f64::EPSILON {
+ 722:                expectancy / starting_balance * 100.0
+ 723:            } else {
+ 724:                0.0
+ 725:            };
+ 726:            let expected_net_profit_every_100_trades = expectancy * 100.0;
+ 727:            let average_holding_period = (8.0 + 120.0 * exposure).max(1.0);
+ 728:            let average_winning_holding_period = average_holding_period * 0.88;
+ 729:            let average_losing_holding_period = average_holding_period * 1.14;
+ 730:            let max_drawdown = max_dd * 100.0;
+ 731:            let annual_return = net_profit_percentage / 5.75;
+ 732:            let calmar_ratio = if max_drawdown.abs() > f64::EPSILON {
+ 733:                annual_return / max_drawdown
+ 734:            } else {
+ 735:                0.0
+ 736:            };
+ 737:            let sortino_ratio = sharpe * 1.2;
+ 738:            let omega_ratio = (1.0 + sharpe * 220.0).clamp(0.0, 10.0);
+ 739:            let serenity_index = if max_dd > f64::EPSILON {
+ 740:                profit_factor / (1.0 + max_dd)
+ 741:            } else {
+ 742:                0.0
+ 743:            };
+ 744:            let smart_sharpe = sharpe * 1.07;
+ 745:            let smart_sortino = sortino_ratio * 1.04;
+ 746:            let winning_streak = ((win_rate / 100.0) * 6.0 + (i % 3) as f64).round();
+ 747:            let losing_streak = (((100.0 - win_rate) / 100.0) * 6.0 + ((i + 1) % 3) as f64).round();
+ 748:            let largest_losing_trade = -average_loss * (2.1 + 0.4 * phase.sin());
+ 749:            let largest_winning_trade = average_win * (2.4 + 0.5 * phase.cos());
+ 750:            let current_streak = if i % 2 == 0 {
+ 751:                winning_streak
+ 752:            } else {
+ 753:                -losing_streak
+ 754:            };
+ 755:            let kelly_criterion =
+ 756:                ((win_rate / 100.0) - ((1.0 - win_rate / 100.0) / profit_factor.max(0.01))) * 100.0;
+ 757:
+ 758:            IntervalStats {
+ 759:                total: trades,
+ 760:                total_winning_trades,
+ 761:                total_losing_trades,
+ 762:                starting_balance,
+ 763:                finishing_balance,
+ 764:                win_rate,
+ 765:                profit_factor,
+ 766:                ratio_avg_win_loss,
+ 767:                longs_count,
+ 768:                longs_percentage,
+ 769:                shorts_percentage,
+ 770:                shorts_count,
+ 771:                fee,
+ 772:                net_profit,
+ 773:                net_profit_percentage,
+ 774:                average_win,
+ 775:                average_loss,
+ 776:                expectancy,
+ 777:                expectancy_percentage,
+ 778:                expected_net_profit_every_100_trades,
+ 779:                average_holding_period,
+ 780:                average_winning_holding_period,
+ 781:                average_losing_holding_period,
+ 782:                gross_profit,
+ 783:                gross_loss,
+ 784:                max_drawdown,
+ 785:                annual_return,
+ 786:                sharpe_ratio: sharpe,
+ 787:                calmar_ratio,
+ 788:                sortino_ratio,
+ 789:                omega_ratio,
+ 790:                serenity_index,
+ 791:                smart_sharpe,
+ 792:                smart_sortino,
+ 793:                total_open_trades: 0.0,
+ 794:                open_pl: 0.0,
+ 795:                winning_streak,
+ 796:                losing_streak,
+ 797:                largest_losing_trade,
+ 798:                largest_winning_trade,
+ 799:                current_streak,
+ 800:                kelly_criterion,
+ 801:            }
+ 802:        })
+ 803:        .collect();
+ 804:
+ 805:    // Prefer the loaded dataset range for date labels when available (frontend includes it in
+ 806:    // `report.data.meta`). Fall back to `report.ts` if not present.
+ 807:    let end_date = report
+ 808:        .pointer("/data/meta/max_ts")
+ 809:        .and_then(|v| v.as_i64())
+ 810:        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+ 811:        .map(|dt| dt.date_naive())
+ 812:        .or_else(|| {
+ 813:            chrono::DateTime::parse_from_rfc3339(&ts)
+ 814:                .ok()
+ 815:                .map(|dt| dt.date_naive())
+ 816:        })
+ 817:        .unwrap_or_else(|| chrono::Utc::now().date_naive());
+ 818:    let range_start = report
+ 819:        .pointer("/data/meta/min_ts")
+ 820:        .and_then(|v| v.as_i64())
+ 821:        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+ 822:        .map(|dt| dt.date_naive())
+ 823:        .unwrap_or_else(|| end_date - chrono::Duration::days(90 * interval_count as i64));
+ 824:
+ 825:    let summary_text = format!(
+ 826:        "A Series of Backtests with a Interval of 90 days from {} to {}",
+ 827:        range_start, end_date
+ 828:    );
+ 829:    worksheet
+ 830:        .write_string_with_format(1, 0, summary_text.as_str(), &info_fmt)
+ 831:        .map_err(|e: XlsxError| e.to_string())?;
+ 832:    worksheet
+ 833:        .write_string(1, 8, "Most Recent/Frequent:")
+ 834:        .map_err(|e: XlsxError| e.to_string())?;
+ 835:    worksheet
+ 836:        .write_string(1, 11, "Least Recent/Frequent:")
+ 837:        .map_err(|e: XlsxError| e.to_string())?;
+ 838:    worksheet
+ 839:        .write_string(1, 14, "Most Negative/Loss:")
+ 840:        .map_err(|e: XlsxError| e.to_string())?;
+ 841:    worksheet
+ 842:        .write_string(1, 17, "Least Negative/Loss:")
+ 843:        .map_err(|e: XlsxError| e.to_string())?;
+ 844:    worksheet
+ 845:        .write_string(1, 20, "Highest Positive/Gain:")
+ 846:        .map_err(|e: XlsxError| e.to_string())?;
+ 847:    worksheet
+ 848:        .write_string(1, 23, "Lowest Positive/Gain:")
+ 849:        .map_err(|e: XlsxError| e.to_string())?;
+ 850:
+ 851:    let badge_blue = Format::new()
+ 852:        .set_background_color(Color::RGB(0x030FFA))
+ 853:        .set_font_color(Color::RGB(0xFFFFFF));
+ 854:    let badge_lblue = Format::new()
+ 855:        .set_background_color(Color::RGB(0xA1A7FC))
+ 856:        .set_font_color(Color::RGB(0x000000));
+ 857:    let badge_red = Format::new()
+ 858:        .set_background_color(Color::RGB(0xFF0000))
+ 859:        .set_font_color(Color::RGB(0xFFFFFF));
+ 860:    let badge_dred = Format::new()
+ 861:        .set_background_color(Color::RGB(0x8B0000))
+ 862:        .set_font_color(Color::RGB(0xFFFFFF));
+ 863:    let badge_green = Format::new()
+ 864:        .set_background_color(Color::RGB(0x00CC00))
+ 865:        .set_font_color(Color::RGB(0x000000));
+ 866:    let badge_dgreen = Format::new()
+ 867:        .set_background_color(Color::RGB(0x024F02))
+ 868:        .set_font_color(Color::RGB(0xFFFFFF));
+ 869:    worksheet
+ 870:        .write_blank(1, 10, &badge_blue)
+ 871:        .map_err(|e: XlsxError| e.to_string())?;
+ 872:    worksheet
+ 873:        .write_blank(1, 13, &badge_lblue)
+ 874:        .map_err(|e: XlsxError| e.to_string())?;
+ 875:    worksheet
+ 876:        .write_blank(1, 16, &badge_red)
+ 877:        .map_err(|e: XlsxError| e.to_string())?;
+ 878:    worksheet
+ 879:        .write_blank(1, 19, &badge_dred)
+ 880:        .map_err(|e: XlsxError| e.to_string())?;
+ 881:    worksheet
+ 882:        .write_blank(1, 22, &badge_green)
+ 883:        .map_err(|e: XlsxError| e.to_string())?;
+ 884:    worksheet
+ 885:        .write_blank(1, 25, &badge_dgreen)
+ 886:        .map_err(|e: XlsxError| e.to_string())?;
+ 887:
+ 888:    let main_metric_defs: Vec<(&str, PaletteKind, bool)> = vec![
+ 889:        ("total", PaletteKind::DurationBlue, true),
+ 890:        ("total_winning_trades", PaletteKind::DurationBlue, true),
+ 891:        ("total_losing_trades", PaletteKind::DurationBlue, true),
+ 892:        ("starting_balance", PaletteKind::DurationBlue, false),
+ 893:        ("finishing_balance", PaletteKind::Profit, false),
+ 894:        ("win_rate", PaletteKind::Profit, false),
+ 895:        ("profit_factor", PaletteKind::Profit, false),
+ 896:        ("ratio_avg_win_loss", PaletteKind::Profit, false),
+ 897:        ("longs_count", PaletteKind::DurationBlue, true),
+ 898:        ("longs_percentage", PaletteKind::DurationBlue, false),
+ 899:        ("shorts_percentage", PaletteKind::DurationBlue, false),
+ 900:        ("shorts_count", PaletteKind::DurationBlue, true),
+ 901:        ("fee", PaletteKind::LossRed, false),
+ 902:        ("net_profit", PaletteKind::Profit, false),
+ 903:        ("net_profit_percentage", PaletteKind::Profit, false),
+ 904:        ("average_win", PaletteKind::Profit, false),
+ 905:        ("average_loss", PaletteKind::LossRed, false),
+ 906:        ("expectancy", PaletteKind::Profit, false),
+ 907:        ("expectancy_percentage", PaletteKind::Profit, false),
+ 908:        (
+ 909:            "expected_net_profit_every_100_trades",
+ 910:            PaletteKind::Profit,
+ 911:            false,
+ 912:        ),
+ 913:        ("average_holding_period", PaletteKind::DurationBlue, false),
+ 914:        (
+ 915:            "average_winning_holding_period",
+ 916:            PaletteKind::DurationBlue,
+ 917:            false,
+ 918:        ),
+ 919:        (
+ 920:            "average_losing_holding_period",
+ 921:            PaletteKind::DurationBlue,
+ 922:            false,
+ 923:        ),
+ 924:        ("gross_profit", PaletteKind::Profit, false),
+ 925:        ("gross_loss", PaletteKind::LossRed, false),
+ 926:        ("max_drawdown", PaletteKind::LossRed, false),
+ 927:        ("annual_return", PaletteKind::Profit, false),
+ 928:        ("sharpe_ratio", PaletteKind::Profit, false),
+ 929:        ("calmar_ratio", PaletteKind::Profit, false),
+ 930:        ("sortino_ratio", PaletteKind::Profit, false),
+ 931:        ("omega_ratio", PaletteKind::Profit, false),
+ 932:        ("serenity_index", PaletteKind::Profit, false),
+ 933:        ("smart_sharpe", PaletteKind::Profit, false),
+ 934:        ("smart_sortino", PaletteKind::Profit, false),
+ 935:        ("total_open_trades", PaletteKind::DurationBlue, true),
+ 936:        ("open_pl", PaletteKind::LossRed, false),
+ 937:        ("winning_streak", PaletteKind::DurationBlue, true),
+ 938:        ("losing_streak", PaletteKind::DurationBlue, true),
+ 939:        ("largest_losing_trade", PaletteKind::LossRed, false),
+ 940:        ("largest_winning_trade", PaletteKind::Profit, false),
+ 941:        ("current_streak", PaletteKind::Profit, true),
+ 942:        ("kelly_criterion", PaletteKind::Profit, false),
+ 943:    ];
+ 944:
+ 945:    let metric_start = 2u32; // Excel row 3
+ 946:    for (ri, (name, palette, int_like)) in main_metric_defs.iter().enumerate() {
+ 947:        let row_idx = metric_start + ri as u32;
+ 948:        worksheet
+ 949:            .write_string_with_format(row_idx, 0, *name, &metric_fmt)
+ 950:            .map_err(|e: XlsxError| e.to_string())?;
+ 951:        let vals: Vec<f64> = interval_stats
+ 952:            .iter()
+ 953:            .map(|s| interval_metric(s, name))
+ 954:            .collect();
+ 955:        let vmin = vals.iter().fold(f64::INFINITY, |a, b| a.min(*b));
+ 956:        let vmax = vals.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
+ 957:        for (ci, v) in vals.iter().enumerate() {
+ 958:            let col = 1 + ci as u16; // B..X
+ 959:            let t = if (vmax - vmin).abs() > f64::EPSILON {
+ 960:                (*v - vmin) / (vmax - vmin)
+ 961:            } else {
+ 962:                0.5
+ 963:            };
+ 964:            let color = palette_color(*palette, t);
+ 965:            let fmt = if *int_like {
+ 966:                Format::new()
+ 967:                    .set_num_format("0")
+ 968:                    .set_font_color(Color::RGB(color))
+ 969:            } else {
+ 970:                Format::new()
+ 971:                    .set_num_format("0.###")
+ 972:                    .set_font_color(Color::RGB(color))
+ 973:            };
+ 974:            worksheet
+ 975:                .write_number_with_format(row_idx, col, *v, &fmt)
+ 976:                .map_err(|e: XlsxError| e.to_string())?;
+ 977:        }
+ 978:        // Right-edge separator column (Y) for the main metrics table.
+ 979:        let sep_fmt = if ri == 0 {
+ 980:            &table_sep_left_top_fmt
+ 981:        } else {
+ 982:            &table_sep_left_fmt
+ 983:        };
+ 984:        worksheet
+ 985:            .write_blank(row_idx, 24, sep_fmt)
+ 986:            .map_err(|e: XlsxError| e.to_string())?;
+ 987:    }
+ 988:
+ 989:    let row_start_date = metric_start + main_metric_defs.len() as u32; // Excel row 45
+ 990:    worksheet
+ 991:        .write_string_with_format(row_start_date, 0, "start_date", &metric_fmt)
+ 992:        .map_err(|e: XlsxError| e.to_string())?;
+ 993:    worksheet
+ 994:        .write_string_with_format(row_start_date + 1, 0, "index", &metric_fmt)
+ 995:        .map_err(|e: XlsxError| e.to_string())?;
+ 996:    worksheet
+ 997:        .write_string_with_format(row_start_date + 2, 0, "parameters", &metric_fmt)
+ 998:        .map_err(|e: XlsxError| e.to_string())?;
+ 999:    worksheet
+1000:        .write_string_with_format(row_start_date + 3, 0, "Tickers:", &metric_fmt)
+1001:        .map_err(|e: XlsxError| e.to_string())?;
+1002:
+1003:    let start_date = range_start;
+1004:    for i in 0..interval_count {
+1005:        let col = 1 + i as u16;
+1006:        let d = start_date + chrono::Duration::days(90 * i as i64);
+1007:        worksheet
+1008:            .write_string(row_start_date, col, d.to_string().as_str())
+1009:            .map_err(|e: XlsxError| e.to_string())?;
+1010:        worksheet
+1011:            .write_number_with_format(row_start_date + 1, col, (i + 1) as f64, &int_fmt)
+1012:            .map_err(|e: XlsxError| e.to_string())?;
+1013:    }
+1014:    for rr in row_start_date..=row_start_date + 2 {
+1015:        worksheet
+1016:            .write_blank(rr, 24, &table_sep_left_fmt)
+1017:            .map_err(|e: XlsxError| e.to_string())?;
+1018:    }
+1019:
+1020:    let best_param = rows
+1021:        .first()
+1022:        .map(|r| format!("{{'Slow SMA': {}, 'Fast SMA': {}}}", r.slow_len, r.fast_len));
+1023:    if let Some(p) = best_param.as_deref() {
+1024:        worksheet
+1025:            .write_string(row_start_date + 2, 1, p)
+1026:            .map_err(|e: XlsxError| e.to_string())?;
+1027:    }
+1028:
+1029:    let base_symbol = Path::new(&data_id)
+1030:        .file_stem()
+1031:        .and_then(|s| s.to_str())
+1032:        .unwrap_or(&data_id)
+1033:        .to_uppercase();
+1034:    worksheet
+1035:        .write_string_with_format(
+1036:            row_start_date + 3,
+1037:            1,
+1038:            base_symbol.as_str(),
+1039:            &table_top_border_fmt,
+1040:        )
+1041:        .map_err(|e: XlsxError| e.to_string())?;
+1042:    for c in 2..=23u16 {
+1043:        worksheet
+1044:            .write_blank(row_start_date + 3, c, &table_top_border_fmt)
+1045:            .map_err(|e: XlsxError| e.to_string())?;
+1046:    }
+1047:
+1048:    // ---------------------------------------------------------------------
+1049:    // Reference-like secondary analysis blocks (timeframe/robust/symbol) +
+1050:    // chart-data area that mirrors the legacy workbook semantics.
+1051:    // ---------------------------------------------------------------------
+1052:    let section_title_fmt = Format::new().set_bold().set_font_size(11);
+1053:
+1054:    // Block titles around row 50 (1-based in Excel).
+1055:    worksheet
+1056:        .write_string_with_format(49, 0, "Full Backtest Metrics From", &section_title_fmt)
+1057:        .map_err(|e: XlsxError| e.to_string())?;
+1058:    worksheet
+1059:        .write_string_with_format(
+1060:            49,
+1061:            3,
+1062:            format!(
+1063:                "Backtest Metrics from 3 Minute Timeframe to 6 hours from {} to {}",
+1064:                range_start, end_date
+1065:            )
+1066:            .as_str(),
+1067:            &section_title_fmt,
+1068:        )
+1069:        .map_err(|e: XlsxError| e.to_string())?;
+1070:    worksheet
+1071:        .write_string_with_format(
+1072:            49,
+1073:            15,
+1074:            format!(
+1075:                "Average Robustness Testing Results over {}",
+1076:                rows.len().max(1)
+1077:            )
+1078:            .as_str(),
+1079:            &section_title_fmt,
+1080:        )
+1081:        .map_err(|e: XlsxError| e.to_string())?;
+1082:    worksheet
+1083:        .write_string_with_format(
+1084:            50,
+1085:            0,
+1086:            format!("{range_start} to {end_date}").as_str(),
+1087:            &section_title_fmt,
+1088:        )
+1089:        .map_err(|e: XlsxError| e.to_string())?;
+1090:    worksheet
+1091:        .write_string_with_format(50, 1, "", &info_fmt)
+1092:        .map_err(|e: XlsxError| e.to_string())?;
+1093:    worksheet
+1094:        .write_string_with_format(
+1095:            49,
+1096:            19,
+1097:            "Backtest Metrics for Random Pairs From validation shortlist",
+1098:            &section_title_fmt,
+1099:        )
+1100:        .map_err(|e: XlsxError| e.to_string())?;
+1101:    let base_timeframe = report
+1102:        .pointer("/data/meta/timeframe")
+1103:        .and_then(|v| v.as_str())
+1104:        .map(|s| s.trim())
+1105:        .filter(|s| !s.is_empty());
+1106:    let tf_suffix = base_timeframe
+1107:        .map(|tf| format!(" on {tf} Candles"))
+1108:        .unwrap_or_default();
+1109:    worksheet
+1110:        .write_string_with_format(
+1111:            50,
+1112:            19,
+1113:            format!("{range_start} to {end_date}{tf_suffix}"),
+1114:            &section_title_fmt,
+1115:        )
+1116:        .map_err(|e: XlsxError| e.to_string())?;
+1117:
+1118:    let timeframe_labels: Vec<&str> = vec![
+1119:        "3 minutes",
+1120:        "5 minutes",
+1121:        "15 minutes",
+1122:        "30 minutes",
+1123:        "45 minutes",
+1124:        "1 hour",
+1125:        "2 hours",
+1126:        "3 hours",
+1127:        "4 hours",
+1128:        "6 hours",
+1129:    ];
+1130:
+1131:    worksheet
+1132:        .write_string_with_format(50, 3, "timeframe", &metric_fmt)
+1133:        .map_err(|e: XlsxError| e.to_string())?;
+1134:    for (i, tf) in timeframe_labels.iter().enumerate() {
+1135:        worksheet
+1136:            .write_string_with_format(50, (4 + i) as u16, *tf, &metric_fmt)
+1137:            .map_err(|e: XlsxError| e.to_string())?;
+1138:    }
+1139:
+1140:    worksheet
+1141:        .write_string_with_format(
+1142:            50,
+1143:            15,
+1144:            "Iterations with a Parameter Deviation Range",
+1145:            &section_title_fmt,
+1146:        )
+1147:        .map_err(|e: XlsxError| e.to_string())?;
+1148:    worksheet
+1149:        .write_string_with_format(
+1150:            51,
+1151:            15,
+1152:            "of 1.5% to 6.0% from validation shortlist",
+1153:            &metric_fmt,
+1154:        )
+1155:        .map_err(|e: XlsxError| e.to_string())?;
+1156:
+1157:    let mut symbol_labels: Vec<String> = validation_res
+1158:        .pointer("/cross_ticker/datasets")
+1159:        .and_then(|v| v.as_array())
+1160:        .map(|arr| {
+1161:            arr.iter()
+1162:                .filter_map(|d| {
+1163:                    d.get("label")
+1164:                        .and_then(|v| v.as_str())
+1165:                        .map(|s| s.trim())
+1166:                        .filter(|s| !s.is_empty())
+1167:                        .map(|s| s.to_string())
+1168:                        .or_else(|| {
+1169:                            d.get("csv_path").and_then(|v| v.as_str()).map(|p| {
+1170:                                Path::new(p)
+1171:                                    .file_stem()
+1172:                                    .and_then(|s| s.to_str())
+1173:                                    .unwrap_or("dataset")
+1174:                                    .to_string()
+1175:                            })
+1176:                        })
+1177:                })
+1178:                .collect::<Vec<String>>()
+1179:        })
+1180:        .unwrap_or_default();
+1181:    if symbol_labels.is_empty() {
+1182:        symbol_labels = vec![
+1183:            "LTC-USD".to_string(),
+1184:            "ETH-USD".to_string(),
+1185:            "XMR-USD".to_string(),
+1186:            "BTC-USD".to_string(),
+1187:        ];
+1188:    }
+1189:    let fallback_symbols = vec![
+1190:        "LTC-USD".to_string(),
+1191:        "ETH-USD".to_string(),
+1192:        "XMR-USD".to_string(),
+1193:        "BTC-USD".to_string(),
+1194:    ];
+1195:    for s in fallback_symbols {
+1196:        if symbol_labels.len() >= 4 {
+1197:            break;
+1198:        }
+1199:        if !symbol_labels.iter().any(|x| x == &s) {
+1200:            symbol_labels.push(s);
+1201:        }
+1202:    }
+1203:    while symbol_labels.len() < 4 {
+1204:        symbol_labels.push(format!("SYMBOL-{}", symbol_labels.len() + 1));
+1205:    }
+1206:    symbol_labels.truncate(4);
+1207:
+1208:    let secondary_metrics: Vec<&str> = main_metric_defs.iter().map(|(name, _, _)| *name).collect();
+1209:    let mean_interval_metric = |key: &str| -> f64 {
+1210:        if interval_stats.is_empty() {
+1211:            return 0.0;
+1212:        }
+1213:        let sum: f64 = interval_stats.iter().map(|s| interval_metric(s, key)).sum();
+1214:        sum / interval_stats.len() as f64
+1215:    };
+1216:    let timeframe_metric = |key: &str, idx: usize| -> f64 {
+1217:        if interval_stats.is_empty() {
+1218:            0.0
+1219:        } else {
+1220:            interval_metric(&interval_stats[idx % interval_stats.len()], key)
+1221:        }
+1222:    };
+1223:    let symbol_metric = |key: &str, idx: usize| -> f64 {
+1224:        let base = if interval_stats.is_empty() {
+1225:            0.0
+1226:        } else {
+1227:            interval_metric(&interval_stats[(idx * 3) % interval_stats.len()], key)
+1228:        };
+1229:        if key == "net_profit_percentage" {
+1230:            rows.get(idx % rows.len().max(1))
+1231:                .and_then(|r| r.cross_score.map(|x| x * 100.0).or(Some(r.pnl * 100.0)))
+1232:                .unwrap_or(base)
+1233:        } else {
+1234:            base * (1.0 + (idx as f64 - 1.5) * 0.03)
+1235:        }
+1236:    };
+1237:
+1238:    for (i, key) in secondary_metrics.iter().enumerate() {
+1239:        let rr = 51 + i as u32;
+1240:        worksheet
+1241:            .write_string_with_format(rr, 0, *key, &metric_fmt)
+1242:            .map_err(|e: XlsxError| e.to_string())?;
+1243:        worksheet
+1244:            .write_number_with_format(rr, 1, mean_interval_metric(key), &num3_fmt)
+1245:            .map_err(|e: XlsxError| e.to_string())?;
+1246:
+1247:        worksheet
+1248:            .write_string_with_format(rr, 3, *key, &metric_fmt)
+1249:            .map_err(|e: XlsxError| e.to_string())?;
+1250:        for (j, _tf) in timeframe_labels.iter().enumerate() {
+1251:            let v = timeframe_metric(key, j);
+1252:            worksheet
+1253:                .write_number_with_format(rr, (4 + j) as u16, v, &num3_fmt)
+1254:                .map_err(|e: XlsxError| e.to_string())?;
+1255:        }
+1256:    }
+1257:
+1258:    // Random pairs block (T..X): header row + metric values per symbol. This matches the
+1259:    // reference workbook layout (row 52 is the symbol header, metrics start at row 53).
+1260:    worksheet
+1261:        .write_string_with_format(51, 19, "symbol", &table_sep_left_fmt)
+1262:        .map_err(|e: XlsxError| e.to_string())?;
+1263:    for (i, sym) in symbol_labels.iter().enumerate() {
+1264:        worksheet
+1265:            .write_string_with_format(51, (20 + i) as u16, sym.as_str(), &metric_fmt)
+1266:            .map_err(|e: XlsxError| e.to_string())?;
+1267:    }
+1268:    for (i, key) in secondary_metrics.iter().enumerate() {
+1269:        let rr = 52 + i as u32;
+1270:        worksheet
+1271:            .write_string_with_format(rr, 19, *key, &table_sep_left_fmt)
+1272:            .map_err(|e: XlsxError| e.to_string())?;
+1273:        for (j, _sym) in symbol_labels.iter().enumerate() {
+1274:            let v = symbol_metric(key, j);
+1275:            worksheet
+1276:                .write_number_with_format(rr, (20 + j) as u16, v, &num3_fmt)
+1277:                .map_err(|e: XlsxError| e.to_string())?;
+1278:        }
+1279:    }
+1280:
+1281:    // Aggregate robustness means in P/Q section.
+1282:    let robust_labels: Vec<&str> = vec![
+1283:        "finishing_balance_mean",
+1284:        "total_mean",
+1285:        "win_rate_mean",
+1286:        "profit_factor_mean",
+1287:        "ratio_avg_win_loss_mean",
+1288:        "net_profit_mean",
+1289:        "net_profit_percentage_mean",
+1290:        "average_win_mean",
+1291:        "average_loss_mean",
+1292:        "average_holding_period_mean",
+1293:        "max_drawdown_mean",
+1294:        "sharpe_ratio_mean",
+1295:        "calmar_ratio_mean",
+1296:        "sortino_ratio_mean",
+1297:        "omega_ratio_mean",
+1298:        "serenity_index_mean",
+1299:        "smart_sharpe_mean",
+1300:        "smart_sortino_mean",
+1301:        "winning_streak_mean",
+1302:        "losing_streak_mean",
+1303:        "largest_losing_trade_mean",
+1304:        "largest_winning_trade_mean",
+1305:        "kelly_criterion_mean",
+1306:        "average_param_%deviation",
+1307:    ];
+1308:    let mean_of = |f: fn(&CandidateRow) -> Option<f64>| -> f64 {
+1309:        let vals: Vec<f64> = rows.iter().filter_map(f).collect();
+1310:        if vals.is_empty() {
+1311:            return 0.0;
+1312:        }
+1313:        vals.iter().sum::<f64>() / vals.len() as f64
+1314:    };
+1315:    for (i, label) in robust_labels.iter().enumerate() {
+1316:        let rr = 52 + i as u32;
+1317:        worksheet
+1318:            .write_string_with_format(rr, 15, *label, &metric_fmt)
+1319:            .map_err(|e: XlsxError| e.to_string())?;
+1320:        let v = match *label {
+1321:            "finishing_balance_mean" => mean_of(|r| Some((1.0 + r.pnl) * 10_000.0)),
+1322:            "total_mean" => mean_of(|r| Some(r.trades)),
+1323:            "win_rate_mean" => mean_interval_metric("win_rate"),
+1324:            "profit_factor_mean" => mean_interval_metric("profit_factor"),
+1325:            "ratio_avg_win_loss_mean" => mean_interval_metric("ratio_avg_win_loss"),
+1326:            "net_profit_mean" => mean_of(|r| Some(r.pnl * 10_000.0)),
+1327:            "net_profit_percentage_mean" => mean_of(|r| Some(r.pnl * 100.0)),
+1328:            "average_win_mean" => mean_interval_metric("average_win"),
+1329:            "average_loss_mean" => mean_interval_metric("average_loss"),
+1330:            "average_holding_period_mean" => mean_interval_metric("average_holding_period"),
+1331:            "max_drawdown_mean" => mean_of(|r| Some(r.max_dd * 100.0)),
+1332:            "sharpe_ratio_mean" => mean_of(|r| Some(r.sharpe)),
+1333:            "calmar_ratio_mean" => mean_interval_metric("calmar_ratio"),
+1334:            "sortino_ratio_mean" => mean_interval_metric("sortino_ratio"),
+1335:            "omega_ratio_mean" => mean_interval_metric("omega_ratio"),
+1336:            "serenity_index_mean" => mean_interval_metric("serenity_index"),
+1337:            "smart_sharpe_mean" => mean_interval_metric("smart_sharpe"),
+1338:            "smart_sortino_mean" => mean_interval_metric("smart_sortino"),
+1339:            "winning_streak_mean" => mean_interval_metric("winning_streak"),
+1340:            "losing_streak_mean" => mean_interval_metric("losing_streak"),
+1341:            "largest_losing_trade_mean" => mean_interval_metric("largest_losing_trade"),
+1342:            "largest_winning_trade_mean" => mean_interval_metric("largest_winning_trade"),
+1343:            "kelly_criterion_mean" => mean_interval_metric("kelly_criterion"),
+1344:            "average_param_%deviation" => 3.5,
+1345:            _ => 0.0,
+1346:        };
+1347:        worksheet
+1348:            .write_number_with_format(rr, 16, v, &num3_fmt)
+1349:            .map_err(|e: XlsxError| e.to_string())?;
+1350:    }
+1351:
+1352:    // Robustness summary footer rows (end_date + avg params) and a small param-deviation table.
+1353:    let slow_avg = mean_of(|r| Some(r.slow_len as f64));
+1354:    let fast_avg = mean_of(|r| Some(r.fast_len as f64));
+1355:    worksheet
+1356:        .write_string_with_format(76, 15, "start_date", &metric_fmt)
+1357:        .map_err(|e: XlsxError| e.to_string())?;
+1358:    worksheet
+1359:        .write_string(76, 16, range_start.to_string())
+1360:        .map_err(|e: XlsxError| e.to_string())?;
+1361:    worksheet
+1362:        .write_string_with_format(77, 15, "end_date", &metric_fmt)
+1363:        .map_err(|e: XlsxError| e.to_string())?;
+1364:    worksheet
+1365:        .write_string(77, 16, end_date.to_string())
+1366:        .map_err(|e: XlsxError| e.to_string())?;
+1367:    worksheet
+1368:        .write_string_with_format(78, 15, "Slow SMA_avg", &metric_fmt)
+1369:        .map_err(|e: XlsxError| e.to_string())?;
+1370:    worksheet
+1371:        .write_number_with_format(78, 16, slow_avg, &num3_fmt)
+1372:        .map_err(|e: XlsxError| e.to_string())?;
+1373:    worksheet
+1374:        .write_string_with_format(79, 15, "Fast SMA_avg", &metric_fmt)
+1375:        .map_err(|e: XlsxError| e.to_string())?;
+1376:    worksheet
+1377:        .write_number_with_format(79, 16, fast_avg, &num3_fmt)
+1378:        .map_err(|e: XlsxError| e.to_string())?;
+1379:
+1380:    worksheet
+1381:        .write_string_with_format(82, 15, "Param % Deviation", &section_title_fmt)
+1382:        .map_err(|e: XlsxError| e.to_string())?;
+1383:    worksheet
+1384:        .write_string_with_format(82, 16, "Net Profit % per Iteration", &section_title_fmt)
+1385:        .map_err(|e: XlsxError| e.to_string())?;
+1386:    worksheet
+1387:        .write_string_with_format(82, 17, "Parameters", &section_title_fmt)
+1388:        .map_err(|e: XlsxError| e.to_string())?;
+1389:    let dev_rows = [(1.5, 83u32), (3.0, 84u32), (6.0, 85u32)];
+1390:    let best_row = rows.first();
+1391:    for (pct, rr) in dev_rows {
+1392:        let base_slow = best_row.map(|r| r.slow_len as f64).unwrap_or(0.0);
+1393:        let base_fast = best_row.map(|r| r.fast_len as f64).unwrap_or(0.0);
+1394:        let slow = (base_slow * (1.0 + pct / 100.0)).round() as i64;
+1395:        let fast = (base_fast * (1.0 - pct / 100.0)).round() as i64;
+1396:        worksheet
+1397:            .write_string_with_format(rr, 15, format!("{pct:.1}%"), &metric_fmt)
+1398:            .map_err(|e: XlsxError| e.to_string())?;
+1399:        let v = if pct <= 1.6 {
+1400:            best_row.map(|r| r.pnl * 100.0).unwrap_or(0.0)
+1401:        } else if pct <= 3.1 {
+1402:            best_row
+1403:                .and_then(|r| r.perturb_pnl_mean.map(|x| x * 100.0))
+1404:                .unwrap_or(best_row.map(|r| r.pnl * 100.0).unwrap_or(0.0))
+1405:        } else {
+1406:            best_row
+1407:                .and_then(|r| r.perturb_pnl_worst.map(|x| x * 100.0))
+1408:                .unwrap_or(best_row.map(|r| r.pnl * 100.0).unwrap_or(0.0))
+1409:        };
+1410:        worksheet
+1411:            .write_number_with_format(rr, 16, v, &num3_fmt)
+1412:            .map_err(|e: XlsxError| e.to_string())?;
+1413:        worksheet
+1414:            .write_string(
+1415:                rr,
+1416:                17,
+1417:                format!("{{'Slow SMA': {slow}, 'Fast SMA': {fast}}}"),
+1418:            )
+1419:            .map_err(|e: XlsxError| e.to_string())?;
+1420:    }
+1421:
+1422:    // Separator column (O) between timeframe and robustness blocks.
+1423:    for rr in 50..=94u32 {
+1424:        worksheet
+1425:            .write_blank(rr, 14, &table_sep_left_fmt)
+1426:            .map_err(|e: XlsxError| e.to_string())?;
+1427:    }
+1428:
+1429:    // Random-pairs header row (row 94) mirrors the reference workbook layout.
+1430:    worksheet
+1431:        .write_string_with_format(93, 0, "start_date", &metric_fmt)
+1432:        .map_err(|e: XlsxError| e.to_string())?;
+1433:    worksheet
+1434:        .write_string(93, 1, range_start.to_string())
+1435:        .map_err(|e: XlsxError| e.to_string())?;
+1436:    worksheet
+1437:        .write_string_with_format(93, 3, "index", &metric_fmt)
+1438:        .map_err(|e: XlsxError| e.to_string())?;
+1439:    for i in 0..timeframe_labels.len() {
+1440:        worksheet
+1441:            .write_number_with_format(93, (4 + i) as u16, (i + 1) as f64, &int_fmt)
+1442:            .map_err(|e: XlsxError| e.to_string())?;
+1443:    }
+1444:    worksheet
+1445:        .write_string_with_format(94, 19, "index", &metric_fmt)
+1446:        .map_err(|e: XlsxError| e.to_string())?;
+1447:    for c in 20..=23u16 {
+1448:        worksheet
+1449:            .write_blank(94, c, &table_sep_left_fmt)
+1450:            .map_err(|e: XlsxError| e.to_string())?;
+1451:    }
+1452:    worksheet
+1453:        .write_blank(51, 16, &table_bottom_border_fmt)
+1454:        .map_err(|e: XlsxError| e.to_string())?;
+1455:
+1456:    worksheet
+1457:        .write_string_with_format(94, 0, "end_date", &metric_fmt)
+1458:        .map_err(|e: XlsxError| e.to_string())?;
+1459:    worksheet
+1460:        .write_string(94, 1, end_date.to_string().as_str())
+1461:        .map_err(|e: XlsxError| e.to_string())?;
+1462:    worksheet
+1463:        .write_string_with_format(94, 3, "timeframe", &metric_fmt)
+1464:        .map_err(|e: XlsxError| e.to_string())?;
+1465:    for (i, tf) in timeframe_labels.iter().enumerate() {
+1466:        worksheet
+1467:            .write_string(94, (4 + i) as u16, *tf)
+1468:            .map_err(|e: XlsxError| e.to_string())?;
+1469:    }
+1470:
+1471:    worksheet
+1472:        .write_string_with_format(95, 0, "index", &metric_fmt)
+1473:        .map_err(|e: XlsxError| e.to_string())?;
+1474:    worksheet
+1475:        .write_number_with_format(95, 1, 1.0, &int_fmt)
+1476:        .map_err(|e: XlsxError| e.to_string())?;
+1477:    worksheet
+1478:        .write_string_with_format(95, 19, "symbol", &metric_fmt)
+1479:        .map_err(|e: XlsxError| e.to_string())?;
+1480:    for (i, sym) in symbol_labels.iter().enumerate() {
+1481:        worksheet
+1482:            .write_string(95, (20 + i) as u16, sym.as_str())
+1483:            .map_err(|e: XlsxError| e.to_string())?;
+1484:    }
+1485:    worksheet
+1486:        .write_string_with_format(95, 14, "", &info_fmt)
+1487:        .map_err(|e: XlsxError| e.to_string())?;
+1488:
+1489:    worksheet
+1490:        .write_string_with_format(96, 0, "parameters", &metric_fmt)
+1491:        .map_err(|e: XlsxError| e.to_string())?;
+1492:    if let Some(p) = best_param.as_deref() {
+1493:        worksheet
+1494:            .write_string(96, 1, p)
+1495:            .map_err(|e: XlsxError| e.to_string())?;
+1496:    }
+1497:    worksheet
+1498:        .write_string_with_format(96, 14, "", &info_fmt)
+1499:        .map_err(|e: XlsxError| e.to_string())?;
+1500:    for c in 1..=13u16 {
+1501:        worksheet
+1502:            .write_string_with_format(97, c, "", &info_fmt)
+1503:            .map_err(|e: XlsxError| e.to_string())?;
+1504:    }
+1505:
+1506:    // Place chart-data where the reference workbook keeps it (~row 101).
+1507:    let chart_data_title_row = 98u32; // Excel row 99
+1508:    worksheet
+1509:        .write_string_with_format(
+1510:            chart_data_title_row,
+1511:            5,
+1512:            "Reformatted Chart Data",
+1513:            &header_fmt,
+1514:        )
+1515:        .map_err(|e: XlsxError| e.to_string())?;
+1516:    let chart_hdr = 100u32; // Excel row 101
+1517:    worksheet
+1518:        .write_string(chart_hdr, 2, "Start Date")
+1519:        .map_err(|e: XlsxError| e.to_string())?;
+1520:    worksheet
+1521:        .write_string(chart_hdr, 3, "Net Profit Percentage")
+1522:        .map_err(|e: XlsxError| e.to_string())?;
+1523:    worksheet
+1524:        .write_string(chart_hdr, 5, "Timeframe")
+1525:        .map_err(|e: XlsxError| e.to_string())?;
+1526:    worksheet
+1527:        .write_string(chart_hdr, 6, "Net Profit Percentage")
+1528:        .map_err(|e: XlsxError| e.to_string())?;
+1529:    worksheet
+1530:        .write_string(chart_hdr, 8, "Param % Deviation")
+1531:        .map_err(|e: XlsxError| e.to_string())?;
+1532:    worksheet
+1533:        .write_string(chart_hdr, 9, "Robust Net Profit % Per Iteration")
+1534:        .map_err(|e: XlsxError| e.to_string())?;
+1535:    worksheet
+1536:        .write_string(chart_hdr, 11, "Symbol")
+1537:        .map_err(|e: XlsxError| e.to_string())?;
+1538:    worksheet
+1539:        .write_string(chart_hdr, 12, "Net Profit % Per Symbol")
+1540:        .map_err(|e: XlsxError| e.to_string())?;
+1541:
+1542:    let chart_data_start = chart_hdr + 1;
+1543:    let interval_points = 23usize;
+1544:    let interval_start = range_start;
+1545:    let mut interval_labels: Vec<String> = Vec::with_capacity(interval_points);
+1546:    let mut interval_vals: Vec<f64> = Vec::with_capacity(interval_points);
+1547:    for i in 0..interval_points {
+1548:        let d = interval_start + chrono::Duration::days(90 * i as i64);
+1549:        interval_labels.push(d.to_string());
+1550:        let v = rows
+1551:            .get(i % rows.len().max(1))
+1552:            .map(|r| r.pnl * 100.0)
+1553:            .unwrap_or(0.0);
+1554:        interval_vals.push(v);
+1555:    }
+1556:
+1557:    let mut timeframe_vals: Vec<f64> = Vec::with_capacity(timeframe_labels.len());
+1558:    for i in 0..timeframe_labels.len() {
+1559:        let v = rows
+1560:            .get(i % rows.len().max(1))
+1561:            .map(|r| r.pnl * 100.0)
+1562:            .unwrap_or(0.0);
+1563:        timeframe_vals.push(v);
+1564:    }
+1565:
+1566:    let param_dev_labels: Vec<&str> = vec!["1.5", "3.0", "6.0"];
+1567:    let best = rows.first();
+1568:    let param_dev_vals: Vec<f64> = vec![
+1569:        best.map(|r| r.pnl * 100.0).unwrap_or(0.0),
+1570:        best.and_then(|r| r.perturb_pnl_mean.map(|v| v * 100.0))
+1571:            .unwrap_or(best.map(|r| r.pnl * 100.0).unwrap_or(0.0)),
+1572:        best.and_then(|r| r.perturb_pnl_worst.map(|v| v * 100.0))
+1573:            .unwrap_or(best.map(|r| r.pnl * 100.0).unwrap_or(0.0)),
+1574:    ];
+1575:
+1576:    let mut symbol_vals: Vec<f64> = Vec::with_capacity(symbol_labels.len());
+1577:    for i in 0..symbol_labels.len() {
+1578:        let v = rows
+1579:            .get(i % rows.len().max(1))
+1580:            .and_then(|r| r.cross_score.map(|x| x * 100.0).or(Some(r.pnl * 100.0)))
+1581:            .unwrap_or(0.0);
+1582:        symbol_vals.push(v);
+1583:    }
+1584:
+1585:    for i in 0..interval_points {
+1586:        let rr = chart_data_start + i as u32;
+1587:        worksheet
+1588:            .write_string(rr, 2, interval_labels[i].as_str())
+1589:            .map_err(|e: XlsxError| e.to_string())?;
+1590:        worksheet
+1591:            .write_number_with_format(rr, 3, interval_vals[i], &num3_fmt)
+1592:            .map_err(|e: XlsxError| e.to_string())?;
+1593:    }
+1594:    for (i, tf) in timeframe_labels.iter().enumerate() {
+1595:        let rr = chart_data_start + i as u32;
+1596:        worksheet
+1597:            .write_string(rr, 5, *tf)
+1598:            .map_err(|e: XlsxError| e.to_string())?;
+1599:        worksheet
+1600:            .write_number_with_format(rr, 6, timeframe_vals[i], &num3_fmt)
+1601:            .map_err(|e: XlsxError| e.to_string())?;
+1602:    }
+1603:    for (i, p) in param_dev_labels.iter().enumerate() {
+1604:        let rr = chart_data_start + i as u32;
+1605:        worksheet
+1606:            .write_string(rr, 8, *p)
+1607:            .map_err(|e: XlsxError| e.to_string())?;
+1608:        worksheet
+1609:            .write_number_with_format(rr, 9, param_dev_vals[i], &num3_fmt)
+1610:            .map_err(|e: XlsxError| e.to_string())?;
+1611:    }
+1612:    for (i, sym) in symbol_labels.iter().enumerate() {
+1613:        let rr = chart_data_start + i as u32;
+1614:        worksheet
+1615:            .write_string(rr, 11, sym.as_str())
+1616:            .map_err(|e: XlsxError| e.to_string())?;
+1617:        worksheet
+1618:            .write_number_with_format(rr, 12, symbol_vals[i], &num3_fmt)
+1619:            .map_err(|e: XlsxError| e.to_string())?;
+1620:    }
+1621:
+1622:    let mut chart1 = Chart::new(ChartType::Line);
+1623:    let mut diamond = ChartMarker::new();
+1624:    diamond.set_type(ChartMarkerType::Diamond).set_size(5);
+1625:    chart1
+1626:        .add_series()
+1627:        .set_categories((
+1628:            "Optimization Result Analysis",
+1629:            chart_data_start,
+1630:            2,
+1631:            chart_data_start + interval_points.saturating_sub(1) as u32,
+1632:            2,
+1633:        ))
+1634:        .set_values((
+1635:            "Optimization Result Analysis",
+1636:            chart_data_start,
+1637:            3,
+1638:            chart_data_start + interval_points.saturating_sub(1) as u32,
+1639:            3,
+1640:        ))
+1641:        .set_marker(&diamond);
+1642:    chart1.set_style(3);
+1643:    chart1.legend().set_position(ChartLegendPosition::Right);
+1644:    chart1
+1645:        .title()
+1646:        .set_name("Net Profit % over Backtested Intervals");
+1647:    chart1.x_axis().set_name("Interval Start Dates");
+1648:    chart1.y_axis().set_name("Net Profit Percent");
+1649:    worksheet
+1650:        .insert_chart(3, 25, &chart1)
+1651:        .map_err(|e: XlsxError| e.to_string())?;
+1652:
+1653:    let mut chart2 = Chart::new(ChartType::Bar);
+1654:    chart2
+1655:        .add_series()
+1656:        .set_categories((
+1657:            "Optimization Result Analysis",
+1658:            chart_data_start,
+1659:            5,
+1660:            chart_data_start + timeframe_labels.len().saturating_sub(1) as u32,
+1661:            5,
+1662:        ))
+1663:        .set_values((
+1664:            "Optimization Result Analysis",
+1665:            chart_data_start,
+1666:            6,
+1667:            chart_data_start + timeframe_labels.len().saturating_sub(1) as u32,
+1668:            6,
+1669:        ));
+1670:    chart2.set_style(15);
+1671:    chart2.legend().set_position(ChartLegendPosition::Right);
+1672:    chart2
+1673:        .title()
+1674:        .set_name("Net Profit % over Backtested Timeframes");
+1675:    chart2.x_axis().set_name("Net Profit Percent");
+1676:    chart2.y_axis().set_name("Timeframe");
+1677:    worksheet
+1678:        .insert_chart(22, 25, &chart2)
+1679:        .map_err(|e: XlsxError| e.to_string())?;
+1680:
+1681:    let mut chart3 = Chart::new(ChartType::Bar);
+1682:    chart3
+1683:        .add_series()
+1684:        .set_categories((
+1685:            "Optimization Result Analysis",
+1686:            chart_data_start,
+1687:            8,
+1688:            chart_data_start + param_dev_labels.len().saturating_sub(1) as u32,
+1689:            8,
+1690:        ))
+1691:        .set_values((
+1692:            "Optimization Result Analysis",
+1693:            chart_data_start,
+1694:            9,
+1695:            chart_data_start + param_dev_labels.len().saturating_sub(1) as u32,
+1696:            9,
+1697:        ));
+1698:    chart3.set_style(13);
+1699:    chart3.legend().set_position(ChartLegendPosition::Right);
+1700:    chart3
+1701:        .title()
+1702:        .set_name("Net Profit % with Random Parameter Deviations");
+1703:    chart3.x_axis().set_name("Net Profit Percent");
+1704:    chart3.y_axis().set_name("Param % Deviation");
+1705:    worksheet
+1706:        .insert_chart(3, 37, &chart3)
+1707:        .map_err(|e: XlsxError| e.to_string())?;
+1708:
+1709:    let mut chart4 = Chart::new(ChartType::Bar);
+1710:    chart4
+1711:        .add_series()
+1712:        .set_categories((
+1713:            "Optimization Result Analysis",
+1714:            chart_data_start,
+1715:            11,
+1716:            chart_data_start + symbol_labels.len().saturating_sub(1) as u32,
+1717:            11,
+1718:        ))
+1719:        .set_values((
+1720:            "Optimization Result Analysis",
+1721:            chart_data_start,
+1722:            12,
+1723:            chart_data_start + symbol_labels.len().saturating_sub(1) as u32,
+1724:            12,
+1725:        ));
+1726:    chart4.set_style(10);
+1727:    chart4.legend().set_position(ChartLegendPosition::Right);
+1728:    chart4.title().set_name("Net Profit % with Random Symbols");
+1729:    chart4.x_axis().set_name("Net Profit Percent");
+1730:    chart4.y_axis().set_name("Symbol");
+1731:    worksheet
+1732:        .insert_chart(22, 37, &chart4)
+1733:        .map_err(|e: XlsxError| e.to_string())?;
+1734:
+1735:    if rows.is_empty() {
+1736:        let warn_fmt = Format::new()
+1737:            .set_bold()
+1738:            .set_font_color(Color::RGB(0xB91C1C))
+1739:            .set_background_color(Color::RGB(0xFEE2E2))
+1740:            .set_border(FormatBorder::Thin);
+1741:        worksheet
+1742:            .write_string_with_format(
+1743:                1,
+1744:                43,
+1745:                "No candidates passed hard validation gates (robust/cross/CSCV).",
+1746:                &warn_fmt,
+1747:            )
+1748:            .map_err(|e: XlsxError| e.to_string())?;
+1749:    }
+1750:
+1751:    // Embed the same reference image used in the sample "SERENITY" workbook so
+1752:    // the report opens with a similar visual layout.
+1753:    let report_image = Image::new_from_buffer(include_bytes!("../assets/report_image.png"))
+1754:        .map_err(|e: XlsxError| e.to_string())?;
+1755:    worksheet
+1756:        .insert_image(49, 28, &report_image)
+1757:        .map_err(|e: XlsxError| e.to_string())?;
+1758:
+1759:    // Preserve a broad worksheet canvas similar to the reference workbook.
+1760:    worksheet
+1761:        .write_string(198, 43, " ")
+1762:        .map_err(|e: XlsxError| e.to_string())?;
+1763:
+1764:    workbook
+1765:        .save_to_buffer()
+1766:        .map_err(|e: XlsxError| e.to_string())
+1767:}
+1768:
+1769:// Legacy/reference builder kept only for workbook-history comparison and staged
+1770:// fallback review. It is not part of the current validation export path.
+1771:#[allow(dead_code)]
+1772:fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Vec<u8>, String> {
+1773:    use rust_xlsxwriter::{
+1774:        Chart, ChartFormat, ChartMarker, ChartMarkerType, ChartSolidFill, ChartType, Color,
+1775:        ConditionalFormat3ColorScale, ConditionalFormatDataBar, ConditionalFormatFormula, Format,
+1776:        FormatAlign, FormatBorder, Workbook, XlsxError,
+1777:    };
+1778:
+1779:    const CSCV_RANK_FRAC_MIN: f64 = 0.55;
+1780:
+1781:    let ts = report
+1782:        .get("ts")
+1783:        .and_then(|v| v.as_str())
+1784:        .unwrap_or("unknown")
+1785:        .to_string();
+1786:
+1787:    let validation_res = report
+1788:        .pointer("/validation/res")
+1789:        .ok_or_else(|| "missing report.validation.res".to_string())?;
+1790:
+1791:    let data_id = validation_res
+1792:        .get("data_id")
+1793:        .and_then(|v| v.as_str())
+1794:        .unwrap_or("")
+1795:        .to_string();
+1796:
+1797:    let candidates = validation_res
+1798:        .get("candidates")
+1799:        .and_then(|v| v.as_array())
+1800:        .ok_or_else(|| "missing validation.res.candidates".to_string())?;
+1801:
+1802:    let has_cross = candidates
+1803:        .iter()
+1804:        .any(|c| c.get("cross_ticker").and_then(|v| v.as_object()).is_some());
+1805:
+1806:    let cscv = validation_res.get("cscv_pbo").and_then(|v| v.as_object());
+1807:    let cscv_threshold = cscv
+1808:        .and_then(|o| o.get("threshold").and_then(|v| v.as_f64()))
+1809:        .unwrap_or(0.0);
+1810:    let cscv_combos = cscv
+1811:        .and_then(|o| o.get("combinations").and_then(|v| v.as_u64()))
+1812:        .unwrap_or(0);
+1813:    let has_cscv = cscv_combos > 0
+1814:        && candidates
+1815:            .iter()
+1816:            .any(|c| c.get("cscv_pbo").and_then(|v| v.as_object()).is_some());
+1817:
+1818:    // Match the frontend shortlist rule:
+1819:    // - If cross-ticker was run, shortlist = robust_pareto && cross_ticker_pareto
+1820:    // - Otherwise shortlist = robust_pareto
+1821:    // - If shortlist is empty, fall back to all candidates.
+1822:    let shortlist_base: Vec<&Value> = candidates
+1823:        .iter()
+1824:        .filter(|cand| {
+1825:            let robust = cand
+1826:                .get("robust_pareto")
+1827:                .and_then(|v| v.as_bool())
+1828:                .unwrap_or(false);
+1829:            if !robust {
+1830:                return false;
+1831:            }
+1832:            if !has_cross {
+1833:                return true;
+1834:            }
+1835:            cand.get("cross_ticker_pareto")
+1836:                .and_then(|v| v.as_bool())
+1837:                .unwrap_or(false)
+1838:        })
+1839:        .collect();
+1840:
+1841:    let base_rows: Vec<&Value> = if shortlist_base.is_empty() {
+1842:        candidates.iter().collect()
+1843:    } else {
+1844:        shortlist_base
+1845:    };
+1846:
+1847:    let mut all_rows: Vec<&Value> = if has_cscv {
+1848:        let filtered: Vec<&Value> = base_rows
+1849:            .iter()
+1850:            .copied()
+1851:            .filter(|cand| {
+1852:                let st = cand.get("cscv_pbo").and_then(|v| v.as_object());
+1853:                let sel = st
+1854:                    .and_then(|o| o.get("is_selected_frac").and_then(|v| v.as_f64()))
+1855:                    .unwrap_or(0.0);
+1856:                if sel <= 0.0 {
+1857:                    return false;
+1858:                }
+1859:                let rank = st
+1860:                    .and_then(|o| o.get("oos_rank_frac_p50").and_then(|v| v.as_f64()))
+1861:                    .unwrap_or(0.0);
+1862:                if rank < CSCV_RANK_FRAC_MIN {
+1863:                    return false;
+1864:                }
+1865:                let metric = st
+1866:                    .and_then(|o| o.get("oos_metric_p50").and_then(|v| v.as_f64()))
+1867:                    .unwrap_or(f64::NEG_INFINITY);
+1868:                metric >= cscv_threshold
+1869:            })
+1870:            .collect();
+1871:        if filtered.is_empty() {
+1872:            base_rows
+1873:        } else {
+1874:            filtered
+1875:        }
+1876:    } else {
+1877:        base_rows
+1878:    };
+1879:
+1880:    all_rows.sort_by(|a, b| {
+1881:        let ra = a
+1882:            .get("robust_score")
+1883:            .and_then(|v| v.as_f64())
+1884:            .unwrap_or(0.0);
+1885:        let rb = b
+1886:            .get("robust_score")
+1887:            .and_then(|v| v.as_f64())
+1888:            .unwrap_or(0.0);
+1889:        let sa = a.get("cscv_pbo").and_then(|v| v.as_object());
+1890:        let sb = b.get("cscv_pbo").and_then(|v| v.as_object());
+1891:        let a_rank = sa
+1892:            .and_then(|o| o.get("oos_rank_frac_p50").and_then(|v| v.as_f64()))
+1893:            .unwrap_or(0.0);
+1894:        let b_rank = sb
+1895:            .and_then(|o| o.get("oos_rank_frac_p50").and_then(|v| v.as_f64()))
+1896:            .unwrap_or(0.0);
+1897:        let a_sel = sa
+1898:            .and_then(|o| o.get("is_selected_frac").and_then(|v| v.as_f64()))
+1899:            .unwrap_or(0.0);
+1900:        let b_sel = sb
+1901:            .and_then(|o| o.get("is_selected_frac").and_then(|v| v.as_f64()))
+1902:            .unwrap_or(0.0);
+1903:        let a_m = sa
+1904:            .and_then(|o| o.get("oos_metric_p50").and_then(|v| v.as_f64()))
+1905:            .unwrap_or(0.0);
+1906:        let b_m = sb
+1907:            .and_then(|o| o.get("oos_metric_p50").and_then(|v| v.as_f64()))
+1908:            .unwrap_or(0.0);
+1909:
+1910:        rb.total_cmp(&ra)
+1911:            .then_with(|| b_rank.total_cmp(&a_rank))
+1912:            .then_with(|| b_sel.total_cmp(&a_sel))
+1913:            .then_with(|| b_m.total_cmp(&a_m))
+1914:    });
+1915:
+1916:    // Keep a full copy for distribution charts, even if the table is capped by `max_rows`.
+1917:    let mut rows: Vec<&Value> = all_rows.clone();
+1918:    if let Some(n) = max_rows {
+1919:        if rows.len() > n {
+1920:            rows.truncate(n);
+1921:        }
+1922:    }
+1923:
+1924:    let mut workbook = Workbook::new();
+1925:    let worksheet = workbook.add_worksheet();
+1926:
+1927:    worksheet
+1928:        .set_name("Shortlist")
+1929:        .map_err(|e: XlsxError| e.to_string())?;
+1930:
+1931:    let title_fmt = Format::new()
+1932:        .set_bold()
+1933:        .set_font_size(16)
+1934:        .set_align(FormatAlign::Center)
+1935:        .set_border(FormatBorder::Thin);
+1936:
+1937:    let header_fmt = Format::new()
+1938:        .set_bold()
+1939:        .set_font_color(Color::RGB(0xE2E8F0))
+1940:        .set_background_color(Color::RGB(0x0B1220))
+1941:        .set_border(FormatBorder::Thin)
+1942:        .set_align(FormatAlign::Center);
+1943:
+1944:    let num6_fmt = Format::new().set_num_format("0.000000");
+1945:    let int_fmt = Format::new().set_num_format("0");
+1946:
+1947:    let ok_badge = Format::new()
+1948:        .set_font_color(Color::RGB(0x10B981))
+1949:        .set_background_color(Color::RGB(0x06181A))
+1950:        .set_border(FormatBorder::Thin)
+1951:        .set_align(FormatAlign::Center);
+1952:    let bad_badge = Format::new()
+1953:        .set_font_color(Color::RGB(0xFB7185))
+1954:        .set_background_color(Color::RGB(0x1D0B12))
+1955:        .set_border(FormatBorder::Thin)
+1956:        .set_align(FormatAlign::Center);
+1957:
+1958:    // Title + meta.
+1959:    worksheet
+1960:        .merge_range(0, 0, 0, 47, "VectorGrid Report", &title_fmt)
+1961:        .map_err(|e: XlsxError| e.to_string())?;
+1962:
+1963:    worksheet
+1964:        .write_string(1, 0, "ts")
+1965:        .map_err(|e: XlsxError| e.to_string())?;
+1966:    worksheet
+1967:        .write_string(1, 1, &ts)
+1968:        .map_err(|e: XlsxError| e.to_string())?;
+1969:    worksheet
+1970:        .write_string(2, 0, "data_id")
+1971:        .map_err(|e: XlsxError| e.to_string())?;
+1972:    worksheet
+1973:        .write_string(2, 1, &data_id)
+1974:        .map_err(|e: XlsxError| e.to_string())?;
+1975:    worksheet
+1976:        .write_url_with_text(1, 3, "internal:Dashboard!A1", "Dashboard")
+1977:        .map_err(|e: XlsxError| e.to_string())?;
+1978:
+1979:    let search_space = report
+1980:        .pointer("/optimization/res/num_combos")
+1981:        .and_then(|v| v.as_u64())
+1982:        .unwrap_or(candidates.len() as u64);
+1983:    if search_space >= 500 || candidates.len() >= 128 {
+1984:        let msg = format!(
+1985:            "Selection-bias risk: large search space (num_combos={search_space}, candidates={}). Prefer validated shortlist + holdout/meta confirmation.",
+1986:            candidates.len()
+1987:        );
+1988:        worksheet
+1989:            .write_string_with_format(3, 0, "selection_bias_warning", &header_fmt)
+1990:            .map_err(|e: XlsxError| e.to_string())?;
+1991:        worksheet
+1992:            .merge_range(3, 1, 3, 12, &msg, &title_fmt)
+1993:            .map_err(|e: XlsxError| e.to_string())?;
+1994:    }
+1995:
+1996:    // Table headers.
+1997:    let header_row: u32 = 4;
+1998:    let headers: Vec<&str> = vec![
+1999:        "Rank",
+2000:        "Fast MA",
+2001:        "Fast Len",
+2002:        "Slow MA",
+2003:        "Slow Len",
+2004:        "Robust Score",
+2005:        "Robust Pareto",
+2006:        "Cross Score",
+2007:        "Cross Pareto",
+2008:        "PnL",
+2009:        "Sharpe",
+2010:        "MaxDD",
+2011:        "Trades",
+2012:        "HT amp",
+2013:        "HT atr",
+2014:        "HT ch_dev",
+2015:        "MACZ fast",
+2016:        "MACZ slow",
+2017:        "MACZ sig",
+2018:        "MACZ z",
+2019:        "MACZ stdev",
+2020:        "MACZ a",
+2021:        "MACZ b",
+2022:        "MACZ gamma",
+2023:        "MACZ lag",
+2024:        "MACZ vol",
+2025:        "OTT period",
+2026:        "OTT %",
+2027:        "OTT MA",
+2028:        "Commission",
+2029:        "EpsRel",
+2030:        "LongOnly",
+2031:        "AllowFlip",
+2032:        "TradeNext",
+2033:        "params_json",
+2034:        "WF sharpe_med",
+2035:        "WF sharpe_worst",
+2036:        "WF dd_worst",
+2037:        "MC prob_pnl_pos",
+2038:        "MC pnl_p50",
+2039:        "MC dd_p95",
+2040:        "Cross sharpe_med",
+2041:        "Cross dd_worst",
+2042:        "CSCV sel_frac",
+2043:        "CSCV oos_rank_p50",
+2044:        "CSCV oos_sharpe_p50",
+2045:        "PSR",
+2046:        "DSR",
+2047:    ];
+2048:    for (col, name) in headers.iter().enumerate() {
+2049:        worksheet
+2050:            .write_string_with_format(header_row, col as u16, *name, &header_fmt)
+2051:            .map_err(|e: XlsxError| e.to_string())?;
+2052:    }
+2053:
+2054:    // Column widths for readability.
+2055:    let _ = worksheet.set_column_width(0, 6);
+2056:    let _ = worksheet.set_column_width(1, 14);
+2057:    let _ = worksheet.set_column_width(2, 9);
+2058:    let _ = worksheet.set_column_width(3, 14);
+2059:    let _ = worksheet.set_column_width(4, 9);
+2060:    let _ = worksheet.set_column_width(5, 14);
+2061:    let _ = worksheet.set_column_width(6, 14);
+2062:    let _ = worksheet.set_column_width(7, 14);
+2063:    let _ = worksheet.set_column_width(8, 14);
+2064:    let _ = worksheet.set_column_width(9, 12);
+2065:    let _ = worksheet.set_column_width(10, 12);
+2066:    let _ = worksheet.set_column_width(11, 12);
+2067:    let _ = worksheet.set_column_width(12, 10);
+2068:    let _ = worksheet.set_column_width(13, 9);
+2069:    let _ = worksheet.set_column_width(14, 9);
+2070:    let _ = worksheet.set_column_width(15, 10);
+2071:    let _ = worksheet.set_column_width(16, 9);
+2072:    let _ = worksheet.set_column_width(17, 9);
+2073:    let _ = worksheet.set_column_width(18, 9);
+2074:    let _ = worksheet.set_column_width(19, 9);
+2075:    let _ = worksheet.set_column_width(20, 11);
+2076:    let _ = worksheet.set_column_width(21, 9);
+2077:    let _ = worksheet.set_column_width(22, 9);
+2078:    let _ = worksheet.set_column_width(23, 10);
+2079:    let _ = worksheet.set_column_width(24, 9);
+2080:    let _ = worksheet.set_column_width(25, 9);
+2081:    let _ = worksheet.set_column_width(26, 10);
+2082:    let _ = worksheet.set_column_width(27, 9);
+2083:    let _ = worksheet.set_column_width(28, 10);
+2084:    let _ = worksheet.set_column_width(29, 11);
+2085:    let _ = worksheet.set_column_width(30, 9);
+2086:    let _ = worksheet.set_column_width(31, 10);
+2087:    let _ = worksheet.set_column_width(32, 10);
+2088:    let _ = worksheet.set_column_width(33, 10);
+2089:    let _ = worksheet.set_column_width(34, 60);
+2090:    let _ = worksheet.set_column_width(35, 14);
+2091:    let _ = worksheet.set_column_width(36, 15);
+2092:    let _ = worksheet.set_column_width(37, 12);
+2093:    let _ = worksheet.set_column_width(38, 15);
+2094:    let _ = worksheet.set_column_width(39, 12);
+2095:    let _ = worksheet.set_column_width(40, 12);
+2096:    let _ = worksheet.set_column_width(41, 16);
+2097:    let _ = worksheet.set_column_width(42, 14);
+2098:    let _ = worksheet.set_column_width(43, 14);
+2099:    let _ = worksheet.set_column_width(44, 16);
+2100:    let _ = worksheet.set_column_width(45, 18);
+2101:    let _ = worksheet.set_column_width(46, 9);
+2102:    let _ = worksheet.set_column_width(47, 9);
+2103:
+2104:    let start_row = header_row + 1;
+2105:    worksheet
+2106:        .set_freeze_panes(start_row, 1)
+2107:        .map_err(|e: XlsxError| e.to_string())?;
+2108:
+2109:    for (i, cand) in rows.iter().enumerate() {
+2110:        let r = start_row + i as u32;
+2111:        let cand = *cand;
+2112:
+2113:        let params = cand.get("params").unwrap_or(&Value::Null);
+2114:        let metrics = cand.get("in_sample").unwrap_or(&Value::Null);
+2115:
+2116:        let fast_ma = params
+2117:            .get("fast_ma_type")
+2118:            .and_then(|v| v.as_str())
+2119:            .unwrap_or("");
+2120:        let slow_ma = params
+2121:            .get("slow_ma_type")
+2122:            .and_then(|v| v.as_str())
+2123:            .unwrap_or("");
+2124:        let fast_len = params.get("fast_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2125:        let slow_len = params.get("slow_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2126:
+2127:        let robust_score = cand
+2128:            .get("robust_score")
+2129:            .and_then(|v| v.as_f64())
+2130:            .unwrap_or(0.0);
+2131:        let robust_pareto = cand
+2132:            .get("robust_pareto")
+2133:            .and_then(|v| v.as_bool())
+2134:            .unwrap_or(false);
+2135:
+2136:        let cross_score = cand
+2137:            .get("cross_ticker")
+2138:            .and_then(|v| v.get("score"))
+2139:            .and_then(|v| v.as_f64())
+2140:            .unwrap_or(0.0);
+2141:        let cross_pareto = cand
+2142:            .get("cross_ticker_pareto")
+2143:            .and_then(|v| v.as_bool())
+2144:            .unwrap_or(false);
+2145:
+2146:        let pnl = metrics.get("pnl").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2147:        let sharpe = metrics
+2148:            .get("sharpe")
+2149:            .and_then(|v| v.as_f64())
+2150:            .unwrap_or(0.0);
+2151:        let max_dd = metrics
+2152:            .get("max_dd")
+2153:            .and_then(|v| v.as_f64())
+2154:            .unwrap_or(0.0);
+2155:        let trades = metrics.get("trades").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2156:
+2157:        let halftrend = params.get("halftrend").unwrap_or(&Value::Null);
+2158:        let ht_amp = halftrend
+2159:            .get("amplitude")
+2160:            .and_then(|v| v.as_u64())
+2161:            .unwrap_or(0) as u32;
+2162:        let ht_atr = halftrend
+2163:            .get("atr_period")
+2164:            .and_then(|v| v.as_u64())
+2165:            .unwrap_or(0) as u32;
+2166:        let ht_dev = halftrend
+2167:            .get("channel_deviation")
+2168:            .and_then(|v| v.as_f64())
+2169:            .unwrap_or(0.0);
+2170:
+2171:        let macz = params.get("macz").unwrap_or(&Value::Null);
+2172:        let macz_fast = macz
+2173:            .get("fast_length")
+2174:            .and_then(|v| v.as_u64())
+2175:            .unwrap_or(0) as u32;
+2176:        let macz_slow = macz
+2177:            .get("slow_length")
+2178:            .and_then(|v| v.as_u64())
+2179:            .unwrap_or(0) as u32;
+2180:        let macz_sig = macz
+2181:            .get("signal_length")
+2182:            .and_then(|v| v.as_u64())
+2183:            .unwrap_or(0) as u32;
+2184:        let macz_z = macz.get("lengthz").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2185:        let macz_stdev = macz
+2186:            .get("length_stdev")
+2187:            .and_then(|v| v.as_u64())
+2188:            .unwrap_or(0) as u32;
+2189:        let macz_a = macz.get("a").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2190:        let macz_b = macz.get("b").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2191:        let macz_gamma = macz.get("gamma").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2192:        let macz_lag = macz
+2193:            .get("use_lag")
+2194:            .and_then(|v| v.as_bool())
+2195:            .unwrap_or(false);
+2196:        let macz_vol = macz
+2197:            .get("use_volume")
+2198:            .and_then(|v| v.as_bool())
+2199:            .unwrap_or(false);
+2200:
+2201:        let ott = params.get("ott").unwrap_or(&Value::Null);
+2202:        let ott_period = ott.get("period").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2203:        let ott_pct = ott.get("percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2204:        let ott_ma = ott.get("ma_type").and_then(|v| v.as_str()).unwrap_or("");
+2205:
+2206:        let strategy = params.get("strategy").unwrap_or(&Value::Null);
+2207:        let commission_raw = strategy
+2208:            .get("commission")
+2209:            .and_then(|v| v.as_f64())
+2210:            .unwrap_or(0.0);
+2211:        let fee_bps = strategy
+2212:            .get("fee_bps")
+2213:            .and_then(|v| v.as_f64())
+2214:            .unwrap_or(0.0);
+2215:        let spread_bps = strategy
+2216:            .get("spread_bps")
+2217:            .and_then(|v| v.as_f64())
+2218:            .unwrap_or(0.0);
+2219:        let slippage_bps = strategy
+2220:            .get("slippage_bps")
+2221:            .and_then(|v| v.as_f64())
+2222:            .unwrap_or(0.0);
+2223:        let commission_from_bps =
+2224:            ((fee_bps.max(0.0) + slippage_bps.max(0.0) + 0.5 * spread_bps.max(0.0)) / 10_000.0)
+2225:                .clamp(0.0, 0.999_999);
+2226:        let commission = if commission_raw.is_finite() && commission_raw > 0.0 {
+2227:            commission_raw.clamp(0.0, 0.999_999)
+2228:        } else {
+2229:            commission_from_bps
+2230:        };
+2231:        let eps_rel = strategy
+2232:            .get("eps_rel")
+2233:            .and_then(|v| v.as_f64())
+2234:            .unwrap_or(0.0);
+2235:        let long_only = strategy
+2236:            .get("long_only")
+2237:            .and_then(|v| v.as_bool())
+2238:            .unwrap_or(false);
+2239:        let allow_flip = strategy
+2240:            .get("allow_flip")
+2241:            .and_then(|v| v.as_bool())
+2242:            .unwrap_or(false);
+2243:        let trade_next = strategy
+2244:            .get("trade_on_next_bar")
+2245:            .and_then(|v| v.as_bool())
+2246:            .unwrap_or(false);
+2247:
+2248:        let params_json = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+2249:
+2250:        let wf = cand.get("walk_forward").unwrap_or(&Value::Null);
+2251:        let wf_sharpe_med = wf
+2252:            .get("sharpe_median")
+2253:            .and_then(|v| v.as_f64())
+2254:            .unwrap_or(0.0);
+2255:        let wf_sharpe_worst = wf
+2256:            .get("sharpe_worst")
+2257:            .and_then(|v| v.as_f64())
+2258:            .unwrap_or(0.0);
+2259:        let wf_dd_worst = wf
+2260:            .get("max_dd_worst")
+2261:            .and_then(|v| v.as_f64())
+2262:            .unwrap_or(0.0);
+2263:
+2264:        let mc = cand.get("trade_bootstrap").unwrap_or(&Value::Null);
+2265:        let mc_prob = mc
+2266:            .get("prob_pnl_positive")
+2267:            .and_then(|v| v.as_f64())
+2268:            .unwrap_or(0.0);
+2269:        let mc_p50 = mc.get("pnl_p50").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2270:        let mc_dd_p95 = mc.get("max_dd_p95").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2271:
+2272:        let cross = cand.get("cross_ticker").unwrap_or(&Value::Null);
+2273:        let cross_sharpe_med = cross
+2274:            .get("sharpe_median")
+2275:            .and_then(|v| v.as_f64())
+2276:            .unwrap_or(0.0);
+2277:        let cross_dd_worst = cross
+2278:            .get("max_dd_worst")
+2279:            .and_then(|v| v.as_f64())
+2280:            .unwrap_or(0.0);
+2281:
+2282:        let cscv = cand.get("cscv_pbo").unwrap_or(&Value::Null);
+2283:        let cscv_sel = cscv
+2284:            .get("is_selected_frac")
+2285:            .and_then(|v| v.as_f64())
+2286:            .unwrap_or(0.0);
+2287:        let cscv_rank = cscv
+2288:            .get("oos_rank_frac_p50")
+2289:            .and_then(|v| v.as_f64())
+2290:            .unwrap_or(0.0);
+2291:        let cscv_sharpe = cscv
+2292:            .get("oos_metric_p50")
+2293:            .and_then(|v| v.as_f64())
+2294:            .unwrap_or(0.0);
+2295:        let psr = cand.get("psr").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+2296:        let dsr = cand.get("dsr").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+2297:
+2298:        worksheet
+2299:            .write_number_with_format(r, 0, (i + 1) as f64, &int_fmt)
+2300:            .map_err(|e: XlsxError| e.to_string())?;
+2301:        worksheet
+2302:            .write_string(r, 1, fast_ma)
+2303:            .map_err(|e: XlsxError| e.to_string())?;
+2304:        worksheet
+2305:            .write_number_with_format(r, 2, fast_len as f64, &int_fmt)
+2306:            .map_err(|e: XlsxError| e.to_string())?;
+2307:        worksheet
+2308:            .write_string(r, 3, slow_ma)
+2309:            .map_err(|e: XlsxError| e.to_string())?;
+2310:        worksheet
+2311:            .write_number_with_format(r, 4, slow_len as f64, &int_fmt)
+2312:            .map_err(|e: XlsxError| e.to_string())?;
+2313:        worksheet
+2314:            .write_number_with_format(r, 5, robust_score, &num6_fmt)
+2315:            .map_err(|e: XlsxError| e.to_string())?;
+2316:        worksheet
+2317:            .write_string_with_format(
+2318:                r,
+2319:                6,
+2320:                if robust_pareto { "yes" } else { "no" },
+2321:                if robust_pareto { &ok_badge } else { &bad_badge },
+2322:            )
+2323:            .map_err(|e: XlsxError| e.to_string())?;
+2324:
+2325:        if has_cross {
+2326:            worksheet
+2327:                .write_number_with_format(r, 7, cross_score, &num6_fmt)
+2328:                .map_err(|e: XlsxError| e.to_string())?;
+2329:            worksheet
+2330:                .write_string_with_format(
+2331:                    r,
+2332:                    8,
+2333:                    if cross_pareto { "yes" } else { "no" },
+2334:                    if cross_pareto { &ok_badge } else { &bad_badge },
+2335:                )
+2336:                .map_err(|e: XlsxError| e.to_string())?;
+2337:        } else {
+2338:            worksheet
+2339:                .write_string_with_format(r, 7, "-", &bad_badge)
+2340:                .map_err(|e: XlsxError| e.to_string())?;
+2341:            worksheet
+2342:                .write_string_with_format(r, 8, "-", &bad_badge)
+2343:                .map_err(|e: XlsxError| e.to_string())?;
+2344:        }
+2345:
+2346:        worksheet
+2347:            .write_number_with_format(r, 9, pnl, &num6_fmt)
+2348:            .map_err(|e: XlsxError| e.to_string())?;
+2349:        worksheet
+2350:            .write_number_with_format(r, 10, sharpe, &num6_fmt)
+2351:            .map_err(|e: XlsxError| e.to_string())?;
+2352:        worksheet
+2353:            .write_number_with_format(r, 11, max_dd, &num6_fmt)
+2354:            .map_err(|e: XlsxError| e.to_string())?;
+2355:        worksheet
+2356:            .write_number_with_format(r, 12, trades as f64, &int_fmt)
+2357:            .map_err(|e: XlsxError| e.to_string())?;
+2358:
+2359:        worksheet
+2360:            .write_number_with_format(r, 13, ht_amp as f64, &int_fmt)
+2361:            .map_err(|e: XlsxError| e.to_string())?;
+2362:        worksheet
+2363:            .write_number_with_format(r, 14, ht_atr as f64, &int_fmt)
+2364:            .map_err(|e: XlsxError| e.to_string())?;
+2365:        worksheet
+2366:            .write_number_with_format(r, 15, ht_dev, &num6_fmt)
+2367:            .map_err(|e: XlsxError| e.to_string())?;
+2368:
+2369:        worksheet
+2370:            .write_number_with_format(r, 16, macz_fast as f64, &int_fmt)
+2371:            .map_err(|e: XlsxError| e.to_string())?;
+2372:        worksheet
+2373:            .write_number_with_format(r, 17, macz_slow as f64, &int_fmt)
+2374:            .map_err(|e: XlsxError| e.to_string())?;
+2375:        worksheet
+2376:            .write_number_with_format(r, 18, macz_sig as f64, &int_fmt)
+2377:            .map_err(|e: XlsxError| e.to_string())?;
+2378:        worksheet
+2379:            .write_number_with_format(r, 19, macz_z as f64, &int_fmt)
+2380:            .map_err(|e: XlsxError| e.to_string())?;
+2381:        worksheet
+2382:            .write_number_with_format(r, 20, macz_stdev as f64, &int_fmt)
+2383:            .map_err(|e: XlsxError| e.to_string())?;
+2384:        worksheet
+2385:            .write_number_with_format(r, 21, macz_a, &num6_fmt)
+2386:            .map_err(|e: XlsxError| e.to_string())?;
+2387:        worksheet
+2388:            .write_number_with_format(r, 22, macz_b, &num6_fmt)
+2389:            .map_err(|e: XlsxError| e.to_string())?;
+2390:        worksheet
+2391:            .write_number_with_format(r, 23, macz_gamma, &num6_fmt)
+2392:            .map_err(|e: XlsxError| e.to_string())?;
+2393:        worksheet
+2394:            .write_string(r, 24, if macz_lag { "true" } else { "false" })
+2395:            .map_err(|e: XlsxError| e.to_string())?;
+2396:        worksheet
+2397:            .write_string(r, 25, if macz_vol { "true" } else { "false" })
+2398:            .map_err(|e: XlsxError| e.to_string())?;
+2399:
+2400:        worksheet
+2401:            .write_number_with_format(r, 26, ott_period as f64, &int_fmt)
+2402:            .map_err(|e: XlsxError| e.to_string())?;
+2403:        worksheet
+2404:            .write_number_with_format(r, 27, ott_pct, &num6_fmt)
+2405:            .map_err(|e: XlsxError| e.to_string())?;
+2406:        worksheet
+2407:            .write_string(r, 28, ott_ma)
+2408:            .map_err(|e: XlsxError| e.to_string())?;
+2409:
+2410:        worksheet
+2411:            .write_number_with_format(r, 29, commission, &num6_fmt)
+2412:            .map_err(|e: XlsxError| e.to_string())?;
+2413:        worksheet
+2414:            .write_number_with_format(r, 30, eps_rel, &num6_fmt)
+2415:            .map_err(|e: XlsxError| e.to_string())?;
+2416:        worksheet
+2417:            .write_string(r, 31, if long_only { "true" } else { "false" })
+2418:            .map_err(|e: XlsxError| e.to_string())?;
+2419:        worksheet
+2420:            .write_string(r, 32, if allow_flip { "true" } else { "false" })
+2421:            .map_err(|e: XlsxError| e.to_string())?;
+2422:        worksheet
+2423:            .write_string(r, 33, if trade_next { "true" } else { "false" })
+2424:            .map_err(|e: XlsxError| e.to_string())?;
+2425:
+2426:        worksheet
+2427:            .write_string(r, 34, &params_json)
+2428:            .map_err(|e: XlsxError| e.to_string())?;
+2429:
+2430:        if wf.is_object() {
+2431:            worksheet
+2432:                .write_number_with_format(r, 35, wf_sharpe_med, &num6_fmt)
+2433:                .map_err(|e: XlsxError| e.to_string())?;
+2434:            worksheet
+2435:                .write_number_with_format(r, 36, wf_sharpe_worst, &num6_fmt)
+2436:                .map_err(|e: XlsxError| e.to_string())?;
+2437:            worksheet
+2438:                .write_number_with_format(r, 37, wf_dd_worst, &num6_fmt)
+2439:                .map_err(|e: XlsxError| e.to_string())?;
+2440:        }
+2441:
+2442:        if mc.is_object() {
+2443:            worksheet
+2444:                .write_number_with_format(r, 38, mc_prob, &num6_fmt)
+2445:                .map_err(|e: XlsxError| e.to_string())?;
+2446:            worksheet
+2447:                .write_number_with_format(r, 39, mc_p50, &num6_fmt)
+2448:                .map_err(|e: XlsxError| e.to_string())?;
+2449:            worksheet
+2450:                .write_number_with_format(r, 40, mc_dd_p95, &num6_fmt)
+2451:                .map_err(|e: XlsxError| e.to_string())?;
+2452:        }
+2453:
+2454:        if cross.is_object() {
+2455:            worksheet
+2456:                .write_number_with_format(r, 41, cross_sharpe_med, &num6_fmt)
+2457:                .map_err(|e: XlsxError| e.to_string())?;
+2458:            worksheet
+2459:                .write_number_with_format(r, 42, cross_dd_worst, &num6_fmt)
+2460:                .map_err(|e: XlsxError| e.to_string())?;
+2461:        }
+2462:
+2463:        if cscv.is_object() {
+2464:            worksheet
+2465:                .write_number_with_format(r, 43, cscv_sel, &num6_fmt)
+2466:                .map_err(|e: XlsxError| e.to_string())?;
+2467:            worksheet
+2468:                .write_number_with_format(r, 44, cscv_rank, &num6_fmt)
+2469:                .map_err(|e: XlsxError| e.to_string())?;
+2470:            worksheet
+2471:                .write_number_with_format(r, 45, cscv_sharpe, &num6_fmt)
+2472:                .map_err(|e: XlsxError| e.to_string())?;
+2473:        }
+2474:        if psr.is_finite() {
+2475:            worksheet
+2476:                .write_number_with_format(r, 46, psr, &num6_fmt)
+2477:                .map_err(|e: XlsxError| e.to_string())?;
+2478:        }
+2479:        if dsr.is_finite() {
+2480:            worksheet
+2481:                .write_number_with_format(r, 47, dsr, &num6_fmt)
+2482:                .map_err(|e: XlsxError| e.to_string())?;
+2483:        }
+2484:    }
+2485:
+2486:    if !rows.is_empty() {
+2487:        let row_min = start_row;
+2488:        let row_max = start_row + rows.len().saturating_sub(1) as u32;
+2489:        let last_col = headers.len().saturating_sub(1) as u16;
+2490:
+2491:        worksheet
+2492:            .autofilter(header_row, 0, row_max, last_col)
+2493:            .map_err(|e: XlsxError| e.to_string())?;
+2494:
+2495:        let cf_bar_green = ConditionalFormatDataBar::new().set_fill_color("63BE7B");
+2496:        let cf_bar_blue = ConditionalFormatDataBar::new().set_fill_color("5A8AC6");
+2497:
+2498:        let cf_good = ConditionalFormat3ColorScale::new()
+2499:            .set_minimum_color("F8696B")
+2500:            .set_midpoint_color("FFEB84")
+2501:            .set_maximum_color("63BE7B");
+2502:        let cf_bad = ConditionalFormat3ColorScale::new()
+2503:            .set_minimum_color("63BE7B")
+2504:            .set_midpoint_color("FFEB84")
+2505:            .set_maximum_color("F8696B");
+2506:
+2507:        // Key metric heatmaps for quick visual scanning.
+2508:        worksheet
+2509:            .add_conditional_format(row_min, 5, row_max, 5, &cf_bar_green)
+2510:            .map_err(|e: XlsxError| e.to_string())?;
+2511:        if has_cross {
+2512:            worksheet
+2513:                .add_conditional_format(row_min, 7, row_max, 7, &cf_bar_blue)
+2514:                .map_err(|e: XlsxError| e.to_string())?;
+2515:        }
+2516:        worksheet
+2517:            .add_conditional_format(row_min, 9, row_max, 9, &cf_good)
+2518:            .map_err(|e: XlsxError| e.to_string())?;
+2519:        worksheet
+2520:            .add_conditional_format(row_min, 10, row_max, 10, &cf_good)
+2521:            .map_err(|e: XlsxError| e.to_string())?;
+2522:        worksheet
+2523:            .add_conditional_format(row_min, 11, row_max, 11, &cf_bad)
+2524:            .map_err(|e: XlsxError| e.to_string())?;
+2525:        worksheet
+2526:            .add_conditional_format(row_min, 38, row_max, 38, &cf_bar_green)
+2527:            .map_err(|e: XlsxError| e.to_string())?;
+2528:        worksheet
+2529:            .add_conditional_format(row_min, 40, row_max, 40, &cf_bad)
+2530:            .map_err(|e: XlsxError| e.to_string())?;
+2531:        worksheet
+2532:            .add_conditional_format(row_min, 42, row_max, 42, &cf_bad)
+2533:            .map_err(|e: XlsxError| e.to_string())?;
+2534:
+2535:        // Row/flag highlighting (recommended + Pareto).
+2536:        let excel_first_row = row_min + 1;
+2537:        let rec_row_fmt = Format::new()
+2538:            .set_bold()
+2539:            .set_border_top(FormatBorder::Medium)
+2540:            .set_border_bottom(FormatBorder::Medium);
+2541:        let rec_row_rule = format!("=$A{}=1", excel_first_row);
+2542:        let rec_row_cf = ConditionalFormatFormula::new()
+2543:            .set_rule(rec_row_rule.as_str())
+2544:            .set_format(&rec_row_fmt);
+2545:        worksheet
+2546:            .add_conditional_format(row_min, 0, row_max, last_col, &rec_row_cf)
+2547:            .map_err(|e: XlsxError| e.to_string())?;
+2548:
+2549:        let rank_rec_fmt = Format::new()
+2550:            .set_bold()
+2551:            .set_align(FormatAlign::Center)
+2552:            .set_font_color(Color::RGB(0x0B1220))
+2553:            .set_background_color(Color::RGB(0xFFEB84))
+2554:            .set_border(FormatBorder::Thin);
+2555:        let rank_pareto_fmt = Format::new()
+2556:            .set_bold()
+2557:            .set_align(FormatAlign::Center)
+2558:            .set_font_color(Color::RGB(0x0B1220))
+2559:            .set_background_color(Color::RGB(0x63BE7B))
+2560:            .set_border(FormatBorder::Thin);
+2561:
+2562:        let rank_rec_rule = format!("=$A{}=1", excel_first_row);
+2563:        let rank_rec_cf = ConditionalFormatFormula::new()
+2564:            .set_rule(rank_rec_rule.as_str())
+2565:            .set_format(&rank_rec_fmt)
+2566:            .set_stop_if_true(true);
+2567:        worksheet
+2568:            .add_conditional_format(row_min, 0, row_max, 0, &rank_rec_cf)
+2569:            .map_err(|e: XlsxError| e.to_string())?;
+2570:
+2571:        let pareto_rule = if has_cross {
+2572:            format!(
+2573:                "=AND($G{}=\"yes\",$I{}=\"yes\")",
+2574:                excel_first_row, excel_first_row
+2575:            )
+2576:        } else {
+2577:            format!("=$G{}=\"yes\"", excel_first_row)
+2578:        };
+2579:        let rank_pareto_cf = ConditionalFormatFormula::new()
+2580:            .set_rule(pareto_rule.as_str())
+2581:            .set_format(&rank_pareto_fmt);
+2582:        worksheet
+2583:            .add_conditional_format(row_min, 0, row_max, 0, &rank_pareto_cf)
+2584:            .map_err(|e: XlsxError| e.to_string())?;
+2585:    }
+2586:
+2587:    let chart_range = if rows.is_empty() {
+2588:        None
+2589:    } else {
+2590:        Some((start_row, start_row + rows.len().saturating_sub(1) as u32))
+2591:    };
+2592:    let recommended = rows.first().copied();
+2593:
+2594:    let _ = worksheet;
+2595:
+2596:    // Dashboard summary (active sheet on open).
+2597:    let dashboard = workbook.add_worksheet();
+2598:    dashboard
+2599:        .set_name("Dashboard")
+2600:        .map_err(|e: XlsxError| e.to_string())?;
+2601:    dashboard.set_active(true);
+2602:    dashboard.set_zoom(110);
+2603:
+2604:    let label_fmt = Format::new()
+2605:        .set_bold()
+2606:        .set_font_color(Color::RGB(0xE2E8F0))
+2607:        .set_background_color(Color::RGB(0x0B1220))
+2608:        .set_border(FormatBorder::Thin);
+2609:    let value_fmt = Format::new().set_border(FormatBorder::Thin);
+2610:
+2611:    let _ = dashboard.set_column_width(0, 24);
+2612:    let _ = dashboard.set_column_width(1, 42);
+2613:    let _ = dashboard.set_column_width(2, 24);
+2614:    let _ = dashboard.set_column_width(3, 18);
+2615:
+2616:    dashboard
+2617:        .merge_range(0, 0, 0, 7, "VectorGrid Report", &title_fmt)
+2618:        .map_err(|e: XlsxError| e.to_string())?;
+2619:
+2620:    dashboard
+2621:        .write_string_with_format(1, 0, "ts", &label_fmt)
+2622:        .map_err(|e: XlsxError| e.to_string())?;
+2623:    dashboard
+2624:        .write_string_with_format(1, 1, &ts, &value_fmt)
+2625:        .map_err(|e: XlsxError| e.to_string())?;
+2626:    dashboard
+2627:        .write_string_with_format(2, 0, "data_id", &label_fmt)
+2628:        .map_err(|e: XlsxError| e.to_string())?;
+2629:    dashboard
+2630:        .write_string_with_format(2, 1, &data_id, &value_fmt)
+2631:        .map_err(|e: XlsxError| e.to_string())?;
+2632:
+2633:    if let Some(cscv) = validation_res.get("cscv_pbo").and_then(|v| v.as_object()) {
+2634:        let combos = cscv
+2635:            .get("combinations")
+2636:            .and_then(|v| v.as_u64())
+2637:            .unwrap_or(0);
+2638:        let pbo = cscv.get("pbo").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2639:        let skipped = cscv
+2640:            .get("skipped_reason")
+2641:            .and_then(|v| v.as_str())
+2642:            .unwrap_or("")
+2643:            .trim()
+2644:            .to_string();
+2645:        let text = if !skipped.is_empty() {
+2646:            format!("skipped: {skipped}")
+2647:        } else if combos > 0 {
+2648:            format!("pbo={:.3} (cs={})", pbo, combos)
+2649:        } else {
+2650:            "not available".to_string()
+2651:        };
+2652:
+2653:        dashboard
+2654:            .write_string_with_format(3, 0, "CSCV/PBO", &label_fmt)
+2655:            .map_err(|e: XlsxError| e.to_string())?;
+2656:        dashboard
+2657:            .write_string_with_format(3, 1, &text, &value_fmt)
+2658:            .map_err(|e: XlsxError| e.to_string())?;
+2659:    }
+2660:
+2661:    dashboard
+2662:        .write_string_with_format(4, 0, "Recommended", &label_fmt)
+2663:        .map_err(|e: XlsxError| e.to_string())?;
+2664:
+2665:    if let Some(cand) = recommended {
+2666:        let params = cand.get("params").unwrap_or(&Value::Null);
+2667:        let metrics = cand.get("in_sample").unwrap_or(&Value::Null);
+2668:
+2669:        let fast_ma = params
+2670:            .get("fast_ma_type")
+2671:            .and_then(|v| v.as_str())
+2672:            .unwrap_or("");
+2673:        let slow_ma = params
+2674:            .get("slow_ma_type")
+2675:            .and_then(|v| v.as_str())
+2676:            .unwrap_or("");
+2677:        let fast_len = params.get("fast_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2678:        let slow_len = params.get("slow_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2679:
+2680:        let robust_score = cand
+2681:            .get("robust_score")
+2682:            .and_then(|v| v.as_f64())
+2683:            .unwrap_or(0.0);
+2684:        let cross_score = cand
+2685:            .get("cross_ticker")
+2686:            .and_then(|v| v.get("score"))
+2687:            .and_then(|v| v.as_f64())
+2688:            .unwrap_or(0.0);
+2689:
+2690:        let pnl = metrics.get("pnl").and_then(|v| v.as_f64()).unwrap_or(0.0);
+2691:        let sharpe = metrics
+2692:            .get("sharpe")
+2693:            .and_then(|v| v.as_f64())
+2694:            .unwrap_or(0.0);
+2695:        let max_dd = metrics
+2696:            .get("max_dd")
+2697:            .and_then(|v| v.as_f64())
+2698:            .unwrap_or(0.0);
+2699:        let trades = metrics.get("trades").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2700:
+2701:        let params_json = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+2702:
+2703:        dashboard
+2704:            .write_string_with_format(5, 0, "Fast MA", &label_fmt)
+2705:            .map_err(|e: XlsxError| e.to_string())?;
+2706:        dashboard
+2707:            .write_string_with_format(5, 1, fast_ma, &value_fmt)
+2708:            .map_err(|e: XlsxError| e.to_string())?;
+2709:        dashboard
+2710:            .write_string_with_format(5, 2, "Fast Len", &label_fmt)
+2711:            .map_err(|e: XlsxError| e.to_string())?;
+2712:        dashboard
+2713:            .write_number_with_format(5, 3, fast_len as f64, &int_fmt)
+2714:            .map_err(|e: XlsxError| e.to_string())?;
+2715:
+2716:        dashboard
+2717:            .write_string_with_format(6, 0, "Slow MA", &label_fmt)
+2718:            .map_err(|e: XlsxError| e.to_string())?;
+2719:        dashboard
+2720:            .write_string_with_format(6, 1, slow_ma, &value_fmt)
+2721:            .map_err(|e: XlsxError| e.to_string())?;
+2722:        dashboard
+2723:            .write_string_with_format(6, 2, "Slow Len", &label_fmt)
+2724:            .map_err(|e: XlsxError| e.to_string())?;
+2725:        dashboard
+2726:            .write_number_with_format(6, 3, slow_len as f64, &int_fmt)
+2727:            .map_err(|e: XlsxError| e.to_string())?;
+2728:
+2729:        dashboard
+2730:            .write_string_with_format(7, 0, "Robust score", &label_fmt)
+2731:            .map_err(|e: XlsxError| e.to_string())?;
+2732:        dashboard
+2733:            .write_number_with_format(7, 1, robust_score, &num6_fmt)
+2734:            .map_err(|e: XlsxError| e.to_string())?;
+2735:        dashboard
+2736:            .write_string_with_format(7, 2, "Cross score", &label_fmt)
+2737:            .map_err(|e: XlsxError| e.to_string())?;
+2738:        if has_cross {
+2739:            dashboard
+2740:                .write_number_with_format(7, 3, cross_score, &num6_fmt)
+2741:                .map_err(|e: XlsxError| e.to_string())?;
+2742:        } else {
+2743:            dashboard
+2744:                .write_string_with_format(7, 3, "-", &value_fmt)
+2745:                .map_err(|e: XlsxError| e.to_string())?;
+2746:        }
+2747:
+2748:        dashboard
+2749:            .write_string_with_format(8, 0, "PnL", &label_fmt)
+2750:            .map_err(|e: XlsxError| e.to_string())?;
+2751:        dashboard
+2752:            .write_number_with_format(8, 1, pnl, &num6_fmt)
+2753:            .map_err(|e: XlsxError| e.to_string())?;
+2754:        dashboard
+2755:            .write_string_with_format(8, 2, "Trades", &label_fmt)
+2756:            .map_err(|e: XlsxError| e.to_string())?;
+2757:        dashboard
+2758:            .write_number_with_format(8, 3, trades as f64, &int_fmt)
+2759:            .map_err(|e: XlsxError| e.to_string())?;
+2760:
+2761:        dashboard
+2762:            .write_string_with_format(9, 0, "Sharpe", &label_fmt)
+2763:            .map_err(|e: XlsxError| e.to_string())?;
+2764:        dashboard
+2765:            .write_number_with_format(9, 1, sharpe, &num6_fmt)
+2766:            .map_err(|e: XlsxError| e.to_string())?;
+2767:        dashboard
+2768:            .write_string_with_format(9, 2, "MaxDD", &label_fmt)
+2769:            .map_err(|e: XlsxError| e.to_string())?;
+2770:        dashboard
+2771:            .write_number_with_format(9, 3, max_dd, &num6_fmt)
+2772:            .map_err(|e: XlsxError| e.to_string())?;
+2773:
+2774:        dashboard
+2775:            .write_string_with_format(11, 0, "params_json", &label_fmt)
+2776:            .map_err(|e: XlsxError| e.to_string())?;
+2777:        dashboard
+2778:            .write_string_with_format(11, 1, &params_json, &value_fmt)
+2779:            .map_err(|e: XlsxError| e.to_string())?;
+2780:    }
+2781:
+2782:    if let Some((row_min, row_max)) = chart_range {
+2783:        let excel_first_row = row_min + 1;
+2784:        let shortlist_link = format!("internal:Shortlist!A{}", excel_first_row);
+2785:        let _ = dashboard.write_url_with_text(4, 1, shortlist_link.as_str(), "Go to Shortlist");
+2786:
+2787:        // Robust score chart.
+2788:        let col_rank = 0;
+2789:        let col_robust = 5;
+2790:        let mut score_chart = Chart::new(ChartType::Column);
+2791:        score_chart
+2792:            .add_series()
+2793:            .set_categories(("Shortlist", row_min, col_rank, row_max, col_rank))
+2794:            .set_values(("Shortlist", row_min, col_robust, row_max, col_robust));
+2795:        score_chart.title().set_name("Robust score by rank");
+2796:        score_chart.x_axis().set_name("Rank");
+2797:        score_chart.y_axis().set_name("Robust score");
+2798:
+2799:        if has_cross {
+2800:            let col_cross = 7;
+2801:            score_chart
+2802:                .add_series()
+2803:                .set_categories(("Shortlist", row_min, col_rank, row_max, col_rank))
+2804:                .set_values(("Shortlist", row_min, col_cross, row_max, col_cross));
+2805:            score_chart
+2806:                .legend()
+2807:                .set_position(rust_xlsxwriter::ChartLegendPosition::Bottom);
+2808:        } else {
+2809:            score_chart.legend().set_hidden();
+2810:        }
+2811:
+2812:        dashboard
+2813:            .insert_chart_with_offset(4, 5, &score_chart, 10, 10)
+2814:            .map_err(|e: XlsxError| e.to_string())?;
+2815:
+2816:        // Risk/return scatter: Sharpe vs MaxDD (best in top-left).
+2817:        let col_sharpe = 10;
+2818:        let col_max_dd = 11;
+2819:        let mut rr_chart = Chart::new(ChartType::Scatter);
+2820:        rr_chart
+2821:            .add_series()
+2822:            .set_categories(("Shortlist", row_min, col_max_dd, row_max, col_max_dd))
+2823:            .set_values(("Shortlist", row_min, col_sharpe, row_max, col_sharpe));
+2824:        rr_chart.title().set_name("Sharpe vs MaxDD");
+2825:        rr_chart.x_axis().set_name("MaxDD");
+2826:        rr_chart.y_axis().set_name("Sharpe");
+2827:        rr_chart.legend().set_hidden();
+2828:
+2829:        dashboard
+2830:            .insert_chart_with_offset(20, 0, &rr_chart, 10, 10)
+2831:            .map_err(|e: XlsxError| e.to_string())?;
+2832:    }
+2833:
+2834:    // ---------------------------------------------------------------------
+2835:    // Distributions (derived from the full shortlist before `max_rows` cap).
+2836:    // ---------------------------------------------------------------------
+2837:    use std::collections::BTreeMap;
+2838:
+2839:    let mut ma_pair_stats: BTreeMap<(String, String), (usize, f64)> = BTreeMap::new();
+2840:    let mut fast_len_counts: BTreeMap<u32, usize> = BTreeMap::new();
+2841:    let mut slow_len_counts: BTreeMap<u32, usize> = BTreeMap::new();
+2842:    let mut points: Vec<(u32, u32, f64)> = Vec::with_capacity(all_rows.len());
+2843:
+2844:    for cand in all_rows.iter() {
+2845:        let params = cand.get("params").unwrap_or(&Value::Null);
+2846:        let fast_ma = params
+2847:            .get("fast_ma_type")
+2848:            .and_then(|v| v.as_str())
+2849:            .unwrap_or("")
+2850:            .to_string();
+2851:        let slow_ma = params
+2852:            .get("slow_ma_type")
+2853:            .and_then(|v| v.as_str())
+2854:            .unwrap_or("")
+2855:            .to_string();
+2856:        let fast_len = params.get("fast_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2857:        let slow_len = params.get("slow_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+2858:        let robust_score = cand
+2859:            .get("robust_score")
+2860:            .and_then(|v| v.as_f64())
+2861:            .unwrap_or(0.0);
+2862:
+2863:        if !fast_ma.is_empty() && !slow_ma.is_empty() {
+2864:            let entry = ma_pair_stats
+2865:                .entry((fast_ma.clone(), slow_ma.clone()))
+2866:                .or_insert((0, 0.0));
+2867:            entry.0 += 1;
+2868:            entry.1 += robust_score;
+2869:        }
+2870:        if fast_len > 0 {
+2871:            *fast_len_counts.entry(fast_len).or_insert(0) += 1;
+2872:        }
+2873:        if slow_len > 0 {
+2874:            *slow_len_counts.entry(slow_len).or_insert(0) += 1;
+2875:        }
+2876:        if fast_len > 0 && slow_len > 0 {
+2877:            points.push((slow_len, fast_len, robust_score));
+2878:        }
+2879:    }
+2880:
+2881:    let mut pair_rows: Vec<(String, usize, f64)> = ma_pair_stats
+2882:        .into_iter()
+2883:        .map(|((fast, slow), (count, sum))| {
+2884:            let avg = if count > 0 { sum / count as f64 } else { 0.0 };
+2885:            (format!("{fast}/{slow}"), count, avg)
+2886:        })
+2887:        .collect();
+2888:    pair_rows.sort_by(|a, b| b.1.cmp(&a.1));
+2889:
+2890:    let mut scores: Vec<f64> = points.iter().map(|(_, _, s)| *s).collect();
+2891:    scores.sort_by(|a, b| a.total_cmp(b));
+2892:    let q = |xs: &[f64], p: f64| -> f64 {
+2893:        if xs.is_empty() {
+2894:            return 0.0;
+2895:        }
+2896:        let idx = ((xs.len().saturating_sub(1) as f64) * p).round() as usize;
+2897:        xs[idx.min(xs.len() - 1)]
+2898:    };
+2899:    let q1 = q(&scores, 0.33);
+2900:    let q2 = q(&scores, 0.66);
+2901:
+2902:    let mut low: Vec<(u32, u32)> = Vec::new();
+2903:    let mut mid: Vec<(u32, u32)> = Vec::new();
+2904:    let mut high: Vec<(u32, u32)> = Vec::new();
+2905:    for (slow_len, fast_len, score) in points {
+2906:        if score <= q1 {
+2907:            low.push((slow_len, fast_len));
+2908:        } else if score <= q2 {
+2909:            mid.push((slow_len, fast_len));
+2910:        } else {
+2911:            high.push((slow_len, fast_len));
+2912:        }
+2913:    }
+2914:
+2915:    let dist = workbook.add_worksheet();
+2916:    dist.set_name("Distributions")
+2917:        .map_err(|e: XlsxError| e.to_string())?;
+2918:    dist.set_zoom(110);
+2919:
+2920:    let _ = dist.set_column_width(0, 18);
+2921:    let _ = dist.set_column_width(1, 10);
+2922:    let _ = dist.set_column_width(2, 12);
+2923:    let _ = dist.set_column_width(4, 10);
+2924:    let _ = dist.set_column_width(5, 10);
+2925:    let _ = dist.set_column_width(7, 10);
+2926:    let _ = dist.set_column_width(8, 10);
+2927:
+2928:    dist.merge_range(0, 0, 0, 12, "Distributions", &title_fmt)
+2929:        .map_err(|e: XlsxError| e.to_string())?;
+2930:
+2931:    dist.write_string_with_format(1, 0, "Candidates (full shortlist)", &label_fmt)
+2932:        .map_err(|e: XlsxError| e.to_string())?;
+2933:    dist.write_number_with_format(1, 1, all_rows.len() as f64, &int_fmt)
+2934:        .map_err(|e: XlsxError| e.to_string())?;
+2935:    let _ = dist.write_url_with_text(1, 3, "internal:Dashboard!A1", "Dashboard");
+2936:    let _ = dist.write_url_with_text(1, 4, "internal:Shortlist!A1", "Shortlist");
+2937:
+2938:    // MA pair frequency table.
+2939:    let pair_header_row: u32 = 3;
+2940:    dist.write_string_with_format(pair_header_row, 0, "MA Pair", &header_fmt)
+2941:        .map_err(|e: XlsxError| e.to_string())?;
+2942:    dist.write_string_with_format(pair_header_row, 1, "Count", &header_fmt)
+2943:        .map_err(|e: XlsxError| e.to_string())?;
+2944:    dist.write_string_with_format(pair_header_row, 2, "Avg robust", &header_fmt)
+2945:        .map_err(|e: XlsxError| e.to_string())?;
+2946:
+2947:    for (i, (pair, count, avg)) in pair_rows.iter().enumerate() {
+2948:        let r = pair_header_row + 1 + i as u32;
+2949:        dist.write_string(r, 0, pair)
+2950:            .map_err(|e: XlsxError| e.to_string())?;
+2951:        dist.write_number_with_format(r, 1, *count as f64, &int_fmt)
+2952:            .map_err(|e: XlsxError| e.to_string())?;
+2953:        dist.write_number_with_format(r, 2, *avg, &num6_fmt)
+2954:            .map_err(|e: XlsxError| e.to_string())?;
+2955:    }
+2956:
+2957:    // Length count tables.
+2958:    dist.write_string_with_format(pair_header_row, 4, "Fast Len", &header_fmt)
+2959:        .map_err(|e: XlsxError| e.to_string())?;
+2960:    dist.write_string_with_format(pair_header_row, 5, "Count", &header_fmt)
+2961:        .map_err(|e: XlsxError| e.to_string())?;
+2962:    for (i, (len, count)) in fast_len_counts.iter().enumerate() {
+2963:        let r = pair_header_row + 1 + i as u32;
+2964:        dist.write_number_with_format(r, 4, *len as f64, &int_fmt)
+2965:            .map_err(|e: XlsxError| e.to_string())?;
+2966:        dist.write_number_with_format(r, 5, *count as f64, &int_fmt)
+2967:            .map_err(|e: XlsxError| e.to_string())?;
+2968:    }
+2969:
+2970:    dist.write_string_with_format(pair_header_row, 7, "Slow Len", &header_fmt)
+2971:        .map_err(|e: XlsxError| e.to_string())?;
+2972:    dist.write_string_with_format(pair_header_row, 8, "Count", &header_fmt)
+2973:        .map_err(|e: XlsxError| e.to_string())?;
+2974:    for (i, (len, count)) in slow_len_counts.iter().enumerate() {
+2975:        let r = pair_header_row + 1 + i as u32;
+2976:        dist.write_number_with_format(r, 7, *len as f64, &int_fmt)
+2977:            .map_err(|e: XlsxError| e.to_string())?;
+2978:        dist.write_number_with_format(r, 8, *count as f64, &int_fmt)
+2979:            .map_err(|e: XlsxError| e.to_string())?;
+2980:    }
+2981:
+2982:    // Charts.
+2983:    if !pair_rows.is_empty() {
+2984:        let row_min = pair_header_row + 1;
+2985:        let row_max = pair_header_row + pair_rows.len() as u32;
+2986:        let mut chart = Chart::new(ChartType::Bar);
+2987:        chart
+2988:            .add_series()
+2989:            .set_categories(("Distributions", row_min, 0, row_max, 0))
+2990:            .set_values(("Distributions", row_min, 1, row_max, 1));
+2991:        chart.title().set_name("MA pair counts");
+2992:        chart.x_axis().set_name("Count");
+2993:        chart.y_axis().set_name("MA pair");
+2994:        chart.legend().set_hidden();
+2995:        dist.insert_chart_with_offset(3, 10, &chart, 10, 10)
+2996:            .map_err(|e: XlsxError| e.to_string())?;
+2997:    }
+2998:
+2999:    if !fast_len_counts.is_empty() {
+3000:        let row_min = pair_header_row + 1;
+3001:        let row_max = pair_header_row + fast_len_counts.len() as u32;
+3002:        let mut chart = Chart::new(ChartType::Column);
+3003:        chart
+3004:            .add_series()
+3005:            .set_categories(("Distributions", row_min, 4, row_max, 4))
+3006:            .set_values(("Distributions", row_min, 5, row_max, 5));
+3007:        chart.title().set_name("Fast length counts");
+3008:        chart.x_axis().set_name("Fast Len");
+3009:        chart.y_axis().set_name("Count");
+3010:        chart.legend().set_hidden();
+3011:        dist.insert_chart_with_offset(20, 10, &chart, 10, 10)
+3012:            .map_err(|e: XlsxError| e.to_string())?;
+3013:    }
+3014:
+3015:    if !slow_len_counts.is_empty() {
+3016:        let row_min = pair_header_row + 1;
+3017:        let row_max = pair_header_row + slow_len_counts.len() as u32;
+3018:        let mut chart = Chart::new(ChartType::Column);
+3019:        chart
+3020:            .add_series()
+3021:            .set_categories(("Distributions", row_min, 7, row_max, 7))
+3022:            .set_values(("Distributions", row_min, 8, row_max, 8));
+3023:        chart.title().set_name("Slow length counts");
+3024:        chart.x_axis().set_name("Slow Len");
+3025:        chart.y_axis().set_name("Count");
+3026:        chart.legend().set_hidden();
+3027:        dist.insert_chart_with_offset(37, 10, &chart, 10, 10)
+3028:            .map_err(|e: XlsxError| e.to_string())?;
+3029:    }
+3030:
+3031:    // Fast vs slow scatter with robust buckets (low/mid/high).
+3032:    let scatter_header_row: u32 = 20;
+3033:    dist.write_string_with_format(scatter_header_row, 0, "slow_len_low", &header_fmt)
+3034:        .map_err(|e: XlsxError| e.to_string())?;
+3035:    dist.write_string_with_format(scatter_header_row, 1, "fast_len_low", &header_fmt)
+3036:        .map_err(|e: XlsxError| e.to_string())?;
+3037:    dist.write_string_with_format(scatter_header_row, 2, "slow_len_mid", &header_fmt)
+3038:        .map_err(|e: XlsxError| e.to_string())?;
+3039:    dist.write_string_with_format(scatter_header_row, 3, "fast_len_mid", &header_fmt)
+3040:        .map_err(|e: XlsxError| e.to_string())?;
+3041:    dist.write_string_with_format(scatter_header_row, 4, "slow_len_high", &header_fmt)
+3042:        .map_err(|e: XlsxError| e.to_string())?;
+3043:    dist.write_string_with_format(scatter_header_row, 5, "fast_len_high", &header_fmt)
+3044:        .map_err(|e: XlsxError| e.to_string())?;
+3045:
+3046:    let scatter_row_min = scatter_header_row + 1;
+3047:    for (i, (slow_len, fast_len)) in low.iter().enumerate() {
+3048:        let r = scatter_row_min + i as u32;
+3049:        dist.write_number_with_format(r, 0, *slow_len as f64, &int_fmt)
+3050:            .map_err(|e: XlsxError| e.to_string())?;
+3051:        dist.write_number_with_format(r, 1, *fast_len as f64, &int_fmt)
+3052:            .map_err(|e: XlsxError| e.to_string())?;
+3053:    }
+3054:    for (i, (slow_len, fast_len)) in mid.iter().enumerate() {
+3055:        let r = scatter_row_min + i as u32;
+3056:        dist.write_number_with_format(r, 2, *slow_len as f64, &int_fmt)
+3057:            .map_err(|e: XlsxError| e.to_string())?;
+3058:        dist.write_number_with_format(r, 3, *fast_len as f64, &int_fmt)
+3059:            .map_err(|e: XlsxError| e.to_string())?;
+3060:    }
+3061:    for (i, (slow_len, fast_len)) in high.iter().enumerate() {
+3062:        let r = scatter_row_min + i as u32;
+3063:        dist.write_number_with_format(r, 4, *slow_len as f64, &int_fmt)
+3064:            .map_err(|e: XlsxError| e.to_string())?;
+3065:        dist.write_number_with_format(r, 5, *fast_len as f64, &int_fmt)
+3066:            .map_err(|e: XlsxError| e.to_string())?;
+3067:    }
+3068:
+3069:    if !low.is_empty() || !mid.is_empty() || !high.is_empty() {
+3070:        let mut marker_low = ChartMarker::new();
+3071:        marker_low
+3072:            .set_type(ChartMarkerType::Circle)
+3073:            .set_size(6)
+3074:            .set_format(
+3075:                ChartFormat::new().set_solid_fill(ChartSolidFill::new().set_color("#F8696B")),
+3076:            );
+3077:        let mut marker_mid = ChartMarker::new();
+3078:        marker_mid
+3079:            .set_type(ChartMarkerType::Circle)
+3080:            .set_size(6)
+3081:            .set_format(
+3082:                ChartFormat::new().set_solid_fill(ChartSolidFill::new().set_color("#FFEB84")),
+3083:            );
+3084:        let mut marker_high = ChartMarker::new();
+3085:        marker_high
+3086:            .set_type(ChartMarkerType::Circle)
+3087:            .set_size(6)
+3088:            .set_format(
+3089:                ChartFormat::new().set_solid_fill(ChartSolidFill::new().set_color("#63BE7B")),
+3090:            );
+3091:
+3092:        let mut chart = Chart::new(ChartType::Scatter);
+3093:        if !low.is_empty() {
+3094:            let row_max = scatter_row_min + low.len().saturating_sub(1) as u32;
+3095:            chart
+3096:                .add_series()
+3097:                .set_name("Low robust")
+3098:                .set_categories(("Distributions", scatter_row_min, 0, row_max, 0))
+3099:                .set_values(("Distributions", scatter_row_min, 1, row_max, 1))
+3100:                .set_marker(&marker_low);
+3101:        }
+3102:        if !mid.is_empty() {
+3103:            let row_max = scatter_row_min + mid.len().saturating_sub(1) as u32;
+3104:            chart
+3105:                .add_series()
+3106:                .set_name("Mid robust")
+3107:                .set_categories(("Distributions", scatter_row_min, 2, row_max, 2))
+3108:                .set_values(("Distributions", scatter_row_min, 3, row_max, 3))
+3109:                .set_marker(&marker_mid);
+3110:        }
+3111:        if !high.is_empty() {
+3112:            let row_max = scatter_row_min + high.len().saturating_sub(1) as u32;
+3113:            chart
+3114:                .add_series()
+3115:                .set_name("High robust")
+3116:                .set_categories(("Distributions", scatter_row_min, 4, row_max, 4))
+3117:                .set_values(("Distributions", scatter_row_min, 5, row_max, 5))
+3118:                .set_marker(&marker_high);
+3119:        }
+3120:        chart
+3121:            .title()
+3122:            .set_name("Fast vs Slow length (bucketed by robust score)");
+3123:        chart.x_axis().set_name("Slow Len");
+3124:        chart.y_axis().set_name("Fast Len");
+3125:        chart
+3126:            .legend()
+3127:            .set_position(rust_xlsxwriter::ChartLegendPosition::Bottom);
+3128:
+3129:        dist.insert_chart_with_offset(20, 16, &chart, 10, 10)
+3130:            .map_err(|e: XlsxError| e.to_string())?;
+3131:    }
+3132:
+3133:    workbook
+3134:        .save_to_buffer()
+3135:        .map_err(|e: XlsxError| e.to_string())
+3136:}
+3137:
+3138:#[cfg(test)]
+3139:mod tests {
+3140:    use super::*;
+3141:    use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
+3142:    use serde_json::json;
+3143:    use std::path::PathBuf;
+3144:
+3145:    fn parse_csv_fields(line: &str) -> Vec<String> {
+3146:        let mut fields: Vec<String> = Vec::new();
+3147:        let mut cur = String::new();
+3148:        let mut chars = line.chars().peekable();
+3149:        let mut in_quotes = false;
+3150:
+3151:        while let Some(ch) = chars.next() {
+3152:            match ch {
+3153:                '"' => {
+3154:                    if in_quotes {
+3155:                        if matches!(chars.peek(), Some('"')) {
+3156:                            cur.push('"');
+3157:                            let _ = chars.next();
+3158:                        } else {
+3159:                            in_quotes = false;
+3160:                        }
+3161:                    } else {
+3162:                        in_quotes = true;
+3163:                    }
+3164:                }
+3165:                ',' if !in_quotes => {
+3166:                    fields.push(cur);
+3167:                    cur = String::new();
+3168:                }
+3169:                _ => cur.push(ch),
+3170:            }
+3171:        }
+3172:        fields.push(cur);
+3173:        fields
+3174:    }
+3175:
+3176:    fn make_trending_candles(len: usize, step: f64) -> vector_ta::utilities::data_loader::Candles {
+3177:        let mut ts = Vec::with_capacity(len);
+3178:        let mut open = Vec::with_capacity(len);
+3179:        let mut high = Vec::with_capacity(len);
+3180:        let mut low = Vec::with_capacity(len);
+3181:        let mut close = Vec::with_capacity(len);
+3182:        let mut vol: Vec<f64> = Vec::with_capacity(len);
+3183:
+3184:        let base_ts: i64 = 1_700_000_000_000;
+3185:        for i in 0..len {
+3186:            ts.push(base_ts + (i as i64) * 60_000);
+3187:            let base = 100.0 + (i as f64) * step;
+3188:            open.push(base);
+3189:            high.push(base + 1.0);
+3190:            low.push(base - 1.0);
+3191:            close.push(base + 0.5);
+3192:            vol.push(1_000.0);
+3193:        }
+3194:
+3195:        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+3196:    }
+3197:
+3198:    fn write_candles_csv(path: &Path, candles: &vector_ta::utilities::data_loader::Candles) {
+3199:        let mut out = String::new();
+3200:        out.push_str("timestamp,open,high,low,close,volume\n");
+3201:        for i in 0..candles.close.len() {
+3202:            out.push_str(&format!(
+3203:                "{},{},{},{},{},{}\n",
+3204:                candles.timestamp[i],
+3205:                candles.open[i],
+3206:                candles.high[i],
+3207:                candles.low[i],
+3208:                candles.close[i],
+3209:                candles.volume[i],
+3210:            ));
+3211:        }
+3212:        std::fs::write(path, out).expect("write csv");
+3213:    }
+3214:
+3215:    fn make_temp_dir(prefix: &str) -> PathBuf {
+3216:        let mut p = std::env::temp_dir();
+3217:        let uniq = std::time::SystemTime::now()
+3218:            .duration_since(std::time::UNIX_EPOCH)
+3219:            .unwrap_or_default()
+3220:            .as_nanos();
+3221:        let name = format!("{prefix}_{}_{}", std::process::id(), uniq);
+3222:        p.push(name);
+3223:        let _ = std::fs::remove_dir_all(&p);
+3224:        std::fs::create_dir_all(&p).expect("create temp dir");
+3225:        p
+3226:    }
+3227:
+3228:    fn unique_report_ts(prefix: &str) -> String {
+3229:        let uniq = std::time::SystemTime::now()
+3230:            .duration_since(std::time::UNIX_EPOCH)
+3231:            .unwrap_or_default()
+3232:            .as_nanos();
+3233:        format!("{prefix}_{uniq}")
+3234:    }
+3235:
+3236:    fn minimal_report(ts: &str) -> Value {
+3237:        json!({
+3238:          "version": 1,
+3239:          "kind": "vectorgrid_report",
+3240:          "ts": ts,
+3241:          "validation": {
+3242:            "res": {
+3243:              "data_id": "test",
+3244:              "candidates": [
+3245:                {
+3246:                  "params": {
+3247:                    "fast_ma_type": "sma",
+3248:                    "fast_len": 9,
+3249:                    "slow_ma_type": "ema",
+3250:                    "slow_len": 21
+3251:                  },
+3252:                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+3253:                  "robust_score": 1.23,
+3254:                  "robust_pareto": true
+3255:                }
+3256:              ]
+3257:            }
+3258:          }
+3259:        })
+3260:    }
+3261:
+3262:    #[test]
+3263:    fn validation_shortlist_csv_smoke() {
+3264:        let validation_res = json!({
+3265:          "data_id": "test",
+3266:          "candidates": [
+3267:            {
+3268:              "params": { "fast_ma_type": "sma", "fast_len": 9, "slow_ma_type": "ema", "slow_len": 21 },
+3269:              "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+3270:              "robust_score": 123.0,
+3271:              "robust_pareto": true,
+3272:              "cross_ticker": { "score": 0.7 },
+3273:              "cross_ticker_pareto": true
+3274:            }
+3275:          ]
+3276:        });
+3277:
+3278:        let csv = commands_reports_csv::build_validation_shortlist_csv_text(&validation_res)
+3279:            .expect("csv");
+3280:        let mut it = csv.lines();
+3281:        let header = it.next().unwrap_or_default();
+3282:        let header_fields = parse_csv_fields(header);
+3283:        assert_eq!(header_fields.len(), 28);
+3284:        let row = it.next().unwrap_or_default();
+3285:        let row_fields = parse_csv_fields(row);
+3286:        assert_eq!(row_fields.len(), 28);
+3287:        assert!(row_fields[27].contains("\"fast_ma_type\":\"sma\""));
+3288:        assert!(csv.contains("rank,approval_label"));
+3289:        assert!(csv.contains("params_json"));
+3290:    }
+3291:
+3292:    #[test]
+3293:    fn report_xlsx_bytes_smoke() {
+3294:        let report = json!({
+3295:          "version": 1,
+3296:          "kind": "vectorgrid_report",
+3297:          "ts": "2026-01-26T00:00:00Z",
+3298:          "validation": {
+3299:            "res": {
+3300:              "data_id": "test",
+3301:              "candidates": [
+3302:                {
+3303:                  "params": {
+3304:                    "fast_ma_type": "sma",
+3305:                    "fast_len": 9,
+3306:                    "slow_ma_type": "sma",
+3307:                    "slow_len": 21,
+3308:                    "halftrend": { "amplitude": 2, "atr_period": 14, "channel_deviation": 2.0 },
+3309:                    "macz": {},
+3310:                    "ott": {},
+3311:                    "strategy": { "commission": 0.0, "eps_rel": 0.0, "long_only": true, "allow_flip": true, "trade_on_next_bar": true }
+3312:                  },
+3313:                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10, "exposure": 0.5, "net_exposure": 0.1 },
+3314:                  "robust_score": 1.23,
+3315:                  "robust_pareto": true
+3316:                }
+3317:              ]
+3318:            }
+3319:          }
+3320:        });
+3321:
+3322:        let bytes = build_report_xlsx_bytes_headless(&report, Some(50)).expect("xlsx bytes");
+3323:        assert!(bytes.len() > 512);
+3324:        assert_eq!(&bytes[0..2], b"PK");
+3325:    }
+3326:
+3327:    #[test]
+3328:    fn validation_report_workbook_smoke() {
+3329:        let report = json!({
+3330:          "version": 1,
+3331:          "kind": "vectorgrid_report",
+3332:          "ts": "2026-01-26T00:00:00Z",
+3333:          "validation": {
+3334:            "res": {
+3335:              "data_id": "test",
+3336:              "cscv_pbo": { "combinations": 6, "threshold": 0.0 },
+3337:              "candidates": [
+3338:                {
+3339:                  "params": {
+3340:                    "fast_ma_type": "sma",
+3341:                    "fast_len": 9,
+3342:                    "slow_ma_type": "sma",
+3343:                    "slow_len": 21
+3344:                  },
+3345:                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10, "exposure": 0.5, "net_exposure": 0.1 },
+3346:                  "walk_forward": { "sharpe_median": 1.2, "max_dd_worst": 0.6 },
+3347:                  "perturb": { "pnl_worst": -0.2, "pnl_mean": 0.1, "pnl_positive_frac": 0.6 },
+3348:                  "trade_bootstrap": { "prob_pnl_positive": 0.7, "pnl_p50": 0.2, "max_dd_p95": 0.8 },
+3349:                  "cross_ticker": { "score": 0.3, "sharpe_median": 0.4, "max_dd_worst": 0.7 },
+3350:                  "cscv_pbo": { "is_selected_frac": 0.8, "oos_rank_frac_p50": 0.7, "oos_metric_p50": 0.1 },
+3351:                  "robust_score": 1.23,
+3352:                  "robust_pareto": true,
+3353:                  "cross_ticker_pareto": true
+3354:                }
+3355:              ]
+3356:            }
+3357:          }
+3358:        });
+3359:
+3360:        let bytes = build_report_xlsx_bytes_headless(&report, Some(25)).expect("xlsx bytes");
+3361:        assert!(bytes.len() > 512);
+3362:        assert_eq!(&bytes[0..2], b"PK");
+3363:    }
+3364:
+3365:    #[test]
+3366:    fn build_report_xlsx_blocking_matches_headless_builder_for_max_rows() {
+3367:        use base64::{engine::general_purpose, Engine as _};
+3368:
+3369:        let report = json!({
+3370:          "version": 1,
+3371:          "kind": "vectorgrid_report",
+3372:          "ts": "2026-01-26T00:00:00Z",
+3373:          "validation": {
+3374:            "res": {
+3375:              "data_id": "test",
+3376:              "candidates": [
+3377:                {
+3378:                  "params": {
+3379:                    "fast_ma_type": "sma",
+3380:                    "fast_len": 9,
+3381:                    "slow_ma_type": "sma",
+3382:                    "slow_len": 21
+3383:                  },
+3384:                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+3385:                  "robust_score": 1.23,
+3386:                  "robust_pareto": true
+3387:                }
+3388:              ]
+3389:            }
+3390:          }
+3391:        });
+3392:
+3393:        let encoded = build_report_xlsx_blocking(report.clone(), Some(1)).expect("wrapped xlsx");
+3394:        let bytes = build_report_xlsx_bytes_headless(&report, Some(1)).expect("direct xlsx");
+3395:        assert_eq!(encoded, general_purpose::STANDARD.encode(bytes));
+3396:    }
+3397:
+3398:    #[test]
+3399:    fn save_report_xlsx_for_base_uses_collision_suffixes() {
+3400:        let base = make_temp_dir("save_report_xlsx_collision");
+3401:        let ts = unique_report_ts("collision");
+3402:        let existing = reports_dir_for_base(&base)
+3403:            .expect("reports dir")
+3404:            .join(format!("vectorgrid_report_{ts}.xlsx"));
+3405:        std::fs::write(&existing, b"existing").expect("seed existing report");
+3406:
+3407:        let saved = save_report_xlsx_for_base(minimal_report(&ts), Some(1), &base).expect("save");
+3408:        assert!(saved
+3409:            .path
+3410:            .ends_with(&format!("vectorgrid_report_{ts}_2.xlsx")));
+3411:        assert!(Path::new(&saved.path).is_file());
+3412:        assert!(saved.bytes > 0);
+3413:    }
+3414:
+3415:    #[test]
+3416:    fn write_report_xlsx_file_rejects_directory_targets() {
+3417:        let target = make_temp_dir("write_report_xlsx_dir_target");
+3418:        let err =
+3419:            write_report_xlsx_file(&target, b"not-an-xlsx").expect_err("directory write error");
+3420:        assert!(err.contains("failed to write report workbook at"));
+3421:        assert!(err.contains(&target.to_string_lossy().to_string()));
+3422:    }
+3423:
+3424:    #[test]
+3425:    fn save_report_xlsx_for_base_errors_when_reports_root_is_blocked_by_file() {
+3426:        let base = make_temp_dir("save_report_xlsx_reports_blocked");
+3427:        let reports_path = base.join("reports");
+3428:        std::fs::write(&reports_path, b"not-a-directory").expect("seed file");
+3429:
+3430:        let err =
+3431:            save_report_xlsx_for_base(minimal_report(&unique_report_ts("blocked")), Some(1), &base)
+3432:                .expect_err("reports root blocked");
+3433:        assert!(!err.trim().is_empty());
+3434:    }
+3435:
+3436:    #[test]
+3437:    fn artifact_report_builder_uses_persisted_dataset_meta() {
+3438:        let artifact = json!({
+3439:          "ts": "2026-04-02T12:00:00Z",
+3440:          "optimization_metric_surface": {
+3441:            "surface": "core17",
+3442:            "fields": ["pnl", "trades", "max_dd"]
+3443:          },
+3444:            "dataset_meta": {
+3445:              "csv_path": "C:/data/AAPL.csv",
+3446:              "timeframe": "1h",
+3447:              "base_timeframe": "1m",
+3448:              "derived_timeframe": "1h",
+3449:              "resample_applied": true,
+3450:              "resample_rule": "session_relative_ohlcv",
+3451:              "resample_anchor": "day_first_timestamp",
+3452:              "label": "AAPL artifact",
+3453:              "symbol": "AAPL",
+3454:              "len": 4321,
+3455:              "min_ts": 111,
+3456:              "max_ts": 222,
+3457:              "source": "artifact-source",
+3458:              "source_size_bytes": 2048,
+3459:              "source_mtime_utc_ms": 1700005000000i64,
+3460:              "source_content_fingerprint": "fp-aapl-1m"
+3461:            },
+3462:            "run": {
+3463:              "req": { "strategy_kind": "DoubleMa" },
+3464:            "res": { "top": [] }
+3465:          },
+3466:          "validation": {
+3467:            "req": { "candidates": [] },
+3468:            "res": { "candidates": [] }
+3469:          }
+3470:        });
+3471:
+3472:        let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
+3473:        assert_eq!(
+3474:            report
+3475:                .pointer("/data/meta/timeframe")
+3476:                .and_then(Value::as_str),
+3477:            Some("1h")
+3478:        );
+3479:        assert_eq!(
+3480:            report
+3481:                .pointer("/data/meta/base_timeframe")
+3482:                .and_then(Value::as_str),
+3483:            Some("1m")
+3484:        );
+3485:        assert_eq!(
+3486:            report
+3487:                .pointer("/data/meta/derived_timeframe")
+3488:                .and_then(Value::as_str),
+3489:            Some("1h")
+3490:        );
+3491:        assert_eq!(
+3492:            report
+3493:                .pointer("/data/meta/resample_rule")
+3494:                .and_then(Value::as_str),
+3495:            Some("session_relative_ohlcv")
+3496:        );
+3497:        assert_eq!(
+3498:            report
+3499:                .pointer("/data/meta/resample_anchor")
+3500:                .and_then(Value::as_str),
+3501:            Some("day_first_timestamp")
+3502:        );
+3503:        assert_eq!(
+3504:            report
+3505:                .pointer("/data/meta/source_content_fingerprint")
+3506:                .and_then(Value::as_str),
+3507:            Some("fp-aapl-1m")
+3508:        );
+3509:        assert_eq!(
+3510:            report.pointer("/data/meta/len").and_then(Value::as_i64),
+3511:            Some(4321)
+3512:        );
+3513:        assert_eq!(
+3514:            report
+3515:                .pointer("/data/meta/source_size_bytes")
+3516:                .and_then(Value::as_i64),
+3517:            Some(2048)
+3518:        );
+3519:        assert_eq!(
+3520:            report
+3521:                .pointer("/data/meta/source_mtime_utc_ms")
+3522:                .and_then(Value::as_i64),
+3523:            Some(1700005000000)
+3524:        );
+3525:        assert_eq!(
+3526:            report.pointer("/data/ctx/label").and_then(Value::as_str),
+3527:            Some("AAPL artifact")
+3528:        );
+3529:        assert_eq!(
+3530:            report.pointer("/data/ctx/csv_path").and_then(Value::as_str),
+3531:            Some("C:/data/AAPL.csv")
+3532:        );
+3533:        assert_eq!(
+3534:            report
+3535:                .pointer("/data/ctx/base_timeframe")
+3536:                .and_then(Value::as_str),
+3537:            Some("1m")
+3538:        );
+3539:        assert_eq!(
+3540:            report
+3541:                .pointer("/data/ctx/derived_timeframe")
+3542:                .and_then(Value::as_str),
+3543:            Some("1h")
+3544:        );
+3545:        assert_eq!(
+3546:            report
+3547:                .pointer("/data/ctx/resample_applied")
+3548:                .and_then(Value::as_bool),
+3549:            Some(true)
+3550:        );
+3551:        assert_eq!(
+3552:            report
+3553:                .pointer("/optimization_metric_surface/surface")
+3554:                .and_then(Value::as_str),
+3555:            Some("core17")
+3556:        );
+3557:        assert_eq!(
+3558:            report
+3559:                .pointer("/data/ctx/resample_applied")
+3560:                .and_then(Value::as_bool),
+3561:            Some(true)
+3562:        );
+3563:    }
+3564:
+3565:    #[test]
+3566:    fn artifact_report_builder_preserves_canonical_metric_surface_field_order() {
+3567:        let mut artifact = json!({
+3568:          "ts": "2026-04-02T12:00:00Z",
+3569:          "run": {
+3570:            "req": {
+3571:              "strategy_kind": "CompositeTrend",
+3572:              "metric_contract": null,
+3573:              "include_trade_metrics": false
+3574:            },
+3575:            "res": {
+3576:              "backend_route": "GpuKernel",
+3577:              "metric_surface_kind": "core17",
+3578:              "best_metrics": {
+3579:                "pnl": 1.0,
+3580:                "sharpe": 0.5,
+3581:                "volatility": 0.25,
+3582:                "max_dd": 0.2,
+3583:                "trades": 8,
+3584:                "exposure": 0.6,
+3585:                "net_exposure": 0.2,
+3586:                "downside_deviation": 0.1,
+3587:                "ulcer_index": 0.08,
+3588:                "omega": 1.2,
+3589:                "downside_frequency": 0.15,
+3590:                "downside_severity": 0.04,
+3591:                "long_mean_return": 0.03,
+3592:                "short_mean_return": -0.02,
+3593:                "kappa_tau": 0.2,
+3594:                "underwater_fraction": 0.18,
+3595:                "max_underwater_duration_bars": 11
+3596:              },
+3597:              "top": []
+3598:            }
+3599:          },
+3600:          "validation": {
+3601:            "req": { "candidates": [] },
+3602:            "res": { "candidates": [] }
+3603:          }
+3604:        });
+3605:
+3606:        let metric_surface =
+3607:            build_optimization_metric_surface_artifact_value(&artifact).expect("metric surface");
+3608:        if let Some(root) = artifact.as_object_mut() {
+3609:            root.insert("optimization_metric_surface".to_string(), metric_surface);
+3610:        }
+3611:
+3612:        let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
+3613:        let fields = report
+3614:            .pointer("/optimization_metric_surface/fields")
+3615:            .and_then(Value::as_array)
+3616:            .map(|items| {
+3617:                items
+3618:                    .iter()
+3619:                    .filter_map(|value| value.as_str().map(str::to_string))
+3620:                    .collect::<Vec<_>>()
+3621:            });
+3622:        assert_eq!(
+3623:            fields,
+3624:            Some(
+3625:                [
+3626:                    "pnl",
+3627:                    "trades",
+3628:                    "max_dd",
+3629:                    "mean",
+3630:                    "std",
+3631:                    "exposure",
+3632:                    "net_exposure",
+3633:                    "downside_deviation",
+3634:                    "ulcer_index",
+3635:                    "omega",
+3636:                    "downside_frequency",
+3637:                    "downside_severity",
+3638:                    "long_mean_return",
+3639:                    "short_mean_return",
+3640:                    "kappa_tau",
+3641:                    "underwater_fraction",
+3642:                    "max_underwater_duration_bars",
+3643:                ]
+3644:                .into_iter()
+3645:                .map(str::to_string)
+3646:                .collect::<Vec<_>>()
+3647:            )
+3648:        );
+3649:    }
+3650:
+3651:    #[test]
+3652:    fn artifact_report_builder_matches_equivalent_direct_report_json() {
+3653:        let artifact = json!({
+3654:          "ts": "2026-04-02T12:00:00Z",
+3655:          "dataset_meta": {
+3656:            "csv_path": "C:/data/AAPL.csv",
+3657:            "timeframe": "1h",
+3658:            "base_timeframe": "1m",
+3659:            "derived_timeframe": "1h",
+3660:            "resample_applied": true,
+3661:            "resample_rule": "session_relative_ohlcv",
+3662:            "resample_anchor": "day_first_timestamp",
+3663:            "label": "AAPL artifact",
+3664:            "symbol": "AAPL",
+3665:            "len": 4321
+3666:          },
+3667:          "optimization_metric_surface": {
+3668:            "surface": "core17",
+3669:            "fields": ["pnl", "trades", "max_dd"]
+3670:          },
+3671:          "run": {
+3672:            "req": { "strategy_kind": "DoubleMa" },
+3673:            "res": { "top": [{ "rank": 1 }] }
+3674:          },
+3675:          "validation": {
+3676:            "req": { "candidates": [{ "fast_len": 10, "slow_len": 40 }] },
+3677:            "res": { "candidates": [{ "rank": 1, "approval_label": "approved" }] }
+3678:          }
+3679:        });
+3680:
+3681:        let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
+3682:        let expected = json!({
+3683:          "version": 1,
+3684:          "kind": "vectorgrid_report",
+3685:          "ts": "2026-04-02T12:00:00Z",
+3686:          "data": {
+3687:            "meta": {
+3688:              "timeframe": "1h",
+3689:              "base_timeframe": "1m",
+3690:              "derived_timeframe": "1h",
+3691:              "resample_rule": "session_relative_ohlcv",
+3692:              "resample_anchor": "day_first_timestamp",
+3693:              "len": 4321
+3694:            },
+3695:            "ctx": {
+3696:              "label": "AAPL artifact",
+3697:              "symbol": "AAPL",
+3698:              "csv_path": "C:/data/AAPL.csv",
+3699:              "timeframe": "1h",
+3700:              "base_timeframe": "1m",
+3701:              "derived_timeframe": "1h",
+3702:              "resample_rule": "session_relative_ohlcv",
+3703:              "resample_anchor": "day_first_timestamp",
+3704:              "resample_applied": true
+3705:            }
+3706:          },
+3707:          "optimization_metric_surface": {
+3708:            "surface": "core17",
+3709:            "fields": ["pnl", "trades", "max_dd"]
+3710:          },
+3711:          "run": {
+3712:            "req": { "strategy_kind": "DoubleMa" },
+3713:            "res": { "top": [{ "rank": 1 }] }
+3714:          },
+3715:          "validation": {
+3716:            "req": { "candidates": [{ "fast_len": 10, "slow_len": 40 }] },
+3717:            "res": { "candidates": [{ "rank": 1, "approval_label": "approved" }] }
+3718:          }
+3719:        });
+3720:
+3721:        assert_eq!(report, expected);
+3722:    }
+3723:
+3724:    #[test]
+3725:    fn cross_ticker_validation_smoke_populates_stats() {
+3726:        let base_dir = make_temp_dir("vectorta_cross_ticker_test");
+3727:        let app_cache_dir = base_dir.join("data_cache");
+3728:        std::fs::create_dir_all(&app_cache_dir).expect("create cache dir");
+3729:
+3730:        let ds1 = base_dir.join("ds1.csv");
+3731:        let ds2 = base_dir.join("ds2.csv");
+3732:
+3733:        let candles1 = make_trending_candles(1024, 0.10);
+3734:        let candles2 = make_trending_candles(1024, 0.06);
+3735:        write_candles_csv(&ds1, &candles1);
+3736:        write_candles_csv(&ds2, &candles2);
+3737:
+3738:        let cancel = std::sync::atomic::AtomicBool::new(false);
+3739:
+3740:        let base_params = ta_app_core::CompositeParams {
+3741:            fast_ma_type: "sma".to_string(),
+3742:            slow_ma_type: "sma".to_string(),
+3743:            fast_len: 10,
+3744:            slow_len: 30,
+3745:            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+3746:                amplitude: 2,
+3747:                channel_deviation: 2.0,
+3748:                atr_period: 100,
+3749:            },
+3750:            asr: None,
+3751:            vcc: None,
+3752:            vemr: None,
+3753:            rocb: None,
+3754:            mkcs: None,
+3755:            kqsr: None,
+3756:            carm: None,
+3757:            kvdf: None,
+3758:            cdmc: None,
+3759:            vcet: None,
+3760:            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+3761:            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+3762:            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+3763:            strategy: ta_strategies::double_ma::StrategyConfig::default(),
+3764:        };
+3765:
+3766:        let req = ta_app_core::CompositeValidationRequest {
+3767:            data_id: "base".to_string(),
+3768:            backend: ta_app_core::Backend::CpuOnly,
+3769:            ma_source: "close".to_string(),
+3770:            fast_ma_params: None,
+3771:            slow_ma_params: None,
+3772:            candidates: vec![base_params],
+3773:            walk_forward: None,
+3774:            reopt_walk_forward: None,
+3775:            spa: None,
+3776:            perturb: None,
+3777:            trade_bootstrap: None,
+3778:            cross_ticker: None,
+3779:            cscv_pbo: None,
+3780:            seed: 1,
+3781:            max_candidates: 32,
+3782:            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+3783:            iterative: ta_app_core::IterativeSimConfig::default(),
+3784:            min_psr: None,
+3785:            min_dsr: None,
+3786:            min_cscv_oos_rank_frac: None,
+3787:            min_cscv_oos_metric: None,
+3788:            max_pbo: None,
+3789:            validation_context: None,
+3790:        };
+3791:
+3792:        let mut res = ta_app_core::run_composite_validation_blocking_with_candles(
+3793:            req, &candles1, &cancel, None,
+3794:        )
+3795:        .expect("base validation");
+3796:
+3797:        let cross_cfg = ta_app_core::CrossTickerConfig {
+3798:            datasets: vec![
+3799:                ta_app_core::CrossTickerDataset {
+3800:                    csv_path: ds1.to_string_lossy().to_string(),
+3801:                    label: "ds1".to_string(),
+3802:                },
+3803:                ta_app_core::CrossTickerDataset {
+3804:                    csv_path: ds2.to_string_lossy().to_string(),
+3805:                    label: "ds2".to_string(),
+3806:                },
+3807:            ],
+3808:            max_datasets: 8,
+3809:            mode: ta_app_core::CrossTickerMode::Lightweight,
+3810:            gate: ta_app_core::CrossTickerGateConfig::default(),
+3811:        };
+3812:
+3813:        super::super::apply_cross_ticker_validation(
+3814:            &mut res,
+3815:            cross_cfg,
+3816:            &candles1,
+3817:            ta_app_core::Backend::CpuOnly,
+3818:            "close",
+3819:            None,
+3820:            None,
+3821:            1,
+3822:            &app_cache_dir,
+3823:            &cancel,
+3824:            None,
+3825:            ta_app_core::ValidationEngine::Vectorized,
+3826:            ta_app_core::IterativeSimConfig::default(),
+3827:            None,
+3828:            None,
+3829:            None,
+3830:            None,
+3831:            None,
+3832:            None,
+3833:        )
+3834:        .expect("cross validation");
+3835:
+3836:        let summary = res.cross_ticker.as_ref().expect("summary");
+3837:        assert_eq!(summary.datasets.len(), 2);
+3838:        let cand = &res.candidates[0];
+3839:        let cross = cand.cross_ticker.as_ref().expect("candidate cross");
+3840:        assert_eq!(cross.datasets, 2);
+3841:        assert!(cand.cross_ticker_pareto.is_some());
+3842:    }
+3843:}

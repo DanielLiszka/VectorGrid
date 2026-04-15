@@ -82,6 +82,44 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
+fn make_gpu_base_composite_candidates(n: usize) -> Vec<CompositeParams> {
+    let mut out = Vec::with_capacity(n);
+    let halftrend = ta_app_core::double_ma::HalfTrendRegimeFilter {
+        amplitude: 2,
+        channel_deviation: 2.0,
+        atr_period: 100,
+    };
+    let macz = ta_app_core::composite_cpu::MaczGateParams::default();
+    let ott = ta_app_core::composite_cpu::OttGateParams::default();
+    for i in 0..n {
+        let i_u16 = i as u16;
+        let fast_len = 6u16.saturating_add(i_u16.saturating_mul(2));
+        let slow_len = fast_len.saturating_add(40);
+        out.push(CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len,
+            slow_len,
+            halftrend: halftrend.clone(),
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            vcet: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            macz: macz.clone(),
+            ott: ott.clone(),
+            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+            strategy: StrategyConfig::default(),
+        });
+    }
+    out
+}
+
 fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
     let mut fields = vec![
         "timing_boundary=Criterion".to_string(),
@@ -984,7 +1022,11 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
         group.finish();
     };
 
-    bench_profile("base_composite", 50_000, make_candidates(8));
+    bench_profile(
+        "base_composite",
+        50_000,
+        make_gpu_base_composite_candidates(8),
+    );
     bench_profile("asr", 50_000, make_asr_candidates(8));
     let mut asr_long_only = StrategyConfig::default();
     asr_long_only.long_only = true;

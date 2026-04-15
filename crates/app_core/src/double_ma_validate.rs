@@ -1,10 +1,12 @@
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
     compute_combined_regime_filter, compute_log_returns_f64, exact_fee_stress_pnl,
-    first_finite_idx, ma_matrix_cpu_f32_staging, ma_matrix_cpu_f64, resolve_alma_params_for_side,
-    validate_ma_kind, validate_strategy_cfg, validation_fee_stress_fee_bps, Backend, BackendUsed,
-    GpuExecutionPolicy, HalfTrendRegimeFilter,
+    first_finite_idx, ma_matrix_cpu_f64, resolve_alma_params_for_side, validate_ma_kind,
+    validate_strategy_cfg, validation_fee_stress_fee_bps, Backend, BackendUsed,
+    HalfTrendRegimeFilter,
 };
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::double_ma::{ma_matrix_cpu_f32_staging, GpuExecutionPolicy};
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
 use crate::validation_pipeline::{
@@ -119,16 +121,10 @@ fn validation_supports_gpu_fixed_candidates(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn gpu_validation_strategy_blocker(backend: &Backend, strategy: &StrategyConfig) -> Option<String> {
-    let uses_unsafe_trend_quality_gpu_kernel = strategy.uses_trend_quality_filter()
-        && !strategy.trend_quality_use_adx()
-        && matches!(backend, Backend::GpuKernel { .. } | Backend::Auto { .. });
-    if uses_unsafe_trend_quality_gpu_kernel {
-        return Some(
-            "GPU fixed-candidate validation currently falls back to CPU for TrendQuality requests without ADX confirmation because the exact-combo GpuKernel validation path is not parity-safe on that route."
-                .to_string(),
-        );
-    }
+fn gpu_validation_strategy_blocker(
+    _backend: &Backend,
+    _strategy: &StrategyConfig,
+) -> Option<String> {
     None
 }
 
@@ -185,16 +181,30 @@ fn gpu_exact_combo_metrics_for_ranges(
                 plan.hybrid_precomputed
                     .as_ref()
                     .and_then(|pre| pre.fast_values.as_deref()),
-                plan.hybrid_precomputed.as_ref().and_then(|pre| pre.fast_cols),
+                plan.hybrid_precomputed
+                    .as_ref()
+                    .and_then(|pre| pre.fast_cols),
                 plan.hybrid_precomputed
                     .as_ref()
                     .and_then(|pre| pre.slow_values.as_deref()),
-                plan.hybrid_precomputed.as_ref().and_then(|pre| pre.slow_cols),
+                plan.hybrid_precomputed
+                    .as_ref()
+                    .and_then(|pre| pre.slow_cols),
                 ranges,
             )
             .map(|result| result.0)
         }
-        _ => crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel_multi_range_with_periods_and_regime(
+        _ => {
+            let regime_input = plan
+                .device_regime_filter
+                .as_deref()
+                .map(crate::gpu_backtest_kernel::RegimeFilterInput::DeviceF32)
+                .or_else(|| {
+                    plan.regime_filter
+                        .as_deref()
+                        .map(crate::gpu_backtest_kernel::RegimeFilterInput::HostF64)
+                });
+            crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel_multi_range_with_periods_and_regime(
             candles,
             &plan.combos,
             &plan.fast_periods,
@@ -204,15 +214,7 @@ fn gpu_exact_combo_metrics_for_ranges(
             &req.ma_source,
             plan.first_fast_params.as_ref(),
             plan.first_slow_params.as_ref(),
-            plan
-                .device_regime_filter
-                .as_deref()
-                .map(crate::gpu_backtest_kernel::RegimeFilterInput::DeviceF32)
-                .or_else(|| {
-                    plan.regime_filter
-                        .as_deref()
-                        .map(crate::gpu_backtest_kernel::RegimeFilterInput::HostF64)
-                }),
+            regime_input,
             crate::gpu_backtest_kernel::KernelConfig {
                 device_id: plan.device_id,
                 fast_alma_offset: plan.fast_alma_offset,
@@ -225,12 +227,21 @@ fn gpu_exact_combo_metrics_for_ranges(
             },
             &plan.first_strategy,
             ranges,
-        ),
+        )
+        }
     }
 }
 
+/// Best-effort execution metadata for a single validation run.
+///
+/// `requested_candidates` and the related uniqueness counters describe the
+/// post-normalization slice that this file actually evaluates after applying
+/// `max_candidates == 0` normalization and truncating the request-local
+/// candidate vector.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ValidationExecutionProfile {
+    /// Number of candidates actually evaluated after local normalization and
+    /// truncation.
     pub requested_candidates: usize,
     pub unique_candidates: usize,
     pub unique_fast_periods: usize,
@@ -1487,6 +1498,12 @@ pub struct DoubleMaValidationParams {
     pub halftrend_filter: Option<HalfTrendRegimeFilter>,
 }
 
+/// App-core request DTO for validating a single in-memory candle series.
+///
+/// This file owns local candidate normalization, backend routing, fixed-candidate
+/// evaluation, and best-effort execution metadata. Compatibility fields such as
+/// `validation_context` are accepted without forcing wrapper-only orchestration
+/// to happen here.
 #[derive(Clone, Debug, Deserialize)]
 pub struct DoubleMaValidationRequest {
     pub data_id: String,
@@ -1533,6 +1550,12 @@ pub struct DoubleMaValidationRequest {
     pub validation_context: Option<ValidationArtifactContext>,
 }
 
+/// Per-candidate validation output.
+///
+/// The core metrics and requested primary validation outputs are populated for
+/// every returned candidate. Several auxiliary analytics fields are
+/// intentionally finalist-only and are filled only for the top-N finalists of
+/// each auxiliary pass.
 #[derive(Clone, Debug, Serialize)]
 pub struct DoubleMaValidationCandidateResult {
     pub params: DoubleMaValidationParams,
@@ -1656,6 +1679,11 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
     }
 }
 
+/// App-core validation result for a single candle series.
+///
+/// `runtime_ms` measures this local execution path. Cross-ticker summary
+/// population remains wrapper-owned and `cross_ticker` is therefore left `None`
+/// by this entrypoint today.
 #[derive(Clone, Debug, Serialize)]
 pub struct DoubleMaValidationResult {
     pub data_id: String,
@@ -3402,6 +3430,8 @@ fn compute_trade_bootstrap_for_candidate(
     ))
 }
 
+/// Runs the default single-series validation flow with the full auxiliary work
+/// mask enabled.
 pub fn run_double_ma_validation_blocking_with_candles(
     req: DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -3417,6 +3447,13 @@ pub fn run_double_ma_validation_blocking_with_candles(
     )
 }
 
+/// Runs single-series validation against the provided candles.
+///
+/// This entrypoint normalizes `max_candidates == 0` to the default limit,
+/// truncates the request-local candidate list before evaluation, and reports
+/// the resulting slice through [`ValidationExecutionProfile`]. It accepts
+/// compatibility fields such as `validation_context`, but wrapper-driven
+/// cross-ticker orchestration and summary population remain out of scope here.
 pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     mut req: DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -4253,6 +4290,133 @@ mod tests {
     }
 
     #[test]
+    fn double_ma_validation_execution_profile_counts_truncated_prefix_candidates() {
+        let candles = make_trending_candles(1024);
+        let cancel = AtomicBool::new(false);
+        let duplicate = DoubleMaValidationParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+        };
+        let distinct = DoubleMaValidationParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 14,
+            slow_len: 42,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+        };
+        let later = DoubleMaValidationParams {
+            fast_ma_type: "ema".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len: 20,
+            slow_len: 60,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+        };
+        let req = DoubleMaValidationRequest {
+            data_id: "truncated-prefix-profile".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![duplicate.clone(), duplicate, distinct, later],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 11,
+            max_candidates: 2,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert_eq!(res.candidates.len(), 2);
+        for cand in &res.candidates {
+            assert_eq!(cand.params.fast_len, 10);
+            assert_eq!(cand.params.slow_len, 30);
+        }
+        if let Some(profile) = res.execution_profile.as_ref() {
+            assert_eq!(profile.requested_candidates, 2);
+            assert_eq!(profile.unique_candidates, 1);
+            assert_eq!(profile.unique_fast_periods, 1);
+            assert_eq!(profile.unique_slow_periods, 1);
+        } else {
+            assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        }
+    }
+
+    #[test]
+    fn double_ma_validation_zero_max_candidates_uses_default_limit_in_execution_profile() {
+        let candles = make_trending_candles(1024);
+        let cancel = AtomicBool::new(false);
+        let base = DoubleMaValidationParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+        };
+        let req = DoubleMaValidationRequest {
+            data_id: "default-max-candidates".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![base; default_max_candidates() + 4],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 3,
+            max_candidates: 0,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert_eq!(res.candidates.len(), default_max_candidates());
+        if let Some(profile) = res.execution_profile.as_ref() {
+            assert_eq!(profile.requested_candidates, default_max_candidates());
+        } else {
+            assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        }
+    }
+
+    #[test]
     fn entry_margin_fragility_stats_match_synthetic_entries() {
         let active_flags = vec![false, true, true, true, true];
         let trade_entries = vec![false, true, false, true, false];
@@ -4829,6 +4993,101 @@ mod tests {
             (exact - replay.pnl).abs() <= 1e-12,
             "exact fee-stress pnl mismatch exact={exact} replay={}",
             replay.pnl
+        );
+    }
+
+    #[test]
+    fn double_ma_validation_aux_analytics_are_limited_to_finalists() {
+        let candles = make_choppy_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let candidates = vec![(9, 30), (10, 32), (12, 36), (14, 42), (16, 48), (18, 54)]
+            .into_iter()
+            .map(|(fast_len, slow_len)| DoubleMaValidationParams {
+                fast_ma_type: "alma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_len,
+                slow_len,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            })
+            .collect();
+        let req = DoubleMaValidationRequest {
+            data_id: "aux-finalists-only".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates,
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: Some(SpaConfigOptional {
+                slices: 8,
+                bootstrap_samples: 64,
+                block_length: 2,
+                benchmark: SpaBenchmarkKind::BuyAndHold,
+            }),
+            seed: 29,
+            max_candidates: 6,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        assert_eq!(res.candidates.len(), 6);
+        assert_eq!(
+            res.candidates
+                .iter()
+                .filter(|cand| cand.regime_slice_robustness.is_some())
+                .count(),
+            DEFAULT_REGIME_SLICE_FINALISTS
+        );
+        assert_eq!(
+            res.candidates
+                .iter()
+                .filter(|cand| cand.friction_stress.is_some())
+                .count(),
+            DEFAULT_FRICTION_STRESS_FINALISTS
+        );
+        assert_eq!(
+            res.candidates
+                .iter()
+                .filter(|cand| cand.entry_margin_fragility.is_some())
+                .count(),
+            DEFAULT_ENTRY_MARGIN_FRAGILITY_FINALISTS
+        );
+        assert_eq!(
+            res.candidates
+                .iter()
+                .filter(|cand| cand.underwater_duration.is_some())
+                .count(),
+            DEFAULT_UNDERWATER_DURATION_FINALISTS
+        );
+        assert_eq!(
+            res.candidates
+                .iter()
+                .filter(|cand| cand.checkpoint_robustness.is_some())
+                .count(),
+            DEFAULT_CHECKPOINT_ROBUSTNESS_FINALISTS
+        );
+        assert_eq!(
+            res.candidates
+                .iter()
+                .filter(|cand| cand.benchmark_slice_summary.is_some())
+                .count(),
+            DEFAULT_BENCHMARK_SLICE_FINALISTS
         );
     }
 
@@ -5815,7 +6074,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_kernel_trend_quality_adx_off_falls_back_to_cpu() {
+    fn double_ma_validation_gpu_kernel_matches_cpu_metrics_trend_quality_adx_off() {
         let candles = make_trending_candles_with_slope(4096, 0.07);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -5915,13 +6174,9 @@ mod tests {
         )
         .expect("gpu validation");
 
-        assert!(matches!(gpu_res.backend_used, BackendUsed::Cpu));
-        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        assert!(gpu_res
-            .backend_fallback_reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("TrendQuality requests without ADX confirmation"));
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             assert!((cpu.in_sample.pnl - gpu.in_sample.pnl).abs() < 1e-4);
@@ -5933,7 +6188,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_auto_trend_quality_adx_off_falls_back_to_cpu() {
+    fn double_ma_validation_auto_trend_quality_adx_off_uses_gpu_kernel() {
         let candles = make_trending_candles_with_slope(4096, 0.07);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -5984,13 +6239,9 @@ mod tests {
 
         let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
             .expect("auto trend-quality validation");
-        assert!(matches!(res.backend_used, BackendUsed::Cpu));
-        assert_eq!(res.backend_route.as_deref(), Some("Auto->CpuOnly"));
-        assert!(res
-            .backend_fallback_reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("TrendQuality requests without ADX confirmation"));
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("Auto->GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -6115,7 +6366,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn double_ma_validation_gpu_kernel_walk_forward_trend_quality_adx_off_falls_back_to_cpu() {
+    fn double_ma_validation_gpu_kernel_walk_forward_matches_cpu_trend_quality_adx_off() {
         let candles = make_trending_candles_with_slope(4096, 0.07);
         let cancel = AtomicBool::new(false);
         let strategy = StrategyConfig {
@@ -6219,13 +6470,9 @@ mod tests {
         )
         .expect("gpu walk_forward validation");
 
-        assert!(matches!(gpu_res.backend_used, BackendUsed::Cpu));
-        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
-        assert!(gpu_res
-            .backend_fallback_reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("TrendQuality requests without ADX confirmation"));
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
             let cpu_wf = cpu.walk_forward.as_ref().expect("cpu walk_forward");
             let gpu_wf = gpu.walk_forward.as_ref().expect("gpu walk_forward");
@@ -6883,6 +7130,157 @@ mod tests {
         assert!((cpu_f32_gpu_start.pnl - gpu.pnl).abs() < 1e-4);
         assert!((cpu_f32_gpu_start.sharpe - gpu.sharpe).abs() < 2e-5);
         assert!((cpu_f32_gpu_start.max_dd - gpu.max_dd).abs() < 1e-5);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_exact_combo_device_regime_matches_host_regime_for_trend_quality() {
+        let candles = make_trending_candles_with_slope(4096, 0.10);
+        let strategy = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 34,
+            trend_quality_angle_min_deg: 2.0,
+            trend_quality_bbw_period: 20,
+            trend_quality_bbw_mult: 2.0,
+            trend_quality_bbw_min: 0.01,
+            trend_quality_roc_period: 9,
+            trend_quality_use_roc: true,
+            ..StrategyConfig::default()
+        };
+        let req = DoubleMaValidationRequest {
+            data_id: "trend-quality-device-regime-exact-combo".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 9,
+                slow_len: 30,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: strategy.clone(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 7,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let base_first_valid = first_finite_idx(close).expect("base first valid");
+        let plan = prepare_gpu_validation_plan(
+            &req,
+            &candles,
+            base_first_valid,
+            &req.candidates,
+            req.fast_ma_params.as_ref(),
+            req.slow_ma_params.as_ref(),
+            "trend-quality exact-combo parity",
+        )
+        .expect("prepared gpu validation plan");
+        let host_regime = plan
+            .regime_filter
+            .as_deref()
+            .expect("host regime filter for trend-quality");
+        let device_regime = plan
+            .device_regime_filter
+            .as_deref()
+            .expect("device regime filter for trend-quality");
+        let start = plan
+            .start_ts
+            .iter()
+            .copied()
+            .max()
+            .expect("candidate start");
+        let mid = start + (candles.close.len().saturating_sub(start) / 2);
+        let ranges = [(start, mid), (mid, candles.close.len())];
+        let cfg = crate::gpu_backtest_kernel::KernelConfig {
+            device_id: plan.device_id,
+            fast_alma_offset: plan.fast_alma_offset,
+            fast_alma_sigma: plan.fast_alma_sigma,
+            slow_alma_offset: plan.slow_alma_offset,
+            slow_alma_sigma: plan.slow_alma_sigma,
+            hurdle_tau: plan.first_strategy.hurdle_tau.unwrap_or(0.0),
+            include_trade_metrics: false,
+            metric_contract: None,
+        };
+
+        let host_metrics =
+            crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel_multi_range_with_periods_and_regime(
+                &candles,
+                &plan.combos,
+                &plan.fast_periods,
+                &plan.slow_periods,
+                &plan.fast_ma_type,
+                &plan.slow_ma_type,
+                &req.ma_source,
+                plan.first_fast_params.as_ref(),
+                plan.first_slow_params.as_ref(),
+                Some(crate::gpu_backtest_kernel::RegimeFilterInput::HostF64(
+                    host_regime,
+                )),
+                cfg,
+                &plan.first_strategy,
+                &ranges,
+            )
+            .expect("host-regime exact-combo metrics");
+        let device_metrics =
+            crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel_multi_range_with_periods_and_regime(
+                &candles,
+                &plan.combos,
+                &plan.fast_periods,
+                &plan.slow_periods,
+                &plan.fast_ma_type,
+                &plan.slow_ma_type,
+                &req.ma_source,
+                plan.first_fast_params.as_ref(),
+                plan.first_slow_params.as_ref(),
+                Some(crate::gpu_backtest_kernel::RegimeFilterInput::DeviceF32(
+                    device_regime,
+                )),
+                cfg,
+                &plan.first_strategy,
+                &ranges,
+            )
+            .expect("device-regime exact-combo metrics");
+
+        assert_eq!(host_metrics.len(), device_metrics.len());
+        for (host, device) in host_metrics.iter().zip(device_metrics.iter()) {
+            assert!(
+                (host.pnl - device.pnl).abs() < 1e-4,
+                "pnl mismatch host={} device={}",
+                host.pnl,
+                device.pnl
+            );
+            assert!(
+                (host.sharpe - device.sharpe).abs() < 5e-5,
+                "sharpe mismatch host={} device={}",
+                host.sharpe,
+                device.sharpe
+            );
+            assert!(
+                (host.max_dd - device.max_dd).abs() < 5e-5,
+                "max_dd mismatch host={} device={}",
+                host.max_dd,
+                device.max_dd
+            );
+            assert_eq!(host.trades, device.trades, "trade count mismatch");
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -7984,6 +8382,174 @@ mod tests {
             .unwrap_or_default()
             .contains("GpuHybridKernel"));
         let gpu_spa = gpu_res.spa.as_ref().expect("gpu spa");
+        assert_eq!(gpu_spa.slice_count, 8);
+        assert_eq!(gpu_spa.candidate_count, 2);
+        assert!(!gpu_spa.best_candidate_key.is_empty());
+        assert!(gpu_spa.best_candidate_mean_diff.is_finite());
+        assert!(gpu_spa.best_candidate_t_stat.is_finite());
+        assert!(gpu_spa.p_value.is_finite());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_cscv_smoke_vfct() {
+        let candles = make_breakout_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let strategy = crate::strategy_presets::vfct_strategy_for_kernel();
+        let cscv = Some(CscvPboConfig {
+            slices: 8,
+            max_combinations: 1000,
+            threshold: 0.0,
+        });
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-kernel-vfct-cscv".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: cscv,
+                spa: None,
+                seed: 5,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu kernel vfct cscv");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        let profile = gpu_res
+            .execution_profile
+            .as_ref()
+            .expect("gpu kernel vfct cscv execution profile");
+        assert_eq!(profile.evaluated_pairs_on_device, Some(2));
+        assert_eq!(profile.expansion_ratio, Some(1.0));
+        assert!(profile.gpu_range_eval_calls.unwrap_or(0) >= 1);
+        assert!(
+            profile.gpu_range_count.unwrap_or(0) > profile.gpu_range_eval_calls.unwrap_or(0),
+            "vfct CSCV should batch multiple slices through GPU ranged evaluation"
+        );
+        let gpu_cscv = gpu_res.cscv_pbo.as_ref().expect("gpu vfct cscv");
+        assert_eq!(gpu_cscv.slices, 8);
+        assert!(gpu_cscv.slice_bars > 0);
+        assert!(gpu_cscv.pbo.is_finite());
+        assert!(gpu_cscv.lambda_p50.is_finite());
+        for gpu in &gpu_res.candidates {
+            let gpu_st = gpu.cscv_pbo.as_ref().expect("gpu vfct candidate cscv");
+            assert!(gpu_st.is_selected_frac.is_finite());
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn double_ma_validation_gpu_kernel_spa_smoke_pit() {
+        let candles = make_breakout_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let strategy = crate::strategy_presets::pit_strategy_for_kernel();
+        let spa = Some(SpaConfigOptional {
+            slices: 8,
+            bootstrap_samples: 64,
+            block_length: 3,
+            benchmark: SpaBenchmarkKind::BuyAndHold,
+        });
+
+        let gpu_res = run_double_ma_validation_blocking_with_candles(
+            DoubleMaValidationRequest {
+                data_id: "gpu-kernel-pit-spa".to_string(),
+                backend: Backend::GpuKernel { device_id: 0 },
+                ma_source: "close".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                candidates: vec![
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 10,
+                        slow_len: 30,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                    DoubleMaValidationParams {
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "sma".to_string(),
+                        fast_len: 14,
+                        slow_len: 42,
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                        strategy: strategy.clone(),
+                        halftrend_filter: None,
+                    },
+                ],
+                walk_forward: None,
+                reopt_walk_forward: None,
+                perturb: None,
+                trade_bootstrap: None,
+                cross_ticker: None,
+                cscv_pbo: None,
+                spa,
+                seed: 7,
+                max_candidates: 32,
+                validation_engine: ValidationEngine::Vectorized,
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                min_cscv_oos_rank_frac: None,
+                min_cscv_oos_metric: None,
+                max_pbo: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu kernel pit spa");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        let gpu_spa = gpu_res.spa.as_ref().expect("gpu pit spa");
         assert_eq!(gpu_spa.slice_count, 8);
         assert_eq!(gpu_spa.candidate_count, 2);
         assert!(!gpu_spa.best_candidate_key.is_empty());

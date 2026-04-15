@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
 
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 
@@ -32,12 +34,27 @@ impl Default for IntrabarRule {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IterativeSimConfig {
+    /// Optional stop-loss override for the iterative simulator.
+    ///
+    /// The simulator normalizes non-finite, non-positive, and overly large
+    /// values silently through the same `clamp_pct` path used internally. When
+    /// this is `None`, the strategy-level stop-loss setting is used instead.
     #[serde(default)]
     pub stop_loss_pct: Option<f64>,
+    /// Optional take-profit override for the iterative simulator.
+    ///
+    /// The simulator normalizes non-finite, non-positive, and overly large
+    /// values silently through the same `clamp_pct` path used internally. When
+    /// this is `None`, the strategy-level take-profit setting is used instead.
     #[serde(default)]
     pub take_profit_pct: Option<f64>,
     #[serde(default)]
     pub intrabar_rule: IntrabarRule,
+    /// Extra transaction-cost multiplier applied from the current bar's
+    /// realized absolute log move (`lr[t].abs()`).
+    ///
+    /// This is same-bar slippage scaling, not a separate intrabar volatility
+    /// estimate.
     #[serde(default)]
     pub slippage_vol_mult: f64,
 }
@@ -76,12 +93,53 @@ impl IterativeMetricsDelta {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct OhlcSlice<'a> {
     pub open: &'a [f64],
     pub high: &'a [f64],
     pub low: &'a [f64],
     pub close: &'a [f64],
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IterativeSimError {
+    InsufficientBars {
+        len: usize,
+    },
+    LengthMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    InvalidStartIndex {
+        start_t: usize,
+        len: usize,
+    },
+}
+
+impl fmt::Display for IterativeSimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InsufficientBars { len } => {
+                write!(f, "iterative simulator requires at least 2 bars, got {len}")
+            }
+            Self::LengthMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "iterative simulator expected {field} length {expected}, got {actual}"
+            ),
+            Self::InvalidStartIndex { start_t, len } => write!(
+                f,
+                "iterative simulator start_t {start_t} must be less than input length {len}"
+            ),
+        }
+    }
+}
+
+impl Error for IterativeSimError {}
 
 fn clamp_pct(v: Option<f64>) -> Option<f64> {
     let x = v?;
@@ -252,7 +310,61 @@ fn overlay_on_trade_close(state: &mut ExecutionOverlayState, params: &ExecutionO
     }
 }
 
-pub fn simulate_iterative_from_signals(
+fn validate_iterative_inputs(
+    lr: &[f64],
+    ohlc: OhlcSlice<'_>,
+    desired_pos: &[i32],
+    start_t: usize,
+) -> Result<(), IterativeSimError> {
+    let n_total = lr.len();
+    if n_total < 2 {
+        return Err(IterativeSimError::InsufficientBars { len: n_total });
+    }
+    if desired_pos.len() != n_total {
+        return Err(IterativeSimError::LengthMismatch {
+            field: "desired_pos",
+            expected: n_total,
+            actual: desired_pos.len(),
+        });
+    }
+    if ohlc.open.len() != n_total {
+        return Err(IterativeSimError::LengthMismatch {
+            field: "open",
+            expected: n_total,
+            actual: ohlc.open.len(),
+        });
+    }
+    if ohlc.high.len() != n_total {
+        return Err(IterativeSimError::LengthMismatch {
+            field: "high",
+            expected: n_total,
+            actual: ohlc.high.len(),
+        });
+    }
+    if ohlc.low.len() != n_total {
+        return Err(IterativeSimError::LengthMismatch {
+            field: "low",
+            expected: n_total,
+            actual: ohlc.low.len(),
+        });
+    }
+    if ohlc.close.len() != n_total {
+        return Err(IterativeSimError::LengthMismatch {
+            field: "close",
+            expected: n_total,
+            actual: ohlc.close.len(),
+        });
+    }
+    if start_t >= n_total {
+        return Err(IterativeSimError::InvalidStartIndex {
+            start_t,
+            len: n_total,
+        });
+    }
+    Ok(())
+}
+
+fn simulate_iterative_from_signals_inner(
     lr: &[f64],
     ohlc: OhlcSlice<'_>,
     desired_pos: &[i32],
@@ -261,16 +373,13 @@ pub fn simulate_iterative_from_signals(
     sim: &IterativeSimConfig,
 ) -> Metrics {
     let n_total = lr.len();
-    if n_total < 2
-        || desired_pos.len() != n_total
-        || ohlc.open.len() != n_total
-        || ohlc.high.len() != n_total
-        || ohlc.low.len() != n_total
-        || ohlc.close.len() != n_total
-        || start_t >= n_total
-    {
-        return Metrics::default();
-    }
+    debug_assert!(n_total >= 2);
+    debug_assert_eq!(desired_pos.len(), n_total);
+    debug_assert_eq!(ohlc.open.len(), n_total);
+    debug_assert_eq!(ohlc.high.len(), n_total);
+    debug_assert_eq!(ohlc.low.len(), n_total);
+    debug_assert_eq!(ohlc.close.len(), n_total);
+    debug_assert!(start_t < n_total);
 
     let stop_loss_pct = sim.stop_loss_pct.or(cfg.stop_loss_pct());
     let take_profit_pct = sim.take_profit_pct.or(cfg.take_profit_pct());
@@ -414,6 +523,9 @@ pub fn simulate_iterative_from_signals(
             sum_pos_r += step_r;
         }
 
+        // Exposure is derived from the end-of-bar position state after this
+        // loop accounts for fills and cooldown-driven exits. It is not an
+        // intrabar fractional exposure model.
         sum_abs_pos += (pos as i64).abs();
         sum_pos += pos as i64;
     }
@@ -514,6 +626,50 @@ pub fn simulate_iterative_from_signals(
     }
 }
 
+/// Simulates the iterative validation path and returns an explicit input error
+/// instead of silently falling back to [`Metrics::default`].
+///
+/// Semantics pinned by this entrypoint:
+/// - stop-loss / take-profit inputs are normalized silently via `clamp_pct`
+/// - `slippage_vol_mult` is applied from the current bar's realized absolute
+///   log move (`lr[t].abs()`)
+/// - exposure and net exposure are derived from end-of-bar loop state
+///   accounting, not an intrabar fractional exposure model
+pub fn try_simulate_iterative_from_signals(
+    lr: &[f64],
+    ohlc: OhlcSlice<'_>,
+    desired_pos: &[i32],
+    start_t: usize,
+    cfg: &StrategyConfig,
+    sim: &IterativeSimConfig,
+) -> Result<Metrics, IterativeSimError> {
+    validate_iterative_inputs(lr, ohlc, desired_pos, start_t)?;
+    Ok(simulate_iterative_from_signals_inner(
+        lr,
+        ohlc,
+        desired_pos,
+        start_t,
+        cfg,
+        sim,
+    ))
+}
+
+/// Compatibility wrapper around [`try_simulate_iterative_from_signals`].
+///
+/// This preserves the historical behavior of returning [`Metrics::default`]
+/// when the input slices are malformed or `start_t` is out of range.
+pub fn simulate_iterative_from_signals(
+    lr: &[f64],
+    ohlc: OhlcSlice<'_>,
+    desired_pos: &[i32],
+    start_t: usize,
+    cfg: &StrategyConfig,
+    sim: &IterativeSimConfig,
+) -> Metrics {
+    try_simulate_iterative_from_signals(lr, ohlc, desired_pos, start_t, cfg, sim)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +750,136 @@ mod tests {
         let m_base = simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg_base, &sim);
         let m_stop = simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg_stop, &sim);
         assert!(m_stop.trades > m_base.trades);
+    }
+
+    #[test]
+    fn try_iterative_returns_error_for_invalid_input_and_wrapper_stays_compatible() {
+        let lr = vec![0.0, 0.0, 0.0];
+        let desired = vec![1, 1];
+        let ohlc = make_flat_ohlc(3);
+        let cfg = StrategyConfig::default();
+        let sim = IterativeSimConfig::default();
+
+        let err = try_simulate_iterative_from_signals(&lr, ohlc, &desired, 1, &cfg, &sim)
+            .expect_err("length mismatch should be surfaced by the fallible API");
+        assert_eq!(
+            err,
+            IterativeSimError::LengthMismatch {
+                field: "desired_pos",
+                expected: 3,
+                actual: 2,
+            }
+        );
+
+        let wrapper =
+            simulate_iterative_from_signals(&lr, make_flat_ohlc(3), &desired, 1, &cfg, &sim);
+        assert_eq!(wrapper.pnl, 0.0);
+        assert_eq!(wrapper.trades, 0);
+        assert_eq!(wrapper.exposure, 0.0);
+        assert_eq!(wrapper.net_exposure, 0.0);
+    }
+
+    #[test]
+    fn iterative_intrabar_rules_change_same_bar_stop_take_resolution() {
+        let n = 4usize;
+        let lr = vec![0.0; n];
+        let sig = vec![0, 1, 0, 0];
+        let open = Box::leak(vec![100.0; n].into_boxed_slice());
+        let high = Box::leak(vec![100.0, 102.0, 100.0, 100.0].into_boxed_slice());
+        let low = Box::leak(vec![100.0, 98.0, 100.0, 100.0].into_boxed_slice());
+        let close = Box::leak(vec![100.0; n].into_boxed_slice());
+        let make_ohlc = || OhlcSlice {
+            open,
+            high,
+            low,
+            close,
+        };
+
+        let cfg = StrategyConfig::default();
+        let stop_first = IterativeSimConfig {
+            stop_loss_pct: Some(0.01),
+            take_profit_pct: Some(0.01),
+            intrabar_rule: IntrabarRule::StopFirst,
+            slippage_vol_mult: 0.0,
+        };
+        let take_first = IterativeSimConfig {
+            intrabar_rule: IntrabarRule::TakeFirst,
+            ..stop_first.clone()
+        };
+
+        let stop_metrics =
+            simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg, &stop_first);
+        let take_metrics =
+            simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg, &take_first);
+
+        assert!(stop_metrics.pnl < 0.0);
+        assert!(take_metrics.pnl > 0.0);
+        assert!(take_metrics.pnl > stop_metrics.pnl);
+    }
+
+    #[test]
+    fn iterative_cooldown_blocks_immediate_reentry_after_stop_exit() {
+        let n = 5usize;
+        let lr = vec![0.0; n];
+        let sig = vec![0, 1, 1, 1, 1];
+        let open = Box::leak(vec![100.0; n].into_boxed_slice());
+        let high = Box::leak(vec![100.0; n].into_boxed_slice());
+        let low = Box::leak(vec![100.0, 98.0, 98.0, 98.0, 98.0].into_boxed_slice());
+        let close = Box::leak(vec![100.0; n].into_boxed_slice());
+        let make_ohlc = || OhlcSlice {
+            open,
+            high,
+            low,
+            close,
+        };
+
+        let mut cfg_no_cooldown = StrategyConfig::default();
+        cfg_no_cooldown.stop_loss_pct = Some(0.01);
+
+        let mut cfg_with_cooldown = cfg_no_cooldown.clone();
+        cfg_with_cooldown.cooldown_bars = 2;
+
+        let sim = IterativeSimConfig::default();
+        let no_cooldown =
+            simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg_no_cooldown, &sim);
+        let with_cooldown =
+            simulate_iterative_from_signals(&lr, make_ohlc(), &sig, 1, &cfg_with_cooldown, &sim);
+
+        assert_eq!(no_cooldown.trades, 8);
+        assert_eq!(with_cooldown.trades, 4);
+        assert!(with_cooldown.trades < no_cooldown.trades);
+    }
+
+    #[test]
+    fn iterative_exposure_counts_end_of_bar_state_after_same_bar_stop_exit() {
+        let n = 5usize;
+        let lr = vec![0.0; n];
+        let sig = vec![0, 1, 1, 1, 1];
+        let open = Box::leak(vec![100.0; n].into_boxed_slice());
+        let high = Box::leak(vec![100.0; n].into_boxed_slice());
+        let low = Box::leak(vec![100.0, 98.0, 98.0, 98.0, 98.0].into_boxed_slice());
+        let close = Box::leak(vec![100.0; n].into_boxed_slice());
+        let cfg = StrategyConfig {
+            stop_loss_pct: Some(0.01),
+            ..StrategyConfig::default()
+        };
+        let sim = IterativeSimConfig::default();
+
+        let metrics = simulate_iterative_from_signals(
+            &lr,
+            OhlcSlice {
+                open,
+                high,
+                low,
+                close,
+            },
+            &sig,
+            1,
+            &cfg,
+            &sim,
+        );
+
+        assert_eq!(metrics.exposure, 0.0);
+        assert_eq!(metrics.net_exposure, 0.0);
     }
 }

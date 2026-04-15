@@ -1,0 +1,19 @@
+Tier: Tier 1
+Tier rationale: previous targeted or custom high-risk third-pass file
+Source file: crates/app_core/src/cuda_device.rs
+Third-pass bucket: Small surgical refactor
+Second-pass bucket: Small surgical refactor
+
+Primary files:
+- source__crates__app_core__src__cuda_device.rs <= crates/app_core/src/cuda_device.rs
+- review__third_pass.md <= Repo Review/backend-file-reviews-third-pass/crates/app_core/src/cuda_device.rs.review.md
+- review__second_pass.md <= Repo Review/backend-file-reviews-second-pass/crates/app_core/src/cuda_device.rs.review.md
+- review__first_pass.md <= Repo Review/backend-file-reviews/crates/app_core/src/cuda_device.rs.review.md
+
+Repo guidance:
+- context__AGENTS.md <= AGENTS.md
+- context__REPO_MAP.md <= REPO_MAP.md
+
+Additional context files:
+- context__01__crates__app_core__src__lib.rs <= crates/app_core/src/lib.rs
+- context__02__crates__app_core__src__gpu_backtest_kernel.rs <= crates/app_core/src/gpu_backtest_kernel.rs

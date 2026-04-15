@@ -126,21 +126,11 @@ impl Backend {
         self,
         preferred_device_id: Result<Option<u32>, String>,
     ) -> Result<Self, String> {
-        let preferred_device_id = preferred_device_id?;
         Ok(match self {
             Self::Auto { .. } => Self::Auto {
-                device_id: preferred_device_id.unwrap_or(0),
+                device_id: preferred_device_id?.unwrap_or(0),
             },
-            Self::CpuOnly => Self::CpuOnly,
-            Self::GpuOnly { .. } => Self::GpuOnly {
-                device_id: preferred_device_id.unwrap_or(0),
-            },
-            Self::GpuHybridKernel { .. } => Self::GpuHybridKernel {
-                device_id: preferred_device_id.unwrap_or(0),
-            },
-            Self::GpuKernel { .. } => Self::GpuKernel {
-                device_id: preferred_device_id.unwrap_or(0),
-            },
+            explicit => explicit,
         })
     }
 
@@ -318,6 +308,11 @@ pub struct DoubleMaRequest {
     pub dynamic_strategy_ir: Option<crate::strategy_ir::StrategyIr>,
     #[serde(default)]
     pub gpu_execution: GpuExecutionPolicy,
+    /// Enables a process-local, best-effort follow-up hint for later drilldown
+    /// or local-stability requests in the same process.
+    ///
+    /// This does not persist artifacts to disk and callers must remain correct
+    /// when the hint is absent, stale, or rejected by follow-up validation.
     #[serde(default)]
     pub persist_followup_cache: bool,
     #[serde(default)]
@@ -454,12 +449,22 @@ pub struct DoubleMaDrilldownRequest {
     pub data_id: String,
     #[serde(default, alias = "backend")]
     pub backend_hint: Option<Backend>,
+    /// Optional process-local token returned by optimization for best-effort
+    /// reuse of in-memory follow-up preparation in the same process.
+    ///
+    /// This is not stable across process boundaries or durable storage. The
+    /// follow-up path revalidates the token against the live request contract
+    /// before attempting reuse.
     #[serde(default)]
     pub followup_cache_key: Option<String>,
     pub params: DoubleMaParamsResolved,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
+    /// Explicit follow-up overrides for the fast MA. When absent, the nested
+    /// `params.fast_ma_params` value remains the source of truth.
     pub fast_ma_params: Option<HashMap<String, f64>>,
+    /// Explicit follow-up overrides for the slow MA. When absent, the nested
+    /// `params.slow_ma_params` value remains the source of truth.
     pub slow_ma_params: Option<HashMap<String, f64>>,
     #[serde(default)]
     pub strategy: StrategyConfig,
@@ -472,12 +477,22 @@ pub struct DoubleMaLocalStabilityRequest {
     pub data_id: String,
     #[serde(default, alias = "backend")]
     pub backend_hint: Option<Backend>,
+    /// Optional process-local token returned by optimization for best-effort
+    /// reuse of in-memory follow-up preparation in the same process.
+    ///
+    /// This is not stable across process boundaries or durable storage. The
+    /// follow-up path revalidates the token against the live request contract
+    /// before attempting reuse.
     #[serde(default)]
     pub followup_cache_key: Option<String>,
     pub params: DoubleMaParamsResolved,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
+    /// Explicit follow-up overrides for the fast MA. When absent, the nested
+    /// `params.fast_ma_params` value remains the source of truth.
     pub fast_ma_params: Option<HashMap<String, f64>>,
+    /// Explicit follow-up overrides for the slow MA. When absent, the nested
+    /// `params.slow_ma_params` value remains the source of truth.
     pub slow_ma_params: Option<HashMap<String, f64>>,
     #[serde(default)]
     pub strategy: StrategyConfig,
@@ -626,6 +641,11 @@ pub struct BackendOptimizationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub residency: Option<GpuResidencySummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional process-local token that follow-up requests may pass back for
+    /// best-effort in-memory reuse during the same process lifetime.
+    ///
+    /// The token is not a durable artifact identifier and is validated against
+    /// the live follow-up request contract before reuse.
     pub followup_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnosticsResolved>,
@@ -633,6 +653,20 @@ pub struct BackendOptimizationResult {
     pub score_observation_context: Option<PairObservationScoreContextResolved>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metric_surface_kind: Option<String>,
+}
+
+fn resolve_followup_ma_params<'a>(
+    top_level: Option<&'a HashMap<String, f64>>,
+    nested: Option<&'a HashMap<String, f64>>,
+) -> Option<&'a HashMap<String, f64>> {
+    top_level.or(nested)
+}
+
+fn resolve_followup_ma_params_owned(
+    top_level: Option<HashMap<String, f64>>,
+    nested: Option<HashMap<String, f64>>,
+) -> Option<HashMap<String, f64>> {
+    top_level.or(nested)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -4526,6 +4560,14 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         .as_ref()
         .and_then(|entry| entry.backend_hint.clone());
     let followup_backend = req.backend_hint.clone().or(cached_backend_hint);
+    let fast_ma_params = resolve_followup_ma_params(
+        req.fast_ma_params.as_ref(),
+        req.params.fast_ma_params.as_ref(),
+    );
+    let slow_ma_params = resolve_followup_ma_params(
+        req.slow_ma_params.as_ref(),
+        req.params.slow_ma_params.as_ref(),
+    );
 
     let (halftrend_trend, kaufman_stops, first_valid, lr) = if let Some(entry) = cached_followup {
         (
@@ -4589,9 +4631,9 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
     }
 
     let (fast_alma_offset, fast_alma_sigma) =
-        resolve_alma_params_for_side("fast", &fast_ma, req.fast_ma_params.as_ref())?;
+        resolve_alma_params_for_side("fast", &fast_ma, fast_ma_params)?;
     let (slow_alma_offset, slow_alma_sigma) =
-        resolve_alma_params_for_side("slow", &slow_ma, req.slow_ma_params.as_ref())?;
+        resolve_alma_params_for_side("slow", &slow_ma, slow_ma_params)?;
 
     let followup_prices_f32 = match followup_backend.as_ref() {
         Some(Backend::CpuOnly) | None => None,
@@ -4608,7 +4650,7 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         &fast_ma,
         &req.ma_source,
         &fast_periods,
-        req.fast_ma_params.as_ref(),
+        fast_ma_params,
         fast_alma_offset,
         fast_alma_sigma,
         followup_backend.as_ref(),
@@ -4624,7 +4666,7 @@ pub fn compute_double_ma_drilldown_blocking_with_candles(
         &slow_ma,
         &req.ma_source,
         &slow_periods,
-        req.slow_ma_params.as_ref(),
+        slow_ma_params,
         slow_alma_offset,
         slow_alma_sigma,
         followup_backend.as_ref(),
@@ -4701,6 +4743,14 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
         .as_ref()
         .and_then(|entry| entry.backend_hint.clone());
     let followup_backend = req.backend_hint.clone().or(cached_backend_hint);
+    let fast_ma_params = resolve_followup_ma_params(
+        req.fast_ma_params.as_ref(),
+        req.params.fast_ma_params.as_ref(),
+    );
+    let slow_ma_params = resolve_followup_ma_params(
+        req.slow_ma_params.as_ref(),
+        req.params.slow_ma_params.as_ref(),
+    );
 
     let (halftrend_trend, kaufman_stops, first_valid, lr) = if let Some(entry) = cached_followup {
         (
@@ -4795,9 +4845,9 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
     }
 
     let (fast_alma_offset, fast_alma_sigma) =
-        resolve_alma_params_for_side("fast", &fast_ma, req.fast_ma_params.as_ref())?;
+        resolve_alma_params_for_side("fast", &fast_ma, fast_ma_params)?;
     let (slow_alma_offset, slow_alma_sigma) =
-        resolve_alma_params_for_side("slow", &slow_ma, req.slow_ma_params.as_ref())?;
+        resolve_alma_params_for_side("slow", &slow_ma, slow_ma_params)?;
 
     let followup_prices_f32 = match followup_backend.as_ref() {
         Some(Backend::CpuOnly) | None => None,
@@ -4813,7 +4863,7 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
         &fast_ma,
         &req.ma_source,
         &fast_periods,
-        req.fast_ma_params.as_ref(),
+        fast_ma_params,
         fast_alma_offset,
         fast_alma_sigma,
         followup_backend.as_ref(),
@@ -4827,7 +4877,7 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
         &slow_ma,
         &req.ma_source,
         &slow_periods,
-        req.slow_ma_params.as_ref(),
+        slow_ma_params,
         slow_alma_offset,
         slow_alma_sigma,
         followup_backend.as_ref(),
@@ -4905,8 +4955,14 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
             slow_len: base_slow,
             fast_ma_type: req.params.fast_ma_type,
             slow_ma_type: req.params.slow_ma_type,
-            fast_ma_params: req.fast_ma_params,
-            slow_ma_params: req.slow_ma_params,
+            fast_ma_params: resolve_followup_ma_params_owned(
+                req.fast_ma_params,
+                req.params.fast_ma_params,
+            ),
+            slow_ma_params: resolve_followup_ma_params_owned(
+                req.slow_ma_params,
+                req.params.slow_ma_params,
+            ),
         },
         objective,
         radius,
@@ -14743,10 +14799,51 @@ mod tests {
 
     #[test]
     fn preferred_cuda_device_resolution_error_is_not_masked() {
-        let err = Backend::GpuKernel { device_id: 0 }
+        let err = Backend::Auto { device_id: 0 }
             .with_resolved_preferred_cuda_device(Err("boom".to_string()))
             .expect_err("preferred-device error should propagate");
         assert!(err.contains("boom"));
+    }
+
+    #[test]
+    fn safe_now_explicit_gpu_device_ids_survive_preferred_device_normalization() {
+        let kernel = Backend::GpuKernel { device_id: 7 }
+            .with_resolved_preferred_cuda_device(Ok(Some(3)))
+            .expect("gpu kernel normalization");
+        assert!(matches!(kernel, Backend::GpuKernel { device_id: 7 }));
+
+        let hybrid = Backend::GpuHybridKernel { device_id: 11 }
+            .with_resolved_preferred_cuda_device(Err("ignored".to_string()))
+            .expect("gpu hybrid explicit device should not need preferred lookup");
+        assert!(matches!(hybrid, Backend::GpuHybridKernel { device_id: 11 }));
+
+        let gpu_only = Backend::GpuOnly { device_id: 5 }
+            .with_resolved_preferred_cuda_device(Ok(Some(9)))
+            .expect("gpu-only normalization");
+        assert!(matches!(gpu_only, Backend::GpuOnly { device_id: 5 }));
+    }
+
+    #[test]
+    fn safe_now_followup_ma_params_prefer_top_level_and_fall_back_to_nested() {
+        let top_level = HashMap::from([(String::from("offset"), 0.85)]);
+        let nested = HashMap::from([(String::from("offset"), 0.25)]);
+
+        let preferred =
+            resolve_followup_ma_params(Some(&top_level), Some(&nested)).expect("preferred params");
+        assert_eq!(preferred.get("offset"), Some(&0.85));
+
+        let fallback =
+            resolve_followup_ma_params(None, Some(&nested)).expect("fallback nested params");
+        assert_eq!(fallback.get("offset"), Some(&0.25));
+
+        let preferred_owned =
+            resolve_followup_ma_params_owned(Some(top_level.clone()), Some(nested.clone()))
+                .expect("preferred owned params");
+        assert_eq!(preferred_owned.get("offset"), Some(&0.85));
+
+        let fallback_owned =
+            resolve_followup_ma_params_owned(None, Some(nested)).expect("fallback owned params");
+        assert_eq!(fallback_owned.get("offset"), Some(&0.25));
     }
 
     #[test]

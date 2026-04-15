@@ -1,0 +1,20 @@
+Tier: Tier 3
+Tier rationale: low-yield thin wrapper, re-export, or support seam
+Source file: src-tauri/src/polygon.rs
+Third-pass bucket: Small surgical refactor
+Second-pass bucket: Small surgical refactor
+
+Primary files:
+- source__src-tauri__src__polygon.rs <= src-tauri/src/polygon.rs
+- review__third_pass.md <= Repo Review/backend-file-reviews-third-pass/src-tauri/src/polygon.rs.review.md
+- review__second_pass.md <= Repo Review/backend-file-reviews-second-pass/src-tauri/src/polygon.rs.review.md
+- review__first_pass.md <= Repo Review/backend-file-reviews/src-tauri/src/polygon.rs.review.md
+
+Repo guidance:
+- context__AGENTS.md <= AGENTS.md
+- context__REPO_MAP.md <= REPO_MAP.md
+
+Additional context files:
+- context__01__src-tauri__src__lib.rs <= src-tauri/src/lib.rs
+- context__02__src-tauri__src__commands.rs <= src-tauri/src/commands.rs
+- context__03__src-tauri__src__state.rs <= src-tauri/src/state.rs

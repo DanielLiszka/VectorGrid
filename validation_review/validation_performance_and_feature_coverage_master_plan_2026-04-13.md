@@ -116,14 +116,28 @@ Current landed slices in this program:
   - targeted regression coverage now locks that fallback policy, and a small TrendQuality uploaded-regime/device-parity test tightens the boundary between host regime construction and the remaining kernel-side bug
 - routed and composite-family coverage truth
   - routed `DoubleMa` profiles already inherit the full `DoubleMa` validation stack on the current repo surface; remaining differences are route-policy exceptions rather than missing module support
+  - `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, and `Vfct` also inherit the full `DoubleMa` validation stack on the current repo surface; their remaining caveats are generic DoubleMa route limits plus candle-field or product-surface restrictions, not missing validation modules
+  - targeted `GpuKernel` validation smoke now covers the highest-caveat inherited profiles too: `Vfct` on CSCV/PBO and `Pit` on SPA both have passing direct tests in `double_ma_validate.rs`
   - Cluster B has broader module coverage than the first draft implied, but still keeps real parity gaps in composite `cross_ticker` scope and composite-vs-`DoubleMa` aux analytics breadth
-- Cluster B helper-parity prep
-  - the dedicated `Cdmc` GPU walk-forward helper now preserves downside/ulcer/martin metrics instead of zero-filling them, and a helper-direct regression test locks that behavior before any future dispatch change
+- composite family coverage truth
+  - `CompositeCpu` and `CompositeMo` are both broader on CPU-side validation coverage than the first draft implied; the real remaining parity gaps are still partial composite `cross_ticker`, narrower aux analytics, and a narrow plain-base GPU eligibility contract
+- Cluster A perturb parity hardening
+  - `Asr` and `Vemr` now route GPU perturb validation through the exact-series metric path in the shared helper instead of trusting raw fixed-candidate GPU metrics on that module
+  - targeted regression tests now lock `GpuKernel` perturb parity for both strategies
+- `MlSignal` coverage and timing truth
+  - the canonical `MlSignal` validation boundary is score-cache-backed iterative replay in `run_ml_signal_validation_blocking_with_candles(...)`; policy sweep remains a separate timing surface in `run_ml_signal_policy_sweep_blocking_with_candles(...)`
+  - current `MlSignal` support is fixed-candidate replay plus PSR/DSR hard gates, robust score / Pareto, run verdict, and score-cache coverage metadata; walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, trade bootstrap, cross-ticker, and the normal `DoubleMa` aux-validation stack do not currently map
+- Cluster B active-route parity hardening
+  - `Carm` and `Cdmc` fixed-candidate `GpuKernel` walk-forward now evaluate each window from the exact desired-position series instead of trusting raw per-window GPU metrics
+  - helper-direct drawdown-risk coverage plus route-level Carm/Cdmc CPU-match tests now lock that parity on the active route
+  - Carm/Cdmc `GpuKernel` reopt walk-forward remains parity-safe on the shipped route through the generic exact-series reducer rather than direct family-specific helper dispatch
 
 Important non-landed findings from the same audit:
 
 - the remaining TrendQuality ADX-off `GpuKernel` parity issue sits below the validation reducers in the exact-combo GPU regime path; the shipped CPU fallback is the safe mitigation, but the underlying kernel-side repair still needs a narrower follow-up slice
-- `Carm` and `Cdmc` already have dedicated GPU walk-forward/reopt helpers, but direct dispatch to those helpers does not currently satisfy the existing CPU-match tolerances in the current regression tests. Those routes remain deferred parity work rather than safe drop-in replacements.
+- there is no remaining active-route Carm/Cdmc parity blocker after the exact desired-series walk-forward repair; any future direct family-specific reopt-helper dispatch is now optional perf work rather than a required correctness fix
+- current `composite_validation_workflow` evidence on the shared 50k/8 `wf_reopt_cscv_spa` surface now shows `Carm` materially cheaper than `Cdmc` on both CPU and `GpuKernel`, so future Cluster B perf prioritization should not assume `Cdmc` leads simply because its route policy is more GPU-favorable
+- the repaired Criterion harness now gets far enough to expose a separate `Mkcs` 100k/32 `GpuKernel` illegal-memory-access/fallback issue during the later GPU workflow benches; targeted Mkcs validation tests still pass, so that remains a long-benchmark/runtime follow-up rather than a broad validation-parity blocker
 - composite `cross_ticker` remains partial relative to the `DoubleMa` baseline even though it is broader than the first draft implied; preserved-finalists reruns keep CSCV/PBO and hard gates, but they do not yet rerun the full walk-forward/reopt/SPA/perturb/bootstrap stack.
 - composite-family aux analytics remain narrower than the `DoubleMa` baseline. Current composite candidates expose `regime_slice_robustness` and `friction_stress`, but not `entry_margin_fragility`, `underwater_duration`, `checkpoint_robustness`, or `benchmark_slice_summary`.
 
@@ -353,10 +367,10 @@ This implementation program should leave behind these concrete artifacts:
 
 - [x] Create a repo-wide validation performance and coverage master plan.
 - [x] Create a companion execution tracker.
-- [ ] Fill the tracker with file-backed module coverage notes for every strategy bucket.
-- [ ] Record the canonical timing surface for each strategy bucket.
-- [ ] Identify any bucket that lacks a trustworthy timing surface and needs one added.
-- [ ] Add a parity-to-`DoubleMa` assessment for every non-`DoubleMa` strategy bucket.
+- [x] Fill the tracker with file-backed module coverage notes for every strategy bucket.
+- [x] Record the canonical timing surface for each strategy bucket.
+- [x] Identify any bucket that lacks a trustworthy timing surface and needs one added.
+- [x] Add a parity-to-`DoubleMa` assessment for every non-`DoubleMa` strategy bucket.
 
 ### Double-MA anchor work
 
@@ -381,11 +395,11 @@ This implementation program should leave behind these concrete artifacts:
 
 ### Strategy-family work
 
-- [ ] Audit `CompositeCpu` validation coverage and fallback rules.
-- [ ] Audit `CompositeMo` validation posture and document intentional CPU-preferred limits.
-- [ ] Audit Cluster A one strategy at a time: `Asr`, `Vcc`, `Vemr`, `Rocb`, `Vcet`.
-- [ ] Audit Cluster B one strategy at a time: `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, `Cdmc`.
-- [ ] Audit `MlSignal` on its own timing boundary and coverage checklist.
+- [x] Audit `CompositeCpu` validation coverage and fallback rules.
+- [x] Audit `CompositeMo` validation posture and document intentional CPU-preferred limits.
+- [x] Audit Cluster A one strategy at a time: `Asr`, `Vcc`, `Vemr`, `Rocb`, `Vcet`.
+- [x] Audit Cluster B one strategy at a time: `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, `Cdmc`.
+- [x] Audit `MlSignal` on its own timing boundary and coverage checklist.
 - [ ] For every non-`DoubleMa` strategy, decide explicitly whether each missing module is:
   - parity work to implement
   - parity work to defer
@@ -438,14 +452,14 @@ Implementation detail:
 Phase 0 checklist:
 
 - [x] Audit the `DoubleMa` family against `double_ma_validate.rs` and current tests.
-- [ ] Audit `CompositeCpu` and `CompositeMo` against `composite_validate.rs` and route notes in `REPO_MAP.md`.
-- [ ] Audit Cluster A strategies against `composite_validate.rs` and strategy-local tests.
+- [x] Audit `CompositeCpu` and `CompositeMo` against `composite_validate.rs` and route notes in `REPO_MAP.md`.
+- [x] Audit Cluster A strategies against `composite_validate.rs` and strategy-local tests.
 - [x] Audit Cluster B strategies against `composite_validate.rs` and strategy-local tests.
-- [ ] Audit `MlSignal` timing and validation ownership separately from the fixed-candidate families.
-- [ ] Mark every bucket in the tracker with a file-backed coverage posture.
-- [ ] Mark every bucket with its canonical timing authority.
-- [ ] Mark every non-`DoubleMa` bucket with a parity target relative to the `DoubleMa` baseline.
-- [ ] Record explicit exception reasons for any module that is unlikely to reach parity.
+- [x] Audit `MlSignal` timing and validation ownership separately from the fixed-candidate families.
+- [x] Mark every bucket in the tracker with a file-backed coverage posture.
+- [x] Mark every bucket with its canonical timing authority.
+- [x] Mark every non-`DoubleMa` bucket with a parity target relative to the `DoubleMa` baseline.
+- [x] Record explicit exception reasons for any module that is unlikely to reach parity.
 
 ### Phase 1. Residual Double-MA Validation Pass
 
@@ -572,7 +586,7 @@ Phase 4 checklist:
 - [x] Confirm module support and route truth for `CompositeTrend`.
 - [x] Confirm module support and route truth for `RegimeHybrid`.
 - [x] Confirm module support and route truth for `BreakoutMomentum`.
-- [ ] Confirm inherited-module support for `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, and `Vfct`.
+- [x] Confirm inherited-module support for `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, and `Vfct`.
 - [x] Update the tracker posture for every routed or double-like profile audited.
 - [x] For every routed or double-like profile, record which remaining module gaps are true parity work versus documented exceptions.
 
@@ -594,12 +608,12 @@ Implementation detail:
 
 Phase 5 checklist:
 
-- [ ] Confirm current `CompositeCpu` module coverage.
-- [ ] Confirm current `CompositeCpu` GPU fallback blockers.
-- [ ] Confirm current `CompositeMo` validation modules and route policy.
-- [ ] Decide whether any current `CompositeMo` limits are implementation gaps or deliberate posture.
+- [x] Confirm current `CompositeCpu` module coverage.
+- [x] Confirm current `CompositeCpu` GPU fallback blockers.
+- [x] Confirm current `CompositeMo` validation modules and route policy.
+- [x] Decide whether current `CompositeMo` limits are primarily route posture / candidate-shape constraints rather than missing validation modules.
 - [ ] Add timing evidence if the current composite bench is too coarse to justify policy decisions.
-- [ ] Record the `DoubleMa` parity gap list for both `CompositeCpu` and `CompositeMo`.
+- [x] Record the `DoubleMa` parity gap list for both `CompositeCpu` and `CompositeMo`.
 
 ### Phase 6. Standalone Cluster A
 
@@ -647,7 +661,7 @@ Objectives:
 
 Implementation detail:
 
-- Cluster B should likely start with `Cdmc` because current repo notes already say it is more GPU-favorable than `Carm`
+- Cluster B no longer defaults to `Cdmc` as the first perf candidate: current `composite_validation_workflow` evidence on the 50k/8 `wf_reopt_cscv_spa` surface measures `Carm` materially faster than `Cdmc` even though `Cdmc` still keeps the more GPU-favorable route policy
 - keep the default assumption conservative:
   - if a strategy remains CPU-preferred on evidence, say so explicitly
   - do not force GPU parity work simply to make the support matrix look more uniform
@@ -656,7 +670,7 @@ Phase 7 checklist:
 
 - [x] `Mkcs`: audit current route posture and module coverage.
 - [x] `Kqsr`: audit OHLC-driven staging cost and module coverage.
-- [ ] `Carm`: compare mixed-route cost against `Cdmc`.
+- [x] `Carm`: compare mixed-route cost against `Cdmc`.
 - [x] `Kvdf`: audit HLCV staging cost, route blockers, and module support.
 - [x] `Cdmc`: evaluate as the first likely Cluster B implementation candidate.
 - [x] For each Cluster B strategy, record the module-by-module parity gap relative to `DoubleMa`.
@@ -679,11 +693,11 @@ Implementation detail:
 
 Phase 8 checklist:
 
-- [ ] Define the canonical `MlSignal` validation timing boundary.
-- [ ] Audit existing module or flow coverage for `MlSignal`.
+- [x] Define the canonical `MlSignal` validation timing boundary.
+- [x] Audit existing module or flow coverage for `MlSignal`.
 - [ ] Identify whether current pain is validation engine cost, replay cost, or policy-sweep overhead.
 - [ ] Add timing or telemetry only where the current evidence is too coarse.
-- [ ] Decide explicitly which `DoubleMa` baseline modules meaningfully map to `MlSignal` and which do not.
+- [x] Decide explicitly which `DoubleMa` baseline modules meaningfully map to `MlSignal` and which do not.
 
 ### Phase 9. Closeout And Governance Sync
 
@@ -754,5 +768,5 @@ Broader verification when risk is higher:
 Finish Phase 0 inventory and keep the companion tracker aligned to the code that already shipped. The next implementation slice should be chosen from the highest-value open runtime truths that remain on current evidence:
 
 - the exact-combo `DoubleMa` TrendQuality ADX-off GPU parity repair behind the new CPU fallback
-- `Carm`/`Cdmc` helper-route parity before any direct helper dispatch change
+- fresh Cluster B timing after the active-route Carm/Cdmc parity repair, including whether dedicated reopt-helper dispatch is worth reopening
 - or another shared validation-core hotspot if fresh timing shows the bottleneck has moved back out of the strategy-local paths

@@ -1,0 +1,2879 @@
+   1:import { resolveRuntimePinia } from '../stores/runtimePinia'
+   2:import { invokeCommand } from '../tauri/invoke'
+   3:import { buildValidationCapabilitySummary, buildValidationRequest } from './validationRequestBuilder'
+   4:import { applyWorkflowArtifactsPayload, readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
+   5:import { useWorkflowStore } from '../stores/workflowStore'
+   6:import { computeConfigFingerprint } from '../utils/core/artifactIdentity'
+   7:import { buildDatasetMetaForArtifact } from '../utils/core/datasetMeta'
+   8:import { openPathWithRevealFallback } from '../utils/openPath'
+   9:import { formatUiCount, formatUtcDateFromUnixMs } from '../utils/uiFormat'
+  10:import { measureValidationReportPerf, recordValidationReportPerf } from './validationReportPerf'
+  11:
+  12:interface PolygonCrossDatasetResponse {
+  13:  csv_path?: unknown
+  14:  display_symbol?: unknown
+  15:  polygon_ticker?: unknown
+  16:  market?: unknown
+  17:  timeframe?: unknown
+  18:  min_ts?: unknown
+  19:  max_ts?: unknown
+  20:  last_updated_utc_ms?: unknown
+  21:  row_count?: unknown
+  22:  adjusted?: unknown
+  23:}
+  24:
+  25:interface PolygonCacheInfoResponse {
+  26:  datasets?: unknown
+  27:}
+  28:
+  29:export interface ValidationCrossDatasetSummary {
+  30:  path: string
+  31:  label: string
+  32:  meta: string
+  33:  market: string
+  34:  timeframe: string
+  35:  adjusted: boolean | null
+  36:}
+  37:
+  38:export interface ValidationCrossRefreshSummary {
+  39:  datasets: ValidationCrossDatasetSummary[]
+  40:}
+  41:
+  42:export interface ValidationContextCompatibilityPreview {
+  43:  state: 'compatible' | 'warning' | 'incompatible' | 'missing'
+  44:  summary: string
+  45:  detail: string
+  46:}
+  47:
+  48:function normalizePath(value: string): string {
+  49:  return String(value || '').trim()
+  50:}
+  51:
+  52:function canonicalPathKey(value: unknown): string {
+  53:  return normalizePath(String(value || '').trim()).replace(/\//g, '\\').toLowerCase()
+  54:}
+  55:
+  56:function normalizeText(value: unknown): string {
+  57:  return String(value || '').trim()
+  58:}
+  59:
+  60:function canonicalizePreviewValue(value: unknown): unknown {
+  61:  if (Array.isArray(value)) return value.map(canonicalizePreviewValue)
+  62:  if (value && typeof value === 'object') {
+  63:    return Object.fromEntries(
+  64:      Object.entries(value as Record<string, unknown>)
+  65:        .sort(([left], [right]) => left.localeCompare(right))
+  66:        .map(([key, nextValue]) => [key, canonicalizePreviewValue(nextValue)]),
+  67:    )
+  68:  }
+  69:  return value
+  70:}
+  71:
+  72:function canonicalPreviewKey(value: unknown): string {
+  73:  return JSON.stringify(canonicalizePreviewValue(value))
+  74:}
+  75:
+  76:function normalizeStrategyKindRaw(kindRaw: unknown): string {
+  77:  const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  78:  if (kind === 'Pit') return 'Pit'
+  79:  if (kind === 'Set') return 'Set'
+  80:  if (kind === 'Mts') return 'Mts'
+  81:  if (kind === 'Orc') return 'Orc'
+  82:  if (kind === 'Marrt') return 'Marrt'
+  83:  if (kind === 'Vfct') return 'Vfct'
+  84:  if (kind === 'Rocb') return 'Rocb'
+  85:  if (kind === 'Vcet') return 'Vcet'
+  86:  if (kind === 'Asr') return 'Asr'
+  87:  if (kind === 'Vcc') return 'Vcc'
+  88:  if (kind === 'Vemr') return 'Vemr'
+  89:  if (kind === 'Mkcs') return 'Mkcs'
+  90:  if (kind === 'Kqsr') return 'Kqsr'
+  91:  if (kind === 'Carm') return 'Carm'
+  92:  if (kind === 'Kvdf') return 'Kvdf'
+  93:  if (kind === 'Cdmc') return 'Cdmc'
+  94:  if (kind === 'CompositeCpu') return 'CompositeCpu'
+  95:  if (kind === 'CompositeMo') return 'CompositeMo'
+  96:  if (kind === 'CompositeTrend') return 'CompositeTrend'
+  97:  if (kind === 'RegimeHybrid') return 'RegimeHybrid'
+  98:  if (kind === 'BreakoutMomentum') return 'BreakoutMomentum'
+  99:  return 'DoubleMa'
+ 100:}
+ 101:
+ 102:function normalizeOptionalStrategyKind(kindRaw: unknown): string {
+ 103:  const raw = normalizeText(kindRaw)
+ 104:  return raw ? normalizeStrategyKindRaw(raw) : ''
+ 105:}
+ 106:
+ 107:function isDoubleLikeKind(kindRaw: unknown): boolean {
+ 108:  const kind = normalizeStrategyKindRaw(kindRaw)
+ 109:  return kind === 'DoubleMa' || kind === 'Pit' || kind === 'Set' || kind === 'Mts' || kind === 'Orc' || kind === 'Marrt' || kind === 'Vfct' || kind === 'CompositeTrend' || kind === 'RegimeHybrid' || kind === 'BreakoutMomentum'
+ 110:}
+ 111:
+ 112:function describeTradeBootstrapRequestConfig(raw: unknown): string {
+ 113:  const tradeBootstrap = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+ 114:  if (!tradeBootstrap) return 'not run'
+ 115:  const statBlockRaw = tradeBootstrap.stationary_mean_block_len
+ 116:  if (typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw === 0) {
+ 117:    return 'trade bootstrap iid-only'
+ 118:  }
+ 119:  const statBlock =
+ 120:    typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw > 0
+ 121:      ? Math.floor(statBlockRaw)
+ 122:      : null
+ 123:  return statBlock != null
+ 124:    ? `trade bootstrap compare (iid + stationary, stat block=${statBlock})`
+ 125:    : 'trade bootstrap compare (iid + stationary, stat block=auto)'
+ 126:}
+ 127:
+ 128:function buildBootstrapSummary(raw: unknown): string {
+ 129:  const tradeBootstrap = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+ 130:  if (!tradeBootstrap) return 'not run'
+ 131:  const statBlockRaw = tradeBootstrap.stationary_mean_block_len
+ 132:  if (typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw === 0) {
+ 133:    return 'iid-only closed-trade bootstrap'
+ 134:  }
+ 135:  const statBlock =
+ 136:    typeof statBlockRaw === 'number' && Number.isFinite(statBlockRaw) && statBlockRaw > 0
+ 137:      ? Math.floor(statBlockRaw)
+ 138:      : null
+ 139:  return statBlock != null
+ 140:    ? `iid + stationary closed-trade compare • stat block=${statBlock}`
+ 141:    : 'iid + stationary closed-trade compare • stat block=auto'
+ 142:}
+ 143:
+ 144:function resolveValidationCommand(runReq: unknown): 'run_double_ma_validation' | 'run_composite_validation' {
+ 145:  const req = runReq && typeof runReq === 'object' ? (runReq as Record<string, unknown>) : null
+ 146:  const kind = normalizeStrategyKindRaw(req?.strategy_kind ?? req?.strategyKind)
+ 147:  return isDoubleLikeKind(kind) ? 'run_double_ma_validation' : 'run_composite_validation'
+ 148:}
+ 149:
+ 150:interface CrossSelectionEntry {
+ 151:  csv_path?: unknown
+ 152:  path?: unknown
+ 153:  label?: unknown
+ 154:  checked?: unknown
+ 155:}
+ 156:
+ 157:interface LegacyValidationBuildContext {
+ 158:  currentRunReq: unknown
+ 159:  currentRunRes: unknown
+ 160:  topRows: Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }>
+ 161:  topRowsFiltered: Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }>
+ 162:}
+ 163:
+ 164:interface RunSnapshot {
+ 165:  req: unknown
+ 166:  res: unknown
+ 167:}
+ 168:
+ 169:export interface ValidationRunOptions {
+ 170:  useFiltered?: boolean
+ 171:  switchTab?: boolean
+ 172:}
+ 173:
+ 174:interface SaveRunArtifactResponse {
+ 175:  path?: unknown
+ 176:}
+ 177:
+ 178:interface SaveReportXlsxResponse {
+ 179:  path?: unknown
+ 180:  artifact_updated?: unknown
+ 181:  artifact_update_warning?: unknown
+ 182:}
+ 183:
+ 184:interface ReportPayload {
+ 185:  version: number
+ 186:  kind: string
+ 187:  ts: string
+ 188:  data: {
+ 189:    meta: Record<string, unknown> | null
+ 190:    ctx: Record<string, unknown>
+ 191:  }
+ 192:  run: { req: unknown; res: unknown }
+ 193:  validation: { req: unknown; res: unknown } | null
+ 194:  optimization_metric_surface?: Record<string, unknown> | null
+ 195:}
+ 196:
+ 197:interface WorkflowRunArtifactSnapshot {
+ 198:  ts: string
+ 199:  artifactPath: string
+ 200:  reportXlsxPath: string
+ 201:  csvPath: string
+ 202:  datasetMeta: Record<string, unknown> | null
+ 203:  mlSignal: Record<string, unknown> | null
+ 204:  optimizationMetricSurface: Record<string, unknown> | null
+ 205:  tags: string[]
+ 206:  req: unknown
+ 207:  res: unknown
+ 208:}
+ 209:
+ 210:interface WorkflowValidationArtifactSnapshot {
+ 211:  ts: string
+ 212:  req: unknown
+ 213:  res: unknown
+ 214:}
+ 215:
+ 216:interface ValidationTableColumn {
+ 217:  label: string
+ 218:  alignLeft: boolean
+ 219:}
+ 220:
+ 221:interface ValidationTableCell {
+ 222:  text: string
+ 223:  className: string
+ 224:  title: string
+ 225:}
+ 226:
+ 227:interface ValidationTableRow {
+ 228:  cells: ValidationTableCell[]
+ 229:}
+ 230:
+ 231:interface PersistValidationArtifactResult {
+ 232:  path: string
+ 233:  ts: string
+ 234:  csvPath: string
+ 235:  reportXlsxPath: string
+ 236:  datasetMeta: Record<string, unknown> | null
+ 237:  mlSignal: Record<string, unknown> | null
+ 238:  optimizationMetricSurface: Record<string, unknown> | null
+ 239:  tags: string[]
+ 240:  persistenceWarning: string
+ 241:}
+ 242:
+ 243:interface ReportXlsxExportResult {
+ 244:  statusLine: string
+ 245:  reportXlsxPath: string
+ 246:  artifactUpdated: boolean
+ 247:  artifactUpdateWarning: string
+ 248:}
+ 249:
+ 250:interface ReportXlsxExportPrefs {
+ 251:  autoReveal: boolean
+ 252:  maxRows: number | null
+ 253:  trigger: 'auto' | 'manual'
+ 254:}
+ 255:
+ 256:interface VueStoreFieldBinding {
+ 257:  key: string
+ 258:}
+ 259:
+ 260:const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
+ 261:  valCandidates: { key: 'candidates' },
+ 262:  valAdmissionPolicy: { key: 'admissionPolicy' },
+ 263:  valSeed: { key: 'seed' },
+ 264:  valMinPsr: { key: 'minPsr' },
+ 265:  valMinDsr: { key: 'minDsr' },
+ 266:  valMinCscvRank: { key: 'minCscvRank' },
+ 267:  valMinCscvMetric: { key: 'minCscvMetric' },
+ 268:  valMaxPbo: { key: 'maxPbo' },
+ 269:  valSpaSlices: { key: 'spaSlices' },
+ 270:  valSpaBootstrapSamples: { key: 'spaBootstrapSamples' },
+ 271:  valSpaBlockLength: { key: 'spaBlockLength' },
+ 272:  valReoptWfWindow: { key: 'reoptWfWindow' },
+ 273:  valReoptWfStep: { key: 'reoptWfStep' },
+ 274:  valReoptWfTopN: { key: 'reoptWfTopN' },
+ 275:  valWfWindow: { key: 'wfWindow' },
+ 276:  valWfStep: { key: 'wfStep' },
+ 277:  valPerturbIters: { key: 'perturbIters' },
+ 278:  valPerturbMin: { key: 'perturbMin' },
+ 279:  valPerturbMax: { key: 'perturbMax' },
+ 280:  valMcSims: { key: 'mcSims' },
+ 281:  valMcBlockLen: { key: 'mcBlockLen' },
+ 282:  valMcMode: { key: 'mcMode' },
+ 283:  valCscvSlices: { key: 'cscvSlices' },
+ 284:  valCrossMax: { key: 'crossMax' },
+ 285:  valCrossMode: { key: 'crossMode' }
+ 286:}
+ 287:
+ 288:const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
+ 289:  valWfEnable: { key: 'wfEnable' },
+ 290:  valPerturbEnable: { key: 'perturbEnable' },
+ 291:  valMcEnable: { key: 'mcEnable' },
+ 292:  valCscvEnable: { key: 'cscvEnable' },
+ 293:  valSpaEnable: { key: 'spaEnable' },
+ 294:  valReoptWfEnable: { key: 'reoptWfEnable' },
+ 295:  valCrossEnable: { key: 'crossEnable' }
+ 296:}
+ 297:
+ 298:function readPiniaStoreState(storeId: string): Record<string, unknown> | null {
+ 299:  const pinia = resolveRuntimePinia()
+ 300:  if (!pinia) return null
+ 301:  const root = pinia.state.value as Record<string, unknown>
+ 302:  const store = root[storeId]
+ 303:  if (!store || typeof store !== 'object') return null
+ 304:  return store as Record<string, unknown>
+ 305:}
+ 306:
+ 307:const VALIDATION_PANEL_SELECTOR = '[data-vue-panel="validate"]'
+ 308:
+ 309:function readValidationStoreState(): Record<string, unknown> | null {
+ 310:  return readPiniaStoreState('validation')
+ 311:}
+ 312:
+ 313:function readVueTextFieldValue(fieldId: string): string | null {
+ 314:  const binding = VUE_TEXT_FIELD_BINDINGS[fieldId]
+ 315:  if (!binding) return null
+ 316:  const store = readValidationStoreState()
+ 317:  if (!store) return null
+ 318:  if (!Object.prototype.hasOwnProperty.call(store, binding.key)) return null
+ 319:  return normalizeText(store[binding.key])
+ 320:}
+ 321:
+ 322:function normalizeBoolean(value: unknown): boolean {
+ 323:  if (typeof value === 'boolean') return value
+ 324:  const text = normalizeText(value).toLowerCase()
+ 325:  return text === 'true' || text === '1' || text === 'yes' || text === 'on'
+ 326:}
+ 327:
+ 328:function readVueCheckboxFieldValue(fieldId: string): boolean | null {
+ 329:  const binding = VUE_CHECKBOX_FIELD_BINDINGS[fieldId]
+ 330:  if (!binding) return null
+ 331:  const store = readValidationStoreState()
+ 332:  if (!store) return null
+ 333:  if (!Object.prototype.hasOwnProperty.call(store, binding.key)) return null
+ 334:  return normalizeBoolean(store[binding.key])
+ 335:}
+ 336:
+ 337:function readVueCrossSelectionFromStore(): CrossSelectionEntry[] | null {
+ 338:  const store = readValidationStoreState()
+ 339:  if (!store) return null
+ 340:  const rows = store.crossDatasets
+ 341:  if (!Array.isArray(rows)) return null
+ 342:
+ 343:  const selected: CrossSelectionEntry[] = []
+ 344:  for (const entry of rows) {
+ 345:    if (!entry || typeof entry !== 'object') continue
+ 346:    const row = entry as CrossSelectionEntry
+ 347:    if (!normalizeBoolean(row.checked)) continue
+ 348:    const csv_path = normalizeText(row.csv_path ?? row.path)
+ 349:    if (!csv_path) continue
+ 350:    selected.push({
+ 351:      csv_path,
+ 352:      label: normalizeText(row.label)
+ 353:    })
+ 354:  }
+ 355:  return selected
+ 356:}
+ 357:
+ 358:function readVueCrossSelection(): CrossSelectionEntry[] {
+ 359:  const selectedFromStore = readVueCrossSelectionFromStore()
+ 360:  return selectedFromStore || []
+ 361:}
+ 362:
+ 363:function normalizeCrossSelectionEntries(entries: CrossSelectionEntry[]): Array<{ csv_path: string; label: string }> {
+ 364:  const selected: Array<{ csv_path: string; label: string }> = []
+ 365:  const seen = new Set<string>()
+ 366:  const rows = Array.isArray(entries) ? entries : []
+ 367:  for (const entry of rows) {
+ 368:    const csv_path = normalizePath(normalizeText(entry?.csv_path ?? entry?.path))
+ 369:    if (!csv_path || seen.has(csv_path)) continue
+ 370:    seen.add(csv_path)
+ 371:    selected.push({
+ 372:      csv_path,
+ 373:      label: normalizeText(entry?.label)
+ 374:    })
+ 375:  }
+ 376:  return selected
+ 377:}
+ 378:
+ 379:function writeVueCrossSelection(entries: CrossSelectionEntry[]): void {
+ 380:  const store = readValidationStoreState()
+ 381:  if (!store) return
+ 382:  const rows = Array.isArray(store.crossDatasets) ? store.crossDatasets : []
+ 383:  if (!rows.length) return
+ 384:
+ 385:  const selected = normalizeCrossSelectionEntries(entries)
+ 386:  const selectedPaths = new Set(selected.map((entry) => entry.csv_path))
+ 387:  let changed = false
+ 388:
+ 389:  const nextRows = rows.map((entry) => {
+ 390:    if (!entry || typeof entry !== 'object') return entry
+ 391:    const row = entry as Record<string, unknown>
+ 392:    const path = normalizePath(normalizeText(row.path))
+ 393:    if (!path) return entry
+ 394:    const nextChecked = selectedPaths.has(path)
+ 395:    const prevChecked = normalizeBoolean(row.checked)
+ 396:    if (prevChecked === nextChecked) return entry
+ 397:    changed = true
+ 398:    return {
+ 399:      ...row,
+ 400:      checked: nextChecked
+ 401:    }
+ 402:  })
+ 403:
+ 404:  if (!changed) return
+ 405:  store.crossDatasets = nextRows
+ 406:  store.crossTotalCount = nextRows.length
+ 407:  store.crossSelectedCount = nextRows.filter((entry) => !!entry && typeof entry === 'object' && normalizeBoolean((entry as Record<string, unknown>).checked)).length
+ 408:  store.source = 'vue'
+ 409:  store.updatedAtUnixMs = Date.now()
+ 410:}
+ 411:
+ 412:function normalizeMarketLabel(market: string, adjusted: boolean): string {
+ 413:  if (!market) return 'market'
+ 414:  if (market !== 'stocks') return market
+ 415:  return adjusted ? 'stocks (adj)' : 'stocks (raw)'
+ 416:}
+ 417:
+ 418:function normalizeRowsHint(value: unknown): string {
+ 419:  return formatUiCount(value)
+ 420:}
+ 421:
+ 422:function formatYmdUtc(value: unknown): string {
+ 423:  return formatUtcDateFromUnixMs(value)
+ 424:}
+ 425:
+ 426:function readStoreTextInputValue(id: string): string {
+ 427:  const key = String(id || '').trim()
+ 428:  if (!key) return ''
+ 429:  const vueValue = readVueTextFieldValue(key)
+ 430:  return vueValue != null ? vueValue : ''
+ 431:}
+ 432:
+ 433:function readStoreCheckboxValue(id: string): boolean {
+ 434:  const key = String(id || '').trim()
+ 435:  if (!key) return false
+ 436:  const vueValue = readVueCheckboxFieldValue(key)
+ 437:  return vueValue != null ? vueValue : false
+ 438:}
+ 439:
+ 440:function asRecord(value: unknown): Record<string, unknown> | null {
+ 441:  if (!value || typeof value !== 'object') return null
+ 442:  return value as Record<string, unknown>
+ 443:}
+ 444:
+ 445:function extractTopRowsFromRunResult(runRes: unknown): Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }> {
+ 446:  const row = asRecord(runRes)
+ 447:  if (!row) return []
+ 448:  const rows: Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }> = []
+ 449:
+ 450:  const paretoRowsRaw = Array.isArray(row.pareto) ? row.pareto : []
+ 451:  if (paretoRowsRaw.length > 0) {
+ 452:    const pts = paretoRowsRaw
+ 453:      .map((entry) => {
+ 454:        const point = asRecord(entry)
+ 455:        return {
+ 456:          params: asRecord(point?.params),
+ 457:          metrics: asRecord(point?.metrics),
+ 458:          maximize_value: Number(point?.maximize_value ?? Number.NEGATIVE_INFINITY),
+ 459:          minimize_value: Number(point?.minimize_value ?? Number.POSITIVE_INFINITY),
+ 460:          violation: Number(point?.violation ?? 0),
+ 461:        }
+ 462:      })
+ 463:      .filter((entry) => !!entry.params)
+ 464:    pts.sort((left, right) => {
+ 465:      const leftFeasible = left.violation <= 0
+ 466:      const rightFeasible = right.violation <= 0
+ 467:      if (leftFeasible !== rightFeasible) return leftFeasible ? -1 : 1
+ 468:      if (left.maximize_value !== right.maximize_value) return right.maximize_value - left.maximize_value
+ 469:      if (left.minimize_value !== right.minimize_value) return left.minimize_value - right.minimize_value
+ 470:      return 0
+ 471:    })
+ 472:    for (const entry of pts) {
+ 473:      rows.push({
+ 474:        params: entry.params,
+ 475:        metrics: entry.metrics,
+ 476:        mo: {
+ 477:          maximize_value: entry.maximize_value,
+ 478:          minimize_value: entry.minimize_value,
+ 479:          violation: entry.violation,
+ 480:        },
+ 481:        source_kind: 'pareto_frontier',
+ 482:      })
+ 483:    }
+ 484:    return rows
+ 485:  }
+ 486:
+ 487:  const topRowsRaw = Array.isArray(row.top) ? row.top : []
+ 488:  for (const entry of topRowsRaw) {
+ 489:    if (Array.isArray(entry)) {
+ 490:      rows.push({
+ 491:        params: entry[0],
+ 492:        metrics: entry[1],
+ 493:        source_kind: 'top_rows',
+ 494:      })
+ 495:      continue
+ 496:    }
+ 497:    const item = asRecord(entry)
+ 498:    if (!item || !item.params) continue
+ 499:    rows.push({
+ 500:      params: item.params,
+ 501:      metrics: item.metrics,
+ 502:      source_kind: 'top_rows',
+ 503:    })
+ 504:  }
+ 505:
+ 506:  if (rows.length > 0) return rows
+ 507:  const bestParams = row.best_params
+ 508:  if (!bestParams || typeof bestParams !== 'object') return []
+ 509:  return [{
+ 510:    params: bestParams,
+ 511:    metrics: row.best_metrics,
+ 512:    source_kind: 'best_params_fallback',
+ 513:  }]
+ 514:}
+ 515:
+ 516:function readRunSnapshotFromStore(): RunSnapshot | null {
+ 517:  const snapshot = readLatestWorkflowRunSnapshot()
+ 518:  if (!snapshot) return null
+ 519:  return {
+ 520:    req: snapshot.req ?? null,
+ 521:    res: snapshot.res ?? null
+ 522:  }
+ 523:}
+ 524:
+ 525:function normalizeStringList(value: unknown): string[] {
+ 526:  if (!Array.isArray(value)) return []
+ 527:  const out: string[] = []
+ 528:  for (const item of value) {
+ 529:    const next = normalizeText(item)
+ 530:    if (!next) continue
+ 531:    out.push(next)
+ 532:  }
+ 533:  return out
+ 534:}
+ 535:
+ 536:function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null {
+ 537:  const workflowArtifactsStore = readPiniaStoreState('workflowArtifacts')
+ 538:  if (!workflowArtifactsStore) return null
+ 539:  const run = workflowArtifactsStore.currentRun
+ 540:  if (!run || typeof run !== 'object') return null
+ 541:  const row = run as Record<string, unknown>
+ 542:  return {
+ 543:    ts: normalizeText(row.ts) || new Date().toISOString(),
+ 544:    artifactPath: normalizeText(row.artifactPath ?? row.artifact_path),
+ 545:    reportXlsxPath: normalizeText(row.reportXlsxPath ?? row.report_xlsx_path),
+ 546:    csvPath: normalizeText(row.csvPath ?? row.csv_path),
+ 547:    datasetMeta: row.datasetMeta && typeof row.datasetMeta === 'object'
+ 548:      ? row.datasetMeta as Record<string, unknown>
+ 549:      : (row.dataset_meta && typeof row.dataset_meta === 'object'
+ 550:        ? row.dataset_meta as Record<string, unknown>
+ 551:        : null),
+ 552:    mlSignal: row.mlSignal && typeof row.mlSignal === 'object'
+ 553:      ? row.mlSignal as Record<string, unknown>
+ 554:      : (row.ml_signal && typeof row.ml_signal === 'object'
+ 555:        ? row.ml_signal as Record<string, unknown>
+ 556:        : null),
+ 557:    optimizationMetricSurface:
+ 558:      row.optimizationMetricSurface && typeof row.optimizationMetricSurface === 'object'
+ 559:        ? row.optimizationMetricSurface as Record<string, unknown>
+ 560:        : (row.optimization_metric_surface && typeof row.optimization_metric_surface === 'object'
+ 561:          ? row.optimization_metric_surface as Record<string, unknown>
+ 562:          : null),
+ 563:    tags: normalizeStringList(row.tags),
+ 564:    req: row.req ?? null,
+ 565:    res: row.res ?? null
+ 566:  }
+ 567:}
+ 568:
+ 569:function readWorkflowValidationArtifactFromStore(): WorkflowValidationArtifactSnapshot | null {
+ 570:  const workflowArtifactsStore = readPiniaStoreState('workflowArtifacts')
+ 571:  if (!workflowArtifactsStore) return null
+ 572:  const validation = workflowArtifactsStore.currentValidation
+ 573:  if (!validation || typeof validation !== 'object') return null
+ 574:  const row = validation as Record<string, unknown>
+ 575:  return {
+ 576:    ts: normalizeText(row.ts) || new Date().toISOString(),
+ 577:    req: row.req ?? null,
+ 578:    res: row.res ?? null
+ 579:  }
+ 580:}
+ 581:
+ 582:function readLatestMetaReportPath(): string {
+ 583:  if (typeof document === 'undefined') return ''
+ 584:  const fromRuntime = normalizeText(document.documentElement?.dataset?.latestMetaReportPath)
+ 585:  if (fromRuntime) return fromRuntime
+ 586:  const commandActionsStore = readPiniaStoreState('commandActions')
+ 587:  return normalizeText(commandActionsStore?.latestMetaReportPath)
+ 588:}
+ 589:
+ 590:function readValidationExportPrefs(): {
+ 591:  autoExport: boolean
+ 592:  autoReveal: boolean
+ 593:  maxRows: number | null
+ 594:} {
+ 595:  const store = readValidationStoreState()
+ 596:  const autoExport = normalizeBoolean(store?.autoExportXlsx)
+ 597:  const autoReveal = normalizeBoolean(store?.autoRevealReport)
+ 598:  const rawTopN = Math.floor(Number(store?.autoExportTopN))
+ 599:  const maxRows = Number.isFinite(rawTopN) && rawTopN > 0 ? rawTopN : null
+ 600:  return { autoExport, autoReveal, maxRows }
+ 601:}
+ 602:
+ 603:function nowMs(): number {
+ 604:  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+ 605:}
+ 606:
+ 607:function formatValidationStatus(commandMs: number, endToEndMs: number, suffix = ''): string {
+ 608:  const base = `Validation completed in ${Math.max(0, endToEndMs).toFixed(0)}ms end-to-end (${Math.max(0, commandMs).toFixed(0)}ms command)`
+ 609:  return suffix ? `${base}. ${suffix}` : base
+ 610:}
+ 611:
+ 612:function buildReportDataFromDatasetMeta(datasetMeta: Record<string, unknown> | null): ReportPayload['data'] {
+ 613:  const datasetState = buildRunDatasetContextState()
+ 614:  if (!datasetMeta) {
+ 615:    const meta = datasetState.currentDataMeta ? { ...datasetState.currentDataMeta } : {}
+ 616:    const ctx = { ...datasetState.currentDatasetCtx }
+ 617:    return {
+ 618:      meta: Object.keys(meta).length > 0 ? meta : null,
+ 619:      ctx
+ 620:    }
+ 621:  }
+ 622:
+ 623:  const dataStore = readPiniaStoreState('data')
+ 624:  const artifactCsvPath = normalizeText(datasetMeta.csv_path)
+ 625:  const artifactTimeframe = normalizeText(
+ 626:    datasetMeta.timeframe ?? datasetMeta.derived_timeframe ?? datasetMeta.base_timeframe
+ 627:  )
+ 628:  const liveCsvPath = normalizeText(dataStore?.csvPath)
+ 629:  const liveTimeframe = normalizeText(
+ 630:    datasetState.currentDatasetCtx.timeframe ?? datasetState.currentDataMeta?.timeframe
+ 631:  )
+ 632:  const canReuseLiveDatasetState =
+ 633:    artifactCsvPath.length > 0
+ 634:    && liveCsvPath.length > 0
+ 635:    && artifactCsvPath === liveCsvPath
+ 636:    && (!artifactTimeframe || !liveTimeframe || artifactTimeframe === liveTimeframe)
+ 637:  const meta = canReuseLiveDatasetState && datasetState.currentDataMeta
+ 638:    ? { ...datasetState.currentDataMeta }
+ 639:    : {}
+ 640:  const ctx = canReuseLiveDatasetState ? { ...datasetState.currentDatasetCtx } : {}
+ 641:
+ 642:  const textKeys = [
+ 643:    'timeframe',
+ 644:    'base_timeframe',
+ 645:    'derived_timeframe',
+ 646:    'source',
+ 647:    'market',
+ 648:    'symbol',
+ 649:    'label',
+ 650:    'csv_path',
+ 651:    'resample_rule',
+ 652:    'resample_anchor',
+ 653:    'source_content_fingerprint',
+ 654:  ]
+ 655:  for (const key of textKeys) {
+ 656:    const next = normalizeText(datasetMeta[key])
+ 657:    if (!next) continue
+ 658:    if (key === 'label' || key === 'symbol' || key === 'source' || key === 'market' || key === 'csv_path') {
+ 659:      ctx[key] = next
+ 660:    } else {
+ 661:      meta[key] = next
+ 662:      if (key === 'timeframe' || key === 'base_timeframe' || key === 'derived_timeframe' || key === 'resample_rule' || key === 'resample_anchor') {
+ 663:        ctx[key] = next
+ 664:      }
+ 665:    }
+ 666:  }
+ 667:
+ 668:  const numericKeys = ['len', 'min_ts', 'max_ts', 'source_size_bytes', 'source_mtime_utc_ms']
+ 669:  for (const key of numericKeys) {
+ 670:    const next = Number(datasetMeta[key])
+ 671:    if (!Number.isFinite(next)) continue
+ 672:    meta[key] = next
+ 673:  }
+ 674:
+ 675:  if (typeof datasetMeta.resample_applied === 'boolean') {
+ 676:    ctx.resample_applied = datasetMeta.resample_applied
+ 677:  }
+ 678:  if (typeof datasetMeta.adjusted === 'boolean') {
+ 679:    ctx.adjusted = datasetMeta.adjusted
+ 680:  }
+ 681:
+ 682:  return {
+ 683:    meta: Object.keys(meta).length > 0 ? meta : null,
+ 684:    ctx
+ 685:  }
+ 686:}
+ 687:
+ 688:function buildReportPayload(input: {
+ 689:  ts?: unknown
+ 690:  datasetMeta?: Record<string, unknown> | null
+ 691:  optimizationMetricSurface?: Record<string, unknown> | null
+ 692:  runReq: unknown
+ 693:  runRes: unknown
+ 694:  validationReq: unknown
+ 695:  validationRes: unknown
+ 696:}): ReportPayload {
+ 697:  const ts = normalizeText(input.ts) || new Date().toISOString()
+ 698:  const payload: ReportPayload = {
+ 699:    version: 1,
+ 700:    kind: 'vectorgrid_report',
+ 701:    ts,
+ 702:    data: buildReportDataFromDatasetMeta(input.datasetMeta ?? null),
+ 703:    run: {
+ 704:      req: input.runReq ?? null,
+ 705:      res: input.runRes ?? null
+ 706:    },
+ 707:    validation: input.validationRes != null
+ 708:      ? { req: input.validationReq ?? null, res: input.validationRes }
+ 709:      : null
+ 710:  }
+ 711:  if (input.optimizationMetricSurface) {
+ 712:    payload.optimization_metric_surface = input.optimizationMetricSurface
+ 713:  }
+ 714:  return payload
+ 715:}
+ 716:
+ 717:function buildCurrentReportPayloadFromStore(): ReportPayload {
+ 718:  const run = readWorkflowRunArtifactFromStore()
+ 719:  const validation = readWorkflowValidationArtifactFromStore()
+ 720:  return buildReportPayload({
+ 721:    ts: run?.ts || validation?.ts,
+ 722:    datasetMeta: run?.datasetMeta ?? null,
+ 723:    optimizationMetricSurface: run?.optimizationMetricSurface ?? null,
+ 724:    runReq: run?.req ?? null,
+ 725:    runRes: run?.res ?? null,
+ 726:    validationReq: validation?.req ?? null,
+ 727:    validationRes: validation?.res ?? null
+ 728:  })
+ 729:}
+ 730:
+ 731:function downloadBlob(filename: string, blob: Blob): boolean {
+ 732:  if (typeof document === 'undefined') return false
+ 733:  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false
+ 734:  const href = URL.createObjectURL(blob)
+ 735:  try {
+ 736:    const link = document.createElement('a')
+ 737:    link.href = href
+ 738:    link.download = filename
+ 739:    link.style.display = 'none'
+ 740:    document.body?.appendChild(link)
+ 741:    link.click()
+ 742:    link.remove()
+ 743:    return true
+ 744:  } finally {
+ 745:    URL.revokeObjectURL(href)
+ 746:  }
+ 747:}
+ 748:
+ 749:function downloadText(filename: string, text: string, mime: string): boolean {
+ 750:  try {
+ 751:    return downloadBlob(filename, new Blob([text], { type: mime }))
+ 752:  } catch {
+ 753:    return false
+ 754:  }
+ 755:}
+ 756:
+ 757:function decodeBase64(value: string): Uint8Array | null {
+ 758:  const src = String(value || '').trim()
+ 759:  if (!src) return null
+ 760:  if (typeof atob === 'function') {
+ 761:    const bin = atob(src)
+ 762:    const out = new Uint8Array(bin.length)
+ 763:    for (let i = 0; i < bin.length; i += 1) {
+ 764:      out[i] = bin.charCodeAt(i) & 0xff
+ 765:    }
+ 766:    return out
+ 767:  }
+ 768:  return null
+ 769:}
+ 770:
+ 771:function downloadBase64(filename: string, base64: string, mime: string): boolean {
+ 772:  const bytes = decodeBase64(base64)
+ 773:  if (!bytes) return false
+ 774:  const copy = new Uint8Array(bytes.length)
+ 775:  copy.set(bytes)
+ 776:  return downloadBlob(filename, new Blob([copy.buffer], { type: mime }))
+ 777:}
+ 778:
+ 779:function buildRunDatasetContextState(): {
+ 780:  currentDataMeta: Record<string, unknown> | null
+ 781:  currentBaseDataMeta: Record<string, unknown> | null
+ 782:  currentBaseDatasetCtx: Record<string, unknown>
+ 783:  currentDatasetCtx: Record<string, unknown>
+ 784:} {
+ 785:  const dataStore = readPiniaStoreState('data')
+ 786:  const dataFields = Array.isArray(dataStore?.dataFields) ? dataStore.dataFields : []
+ 787:  const fields = new Set<string>()
+ 788:  for (const entry of dataFields) {
+ 789:    const key = normalizeText(entry).toLowerCase()
+ 790:    if (!key) continue
+ 791:    fields.add(key)
+ 792:  }
+ 793:  const len = Number(dataStore?.dataLen)
+ 794:  const baseMeta = asRecord(dataStore?.baseDataMeta)
+ 795:  const timeframe = normalizeText(dataStore?.dataTimeframe || baseMeta?.timeframe)
+ 796:  const dataMeta: Record<string, unknown> = {
+ 797:    has_open: fields.has('open'),
+ 798:    has_high: fields.has('high'),
+ 799:    has_low: fields.has('low'),
+ 800:    has_close: fields.has('close'),
+ 801:    has_volume: fields.has('volume')
+ 802:  }
+ 803:  if (Number.isFinite(len) && len >= 0) dataMeta.len = Math.floor(len)
+ 804:  if (timeframe) dataMeta.timeframe = timeframe
+ 805:
+ 806:  const datasetCtx: Record<string, unknown> = {}
+ 807:  const label = normalizeText(dataStore?.datasetLabel)
+ 808:  const source = normalizeText(dataStore?.datasetContext)
+ 809:  const symbol = normalizeText(dataStore?.polygonSymbol || label)
+ 810:  if (label && label !== '—') datasetCtx.label = label
+ 811:  if (symbol && symbol !== '—') datasetCtx.symbol = symbol
+ 812:  if (source && source !== '—') datasetCtx.source = source
+ 813:  if (timeframe) {
+ 814:    datasetCtx.timeframe = timeframe
+ 815:    datasetCtx.base_timeframe = timeframe
+ 816:    datasetCtx.derived_timeframe = timeframe
+ 817:    datasetCtx.resample_applied = false
+ 818:  }
+ 819:
+ 820:  return {
+ 821:    currentDataMeta: dataMeta,
+ 822:    currentBaseDataMeta: dataMeta,
+ 823:    currentBaseDatasetCtx: datasetCtx,
+ 824:    currentDatasetCtx: datasetCtx
+ 825:  }
+ 826:}
+ 827:
+ 828:function canonicalLower(value: unknown): string {
+ 829:  return normalizeText(value).toLowerCase()
+ 830:}
+ 831:
+ 832:function firstNonEmptyText(...values: unknown[]): string {
+ 833:  for (const value of values) {
+ 834:    const next = normalizeText(value)
+ 835:    if (next) return next
+ 836:  }
+ 837:  return ''
+ 838:}
+ 839:
+ 840:function assertValidationRunMatchesCurrentDataset(
+ 841:  run: WorkflowRunArtifactSnapshot,
+ 842:  runReq: Record<string, unknown>,
+ 843:): void {
+ 844:  const datasetMeta = run.datasetMeta
+ 845:  const expectedCsvPath = normalizePath(normalizeText(datasetMeta?.csv_path ?? run.csvPath))
+ 846:  const expectedTimeframe = canonicalLower(
+ 847:    firstNonEmptyText(datasetMeta?.timeframe, datasetMeta?.derived_timeframe, datasetMeta?.base_timeframe),
+ 848:  )
+ 849:  if (!expectedCsvPath && !expectedTimeframe) return
+ 850:
+ 851:  const dataStore = readPiniaStoreState('data')
+ 852:  const currentCsvPath = normalizePath(normalizeText(dataStore?.csvPath))
+ 853:  if (expectedCsvPath && !currentCsvPath) {
+ 854:    throw new Error('Load the same dataset used by the optimization artifact before running validation.')
+ 855:  }
+ 856:
+ 857:  if (expectedCsvPath && currentCsvPath !== expectedCsvPath) {
+ 858:    const expectedLabel = firstNonEmptyText(datasetMeta?.symbol, datasetMeta?.label, expectedCsvPath)
+ 859:    throw new Error(`Validation requires the optimization dataset ${expectedLabel} (${expectedCsvPath}).`)
+ 860:  }
+ 861:
+ 862:  const currentTimeframe = canonicalLower(
+ 863:    firstNonEmptyText(dataStore?.dataTimeframe, asRecord(dataStore?.baseDataMeta)?.timeframe),
+ 864:  )
+ 865:  if (currentTimeframe && expectedTimeframe && currentTimeframe !== expectedTimeframe) {
+ 866:    throw new Error(`Validation requires timeframe ${expectedTimeframe}; current dataset is ${currentTimeframe}.`)
+ 867:  }
+ 868:
+ 869:  const artifactStrategy = normalizeStrategyKindRaw(runReq.strategy_kind ?? runReq.strategyKind)
+ 870:  const runtimeStrategy = normalizeStrategyKindRaw(run.req && typeof run.req === 'object'
+ 871:    ? (run.req as Record<string, unknown>).strategy_kind ?? (run.req as Record<string, unknown>).strategyKind
+ 872:    : '')
+ 873:  if (runtimeStrategy && artifactStrategy !== runtimeStrategy) {
+ 874:    throw new Error(`Validation requires strategy ${runtimeStrategy}; current run context is ${artifactStrategy}.`)
+ 875:  }
+ 876:}
+ 877:
+ 878:function resolveValidationCompatibilityContext(
+ 879:  workflowRun: WorkflowRunArtifactSnapshot,
+ 880:  runReq: Record<string, unknown> | null,
+ 881:  validationReq: Record<string, unknown> | null,
+ 882:): {
+ 883:  expectedCsvPath: string
+ 884:  expectedLabel: string
+ 885:  expectedTimeframe: string
+ 886:  expectedStrategy: string
+ 887:} {
+ 888:  const validationContext = asRecord(validationReq?.validation_context)
+ 889:  const datasetMeta = workflowRun.datasetMeta
+ 890:  return {
+ 891:    expectedCsvPath: normalizePath(firstNonEmptyText(
+ 892:      validationContext?.csv_path,
+ 893:      datasetMeta?.csv_path,
+ 894:      workflowRun.csvPath,
+ 895:    )),
+ 896:    expectedLabel: firstNonEmptyText(
+ 897:      validationContext?.label,
+ 898:      datasetMeta?.symbol,
+ 899:      datasetMeta?.label,
+ 900:      validationContext?.csv_path,
+ 901:      datasetMeta?.csv_path,
+ 902:      workflowRun.csvPath,
+ 903:    ) || 'artifact dataset',
+ 904:    expectedTimeframe: canonicalLower(firstNonEmptyText(
+ 905:      validationContext?.timeframe,
+ 906:      datasetMeta?.timeframe,
+ 907:      datasetMeta?.derived_timeframe,
+ 908:      datasetMeta?.base_timeframe,
+ 909:    )),
+ 910:    expectedStrategy: normalizeOptionalStrategyKind(
+ 911:      validationContext?.strategy_kind ?? runReq?.strategy_kind ?? runReq?.strategyKind,
+ 912:    ),
+ 913:  }
+ 914:}
+ 915:
+ 916:export function previewValidationContextCompatibilityFromStores(): ValidationContextCompatibilityPreview {
+ 917:  const workflowRun = readWorkflowRunArtifactFromStore()
+ 918:  if (!workflowRun) {
+ 919:    return {
+ 920:      state: 'missing',
+ 921:      summary: 'Awaiting optimization artifact',
+ 922:      detail: 'Run or reopen an optimization artifact before validating so dataset, timeframe, and strategy compatibility can be checked.',
+ 923:    }
+ 924:  }
+ 925:
+ 926:  const artifactReq = asRecord(workflowRun.req)
+ 927:  const runSnapshot = readRunSnapshotFromStore()
+ 928:  const runReq = asRecord(runSnapshot?.req ?? artifactReq)
+ 929:  const validationReq = asRecord(readWorkflowValidationArtifactFromStore()?.req)
+ 930:  const {
+ 931:    expectedCsvPath,
+ 932:    expectedLabel,
+ 933:    expectedTimeframe,
+ 934:    expectedStrategy,
+ 935:  } = resolveValidationCompatibilityContext(workflowRun, runReq, validationReq)
+ 936:  const currentStrategy = normalizeOptionalStrategyKind(
+ 937:    runReq?.strategy_kind ?? runReq?.strategyKind,
+ 938:  )
+ 939:
+ 940:  if (expectedStrategy && currentStrategy && expectedStrategy !== currentStrategy) {
+ 941:    return {
+ 942:      state: 'incompatible',
+ 943:      summary: 'Incompatible: strategy mismatch',
+ 944:      detail: `Validation artifact expects strategy ${expectedStrategy}; current run context is ${currentStrategy}.`,
+ 945:    }
+ 946:  }
+ 947:
+ 948:  const dataStore = readPiniaStoreState('data')
+ 949:  const currentCsvPath = normalizePath(normalizeText(dataStore?.csvPath))
+ 950:  const currentLabel = firstNonEmptyText(dataStore?.datasetLabel, currentCsvPath) || 'loaded dataset'
+ 951:  const currentTimeframe = canonicalLower(
+ 952:    firstNonEmptyText(dataStore?.dataTimeframe, asRecord(dataStore?.baseDataMeta)?.timeframe),
+ 953:  )
+ 954:
+ 955:  if (expectedCsvPath && !currentCsvPath) {
+ 956:    return {
+ 957:      state: 'missing',
+ 958:      summary: `Load ${expectedLabel}`,
+ 959:      detail: `Validation artifact expects dataset ${expectedLabel} (${expectedCsvPath}). Load that dataset before running validation.`,
+ 960:    }
+ 961:  }
+ 962:
+ 963:  if (expectedCsvPath && currentCsvPath && canonicalPathKey(currentCsvPath) !== canonicalPathKey(expectedCsvPath)) {
+ 964:    return {
+ 965:      state: 'incompatible',
+ 966:      summary: 'Incompatible: dataset mismatch',
+ 967:      detail: `Validation artifact expects dataset ${expectedLabel} (${expectedCsvPath}); loaded dataset is ${currentLabel} (${currentCsvPath}).`,
+ 968:    }
+ 969:  }
+ 970:
+ 971:  if (expectedTimeframe && currentTimeframe && currentTimeframe !== expectedTimeframe) {
+ 972:    return {
+ 973:      state: 'incompatible',
+ 974:      summary: 'Incompatible: timeframe mismatch',
+ 975:      detail: `Validation artifact expects timeframe ${expectedTimeframe}; loaded dataset is ${currentTimeframe}.`,
+ 976:    }
+ 977:  }
+ 978:
+ 979:  if (expectedTimeframe && !currentTimeframe) {
+ 980:    return {
+ 981:      state: 'warning',
+ 982:      summary: 'Partial: current timeframe unavailable',
+ 983:      detail: `Validation artifact expects timeframe ${expectedTimeframe}, but the currently loaded dataset does not expose an active timeframe label yet.`,
+ 984:    }
+ 985:  }
+ 986:
+ 987:  const missingArtifactContext: string[] = []
+ 988:  if (!expectedCsvPath) missingArtifactContext.push('dataset')
+ 989:  if (!expectedTimeframe) missingArtifactContext.push('timeframe')
+ 990:  if (!expectedStrategy) missingArtifactContext.push('strategy')
+ 991:  if (missingArtifactContext.length > 0) {
+ 992:    return {
+ 993:      state: 'warning',
+ 994:      summary: `Partial: missing ${missingArtifactContext.join(' + ')}`,
+ 995:      detail: `This artifact is missing ${missingArtifactContext.join(', ')} metadata, so compatibility cannot be fully confirmed before validation runs.`,
+ 996:    }
+ 997:  }
+ 998:
+ 999:  return {
+1000:    state: 'compatible',
+1001:    summary: 'Compatible: dataset + timeframe + strategy aligned',
+1002:    detail: `Loaded dataset ${expectedLabel}${expectedTimeframe ? ` (${expectedTimeframe})` : ''} matches the artifact context${expectedStrategy ? ` for ${expectedStrategy}` : ''}.`,
+1003:  }
+1004:}
+1005:
+1006:function patchValidationStoreState(patch: Record<string, unknown>): void {
+1007:  const store = readValidationStoreState()
+1008:  if (!store) return
+1009:  Object.assign(store, patch)
+1010:  store.source = 'vue'
+1011:  store.updatedAtUnixMs = Date.now()
+1012:}
+1013:
+1014:function safePrettyJson(value: unknown): string {
+1015:  try {
+1016:    return JSON.stringify(value ?? null, null, 2)
+1017:  } catch {
+1018:    return String(value ?? '')
+1019:  }
+1020:}
+1021:
+1022:function toOutputPreview(value: unknown): string {
+1023:  const text = safePrettyJson(value)
+1024:  return text.length > 200 ? `${text.slice(0, 200).trimEnd()}…` : text
+1025:}
+1026:
+1027:function queryDomById<T extends Element>(id: string, scopeSelector?: string): T | null {
+1028:  if (typeof document === 'undefined') return null
+1029:  const selector = `[id="${id}"]`
+1030:  if (scopeSelector) {
+1031:    if (typeof document.querySelector !== 'function') return null
+1032:    const scopeRoot = document.querySelector(scopeSelector) as HTMLElement | null
+1033:    if (!scopeRoot) return null
+1034:    return scopeRoot.querySelector(selector) as T | null
+1035:  }
+1036:  const byQuery = typeof document.querySelector === 'function' ? document.querySelector(selector) : null
+1037:  if (byQuery) return byQuery as T
+1038:  const getById = (
+1039:    document as unknown as {
+1040:      getElementById?: (nextId: string) => Element | null
+1041:    }
+1042:  ).getElementById
+1043:  if (typeof getById !== 'function') return null
+1044:  return (getById.call(document, id) as T | null) ?? null
+1045:}
+1046:
+1047:function writeDomTextContent(id: string, value: string, scopeSelector?: string): void {
+1048:  const el = queryDomById<HTMLElement>(id, scopeSelector)
+1049:  if (!el) return
+1050:  el.textContent = value
+1051:}
+1052:
+1053:function selectWorkflowResultsTab(tab: 'validate', persist: boolean): void {
+1054:  const pinia = resolveRuntimePinia()
+1055:  if (!pinia) return
+1056:  const workflowStore = useWorkflowStore(pinia)
+1057:  workflowStore.selectResultsTab(tab, { persist })
+1058:}
+1059:
+1060:function buildValidationMetaText(result: unknown, validationReq?: unknown): string {
+1061:  const row = asRecord(result)
+1062:  const candidates = Array.isArray(row?.candidates) ? row.candidates.length : 0
+1063:  const runtimeMs = Math.max(0, Math.floor(Number(row?.runtime_ms ?? 0)))
+1064:  const backendUsed = normalizeText(row?.backend_used)
+1065:  const backendRoute = normalizeText(row?.backend_route)
+1066:  const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
+1067:  const backendParts: string[] = []
+1068:  if (backendUsed) backendParts.push(`backend=${backendUsed}`)
+1069:  if (backendRoute) backendParts.push(`route=${backendRoute}`)
+1070:  if (backendFallbackReason) {
+1071:    const routeLabel = backendRoute.includes('->CpuOnly') ? 'fallback' : 'route_note'
+1072:    backendParts.push(`${routeLabel}=${backendFallbackReason}`)
+1073:  }
+1074:  const backendSummary = backendParts.length > 0 ? backendParts.join(' • ') : 'backend'
+1075:  const cross = asRecord(row?.cross_ticker)
+1076:  const crossDatasets = Array.isArray(cross?.datasets) ? cross.datasets.length : 0
+1077:  const crossModeRaw = normalizeText(cross?.mode).toLowerCase()
+1078:  const crossMode = crossModeRaw === 'preserved_finalists'
+1079:    ? 'preserved_finalists'
+1080:    : crossModeRaw === 'lightweight'
+1081:      ? 'lightweight'
+1082:      : ''
+1083:  const crossSuffix = crossDatasets > 0
+1084:    ? ` • cross=${crossDatasets}${crossMode ? ` (${crossMode})` : ''}`
+1085:    : ''
+1086:
+1087:  const cscv = asRecord(row?.cscv_pbo)
+1088:  const cscvSkipped = normalizeText(cscv?.skipped_reason)
+1089:  const cscvCombos = Math.max(0, Math.floor(Number(cscv?.combinations ?? 0)))
+1090:  const cscvPbo = Number(cscv?.pbo ?? Number.NaN)
+1091:  let cscvSuffix = ''
+1092:  if (cscvSkipped) cscvSuffix = ` • cscv skipped=${cscvSkipped}`
+1093:  else if (cscv && cscvCombos > 0 && Number.isFinite(cscvPbo)) cscvSuffix = ` • pbo=${cscvPbo.toFixed(3)} (cs=${cscvCombos})`
+1094:
+1095:  const reopt = asRecord(row?.reopt_walk_forward)
+1096:  const reoptWindows = Math.max(0, Math.floor(Number(reopt?.windows ?? 0)))
+1097:  const reoptSharpe = Number(reopt?.forward_sharpe_median ?? Number.NaN)
+1098:  const reoptUlcer = Number(reopt?.forward_ulcer_index_worst ?? Number.NaN)
+1099:  const reoptMartin = Number(reopt?.forward_martin_ratio_median ?? Number.NaN)
+1100:  const reoptSuffix = reoptWindows > 0
+1101:    ? ` • reopt_wf=${reoptWindows}w` +
+1102:      `${Number.isFinite(reoptSharpe) ? ` sh_med=${reoptSharpe.toFixed(3)}` : ''}` +
+1103:      `${Number.isFinite(reoptUlcer) ? ` ulcer_worst=${reoptUlcer.toFixed(3)}` : ''}` +
+1104:      `${Number.isFinite(reoptMartin) ? ` martin_med=${reoptMartin.toFixed(2)}` : ''}`
+1105:    : ''
+1106:  const spa = asRecord(row?.spa)
+1107:  const spaP = Number(spa?.p_value ?? Number.NaN)
+1108:  const spaSkipped = normalizeText(spa?.skipped_reason)
+1109:  const spaSuffix = spaSkipped
+1110:    ? ` • spa skipped=${spaSkipped}`
+1111:    : spa
+1112:      ? ` • spa=${Number.isFinite(spaP) ? spaP.toFixed(3) : '-'}${spa?.passed === false ? ' fail' : ' pass'}`
+1113:      : ''
+1114:
+1115:  const runVerdict = asRecord(row?.run_verdict)
+1116:  const survived = Math.max(0, Math.floor(Number(runVerdict?.candidates_survived_hard_gates ?? 0)))
+1117:  const tested = Math.max(0, Math.floor(Number(runVerdict?.candidates_tested ?? candidates)))
+1118:  const approved = Math.max(0, Math.floor(Number(runVerdict?.approved_candidate_count ?? 0)))
+1119:  const recommendation = normalizeText(runVerdict?.final_recommendation)
+1120:  const warningFlags = Array.isArray(runVerdict?.warning_flags)
+1121:    ? runVerdict?.warning_flags.map((value) => normalizeText(value)).filter((value) => value.length > 0)
+1122:    : []
+1123:  const failReasons = Array.isArray(runVerdict?.fail_reasons)
+1124:    ? runVerdict?.fail_reasons.map((value) => normalizeText(value)).filter((value) => value.length > 0)
+1125:    : []
+1126:  const topObs = Math.max(0, Math.floor(Number(runVerdict?.top_candidate_track_record_bars ?? 0)))
+1127:  const topMinTrl = Math.max(0, Math.floor(Number(runVerdict?.top_candidate_min_track_record_length_bars ?? 0)))
+1128:  const approvalSuffix = runVerdict
+1129:    ? ` • approved=${approved}/${survived}${recommendation ? ` • rec=${recommendation}` : ''}`
+1130:    : ''
+1131:  const minTrlSuffix = topObs > 0 && topMinTrl > 0
+1132:    ? ` • top_mintrl=${topObs}/${topMinTrl}`
+1133:    : ''
+1134:  const hasRunVerdict = !!runVerdict
+1135:  const runState = hasRunVerdict ? ` • hard_gates=${survived}/${tested}${runVerdict?.passed === false ? ' fail' : ''}` : ''
+1136:  const runReason = failReasons[0] || warningFlags[0] || ''
+1137:  const runReasonSuffix = runReason ? ` • note=${runReason}` : ''
+1138:  const req = asRecord(validationReq)
+1139:  const admissionPolicy = normalizeText(req?.admission_policy)
+1140:  const admissionProvenance = asRecord(req?.admission_provenance)
+1141:  const admissionSource = normalizeText(admissionProvenance?.source_kind)
+1142:  const admissionPostCap = Math.max(0, Math.floor(Number(admissionProvenance?.post_cap_count ?? 0)))
+1143:  const admissionPostDedupe = Math.max(0, Math.floor(Number(admissionProvenance?.post_dedupe_count ?? 0)))
+1144:  const admissionRequested = normalizeText(admissionProvenance?.requested_policy)
+1145:  const admissionHeads = Array.isArray(admissionProvenance?.heads)
+1146:    ? admissionProvenance.heads
+1147:      .map((entry) => asRecord(entry))
+1148:      .map((entry) => normalizeText(entry?.objective ?? entry?.head))
+1149:      .filter((value, index, values) => value.length > 0 && values.indexOf(value) === index)
+1150:      .slice(0, 4)
+1151:      .join('/')
+1152:    : ''
+1153:  const admissionSummary = admissionPolicy
+1154:    ? ` • admission=${admissionPolicy}`
+1155:      + (admissionRequested && admissionRequested !== admissionPolicy ? ` req=${admissionRequested}` : '')
+1156:      + (admissionSource ? ` src=${admissionSource}` : '')
+1157:      + (admissionPostDedupe > 0 ? ` kept=${admissionPostCap}/${admissionPostDedupe}` : '')
+1158:      + (admissionHeads ? ` heads=${admissionHeads}` : '')
+1159:    : ''
+1160:
+1161:  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${admissionSummary}${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${runReasonSuffix}${minTrlSuffix}`
+1162:}
+1163:
+1164:function buildValidationHintText(result: unknown): string {
+1165:  const row = asRecord(result)
+1166:  const warnings: string[] = []
+1167:
+1168:  const backendRoute = normalizeText(row?.backend_route)
+1169:  const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
+1170:  if (backendFallbackReason) {
+1171:    const label = backendRoute.includes('->CpuOnly') ? 'route fallback' : 'route note'
+1172:    warnings.push(`${label}: ${backendFallbackReason}`)
+1173:  }
+1174:
+1175:  const cscv = asRecord(row?.cscv_pbo)
+1176:  const cscvSkipped = normalizeText(cscv?.skipped_reason)
+1177:  if (cscvSkipped) warnings.push(`CSCV skipped`)
+1178:
+1179:  const spa = asRecord(row?.spa)
+1180:  const spaSkipped = normalizeText(spa?.skipped_reason)
+1181:  if (spaSkipped) warnings.push(`SPA skipped`)
+1182:
+1183:  const runVerdict = asRecord(row?.run_verdict)
+1184:  const warningFlags = Array.isArray(runVerdict?.warning_flags)
+1185:    ? runVerdict.warning_flags.map((value) => normalizeText(value)).filter((value) => value.length > 0)
+1186:    : []
+1187:  if (warningFlags.length > 0) warnings.push(`run notes: ${warningFlags[0]}`)
+1188:
+1189:  if (!warnings.length) return 'Validation complete.'
+1190:  return `Validation complete with warnings: ${warnings.join(' • ')}`
+1191:}
+1192:
+1193:function topValidationCandidateRecord(result: unknown): Record<string, unknown> | null {
+1194:  const row = asRecord(result)
+1195:  const candidates = validationCandidates(result)
+1196:  if (candidates.length === 0) return null
+1197:  const runVerdict = asRecord(row?.run_verdict)
+1198:  const firstApprovedRank = Math.max(0, Math.floor(Number(runVerdict?.first_approved_rank ?? 0)))
+1199:  if (firstApprovedRank > 0) {
+1200:    const approvedCandidate = candidates[firstApprovedRank - 1]
+1201:    if (approvedCandidate) return approvedCandidate
+1202:  }
+1203:  return candidates[0] || null
+1204:}
+1205:
+1206:function deriveRegimeFragilityLabel(stableBucketCount: number, worstSharpe: number, worstMaxDd: number): string {
+1207:  if (stableBucketCount >= 4 && worstSharpe >= 0 && worstMaxDd <= 0.35) return 'stable'
+1208:  if (stableBucketCount >= 2 && worstSharpe >= -0.1 && worstMaxDd <= 0.45) return 'selective'
+1209:  return 'fragile'
+1210:}
+1211:
+1212:function deriveRegimeSupportLabel(regime: Record<string, unknown>): string {
+1213:  const explicit = normalizeText(regime.support_label)
+1214:  if (explicit) return explicit
+1215:  const trend = asRecord(regime.trend)
+1216:  const range = asRecord(regime.range)
+1217:  const trendStable = Number(trend?.pnl ?? Number.NaN) >= 0 && Number(trend?.sharpe ?? Number.NaN) >= 0
+1218:  const rangeStable = Number(range?.pnl ?? Number.NaN) >= 0 && Number(range?.sharpe ?? Number.NaN) >= 0
+1219:  const stableBucketCount = Math.max(0, Math.floor(Number(regime.stable_bucket_count ?? 0)))
+1220:  if (trendStable && rangeStable) return 'broad'
+1221:  if (trendStable) return 'trend_only'
+1222:  if (rangeStable) return 'range_only'
+1223:  return stableBucketCount >= 2 ? 'vol_selective' : 'weak'
+1224:}
+1225:
+1226:function buildValidationRegimeSummary(result: unknown): string {
+1227:  const candidate = topValidationCandidateRecord(result)
+1228:  const regime = asRecord(candidate?.regime_slice_robustness)
+1229:  if (!regime) return 'not run'
+1230:  const stableBucketCount = Math.max(0, Math.floor(Number(regime.stable_bucket_count ?? 0)))
+1231:  const stableBucketFrac = Number(regime.stable_bucket_frac ?? Number.NaN)
+1232:  const worstBucket = normalizeText(regime.worst_bucket_label) || 'unknown'
+1233:  const worstSharpe = Number(regime.worst_sharpe ?? Number.NaN)
+1234:  const worstMaxDd = Number(regime.worst_max_dd ?? Number.NaN)
+1235:  const worstUlcer = Number(regime.worst_ulcer_index ?? Number.NaN)
+1236:  const worstMartin = Number(regime.worst_martin_ratio ?? Number.NaN)
+1237:  const flag = deriveRegimeFragilityLabel(
+1238:    stableBucketCount,
+1239:    Number.isFinite(worstSharpe) ? worstSharpe : Number.NEGATIVE_INFINITY,
+1240:    Number.isFinite(worstMaxDd) ? worstMaxDd : Number.POSITIVE_INFINITY,
+1241:  )
+1242:  const support = deriveRegimeSupportLabel(regime)
+1243:  const sharpeSuffix = Number.isFinite(worstSharpe) ? ` • sh=${worstSharpe.toFixed(2)}` : ''
+1244:  const ulcerSuffix = Number.isFinite(worstUlcer) ? ` • ulcer=${worstUlcer.toFixed(3)}` : ''
+1245:  const martinSuffix = Number.isFinite(worstMartin) ? ` • martin=${worstMartin.toFixed(2)}` : ''
+1246:  const stableSuffix = Number.isFinite(stableBucketFrac)
+1247:    ? ` • stable=${stableBucketCount}/5 (${(stableBucketFrac * 100).toFixed(0)}%)`
+1248:    : ` • stable=${stableBucketCount}/5`
+1249:  return `${flag} • support=${support} • worst=${worstBucket}${stableSuffix}${sharpeSuffix}${ulcerSuffix}${martinSuffix}`
+1250:}
+1251:
+1252:function buildValidationFrictionSummary(result: unknown): string {
+1253:  const candidate = topValidationCandidateRecord(result)
+1254:  const friction = asRecord(candidate?.friction_stress)
+1255:  if (!friction) return 'not run'
+1256:  const passFrac = Number(friction.pass_frac ?? Number.NaN)
+1257:  const maxRankDrift = Math.max(0, Math.floor(Number(friction.max_rank_drift ?? 0)))
+1258:  const worstScenario = normalizeText(friction.worst_scenario_label) || 'unknown'
+1259:  const worstUlcer = Number(friction.worst_ulcer_index ?? Number.NaN)
+1260:  const worstMartin = Number(friction.worst_martin_ratio ?? Number.NaN)
+1261:  const flag = Number.isFinite(passFrac) && passFrac >= 1 && maxRankDrift < 2 ? 'stable' : 'fragile'
+1262:  const passSuffix = Number.isFinite(passFrac) ? ` • pass=${(passFrac * 100).toFixed(1)}%` : ''
+1263:  const ulcerSuffix = Number.isFinite(worstUlcer) ? ` • ulcer=${worstUlcer.toFixed(3)}` : ''
+1264:  const martinSuffix = Number.isFinite(worstMartin) ? ` • martin=${worstMartin.toFixed(2)}` : ''
+1265:  return `${flag} • worst=${worstScenario}${passSuffix} • drift=${maxRankDrift}${ulcerSuffix}${martinSuffix} • absolute pnl/sharpe rule`
+1266:}
+1267:
+1268:type ValidationModuleCategory =
+1269:  | 'GPU-native'
+1270:  | 'GPU main + CPU tail'
+1271:  | 'CPU-only'
+1272:  | 'lightweight rerun only'
+1273:  | 'not supported'
+1274:
+1275:function enabledExecutionCategoryModules(req: Record<string, unknown> | null | undefined): string[] {
+1276:  const modules = ['base reruns', 'hard gates']
+1277:  if (req?.walk_forward && typeof req.walk_forward === 'object') modules.push('walk_forward')
+1278:  if (req?.reopt_walk_forward && typeof req.reopt_walk_forward === 'object') modules.push('reopt_walk_forward')
+1279:  if (req?.cscv_pbo && typeof req.cscv_pbo === 'object') modules.push('cscv_pbo')
+1280:  if (req?.spa && typeof req.spa === 'object') modules.push('spa')
+1281:  if (req?.perturb && typeof req.perturb === 'object') modules.push('perturb')
+1282:  if (req?.trade_bootstrap && typeof req.trade_bootstrap === 'object') modules.push('trade_bootstrap')
+1283:  return modules
+1284:}
+1285:
+1286:function formatExecutionCategorySummary(groups: Array<[ValidationModuleCategory, string[]]>): string {
+1287:  const parts = groups
+1288:    .filter(([, labels]) => labels.length > 0)
+1289:    .map(([category, labels]) => `${category}: ${labels.join(' + ')}`)
+1290:  return parts.join(' | ') || 'none'
+1291:}
+1292:
+1293:function buildActualValidationCategorySummary(
+1294:  validationReq: Record<string, unknown> | null | undefined,
+1295:  row: Record<string, unknown> | null | undefined,
+1296:  strategyKind: string,
+1297:): string {
+1298:  const modules = enabledExecutionCategoryModules(validationReq)
+1299:  const backendUsed = normalizeText(row?.backend_used).toLowerCase()
+1300:  const backendRoute = normalizeText(row?.backend_route)
+1301:  if (modules.length === 0) return 'none'
+1302:  if (backendUsed !== 'gpu' || backendRoute.includes('->CpuOnly')) {
+1303:    return formatExecutionCategorySummary([['CPU-only', modules]])
+1304:  }
+1305:  if (!isDoubleLikeKind(strategyKind)) {
+1306:    const gpuNative: string[] = []
+1307:    const gpuMainCpuTail: string[] = []
+1308:    const isCpuReferenceHybrid = strategyKind === 'Carm' || strategyKind === 'Cdmc'
+1309:    const isVcetMixed = strategyKind === 'Vcet'
+1310:    const baseCategory = isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative
+1311:    baseCategory.push('base reruns', 'hard gates')
+1312:    if (validationReq?.walk_forward && typeof validationReq.walk_forward === 'object') {
+1313:      ;(isCpuReferenceHybrid || isVcetMixed ? gpuMainCpuTail : gpuNative).push('walk_forward')
+1314:    }
+1315:    if (validationReq?.reopt_walk_forward && typeof validationReq.reopt_walk_forward === 'object') {
+1316:      ;(isCpuReferenceHybrid || isVcetMixed ? gpuMainCpuTail : gpuNative).push('reopt_walk_forward')
+1317:    }
+1318:    if (validationReq?.cscv_pbo && typeof validationReq.cscv_pbo === 'object') {
+1319:      ;(isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative).push('cscv_pbo')
+1320:    }
+1321:    if (validationReq?.spa && typeof validationReq.spa === 'object') {
+1322:      ;(isCpuReferenceHybrid ? gpuMainCpuTail : gpuNative).push('spa')
+1323:    }
+1324:    if (validationReq?.perturb && typeof validationReq.perturb === 'object') gpuMainCpuTail.push('perturb')
+1325:    if (validationReq?.trade_bootstrap && typeof validationReq.trade_bootstrap === 'object') {
+1326:      gpuMainCpuTail.push('trade_bootstrap')
+1327:    }
+1328:    return formatExecutionCategorySummary([
+1329:      ['GPU-native', gpuNative],
+1330:      ['GPU main + CPU tail', gpuMainCpuTail],
+1331:    ])
+1332:  }
+1333:  const gpuNative: string[] = ['base reruns', 'hard gates']
+1334:  if (validationReq?.walk_forward && typeof validationReq.walk_forward === 'object') gpuNative.push('walk_forward')
+1335:  if (validationReq?.reopt_walk_forward && typeof validationReq.reopt_walk_forward === 'object') gpuNative.push('reopt_walk_forward')
+1336:  if (validationReq?.cscv_pbo && typeof validationReq.cscv_pbo === 'object') gpuNative.push('cscv_pbo')
+1337:  if (validationReq?.spa && typeof validationReq.spa === 'object') gpuNative.push('spa')
+1338:  const gpuMainCpuTail: string[] = []
+1339:  if (validationReq?.perturb && typeof validationReq.perturb === 'object') gpuMainCpuTail.push('perturb')
+1340:  if (validationReq?.trade_bootstrap && typeof validationReq.trade_bootstrap === 'object') gpuMainCpuTail.push('trade_bootstrap')
+1341:  return formatExecutionCategorySummary([
+1342:    ['GPU-native', gpuNative],
+1343:    ['GPU main + CPU tail', gpuMainCpuTail],
+1344:  ])
+1345:}
+1346:
+1347:function compositeValidationRouteDetailNote(strategyKind: string): string {
+1348:  switch (strategyKind) {
+1349:    case 'CompositeCpu':
+1350:      return 'Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU.'
+1351:    case 'Asr':
+1352:      return 'ASR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1353:    case 'Vcc':
+1354:      return 'VCC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. This removes the old fp32 momentum roundtrip fallback while keeping strict validation parity.'
+1355:    case 'Vemr':
+1356:      return 'VEMR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1357:    case 'Rocb':
+1358:      return 'ROCB GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1359:    case 'Vcet':
+1360:      return 'VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward and reopt walk-forward currently use the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work.'
+1361:    case 'Mkcs':
+1362:      return 'MKCS GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1363:    case 'Kqsr':
+1364:      return 'KQSR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1365:    case 'Kvdf':
+1366:      return 'KVDF GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1367:    case 'Carm':
+1368:      return 'CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+1369:    case 'Cdmc':
+1370:      return 'CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads.'
+1371:    default:
+1372:      return ''
+1373:  }
+1374:}
+1375:
+1376:function compositeValidationAutoCpuPreferenceNote(strategyKind: string): string {
+1377:  switch (strategyKind) {
+1378:    case 'Asr':
+1379:      return 'Auto composite validation currently prefers CPU for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1380:    case 'Vcc':
+1381:      return ''
+1382:    case 'Vemr':
+1383:      return 'Auto composite validation currently prefers CPU for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1384:    case 'Rocb':
+1385:      return 'Auto composite validation currently prefers CPU for ROCB because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1386:    case 'Mkcs':
+1387:      return 'Auto composite validation currently prefers CPU for MKCS because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1388:    case 'Kqsr':
+1389:      return 'Auto composite validation currently prefers CPU for KQSR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1390:    case 'Kvdf':
+1391:      return 'Auto composite validation currently prefers CPU for KVDF because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
+1392:    case 'Carm':
+1393:      return 'Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+1394:    default:
+1395:      return ''
+1396:  }
+1397:}
+1398:
+1399:function buildValidationExecutionSummary(result: unknown, validationReq?: unknown): {
+1400:  routeSummary: string
+1401:  routeDetailSummary: string
+1402:  categorySummary: string
+1403:  auxCpuSummary: string
+1404:  bootstrapSummary: string
+1405:  regimeSummary: string
+1406:  frictionSummary: string
+1407:  crossSummary: string
+1408:  skippedSummary: string
+1409:  warningSummary: string
+1410:} {
+1411:  const row = asRecord(result)
+1412:  const req = asRecord(validationReq)
+1413:  const validationContext = asRecord(req?.validation_context)
+1414:  const strategyKind = normalizeStrategyKindRaw(validationContext?.strategy_kind)
+1415:  const isDoubleLike = isDoubleLikeKind(strategyKind)
+1416:  const backendUsed = normalizeText(row?.backend_used) || 'unknown'
+1417:  const backendRoute = normalizeText(row?.backend_route) || '-'
+1418:  const backendFallbackReason = normalizeText(row?.backend_fallback_reason)
+1419:  const requestedBackend = normalizeText(asRecord(asRecord(validationReq)?.backend)?.backend)
+1420:  const compositeMoCpuPreferred = strategyKind === 'CompositeMo'
+1421:    && backendUsed.toLowerCase() === 'cpu'
+1422:    && backendRoute.toLowerCase().includes('cpuonly')
+1423:  const compositeMoRouteNote = compositeMoCpuPreferred
+1424:    ? 'CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.'
+1425:    : ''
+1426:  const compositeAutoCpuPreferred = strategyKind === 'Carm'
+1427:    && requestedBackend === 'Auto'
+1428:    && backendUsed.toLowerCase() === 'cpu'
+1429:    && backendRoute.toLowerCase().includes('cpuonly')
+1430:  const compositeAutoCpuRouteNote = compositeAutoCpuPreferred
+1431:    ? compositeValidationAutoCpuPreferenceNote(strategyKind)
+1432:    : ''
+1433:  const compositeGpuRouteDetail = backendUsed.toLowerCase() === 'gpu'
+1434:    ? compositeValidationRouteDetailNote(strategyKind)
+1435:    : ''
+1436:  const routeNoteParts = [
+1437:    backendFallbackReason,
+1438:    compositeMoRouteNote,
+1439:    compositeAutoCpuRouteNote,
+1440:    compositeGpuRouteDetail,
+1441:  ].filter((entry) => entry.length > 0)
+1442:  const routeNoteSummary = routeNoteParts.join(' • ')
+1443:  const routeModeLabel = (backendRoute.includes('->CpuOnly') && !compositeMoCpuPreferred && !compositeAutoCpuPreferred)
+1444:    ? 'fallback'
+1445:    : 'route note'
+1446:  const actualAuxCpuTails: string[] = []
+1447:  if (backendUsed.toLowerCase() === 'gpu' && !backendRoute.includes('->CpuOnly')) {
+1448:    if (req?.perturb && typeof req.perturb === 'object') actualAuxCpuTails.push('perturb')
+1449:    if (req?.trade_bootstrap && typeof req.trade_bootstrap === 'object') {
+1450:      actualAuxCpuTails.push(describeTradeBootstrapRequestConfig(req.trade_bootstrap))
+1451:    }
+1452:  }
+1453:  const routeSummaryBase = routeNoteSummary
+1454:    ? `${backendUsed} • ${backendRoute} • ${routeModeLabel}: ${routeNoteSummary}`
+1455:    : `${backendUsed} • ${backendRoute}`
+1456:  const routeDetailSummary = routeNoteSummary || 'none'
+1457:  const auxCpuSummary = actualAuxCpuTails.length > 0 ? actualAuxCpuTails.join(' + ') : 'none'
+1458:  const routeSummary = actualAuxCpuTails.length > 0
+1459:    ? `${routeSummaryBase} • aux CPU tails: ${auxCpuSummary}`
+1460:    : routeSummaryBase
+1461:  const auxCpuDesignNote = actualAuxCpuTails.length > 0
+1462:    ? `Aux CPU tails are intentional in the current validation route: ${auxCpuSummary}.`
+1463:    : ''
+1464:  const categorySummary = buildActualValidationCategorySummary(req, row, strategyKind)
+1465:
+1466:  const bootstrapSummary = buildBootstrapSummary(req?.trade_bootstrap)
+1467:  const regimeSummary = buildValidationRegimeSummary(result)
+1468:  const frictionSummary = buildValidationFrictionSummary(result)
+1469:
+1470:  const cross = asRecord(row?.cross_ticker)
+1471:  const crossDatasets = Array.isArray(cross?.datasets) ? cross.datasets.length : 0
+1472:  const requestedCross = asRecord(req?.cross_ticker)
+1473:  const crossMode = normalizeText(cross?.mode) || normalizeText(requestedCross?.mode)
+1474:  const preservedFinalistsMode = crossMode === 'preserved_finalists'
+1475:  const crossSummary = crossDatasets > 0
+1476:    ? isDoubleLike
+1477:      ? `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'}${crossMode ? ` • ${crossMode}` : ''}${preservedFinalistsMode ? ' • finalists only (cap=4)' : ''}`
+1478:      : `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'}${crossMode ? ` • requested=${crossMode}` : ''} • ${preservedFinalistsMode ? 'finalists only (cap=4)' : 'lightweight reruns'}`
+1479:    : 'not run'
+1480:
+1481:  const skipped: string[] = []
+1482:  if (req?.cross_ticker && typeof req.cross_ticker === 'object' && crossDatasets === 0) {
+1483:    skipped.push('Cross: unavailable')
+1484:  }
+1485:  if (isDoubleLike && preservedFinalistsMode) {
+1486:    skipped.push('Cross reruns: omit walk_forward + reopt WF + SPA + perturb + trade bootstrap')
+1487:  } else if (!isDoubleLike && requestedCross) {
+1488:    skipped.push(
+1489:      preservedFinalistsMode
+1490:        ? 'Cross reruns: preserved_finalists omit walk_forward + reopt WF + SPA + perturb + trade bootstrap'
+1491:        : 'Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates'
+1492:    )
+1493:  }
+1494:  if (req?.reopt_walk_forward && typeof req.reopt_walk_forward === 'object' && !asRecord(row?.reopt_walk_forward)) {
+1495:    skipped.push('Reopt WF: unavailable')
+1496:  }
+1497:  const cscv = asRecord(row?.cscv_pbo)
+1498:  const cscvSkipped = normalizeText(cscv?.skipped_reason)
+1499:  if (req?.cscv_pbo && typeof req.cscv_pbo === 'object') {
+1500:    skipped.push(cscvSkipped ? `CSCV: ${cscvSkipped}` : !cscv ? 'CSCV: unavailable' : '')
+1501:  }
+1502:  const spa = asRecord(row?.spa)
+1503:  const spaSkipped = normalizeText(spa?.skipped_reason)
+1504:  if (req?.spa && typeof req.spa === 'object') {
+1505:    skipped.push(spaSkipped ? `SPA: ${spaSkipped}` : !spa ? 'SPA: unavailable' : '')
+1506:  }
+1507:  const skippedSummary = skipped.filter((entry) => entry.length > 0).join(' • ') || 'none'
+1508:
+1509:  const runVerdict = asRecord(row?.run_verdict)
+1510:  const failReasons = Array.isArray(runVerdict?.fail_reasons)
+1511:    ? runVerdict.fail_reasons.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
+1512:    : []
+1513:  const warningFlags = Array.isArray(runVerdict?.warning_flags)
+1514:    ? runVerdict.warning_flags.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
+1515:    : []
+1516:  const warningSummary = failReasons[0] || warningFlags[0] || compositeMoRouteNote || auxCpuDesignNote || 'none'
+1517:
+1518:  return {
+1519:    routeSummary,
+1520:    routeDetailSummary,
+1521:    categorySummary,
+1522:    auxCpuSummary,
+1523:    bootstrapSummary,
+1524:    regimeSummary,
+1525:    frictionSummary,
+1526:    crossSummary,
+1527:    skippedSummary,
+1528:    warningSummary,
+1529:  }
+1530:}
+1531:
+1532:function compactWinnerLabel(value: unknown): string {
+1533:  const raw = normalizeText(value)
+1534:  if (!raw) return '—'
+1535:  try {
+1536:    const parsed = JSON.parse(raw) as Record<string, unknown>
+1537:    const fastMa = normalizeText(parsed.fast_ma_type || '?')
+1538:    const slowMa = normalizeText(parsed.slow_ma_type || '?')
+1539:    const fastLen = Math.max(0, Math.floor(Number(parsed.fast_len || 0)))
+1540:    const slowLen = Math.max(0, Math.floor(Number(parsed.slow_len || 0)))
+1541:    const base = `${fastMa || '?'}(${fastLen || '?'})/${slowMa || '?'}(${slowLen || '?'})`
+1542:    const overlays: string[] = []
+1543:    for (const key of ['asr', 'vcc', 'vemr', 'rocb', 'mkcs', 'kqsr', 'carm', 'kvdf', 'cdmc']) {
+1544:      const entry = asRecord(parsed[key])
+1545:      if (entry) overlays.push(key)
+1546:    }
+1547:    if (parsed.halftrend || parsed.halftrend_filter) overlays.push('halftrend')
+1548:    return overlays.length > 0 ? `${base}+${overlays.join('+')}` : base
+1549:  } catch {
+1550:    return raw.length > 40 ? `${raw.slice(0, 37)}...` : raw
+1551:  }
+1552:}
+1553:
+1554:function buildValidationReoptMetaText(result: unknown): string {
+1555:  const row = asRecord(result)
+1556:  const reopt = asRecord(row?.reopt_walk_forward)
+1557:  if (!reopt) return '-'
+1558:  const windows = Math.max(0, Math.floor(Number(reopt.windows ?? 0)))
+1559:  if (windows <= 0) return '-'
+1560:
+1561:  const topN = Math.max(1, Math.floor(Number(reopt.top_n_candidates ?? 1)))
+1562:  const uniqueWinners = Math.max(0, Math.floor(Number(reopt.unique_winners ?? 0)))
+1563:  const winnerChanges = Math.max(0, Math.floor(Number(reopt.winner_changes ?? 0)))
+1564:  const driftMean = Number(reopt.winner_param_drift_mean ?? Number.NaN)
+1565:  const driftMax = Number(reopt.winner_param_drift_max ?? Number.NaN)
+1566:  const hitRate = Number(reopt.forward_positive_pnl_frac ?? Number.NaN)
+1567:  const sharpeMedian = Number(reopt.forward_sharpe_median ?? Number.NaN)
+1568:  const ddWorst = Number(reopt.forward_max_dd_worst ?? Number.NaN)
+1569:  const ulcerWorst = Number(reopt.forward_ulcer_index_worst ?? Number.NaN)
+1570:  const martinMedian = Number(reopt.forward_martin_ratio_median ?? Number.NaN)
+1571:  const sequenceRaw = Array.isArray(reopt.winner_sequence) ? reopt.winner_sequence : []
+1572:  const sequence = sequenceRaw
+1573:    .slice(0, 4)
+1574:    .map((entry) => compactWinnerLabel(entry))
+1575:    .filter((entry) => entry.length > 0)
+1576:  const sequenceSuffix = sequence.length > 0
+1577:    ? ` • winners=${sequence.join(' -> ')}${sequenceRaw.length > sequence.length ? ' -> ...' : ''}`
+1578:    : ''
+1579:
+1580:  return `reopt_wf: ${windows} windows • topN=${topN} • unique=${uniqueWinners} • changes=${winnerChanges}` +
+1581:    `${Number.isFinite(hitRate) ? ` • oos_hit=${fmtPct(hitRate, 1)}` : ''}` +
+1582:    `${Number.isFinite(sharpeMedian) ? ` • sh_med=${sharpeMedian.toFixed(3)}` : ''}` +
+1583:    `${Number.isFinite(ddWorst) ? ` • dd_worst=${ddWorst.toFixed(3)}` : ''}` +
+1584:    `${Number.isFinite(ulcerWorst) ? ` • ulcer_worst=${ulcerWorst.toFixed(3)}` : ''}` +
+1585:    `${Number.isFinite(martinMedian) ? ` • martin_med=${martinMedian.toFixed(2)}` : ''}` +
+1586:    `${Number.isFinite(driftMean) ? ` • drift_mean=${driftMean.toFixed(3)}` : ''}` +
+1587:    `${Number.isFinite(driftMax) ? ` • drift_max=${driftMax.toFixed(3)}` : ''}` +
+1588:    sequenceSuffix
+1589:}
+1590:
+1591:function fmt(value: unknown, digits = 6): string {
+1592:  const n = Number(value)
+1593:  if (!Number.isFinite(n)) return '-'
+1594:  return n.toFixed(digits)
+1595:}
+1596:
+1597:function fmtFixed(value: number, digits = 2): string {
+1598:  if (!Number.isFinite(value)) return '-'
+1599:  return value.toFixed(digits)
+1600:}
+1601:
+1602:function fmtPct(value: unknown, digits = 1): string {
+1603:  const n = Number(value)
+1604:  if (!Number.isFinite(n)) return '-'
+1605:  return `${(n * 100).toFixed(digits)}%`
+1606:}
+1607:
+1608:function parseProbabilityGateValue(value: unknown): number | null {
+1609:  const raw = normalizeText(value)
+1610:  if (!raw) return null
+1611:  const n = Number(raw)
+1612:  if (!Number.isFinite(n)) return null
+1613:  return Math.max(0, Math.min(1, n))
+1614:}
+1615:
+1616:function parseFiniteNumberValue(value: unknown): number | null {
+1617:  const raw = normalizeText(value)
+1618:  if (!raw) return null
+1619:  const n = Number(raw)
+1620:  return Number.isFinite(n) ? n : null
+1621:}
+1622:
+1623:function validationCandidates(result: unknown): Array<Record<string, unknown>> {
+1624:  const row = asRecord(result)
+1625:  const xs = Array.isArray(row?.candidates) ? row.candidates : []
+1626:  const out: Array<Record<string, unknown>> = []
+1627:  for (const entry of xs) {
+1628:    const candidate = asRecord(entry)
+1629:    if (!candidate) continue
+1630:    out.push(candidate)
+1631:  }
+1632:  return out
+1633:}
+1634:
+1635:function computeValidationShortlist(
+1636:  result: unknown,
+1637:  minPsr: number | null,
+1638:  minDsr: number | null,
+1639:  minCscvRank: number | null,
+1640:  minCscvMetric: number | null
+1641:): {
+1642:  rows: Array<Record<string, unknown>>
+1643:  candidates: Array<Record<string, unknown>>
+1644:  strictBase: Array<Record<string, unknown>>
+1645:  hasCross: boolean
+1646:  usedFallback: boolean
+1647:  hasCscv: boolean
+1648:  cscvCombos: number
+1649:  cscvThreshold: number
+1650:  cscvRankMin: number
+1651:  usedCscvFallback: boolean
+1652:  hasProbGate: boolean
+1653:  probPassN: number
+1654:  hasBackendVerdicts: boolean
+1655:  backendPassN: number
+1656:  runVerdict: Record<string, unknown> | null
+1657:} {
+1658:  const CSCV_RANK_FRAC_MIN = 0.55
+1659:  const candidates = validationCandidates(result)
+1660:  const hasProbGate = minPsr != null || minDsr != null
+1661:  const cscvRankThreshold = minCscvRank ?? CSCV_RANK_FRAC_MIN
+1662:  const runVerdict = asRecord(asRecord(result)?.run_verdict)
+1663:  const hasBackendVerdicts = candidates.some((candidate) => {
+1664:    const verdict = asRecord(candidate.validation_verdict)
+1665:    return !!verdict && typeof verdict.passed === 'boolean'
+1666:  })
+1667:  const passProbabilityGates = (candidate: Record<string, unknown>): boolean => {
+1668:    if (!hasProbGate) return true
+1669:    const psr = Number(candidate.psr)
+1670:    const dsr = Number(candidate.dsr)
+1671:    if (minPsr != null && (!Number.isFinite(psr) || psr < minPsr)) return false
+1672:    if (minDsr != null && (!Number.isFinite(dsr) || dsr < minDsr)) return false
+1673:    return true
+1674:  }
+1675:
+1676:  const hasCross = candidates.some((candidate) => {
+1677:    const cross = candidate.cross_ticker
+1678:    return !!(cross && typeof cross === 'object')
+1679:  })
+1680:
+1681:  const strict = candidates.filter((candidate) => {
+1682:    if (!candidate.robust_pareto) return false
+1683:    if (hasCross) return !!candidate.cross_ticker_pareto
+1684:    return true
+1685:  })
+1686:
+1687:  const resultRecord = asRecord(result)
+1688:  const cscv = asRecord(resultRecord?.cscv_pbo)
+1689:  const cscvCombos = Math.max(0, Math.floor(Number(cscv?.combinations ?? 0)))
+1690:  const cscvThreshold = Number(cscv?.threshold ?? 0)
+1691:  const hasCscv =
+1692:    cscvCombos > 0 &&
+1693:    candidates.some((candidate) => {
+1694:      const stats = candidate.cscv_pbo
+1695:      return !!(stats && typeof stats === 'object')
+1696:    })
+1697:
+1698:  const baseRows = strict.length > 0 ? strict : candidates
+1699:  const usedFallback = strict.length === 0
+1700:
+1701:  const passCscv = (candidate: Record<string, unknown>): boolean => {
+1702:    const verdict = asRecord(candidate.validation_verdict)
+1703:    if (verdict && typeof verdict.passed === 'boolean') return verdict.passed === true
+1704:    const stats = asRecord(candidate.cscv_pbo)
+1705:    if (!stats) return false
+1706:    const selectedFrac = Number(stats.is_selected_frac ?? 0)
+1707:    const rankFrac = Number(stats.oos_rank_frac_p50 ?? 0)
+1708:    const metric = Number(stats.oos_metric_p50 ?? Number.NaN)
+1709:    if (!Number.isFinite(selectedFrac) || selectedFrac <= 0) return false
+1710:    if (!Number.isFinite(rankFrac) || rankFrac < cscvRankThreshold) return false
+1711:    const requiredMetric = minCscvMetric != null ? minCscvMetric : cscvThreshold
+1712:    if (!Number.isFinite(metric) || metric < requiredMetric) return false
+1713:    return true
+1714:  }
+1715:
+1716:  const probFiltered = hasProbGate ? baseRows.filter(passProbabilityGates) : baseRows
+1717:  const cscvFiltered = hasCscv || hasBackendVerdicts ? probFiltered.filter(passCscv) : probFiltered
+1718:  const usedCscvFallback = !hasBackendVerdicts && hasCscv && baseRows.length > 0 && cscvFiltered.length === 0
+1719:  const pickedRows = hasProbGate ? cscvFiltered : usedCscvFallback ? baseRows : cscvFiltered
+1720:  const backendPassN = hasBackendVerdicts
+1721:    ? candidates.filter((candidate) => asRecord(candidate.validation_verdict)?.passed === true).length
+1722:    : 0
+1723:
+1724:  const sortByFinal = (left: Record<string, unknown>, right: Record<string, unknown>): number => {
+1725:    const robustL = Number(left.robust_score ?? 0)
+1726:    const robustR = Number(right.robust_score ?? 0)
+1727:    if (robustR !== robustL) return robustR - robustL
+1728:
+1729:    const cscvL = asRecord(left.cscv_pbo)
+1730:    const cscvR = asRecord(right.cscv_pbo)
+1731:    const rankL = Number(cscvL?.oos_rank_frac_p50 ?? 0)
+1732:    const rankR = Number(cscvR?.oos_rank_frac_p50 ?? 0)
+1733:    if (rankR !== rankL) return rankR - rankL
+1734:
+1735:    const selectedL = Number(cscvL?.is_selected_frac ?? 0)
+1736:    const selectedR = Number(cscvR?.is_selected_frac ?? 0)
+1737:    if (selectedR !== selectedL) return selectedR - selectedL
+1738:
+1739:    const metricL = Number(cscvL?.oos_metric_p50 ?? 0)
+1740:    const metricR = Number(cscvR?.oos_metric_p50 ?? 0)
+1741:    if (metricR !== metricL) return metricR - metricL
+1742:
+1743:    return 0
+1744:  }
+1745:
+1746:  return {
+1747:    rows: [...pickedRows].sort(sortByFinal),
+1748:    candidates,
+1749:    strictBase: strict,
+1750:    hasCross,
+1751:    usedFallback,
+1752:    hasCscv,
+1753:    cscvCombos,
+1754:    cscvThreshold,
+1755:    cscvRankMin: cscvRankThreshold,
+1756:    usedCscvFallback,
+1757:    hasProbGate,
+1758:    probPassN: probFiltered.length,
+1759:    hasBackendVerdicts,
+1760:    backendPassN,
+1761:    runVerdict
+1762:  }
+1763:}
+1764:
+1765:function buildValidationShortlistMetaText(shortlist: ReturnType<typeof computeValidationShortlist>, minPsr: number | null, minDsr: number | null): string {
+1766:  const robustParetoN = shortlist.candidates.filter((candidate) => !!candidate.robust_pareto).length
+1767:  const crossParetoN = shortlist.hasCross ? shortlist.candidates.filter((candidate) => !!candidate.cross_ticker_pareto).length : 0
+1768:  const baseRule = shortlist.hasCross ? 'robust_pareto && cross_ticker_pareto' : 'robust_pareto'
+1769:  const probRule = shortlist.hasProbGate ? `prob(${minPsr != null ? `psr>=${fmtFixed(minPsr, 2)}` : ''}${minPsr != null && minDsr != null ? ',' : ''}${minDsr != null ? `dsr>=${fmtFixed(minDsr, 2)}` : ''})` : ''
+1770:  const cscvRule = shortlist.hasCscv ? `cscv(oos_rank_p50>=${shortlist.cscvRankMin}, oos_sharpe_p50>=${shortlist.cscvThreshold})` : ''
+1771:  const backendRule = shortlist.hasBackendVerdicts ? 'backend_hard_gates' : ''
+1772:  const rule = [baseRule, probRule, cscvRule, backendRule].filter((part) => part.length > 0).join(' && ')
+1773:  const baseFallbackNote = shortlist.usedFallback ? ' • (fallback: top robust score)' : ''
+1774:  const cscvFallbackNote = shortlist.usedCscvFallback && !shortlist.hasProbGate ? ' • (cscv fallback)' : ''
+1775:  const crossNote = shortlist.hasCross ? ` • cross_pareto=${crossParetoN}/${shortlist.candidates.length}` : ''
+1776:  const strictCount = shortlist.strictBase.length > 0 ? shortlist.strictBase.length : shortlist.candidates.length
+1777:  const probNote = shortlist.hasProbGate ? ` • prob_pass=${shortlist.probPassN}/${strictCount}` : ''
+1778:  const cscvNote = shortlist.hasCscv ? ` • cscv=${shortlist.cscvCombos} combos` : ''
+1779:  const cscvPassNote = shortlist.hasCscv ? ` • cscv_pass=${shortlist.rows.length}/${strictCount}` : ''
+1780:  const backendNote = shortlist.hasBackendVerdicts ? ` • backend_pass=${shortlist.backendPassN}/${shortlist.candidates.length}` : ''
+1781:  const approvedCount = Math.max(0, Math.floor(Number(shortlist.runVerdict?.approved_candidate_count ?? 0)))
+1782:  const firstApprovedRank = Math.max(0, Math.floor(Number(shortlist.runVerdict?.first_approved_rank ?? 0)))
+1783:  const runVerdictRecommendation = normalizeText(shortlist.runVerdict?.final_recommendation)
+1784:  const runVerdictNote = shortlist.runVerdict
+1785:    ? ` • run=${shortlist.runVerdict.passed === false ? 'fail' : 'pass'} • approved=${approvedCount}${firstApprovedRank > 0 ? `@#${firstApprovedRank}` : ''}${runVerdictRecommendation ? ` • rec=${runVerdictRecommendation}` : ''}`
+1786:    : ''
+1787:  return `shortlist=${shortlist.rows.length}/${shortlist.candidates.length} • robust_pareto=${robustParetoN}/${shortlist.candidates.length}${crossNote}${probNote}${cscvNote}${cscvPassNote}${backendNote}${runVerdictNote} • rule=${rule}${baseFallbackNote}${cscvFallbackNote}`
+1788:}
+1789:
+1790:function buildValidationTableColumns(): ValidationTableColumn[] {
+1791:  return [
+1792:    { label: '#', alignLeft: true },
+1793:    { label: 'Fast', alignLeft: true },
+1794:    { label: 'Slow', alignLeft: true },
+1795:    { label: 'Robust', alignLeft: false },
+1796:    { label: 'PSR', alignLeft: false },
+1797:    { label: 'DSR', alignLeft: false },
+1798:    { label: 'CSCV Rank', alignLeft: false },
+1799:    { label: 'Gate', alignLeft: true },
+1800:    { label: 'Robust Pareto', alignLeft: true },
+1801:    { label: 'Cross', alignLeft: false },
+1802:    { label: 'Cross Pareto', alignLeft: true },
+1803:    { label: 'PnL', alignLeft: false },
+1804:    { label: 'Sharpe', alignLeft: false },
+1805:    { label: 'Max DD', alignLeft: false },
+1806:    { label: 'Trades', alignLeft: false }
+1807:  ]
+1808:}
+1809:
+1810:function buildValidationTableRows(shortlistRows: Array<Record<string, unknown>>, hasCross: boolean): ValidationTableRow[] {
+1811:  const rows: ValidationTableRow[] = []
+1812:  for (let i = 0; i < shortlistRows.length; i += 1) {
+1813:    const candidate = shortlistRows[i] || {}
+1814:    const params = asRecord(candidate.params) ?? {}
+1815:    const inSample = asRecord(candidate.in_sample) ?? {}
+1816:    const cross = asRecord(candidate.cross_ticker)
+1817:    const cscv = asRecord(candidate.cscv_pbo)
+1818:    const verdict = asRecord(candidate.validation_verdict)
+1819:    const failReasons = Array.isArray(verdict?.fail_reasons) ? verdict.fail_reasons.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0) : []
+1820:    const warningFlags = Array.isArray(verdict?.warning_flags) ? verdict.warning_flags.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0) : []
+1821:    const gateText = verdict
+1822:      ? verdict.passed === false
+1823:        ? failReasons[0] || 'fail'
+1824:        : warningFlags.length
+1825:          ? `pass*`
+1826:          : 'pass'
+1827:      : '-'
+1828:    const gateTitle = verdict
+1829:      ? [...failReasons, ...warningFlags].filter((entry) => entry.length > 0).join(' • ')
+1830:      : ''
+1831:
+1832:    rows.push({
+1833:      cells: [
+1834:        { text: String(i + 1), className: 'left mono', title: '' },
+1835:        {
+1836:          text: `${normalizeText(params.fast_ma_type || '?')}(${Math.max(0, Math.floor(Number(params.fast_len || 0))) || '?'})`,
+1837:          className: 'left mono',
+1838:          title: ''
+1839:        },
+1840:        {
+1841:          text: `${normalizeText(params.slow_ma_type || '?')}(${Math.max(0, Math.floor(Number(params.slow_len || 0))) || '?'})`,
+1842:          className: 'left mono',
+1843:          title: ''
+1844:        },
+1845:        { text: fmt(candidate.robust_score, 6), className: 'mono', title: '' },
+1846:        {
+1847:          text: candidate.psr != null ? fmt(candidate.psr, 4) : '-',
+1848:          className: 'mono',
+1849:          title: ''
+1850:        },
+1851:        {
+1852:          text: candidate.dsr != null ? fmt(candidate.dsr, 4) : '-',
+1853:          className: 'mono',
+1854:          title: ''
+1855:        },
+1856:        {
+1857:          text: cscv ? fmtPct(cscv.oos_rank_frac_p50, 1) : '-',
+1858:          className: 'mono',
+1859:          title: ''
+1860:        },
+1861:        {
+1862:          text: gateText,
+1863:          className: 'left mono',
+1864:          title: gateTitle
+1865:        },
+1866:        {
+1867:          text: candidate.robust_pareto ? 'robust' : '—',
+1868:          className: 'left',
+1869:          title: ''
+1870:        },
+1871:        {
+1872:          text: cross ? fmt(cross.score, 6) : '-',
+1873:          className: 'mono',
+1874:          title: ''
+1875:        },
+1876:        {
+1877:          text: hasCross ? (candidate.cross_ticker_pareto ? 'cross' : '—') : '—',
+1878:          className: 'left',
+1879:          title: ''
+1880:        },
+1881:        { text: fmt(inSample.pnl, 6), className: 'mono', title: '' },
+1882:        { text: fmt(inSample.sharpe, 6), className: 'mono', title: '' },
+1883:        { text: fmt(inSample.max_dd, 6), className: 'mono', title: '' },
+1884:        {
+1885:          text: String(Math.max(0, Math.floor(Number(inSample.trades || 0)))),
+1886:          className: 'mono',
+1887:          title: ''
+1888:        }
+1889:      ]
+1890:    })
+1891:  }
+1892:  return rows
+1893:}
+1894:
+1895:async function persistValidationArtifact(
+1896:  runReq: Record<string, unknown>,
+1897:  runRes: unknown,
+1898:  validationReq: Record<string, unknown>,
+1899:  validationRes: unknown,
+1900:  options: { reportXlsxPath?: string; datasetMeta?: Record<string, unknown> | null } = {}
+1901:): Promise<PersistValidationArtifactResult> {
+1902:  const currentRun = readWorkflowRunArtifactFromStore()
+1903:  const dataStore = readPiniaStoreState('data')
+1904:  const ts = normalizeText(currentRun?.ts) || new Date().toISOString()
+1905:  const csvPath = normalizeText(currentRun?.csvPath || dataStore?.csvPath)
+1906:  const reportXlsxPath = normalizeText(options.reportXlsxPath || currentRun?.reportXlsxPath)
+1907:  const tags = currentRun?.tags ?? []
+1908:  const datasetMeta =
+1909:    options.datasetMeta
+1910:      ?? currentRun?.datasetMeta
+1911:      ?? buildDatasetMetaForArtifact(csvPath, buildRunDatasetContextState())
+1912:  const mlSignal = currentRun?.mlSignal ?? null
+1913:  const optimizationMetricSurface = currentRun?.optimizationMetricSurface ?? null
+1914:  const configFingerprint = computeConfigFingerprint(runReq, validationReq)
+1915:
+1916:  return measureValidationReportPerf(
+1917:    'validationService.persistValidationArtifactMs',
+1918:    async () => {
+1919:      const artifact: Record<string, unknown> = {
+1920:        version: 1,
+1921:        kind: 'vectorgrid_run_artifact',
+1922:        ts,
+1923:        config_fingerprint: configFingerprint,
+1924:        run: { req: runReq, res: runRes },
+1925:        validation: { req: validationReq, res: validationRes },
+1926:        report_xlsx_path: reportXlsxPath,
+1927:        data: { csv_path: csvPath },
+1928:        dataset_meta: datasetMeta,
+1929:        ml_signal: mlSignal,
+1930:        optimization_metric_surface: optimizationMetricSurface,
+1931:        tags
+1932:      }
+1933:      let path = normalizeText(currentRun?.artifactPath)
+1934:      let persistenceWarning = ''
+1935:      try {
+1936:        const saveArgs: Record<string, unknown> = { artifact }
+1937:        if (normalizeText(currentRun?.artifactPath)) {
+1938:          saveArgs.existing_path = normalizeText(currentRun?.artifactPath)
+1939:        }
+1940:        const saved = (await invokeCommand('save_run_artifact', saveArgs)) as SaveRunArtifactResponse
+1941:        const next = normalizeText(saved?.path)
+1942:        if (next) path = next
+1943:      } catch (error) {
+1944:        const detail = normalizeText(error)
+1945:        persistenceWarning = detail
+1946:          ? `Validation artifact persistence failed: ${detail}`
+1947:          : 'Validation artifact persistence failed.'
+1948:      }
+1949:
+1950:      return {
+1951:        path,
+1952:        ts,
+1953:        csvPath,
+1954:        reportXlsxPath,
+1955:        datasetMeta,
+1956:        mlSignal,
+1957:        optimizationMetricSurface,
+1958:        tags,
+1959:        persistenceWarning,
+1960:      }
+1961:    },
+1962:    {
+1963:      meta: {
+1964:        hasExistingArtifactPath: !!normalizeText(currentRun?.artifactPath),
+1965:        hasReportXlsxPath: !!reportXlsxPath,
+1966:      },
+1967:      onSuccessMeta: (result) => ({
+1968:        persistedPathReturned: !!normalizeText(result.path),
+1969:        persistenceWarning: !!normalizeText(result.persistenceWarning),
+1970:      }),
+1971:    },
+1972:  )
+1973:}
+1974:
+1975:function applyVueValidationArtifacts(
+1976:  runReq: Record<string, unknown>,
+1977:  runRes: unknown,
+1978:  validationReq: Record<string, unknown>,
+1979:  validationRes: unknown,
+1980:  persisted: PersistValidationArtifactResult
+1981:): void {
+1982:  applyWorkflowArtifactsPayload(
+1983:    {
+1984:      currentRun: {
+1985:        ts: persisted.ts,
+1986:        artifact_path: persisted.path,
+1987:        report_xlsx_path: persisted.reportXlsxPath,
+1988:        csv_path: persisted.csvPath,
+1989:        dataset_meta: persisted.datasetMeta,
+1990:        ml_signal: persisted.mlSignal,
+1991:        optimization_metric_surface: persisted.optimizationMetricSurface,
+1992:        tags: persisted.tags,
+1993:        req: runReq,
+1994:        res: runRes
+1995:      },
+1996:      currentValidation: {
+1997:        ts: persisted.ts,
+1998:        req: validationReq,
+1999:        res: validationRes
+2000:      }
+2001:    },
+2002:    'vue'
+2003:  )
+2004:}
+2005:
+2006:function resolveValidationBuildContextFromWorkflowArtifacts(): LegacyValidationBuildContext | null {
+2007:  const runSnapshot = readRunSnapshotFromStore()
+2008:  const runArtifact = readWorkflowRunArtifactFromStore()
+2009:  const runReq = runSnapshot?.req ?? runArtifact?.req ?? null
+2010:  const runRes = runSnapshot?.res ?? runArtifact?.res ?? null
+2011:  const snapshotTopRows = extractTopRowsFromRunResult(runRes)
+2012:  if (!runReq || !runRes || snapshotTopRows.length === 0) return null
+2013:  return {
+2014:    currentRunReq: runReq,
+2015:    currentRunRes: runRes,
+2016:    topRows: snapshotTopRows,
+2017:    topRowsFiltered: []
+2018:  }
+2019:}
+2020:
+2021:export async function runValidation(options: ValidationRunOptions = {}): Promise<void> {
+2022:  const validationStartedAt = nowMs()
+2023:  const buildContext = resolveValidationBuildContextFromWorkflowArtifacts()
+2024:  if (!buildContext) {
+2025:    const message = 'Run an optimization first.'
+2026:    patchValidationStoreState({
+2027:      statusLine: message,
+2028:      validationHint: message,
+2029:      validationRouteSummary: '-',
+2030:      validationRouteDetailSummary: '-',
+2031:      validationCategorySummary: '-',
+2032:      validationAuxCpuSummary: '-',
+2033:      validationCrossSummary: '-',
+2034:      validationSkippedSummary: '-',
+2035:      validationWarningSummary: '-',
+2036:    })
+2037:    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
+2038:    throw new Error(message)
+2039:  }
+2040:  const runSnapshot = readRunSnapshotFromStore()
+2041:  const workflowRun = readWorkflowRunArtifactFromStore()
+2042:  const runReq = asRecord(runSnapshot?.req ?? buildContext.currentRunReq)
+2043:  const runRes = runSnapshot?.res ?? buildContext.currentRunRes
+2044:  if (!runReq || !runRes) {
+2045:    const message = 'Run artifact is unavailable. Re-run optimization first.'
+2046:    patchValidationStoreState({
+2047:      statusLine: message,
+2048:      validationHint: message,
+2049:      validationRouteSummary: '-',
+2050:      validationRouteDetailSummary: '-',
+2051:      validationCategorySummary: '-',
+2052:      validationAuxCpuSummary: '-',
+2053:      validationCrossSummary: '-',
+2054:      validationSkippedSummary: '-',
+2055:      validationWarningSummary: '-',
+2056:    })
+2057:    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
+2058:    throw new Error(message)
+2059:  }
+2060:  if (!workflowRun) {
+2061:    const message = 'Run artifact is unavailable. Re-run optimization first.'
+2062:    patchValidationStoreState({
+2063:      statusLine: message,
+2064:      validationHint: message,
+2065:      validationRouteSummary: '-',
+2066:      validationRouteDetailSummary: '-',
+2067:      validationCategorySummary: '-',
+2068:      validationAuxCpuSummary: '-',
+2069:      validationCrossSummary: '-',
+2070:      validationSkippedSummary: '-',
+2071:      validationWarningSummary: '-',
+2072:    })
+2073:    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
+2074:    throw new Error(message)
+2075:  }
+2076:  assertValidationRunMatchesCurrentDataset(workflowRun, runReq)
+2077:
+2078:  const buildInputs: Parameters<typeof buildValidationRequest>[0] = {
+2079:    currentRunReq: runReq,
+2080:    currentRunRes: runRes,
+2081:    runDatasetMeta: workflowRun.datasetMeta,
+2082:    runCsvPath: workflowRun.csvPath,
+2083:    topRows: buildContext.topRows,
+2084:    topRowsFiltered: buildContext.topRowsFiltered,
+2085:    candidates: readStoreTextInputValue('valCandidates'),
+2086:    admissionPolicy: readStoreTextInputValue('valAdmissionPolicy'),
+2087:    seed: readStoreTextInputValue('valSeed'),
+2088:    minPsr: readStoreTextInputValue('valMinPsr'),
+2089:    minDsr: readStoreTextInputValue('valMinDsr'),
+2090:    minCscvOosRankFrac: readStoreTextInputValue('valMinCscvRank'),
+2091:    minCscvOosMetric: readStoreTextInputValue('valMinCscvMetric'),
+2092:    maxPbo: readStoreTextInputValue('valMaxPbo'),
+2093:    spaEnable: readStoreCheckboxValue('valSpaEnable'),
+2094:    spaSlices: readStoreTextInputValue('valSpaSlices'),
+2095:    spaBootstrapSamples: readStoreTextInputValue('valSpaBootstrapSamples'),
+2096:    spaBlockLength: readStoreTextInputValue('valSpaBlockLength'),
+2097:    reoptWfEnable: readStoreCheckboxValue('valReoptWfEnable'),
+2098:    reoptWfWindow: readStoreTextInputValue('valReoptWfWindow'),
+2099:    reoptWfStep: readStoreTextInputValue('valReoptWfStep'),
+2100:    reoptWfTopN: readStoreTextInputValue('valReoptWfTopN'),
+2101:    wfEnable: readStoreCheckboxValue('valWfEnable'),
+2102:    wfWindow: readStoreTextInputValue('valWfWindow'),
+2103:    wfStep: readStoreTextInputValue('valWfStep'),
+2104:    perturbEnable: readStoreCheckboxValue('valPerturbEnable'),
+2105:    perturbIters: readStoreTextInputValue('valPerturbIters'),
+2106:    perturbMin: readStoreTextInputValue('valPerturbMin'),
+2107:    perturbMax: readStoreTextInputValue('valPerturbMax'),
+2108:    mcEnable: readStoreCheckboxValue('valMcEnable'),
+2109:    mcSims: readStoreTextInputValue('valMcSims'),
+2110:    mcBlockLen: readStoreTextInputValue('valMcBlockLen'),
+2111:    mcMode: readStoreTextInputValue('valMcMode'),
+2112:    cscvEnable: readStoreCheckboxValue('valCscvEnable'),
+2113:    cscvSlices: readStoreTextInputValue('valCscvSlices'),
+2114:    crossEnable: readStoreCheckboxValue('valCrossEnable'),
+2115:    crossMax: readStoreTextInputValue('valCrossMax'),
+2116:    crossMode: readStoreTextInputValue('valCrossMode'),
+2117:    crossDatasets: readVueCrossSelection()
+2118:  }
+2119:  if (typeof options.useFiltered === 'boolean') buildInputs.useFiltered = options.useFiltered
+2120:
+2121:  const validationReq = buildValidationRequest(buildInputs) as unknown as Record<string, unknown>
+2122:  const command = resolveValidationCommand(runReq)
+2123:  const switchTab = options.switchTab !== false
+2124:
+2125:  patchValidationStoreState({
+2126:      validateDisabled: true,
+2127:      statusLine: 'Running validation…',
+2128:      validationHint: 'Running validation…',
+2129:      validationRouteSummary: '-',
+2130:      validationRouteDetailSummary: '-',
+2131:      validationCategorySummary: '-',
+2132:      validationAuxCpuSummary: '-',
+2133:      validationBootstrapSummary: '-',
+2134:      validationRegimeSummary: '-',
+2135:      validationFrictionSummary: '-',
+2136:      validationCrossSummary: '-',
+2137:      validationSkippedSummary: '-',
+2138:      validationWarningSummary: '-',
+2139:      validationReoptMeta: '-'
+2140:  })
+2141:  writeDomTextContent('status', 'Running validation…', VALIDATION_PANEL_SELECTOR)
+2142:
+2143:  try {
+2144:    const commandStartedAt = nowMs()
+2145:    const validationRes = await measureValidationReportPerf(
+2146:      'validationService.validationCommandMs',
+2147:      async () => invokeCommand(command, { req: validationReq }),
+2148:      {
+2149:        meta: {
+2150:          command,
+2151:          autoExport: readValidationExportPrefs().autoExport,
+2152:        },
+2153:        onSuccessMeta: (result) => {
+2154:          const row = asRecord(result)
+2155:          const candidates = Array.isArray(row?.candidates) ? row.candidates.length : 0
+2156:          return {
+2157:            reportedRuntimeMs: Number(row?.runtime_ms ?? 0),
+2158:            candidateCount: candidates,
+2159:          }
+2160:        },
+2161:      },
+2162:    )
+2163:    const commandMs = Math.max(0, nowMs() - commandStartedAt)
+2164:    const reportedRuntimeMs = Number(asRecord(validationRes)?.runtime_ms ?? 0)
+2165:    const validationMeta = buildValidationMetaText(validationRes, validationReq)
+2166:    const validationReoptMeta = buildValidationReoptMetaText(validationRes)
+2167:    const executionSummary = buildValidationExecutionSummary(validationRes, validationReq)
+2168:    const minPsrGate = parseProbabilityGateValue(validationReq.min_psr)
+2169:    const minDsrGate = parseProbabilityGateValue(validationReq.min_dsr)
+2170:    const minCscvRankGate = parseProbabilityGateValue(validationReq.min_cscv_oos_rank_frac)
+2171:    const minCscvMetricGate = parseFiniteNumberValue(validationReq.min_cscv_oos_metric)
+2172:    const shortlist = computeValidationShortlist(validationRes, minPsrGate, minDsrGate, minCscvRankGate, minCscvMetricGate)
+2173:    const validationColumns = buildValidationTableColumns()
+2174:    const validationRows = buildValidationTableRows(shortlist.rows, shortlist.hasCross)
+2175:    const validationShortlistMeta = validationRows.length > 0 ? buildValidationShortlistMetaText(shortlist, minPsrGate, minDsrGate) : 'No validation result yet.'
+2176:    const { autoExport } = readValidationExportPrefs()
+2177:    const datasetMeta = workflowRun.datasetMeta ?? buildDatasetMetaForArtifact(workflowRun.csvPath, buildRunDatasetContextState())
+2178:    let autoExportStatus = ''
+2179:    let reportXlsxPath = ''
+2180:    if (autoExport) {
+2181:      const report = buildReportPayload({
+2182:        ts: workflowRun.ts,
+2183:        datasetMeta,
+2184:        optimizationMetricSurface: workflowRun.optimizationMetricSurface,
+2185:        runReq,
+2186:        runRes,
+2187:        validationReq,
+2188:        validationRes
+2189:      })
+2190:      try {
+2191:        const exportPrefs = readValidationExportPrefs()
+2192:        const exportResult = await measureValidationReportPerf(
+2193:          'validationService.autoExportReportXlsxMs',
+2194:          async () => exportReportXlsxInternal(report, {
+2195:            autoReveal: exportPrefs.autoReveal,
+2196:            maxRows: exportPrefs.maxRows,
+2197:            trigger: 'auto',
+2198:          }),
+2199:          {
+2200:            meta: {
+2201:              autoReveal: exportPrefs.autoReveal,
+2202:              maxRows: exportPrefs.maxRows,
+2203:            },
+2204:            onSuccessMeta: (result) => ({
+2205:              returnedPath: !!normalizeText(result.reportXlsxPath),
+2206:            }),
+2207:          },
+2208:        )
+2209:        autoExportStatus = exportResult.statusLine
+2210:        reportXlsxPath = exportResult.reportXlsxPath
+2211:      } catch (error) {
+2212:        const reason = String(error || '').trim() || 'unknown error'
+2213:        autoExportStatus = `Auto-export XLSX failed: ${reason}`
+2214:      }
+2215:    }
+2216:    const persisted = await persistValidationArtifact(runReq, runRes, validationReq, validationRes, {
+2217:      reportXlsxPath,
+2218:      datasetMeta
+2219:    })
+2220:
+2221:    applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
+2222:    const endToEndMs = Math.max(0, nowMs() - validationStartedAt)
+2223:    recordValidationReportPerf('validationService.runValidationEndToEndMs', endToEndMs, {
+2224:      command,
+2225:      autoExport,
+2226:      commandMs,
+2227:      reportedRuntimeMs: Number.isFinite(reportedRuntimeMs) ? reportedRuntimeMs : null,
+2228:      returnedReportXlsxPath: !!reportXlsxPath,
+2229:      persistenceWarning: !!normalizeText(persisted.persistenceWarning),
+2230:    })
+2231:    const statusLine = formatValidationStatus(
+2232:      commandMs,
+2233:      endToEndMs,
+2234:      [autoExportStatus, persisted.persistenceWarning]
+2235:        .map((part) => normalizeText(part))
+2236:        .filter((part) => part.length > 0)
+2237:        .join(' • '),
+2238:    )
+2239:    patchValidationStoreState({
+2240:      validationHint: buildValidationHintText(validationRes),
+2241:      validationMeta,
+2242:      validationRouteSummary: executionSummary.routeSummary,
+2243:      validationRouteDetailSummary: executionSummary.routeDetailSummary,
+2244:      validationCategorySummary: executionSummary.categorySummary,
+2245:      validationAuxCpuSummary: executionSummary.auxCpuSummary,
+2246:      validationBootstrapSummary: executionSummary.bootstrapSummary,
+2247:      validationRegimeSummary: executionSummary.regimeSummary,
+2248:      validationFrictionSummary: executionSummary.frictionSummary,
+2249:      validationCrossSummary: executionSummary.crossSummary,
+2250:      validationSkippedSummary: executionSummary.skippedSummary,
+2251:      validationWarningSummary: executionSummary.warningSummary,
+2252:      validationReoptMeta,
+2253:      validationColumns,
+2254:      validationRows,
+2255:      validationOutputPreview: toOutputPreview(validationRes),
+2256:      tableRowCount: validationRows.length,
+2257:      tableVisible: validationRows.length > 0,
+2258:      canExportValidationCsv: true,
+2259:      canExportValidationJson: true,
+2260:      canExportReportJson: true,
+2261:      canExportReportXlsx: true,
+2262:      validationShortlistMeta,
+2263:      statusLine
+2264:    })
+2265:    writeDomTextContent('validationMeta', validationMeta, VALIDATION_PANEL_SELECTOR)
+2266:    writeDomTextContent('status', statusLine, VALIDATION_PANEL_SELECTOR)
+2267:
+2268:    if (switchTab) selectWorkflowResultsTab('validate', true)
+2269:  } catch (error) {
+2270:    const message = String(error || '').trim() || 'Validation failed.'
+2271:    patchValidationStoreState({
+2272:      statusLine: message,
+2273:      validationHint: message,
+2274:      validationRouteSummary: '-',
+2275:      validationRouteDetailSummary: '-',
+2276:      validationCategorySummary: '-',
+2277:      validationAuxCpuSummary: '-',
+2278:      validationBootstrapSummary: '-',
+2279:      validationRegimeSummary: '-',
+2280:      validationFrictionSummary: '-',
+2281:      validationCrossSummary: '-',
+2282:      validationSkippedSummary: '-',
+2283:      validationWarningSummary: '-',
+2284:      validationReoptMeta: '-'
+2285:    })
+2286:    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
+2287:    throw error
+2288:  } finally {
+2289:    patchValidationStoreState({ validateDisabled: false })
+2290:  }
+2291:}
+2292:
+2293:export function previewValidationExecutionSummaryFromStores(): {
+2294:  routeSummary: string
+2295:  crossSummary: string
+2296:  moduleSummary: string
+2297:  categorySummary: string
+2298:  skippedSummary: string
+2299:  warningSummary: string
+2300:} {
+2301:  const buildContext = resolveValidationBuildContextFromWorkflowArtifacts()
+2302:  if (!buildContext) {
+2303:    return {
+2304:      routeSummary: 'Run an optimization first.',
+2305:      crossSummary: '-',
+2306:      moduleSummary: '-',
+2307:      categorySummary: '-',
+2308:      skippedSummary: '-',
+2309:      warningSummary: 'No validation preview is available without an optimization artifact.',
+2310:    }
+2311:  }
+2312:
+2313:  const runSnapshot = readRunSnapshotFromStore()
+2314:  const workflowRun = readWorkflowRunArtifactFromStore()
+2315:  const runReq = asRecord(runSnapshot?.req ?? buildContext.currentRunReq)
+2316:  const runRes = runSnapshot?.res ?? buildContext.currentRunRes
+2317:  if (!runReq || !runRes || !workflowRun) {
+2318:    return {
+2319:      routeSummary: 'Run artifact unavailable.',
+2320:      crossSummary: '-',
+2321:      moduleSummary: '-',
+2322:      categorySummary: '-',
+2323:      skippedSummary: '-',
+2324:      warningSummary: 'Re-run optimization before previewing validation execution.',
+2325:    }
+2326:  }
+2327:
+2328:  try {
+2329:    assertValidationRunMatchesCurrentDataset(workflowRun, runReq)
+2330:    const buildInputs: Parameters<typeof buildValidationRequest>[0] = {
+2331:      currentRunReq: runReq,
+2332:      currentRunRes: runRes,
+2333:      runDatasetMeta: workflowRun.datasetMeta,
+2334:      runCsvPath: workflowRun.csvPath,
+2335:      topRows: buildContext.topRows,
+2336:      topRowsFiltered: buildContext.topRowsFiltered,
+2337:      candidates: readStoreTextInputValue('valCandidates'),
+2338:      admissionPolicy: readStoreTextInputValue('valAdmissionPolicy'),
+2339:      seed: readStoreTextInputValue('valSeed'),
+2340:      minPsr: readStoreTextInputValue('valMinPsr'),
+2341:      minDsr: readStoreTextInputValue('valMinDsr'),
+2342:      minCscvOosRankFrac: readStoreTextInputValue('valMinCscvRank'),
+2343:      minCscvOosMetric: readStoreTextInputValue('valMinCscvMetric'),
+2344:      maxPbo: readStoreTextInputValue('valMaxPbo'),
+2345:      spaEnable: readStoreCheckboxValue('valSpaEnable'),
+2346:      spaSlices: readStoreTextInputValue('valSpaSlices'),
+2347:      spaBootstrapSamples: readStoreTextInputValue('valSpaBootstrapSamples'),
+2348:      spaBlockLength: readStoreTextInputValue('valSpaBlockLength'),
+2349:      reoptWfEnable: readStoreCheckboxValue('valReoptWfEnable'),
+2350:      reoptWfWindow: readStoreTextInputValue('valReoptWfWindow'),
+2351:      reoptWfStep: readStoreTextInputValue('valReoptWfStep'),
+2352:      reoptWfTopN: readStoreTextInputValue('valReoptWfTopN'),
+2353:      wfEnable: readStoreCheckboxValue('valWfEnable'),
+2354:      wfWindow: readStoreTextInputValue('valWfWindow'),
+2355:      wfStep: readStoreTextInputValue('valWfStep'),
+2356:      perturbEnable: readStoreCheckboxValue('valPerturbEnable'),
+2357:      perturbIters: readStoreTextInputValue('valPerturbIters'),
+2358:      perturbMin: readStoreTextInputValue('valPerturbMin'),
+2359:      perturbMax: readStoreTextInputValue('valPerturbMax'),
+2360:      mcEnable: readStoreCheckboxValue('valMcEnable'),
+2361:      mcSims: readStoreTextInputValue('valMcSims'),
+2362:      mcBlockLen: readStoreTextInputValue('valMcBlockLen'),
+2363:      mcMode: readStoreTextInputValue('valMcMode'),
+2364:      cscvEnable: readStoreCheckboxValue('valCscvEnable'),
+2365:      cscvSlices: readStoreTextInputValue('valCscvSlices'),
+2366:      crossEnable: readStoreCheckboxValue('valCrossEnable'),
+2367:      crossMax: readStoreTextInputValue('valCrossMax'),
+2368:      crossMode: readStoreTextInputValue('valCrossMode'),
+2369:      crossDatasets: readVueCrossSelection(),
+2370:    }
+2371:    const validationReq = buildValidationRequest(buildInputs)
+2372:    return buildValidationCapabilitySummary(validationReq)
+2373:  } catch (error) {
+2374:    const message = normalizeText(error)
+2375:    return {
+2376:      routeSummary: 'Validation preview unavailable.',
+2377:      crossSummary: '-',
+2378:      moduleSummary: '-',
+2379:      categorySummary: '-',
+2380:      skippedSummary: '-',
+2381:      warningSummary: message || 'Unable to build validation preview from the current workflow state.',
+2382:    }
+2383:  }
+2384:}
+2385:
+2386:export function previewValidationAdmissionComparisonFromStores(): {
+2387:  summary: string
+2388:  detail: string
+2389:} {
+2390:  const buildContext = resolveValidationBuildContextFromWorkflowArtifacts()
+2391:  if (!buildContext) {
+2392:    return {
+2393:      summary: 'Run an optimization first.',
+2394:      detail: 'No shortlist comparison is available without an optimization artifact.',
+2395:    }
+2396:  }
+2397:
+2398:  const runSnapshot = readRunSnapshotFromStore()
+2399:  const workflowRun = readWorkflowRunArtifactFromStore()
+2400:  const runReq = asRecord(runSnapshot?.req ?? buildContext.currentRunReq)
+2401:  const runRes = runSnapshot?.res ?? buildContext.currentRunRes
+2402:  if (!runReq || !runRes || !workflowRun) {
+2403:    return {
+2404:      summary: 'Run artifact unavailable.',
+2405:      detail: 'Re-run optimization before previewing shortlist admission changes.',
+2406:    }
+2407:  }
+2408:
+2409:  try {
+2410:    const buildPreviewRequest = (admissionPolicyOverride?: string) =>
+2411:      buildValidationRequest({
+2412:        currentRunReq: runReq,
+2413:        currentRunRes: runRes,
+2414:        runDatasetMeta: workflowRun.datasetMeta,
+2415:        runCsvPath: workflowRun.csvPath,
+2416:        topRows: buildContext.topRows,
+2417:        topRowsFiltered: buildContext.topRowsFiltered,
+2418:        candidates: readStoreTextInputValue('valCandidates'),
+2419:        admissionPolicy: admissionPolicyOverride ?? readStoreTextInputValue('valAdmissionPolicy'),
+2420:        seed: readStoreTextInputValue('valSeed'),
+2421:        minPsr: readStoreTextInputValue('valMinPsr'),
+2422:        minDsr: readStoreTextInputValue('valMinDsr'),
+2423:        minCscvOosRankFrac: readStoreTextInputValue('valMinCscvRank'),
+2424:        minCscvOosMetric: readStoreTextInputValue('valMinCscvMetric'),
+2425:        maxPbo: readStoreTextInputValue('valMaxPbo'),
+2426:        spaEnable: readStoreCheckboxValue('valSpaEnable'),
+2427:        spaSlices: readStoreTextInputValue('valSpaSlices'),
+2428:        spaBootstrapSamples: readStoreTextInputValue('valSpaBootstrapSamples'),
+2429:        spaBlockLength: readStoreTextInputValue('valSpaBlockLength'),
+2430:        reoptWfEnable: readStoreCheckboxValue('valReoptWfEnable'),
+2431:        reoptWfWindow: readStoreTextInputValue('valReoptWfWindow'),
+2432:        reoptWfStep: readStoreTextInputValue('valReoptWfStep'),
+2433:        reoptWfTopN: readStoreTextInputValue('valReoptWfTopN'),
+2434:        wfEnable: readStoreCheckboxValue('valWfEnable'),
+2435:        wfWindow: readStoreTextInputValue('valWfWindow'),
+2436:        wfStep: readStoreTextInputValue('valWfStep'),
+2437:        perturbEnable: readStoreCheckboxValue('valPerturbEnable'),
+2438:        perturbIters: readStoreTextInputValue('valPerturbIters'),
+2439:        perturbMin: readStoreTextInputValue('valPerturbMin'),
+2440:        perturbMax: readStoreTextInputValue('valPerturbMax'),
+2441:        mcEnable: readStoreCheckboxValue('valMcEnable'),
+2442:        mcSims: readStoreTextInputValue('valMcSims'),
+2443:        mcBlockLen: readStoreTextInputValue('valMcBlockLen'),
+2444:        mcMode: readStoreTextInputValue('valMcMode'),
+2445:        cscvEnable: readStoreCheckboxValue('valCscvEnable'),
+2446:        cscvSlices: readStoreTextInputValue('valCscvSlices'),
+2447:        crossEnable: readStoreCheckboxValue('valCrossEnable'),
+2448:        crossMax: readStoreTextInputValue('valCrossMax'),
+2449:        crossMode: readStoreTextInputValue('valCrossMode'),
+2450:        crossDatasets: readVueCrossSelection(),
+2451:      })
+2452:
+2453:    const currentReq = buildPreviewRequest()
+2454:    const currentPolicy = normalizeText(currentReq.admission_policy) || 'legacy_topk'
+2455:    const currentProvenance = asRecord(currentReq.admission_provenance)
+2456:    const requestedPolicy =
+2457:      normalizeText(currentProvenance?.requested_policy) || currentPolicy
+2458:    const currentNote = normalizeText(currentProvenance?.note)
+2459:    const currentHeads = Array.isArray(currentProvenance?.heads)
+2460:      ? (currentProvenance?.heads as unknown[])
+2461:          .map((entry) => asRecord(entry))
+2462:          .map((entry) => normalizeText(entry?.objective ?? entry?.head))
+2463:          .filter(
+2464:            (value, index, values) =>
+2465:              value.length > 0 && values.indexOf(value) === index,
+2466:          )
+2467:          .slice(0, 4)
+2468:      : []
+2469:    if (currentPolicy === 'legacy_topk') {
+2470:      if (requestedPolicy !== currentPolicy) {
+2471:        const detailParts = []
+2472:        if (currentNote) detailParts.push(currentNote)
+2473:        if (currentHeads.length > 0) {
+2474:          detailParts.push(`heads=${currentHeads.join('/')}`)
+2475:        }
+2476:        return {
+2477:          summary: `${requestedPolicy} -> legacy_topk fallback`,
+2478:          detail:
+2479:            detailParts.join(' • ') ||
+2480:            'The requested admission policy is unavailable for this artifact, so preview falls back to the legacy shortlist.',
+2481:        }
+2482:      }
+2483:      return {
+2484:        summary: 'Legacy Top K active.',
+2485:        detail: 'Switch the admission policy to compare a diversified shortlist against the legacy ordering.',
+2486:      }
+2487:    }
+2488:
+2489:    const legacyReq = buildPreviewRequest('legacy_topk')
+2490:    const currentCandidates = Array.isArray(currentReq.candidates)
+2491:      ? currentReq.candidates
+2492:      : []
+2493:    const legacyCandidates = Array.isArray(legacyReq.candidates)
+2494:      ? legacyReq.candidates
+2495:      : []
+2496:    const currentKeys = currentCandidates.map((candidate) =>
+2497:      canonicalPreviewKey(candidate),
+2498:    )
+2499:    const legacyKeys = legacyCandidates.map((candidate) =>
+2500:      canonicalPreviewKey(candidate),
+2501:    )
+2502:    const legacySet = new Set(legacyKeys)
+2503:    const currentOnlyCount = currentKeys.filter((key) => !legacySet.has(key)).length
+2504:    const currentSet = new Set(currentKeys)
+2505:    const legacyOnlyCount = legacyKeys.filter((key) => !currentSet.has(key)).length
+2506:    const overlap = currentKeys.filter((key) => legacySet.has(key)).length
+2507:
+2508:    const summary =
+2509:      currentOnlyCount === 0 && legacyOnlyCount === 0
+2510:        ? `${currentPolicy} matches legacy • ${currentCandidates.length} candidates`
+2511:        : `${currentPolicy} vs legacy • overlap=${overlap} • current-only=${currentOnlyCount} • legacy-only=${legacyOnlyCount}`
+2512:    const detailParts = [
+2513:      `current=${currentCandidates.length}`,
+2514:      `legacy=${legacyCandidates.length}`,
+2515:    ]
+2516:    if (currentHeads.length > 0) {
+2517:      detailParts.push(`heads=${currentHeads.join('/')}`)
+2518:    }
+2519:    return {
+2520:      summary,
+2521:      detail: detailParts.join(' • '),
+2522:    }
+2523:  } catch (error) {
+2524:    return {
+2525:      summary: 'Validation preview unavailable.',
+2526:      detail: normalizeText(error) || 'Unable to compare shortlist admission policies.',
+2527:    }
+2528:  }
+2529:}
+2530:
+2531:export async function exportShortlistCsv(): Promise<void> {
+2532:  const run = readWorkflowRunArtifactFromStore()
+2533:  const validation = readWorkflowValidationArtifactFromStore()
+2534:  const validationRes = validation?.res ?? null
+2535:  if (!validationRes) return
+2536:  const ts = normalizeText(run?.ts || validation?.ts) || new Date().toISOString()
+2537:  const csv = await invokeCommand('build_validation_shortlist_csv', {
+2538:    validation_res: validationRes
+2539:  })
+2540:  const downloaded = downloadText(`vectorgrid_validation_shortlist_${ts}.csv`, String(csv || ''), 'text/csv;charset=utf-8')
+2541:  patchValidationStoreState({
+2542:    statusLine: downloaded ? 'Exported validation shortlist CSV.' : 'Built validation shortlist CSV (download unavailable in this environment).'
+2543:  })
+2544:}
+2545:
+2546:export async function exportValidationJson(): Promise<void> {
+2547:  const run = readWorkflowRunArtifactFromStore()
+2548:  const validation = readWorkflowValidationArtifactFromStore()
+2549:  const validationRes = validation?.res ?? null
+2550:  if (!validationRes) return
+2551:  const ts = normalizeText(run?.ts || validation?.ts) || new Date().toISOString()
+2552:  const downloaded = downloadText(`vectorgrid_validation_${ts}.json`, safePrettyJson(validationRes), 'application/json;charset=utf-8')
+2553:  patchValidationStoreState({
+2554:    statusLine: downloaded ? 'Exported validation JSON.' : 'Built validation JSON (download unavailable in this environment).'
+2555:  })
+2556:}
+2557:
+2558:export async function exportReportJson(): Promise<void> {
+2559:  const report = buildCurrentReportPayloadFromStore()
+2560:  const hasRun = !!(report.run && report.run.res)
+2561:  if (!hasRun) return
+2562:  const ts = normalizeText(report.ts) || new Date().toISOString()
+2563:  const downloaded = downloadText(`vectorgrid_report_${ts}.json`, safePrettyJson(report), 'application/json;charset=utf-8')
+2564:  patchValidationStoreState({
+2565:    statusLine: downloaded ? 'Exported report JSON.' : 'Built report JSON (download unavailable in this environment).'
+2566:  })
+2567:}
+2568:
+2569:async function exportReportXlsxInternal(
+2570:  report: ReportPayload,
+2571:  prefs: ReportXlsxExportPrefs,
+2572:): Promise<ReportXlsxExportResult> {
+2573:  const ts = normalizeText(report.ts) || new Date().toISOString()
+2574:  const validationReq = asRecord(report.validation?.req ?? null)
+2575:  const validationRes = report.validation?.res ?? null
+2576:  const currentRun = readWorkflowRunArtifactFromStore()
+2577:  const currentValidation = readWorkflowValidationArtifactFromStore()
+2578:  let exportBranch = 'direct'
+2579:  let usedFallbackBuild = false
+2580:
+2581:  return measureValidationReportPerf(
+2582:    'validationService.exportReportXlsxTotalMs',
+2583:    async () => {
+2584:      if (!validationReq || validationRes == null) {
+2585:        exportBranch = 'stage3_meta'
+2586:        const stage3Path = readLatestMetaReportPath()
+2587:        if (!stage3Path) {
+2588:          return {
+2589:            statusLine: 'Run validation first to export report XLSX (or run Meta Analysis to open Stage 3 XLSX).',
+2590:            reportXlsxPath: '',
+2591:            artifactUpdated: false,
+2592:            artifactUpdateWarning: '',
+2593:          }
+2594:        }
+2595:        const opened = await measureValidationReportPerf(
+2596:          'validationService.exportReportXlsxOpenMs',
+2597:          async () => openPathWithRevealFallback(stage3Path),
+2598:          {
+2599:            meta: {
+2600:              branch: exportBranch,
+2601:              trigger: prefs.trigger,
+2602:            },
+2603:            onSuccessMeta: (result) => ({
+2604:              openedWith: normalizeText(result.openedWith),
+2605:            }),
+2606:          },
+2607:        )
+2608:        if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
+2609:          await measureValidationReportPerf(
+2610:            'validationService.exportReportXlsxRevealMs',
+2611:            async () => invokeCommand('reveal_path', { path: stage3Path }),
+2612:            {
+2613:              meta: {
+2614:                branch: exportBranch,
+2615:                trigger: prefs.trigger,
+2616:              },
+2617:            },
+2618:          ).catch(() => undefined)
+2619:        }
+2620:        return {
+2621:          statusLine: `Opened Stage 3 XLSX report: ${stage3Path}`,
+2622:          reportXlsxPath: '',
+2623:          artifactUpdated: false,
+2624:          artifactUpdateWarning: '',
+2625:        }
+2626:      }
+2627:
+2628:      let path = ''
+2629:      let artifactUpdated = false
+2630:      let artifactUpdateWarning = ''
+2631:      try {
+2632:        const artifactPath = normalizePath(currentRun?.artifactPath ?? '')
+2633:        const canUseArtifactExport =
+2634:          !!artifactPath
+2635:          && currentValidation?.req === validationReq
+2636:          && currentValidation?.res === validationRes
+2637:        exportBranch = canUseArtifactExport ? 'artifact' : 'direct'
+2638:        const saved = (await measureValidationReportPerf(
+2639:          'validationService.exportReportXlsxSaveMs',
+2640:          async () => invokeCommand(
+2641:            canUseArtifactExport ? 'save_report_xlsx_from_artifact' : 'save_report_xlsx',
+2642:            canUseArtifactExport
+2643:              ? {
+2644:                  path: artifactPath,
+2645:                  max_rows: prefs.maxRows
+2646:                }
+2647:              : {
+2648:                  report,
+2649:                  max_rows: prefs.maxRows
+2650:                },
+2651:          ) as Promise<SaveReportXlsxResponse>,
+2652:          {
+2653:            meta: {
+2654:              branch: exportBranch,
+2655:              trigger: prefs.trigger,
+2656:              maxRows: prefs.maxRows,
+2657:            },
+2658:            onSuccessMeta: (result) => ({
+2659:              returnedPath: !!normalizeText(result?.path),
+2660:            }),
+2661:          },
+2662:        )) as SaveReportXlsxResponse
+2663:        path = normalizeText(saved?.path)
+2664:        artifactUpdated = normalizeBoolean(saved?.artifact_updated)
+2665:        artifactUpdateWarning = normalizeText(saved?.artifact_update_warning)
+2666:      } catch (saveError) {
+2667:        usedFallbackBuild = true
+2668:        exportBranch = 'fallback_build'
+2669:        try {
+2670:          const base64 = await measureValidationReportPerf(
+2671:            'validationService.exportReportXlsxFallbackBuildMs',
+2672:            async () => invokeCommand('build_report_xlsx', {
+2673:              report,
+2674:              max_rows: prefs.maxRows
+2675:            }),
+2676:            {
+2677:              meta: {
+2678:                branch: exportBranch,
+2679:                trigger: prefs.trigger,
+2680:                maxRows: prefs.maxRows,
+2681:              },
+2682:            },
+2683:          )
+2684:          const downloaded = downloadBase64(`vectorgrid_report_${ts}.xlsx`, String(base64 || ''), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+2685:          return {
+2686:            statusLine: downloaded ? 'Exported XLSX report as a file download.' : 'Built XLSX report (download unavailable in this environment).',
+2687:            reportXlsxPath: '',
+2688:            artifactUpdated: false,
+2689:            artifactUpdateWarning: '',
+2690:          }
+2691:        } catch (fallbackError) {
+2692:          throw new Error(`Failed to export XLSX report: ${String(saveError)} | fallback failed: ${String(fallbackError)}`)
+2693:        }
+2694:      }
+2695:
+2696:      if (!path) {
+2697:        return {
+2698:          statusLine: 'Saved XLSX report, but no path was returned.',
+2699:          reportXlsxPath: '',
+2700:          artifactUpdated: false,
+2701:          artifactUpdateWarning,
+2702:        }
+2703:      }
+2704:
+2705:      const opened = await measureValidationReportPerf(
+2706:        'validationService.exportReportXlsxOpenMs',
+2707:        async () => openPathWithRevealFallback(path),
+2708:        {
+2709:          meta: {
+2710:            branch: exportBranch,
+2711:            trigger: prefs.trigger,
+2712:          },
+2713:          onSuccessMeta: (result) => ({
+2714:            openedWith: normalizeText(result.openedWith),
+2715:          }),
+2716:        },
+2717:      )
+2718:      if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
+2719:        await measureValidationReportPerf(
+2720:          'validationService.exportReportXlsxRevealMs',
+2721:          async () => invokeCommand('reveal_path', { path }),
+2722:          {
+2723:            meta: {
+2724:              branch: exportBranch,
+2725:              trigger: prefs.trigger,
+2726:            },
+2727:          },
+2728:        ).catch(() => undefined)
+2729:      }
+2730:      return {
+2731:        statusLine: `Saved XLSX report: ${path}`,
+2732:        reportXlsxPath: path,
+2733:        artifactUpdated,
+2734:        artifactUpdateWarning,
+2735:      }
+2736:    },
+2737:    {
+2738:      meta: {
+2739:        trigger: prefs.trigger,
+2740:        autoReveal: prefs.autoReveal,
+2741:        maxRows: prefs.maxRows,
+2742:      },
+2743:      onSuccessMeta: (result) => ({
+2744:        branch: exportBranch,
+2745:        usedFallbackBuild,
+2746:        returnedPath: !!normalizeText(result.reportXlsxPath),
+2747:        artifactUpdated: result.artifactUpdated,
+2748:        artifactUpdateWarning: !!normalizeText(result.artifactUpdateWarning),
+2749:      }),
+2750:      onErrorMeta: () => ({
+2751:        branch: exportBranch,
+2752:        usedFallbackBuild,
+2753:      }),
+2754:    },
+2755:  )
+2756:}
+2757:
+2758:function buildPersistedValidationArtifactFromCurrentRun(
+2759:  reportXlsxPath: string,
+2760:): PersistValidationArtifactResult | null {
+2761:  const currentRun = readWorkflowRunArtifactFromStore()
+2762:  if (!currentRun) return null
+2763:  return {
+2764:    path: currentRun.artifactPath,
+2765:    ts: normalizeText(currentRun.ts) || new Date().toISOString(),
+2766:    csvPath: currentRun.csvPath,
+2767:    reportXlsxPath: normalizeText(reportXlsxPath),
+2768:    datasetMeta: currentRun.datasetMeta,
+2769:    mlSignal: currentRun.mlSignal,
+2770:    optimizationMetricSurface: currentRun.optimizationMetricSurface,
+2771:    tags: currentRun.tags,
+2772:    persistenceWarning: '',
+2773:  }
+2774:}
+2775:
+2776:export async function exportReportXlsx(): Promise<void> {
+2777:  const report = buildCurrentReportPayloadFromStore()
+2778:  const runReq = asRecord(report.run?.req)
+2779:  const runRes = report.run?.res ?? null
+2780:  const validationReq = asRecord(report.validation?.req ?? null)
+2781:  const validationRes = report.validation?.res ?? null
+2782:  const exportPrefs = readValidationExportPrefs()
+2783:  const result = await exportReportXlsxInternal(report, {
+2784:    autoReveal: exportPrefs.autoReveal,
+2785:    maxRows: exportPrefs.maxRows,
+2786:    trigger: 'manual',
+2787:  })
+2788:  let statusLine = result.statusLine
+2789:  if (runReq && runRes != null && validationReq && validationRes != null && result.reportXlsxPath) {
+2790:    if (result.artifactUpdated) {
+2791:      const persisted = buildPersistedValidationArtifactFromCurrentRun(result.reportXlsxPath)
+2792:      if (persisted) {
+2793:        applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
+2794:      }
+2795:      statusLine = [result.statusLine, result.artifactUpdateWarning]
+2796:        .map((part) => normalizeText(part))
+2797:        .filter((part) => part.length > 0)
+2798:        .join(' • ')
+2799:    } else {
+2800:      const persisted = await persistValidationArtifact(runReq, runRes, validationReq, validationRes, {
+2801:        reportXlsxPath: result.reportXlsxPath,
+2802:      })
+2803:      applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
+2804:      statusLine = [result.statusLine, result.artifactUpdateWarning, persisted.persistenceWarning]
+2805:        .map((part) => normalizeText(part))
+2806:        .filter((part) => part.length > 0)
+2807:        .join(' • ')
+2808:    }
+2809:  }
+2810:  patchValidationStoreState({ statusLine })
+2811:}
+2812:
+2813:export async function openReportsDir(): Promise<void> {
+2814:  await invokeCommand('open_reports_dir')
+2815:}
+2816:
+2817:export async function crossRefresh(): Promise<ValidationCrossRefreshSummary> {
+2818:  const raw = (await invokeCommand('polygon_get_cache_info')) as PolygonCacheInfoResponse
+2819:  const datasets = Array.isArray(raw?.datasets) ? raw.datasets : []
+2820:
+2821:  const entries: ValidationCrossDatasetSummary[] = []
+2822:  for (const row of datasets) {
+2823:    const dataset = (row && typeof row === 'object' ? row : {}) as PolygonCrossDatasetResponse
+2824:    const path = normalizeText(dataset.csv_path)
+2825:    if (!path) continue
+2826:
+2827:    const label = normalizeText(dataset.display_symbol || dataset.polygon_ticker || path) || path
+2828:    const market = normalizeText(dataset.market)
+2829:    const timeframe = normalizeText(dataset.timeframe) || '1m'
+2830:    const adjusted = market === 'stocks' ? !!dataset.adjusted : null
+2831:    const minTs = formatYmdUtc(dataset.min_ts)
+2832:    const maxTs = formatYmdUtc(dataset.max_ts)
+2833:    const updated = formatYmdUtc(dataset.last_updated_utc_ms)
+2834:    const rowsHint = normalizeRowsHint(dataset.row_count)
+2835:    const marketLabel = normalizeMarketLabel(market, adjusted === true)
+2836:
+2837:    entries.push({
+2838:      path,
+2839:      label,
+2840:      meta: `${marketLabel} • tf=${timeframe} • ${minTs} → ${maxTs} • rows=${rowsHint} • updated=${updated}`,
+2841:      market,
+2842:      timeframe: timeframe.toLowerCase(),
+2843:      adjusted
+2844:    })
+2845:  }
+2846:
+2847:  entries.sort((a, b) => `${a.market}${a.label}`.localeCompare(`${b.market}${b.label}`))
+2848:  return { datasets: entries }
+2849:}
+2850:
+2851:export async function toggleCrossDataset(path: string, checked: boolean): Promise<void> {
+2852:  const nextPath = normalizePath(path)
+2853:  if (!nextPath) return
+2854:  const selected = readVueCrossSelection()
+2855:  const nextSelected: CrossSelectionEntry[] = []
+2856:  let present = false
+2857:  for (const item of selected) {
+2858:    const csvPath = normalizeText(item?.csv_path ?? item?.path)
+2859:    if (!csvPath) continue
+2860:    if (csvPath === nextPath) {
+2861:      present = true
+2862:      if (checked) {
+2863:        nextSelected.push({
+2864:          csv_path: csvPath,
+2865:          label: normalizeText(item?.label)
+2866:        })
+2867:      }
+2868:      continue
+2869:    }
+2870:    nextSelected.push({
+2871:      csv_path: csvPath,
+2872:      label: normalizeText(item?.label)
+2873:    })
+2874:  }
+2875:  if (checked && !present) {
+2876:    nextSelected.push({ csv_path: nextPath, label: '' })
+2877:  }
+2878:  writeVueCrossSelection(nextSelected)
+2879:}
