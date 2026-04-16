@@ -312,6 +312,8 @@ describe("mlSignalService", () => {
         ml_signal: {
           stage: "dataset_export",
           dataset_export_path: "C:\\data\\ml_dataset.csv",
+          source_bundle_manifest_path:
+            "C:\\models\\bundle-a\\manifest.json",
           export_manifest_path: "C:\\data\\ml_dataset.export_manifest.json",
           split_manifest_path: "C:\\data\\ml_dataset.split_manifest.json",
           feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
@@ -390,6 +392,7 @@ describe("mlSignalService", () => {
           data_id: "data-1",
           input_path: "C:\\data\\scores.csv",
           output_path: "C:\\data\\score_cache.json",
+          source_bundle_manifest_path: "C:\\models\\bundle-a\\manifest.json",
           feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
           feature_schema_hash: "schemahash-source-abcdef",
           export_manifest_path: "C:\\data\\ml_dataset.export_manifest.json",
@@ -442,6 +445,9 @@ describe("mlSignalService", () => {
     expect(workflowArtifacts.currentRun?.mlSignal?.stage).toBe("validation");
     expect(workflowArtifacts.currentRun?.mlSignal?.datasetExportPath).toBe(
       "C:\\data\\ml_dataset.csv",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.sourceBundleManifestPath).toBe(
+      "C:\\models\\bundle-a\\manifest.json",
     );
     expect(workflowArtifacts.currentRun?.mlSignal?.exportManifestPath).toBe(
       "C:\\data\\ml_dataset.export_manifest.json",
@@ -584,6 +590,44 @@ describe("mlSignalService", () => {
       native_gpu_device_id: 1,
       native_fallback_reason: "EnableGPUEvaluation unavailable",
     });
+  });
+
+  it("defaults native score-cache generation to native_cpu when no backend is set", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalScoreSource = "native";
+    optimize.mlSignalScoreInputPath = "";
+    optimize.mlSignalNativeBackend = "";
+
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "generate_ml_signal_score_cache") {
+        return {
+          matched_rows: 40,
+          skipped_rows: 0,
+          model_bundle_id: "bundle-a",
+          manifest_path: "C:\\data\\score_cache.manifest.json",
+          native_backend_requested: "native_cpu",
+          native_backend_used: "native_cpu",
+          score_space: "Probability",
+          score_scope: "FullDataset",
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_ml_signal_native_cpu.json" };
+      }
+      return {};
+    });
+
+    await generateMlSignalScoreCache();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "generate_ml_signal_score_cache",
+      {
+        req: expect.objectContaining({
+          native_backend_preference: "native_cpu",
+        }),
+      },
+    );
   });
 
   it("runs ML policy sweep through the dedicated command and persists the best policy", async () => {
@@ -732,6 +776,7 @@ describe("mlSignalService", () => {
             manifest_path: "",
             state: "warning",
             model_family: "",
+            issues: ["schema mismatch", "missing native sidecar"],
           },
         ];
       }
@@ -760,7 +805,7 @@ describe("mlSignalService", () => {
         bundleId: "bundle-b",
         manifestPath: "",
         state: "warning",
-        label: "bundle-b • warning",
+        label: "bundle-b • warning • 2 issues",
       },
     ]);
 
@@ -843,6 +888,24 @@ describe("mlSignalService", () => {
     );
     expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain(
       "optional for score-cache-backed validation",
+    );
+  });
+
+  it("requires a bundle status when native score-cache generation is selected", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalScoreSource = "native";
+    optimize.mlSignalModelBundleId = "";
+
+    const result = await refreshMlSignalModelStatus();
+
+    expect(result).toBeNull();
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "ml_signal_model_status",
+      expect.anything(),
+    );
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain(
+      "required for native score-cache generation",
     );
   });
 

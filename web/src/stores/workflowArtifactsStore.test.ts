@@ -187,6 +187,7 @@ describe("workflowArtifactsStore", () => {
           artifact_path: "C:/runs/ml_signal.json",
           ml_signal: {
             stage: "score_cache",
+            source_bundle_manifest_path: "C:/models/bundle-a/manifest.json",
             feature_schema_hash: "schemahash0123456789abcdef",
             exporter: {
               exporter_version: "desktop-ml-exporter@2026.04.15",
@@ -226,6 +227,7 @@ describe("workflowArtifactsStore", () => {
 
     expect(store.currentRun?.mlSignal).toMatchObject({
       stage: "score_cache",
+      sourceBundleManifestPath: "C:/models/bundle-a/manifest.json",
       featureSchemaHash: "schemahash0123456789abcdef",
       exporter: {
         exporter_version: "desktop-ml-exporter@2026.04.15",

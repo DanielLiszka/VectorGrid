@@ -1,4 +1,6 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 use libloading::Library;
@@ -8,7 +10,9 @@ const NVTX_VERSION: u16 = 3;
 const NVTX_COLOR_ARGB: i32 = 1;
 const NVTX_MESSAGE_TYPE_ASCII: i32 = 1;
 
+#[allow(dead_code)]
 const ENGINE_DOMAIN_NAME: &[u8] = b"engine\0";
+#[allow(dead_code)]
 const KERNEL_DOMAIN_NAME: &[u8] = b"kernel\0";
 
 type NvtxDomainHandle = *mut c_void;
@@ -18,7 +22,6 @@ type NvtxDomainRangePushExFn =
     unsafe extern "system" fn(NvtxDomainHandle, *const NvtxEventAttributes) -> c_int;
 type NvtxDomainRangePopFn = unsafe extern "system" fn(NvtxDomainHandle) -> c_int;
 type NvtxRangePushAFn = unsafe extern "system" fn(*const c_char) -> c_int;
-type NvtxRangePushExFn = unsafe extern "system" fn(*const NvtxEventAttributes) -> c_int;
 type NvtxRangePopFn = unsafe extern "system" fn() -> c_int;
 
 #[derive(Clone, Copy)]
@@ -45,11 +48,11 @@ pub(crate) mod color {
 
 #[derive(Clone, Copy)]
 struct NvtxApi {
+    #[allow(dead_code)]
     domain_create_a: Option<NvtxDomainCreateAFn>,
     domain_range_push_ex: Option<NvtxDomainRangePushExFn>,
     domain_range_pop: Option<NvtxDomainRangePopFn>,
     range_push_a: NvtxRangePushAFn,
-    range_push_ex: NvtxRangePushExFn,
     range_pop: NvtxRangePopFn,
 }
 
@@ -103,10 +106,11 @@ impl NvtxEventAttributes {
     }
 }
 
+#[must_use = "bind the guard for the duration of the profiled scope"]
 pub struct RangeGuard {
     domain: Option<NvtxDomainHandle>,
     pushed_default_range: bool,
-    default_name: Option<CString>,
+    _default_name: Option<CString>,
 }
 
 impl RangeGuard {
@@ -114,13 +118,16 @@ impl RangeGuard {
         Self {
             domain: None,
             pushed_default_range: false,
-            default_name: None,
+            _default_name: None,
         }
     }
 }
 
 impl Drop for RangeGuard {
     fn drop(&mut self) {
+        if self.domain.is_none() && !self.pushed_default_range {
+            return;
+        }
         let Some(api) = api() else {
             return;
         };
@@ -156,6 +163,13 @@ pub fn scope(domain: &str, name: &str) -> RangeGuard {
     }
 }
 
+fn try_push_default_range(api: &NvtxApi, name: Option<&CStr>) -> bool {
+    let Some(name) = name else {
+        return false;
+    };
+    unsafe { (api.range_push_a)(name.as_ptr()) >= 0 }
+}
+
 fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
     if !env_flag_enabled(NVTX_ENV, false) {
         return RangeGuard::disabled();
@@ -165,12 +179,7 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
     };
     let domain_handle = None;
     let can_use_domain_api = false;
-    let pushed_default_range = true;
-    let default_name = if pushed_default_range {
-        fallback_default_range_name(domain, name)
-    } else {
-        None
-    };
+    let default_name = fallback_default_range_name(domain, name);
     let default_name_c = match default_name {
         Some(ref value) => match CString::new(value.as_str()) {
             Ok(v) => Some(v),
@@ -178,6 +187,7 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
         },
         None => None,
     };
+    let mut pushed_default_range = false;
     let domain_name_c = if can_use_domain_api {
         match CString::new(name) {
             Ok(v) => Some(v),
@@ -189,7 +199,7 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
     unsafe {
         if let Some(ref default_name_c) = default_name_c {
             let _ = color;
-            (api.range_push_a)(default_name_c.as_ptr());
+            pushed_default_range = try_push_default_range(&api, Some(default_name_c.as_c_str()));
         }
         if let (Some(domain_handle), Some(domain_range_push_ex)) =
             (domain_handle, api.domain_range_push_ex)
@@ -208,7 +218,7 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
             None
         },
         pushed_default_range,
-        default_name: default_name_c,
+        _default_name: default_name_c,
     }
 }
 
@@ -227,6 +237,7 @@ fn should_mirror_default_range(domain: Domain, name: &str) -> bool {
         )
 }
 
+#[allow(dead_code)]
 fn domain_handle(domain: Domain) -> Option<NvtxDomainHandle> {
     match domain {
         Domain::Engine => ENGINE_DOMAIN
@@ -238,6 +249,7 @@ fn domain_handle(domain: Domain) -> Option<NvtxDomainHandle> {
     }
 }
 
+#[allow(dead_code)]
 fn create_domain(name: &[u8]) -> Option<usize> {
     let api = api()?;
     let domain_create_a = api.domain_create_a?;
@@ -250,6 +262,8 @@ fn create_domain(name: &[u8]) -> Option<usize> {
 }
 
 fn api() -> Option<NvtxApi> {
+    #[cfg(test)]
+    API_LOAD_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
     *NVTX_API.get_or_init(|| unsafe { try_load_api() })
 }
 
@@ -259,10 +273,6 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
             continue;
         };
         let Some(range_push_a) = load_symbol::<NvtxRangePushAFn>(&lib, b"nvtxRangePushA\0") else {
-            continue;
-        };
-        let Some(range_push_ex) = load_symbol::<NvtxRangePushExFn>(&lib, b"nvtxRangePushEx\0")
-        else {
             continue;
         };
         let Some(range_pop) = load_symbol::<NvtxRangePopFn>(&lib, b"nvtxRangePop\0") else {
@@ -293,7 +303,6 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
                 None
             },
             range_push_a,
-            range_push_ex,
             range_pop,
         });
     }
@@ -309,7 +318,11 @@ fn env_flag_enabled(name: &str, default_enabled: bool) -> bool {
     match std::env::var(name) {
         Ok(v) => {
             let v = v.trim();
-            !(v == "0" || v.eq_ignore_ascii_case("false"))
+            !(v.is_empty()
+                || v == "0"
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("no"))
         }
         Err(_) => default_enabled,
     }
@@ -349,8 +362,12 @@ fn library_candidates() -> Vec<String> {
 }
 
 static NVTX_API: OnceLock<Option<NvtxApi>> = OnceLock::new();
+#[allow(dead_code)]
 static ENGINE_DOMAIN: OnceLock<Option<usize>> = OnceLock::new();
+#[allow(dead_code)]
 static KERNEL_DOMAIN: OnceLock<Option<usize>> = OnceLock::new();
+#[cfg(test)]
+static API_LOAD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 
 fn default_color(name: &str) -> u32 {
     match name {
@@ -432,7 +449,41 @@ fn fallback_default_range_name(domain: Domain, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fallback_default_range_name, Domain};
+    use super::{
+        api, env_flag_enabled, fallback_default_range_name, scope, Domain, RangeGuard,
+        API_LOAD_ATTEMPTS, NVTX_ENV,
+    };
+    use crate::test_support::lock_test_env;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+    use std::sync::atomic::Ordering;
+
+    static API_LOAD_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarRestoreGuard {
+        previous: Option<OsString>,
+    }
+
+    impl Drop for EnvVarRestoreGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => unsafe { std::env::set_var(NVTX_ENV, value) },
+                None => unsafe { std::env::remove_var(NVTX_ENV) },
+            }
+        }
+    }
+
+    fn with_env_flag<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let _guard = lock_test_env();
+        let _restore = EnvVarRestoreGuard {
+            previous: std::env::var_os(NVTX_ENV),
+        };
+        match value {
+            Some(value) => unsafe { std::env::set_var(NVTX_ENV, value) },
+            None => unsafe { std::env::remove_var(NVTX_ENV) },
+        }
+        f()
+    }
 
     #[test]
     fn fallback_preserves_top_level_engine_capture_names() {
@@ -466,5 +517,48 @@ mod tests {
             fallback_default_range_name(Domain::Kernel, "backtest_core").as_deref(),
             Some("kernel::backtest_core")
         );
+    }
+
+    #[test]
+    fn disabled_guard_drop_does_not_probe_api_loader() {
+        let _guard = API_LOAD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = API_LOAD_ATTEMPTS.load(Ordering::Relaxed);
+        drop(RangeGuard::disabled());
+        drop(scope("unknown-domain", "noop"));
+        let after = API_LOAD_ATTEMPTS.load(Ordering::Relaxed);
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn api_probe_counter_increments_when_loader_is_touched() {
+        let _guard = API_LOAD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = API_LOAD_ATTEMPTS.load(Ordering::Relaxed);
+        let _ = api();
+        let after = API_LOAD_ATTEMPTS.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn env_flag_enabled_respects_blank_and_false_tokens() {
+        assert!(!with_env_flag(None, || env_flag_enabled(NVTX_ENV, false)));
+        assert!(with_env_flag(None, || env_flag_enabled(NVTX_ENV, true)));
+        assert!(!with_env_flag(Some(""), || env_flag_enabled(
+            NVTX_ENV, true
+        )));
+        assert!(!with_env_flag(Some("0"), || env_flag_enabled(
+            NVTX_ENV, true
+        )));
+        assert!(!with_env_flag(Some("false"), || env_flag_enabled(
+            NVTX_ENV, true
+        )));
+        assert!(!with_env_flag(Some("off"), || env_flag_enabled(
+            NVTX_ENV, true
+        )));
+        assert!(!with_env_flag(Some("no"), || env_flag_enabled(
+            NVTX_ENV, true
+        )));
+        assert!(with_env_flag(Some("1"), || env_flag_enabled(
+            NVTX_ENV, false
+        )));
     }
 }

@@ -1,5 +1,5 @@
 use crate::{polygon, settings};
-use chrono::{Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde::Serialize;
@@ -252,7 +252,8 @@ impl OptionContractTypeFilter {
 
     fn matches_contract(self, raw: &str) -> bool {
         match (self, raw.trim().to_ascii_lowercase().as_str()) {
-            (Self::Both, _) => true,
+            (Self::Both, "call") | (Self::Both, "c") => true,
+            (Self::Both, "put") | (Self::Both, "p") => true,
             (Self::Call, "call") | (Self::Call, "c") => true,
             (Self::Put, "put") | (Self::Put, "p") => true,
             _ => false,
@@ -343,14 +344,71 @@ fn derive_polygon_download_dataset_id(req: &PolygonOptionsDatasetDownloadRequest
     let root = sanitize_id_component(&req.root_symbol);
     let from = sanitize_id_component(&req.from);
     let to = sanitize_id_component(&req.to);
-    format!("{root}_options_1m_{from}_{to}")
+    let mut dataset_id = format!("{root}_options_1m_{from}_{to}");
+
+    if let Some(contract_type) = req.contract_type.as_deref() {
+        match OptionContractTypeFilter::parse(Some(contract_type)) {
+            Ok(OptionContractTypeFilter::Call) => dataset_id.push_str("_call"),
+            Ok(OptionContractTypeFilter::Put) => dataset_id.push_str("_put"),
+            _ => {}
+        }
+    }
+    if let Some(expiration_date_from) = req
+        .expiration_date_from
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        dataset_id.push_str("_exp_from_");
+        dataset_id.push_str(&sanitize_id_component(expiration_date_from));
+    }
+    if let Some(expiration_date_to) = req
+        .expiration_date_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        dataset_id.push_str("_exp_to_");
+        dataset_id.push_str(&sanitize_id_component(expiration_date_to));
+    }
+    if let Some(max_dte_days) = req.max_dte_days {
+        dataset_id.push_str(&format!("_max_dte_{max_dte_days}"));
+    }
+    if let Some(strike_min) = req.strike_min {
+        dataset_id.push_str("_strike_min_");
+        dataset_id.push_str(&sanitize_id_component(&strike_min.to_string()));
+    }
+    if let Some(strike_max) = req.strike_max {
+        dataset_id.push_str("_strike_max_");
+        dataset_id.push_str(&sanitize_id_component(&strike_max.to_string()));
+    }
+    if let Some(max_contracts) = req.max_contracts {
+        dataset_id.push_str(&format!("_max_contracts_{max_contracts}"));
+    }
+    if let Some(as_of) = req
+        .contract_reference_as_of_utc
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        dataset_id.push_str("_as_of_");
+        dataset_id.push_str(&sanitize_id_component(as_of));
+    }
+
+    dataset_id
+}
+
+fn resolve_options_datasets_dir(
+    app_local_data_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let market_root = settings::resolve_market_data_root_dir(app_local_data_dir)?;
+    Ok(market_root.join("options_research").join("datasets"))
 }
 
 fn options_datasets_dir(
     app_local_data_dir: &std::path::Path,
 ) -> Result<std::path::PathBuf, String> {
-    let market_root = settings::resolve_market_data_root_dir(app_local_data_dir)?;
-    let dir = market_root.join("options_research").join("datasets");
+    let dir = resolve_options_datasets_dir(app_local_data_dir)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -502,11 +560,29 @@ fn client_with_polygon_defaults() -> Result<Client, String> {
         .map_err(|e| e.to_string())
 }
 
+fn parse_retry_after_ms(value: &str, now: DateTime<Utc>, max_wait_ms: u64) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = trimmed.parse::<u64>() {
+        return Some(seconds.saturating_mul(1000).min(max_wait_ms));
+    }
+    let retry_at = DateTime::parse_from_rfc2822(trimmed).ok()?;
+    let delay_ms = retry_at
+        .with_timezone(&Utc)
+        .signed_duration_since(now)
+        .num_milliseconds()
+        .max(0) as u64;
+    Some(delay_ms.min(max_wait_ms))
+}
+
 fn send_json_with_retry<T, F>(make_request: F) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
     F: Fn() -> reqwest::blocking::RequestBuilder,
 {
+    const MAX_RETRY_WAIT_MS: u64 = 30_000;
     let mut last_err: Option<String> = None;
     for attempt in 0..=6u32 {
         let resp = make_request().send();
@@ -516,7 +592,7 @@ where
                 last_err = Some(e.to_string());
                 if attempt < 6 {
                     std::thread::sleep(std::time::Duration::from_millis(
-                        (1_000u64.saturating_mul(1u64 << attempt)).min(30_000),
+                        (1_000u64.saturating_mul(1u64 << attempt)).min(MAX_RETRY_WAIT_MS),
                     ));
                     continue;
                 }
@@ -536,13 +612,12 @@ where
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .map(|secs| secs.saturating_mul(1000));
+            .and_then(|value| parse_retry_after_ms(value, Utc::now(), MAX_RETRY_WAIT_MS));
         let body = resp.text().unwrap_or_default();
         let retriable = status.as_u16() == 429 || status.is_server_error();
         last_err = Some(format!("({status}) {body}"));
         if retriable && attempt < 6 {
-            let backoff_ms = (1_000u64.saturating_mul(1u64 << attempt)).min(30_000);
+            let backoff_ms = (1_000u64.saturating_mul(1u64 << attempt)).min(MAX_RETRY_WAIT_MS);
             let wait_ms = retry_after_ms.unwrap_or(backoff_ms).max(backoff_ms);
             std::thread::sleep(std::time::Duration::from_millis(wait_ms));
             continue;
@@ -817,35 +892,14 @@ fn download_polygon_options_dataset_into_store(
     if expiration_date_to < expiration_date_from {
         return Err("expiration_date_to must be >= expiration_date_from".to_string());
     }
-    let datasets_dir = options_datasets_dir(app_local_data_dir)?;
-    let dataset_id = derive_polygon_download_dataset_id(req);
-    let dataset_dir = datasets_dir.join(&dataset_id);
-    if dataset_dir.exists() {
-        return Err(format!(
-            "options dataset id '{}' already exists at {}",
-            dataset_id,
-            dataset_dir.display()
-        ));
+    if let (Some(strike_min), Some(strike_max)) = (req.strike_min, req.strike_max) {
+        if strike_min > strike_max {
+            return Err("strike_min must be <= strike_max".to_string());
+        }
     }
 
     let market_root = settings::resolve_market_data_root_dir(app_local_data_dir)?;
     let polygon_cache_dir = polygon::polygon_cache_dir(&market_root);
-    let underlying_download = polygon::download_1m_to_cache(
-        app_identifier,
-        &polygon_cache_dir,
-        &polygon::PolygonDownloadRequest {
-            market: "stocks".to_string(),
-            symbol: root_symbol.clone(),
-            from: req.from.clone(),
-            to: req.to.clone(),
-            adjusted: Some(false),
-            timeframe: Some("1m".to_string()),
-        },
-        None,
-    )?;
-    let underlying_csv_path = underlying_download.csv_path.clone();
-    let underlying_by_timestamp = read_underlying_close_map(&underlying_csv_path)?;
-
     let api_key = polygon::read_api_key(app_identifier, &polygon_cache_dir)?
         .ok_or_else(|| "Polygon API key is not set. Enter your key and click Save.".to_string())?;
     let client = client_with_polygon_defaults()?;
@@ -897,6 +951,33 @@ fn download_polygon_options_dataset_into_store(
             max_contracts
         ));
     }
+
+    let datasets_dir = options_datasets_dir(app_local_data_dir)?;
+    let dataset_id = derive_polygon_download_dataset_id(req);
+    let dataset_dir = datasets_dir.join(&dataset_id);
+    if dataset_dir.exists() {
+        return Err(format!(
+            "options dataset id '{}' already exists at {}",
+            dataset_id,
+            dataset_dir.display()
+        ));
+    }
+
+    let underlying_download = polygon::download_1m_to_cache(
+        app_identifier,
+        &polygon_cache_dir,
+        &polygon::PolygonDownloadRequest {
+            market: "stocks".to_string(),
+            symbol: root_symbol.clone(),
+            from: req.from.clone(),
+            to: req.to.clone(),
+            adjusted: Some(false),
+            timeframe: Some("1m".to_string()),
+        },
+        None,
+    )?;
+    let underlying_csv_path = underlying_download.csv_path.clone();
+    let underlying_by_timestamp = read_underlying_close_map(&underlying_csv_path)?;
 
     let result = (|| {
         std::fs::create_dir_all(&dataset_dir).map_err(|e| e.to_string())?;
@@ -1092,7 +1173,10 @@ pub async fn list_options_datasets(
 ) -> Result<Vec<OptionsDatasetManifestV1>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        let datasets_dir = options_datasets_dir(&app_local_data_dir)?;
+        let datasets_dir = resolve_options_datasets_dir(&app_local_data_dir)?;
+        if !datasets_dir.is_dir() {
+            return Ok(Vec::new());
+        }
         scan_options_dataset_manifests(&datasets_dir)
     })
     .await
@@ -1106,7 +1190,7 @@ pub async fn load_options_dataset_manifest(
 ) -> Result<OptionsDatasetManifestV1, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        let datasets_dir = options_datasets_dir(&app_local_data_dir)?;
+        let datasets_dir = resolve_options_datasets_dir(&app_local_data_dir)?;
         let dataset_id = sanitize_dataset_id(options_dataset_id.trim())?;
         let manifest_path = dataset_manifest_path(&datasets_dir, &dataset_id);
         if !manifest_path.is_file() {
@@ -1210,6 +1294,37 @@ mod tests {
             derive_polygon_download_dataset_id(&req),
             "spy_options_1m_2026_04_01_2026_04_05"
         );
+    }
+
+    #[test]
+    fn polygon_download_dataset_id_adds_material_filter_suffixes() {
+        let req = PolygonOptionsDatasetDownloadRequest {
+            root_symbol: "SPY".to_string(),
+            from: "2026-04-01".to_string(),
+            to: "2026-04-05".to_string(),
+            options_dataset_id: None,
+            contract_type: Some("call".to_string()),
+            expiration_date_from: Some("2026-04-03".to_string()),
+            expiration_date_to: Some("2026-04-12".to_string()),
+            max_dte_days: Some(14),
+            strike_min: Some(410.5),
+            strike_max: Some(420.0),
+            max_contracts: Some(50),
+            provider_entitlement_profile: None,
+            contract_reference_as_of_utc: Some("2026-04-05T23:59:00Z".to_string()),
+        };
+
+        assert_eq!(
+            derive_polygon_download_dataset_id(&req),
+            "spy_options_1m_2026_04_01_2026_04_05_call_exp_from_2026_04_03_exp_to_2026_04_12_max_dte_14_strike_min_410_5_strike_max_420_max_contracts_50_as_of_2026_04_05t23_59_00z"
+        );
+    }
+
+    #[test]
+    fn contract_type_filter_both_skips_unsupported_provider_values() {
+        assert!(OptionContractTypeFilter::Both.matches_contract("call"));
+        assert!(OptionContractTypeFilter::Both.matches_contract("p"));
+        assert!(!OptionContractTypeFilter::Both.matches_contract("other"));
     }
 
     #[test]
@@ -1318,6 +1433,63 @@ mod tests {
         let datasets_dir = options_datasets_dir(&app_local_data_dir).expect("datasets dir");
         let manifest_path = dataset_manifest_path(&datasets_dir, "spy_bad_aggregate_field");
         assert!(!manifest_path.exists());
+
+        let _ = std::fs::remove_dir_all(&app_local_data_dir);
+    }
+
+    #[test]
+    fn parse_retry_after_ms_accepts_seconds_and_http_date_and_clamps() {
+        let now = DateTime::parse_from_rfc3339("2026-04-01T12:00:00Z")
+            .expect("parse now")
+            .with_timezone(&Utc);
+
+        assert_eq!(parse_retry_after_ms("7", now, 30_000), Some(7_000));
+        assert_eq!(
+            parse_retry_after_ms("Wed, 01 Apr 2026 12:00:05 GMT", now, 30_000),
+            Some(5_000)
+        );
+        assert_eq!(
+            parse_retry_after_ms("Wed, 01 Apr 2026 12:10:00 GMT", now, 30_000),
+            Some(30_000)
+        );
+    }
+
+    #[test]
+    fn resolve_options_datasets_dir_does_not_create_directories() {
+        let app_local_data_dir = temp_app_local_data_dir("read_only_datasets_dir");
+        let datasets_dir = resolve_options_datasets_dir(&app_local_data_dir).expect("resolve dir");
+
+        assert!(!datasets_dir.exists());
+
+        let _ = std::fs::remove_dir_all(&app_local_data_dir);
+    }
+
+    #[test]
+    fn polygon_download_preflight_rejects_inverted_strike_range_before_io() {
+        let app_local_data_dir = temp_app_local_data_dir("polygon_strike_range_preflight");
+        let req = PolygonOptionsDatasetDownloadRequest {
+            root_symbol: "SPY".to_string(),
+            from: "2026-04-01".to_string(),
+            to: "2026-04-05".to_string(),
+            options_dataset_id: None,
+            contract_type: None,
+            expiration_date_from: None,
+            expiration_date_to: None,
+            max_dte_days: None,
+            strike_min: Some(430.0),
+            strike_max: Some(420.0),
+            max_contracts: None,
+            provider_entitlement_profile: None,
+            contract_reference_as_of_utc: None,
+        };
+
+        let error = download_polygon_options_dataset_blocking_headless(
+            req,
+            "com.vectorgrid.tests",
+            &app_local_data_dir,
+        )
+        .expect_err("invalid strike range should fail");
+        assert!(error.contains("strike_min must be <= strike_max"));
 
         let _ = std::fs::remove_dir_all(&app_local_data_dir);
     }

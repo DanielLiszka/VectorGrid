@@ -586,7 +586,7 @@ mod real {
         parse_arg_value("--output-dir")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from(r"C:\Rust Projects\ta_desktop_demo\target\cupti_sass_probe")
+                PathBuf::from(r"C:\Rust Projects\ta_desktop_demo\output\profiling\cupti_sass_probe")
             })
     }
 

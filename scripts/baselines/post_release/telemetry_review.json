@@ -163,7 +163,7 @@
   ],
   "sources": {
     "baseline": "scripts/baselines/workflow_regression_baseline.json",
-    "summary": "target/workflow_regression_summary.json",
+    "summary": "output/benchmarks/workflow_regression_summary.json",
     "ui_metrics": "scripts/baselines/ui_capture/perf_metrics.json",
     "memory_metrics": "scripts/baselines/ui_capture/optimization_memory_metrics.json",
     "samples_manifest": "scripts/baselines/samples/manifest.json"

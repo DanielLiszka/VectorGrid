@@ -313,7 +313,7 @@ fn parse_args() -> Result<CliConfig, String> {
         top_k: 20,
         holdout_frac: 0.20,
         device_id: 0,
-        out_path: PathBuf::from("target/real_data_optimizer_eval_aapl.json"),
+        out_path: PathBuf::from("output/reports/real_data_optimizer_eval_aapl.json"),
     };
 
     let mut args = std::env::args().skip(1);
@@ -404,7 +404,7 @@ fn print_help() {
     println!("  --top-k <n>            Default: 20");
     println!("  --holdout-frac <f>     Default: 0.20");
     println!("  --device <id>          Default: 0");
-    println!("  --out <path>           Default: target/real_data_optimizer_eval_aapl.json");
+    println!("  --out <path>           Default: output/reports/real_data_optimizer_eval_aapl.json");
 }
 
 fn parse_range_arg(raw: &str, name: &str) -> Result<(u32, u32, u32), String> {

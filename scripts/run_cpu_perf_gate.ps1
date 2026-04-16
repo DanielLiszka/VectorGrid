@@ -2,7 +2,7 @@ param(
   [ValidateSet("baseline", "candidate")]
   [string]$Mode = "candidate",
   [string]$BaselinePath = "scripts/baselines/cpu_perf_baseline.json",
-  [string]$OutPath = "target/cpu_perf_summary.json",
+  [string]$OutPath = "output/benchmarks/cpu_perf_summary.json",
   [double]$CriterionRegressionPct = 15.0,
   [bool]$CheckDynamicStrategyCpuRatio = $true,
   [string]$DynamicBenchFilter = "dynamic_strategy_cpu/full_run/2k/composite_mo",
@@ -10,7 +10,7 @@ param(
   [string]$DynamicOnEstimatesPath = "target/criterion/dynamic_strategy_cpu_full_run_2k/composite_mo_dynamic_env_on/new/estimates.json",
   [double]$DynamicStrategyCpuRegressionPct = 20.0,
   [string]$WorkflowBaselinePath = "scripts/baselines/workflow_regression_baseline.json",
-  [string]$WorkflowSummaryPath = "target/workflow_regression_summary.json",
+  [string]$WorkflowSummaryPath = "output/benchmarks/workflow_regression_summary.json",
   [ValidateSet("release", "dev")]
   [string]$WorkflowBuildProfile = "release"
 )

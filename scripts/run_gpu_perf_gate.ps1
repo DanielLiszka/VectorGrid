@@ -2,7 +2,7 @@ param(
   [ValidateSet("baseline", "candidate")]
   [string]$Mode = "candidate",
   [string]$BaselinePath = "scripts/baselines/gpu_perf_baseline.json",
-  [string]$OutPath = "target/gpu_perf_summary.json",
+  [string]$OutPath = "output/benchmarks/gpu_perf_summary.json",
   [string]$CaseId = "",
   [string]$BenchFilter = "",
   [string]$CriterionEstimatesPath = "",

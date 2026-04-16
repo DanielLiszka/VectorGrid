@@ -9,7 +9,7 @@ param(
     [string]$ShortlistSliceMode = "none",
     [string]$KernelFilter = "double_cross_backtest_tm_flex_f32_lockstep_time",
     [string]$Metric = "smsp__sass_inst_executed",
-    [string]$OutputDir = "target/cupti_sass_probe",
+    [string]$OutputDir = "output/profiling/cupti_sass_probe",
     [int]$DeviceId = 0
 )
 

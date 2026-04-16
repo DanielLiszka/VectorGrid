@@ -1,3 +1,5 @@
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+mod imp {
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -550,7 +552,7 @@ fn run_profile(cfg: &Config) -> Result<RunSummary, String> {
     }
 }
 
-fn main() -> Result<(), String> {
+pub(crate) fn main() -> Result<(), String> {
     let cfg = parse_config()?;
     let summary = run_profile(&cfg)?;
     let rendered = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
@@ -566,4 +568,18 @@ fn main() -> Result<(), String> {
         println!("{rendered}");
     }
     Ok(())
+}
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn main() -> Result<(), String> {
+    imp::main()
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn main() -> Result<(), String> {
+    Err(
+        "profile_doublema_campaign_prefetch requires `cuda,cuda-backtest-kernel` features."
+            .to_string(),
+    )
 }

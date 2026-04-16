@@ -11,11 +11,11 @@
     "peak_working_set_mb":  40.95,
     "peak_private_bytes":  40427520,
     "peak_private_mb":  38.55,
-    "workflow_summary_json":  "target/workflow_regression_summary.json",
+    "workflow_summary_json":  "output/benchmarks/workflow_regression_summary.json",
     "command":  {
                     "args":  [
                                  "--out",
-                                 "C:\\Rust Projects\\ta_desktop_demo\\target\\workflow_regression_summary.json",
+                                 "C:\\Rust Projects\\ta_desktop_demo\\output\\benchmarks\\workflow_regression_summary.json",
                                  "--candles-len",
                                  "10000",
                                  "--train-assets",

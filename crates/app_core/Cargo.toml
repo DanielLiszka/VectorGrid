@@ -122,3 +122,13 @@ required-features = ["cli"]
 [[bin]]
 name = "stage6b_kernel_report"
 path = "src/bin/stage6b_kernel_report.rs"
+
+[[bin]]
+name = "ta_ml_signal_native_smoke"
+path = "src/bin/ta_ml_signal_native_smoke.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "ta_ml_signal_export_dataset"
+path = "src/bin/ta_ml_signal_export_dataset.rs"
+required-features = ["cli"]

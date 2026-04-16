@@ -87,6 +87,30 @@ const { mode, workflowStep } = storeToRefs(workflowStore);
 const bundleOptions = ref<BundleOption[]>([]);
 const bundleRefreshBusy = ref(false);
 const hasTauriRuntime = computed(() => tauriRuntimeAvailable());
+const nativeBackendValue = computed(() =>
+  String(mlSignalNativeBackend.value || "").trim() || "native_cpu",
+);
+const nativeBackendUsesGpu = computed(() => {
+  const backend = nativeBackendValue.value;
+  return backend === "auto" || backend === "native_cuda";
+});
+const nativeBackendOptions = computed(() => {
+  const options = [
+    { value: "native_cpu", label: "Native CPU (recommended)" },
+  ];
+  if (nativeBackendValue.value === "auto") {
+    options.push({ value: "auto", label: "Auto (legacy experimental run)" });
+  } else if (nativeBackendValue.value === "native_cuda") {
+    options.push({
+      value: "native_cuda",
+      label: "Native CUDA (legacy experimental run)",
+    });
+  }
+  return options;
+});
+const nativeBackendHasLegacyExperimentalValue = computed(
+  () => nativeBackendUsesGpu.value,
+);
 const datasetLoaded = computed(() => {
   const dataId = String(dataStore.dataId || "").trim();
   return !!dataId && dataId !== "—";
@@ -830,17 +854,35 @@ async function refreshBundleOptions(): Promise<void> {
   bundleRefreshBusy.value = true;
   try {
     bundleOptions.value = await listMlSignalModelBundles();
+  } catch (error) {
+    optimizeStore.statusLine = describeUiError(
+      error,
+      "ML bundle inventory refresh failed",
+    );
   } finally {
     bundleRefreshBusy.value = false;
   }
+}
+
+function describeUiError(error: unknown, fallback: string): string {
+  const detail =
+    error instanceof Error
+      ? String(error.message || "").trim()
+      : String(error || "").trim();
+  return detail ? `${fallback}: ${detail}` : fallback;
 }
 
 async function refreshBundleStatus(): Promise<void> {
   if (!hasTauriRuntime.value) return;
   try {
     await refreshMlSignalModelStatus();
-  } catch {
-    // keep UI non-throwing
+  } catch (error) {
+    const message = describeUiError(
+      error,
+      "ML model bundle status refresh failed",
+    );
+    optimizeStore.statusLine = message;
+    optimizeStore.mlSignalModelStatus = message;
   }
 }
 
@@ -880,8 +922,11 @@ async function onOpenArtifactPath(path: string): Promise<void> {
   if (!hasTauriRuntime.value || !String(path || "").trim()) return;
   try {
     await openMlSignalArtifactPath(path);
-  } catch {
-    // non-throwing from panel
+  } catch (error) {
+    optimizeStore.statusLine = describeUiError(
+      error,
+      "Open artifact path failed",
+    );
   }
 }
 
@@ -889,8 +934,11 @@ async function onRevealArtifactPath(path: string): Promise<void> {
   if (!hasTauriRuntime.value || !String(path || "").trim()) return;
   try {
     await revealMlSignalArtifactPath(path);
-  } catch {
-    // non-throwing from panel
+  } catch (error) {
+    optimizeStore.statusLine = describeUiError(
+      error,
+      "Reveal artifact path failed",
+    );
   }
 }
 
@@ -910,6 +958,10 @@ async function syncStageScroll(step: string): Promise<void> {
 }
 
 watch(mlSignalModelBundleId, () => {
+  void refreshBundleStatus();
+});
+
+watch(mlSignalScoreSource, () => {
   void refreshBundleStatus();
 });
 
@@ -1321,15 +1373,25 @@ onMounted(() => {
                 )
               "
             >
-              <option value="auto">Auto</option>
-              <option value="native_cuda">Native CUDA</option>
-              <option value="native_cpu">Native CPU</option>
+              <option
+                v-for="option in nativeBackendOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
             </select>
           </div>
           <div class="muted">
-            Auto prefers CUDA when the native CatBoost runtime exposes GPU
-            evaluation, then falls back to CPU while preserving the same score
-            cache contract.
+            Native CPU is the default and only normal UI-selectable runtime
+            path. Experimental GPU-native backends remain replay-compatible for
+            older saved runs, but new runs should stay CPU-only until a
+            GPU-capable CatBoost native library is validated here.
+          </div>
+          <div v-if="nativeBackendHasLegacyExperimentalValue" class="warningText">
+            This run is carrying a legacy experimental backend selection.
+            Switch back to Native CPU unless you are intentionally testing an
+            unsupported CatBoost GPU-native build.
           </div>
         </div>
         <div class="gridTwo">
@@ -1349,8 +1411,10 @@ onMounted(() => {
               "
             />
           </div>
-          <div>
-            <label for="mlSignalNativeGpuDeviceId">GPU device id</label>
+          <div v-if="nativeBackendUsesGpu">
+            <label for="mlSignalNativeGpuDeviceId">
+              GPU device id (legacy experimental GPU runs only)
+            </label>
             <input
               id="mlSignalNativeGpuDeviceId"
               type="number"
@@ -1370,8 +1434,14 @@ onMounted(() => {
         <div class="muted">
           Native bundle inference reads the selected bundle manifest plus its
           model, schema, export-manifest, and calibration sidecars, then writes
-          a normal score cache and manifest. Leave the library override blank to
-          use the default native loader search path.
+          a normal score cache and manifest. For the standard CPU path, bundle
+          the CatBoost native library under <span class="mono">native/</span>
+          next to <span class="mono">manifest.json</span> and keep
+          <span class="mono">native_library_path</span> relative, for example
+          <span class="mono">native/catboostmodel.dll</span>. Leave the
+          library override blank to use the default native loader search path.
+          When set, it must point to the DLL/shared-library file itself;
+          directories are rejected.
         </div>
       </div>
       <label for="mlSignalScoreCachePath">Score cache output</label>
@@ -2345,6 +2415,12 @@ label + input,
 
 .muted {
   color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 0.4rem;
+}
+
+.warningText {
+  color: color-mix(in oklab, #b36b00 78%, var(--text));
   font-size: 0.8rem;
   margin-top: 0.4rem;
 }

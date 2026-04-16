@@ -134,15 +134,7 @@ function inferMlSignalScoreSource(
   if (isDatasetExportStage) return "csv";
   const inputPath = normalizeText(req?.input_path ?? req?.inputPath);
   const bundleId = normalizeText(req?.model_bundle_id ?? req?.modelBundleId);
-  const nativeBackendPreference = normalizeText(
-    req?.native_backend_preference ?? req?.nativeBackendPreference,
-  ).toLowerCase();
-  if (
-    !inputPath &&
-    (bundleId ||
-      (nativeBackendPreference &&
-        nativeBackendPreference !== "score_cache_only"))
-  ) {
+  if (!inputPath && bundleId) {
     return "native";
   }
   return "csv";
@@ -167,7 +159,9 @@ function applyMlSignalScoreCacheRequestFields(
     req?.native_backend_preference ?? req?.nativeBackendPreference,
   );
   optimizeStore.mlSignalNativeBackend =
-    scoreSource === "native" ? nativeBackendPreference || "auto" : "auto";
+    scoreSource === "native"
+      ? nativeBackendPreference || "native_cpu"
+      : "native_cpu";
   optimizeStore.mlSignalNativeLibraryPath =
     scoreSource === "native"
       ? normalizeText(req?.native_library_path ?? req?.nativeLibraryPath)

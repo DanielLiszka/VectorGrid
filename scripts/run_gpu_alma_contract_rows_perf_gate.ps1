@@ -2,7 +2,7 @@ param(
   [ValidateSet("baseline", "candidate")]
   [string]$Mode = "candidate",
   [string]$BaselineDir = "scripts/baselines/gpu_alma_contract_rows",
-  [string]$SummaryPath = "target/gpu_alma_contract_rows_perf_summary.json",
+  [string]$SummaryPath = "output/benchmarks/gpu_alma_contract_rows_perf_summary.json",
   [double]$RegressionPct = 10.0
 )
 
@@ -22,21 +22,21 @@ $specs = @(
     bench_filter = "double_ma/gpu_kernel_contract_rows/alma_alma/trending_200k/large/58300pairs/auto"
     criterion_estimates_path = "target/criterion/double_ma_gpu_kernel_contract_rows_alma_alma_trending_200k/large_58300pairs_auto/new/estimates.json"
     baseline_path = Join-Path $BaselineDir "auto.json"
-    out_path = "target/gpu_alma_contract_rows_perf/auto.json"
+    out_path = "output/benchmarks/gpu_alma_contract_rows_perf/auto.json"
   },
   [ordered]@{
     name = "full17"
     bench_filter = "double_ma/gpu_kernel_contract_rows/alma_alma/trending_200k/large/58300pairs/full17"
     criterion_estimates_path = "target/criterion/double_ma_gpu_kernel_contract_rows_alma_alma_trending_200k/large_58300pairs_full17/new/estimates.json"
     baseline_path = Join-Path $BaselineDir "full17.json"
-    out_path = "target/gpu_alma_contract_rows_perf/full17.json"
+    out_path = "output/benchmarks/gpu_alma_contract_rows_perf/full17.json"
   },
   [ordered]@{
     name = "trade22"
     bench_filter = "double_ma/gpu_kernel_contract_rows/alma_alma/trending_200k/large/58300pairs/trade22"
     criterion_estimates_path = "target/criterion/double_ma_gpu_kernel_contract_rows_alma_alma_trending_200k/large_58300pairs_trade22/new/estimates.json"
     baseline_path = Join-Path $BaselineDir "trade22.json"
-    out_path = "target/gpu_alma_contract_rows_perf/trade22.json"
+    out_path = "output/benchmarks/gpu_alma_contract_rows_perf/trade22.json"
   }
 )
 

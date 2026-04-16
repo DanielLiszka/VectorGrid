@@ -27,7 +27,7 @@ param(
   [int]$RunnerWarmupIterations = 0,
   [int]$RunnerHeatmapBins = 64,
   [int]$RunnerDeviceId = 0,
-  [string]$OutputPrefix = "target/nsight/gpu_kernel_small",
+  [string]$OutputPrefix = "output/profiling/nsight/gpu_kernel_small",
   [int]$LaunchCount = 200,
   [string]$KernelName = "regex:^double_cross_backtest_tm_flex_f32",
   [bool]$UseKernelNameFilter = $false,

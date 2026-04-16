@@ -438,11 +438,13 @@ fn plan_download_cache_strategy(
     from_date: NaiveDate,
     to_date: NaiveDate,
 ) -> DownloadCachePlan {
+    let same_day_tail_request =
+        csv_exists && cached_max_date == Some(to_date) && cached_max_ts > 0 && from_date == to_date;
     let have_full_range = match (cached_min_date, cached_max_date) {
         (Some(min_d), Some(max_d)) => csv_exists && from_date >= min_d && to_date <= max_d,
         _ => false,
     };
-    if have_full_range {
+    if have_full_range && !same_day_tail_request {
         return DownloadCachePlan::FullHit;
     }
 
@@ -454,6 +456,17 @@ fn plan_download_cache_strategy(
         DownloadCachePlan::AppendOnly
     } else {
         DownloadCachePlan::FullRefresh
+    }
+}
+
+fn integrity_after_download(
+    cached_meta: Option<&PolygonDatasetMeta>,
+    bytes_changed: bool,
+) -> Option<PolygonDatasetIntegrity> {
+    if bytes_changed {
+        None
+    } else {
+        cached_meta.and_then(|meta| meta.integrity.clone())
     }
 }
 
@@ -747,13 +760,9 @@ fn scan_csv_integrity(
             continue;
         }
 
-        let ts_str = t.split(',').next().unwrap_or("").trim();
-        if ts_str.is_empty() {
-            continue;
-        }
-        let ts: i64 = match ts_str.parse() {
-            Ok(v) => v,
-            Err(_) => {
+        let ts = match parse_csv_bar(t) {
+            Some(bar) => bar.t,
+            None => {
                 parse_errors = parse_errors.saturating_add(1);
                 continue;
             }
@@ -1114,9 +1123,6 @@ pub fn download_1m_to_cache(
         return Err("to date must be >= from date".to_string());
     }
 
-    let api_key = read_api_key(app_identifier, cache_dir)?
-        .ok_or_else(|| "Polygon API key is not set. Enter your key and click Save.".to_string())?;
-
     fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
     let mut manifest = load_manifest(cache_dir)?;
 
@@ -1132,7 +1138,6 @@ pub fn download_1m_to_cache(
         polygon_dataset_key_and_file_name(market, &polygon_ticker, adjusted, &tf.label);
     let csv_path = cache_dir.join(file_name);
 
-    let mut used_cache_only = false;
     let mut downloaded = 0usize;
 
     if let Some(meta) = manifest.datasets.get(&dataset_key) {
@@ -1169,8 +1174,15 @@ pub fn download_1m_to_cache(
     );
 
     if cache_plan == DownloadCachePlan::FullHit {
-        used_cache_only = true;
+        return Ok(PolygonDownloadResult {
+            csv_path,
+            downloaded_bars: 0,
+            used_cache_only: true,
+        });
     } else {
+        let api_key = read_api_key(app_identifier, cache_dir)?.ok_or_else(|| {
+            "Polygon API key is not set. Enter your key and click Save.".to_string()
+        })?;
         let client = Client::builder()
             .user_agent("vectorgrid/0.1 (tauri)")
             .timeout(std::time::Duration::from_secs(30))
@@ -1264,7 +1276,7 @@ pub fn download_1m_to_cache(
         last_updated_utc_ms: now_utc_ms(),
         row_count,
         adjusted,
-        integrity: cached_meta.and_then(|m| m.integrity),
+        integrity: integrity_after_download(cached_meta.as_ref(), downloaded > 0),
     };
     manifest.datasets.insert(dataset_key, meta);
     save_manifest(cache_dir, &manifest)?;
@@ -1272,7 +1284,7 @@ pub fn download_1m_to_cache(
     Ok(PolygonDownloadResult {
         csv_path,
         downloaded_bars: downloaded,
-        used_cache_only,
+        used_cache_only: false,
     })
 }
 
@@ -1551,6 +1563,133 @@ badline\n",
             NaiveDate::from_ymd_opt(2024, 1, 20).expect("to"),
         );
         assert_eq!(full_refresh, DownloadCachePlan::FullRefresh);
+
+        let same_day_tail =
+            plan_download_cache_strategy(true, Some(min_d), Some(max_d), 1, 2, max_d, max_d);
+        assert_eq!(same_day_tail, DownloadCachePlan::AppendOnly);
+    }
+
+    #[test]
+    fn integrity_after_download_clears_stale_metadata_when_bytes_change() {
+        let cached_meta = PolygonDatasetMeta {
+            market: "stocks".to_string(),
+            display_symbol: "AAPL".to_string(),
+            polygon_ticker: "AAPL".to_string(),
+            timeframe: "1m".to_string(),
+            csv_path: "dummy.csv".to_string(),
+            min_ts: 1,
+            max_ts: 2,
+            last_updated_utc_ms: 3,
+            row_count: 2,
+            adjusted: true,
+            integrity: Some(PolygonDatasetIntegrity {
+                checked_utc_ms: 4,
+                parse_errors: 0,
+                duplicates: 0,
+                out_of_order: 0,
+                same_day_gaps_gt_2min: 0,
+            }),
+        };
+
+        assert!(integrity_after_download(Some(&cached_meta), true).is_none());
+        assert!(integrity_after_download(Some(&cached_meta), false).is_some());
+    }
+
+    #[test]
+    fn download_1m_to_cache_full_hit_is_read_only_and_does_not_require_api_key() {
+        let cache_dir = make_temp_dir("vectorta_polygon_full_hit");
+        let (dataset_key, file_name) =
+            polygon_dataset_key_and_file_name(Market::Stocks, "AAPL", true, "1m");
+        let csv_path = cache_dir.join(&file_name);
+        fs::write(
+            &csv_path,
+            "timestamp,open,close,high,low,volume\n1704067200000,1,1,1,1,1\n1706659200000,1,1,1,1,1\n",
+        )
+        .expect("seed csv");
+
+        let mut manifest = PolygonCacheManifest::default();
+        manifest.datasets.insert(
+            dataset_key,
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "AAPL".to_string(),
+                polygon_ticker: "AAPL".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: csv_path.to_string_lossy().to_string(),
+                min_ts: 1_704_067_200_000,
+                max_ts: 1_706_659_200_000,
+                last_updated_utc_ms: 111,
+                row_count: 2,
+                adjusted: true,
+                integrity: Some(PolygonDatasetIntegrity {
+                    checked_utc_ms: 222,
+                    parse_errors: 0,
+                    duplicates: 0,
+                    out_of_order: 0,
+                    same_day_gaps_gt_2min: 0,
+                }),
+            },
+        );
+        save_manifest(&cache_dir, &manifest).expect("save manifest");
+        let before_manifest =
+            fs::read_to_string(manifest_path(&cache_dir)).expect("read manifest before");
+
+        let result = download_1m_to_cache(
+            "dev.vectoralpha.vectorgrid",
+            &cache_dir,
+            &PolygonDownloadRequest {
+                market: "stocks".to_string(),
+                symbol: "AAPL".to_string(),
+                from: "2024-01-10".to_string(),
+                to: "2024-01-20".to_string(),
+                adjusted: Some(true),
+                timeframe: Some("1m".to_string()),
+            },
+            None,
+        )
+        .expect("full-hit cache read should succeed without api key");
+
+        assert!(result.used_cache_only);
+        assert_eq!(result.downloaded_bars, 0);
+        let after_manifest =
+            fs::read_to_string(manifest_path(&cache_dir)).expect("read manifest after");
+        assert_eq!(before_manifest, after_manifest);
+    }
+
+    #[test]
+    fn validate_cached_dataset_counts_rows_with_broken_numeric_fields_as_parse_errors() {
+        let cache_dir = make_temp_dir("vectorta_polygon_validate_parse_errors");
+        let csv_path = cache_dir.join("polygon_stocks_TEST_1m.csv");
+        let csv_path_s = csv_path.to_string_lossy().to_string();
+        fs::write(
+            &csv_path,
+            "timestamp,open,close,high,low,volume\n1700000000000,1,1,1,1,10\n1700000060000,bad,1,1,1,10\n",
+        )
+        .expect("write csv");
+
+        let mut manifest = PolygonCacheManifest::default();
+        manifest.datasets.insert(
+            "stocks:TEST:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "TEST".to_string(),
+                polygon_ticker: "TEST".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: csv_path_s.clone(),
+                min_ts: 1_700_000_000_000,
+                max_ts: 1_700_000_060_000,
+                last_updated_utc_ms: 1,
+                row_count: 2,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+        save_manifest(&cache_dir, &manifest).expect("save manifest");
+
+        let validated = validate_cached_dataset(&cache_dir, &csv_path_s).expect("validate dataset");
+        let integrity = validated.integrity.expect("integrity should be populated");
+        assert_eq!(validated.row_count, 1);
+        assert_eq!(integrity.parse_errors, 1);
     }
 
     #[test]

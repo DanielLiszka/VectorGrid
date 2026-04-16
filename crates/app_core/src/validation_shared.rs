@@ -479,6 +479,7 @@ pub(crate) fn canonical_json_key_bytes<T: Serialize>(value: &T) -> Result<Vec<u8
     serde_json::to_vec(&canonicalize_json_value(&json)).map_err(|e| e.to_string())
 }
 
+#[cfg(any(test, all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 pub(crate) fn canonical_json_eq<T: Serialize>(a: &T, b: &T) -> Result<bool, String> {
     Ok(canonical_json_key(a)? == canonical_json_key(b)?)
 }

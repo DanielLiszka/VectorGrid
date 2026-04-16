@@ -23,6 +23,49 @@ fn cuda_available_now() -> bool {
     false
 }
 
+fn normalized_window_effect(effect: Option<String>) -> String {
+    effect
+        .unwrap_or_else(|| "none".to_string())
+        .trim()
+        .to_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsWindowEffect {
+    None,
+    Mica,
+    Acrylic,
+    Blur,
+}
+
+#[cfg(target_os = "windows")]
+fn parse_windows_window_effect(effect: &str) -> Result<WindowsWindowEffect, String> {
+    match effect {
+        "" | "none" => Ok(WindowsWindowEffect::None),
+        "mica" => Ok(WindowsWindowEffect::Mica),
+        "acrylic" => Ok(WindowsWindowEffect::Acrylic),
+        "blur" => Ok(WindowsWindowEffect::Blur),
+        _ => Err(format!("Unknown window effect: {effect}")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacosWindowEffect {
+    None,
+    Vibrancy,
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_window_effect(effect: &str) -> Result<MacosWindowEffect, String> {
+    match effect {
+        "" | "none" => Ok(MacosWindowEffect::None),
+        "vibrancy" => Ok(MacosWindowEffect::Vibrancy),
+        _ => Err(format!("Unknown window effect: {effect}")),
+    }
+}
+
 #[tauri::command]
 pub fn get_gpu_status() -> Result<GpuStatus, String> {
     let (auto_device_name, auto_device_memory_bytes, auto_device_error) =
@@ -53,16 +96,14 @@ pub fn set_window_effect(
     dark: Option<bool>,
     window: tauri::WebviewWindow,
 ) -> Result<(), String> {
-    let eff = effect
-        .unwrap_or_else(|| "none".to_string())
-        .trim()
-        .to_lowercase();
+    let eff = normalized_window_effect(effect);
 
     #[cfg(target_os = "windows")]
     {
         use window_vibrancy::{
             apply_acrylic, apply_blur, apply_mica, clear_acrylic, clear_blur, clear_mica,
         };
+        let planned_effect = parse_windows_window_effect(&eff)?;
 
         let _ = clear_mica(&window);
         let _ = clear_acrylic(&window);
@@ -74,12 +115,11 @@ pub fn set_window_effect(
             None => None,
         };
 
-        match eff.as_str() {
-            "" | "none" => Ok(()),
-            "mica" => apply_mica(&window, dark).map_err(|e| e.to_string()),
-            "acrylic" => apply_acrylic(&window, tint).map_err(|e| e.to_string()),
-            "blur" => apply_blur(&window, tint).map_err(|e| e.to_string()),
-            _ => Err(format!("Unknown window effect: {eff}")),
+        match planned_effect {
+            WindowsWindowEffect::None => Ok(()),
+            WindowsWindowEffect::Mica => apply_mica(&window, dark).map_err(|e| e.to_string()),
+            WindowsWindowEffect::Acrylic => apply_acrylic(&window, tint).map_err(|e| e.to_string()),
+            WindowsWindowEffect::Blur => apply_blur(&window, tint).map_err(|e| e.to_string()),
         }?;
         return Ok(());
     }
@@ -90,18 +130,18 @@ pub fn set_window_effect(
             apply_vibrancy, clear_vibrancy, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
             NSVisualEffectState,
         };
+        let planned_effect = parse_macos_window_effect(&eff)?;
 
         let _ = clear_vibrancy(&window);
-        match eff.as_str() {
-            "" | "none" => Ok(()),
-            "vibrancy" => apply_vibrancy(
+        match planned_effect {
+            MacosWindowEffect::None => Ok(()),
+            MacosWindowEffect::Vibrancy => apply_vibrancy(
                 &window,
                 NSVisualEffectMaterial::Sidebar,
                 NSVisualEffectBlendingMode::BehindWindow,
                 NSVisualEffectState::Active,
             )
             .map_err(|e| e.to_string()),
-            _ => Err(format!("Unknown window effect: {eff}")),
         }?;
         return Ok(());
     }
@@ -115,7 +155,7 @@ pub fn set_window_effect(
 
 #[cfg(test)]
 mod tests {
-    use super::get_gpu_status;
+    use super::{get_gpu_status, normalized_window_effect};
 
     #[test]
     fn get_gpu_status_reports_consistent_diagnostics_shape() {
@@ -145,5 +185,38 @@ mod tests {
             (None, None, None) => {}
             other => panic!("unexpected gpu diagnostics shape: {:?}", other),
         }
+    }
+
+    #[test]
+    fn normalized_window_effect_trims_and_lowercases() {
+        assert_eq!(
+            normalized_window_effect(Some("  Mica  ".to_string())),
+            "mica"
+        );
+        assert_eq!(normalized_window_effect(None), "none");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parse_windows_window_effect_rejects_unknown_values_before_side_effects() {
+        use super::{parse_windows_window_effect, WindowsWindowEffect};
+
+        assert_eq!(
+            parse_windows_window_effect("mica").expect("mica should parse"),
+            WindowsWindowEffect::Mica
+        );
+        assert!(parse_windows_window_effect("glass").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parse_macos_window_effect_rejects_unknown_values_before_side_effects() {
+        use super::{parse_macos_window_effect, MacosWindowEffect};
+
+        assert_eq!(
+            parse_macos_window_effect("vibrancy").expect("vibrancy should parse"),
+            MacosWindowEffect::Vibrancy
+        );
+        assert!(parse_macos_window_effect("glass").is_err());
     }
 }

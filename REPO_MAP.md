@@ -149,9 +149,17 @@ Use dated options implementation guides under `options_research/` only as second
 - `target/`
 - `dist/`
 - `node_modules/`
-- `output/`
 - `.codex_tmp/`
 - generated benchmark/result dumps
+
+### Local generated artifacts
+
+- `output/`
+  - gitignored preserved local artifacts from benchmark, profiling, faceoff, and report runs
+  - preferred home for any local evidence you want to keep across routine `target/` cleanups
+- `target/`
+  - Cargo build cache, generated binaries, Criterion internals, and other disposable build scratch
+  - safe to delete when you do not need the current build products
 
 ### Secondary reference, not canonical routing
 
@@ -1505,6 +1513,10 @@ Important current-state notes:
 - split-plan gap/step semantics are now described in-panel, including the current blank-field contract of `gap=0` and `step=1`
 - dataset-export and current-artifact views now distinguish the always-generated export manifest from the conditional split manifest, and keep score-cache manifests separate as stage-2 artifacts
 - ML-signal model bundles are bundle-based, not meta-model-based, and live under `app_local_data_dir/models/ml_signal/<bundle_id>/manifest.json`
+- packaged Windows builds also ship an app-level CPU CatBoost fallback at `$RESOURCE/native/catboostmodel.dll`; `commands_ml_signal.rs` resolves it when no bundle-local or explicit override path is present
+- preferred CPU-native bundle packaging is `<bundle>/native/catboostmodel.dll` next to `manifest.json`, with `native_library_path` kept relative when declared
+- CatBoost native library discovery currently resolves in this order: explicit override -> env vars -> bundle root/native/lib -> manifest `native_library_path` -> exe dirs -> cwd -> bare library name
+- the normal desktop `MlSignal` panel now exposes `native_cpu` as the only normal selectable backend; legacy `auto` / `native_cuda` values remain replay-compatible for older saved runs and internal testing
 - stage-2 ML copy now makes the score-CSV ingest contract explicit: `timestamp` is required, at least one of `p_long` / `p_short` / `raw_long` / `raw_short` must exist, and calibrated probability columns are preferred when present
 - the ML artifact panel now treats feature schema path/version as an operational contract, not just metadata: schema version must stay aligned across exported datasets, score caches, and reopened ML runs
 - score-cache bundle truth is the cache JSON plus manifest plus feature-schema metadata, with `score_space`, `score_scope`, `matched_rows`, `duplicate_timestamps`, and `coverage_ratio` carried into artifacts and UI summaries

@@ -33,7 +33,7 @@ param(
   [string]$CaptureMode = "none",
   [string]$NvtxCapture = "double_ma_opt_total",
   [string]$NvtxDomains = "default,engine,kernel",
-  [string]$OutputPrefix = "target/nsight/gpu_kernel_small",
+  [string]$OutputPrefix = "output/profiling/nsight/gpu_kernel_small",
   [ValidateSet("off", "on")]
   [string]$DynamicStrategyMode = "off",
   [ValidateSet("inherit", "off", "on")]

@@ -44,6 +44,8 @@ interface MlSignalArtifactLike {
   stage?: unknown;
   bundle_id?: unknown;
   bundleId?: unknown;
+  source_bundle_manifest_path?: unknown;
+  sourceBundleManifestPath?: unknown;
   dataset_export_path?: unknown;
   datasetExportPath?: unknown;
   export_manifest_path?: unknown;
@@ -989,6 +991,17 @@ function buildMlSignalArtifactPayload(
         ),
       ],
       [
+        "source_bundle_manifest_path",
+        firstMeaningfulValue(
+          validationScoreSummary?.source_bundle_manifest_path,
+          validationScoreSummary?.sourceBundleManifestPath,
+          runResRecord?.source_bundle_manifest_path,
+          runResRecord?.sourceBundleManifestPath,
+          prior.source_bundle_manifest_path,
+          prior.sourceBundleManifestPath,
+        ),
+      ],
+      [
         "source_bundle_manifest_hash",
         firstMeaningfulValue(
           validationScoreSummary?.source_bundle_manifest_hash,
@@ -1157,6 +1170,14 @@ function buildMlSignalArtifactPayload(
           prior.bundleId ??
           "",
       ),
+    source_bundle_manifest_path: normalizeText(
+      firstMeaningfulValue(
+        runResRecord?.source_bundle_manifest_path,
+        runResRecord?.sourceBundleManifestPath,
+        prior.source_bundle_manifest_path,
+        prior.sourceBundleManifestPath,
+      ),
+    ),
     dataset_export_path:
       stage === "dataset_export"
         ? normalizeText(
@@ -1667,6 +1688,11 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
           currentArtifact?.thresholdPolicy,
         ),
       ) || null,
+    source_bundle_manifest_path:
+      normalizeText(
+        currentArtifact?.source_bundle_manifest_path ??
+          currentArtifact?.sourceBundleManifestPath,
+      ) || null,
     producer_kind:
       normalizeText(
         firstMeaningfulValue(
@@ -1683,7 +1709,8 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
       ),
     ),
     native_backend_preference: nativeScoreSource
-      ? normalizeText(optimize.mlSignalNativeBackend || "auto") || "auto"
+      ? normalizeText(optimize.mlSignalNativeBackend || "native_cpu") ||
+        "native_cpu"
       : "score_cache_only",
     native_library_path: nativeScoreSource
       ? normalizeText(optimize.mlSignalNativeLibraryPath) || null
@@ -1989,13 +2016,16 @@ export async function listMlSignalModelBundles(): Promise<
       const bundleId = normalizeText(row.bundle_id);
       const state = normalizeText(row.state) || "unknown";
       const family = normalizeText(row.model_family);
+      const issues = readStringList(row.issues);
+      const issueSummary =
+        issues.length === 1 ? "1 issue" : issues.length > 1 ? `${issues.length} issues` : "";
       return {
         bundleId,
         manifestPath: normalizeText(row.manifest_path),
         state,
-        label: family
-          ? `${bundleId} • ${family} • ${state}`
-          : `${bundleId} • ${state}`,
+        label: [bundleId, family, state, issueSummary]
+          .filter((part) => String(part || "").trim().length > 0)
+          .join(" • "),
       };
     })
     .filter((row) => row.bundleId);
@@ -2007,9 +2037,12 @@ export async function refreshMlSignalModelStatus(): Promise<unknown> {
   const optimize = useOptimizeStore(pinia);
   const bundleId = normalizeText(optimize.mlSignalModelBundleId);
   if (!bundleId) {
+    const nativeScoreSource =
+      normalizeText(optimize.mlSignalScoreSource).toLowerCase() === "native";
     patchOptimizeState({
-      mlSignalModelStatus:
-        "Model bundle: optional for score-cache-backed validation.",
+      mlSignalModelStatus: nativeScoreSource
+        ? "Model bundle: required for native score-cache generation."
+        : "Model bundle: optional for score-cache-backed validation.",
     });
     return null;
   }

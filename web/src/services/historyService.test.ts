@@ -721,6 +721,78 @@ describe("historyService", () => {
     expect(optimize.mlSignalNativeGpuDeviceId).toBe("1");
   });
 
+  it("defaults replayed native MlSignal runs to native_cpu when backend is omitted", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      strategyKind: "MlSignal",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "data-ml",
+        input_path: "",
+        output_path: "C:/runs/ml_score_cache.json",
+        model_bundle_id: "bundle-native",
+      },
+      mlSignalStage: "validation",
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.61,
+            t_short: 0.57,
+            delta: 0.09,
+            max_hold_bars: 9,
+          },
+        ],
+      },
+    });
+
+    await applySavedRun(" C:/runs/ml_signal_native_cpu_default.json ");
+
+    const optimize = useOptimizeStore(pinia);
+    expect(optimize.mlSignalScoreSource).toBe("native");
+    expect(optimize.mlSignalNativeBackend).toBe("native_cpu");
+    expect(optimize.mlSignalNativeGpuDeviceId).toBe("");
+  });
+
+  it("does not infer native MlSignal replay mode from backend preference alone", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      strategyKind: "MlSignal",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "data-ml",
+        input_path: "",
+        output_path: "C:/runs/ml_score_cache.json",
+        native_backend_preference: "native_cuda",
+        native_library_path: "C:/catboost/catboostmodel.dll",
+        native_gpu_device_id: 3,
+      },
+      mlSignalStage: "validation",
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.61,
+            t_short: 0.57,
+            delta: 0.09,
+            max_hold_bars: 9,
+          },
+        ],
+      },
+    });
+
+    await applySavedRun(" C:/runs/ml_signal_invalid_native.json ");
+
+    const optimize = useOptimizeStore(pinia);
+    expect(optimize.mlSignalScoreSource).toBe("csv");
+    expect(optimize.mlSignalModelBundleId).toBe("");
+    expect(optimize.mlSignalNativeBackend).toBe("native_cpu");
+    expect(optimize.mlSignalNativeLibraryPath).toBe("");
+    expect(optimize.mlSignalNativeGpuDeviceId).toBe("");
+  });
+
   it("reruns saved run by loading data, optional resample, then executing optimization", async () => {
     useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({

@@ -236,19 +236,20 @@ pub struct SampleCsv {
 }
 
 fn sample_csvs_from_root(root: &Path) -> Vec<SampleCsv> {
+    let data_dir = find_repo_data_dir_from(root).unwrap_or_else(|| root.join("data"));
     let candidates: [(&str, &str, &str); 3] = [
-        ("10k", "10k candles", "src/data/10kCandles.csv"),
+        ("10k", "10k candles", "10kCandles.csv"),
         (
             "100k",
             "100k candles",
-            "src/data/bitfinex btc-usd 100,000 candles ends 09-01-24.csv",
+            "bitfinex btc-usd 100,000 candles ends 09-01-24.csv",
         ),
-        ("1m", "1M candles", "src/data/1MillionCandles.csv"),
+        ("1m", "1M candles", "1MillionCandles.csv"),
     ];
 
     let mut out: Vec<SampleCsv> = Vec::new();
     for (id, label, rel) in candidates {
-        let path = root.join(rel);
+        let path = data_dir.join(rel);
         if path.exists() {
             out.push(SampleCsv {
                 id: id.to_string(),
@@ -262,7 +263,12 @@ fn sample_csvs_from_root(root: &Path) -> Vec<SampleCsv> {
 
 #[tauri::command]
 pub fn list_sample_csvs() -> Vec<SampleCsv> {
-    let root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root: PathBuf = find_workspace_root().unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+    });
     sample_csvs_from_root(&root)
 }
 
@@ -478,6 +484,37 @@ fn clear_market_data_dir_for_base(base: &Path) -> Result<MarketDataDirInfo, Stri
     market_data_dir_info_for_base(base)
 }
 
+fn probe_directory_writable(dir: &Path) -> Result<(), String> {
+    for attempt in 0..8u32 {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(u128::from(attempt));
+        let probe = dir.join(format!(
+            ".vta_write_probe_{}_{}_{}",
+            std::process::id(),
+            nonce,
+            attempt
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err(format!(
+        "failed to verify directory writability: {}",
+        dir.display()
+    ))
+}
+
 fn set_market_data_dir_for_base(
     base: &Path,
     dir: &str,
@@ -500,10 +537,7 @@ fn set_market_data_dir_for_base(
         ));
     }
 
-    // Best-effort check that it's writable.
-    let probe = new_root.join(".vta_write_probe");
-    std::fs::write(&probe, b"ok").map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(&probe);
+    probe_directory_writable(&new_root)?;
 
     let old_root = settings::resolve_market_data_root_dir(&base)?;
     if move_existing && old_root != new_root {
@@ -727,7 +761,7 @@ fn normalize_polygon_live_bar(
     if ev != "AM" {
         return None;
     }
-    let sym = v.get("sym").and_then(|x| x.as_str()).unwrap_or(symbol);
+    let sym = v.get("sym").and_then(|x| x.as_str())?;
     if !symbol.is_empty() && !super::commands_execution::symbol_matches(sym, symbol) {
         return None;
     }
@@ -735,8 +769,14 @@ fn normalize_polygon_live_bar(
     let high = value_as_f64(v, "h")?;
     let low = value_as_f64(v, "l")?;
     let close = value_as_f64(v, "c")?;
+    if !(open.is_finite() && high.is_finite() && low.is_finite() && close.is_finite()) {
+        return None;
+    }
     let start = value_as_i64(v, "s")?;
     let end = value_as_i64(v, "e").unwrap_or_else(|| start.saturating_add(60_000 - 1));
+    if start <= 0 || end < start {
+        return None;
+    }
     Some(PolygonLiveBarEvent {
         market: market.to_string(),
         symbol: sym.to_string(),
@@ -954,6 +994,20 @@ async fn run_polygon_live_candle_stream(
             }
             Some(Ok(Message::Ping(payload))) => {
                 if stream.send(Message::Pong(payload)).await.is_err() {
+                    emit_polygon_live_status(
+                        &app,
+                        &market,
+                        &symbol,
+                        delayed,
+                        &channel,
+                        "closed",
+                        "pong send failed",
+                    );
+                    disarm_runner_after_nonmanual_feed_interruption(
+                        &app,
+                        "closed",
+                        "pong send failed",
+                    );
                     break;
                 }
             }
@@ -1719,12 +1773,12 @@ mod tests {
     #[test]
     fn sample_csvs_from_root_skips_missing_files_and_preserves_order() {
         let temp = make_temp_dir("commands_data_sample_csvs");
-        let src_data = temp.join("src").join("data");
-        std::fs::create_dir_all(&src_data).expect("create sample data dir");
-        std::fs::write(src_data.join("10kCandles.csv"), "timestamp,close\n1,1\n")
+        let data_dir = temp.join("data");
+        std::fs::create_dir_all(&data_dir).expect("create sample data dir");
+        std::fs::write(data_dir.join("10kCandles.csv"), "timestamp,close\n1,1\n")
             .expect("write 10k sample");
         std::fs::write(
-            src_data.join("bitfinex btc-usd 100,000 candles ends 09-01-24.csv"),
+            data_dir.join("bitfinex btc-usd 100,000 candles ends 09-01-24.csv"),
             "timestamp,close\n1,1\n",
         )
         .expect("write 100k sample");
@@ -1733,7 +1787,12 @@ mod tests {
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(ids, vec!["10k", "100k"]);
         assert_eq!(rows[0].label, "10k candles");
-        assert!(rows[0].path.ends_with("src/data/10kCandles.csv"));
+        assert_eq!(
+            Path::new(&rows[0].path)
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("10kCandles.csv")
+        );
     }
 
     #[test]
@@ -1912,5 +1971,49 @@ mod tests {
         assert!(
             normalize_polygon_live_bar(&rejected, "stocks", "BRK.B", true, "AM.BRK.B").is_none()
         );
+    }
+
+    #[test]
+    fn normalize_polygon_live_bar_requires_vendor_symbol_and_finite_prices() {
+        let missing_symbol = json!({
+            "ev": "AM",
+            "o": 10.0,
+            "h": 11.0,
+            "l": 9.5,
+            "c": 10.5,
+            "s": 1_700_000_000_000i64,
+        });
+        let invalid_close = json!({
+            "ev": "AM",
+            "sym": "SPY",
+            "o": 10.0,
+            "h": 11.0,
+            "l": 9.5,
+            "c": "NaN",
+            "s": 1_700_000_000_000i64,
+        });
+
+        assert!(
+            normalize_polygon_live_bar(&missing_symbol, "stocks", "SPY", true, "AM.SPY").is_none()
+        );
+        assert!(
+            normalize_polygon_live_bar(&invalid_close, "stocks", "SPY", true, "AM.SPY").is_none()
+        );
+    }
+
+    #[test]
+    fn normalize_polygon_live_bar_rejects_inverted_time_window() {
+        let inverted = json!({
+            "ev": "AM",
+            "sym": "SPY",
+            "o": 10.0,
+            "h": 11.0,
+            "l": 9.5,
+            "c": 10.5,
+            "s": 1_700_000_060_000i64,
+            "e": 1_700_000_000_000i64,
+        });
+
+        assert!(normalize_polygon_live_bar(&inverted, "stocks", "SPY", true, "AM.SPY").is_none());
     }
 }

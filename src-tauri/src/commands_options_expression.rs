@@ -450,8 +450,9 @@ fn serialize_scalar_to_string<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
-fn resolve_options_parent_strategy_kind_from_saved_artifact(
+fn resolve_options_parent_strategy_kind_from_saved_artifact_within_dir(
     artifact: &OptionsExpressionArtifactV1,
+    allowed_dir: Option<&Path>,
 ) -> String {
     let parent_artifact_path = artifact.request.parent_artifact_path.trim();
     if parent_artifact_path.is_empty() {
@@ -461,6 +462,11 @@ fn resolve_options_parent_strategy_kind_from_saved_artifact(
     if !parent_path.is_file() {
         return String::new();
     }
+    if let Some(dir) = allowed_dir {
+        if ensure_path_is_within_dir(parent_path, dir).is_err() {
+            return String::new();
+        }
+    }
     let parent_artifact = match read_artifact_value(parent_path) {
         Ok(value) => value,
         Err(_) => return String::new(),
@@ -469,6 +475,15 @@ fn resolve_options_parent_strategy_kind_from_saved_artifact(
         return family.strategy_kind().to_string();
     }
     non_empty_string(parent_artifact.pointer("/run/req/strategy_kind")).unwrap_or_default()
+}
+
+fn max_metric_or_default<I>(values: I) -> f64
+where
+    I: Iterator<Item = f64>,
+{
+    values
+        .max_by(|left, right| left.total_cmp(right))
+        .unwrap_or(0.0)
 }
 
 fn file_cache_stamp(path: &Path) -> Result<String, String> {
@@ -806,14 +821,13 @@ fn load_signal_manifest_replay_cache(
             path.display()
         )
     })?;
-    let manifest = serde_json::from_slice::<ta_app_core::OptionsSignalEventManifestV1>(&bytes)
-        .map_err(|e| {
-            format!(
-                "failed to deserialize cached signal manifest {}: {e}",
-                path.display()
-            )
-        })?;
-    Ok(Some(manifest))
+    match serde_json::from_slice::<ta_app_core::OptionsSignalEventManifestV1>(&bytes) {
+        Ok(manifest) => Ok(Some(manifest)),
+        Err(_) => {
+            let _ = std::fs::remove_file(&path);
+            Ok(None)
+        }
+    }
 }
 
 fn persist_signal_manifest_replay_cache(
@@ -1201,18 +1215,30 @@ pub(crate) fn summarize_options_expression_artifact(
     bytes: u64,
     artifact: &OptionsExpressionArtifactV1,
 ) -> OptionsExpressionArtifactSummary {
-    let parent_strategy_kind = resolve_options_parent_strategy_kind_from_saved_artifact(artifact);
+    summarize_options_expression_artifact_with_runs_dir(path, bytes, artifact, None)
+}
+
+fn summarize_options_expression_artifact_with_runs_dir(
+    path: &std::path::Path,
+    bytes: u64,
+    artifact: &OptionsExpressionArtifactV1,
+    runs_dir: Option<&std::path::Path>,
+) -> OptionsExpressionArtifactSummary {
+    let parent_strategy_kind =
+        resolve_options_parent_strategy_kind_from_saved_artifact_within_dir(artifact, runs_dir);
     let leader_summary = build_artifact_leader_summary(&artifact.selection_metrics);
-    let best_robust_score = artifact
-        .selection_metrics
-        .iter()
-        .map(|entry| entry.robust_score)
-        .fold(0.0_f64, f64::max);
-    let best_selection_expectancy_per_premium = artifact
-        .selection_metrics
-        .iter()
-        .map(|entry| entry.selection_metrics.expectancy_per_premium)
-        .fold(0.0_f64, f64::max);
+    let best_robust_score = max_metric_or_default(
+        artifact
+            .selection_metrics
+            .iter()
+            .map(|entry| entry.robust_score),
+    );
+    let best_selection_expectancy_per_premium = max_metric_or_default(
+        artifact
+            .selection_metrics
+            .iter()
+            .map(|entry| entry.selection_metrics.expectancy_per_premium),
+    );
     let best_holdout_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
@@ -1419,6 +1445,69 @@ fn validate_saved_artifact_replay_provenance(
             artifact.price_semantics,
             replay.dataset.manifest.price_semantics,
             artifact.options_dataset_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_event_path_replay_consistency(
+    expected_tuple: &ta_app_core::options_types::OptionsTupleSpec,
+    tuple_inspection: &OptionsExpressionTupleInspectionResult,
+    event_path_inspection: &OptionsExpressionEventPathInspectionResult,
+) -> Result<(), String> {
+    if tuple_inspection.tuple_result.tuple != *expected_tuple {
+        return Err(format!(
+            "recomputed tuple at index {} does not match the saved artifact ordering",
+            tuple_inspection.tuple_index
+        ));
+    }
+    if event_path_inspection.tuple_index != tuple_inspection.tuple_index {
+        return Err(format!(
+            "event-path replay tuple index {} does not match tuple inspection tuple index {}",
+            event_path_inspection.tuple_index, tuple_inspection.tuple_index
+        ));
+    }
+    if event_path_inspection.event_index != event_path_inspection.row.event_index {
+        return Err(format!(
+            "event-path replay event index {} does not match row event index {}",
+            event_path_inspection.event_index, event_path_inspection.row.event_index
+        ));
+    }
+    if event_path_inspection.event_id != event_path_inspection.row.event_id {
+        return Err(
+            "event-path replay event id does not match the returned row event id".to_string(),
+        );
+    }
+    if event_path_inspection.point_count != event_path_inspection.points.len() {
+        return Err(format!(
+            "event-path replay point_count {} does not match point vector length {}",
+            event_path_inspection.point_count,
+            event_path_inspection.points.len()
+        ));
+    }
+    let expected_row = tuple_inspection
+        .rows
+        .get(event_path_inspection.event_index)
+        .ok_or_else(|| {
+            format!(
+                "event_index {} is out of range for recomputed tuple inspection with {} row{}",
+                event_path_inspection.event_index,
+                tuple_inspection.rows.len(),
+                if tuple_inspection.rows.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        })?;
+    let expected_row_value = serde_json::to_value(expected_row)
+        .map_err(|e| format!("failed to serialize recomputed tuple inspection row: {e}"))?;
+    let event_path_row_value = serde_json::to_value(&event_path_inspection.row)
+        .map_err(|e| format!("failed to serialize recomputed event-path row: {e}"))?;
+    if event_path_row_value != expected_row_value {
+        return Err(format!(
+            "recomputed event path row for tuple {} event {} drifted from tuple inspection replay state",
+            tuple_inspection.tuple_index, event_path_inspection.event_index
         ));
     }
     Ok(())
@@ -1837,6 +1926,9 @@ pub fn list_options_expression_artifacts_blocking_headless(
         if !path.is_file() {
             continue;
         }
+        if ensure_path_is_within_dir(&path, &runs_dir).is_err() {
+            continue;
+        }
         let file_name = path
             .file_name()
             .and_then(|value| value.to_str())
@@ -1855,8 +1947,11 @@ pub fn list_options_expression_artifacts_blocking_headless(
         if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
             continue;
         }
-        out.push(summarize_options_expression_artifact(
-            &path, bytes, &artifact,
+        out.push(summarize_options_expression_artifact_with_runs_dir(
+            &path,
+            bytes,
+            &artifact,
+            Some(&runs_dir),
         ));
     }
     out.sort_by(|a, b| b.ts.cmp(&a.ts));
@@ -2114,6 +2209,12 @@ pub async fn inspect_options_expression_event_path(
         let replay =
             build_options_expression_replay_inputs(artifact.request.clone(), &app_local_data_dir)?;
         validate_saved_artifact_replay_provenance(&artifact, &replay)?;
+        let tuple_inspection = inspect_options_expression_tuple_blocking(
+            replay.normalized_req.clone(),
+            req.tuple_index,
+            replay.signal_manifest.as_ref(),
+            replay.dataset.as_ref(),
+        )?;
         let inspection = inspect_options_expression_event_path_blocking(
             replay.normalized_req,
             req.tuple_index,
@@ -2132,12 +2233,7 @@ pub async fn inspect_options_expression_event_path(
                     .to_string(),
             );
         }
-        if artifact.selection_metrics[req.tuple_index].tuple != expected_tuple {
-            return Err(format!(
-                "saved tuple at index {} changed during event-path inspection replay",
-                req.tuple_index
-            ));
-        }
+        validate_event_path_replay_consistency(&expected_tuple, &tuple_inspection, &inspection)?;
         Ok(inspection)
     })
     .await
@@ -2173,6 +2269,22 @@ mod tests {
         let dir = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[cfg(windows)]
+    fn create_test_file_symlink(
+        link: &std::path::Path,
+        target: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(unix)]
+    fn create_test_file_symlink(
+        link: &std::path::Path,
+        target: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
     }
 
     fn sample_signal_manifest() -> OptionsSignalEventManifestV1 {
@@ -2470,6 +2582,25 @@ mod tests {
         assert_eq!(loaded.manifest_id, manifest.manifest_id);
         assert_eq!(loaded.events.len(), 1);
         assert_eq!(loaded.events[0].event_id, "evt-1");
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn signal_manifest_replay_cache_treats_corrupt_payload_as_cache_miss() {
+        let app_local_data_dir = temp_app_local_data_dir("signal_manifest_cache_corrupt");
+        let cache_key = "artifact|source=csv|timeframe=1m|candidate=none";
+        let path =
+            signal_manifest_replay_cache_path(&app_local_data_dir, "parent_artifact", cache_key)
+                .expect("cache path");
+        std::fs::write(&path, br#"{"manifest_id":"broken""#).expect("write corrupt cache");
+
+        let loaded =
+            load_signal_manifest_replay_cache(&app_local_data_dir, "parent_artifact", cache_key)
+                .expect("load corrupt cache");
+
+        assert!(loaded.is_none());
+        assert!(!path.exists());
 
         let _ = std::fs::remove_dir_all(app_local_data_dir);
     }
@@ -2953,6 +3084,34 @@ mod tests {
     }
 
     #[test]
+    fn summarize_options_expression_artifact_preserves_all_negative_maxima() {
+        let temp_root = temp_app_local_data_dir("summary_all_negative_maxima");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let mut artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        artifact.selection_metrics = vec![
+            sample_summary_tuple(0, -0.40, -0.20, Some(-0.12), None, None, false, 0),
+            sample_summary_tuple(1, -0.25, -0.35, Some(-0.18), None, None, false, 0),
+        ];
+
+        let summary = summarize_options_expression_artifact(
+            std::path::Path::new("C:/runs/vectorgrid_options_expression_negative.json"),
+            1024,
+            &artifact,
+        );
+
+        assert_eq!(summary.best_robust_score, -0.25);
+        assert_eq!(summary.best_selection_expectancy_per_premium, -0.20);
+
+        let _ = std::fs::remove_file(&parent_artifact_path);
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn load_options_expression_artifact_blocking_headless_refreshes_tuple_verdicts() {
         let app_local_data_dir = temp_app_local_data_dir("artifact_validation_refresh");
         let runs = runs_dir(&app_local_data_dir).expect("runs dir");
@@ -3052,6 +3211,74 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn listing_options_expression_artifacts_does_not_reopen_parent_artifacts_outside_runs_dir() {
+        let app_local_data_dir = temp_app_local_data_dir("options_artifact_parent_boundary");
+        let runs = runs_dir(&app_local_data_dir).expect("runs dir");
+        let external_parent_dir = temp_app_local_data_dir("options_artifact_parent_external");
+        let external_parent_artifact =
+            write_parent_strategy_artifact(&external_parent_dir, "DoubleMa");
+        let artifact_path = runs.join("vectorgrid_options_expression_boundary.json");
+        let mut artifact = sample_summary_artifact(
+            &external_parent_artifact,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        artifact.artifact_path = artifact_path.to_string_lossy().to_string();
+        std::fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&artifact).expect("serialize artifact"),
+        )
+        .expect("write artifact");
+
+        let listed =
+            list_options_expression_artifacts_blocking_headless(&app_local_data_dir).expect("list");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, artifact_path.to_string_lossy());
+        assert!(listed[0].parent_strategy_kind.is_empty());
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+        let _ = std::fs::remove_dir_all(external_parent_dir);
+    }
+
+    #[test]
+    fn listing_options_expression_artifacts_skips_symlinked_entries_outside_runs_dir() {
+        let app_local_data_dir = temp_app_local_data_dir("options_artifact_symlink_boundary");
+        let runs = runs_dir(&app_local_data_dir).expect("runs dir");
+        let external_dir = temp_app_local_data_dir("options_artifact_symlink_external");
+        let external_parent_artifact = write_parent_strategy_artifact(&external_dir, "DoubleMa");
+        let external_artifact_path =
+            external_dir.join("vectorgrid_options_expression_outside.json");
+        let mut artifact = sample_summary_artifact(
+            &external_parent_artifact,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        artifact.artifact_path = external_artifact_path.to_string_lossy().to_string();
+        std::fs::write(
+            &external_artifact_path,
+            serde_json::to_vec_pretty(&artifact).expect("serialize external artifact"),
+        )
+        .expect("write external artifact");
+        let linked_path = runs.join("vectorgrid_options_expression_symlink.json");
+        if create_test_file_symlink(&linked_path, &external_artifact_path).is_err() {
+            let _ = std::fs::remove_dir_all(app_local_data_dir);
+            let _ = std::fs::remove_dir_all(external_dir);
+            return;
+        }
+
+        let listed =
+            list_options_expression_artifacts_blocking_headless(&app_local_data_dir).expect("list");
+
+        assert!(listed.is_empty());
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+        let _ = std::fs::remove_dir_all(external_dir);
     }
 
     #[test]
@@ -3390,5 +3617,89 @@ mod tests {
 
         let _ = std::fs::remove_file(&parent_artifact_path);
         let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    #[test]
+    fn validate_event_path_replay_consistency_rejects_row_drift() {
+        let tuple_result =
+            sample_summary_tuple(0, 0.30, 0.20, Some(0.10), Some(0.08), Some(0.04), true, 1);
+        let expected_tuple = tuple_result.tuple.clone();
+        let tuple_row = ta_app_core::options_types::OptionsExpressionEventDetailRow {
+            event_index: 0,
+            event_id: "evt-1".to_string(),
+            split: OptionsEvaluationSplit::Search,
+            side: SignalSide::Bullish,
+            decision_timestamp: 1_700_000_000_000,
+            earliest_tradable_timestamp: 1_700_000_060_000,
+            requested_entry_timestamp: 1_700_000_060_000,
+            raw_underlier_price: 100.0,
+            base_exit_timestamp: Some(1_700_000_120_000),
+            status: ta_app_core::options_types::OptionsExpressionEventStatus::Executed,
+            candidate_invalid_reason: None,
+            contract_id: Some("SPY-2026-04-03-C-645".to_string()),
+            companion_contract_id: None,
+            expiration_date: Some("2026-04-03".to_string()),
+            strike: Some(645.0),
+            companion_strike: None,
+            multiplier: Some(100.0),
+            entry_timestamp: Some(1_700_000_060_000),
+            entry_option_price: Some(2.2),
+            companion_entry_option_price: None,
+            entry_underlier_price: Some(100.5),
+            exit_timestamp: Some(1_700_000_120_000),
+            exit_option_price: Some(2.5),
+            companion_exit_option_price: None,
+            premium_paid: Some(2.2),
+            pnl_per_contract: Some(30.0),
+            return_on_premium: Some(0.13636),
+            entry_lag_minutes: Some(1),
+            minutes_to_expiry_at_entry: Some(390),
+            realized_hold_minutes: Some(60),
+            path_option_high: Some(2.6),
+            path_option_low: Some(2.1),
+            path_underlier_high: Some(101.0),
+            path_underlier_low: Some(99.8),
+            exit_reason: Some(ta_app_core::options_types::OptionsExpressionExitReason::TargetHit),
+        };
+        let tuple_inspection = OptionsExpressionTupleInspectionResult {
+            tuple_index: 0,
+            tuple_count: 1,
+            tuple_result,
+            total_events: 1,
+            executed_events: 1,
+            candidate_missing_events: 0,
+            outcome_missing_events: 0,
+            rows: vec![tuple_row.clone()],
+        };
+        let mut drifted_row = tuple_row.clone();
+        drifted_row.status =
+            ta_app_core::options_types::OptionsExpressionEventStatus::OutcomeMissing;
+        let event_path_inspection =
+            ta_app_core::options_types::OptionsExpressionEventPathInspectionResult {
+                tuple_index: 0,
+                event_index: 0,
+                event_id: "evt-1".to_string(),
+                row: drifted_row,
+                point_count: 1,
+                points: vec![
+                    ta_app_core::options_types::OptionsExpressionEventPathPoint {
+                        timestamp_ms: 1_700_000_060_000,
+                        option_open: 2.2,
+                        option_high: 2.6,
+                        option_low: 2.1,
+                        option_close: 2.5,
+                        underlying_price: 100.5,
+                    },
+                ],
+            };
+
+        let error = validate_event_path_replay_consistency(
+            &expected_tuple,
+            &tuple_inspection,
+            &event_path_inspection,
+        )
+        .expect_err("row drift should fail");
+
+        assert!(error.contains("drifted from tuple inspection replay state"));
     }
 }

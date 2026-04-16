@@ -17,7 +17,7 @@ const COMPOSITE_DATA_META = {
   has_volume: true,
 }
 
-const DEFAULT_OUTPUT_PATH = path.resolve(process.cwd(), '../target/request-builder-bench.json')
+const DEFAULT_OUTPUT_PATH = path.resolve(process.cwd(), '../output/benchmarks/request-builder-bench.json')
 const BENCH_TIME_MS = Number(process.env.REQUEST_BUILDER_BENCH_TIME_MS || 500)
 const WARMUP_TIME_MS = Number(process.env.REQUEST_BUILDER_BENCH_WARMUP_TIME_MS || 100)
 

@@ -9,7 +9,7 @@ Supplemental review only; this is not a perf-authority gate.
 ## Sources
 
 - Baseline: `scripts/baselines/workflow_regression_baseline.json`
-- Summary: `target/workflow_regression_summary.json`
+- Summary: `output/benchmarks/workflow_regression_summary.json`
 - UI metrics: `scripts/baselines/ui_capture/perf_metrics.json`
 - Memory metrics: `scripts/baselines/ui_capture/optimization_memory_metrics.json`
 - Samples manifest: `scripts/baselines/samples/manifest.json`

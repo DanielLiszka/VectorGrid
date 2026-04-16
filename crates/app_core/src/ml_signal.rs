@@ -84,7 +84,7 @@ fn default_ml_signal_score_contract_version() -> u32 {
 }
 
 fn default_ml_signal_inference_backend_preference() -> MlSignalInferenceBackendPreference {
-    MlSignalInferenceBackendPreference::Auto
+    MlSignalInferenceBackendPreference::NativeCpu
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -711,6 +711,8 @@ pub struct MlSignalModelBundleManifest {
     pub bundle_parent_id: Option<String>,
     #[serde(default)]
     pub score_contract: Option<JsonValue>,
+    #[serde(default)]
+    pub native_library_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -782,8 +784,6 @@ struct MlSignalNativeScoreBuild {
 struct ScorePoint {
     p_long: Option<f64>,
     p_short: Option<f64>,
-    raw_long: Option<f64>,
-    raw_short: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1081,22 +1081,6 @@ fn format_f64(value: f64) -> String {
     } else {
         String::new()
     }
-}
-
-fn stddev(values: &[f64]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    let mean = values.iter().copied().sum::<f64>() / values.len() as f64;
-    let var = values
-        .iter()
-        .map(|value| {
-            let diff = *value - mean;
-            diff * diff
-        })
-        .sum::<f64>()
-        / values.len() as f64;
-    var.sqrt()
 }
 
 fn prefix_sum(values: &[f64]) -> Vec<f64> {
@@ -1731,7 +1715,7 @@ struct CatBoostApi {
     model_calcer_delete: ModelCalcerDeleteFn,
     get_error_string: GetErrorStringFn,
     load_full_model_from_file: LoadFullModelFromFileFn,
-    enable_gpu_evaluation: EnableGPUEvaluationFn,
+    enable_gpu_evaluation: Option<EnableGPUEvaluationFn>,
     set_prediction_type: SetPredictionTypeFn,
     calc_model_prediction_flat_transposed: CalcModelPredictionFlatTransposedFn,
     get_float_features_count: GetFloatFeaturesCountFn,
@@ -1743,25 +1727,16 @@ struct CatBoostModelHandle<'a> {
 }
 
 impl CatBoostApi {
-    fn load(explicit_path: Option<&str>) -> Result<(Self, String), String> {
-        let mut candidates: Vec<String> = Vec::new();
-        if let Some(path) = explicit_path
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            candidates.push(path.to_string());
-        }
-        if let Ok(path) = std::env::var("CATBOOST_MODEL_INTERFACE_LIB") {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() && !candidates.iter().any(|value| value == trimmed) {
-                candidates.push(trimmed.to_string());
-            }
-        }
-        for candidate in DEFAULT_CATBOOST_LIBRARY_CANDIDATES {
-            if !candidates.iter().any(|value| value == candidate) {
-                candidates.push((*candidate).to_string());
-            }
-        }
+    fn load(
+        explicit_path: Option<&str>,
+        bundle_manifest_path: Option<&str>,
+        manifest_native_library_path: Option<&str>,
+    ) -> Result<(Self, String), String> {
+        let candidates = build_catboost_library_candidates(
+            explicit_path,
+            bundle_manifest_path,
+            manifest_native_library_path,
+        );
 
         let mut load_errors = Vec::new();
         for candidate in candidates {
@@ -1802,7 +1777,11 @@ impl CatBoostApi {
             model_calcer_delete: load_symbol(&library, b"ModelCalcerDelete\0")?,
             get_error_string: load_symbol(&library, b"GetErrorString\0")?,
             load_full_model_from_file: load_symbol(&library, b"LoadFullModelFromFile\0")?,
-            enable_gpu_evaluation: load_symbol(&library, b"EnableGPUEvaluation\0")?,
+            enable_gpu_evaluation: unsafe {
+                library.get::<EnableGPUEvaluationFn>(b"EnableGPUEvaluation\0")
+            }
+            .ok()
+            .map(|symbol| *symbol),
             set_prediction_type: load_symbol(&library, b"SetPredictionType\0")?,
             calc_model_prediction_flat_transposed: load_symbol(
                 &library,
@@ -1824,6 +1803,144 @@ impl CatBoostApi {
                 .to_string()
         }
     }
+}
+
+fn normalize_catboost_candidate_key(raw: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        raw.replace('/', "\\").to_ascii_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        raw.to_string()
+    }
+}
+
+fn push_catboost_candidate(candidates: &mut Vec<String>, seen: &mut HashSet<String>, raw: String) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let key = normalize_catboost_candidate_key(trimmed);
+    if seen.insert(key) {
+        candidates.push(trimmed.to_string());
+    }
+}
+
+fn push_catboost_candidate_path(
+    candidates: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    path: &Path,
+) {
+    push_catboost_candidate(candidates, seen, path.to_string_lossy().to_string());
+}
+
+fn append_catboost_candidates_from_path(
+    candidates: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    path: &Path,
+) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    if path.is_dir() {
+        for candidate in DEFAULT_CATBOOST_LIBRARY_CANDIDATES {
+            push_catboost_candidate_path(candidates, seen, &path.join(candidate));
+        }
+    } else {
+        push_catboost_candidate_path(candidates, seen, path);
+    }
+}
+
+fn append_catboost_candidates_from_trimmed_str(
+    candidates: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    raw: &str,
+) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    append_catboost_candidates_from_path(candidates, seen, Path::new(trimmed));
+}
+
+fn append_bundle_relative_catboost_candidates(
+    candidates: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    bundle_manifest_path: Option<&str>,
+    manifest_native_library_path: Option<&str>,
+) {
+    let Some(manifest_path) = bundle_manifest_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let manifest_ref = Path::new(manifest_path);
+    let Some(bundle_dir) = manifest_ref.parent() else {
+        return;
+    };
+    append_catboost_candidates_from_path(candidates, seen, bundle_dir);
+    append_catboost_candidates_from_path(candidates, seen, &bundle_dir.join("native"));
+    append_catboost_candidates_from_path(candidates, seen, &bundle_dir.join("lib"));
+    if let Some(raw) = manifest_native_library_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let candidate = Path::new(raw);
+        if candidate.is_absolute() {
+            append_catboost_candidates_from_path(candidates, seen, candidate);
+        } else {
+            append_catboost_candidates_from_path(candidates, seen, &bundle_dir.join(candidate));
+        }
+    }
+}
+
+fn append_process_relative_catboost_candidates(
+    candidates: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            append_catboost_candidates_from_path(candidates, seen, exe_dir);
+            append_catboost_candidates_from_path(candidates, seen, &exe_dir.join("native"));
+            append_catboost_candidates_from_path(candidates, seen, &exe_dir.join("lib"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        append_catboost_candidates_from_path(candidates, seen, &cwd);
+        append_catboost_candidates_from_path(candidates, seen, &cwd.join("native"));
+    }
+}
+
+fn build_catboost_library_candidates(
+    explicit_path: Option<&str>,
+    bundle_manifest_path: Option<&str>,
+    manifest_native_library_path: Option<&str>,
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(path) = explicit_path {
+        append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, path);
+    }
+    if let Ok(path) = std::env::var("CATBOOST_MODEL_INTERFACE_LIB") {
+        append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, &path);
+    }
+    if let Ok(path) = std::env::var("CATBOOST_MODEL_INTERFACE_DIR") {
+        append_catboost_candidates_from_trimmed_str(&mut candidates, &mut seen, &path);
+    }
+    append_bundle_relative_catboost_candidates(
+        &mut candidates,
+        &mut seen,
+        bundle_manifest_path,
+        manifest_native_library_path,
+    );
+    append_process_relative_catboost_candidates(&mut candidates, &mut seen);
+    for candidate in DEFAULT_CATBOOST_LIBRARY_CANDIDATES {
+        push_catboost_candidate(&mut candidates, &mut seen, (*candidate).to_string());
+    }
+    candidates
 }
 
 impl<'a> CatBoostModelHandle<'a> {
@@ -1848,7 +1965,12 @@ impl<'a> CatBoostModelHandle<'a> {
     }
 
     fn try_enable_gpu(&self, device_id: i32) -> Result<(), String> {
-        let ok = unsafe { (self.api.enable_gpu_evaluation)(self.handle, device_id as c_int) };
+        let Some(enable_gpu_evaluation) = self.api.enable_gpu_evaluation else {
+            return Err(
+                "EnableGPUEvaluation unavailable in loaded CatBoost native library".to_string(),
+            );
+        };
+        let ok = unsafe { enable_gpu_evaluation(self.handle, device_id as c_int) };
         if ok {
             Ok(())
         } else {
@@ -2575,6 +2697,12 @@ fn build_ml_signal_native_score_cache(
         manifest.short_model_path.as_deref(),
         "model_short.cbm",
     );
+    let manifest_native_library_path = manifest
+        .native_library_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     let inference_rows = build_ml_signal_inference_feature_rows(candles, &feature_schema)?;
     let calibration_json = calibration_path
@@ -2590,7 +2718,11 @@ fn build_ml_signal_native_score_cache(
         .and_then(|value| value.get("short"));
 
     let backend_requested = req.native_backend_preference;
-    let (api, library_path) = CatBoostApi::load(req.native_library_path.as_deref())?;
+    let (api, library_path) = CatBoostApi::load(
+        req.native_library_path.as_deref(),
+        Some(&manifest_path.to_string_lossy()),
+        manifest_native_library_path.as_deref(),
+    )?;
     let long_model = CatBoostModelHandle::new(&api)?;
     long_model.load_model_from_file(&long_model_path)?;
     let short_model = CatBoostModelHandle::new(&api)?;
@@ -3329,8 +3461,6 @@ fn load_score_cache(
             out[candle_idx] = Some(ScorePoint {
                 p_long: row.p_long,
                 p_short: row.p_short,
-                raw_long: row.raw_long,
-                raw_short: row.raw_short,
             });
             matched_rows = matched_rows.saturating_add(1);
             matched_first_timestamp.get_or_insert(row.timestamp);
@@ -3966,6 +4096,11 @@ pub fn classify_ml_signal_manifest(
             issues.push("calibration file missing".to_string());
         }
     }
+    if let Some(path) = manifest.native_library_path.as_ref() {
+        if !path.trim().is_empty() && !base_dir.join(path).is_file() {
+            issues.push("declared native_library_path missing".to_string());
+        }
+    }
     if manifest
         .source_feature_schema_hash
         .as_deref()
@@ -4246,6 +4381,22 @@ mod tests {
     }
 
     #[test]
+    fn score_cache_build_request_defaults_to_native_cpu_when_backend_missing() {
+        let parsed: MlSignalScoreCacheBuildRequest = serde_json::from_value(serde_json::json!({
+            "data_id": "data-1",
+            "input_path": "",
+            "output_path": "C:/runs/ml_score_cache.json",
+            "model_bundle_id": "bundle-a"
+        }))
+        .expect("deserialize request");
+
+        assert_eq!(
+            parsed.native_backend_preference,
+            MlSignalInferenceBackendPreference::NativeCpu
+        );
+    }
+
+    #[test]
     fn validate_series_len_rejects_length_mismatch() {
         let err = validate_series_len("alma(H)", &[1.0, 2.0], 3).expect_err("length mismatch");
         assert!(err.contains("alma(H)"));
@@ -4269,8 +4420,6 @@ mod tests {
                 Some(ScorePoint {
                     p_long: Some(0.68),
                     p_short: Some(0.45),
-                    raw_long: None,
-                    raw_short: None,
                 }),
                 &params
             ),
@@ -4281,8 +4430,6 @@ mod tests {
                 Some(ScorePoint {
                     p_long: Some(0.44),
                     p_short: Some(0.69),
-                    raw_long: None,
-                    raw_short: None,
                 }),
                 &params
             ),
@@ -4293,8 +4440,6 @@ mod tests {
                 Some(ScorePoint {
                     p_long: Some(0.58),
                     p_short: Some(0.56),
-                    raw_long: None,
-                    raw_short: None,
                 }),
                 &params
             ),
@@ -4339,26 +4484,18 @@ mod tests {
             Some(ScorePoint {
                 p_long: Some(0.80),
                 p_short: Some(0.10),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.10),
                 p_short: Some(0.85),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.10),
                 p_short: Some(0.85),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.10),
                 p_short: Some(0.85),
-                raw_long: None,
-                raw_short: None,
             }),
         ];
         assert_eq!(
@@ -4373,20 +4510,14 @@ mod tests {
             Some(ScorePoint {
                 p_long: Some(0.80),
                 p_short: Some(0.10),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.80),
                 p_short: Some(0.10),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.10),
                 p_short: Some(0.10),
-                raw_long: None,
-                raw_short: None,
             }),
         ];
         assert_eq!(build_desired_positions(&persistent, &params), vec![0, 1, 1]);
@@ -4408,38 +4539,26 @@ mod tests {
             Some(ScorePoint {
                 p_long: Some(0.80),
                 p_short: Some(0.10),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.82),
                 p_short: Some(0.10),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.12),
                 p_short: Some(0.81),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.10),
                 p_short: Some(0.84),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.09),
                 p_short: Some(0.86),
-                raw_long: None,
-                raw_short: None,
             }),
             Some(ScorePoint {
                 p_long: Some(0.08),
                 p_short: Some(0.88),
-                raw_long: None,
-                raw_short: None,
             }),
         ];
 
@@ -5298,6 +5417,152 @@ mod tests {
         let _ = fs::remove_file(bundle_dir.join("calibration.json"));
         let _ = fs::remove_file(&manifest_path);
         let _ = fs::remove_dir(&bundle_dir);
+    }
+
+    #[test]
+    fn classify_manifest_reports_missing_declared_native_library() {
+        let _guard = lock_test_env();
+        let bundle_dir = Path::new(&temp_dir_path("mlsig_manifest_native_status")).to_path_buf();
+        fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        fs::write(bundle_dir.join("model_long.cbm"), b"long").expect("write long model");
+        fs::write(bundle_dir.join("model_short.cbm"), b"short").expect("write short model");
+        fs::write(bundle_dir.join("feature_schema.json"), b"{}").expect("write feature schema");
+        fs::write(bundle_dir.join("export_manifest.json"), b"{}").expect("write export manifest");
+        fs::write(bundle_dir.join("split_manifest.json"), b"{}").expect("write split manifest");
+        let manifest_path = bundle_dir.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "bundle_id": "bundle_native_status_test",
+                "schema_version": 1,
+                "feature_schema_version": 1,
+                "model_family": "catboost_binary_pair",
+                "model_format": "cbm",
+                "long_model_path": "model_long.cbm",
+                "short_model_path": "model_short.cbm",
+                "feature_schema_path": "feature_schema.json",
+                "export_manifest_path": "export_manifest.json",
+                "split_manifest_path": "split_manifest.json",
+                "source_feature_schema_hash": "schemahash-ok",
+                "source_export_manifest_hash": "exporthash-ok",
+                "training_config": { "iterations": 100 },
+                "training_windows_summary": { "windows": 1 },
+                "class_balance_policy": "none",
+                "explainability_artifacts": { "feature_importance_csv": "feature_importance.csv" },
+                "score_contract": {
+                    "score_contract_version": 1,
+                    "walkforward_recommended_mode": "rolling"
+                },
+                "native_library_path": "native/catboostmodel.dll"
+            }))
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let status = classify_ml_signal_manifest(&manifest_path).expect("classify manifest");
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "declared native_library_path missing"));
+
+        let _ = fs::remove_file(bundle_dir.join("model_long.cbm"));
+        let _ = fs::remove_file(bundle_dir.join("model_short.cbm"));
+        let _ = fs::remove_file(bundle_dir.join("feature_schema.json"));
+        let _ = fs::remove_file(bundle_dir.join("export_manifest.json"));
+        let _ = fs::remove_file(bundle_dir.join("split_manifest.json"));
+        let _ = fs::remove_file(&manifest_path);
+        let _ = fs::remove_dir(&bundle_dir);
+    }
+
+    #[test]
+    fn classify_manifest_reports_directory_declared_as_native_library_missing() {
+        let _guard = lock_test_env();
+        let bundle_dir =
+            Path::new(&temp_dir_path("mlsig_manifest_native_dir_status")).to_path_buf();
+        fs::create_dir_all(bundle_dir.join("native").join("catboostmodel.dll"))
+            .expect("create directory-shaped native entry");
+        fs::write(bundle_dir.join("model_long.cbm"), b"long").expect("write long model");
+        fs::write(bundle_dir.join("model_short.cbm"), b"short").expect("write short model");
+        let manifest_path = bundle_dir.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "bundle_id": "bundle_native_dir_status_test",
+                "schema_version": 1,
+                "feature_schema_version": 1,
+                "model_family": "catboost_binary_pair",
+                "model_format": "cbm",
+                "long_model_path": "model_long.cbm",
+                "short_model_path": "model_short.cbm",
+                "native_library_path": "native/catboostmodel.dll"
+            }))
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let status = classify_ml_signal_manifest(&manifest_path).expect("classify manifest");
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "declared native_library_path missing"));
+
+        let _ = fs::remove_file(bundle_dir.join("model_long.cbm"));
+        let _ = fs::remove_file(bundle_dir.join("model_short.cbm"));
+        let _ = fs::remove_file(&manifest_path);
+        let _ = fs::remove_dir_all(&bundle_dir);
+    }
+
+    #[test]
+    fn catboost_library_candidates_include_bundle_and_explicit_directory_paths() {
+        let _guard = lock_test_env();
+        let root_dir = Path::new(&temp_dir_path("mlsig_catboost_candidates")).to_path_buf();
+        let explicit_dir = root_dir.join("explicit");
+        let native_dir = root_dir.join("bundle").join("native");
+        let runtime_dir = root_dir.join("bundle").join("runtime");
+        fs::create_dir_all(&explicit_dir).expect("create explicit dir");
+        fs::create_dir_all(&native_dir).expect("create native dir");
+        fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+        let manifest_path = root_dir.join("bundle").join("manifest.json");
+        fs::write(&manifest_path, b"{}").expect("write manifest");
+        let explicit_candidate = explicit_dir.join(DEFAULT_CATBOOST_LIBRARY_CANDIDATES[0]);
+        let bundle_candidate = native_dir.join(DEFAULT_CATBOOST_LIBRARY_CANDIDATES[0]);
+        let manifest_candidate = runtime_dir.join(DEFAULT_CATBOOST_LIBRARY_CANDIDATES[0]);
+        fs::write(&explicit_candidate, b"explicit").expect("write explicit candidate");
+        fs::write(&bundle_candidate, b"native").expect("write bundle candidate");
+        fs::write(&manifest_candidate, b"runtime").expect("write manifest candidate");
+
+        let explicit_dir_str = explicit_dir.to_string_lossy().to_string();
+        let manifest_path_str = manifest_path.to_string_lossy().to_string();
+        let candidates = build_catboost_library_candidates(
+            Some(&explicit_dir_str),
+            Some(&manifest_path_str),
+            Some(&format!(
+                "runtime/{}",
+                DEFAULT_CATBOOST_LIBRARY_CANDIDATES[0]
+            )),
+        );
+
+        let explicit_key = normalize_catboost_candidate_key(&explicit_candidate.to_string_lossy());
+        let bundle_key = normalize_catboost_candidate_key(&bundle_candidate.to_string_lossy());
+        let manifest_key = normalize_catboost_candidate_key(&manifest_candidate.to_string_lossy());
+        assert!(candidates
+            .iter()
+            .any(|value| normalize_catboost_candidate_key(value) == explicit_key));
+        assert!(candidates
+            .iter()
+            .any(|value| normalize_catboost_candidate_key(value) == bundle_key));
+        assert!(candidates
+            .iter()
+            .any(|value| normalize_catboost_candidate_key(value) == manifest_key));
+        assert!(candidates
+            .iter()
+            .any(|value| value == DEFAULT_CATBOOST_LIBRARY_CANDIDATES[0]));
+
+        let _ = fs::remove_file(&explicit_candidate);
+        let _ = fs::remove_file(&bundle_candidate);
+        let _ = fs::remove_file(&manifest_candidate);
+        let _ = fs::remove_file(&manifest_path);
+        let _ = fs::remove_dir_all(&root_dir);
     }
 
     #[test]

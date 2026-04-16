@@ -1,16 +1,18 @@
+//! Test-only forwarding helpers for `double_ma.rs`.
+//!
+//! Canonical preset definitions remain owned by `strategy_presets.rs`; this
+//! module only keeps large local tests from importing that module repeatedly.
+
 use ta_strategies::double_ma::StrategyConfig;
 
-#[allow(dead_code)]
 pub(super) fn trend_quality_strategy_for_kernel() -> StrategyConfig {
     crate::strategy_presets::trend_quality_strategy_for_kernel()
 }
 
-#[allow(dead_code)]
 pub(super) fn regime_hybrid_strategy_for_kernel() -> StrategyConfig {
     crate::strategy_presets::regime_hybrid_strategy_for_kernel()
 }
 
-#[allow(dead_code)]
 pub(super) fn breakout_strategy_for_kernel() -> StrategyConfig {
     crate::strategy_presets::breakout_strategy_for_kernel()
 }

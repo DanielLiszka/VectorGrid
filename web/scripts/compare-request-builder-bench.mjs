@@ -34,8 +34,8 @@ function formatPct(value) {
 }
 
 const [, , baselineArg, candidateArg] = process.argv
-const baselinePath = path.resolve(process.cwd(), baselineArg ?? '../target/request-builder-bench-baseline.json')
-const candidatePath = path.resolve(process.cwd(), candidateArg ?? '../target/request-builder-bench.json')
+const baselinePath = path.resolve(process.cwd(), baselineArg ?? '../output/benchmarks/request-builder-bench-baseline.json')
+const candidatePath = path.resolve(process.cwd(), candidateArg ?? '../output/benchmarks/request-builder-bench.json')
 
 if (!fs.existsSync(baselinePath)) {
   throw new Error(`Missing baseline benchmark file: ${baselinePath}`)

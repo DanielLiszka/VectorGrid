@@ -1,7 +1,7 @@
 param(
   [string]$ScenarioPath = "scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json",
   [string]$Csv = "",
-  [string]$OutDir = "target/vectorbt_vs_vectorgrid_faceoff",
+  [string]$OutDir = "output/benchmarks/vectorbt_vs_vectorgrid_faceoff",
   [ValidateSet("app-path", "cli-cold")]
   [string]$VectorGridMode = "app-path",
   [ValidateSet("cpu", "gpu-kernel")]

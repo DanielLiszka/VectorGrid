@@ -116,7 +116,7 @@ fn parse_timeframe() -> String {
 fn parse_out_path(timeframe: &str) -> PathBuf {
     parse_flag("--out").map(PathBuf::from).unwrap_or_else(|| {
         PathBuf::from(format!(
-            "target/profile_route_matrix_aapl_{}.json",
+            "output/reports/profile_route_matrix_aapl_{}.json",
             timeframe.replace(['/', '\\', ':'], "_")
         ))
     })

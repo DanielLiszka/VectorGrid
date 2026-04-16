@@ -6,8 +6,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import MlSignalWorkspacePanel from "./MlSignalWorkspacePanel.vue";
 import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
+import { bindRuntimePinia } from "../stores/runtimePinia";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { invokeCommand, tauriRuntimeAvailable } from "../tauri/invoke";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => ({})),
@@ -16,10 +18,16 @@ vi.mock("../tauri/invoke", () => ({
 
 describe("MlSignalWorkspacePanel", () => {
   let pinia: ReturnType<typeof createPinia>;
+  const invokeCommandMock = vi.mocked(invokeCommand);
+  const tauriRuntimeAvailableMock = vi.mocked(tauriRuntimeAvailable);
 
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
+    bindRuntimePinia(pinia);
+    vi.clearAllMocks();
+    tauriRuntimeAvailableMock.mockReturnValue(false);
+    invokeCommandMock.mockResolvedValue({});
   });
 
   it("renders sweep controls and current ML artifact details", () => {
@@ -340,10 +348,11 @@ describe("MlSignalWorkspacePanel", () => {
     await nextTick();
 
     expect(optimize.mlSignalScoreSource).toBe("native");
+    expect(optimize.mlSignalNativeBackend).toBe("native_cpu");
     expect(wrapper.find("#mlSignalScoreInputPath").exists()).toBe(false);
     expect(wrapper.find("#mlSignalNativeBackend").exists()).toBe(true);
     expect(wrapper.find("#mlSignalNativeLibraryPath").exists()).toBe(true);
-    expect(wrapper.find("#mlSignalNativeGpuDeviceId").exists()).toBe(true);
+    expect(wrapper.find("#mlSignalNativeGpuDeviceId").exists()).toBe(false);
     expect(wrapper.text()).toContain("Native bundle inference");
     expect(wrapper.text()).toContain(
       "Bundle selection is required for native score-cache generation.",
@@ -351,12 +360,172 @@ describe("MlSignalWorkspacePanel", () => {
     expect(wrapper.text()).toContain(
       "Native mode still emits the standard cache artifact",
     );
+    expect(wrapper.text()).toContain("Native CPU is the default");
+    expect(wrapper.text()).toContain("only normal UI-selectable runtime path");
+    const backendOptions = wrapper
+      .get("#mlSignalNativeBackend")
+      .findAll("option")
+      .map((option) => option.text());
+    expect(backendOptions).toEqual(["Native CPU (recommended)"]);
     expect(buildButton?.attributes("disabled")).toBeDefined();
 
     optimize.mlSignalModelBundleId = "bundle-a";
     await nextTick();
 
     expect(buildButton?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("refreshes the native bundle status message when Stage 2 switches to native mode", async () => {
+    const data = useDataStore();
+    const optimize = useOptimizeStore();
+
+    data.dataId = "data-1";
+    optimize.mlSignalScoreCachePath = "C:\\data\\score_cache.json";
+    optimize.mlSignalScoreInputPath = "C:\\scores\\model_scores.csv";
+    tauriRuntimeAvailableMock.mockReturnValue(true);
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "list_ml_signal_model_bundles") return [];
+      return {};
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    await Promise.resolve();
+    await nextTick();
+
+    await wrapper.get("#mlSignalScoreSource").setValue("native");
+    await nextTick();
+
+    expect(optimize.mlSignalModelStatus).toContain(
+      "required for native score-cache generation",
+    );
+  });
+
+  it("surfaces bundle status refresh failures into the shared status line", async () => {
+    const optimize = useOptimizeStore();
+    optimize.mlSignalModelBundleId = "bundle-a";
+    tauriRuntimeAvailableMock.mockReturnValue(true);
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "list_ml_signal_model_bundles") return [];
+      if (command === "ml_signal_model_status") {
+        throw new Error("manifest parse failed");
+      }
+      return {};
+    });
+
+    mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    await Promise.resolve();
+    await nextTick();
+
+    expect(optimize.statusLine).toContain("ML model bundle status refresh failed");
+    expect(optimize.statusLine).toContain("manifest parse failed");
+    expect(optimize.mlSignalModelStatus).toContain("manifest parse failed");
+  });
+
+  it("surfaces bundle inventory refresh failures into the shared status line", async () => {
+    tauriRuntimeAvailableMock.mockReturnValue(true);
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "list_ml_signal_model_bundles") {
+        throw new Error("inventory unavailable");
+      }
+      return {};
+    });
+
+    mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    await Promise.resolve();
+    await nextTick();
+
+    expect(useOptimizeStore().statusLine).toContain(
+      "ML bundle inventory refresh failed",
+    );
+    expect(useOptimizeStore().statusLine).toContain("inventory unavailable");
+  });
+
+  it("surfaces open and reveal artifact failures into the shared status line", async () => {
+    const workflowArtifacts = useWorkflowArtifactsStore();
+    workflowArtifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-03-20T10:00:00.000Z",
+        artifact_path: "runs/vectorgrid_run_ml_signal.json",
+        csv_path: "C:\\data\\prices.csv",
+        ml_signal: {
+          stage: "dataset_export",
+          dataset_export_path: "C:\\data\\ml_dataset.csv",
+        },
+        req: {},
+        res: {},
+      },
+      currentValidation: null,
+    });
+    tauriRuntimeAvailableMock.mockReturnValue(true);
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "list_ml_signal_model_bundles") return [];
+      if (command === "open_path" || command === "reveal_path") {
+        throw new Error(`${command} unavailable`);
+      }
+      return {};
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+    await Promise.resolve();
+    await nextTick();
+
+    const openButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().trim() === "Open");
+    const revealButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().trim() === "Reveal");
+
+    expect(openButton).toBeTruthy();
+    expect(revealButton).toBeTruthy();
+
+    await openButton!.trigger("click");
+    await nextTick();
+    expect(useOptimizeStore().statusLine).toContain("Open artifact path failed");
+    expect(useOptimizeStore().statusLine).toContain("reveal_path unavailable");
+
+    await revealButton!.trigger("click");
+    await nextTick();
+    expect(useOptimizeStore().statusLine).toContain(
+      "Reveal artifact path failed",
+    );
+    expect(useOptimizeStore().statusLine).toContain("reveal_path unavailable");
+  });
+
+  it("surfaces legacy experimental native backends from saved runs without offering them for new runs", async () => {
+    const data = useDataStore();
+    const optimize = useOptimizeStore();
+
+    data.dataId = "data-1";
+    optimize.mlSignalScoreSource = "native";
+    optimize.mlSignalModelBundleId = "bundle-a";
+    optimize.mlSignalNativeBackend = "native_cuda";
+    optimize.mlSignalNativeGpuDeviceId = "2";
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+
+    const backendOptions = wrapper
+      .get("#mlSignalNativeBackend")
+      .findAll("option")
+      .map((option) => option.text());
+    expect(backendOptions).toEqual([
+      "Native CPU (recommended)",
+      "Native CUDA (legacy experimental run)",
+    ]);
+    expect(wrapper.text()).toContain(
+      "legacy experimental backend selection",
+    );
+    expect(wrapper.find("#mlSignalNativeGpuDeviceId").exists()).toBe(true);
   });
 
   it("summarizes split-plan, ticker-holdout, and export sidecars in the dataset export stage", () => {

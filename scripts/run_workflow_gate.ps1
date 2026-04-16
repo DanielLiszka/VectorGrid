@@ -3,7 +3,7 @@ param(
   [string]$Mode = "candidate",
   [string]$PackPath = "scripts/workflow_benchmark_pack.json",
   [string]$BaselinePath = "scripts/baselines/workflow_regression_baseline.json",
-  [string]$OutPath = "target/workflow_regression_summary.json",
+  [string]$OutPath = "output/benchmarks/workflow_regression_summary.json",
   [ValidateSet("release", "dev")]
   [string]$BuildProfile = "release",
   [bool]$CheckStageBudgets = $true,

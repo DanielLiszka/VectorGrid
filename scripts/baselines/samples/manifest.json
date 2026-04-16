@@ -14,7 +14,7 @@
   },
   "sources": {
     "run_artifact": "scripts/baselines/samples/run_artifact.json",
-    "batch_summary": "target/workflow_regression_summary.json",
+    "batch_summary": "output/benchmarks/workflow_regression_summary.json",
     "report_json": "_write_test/headless_reports/AAPL_headless_test.json",
     "report_xlsx": "_write_test/headless_reports/AAPL_headless_test.xlsx"
   }

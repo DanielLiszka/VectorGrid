@@ -4882,6 +4882,7 @@ dependencies = [
  "rand_distr",
  "rayon",
  "serde",
+ "serde_json",
  "sobol",
  "ta_strategies",
  "vector-ta",

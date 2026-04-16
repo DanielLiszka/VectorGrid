@@ -699,20 +699,31 @@ fn record_live_session_broker_snapshot(
 }
 
 fn finalize_active_live_session(app: &tauri::AppHandle, session_state: &str) -> Result<(), String> {
-    let path = {
-        let mut slot = live_session_audit_slot()
+    let runtime = {
+        let slot = live_session_audit_slot()
             .lock()
             .map_err(|_| "failed to lock live session audit state".to_string())?;
-        let Some(runtime) = slot.take() else {
+        let Some(runtime) = slot.as_ref() else {
             return Ok(());
         };
-        runtime.path
+        runtime.clone()
     };
     super::run_artifacts::finalize_live_session_artifact_blocking(
-        path,
+        runtime.path.clone(),
         session_state.to_string(),
         app.clone(),
-    )
+    )?;
+    let mut slot = live_session_audit_slot()
+        .lock()
+        .map_err(|_| "failed to lock live session audit state".to_string())?;
+    if slot
+        .as_ref()
+        .map(|active| active.path == runtime.path)
+        .unwrap_or(false)
+    {
+        *slot = None;
+    }
+    Ok(())
 }
 
 pub(crate) fn record_live_session_interruption_and_finalize(
@@ -1213,12 +1224,40 @@ fn fetch_alpaca_orders(
     api_secret: &str,
     limit: u32,
 ) -> Result<Vec<serde_json::Value>, String> {
+    fetch_alpaca_orders_with_filters(client, mode, api_key, api_secret, "all", limit, None)
+}
+
+fn build_alpaca_orders_url(
+    mode: LiveExecutionMode,
+    status: &str,
+    limit: u32,
+    symbol: Option<&str>,
+) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(&format!("{}/v2/orders", base_url(mode)))
+        .map_err(|e| format!("failed to build Alpaca orders url: {e}"))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("status", status.trim());
+        query.append_pair("direction", "desc");
+        query.append_pair("limit", &limit.clamp(1, 500).to_string());
+        if let Some(symbol) = symbol.map(str::trim).filter(|value| !value.is_empty()) {
+            query.append_pair("symbols", symbol);
+        }
+    }
+    Ok(url)
+}
+
+fn fetch_alpaca_orders_with_filters(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+    status: &str,
+    limit: u32,
+    symbol: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
     let headers = build_alpaca_headers(api_key, api_secret)?;
-    let url = format!(
-        "{}/v2/orders?status=all&direction=desc&limit={}",
-        base_url(mode),
-        limit.clamp(1, 500)
-    );
+    let url = build_alpaca_orders_url(mode, status, limit, symbol)?;
     let resp = client
         .get(url)
         .headers(headers)
@@ -1236,6 +1275,16 @@ fn fetch_alpaca_orders(
         .as_array()
         .ok_or_else(|| "Alpaca orders response must be an array".to_string())?;
     Ok(arr.clone())
+}
+
+fn fetch_alpaca_open_orders_for_symbol(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+    symbol: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    fetch_alpaca_orders_with_filters(client, mode, api_key, api_secret, "open", 500, Some(symbol))
 }
 
 fn fetch_alpaca_positions(
@@ -1346,7 +1395,7 @@ fn normalize_order_snapshot(v: &serde_json::Value) -> Option<LiveOrderSnapshot> 
     })
 }
 
-fn is_broker_open_order_status(status: &str) -> bool {
+fn is_broker_cancelable_order_status(status: &str) -> bool {
     matches!(
         status.trim().to_ascii_lowercase().as_str(),
         "new"
@@ -1355,20 +1404,95 @@ fn is_broker_open_order_status(status: &str) -> bool {
             | "accepted_for_bidding"
             | "partially_filled"
             | "pending_replace"
-            | "held"
-            | "stopped"
             | "calculated"
-            | "suspended"
     )
 }
 
-fn open_orders_for_symbol(orders: &[serde_json::Value], symbol: &str) -> Vec<LiveOrderSnapshot> {
+fn is_broker_open_order_status(status: &str) -> bool {
+    is_broker_cancelable_order_status(status)
+        || matches!(
+            status.trim().to_ascii_lowercase().as_str(),
+            "pending_cancel" | "held" | "stopped" | "suspended"
+        )
+}
+
+fn filter_symbol_orders_by_status<F>(
+    orders: &[serde_json::Value],
+    symbol: &str,
+    mut include_status: F,
+) -> Vec<LiveOrderSnapshot>
+where
+    F: FnMut(&str) -> bool,
+{
     orders
         .iter()
         .filter_map(normalize_order_snapshot)
-        .filter(|order| is_broker_open_order_status(&order.status))
+        .filter(|order| include_status(&order.status))
         .filter(|order| symbol_matches(&order.symbol, symbol))
         .collect()
+}
+
+fn open_orders_for_symbol(orders: &[serde_json::Value], symbol: &str) -> Vec<LiveOrderSnapshot> {
+    filter_symbol_orders_by_status(orders, symbol, is_broker_open_order_status)
+}
+
+fn cancelable_orders_for_symbol(
+    orders: &[serde_json::Value],
+    symbol: &str,
+) -> Vec<LiveOrderSnapshot> {
+    filter_symbol_orders_by_status(orders, symbol, is_broker_cancelable_order_status)
+}
+
+fn summarize_snapshot_orders(
+    orders_raw: &[serde_json::Value],
+    symbol: &str,
+    return_limit: usize,
+) -> (Vec<LiveOrderSnapshot>, usize) {
+    let mut orders: Vec<LiveOrderSnapshot> = Vec::new();
+    let mut open_order_count = 0usize;
+    for order in orders_raw.iter().filter_map(normalize_order_snapshot) {
+        if !symbol_matches(&order.symbol, symbol) {
+            continue;
+        }
+        if is_broker_open_order_status(&order.status) {
+            open_order_count = open_order_count.saturating_add(1);
+        }
+        if orders.len() < return_limit {
+            orders.push(order);
+        }
+    }
+    (orders, open_order_count)
+}
+
+fn apply_manual_execution_audit_result(
+    mut response: ExecuteStrategySignalResponse,
+    audit_result: Result<(), String>,
+) -> Result<ExecuteStrategySignalResponse, String> {
+    match audit_result {
+        Ok(()) => Ok(response),
+        Err(error) if response.order_submitted => {
+            response.warnings.push(format!(
+                "Order was submitted, but live-session audit capture failed: {error}"
+            ));
+            Ok(response)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn rollback_runner_start(generation: u64) {
+    if let Ok(mut slot) = live_execution_runner_slot().lock() {
+        if slot
+            .as_ref()
+            .map(|runtime| runtime.generation == generation)
+            .unwrap_or(false)
+        {
+            if let Some(runtime) = slot.as_ref() {
+                runtime.abort.cancel();
+            }
+            *slot = None;
+        }
+    }
 }
 
 fn normalize_position_snapshot(v: &serde_json::Value) -> Option<LivePositionSnapshot> {
@@ -1685,7 +1809,7 @@ pub async fn execute_strategy_signal_once(
     .await
     .map_err(|e| e.to_string())??;
     if !req_for_session.dry_run {
-        capture_manual_execution_live_session(
+        let audit_result = capture_manual_execution_live_session(
             &app,
             &req_for_session,
             &symbol_for_session,
@@ -1693,7 +1817,8 @@ pub async fn execute_strategy_signal_once(
             &data_id,
             &strategy_kind,
             &response,
-        )?;
+        );
+        return apply_manual_execution_audit_result(response, audit_result);
     }
     Ok(response)
 }
@@ -1764,10 +1889,16 @@ pub async fn start_live_execution_runner(
     }
 
     if !req.dry_run {
-        let saved = super::run_artifacts::create_live_session_artifact_blocking(
+        let saved = match super::run_artifacts::create_live_session_artifact_blocking(
             build_live_session_seed(&req, &symbol, qty, &strategy_kind, &data_id),
             app.clone(),
-        )?;
+        ) {
+            Ok(saved) => saved,
+            Err(error) => {
+                rollback_runner_start(generation);
+                return Err(error);
+            }
+        };
         let mut session_slot = live_session_audit_slot()
             .lock()
             .map_err(|_| "failed to lock live session audit state".to_string())?;
@@ -2199,8 +2330,8 @@ pub async fn get_live_execution_snapshot(
     let include_orders = req.include_orders.unwrap_or(true);
     let include_position = req.include_position.unwrap_or(true);
 
-    let response = tauri::async_runtime::spawn_blocking(
-        move || -> Result<GetLiveExecutionSnapshotResponse, String> {
+    let (response, open_order_count) = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(GetLiveExecutionSnapshotResponse, usize), String> {
             let client = alpaca_client()?;
             let (
                 account_id,
@@ -2231,21 +2362,14 @@ pub async fn get_live_execution_snapshot(
                 return_limit
             };
             let mut orders: Vec<LiveOrderSnapshot> = Vec::new();
+            let mut open_order_count = 0usize;
             if include_orders {
                 let orders_raw =
                     fetch_alpaca_orders(client, mode, &api_key, &api_secret, order_scan_limit)?;
-                for o in &orders_raw {
-                    let Some(ord) = normalize_order_snapshot(o) else {
-                        continue;
-                    };
-                    if !symbol_matches(&ord.symbol, &symbol) {
-                        continue;
-                    }
-                    orders.push(ord);
-                    if orders.len() >= return_limit as usize {
-                        break;
-                    }
-                }
+                let (filtered_orders, filtered_open_order_count) =
+                    summarize_snapshot_orders(&orders_raw, &symbol, return_limit as usize);
+                orders = filtered_orders;
+                open_order_count = filtered_open_order_count;
             }
 
             let mut position: Option<LivePositionSnapshot> = None;
@@ -2275,7 +2399,7 @@ pub async fn get_live_execution_snapshot(
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
 
-            Ok(GetLiveExecutionSnapshotResponse {
+            let response = GetLiveExecutionSnapshotResponse {
                 mode,
                 symbol,
                 account_id,
@@ -2288,7 +2412,8 @@ pub async fn get_live_execution_snapshot(
                 fetched_at_unix_ms,
                 position,
                 orders,
-            })
+            };
+            Ok((response, open_order_count))
         },
     )
     .await
@@ -2314,11 +2439,6 @@ pub async fn get_live_execution_snapshot(
         .as_ref()
         .and_then(|position| position.side.clone())
         .unwrap_or_default();
-    let open_order_count = response
-        .orders
-        .iter()
-        .filter(|order| is_broker_open_order_status(&order.status))
-        .count();
     let _ = record_live_session_broker_snapshot(
         &app,
         serde_json::json!({
@@ -2358,9 +2478,9 @@ pub async fn cancel_live_execution_open_orders(
     let response = tauri::async_runtime::spawn_blocking(
         move || -> Result<CancelLiveExecutionOpenOrdersResponse, String> {
             let client = alpaca_client()?;
-            let orders = fetch_alpaca_orders(client, mode, &api_key, &api_secret, 500)?;
-            let open_orders = open_orders_for_symbol(&orders, &symbol);
-            let open_order_count_before = open_orders.len();
+            let orders = fetch_alpaca_open_orders_for_symbol(client, mode, &api_key, &api_secret, &symbol)?;
+            let open_order_count_before = open_orders_for_symbol(&orders, &symbol).len();
+            let open_orders = cancelable_orders_for_symbol(&orders, &symbol);
             let mut cancelled_order_ids = Vec::with_capacity(open_orders.len());
             for order in open_orders {
                 if let Err(error) = cancel_alpaca_order(client, mode, &api_key, &api_secret, &order.id) {
@@ -2421,7 +2541,8 @@ pub async fn flatten_live_execution_position(
     let response = tauri::async_runtime::spawn_blocking(
         move || -> Result<FlattenLiveExecutionPositionResponse, String> {
             let client = alpaca_client()?;
-            let orders = fetch_alpaca_orders(client, mode, &api_key, &api_secret, 500)?;
+            let orders =
+                fetch_alpaca_open_orders_for_symbol(client, mode, &api_key, &api_secret, &symbol)?;
             let open_order_count_before = open_orders_for_symbol(&orders, &symbol).len();
             if open_order_count_before > 0 {
                 let plural = if open_order_count_before == 1 { "" } else { "s" };
@@ -2660,7 +2781,14 @@ mod tests {
 
     #[test]
     fn broker_open_order_status_matches_only_open_like_states() {
-        for status in ["new", "accepted", "pending_new", "partially_filled", "held"] {
+        for status in [
+            "new",
+            "accepted",
+            "pending_new",
+            "partially_filled",
+            "pending_cancel",
+            "held",
+        ] {
             assert!(
                 is_broker_open_order_status(status),
                 "expected open-like status {status} to match"
@@ -2672,6 +2800,14 @@ mod tests {
                 "expected terminal status {status} to be excluded"
             );
         }
+    }
+
+    #[test]
+    fn broker_cancelable_status_is_stricter_than_action_blocking_status() {
+        assert!(!is_broker_cancelable_order_status("pending_cancel"));
+        assert!(is_broker_open_order_status("pending_cancel"));
+        assert!(!is_broker_cancelable_order_status("held"));
+        assert!(is_broker_open_order_status("held"));
     }
 
     #[test]
@@ -2687,6 +2823,94 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "ord_1");
         assert_eq!(filtered[0].symbol, "AAPL");
+    }
+
+    #[test]
+    fn cancelable_orders_for_symbol_uses_cancelable_status_subset() {
+        let orders = vec![
+            json!({ "id": "ord_1", "symbol": "AAPL", "status": "pending_cancel", "side": "buy", "type": "market" }),
+            json!({ "id": "ord_2", "symbol": "AAPL", "status": "held", "side": "buy", "type": "market" }),
+        ];
+
+        let filtered = cancelable_orders_for_symbol(&orders, "AAPL");
+
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn alpaca_orders_url_can_scope_open_queries_to_a_symbol() {
+        let url = build_alpaca_orders_url(LiveExecutionMode::Paper, "open", 900, Some("AAPL"))
+            .expect("orders url");
+
+        assert_eq!(url.as_str(), "https://paper-api.alpaca.markets/v2/orders?status=open&direction=desc&limit=500&symbols=AAPL");
+    }
+
+    #[test]
+    fn summarize_snapshot_orders_counts_full_filtered_open_set_before_truncation() {
+        let orders = vec![
+            json!({ "id": "ord_1", "symbol": "AAPL", "status": "new", "side": "buy", "type": "market" }),
+            json!({ "id": "ord_2", "symbol": "AAPL", "status": "pending_cancel", "side": "buy", "type": "market" }),
+            json!({ "id": "ord_3", "symbol": "AAPL", "status": "filled", "side": "buy", "type": "market" }),
+        ];
+
+        let (filtered, open_count) = summarize_snapshot_orders(&orders, "AAPL", 1);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "ord_1");
+        assert_eq!(open_count, 2);
+    }
+
+    #[test]
+    fn manual_execution_audit_failure_becomes_warning_only_after_submission() {
+        let response = ExecuteStrategySignalResponse {
+            symbol: "AAPL".to_string(),
+            mode: LiveExecutionMode::Paper,
+            desired_position: 1,
+            current_position_qty: 0.0,
+            target_position_qty: 1.0,
+            delta_qty: 1.0,
+            order_submitted: true,
+            order_id: Some("ord_123".to_string()),
+            action: "buy".to_string(),
+            last_bar_ts: None,
+            last_close: Some(123.0),
+            warnings: Vec::new(),
+        };
+
+        let audited = apply_manual_execution_audit_result(
+            response,
+            Err("artifact append failed".to_string()),
+        )
+        .expect("submitted order should still succeed");
+
+        assert_eq!(audited.order_id.as_deref(), Some("ord_123"));
+        assert_eq!(audited.warnings.len(), 1);
+        assert!(audited.warnings[0].contains("artifact append failed"));
+    }
+
+    #[test]
+    fn rollback_runner_start_only_clears_matching_generation() {
+        let _guard = runner_test_guard().lock().expect("runner test guard");
+        {
+            let mut slot = live_execution_runner_slot().lock().expect("runner slot");
+            *slot = Some(test_runner_runtime(41));
+        }
+
+        rollback_runner_start(99);
+        assert_eq!(
+            live_execution_runner_slot()
+                .lock()
+                .expect("runner slot")
+                .as_ref()
+                .map(|runtime| runtime.generation),
+            Some(41)
+        );
+
+        rollback_runner_start(41);
+        assert!(live_execution_runner_slot()
+            .lock()
+            .expect("runner slot")
+            .is_none());
     }
 
     #[test]

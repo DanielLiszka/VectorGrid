@@ -12,6 +12,34 @@ use state::BackgroundTaskState;
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_window_state::{StateFlags, WindowExt};
 
+const MAIN_WINDOW_LABEL: &str = "main";
+
+fn main_window_restore_flags() -> StateFlags {
+    StateFlags::all() & !StateFlags::VISIBLE
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn spawn_options_expression_gpu_prewarm() {
+    let builder = std::thread::Builder::new().name("options-expression-gpu-prewarm".to_string());
+    if let Err(error) = builder.spawn(|| match ta_app_core::preferred_cuda_device_id_result() {
+        Ok(Some(device_id)) => {
+            if let Err(error) = ta_app_core::prewarm_options_expression_gpu_runtime(device_id) {
+                log::warn!(
+                    "options-expression GPU runtime prewarm failed for device {device_id}: {error}"
+                );
+            } else {
+                log::info!("options-expression GPU runtime prewarmed for device {device_id}");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log::warn!("options-expression GPU runtime prewarm skipped: {error}");
+        }
+    }) {
+        log::warn!("failed to spawn options-expression GPU runtime prewarm thread: {error}");
+    }
+}
+
 pub fn run_tauri() {
     tauri::Builder::default()
         .plugin(
@@ -32,7 +60,11 @@ pub fn run_tauri() {
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .skip_initial_state(MAIN_WINDOW_LABEL)
+                .build(),
+        )
         .manage(AppState::default())
         .manage(BackgroundTaskState::default())
         .setup(|app| {
@@ -46,7 +78,7 @@ pub fn run_tauri() {
                 .data_directory(data_dir)
                 .build()?;
 
-            if let Err(error) = window.restore_state(StateFlags::all()) {
+            if let Err(error) = window.restore_state(main_window_restore_flags()) {
                 log::warn!("failed to restore main window state: {error}");
             }
 
@@ -56,24 +88,7 @@ pub fn run_tauri() {
             }
 
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-            std::thread::spawn(|| match ta_app_core::preferred_cuda_device_id_result() {
-                Ok(Some(device_id)) => {
-                    if let Err(error) = ta_app_core::prewarm_options_expression_gpu_runtime(device_id)
-                    {
-                        log::warn!(
-                            "options-expression GPU runtime prewarm failed for device {device_id}: {error}"
-                        );
-                    } else {
-                        log::info!(
-                            "options-expression GPU runtime prewarmed for device {device_id}"
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    log::warn!("options-expression GPU runtime prewarm skipped: {error}");
-                }
-            });
+            spawn_options_expression_gpu_prewarm();
 
             log::info!("main window initialized");
 
@@ -192,4 +207,18 @@ pub fn run_tauri() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::main_window_restore_flags;
+    use tauri_plugin_window_state::StateFlags;
+
+    #[test]
+    fn main_window_restore_flags_excludes_visible() {
+        let flags = main_window_restore_flags();
+        assert!(!flags.contains(StateFlags::VISIBLE));
+        assert!(flags.contains(StateFlags::SIZE));
+        assert!(flags.contains(StateFlags::POSITION));
+    }
 }

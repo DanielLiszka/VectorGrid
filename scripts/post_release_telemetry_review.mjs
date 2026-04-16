@@ -6,7 +6,7 @@ const ROOT = process.cwd()
 
 const DEFAULTS = {
   baseline: path.resolve(ROOT, 'scripts', 'baselines', 'workflow_regression_baseline.json'),
-  summary: path.resolve(ROOT, 'target', 'workflow_regression_summary.json'),
+  summary: path.resolve(ROOT, 'output', 'benchmarks', 'workflow_regression_summary.json'),
   uiMetrics: path.resolve(ROOT, 'scripts', 'baselines', 'ui_capture', 'perf_metrics.json'),
   memoryMetrics: path.resolve(ROOT, 'scripts', 'baselines', 'ui_capture', 'optimization_memory_metrics.json'),
   samplesManifest: path.resolve(ROOT, 'scripts', 'baselines', 'samples', 'manifest.json'),

@@ -27,7 +27,7 @@ impl OptionsSupportedParentFamily {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SupportedOptionsParentReplay {
     pub family: OptionsSupportedParentFamily,
     pub drilldown_request: DoubleMaDrilldownRequest,
@@ -41,23 +41,31 @@ fn non_empty_string(v: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn resolve_strategy_kind(value: &Value) -> String {
+fn resolved_strategy_kind(value: &Value) -> Option<String> {
     non_empty_string(value.pointer("/run/req/strategy_kind"))
         .or_else(|| {
             non_empty_string(value.pointer("/validation/req/validation_context/strategy_kind"))
         })
         .or_else(|| non_empty_string(value.pointer("/validation/req/strategy_kind")))
-        .unwrap_or_default()
+}
+
+fn resolve_strategy_kind(value: &Value) -> String {
+    resolved_strategy_kind(value).unwrap_or_default()
 }
 
 pub fn supported_options_parent_strategy_list() -> &'static str {
     "DoubleMa, CompositeTrend, RegimeHybrid, and BreakoutMomentum"
 }
 
+/// Kind allowlist prefilter only; replay compatibility is established later.
 pub fn supported_options_parent_family_from_artifact(
     artifact: &Value,
 ) -> Option<OptionsSupportedParentFamily> {
-    supported_options_parent_family_from_kind(&resolve_strategy_kind(artifact))
+    let strategy_kind = resolve_strategy_kind(artifact);
+    if !is_supported_options_parent_strategy_kind(&strategy_kind) {
+        return None;
+    }
+    supported_options_parent_family_from_kind(&strategy_kind)
 }
 
 pub fn supported_options_parent_family_from_kind(
@@ -93,6 +101,7 @@ fn build_double_like_parent_replay(
     })?;
 
     let candidate_params = if let Some(index) = parent_candidate_index {
+        // An explicit replay candidate request is fail-closed when absent.
         Some(
             artifact
                 .pointer(&format!("/validation/res/candidates/{index}/params"))
@@ -110,6 +119,7 @@ fn build_double_like_parent_replay(
     };
 
     let (params, strategy, halftrend_filter) = if let Some(candidate_value) = candidate_params {
+        // A malformed candidate payload is an error; do not silently fall back.
         let candidate: DoubleMaValidationParams =
             serde_json::from_value(candidate_value).map_err(|e| {
                 format!(
@@ -172,9 +182,18 @@ pub fn build_supported_options_parent_replay(
     artifact: &Value,
     parent_candidate_index: Option<usize>,
 ) -> Result<SupportedOptionsParentReplay, String> {
-    let family = supported_options_parent_family_from_artifact(artifact).ok_or_else(|| {
+    let strategy_kind = resolved_strategy_kind(artifact).ok_or_else(|| {
+        "saved run artifact is missing supported options parent strategy-kind metadata".to_string()
+    })?;
+    if !is_supported_options_parent_strategy_kind(&strategy_kind) {
+        return Err(format!(
+            "options expression currently supports {} parent artifacts only (found strategy kind '{strategy_kind}')",
+            supported_options_parent_strategy_list()
+        ));
+    }
+    let family = supported_options_parent_family_from_kind(&strategy_kind).ok_or_else(|| {
         format!(
-            "options expression currently supports {} parent artifacts only",
+            "options expression currently supports {} parent artifacts only (found strategy kind '{strategy_kind}')",
             supported_options_parent_strategy_list()
         )
     })?;
@@ -280,6 +299,108 @@ pub fn build_supported_options_parent_signal_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use ta_app_core::{double_ma::GpuExecutionPolicy, Backend};
+    use ta_optimizer::{ObjectiveKind, OptimizationMode};
+    use ta_strategies::double_ma::StrategyConfig;
+
+    fn sample_run_request() -> DoubleMaRequest {
+        DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "artifact_parent".to_string(),
+            fast_range: (5, 5, 1),
+            slow_range: (20, 20, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            hurdle_tau: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(10),
+            include_all: Some(false),
+            heatmap_bins: None,
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: false,
+            metric_contract: None,
+        }
+    }
+
+    fn sample_candidate(fast_len: u16, trade_on_next_bar: bool) -> DoubleMaValidationParams {
+        DoubleMaValidationParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_len,
+            slow_len: fast_len + 10,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig {
+                trade_on_next_bar,
+                ..StrategyConfig::default()
+            },
+            halftrend_filter: None,
+        }
+    }
+
+    fn sample_best_params(fast_len: u16) -> DoubleMaParamsResolved {
+        DoubleMaParamsResolved {
+            fast_len,
+            slow_len: fast_len + 10,
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+        }
+    }
+
+    fn artifact_with_replay_payload(
+        strategy_kind: Option<&str>,
+        candidates: Option<Vec<Value>>,
+        best_params: Option<DoubleMaParamsResolved>,
+    ) -> Value {
+        let mut run_req = serde_json::to_value(sample_run_request()).expect("run request");
+        if let Some(strategy_kind) = strategy_kind {
+            run_req
+                .as_object_mut()
+                .expect("request object")
+                .insert("strategy_kind".to_string(), json!(strategy_kind));
+        }
+        let best_params_value =
+            best_params.map(|params| serde_json::to_value(params).expect("best params"));
+        let candidates_value = candidates.unwrap_or_default();
+
+        json!({
+            "run": {
+                "req": run_req,
+                "res": {
+                    "best_params": best_params_value
+                }
+            },
+            "validation": {
+                "res": {
+                    "candidates": candidates_value
+                }
+            }
+        })
+    }
 
     #[test]
     fn supported_parent_family_mapping_matches_current_surface() {
@@ -300,5 +421,90 @@ mod tests {
             Some(OptionsSupportedParentFamily::BreakoutMomentum)
         );
         assert_eq!(supported_options_parent_family_from_kind("MlSignal"), None);
+    }
+
+    #[test]
+    fn build_supported_options_parent_replay_rejects_missing_strategy_kind_metadata() {
+        let artifact = artifact_with_replay_payload(None, None, Some(sample_best_params(5)));
+
+        let err = build_supported_options_parent_replay(&artifact, None)
+            .expect_err("missing strategy kind should fail");
+        assert!(err.contains("missing supported options parent strategy-kind metadata"));
+    }
+
+    #[test]
+    fn build_supported_options_parent_replay_rejects_unsupported_strategy_kind() {
+        let artifact =
+            artifact_with_replay_payload(Some("MlSignal"), None, Some(sample_best_params(5)));
+
+        let err = build_supported_options_parent_replay(&artifact, None)
+            .expect_err("unsupported strategy kind should fail");
+        assert!(err.contains("found strategy kind 'MlSignal'"));
+    }
+
+    #[test]
+    fn build_supported_options_parent_replay_uses_explicit_nonzero_candidate_index() {
+        let artifact = artifact_with_replay_payload(
+            Some("DoubleMa"),
+            Some(vec![
+                json!({ "params": serde_json::to_value(sample_candidate(7, false)).expect("candidate 0") }),
+                json!({ "params": serde_json::to_value(sample_candidate(11, true)).expect("candidate 1") }),
+            ]),
+            Some(sample_best_params(5)),
+        );
+
+        let replay = build_supported_options_parent_replay(&artifact, Some(1))
+            .expect("candidate 1 replay should succeed");
+
+        assert_eq!(replay.drilldown_request.params.fast_len, 11);
+        assert!(replay.trade_on_next_bar);
+    }
+
+    #[test]
+    fn build_supported_options_parent_replay_fails_closed_for_missing_explicit_candidate() {
+        let artifact = artifact_with_replay_payload(
+            Some("DoubleMa"),
+            Some(vec![json!({
+                "params": serde_json::to_value(sample_candidate(7, false)).expect("candidate 0")
+            })]),
+            Some(sample_best_params(5)),
+        );
+
+        let err = build_supported_options_parent_replay(&artifact, Some(1))
+            .expect_err("missing explicit candidate should fail");
+        assert!(err.contains("requested parent_candidate_index 1"));
+    }
+
+    #[test]
+    fn build_supported_options_parent_replay_falls_back_to_best_params_when_candidates_are_absent()
+    {
+        let artifact =
+            artifact_with_replay_payload(Some("DoubleMa"), None, Some(sample_best_params(5)));
+
+        let replay = build_supported_options_parent_replay(&artifact, None)
+            .expect("best_params fallback should succeed");
+
+        assert_eq!(replay.drilldown_request.params.fast_len, 5);
+        assert_eq!(replay.drilldown_request.data_id, "artifact_replay");
+        assert_eq!(replay.drilldown_request.bins, Some(256));
+    }
+
+    #[test]
+    fn build_supported_options_parent_replay_fails_closed_for_malformed_candidate_payload() {
+        let artifact = artifact_with_replay_payload(
+            Some("DoubleMa"),
+            Some(vec![json!({
+                "params": {
+                    "fast_ma_type": "sma",
+                    "slow_ma_type": "ema",
+                    "fast_len": 7
+                }
+            })]),
+            Some(sample_best_params(5)),
+        );
+
+        let err = build_supported_options_parent_replay(&artifact, None)
+            .expect_err("malformed candidate should fail");
+        assert!(err.contains("validation candidate"));
     }
 }

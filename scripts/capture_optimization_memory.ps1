@@ -33,7 +33,7 @@ if (-not (Test-Path $exePath)) {
 $outDir = Split-Path -Parent (Join-Path $repoRoot $OutFile)
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-$summaryPath = Join-Path $repoRoot "target\workflow_regression_summary.json"
+$summaryPath = Join-Path $repoRoot "output\benchmarks\workflow_regression_summary.json"
 $arguments = @(
   "--out", $summaryPath,
   "--candles-len", "10000",
@@ -92,7 +92,7 @@ $payload = [ordered]@{
   peak_working_set_mb = [math]::Round($maxWorkingSet / 1MB, 2)
   peak_private_bytes = $maxPrivateBytes
   peak_private_mb = [math]::Round($maxPrivateBytes / 1MB, 2)
-  workflow_summary_json = "target/workflow_regression_summary.json"
+  workflow_summary_json = "output/benchmarks/workflow_regression_summary.json"
   command = @{
     exe = "target/$targetDirName/ta_workflow_regression.exe"
     args = $arguments

@@ -493,7 +493,7 @@ where
         comparison_top_k: 5,
         holdout_frac: 0.20,
         device_id: 0,
-        out_path: PathBuf::from("target/real_data_fidelity_audit_aapl.json"),
+        out_path: PathBuf::from("output/reports/real_data_fidelity_audit_aapl.json"),
     };
 
     let mut args = args.into_iter().map(Into::into);
@@ -615,7 +615,9 @@ fn print_help() {
     println!("  --comparison-top-k <n>    Default: 5");
     println!("  --holdout-frac <f>        Default: 0.20");
     println!("  --device <id>             Default: 0");
-    println!("  --out <path>              Default: target/real_data_fidelity_audit_aapl.json");
+    println!(
+        "  --out <path>              Default: output/reports/real_data_fidelity_audit_aapl.json"
+    );
 }
 
 fn build_optimization_audit(
@@ -1710,7 +1712,7 @@ mod tests {
         assert_eq!(cfg.device_id, 0);
         assert_eq!(
             cfg.out_path,
-            PathBuf::from("target/real_data_fidelity_audit_aapl.json")
+            PathBuf::from("output/reports/real_data_fidelity_audit_aapl.json")
         );
     }
 

@@ -69,6 +69,8 @@ This repo also has a tighter engine benchmark boundary for the classic `58,300`-
 
 Use the warm app-path numbers only for scenario-matched saved-snapshot comparisons with explicit artifact/date context. Use the Criterion benchmark for lower-level engine tracking.
 
+Local preserved benchmark, profiling, and report artifacts now belong under `output/`. Treat `target/` as disposable Cargo/build scratch that can be deleted between runs without intentionally preserving historical evidence.
+
 ## What The App Does
 
 - Exact-grid optimization for trading strategies, with a mature GPU path for the `Double MA` family.
@@ -167,7 +169,7 @@ Run the real-workflow `250,000`-pair warm faceoff scenario with the same interpr
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1 `
   -ScenarioPath scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json `
-  -OutDir target/vectorbt_vs_vectorgrid_faceoff_250k_real_workflow `
+  -OutDir output/benchmarks/vectorbt_vs_vectorgrid_faceoff_250k_real_workflow `
   -PythonExe .\.venv-vectorbt-faceoff\Scripts\python.exe
 ```
 
@@ -184,17 +186,17 @@ Each faceoff run now writes the lockfile hash plus same-interpreter Python prove
 - `summary.json` `environment.python.requirements_lock`
 - `summary.json` `environment.python.pip`
 
-Those saved artifacts were written to:
+Preserved faceoff artifacts now belong under `output/benchmarks/`. Older historical snapshots may still exist under legacy `target/...` paths from before this convention.
 
 - fastest saved `58,300`-pair snapshot:
-  - `target/vectorgrid_app_faceoff_only_20260313/`
-  - `target/vectorbt_vs_vectorgrid_faceoff_58300_rerun/`
+  - `output/benchmarks/vectorgrid_app_faceoff_only_20260313/`
+  - `output/benchmarks/vectorbt_vs_vectorgrid_faceoff_58300_rerun/`
 - latest saved `250,000`-pair rerun set:
-  - `target/vectorbt_vs_vectorgrid_manual_rerun_2026-04-03/`
-  - `target/vectorbt_vs_vectorgrid_faceoff_rerun_2026-04-03/`
+  - `output/benchmarks/vectorbt_vs_vectorgrid_manual_rerun_2026-04-03/`
+  - `output/benchmarks/vectorbt_vs_vectorgrid_faceoff_rerun_2026-04-03/`
 - March public `250,000`-pair chart snapshot:
-  - `target/vectorgrid_app_faceoff_only_250k_20260313/`
-  - `target/vectorbt_only_faceoff_250k_20260313/`
+  - `output/benchmarks/vectorgrid_app_faceoff_only_250k_20260313/`
+  - `output/benchmarks/vectorbt_only_faceoff_250k_20260313/`
 
 ## Performance Gates And Profiling
 

@@ -9,6 +9,22 @@ Current scope:
 - evaluate both proxy and rolling walk-forward rolls outside the Tauri runtime
 - assemble model bundles that the app can inspect and later score natively
 
+## Desktop Runtime Recommendation
+
+The current desktop-native recommendation is:
+
+- prefer `native_cpu` for bundle-backed runtime scoring
+- treat `auto` and `native_cuda` as experimental
+- keep score-cache import available as the compatibility fallback
+
+Reason:
+
+- CPU-native CatBoost inference is implemented and validated in the app/runtime path
+- Windows GPU-native CatBoost builds are still upstream-fragile on the current CUDA 13.x stack
+- the desktop workflow does not need GPU inference to remain fast enough for the current `MlSignal` scope
+- packaged Windows builds now ship an app-level CPU CatBoost DLL fallback at `$RESOURCE/native/catboostmodel.dll`
+- the normal desktop panel only offers `native_cpu`; experimental GPU-native backend values are kept replay-compatible for older saved runs and internal testing
+
 ## Environment
 
 Create a virtual environment and install the pinned research dependencies:
@@ -130,6 +146,57 @@ python holdout_bundle_report.py `
   --bundle-dirs C:\data\ml_signal\bundle_holdout_true C:\data\ml_signal\bundle_holdout_false
 ```
 
+## Native Bundle Layout For Desktop CPU Inference
+
+Preferred operator layout for a bundle that will be scored natively by the desktop app:
+
+- `manifest.json`
+- `model_long.cbm`
+- `model_short.cbm`
+- `feature_schema.json`
+- `export_manifest.json`
+- optional `split_manifest.json`
+- optional `calibration.json`
+- `native/catboostmodel.dll` on Windows
+
+Preferred manifest shape:
+
+- keep model/schema/export paths relative to the bundle directory
+- keep `native_library_path` relative to the bundle directory
+
+Example:
+
+```json
+{
+  "long_model_path": "model_long.cbm",
+  "short_model_path": "model_short.cbm",
+  "feature_schema_path": "feature_schema.json",
+  "export_manifest_path": "export_manifest.json",
+  "native_library_path": "native/catboostmodel.dll"
+}
+```
+
+The runtime native loader currently searches in this order:
+
+1. explicit UI/CLI override path
+2. `CATBOOST_MODEL_INTERFACE_LIB`
+3. `CATBOOST_MODEL_INTERFACE_DIR`
+4. bundle directory
+5. bundle `native/`
+6. bundle `lib/`
+7. executable directory
+8. executable `native/`
+9. executable `lib/`
+10. current working directory
+11. current working directory `native/`
+12. bare platform default filename such as `catboostmodel.dll`
+
+Operational guidance:
+
+- prefer shipping the CPU CatBoost library inside the bundle under `native/`
+- use the UI `Native library override` only for local debugging or temporary operator overrides
+- leave the GPU device field blank unless you are explicitly testing an experimental GPU-native CatBoost library
+
 ## Current Status
 
 Current capabilities:
@@ -201,7 +268,6 @@ Current capabilities:
 Still open:
 
 - direct app invocation from the Python harness for score-cache generation and policy sweeps
-- native Rust model scoring inside the desktop app
 - automatic ticker-holdout reporting still requires either a preserved holdout column or explicit modulus/residue inputs
 - native in-app threshold-stability review is still a separate step from the Python research reports
 

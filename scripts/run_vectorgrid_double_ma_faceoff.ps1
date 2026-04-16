@@ -4,8 +4,8 @@ param(
     [int]$MeasurementTimeSec = 3,
     [int]$WarmUpTimeSec = 1,
     [string]$Features = "cuda,cuda-backtest-kernel",
-    [string]$OutputJson = "target/vectorgrid_double_ma_faceoff.json",
-    [string]$RawOutputPath = "target/vectorgrid_double_ma_faceoff.raw.txt"
+    [string]$OutputJson = "output/benchmarks/vectorgrid_double_ma_faceoff.json",
+    [string]$RawOutputPath = "output/benchmarks/vectorgrid_double_ma_faceoff.raw.txt"
 )
 
 Set-StrictMode -Version Latest

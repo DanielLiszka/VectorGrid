@@ -43,6 +43,9 @@ codex_tmp*/
 rustc-ice-*.txt
 codex_tmp*.svg
 
+# Preserved local run / benchmark / profiling artifacts
+/output/
+
 # Generated profiler captures in research trees
 SASS research/**/profiling/**/*.ncu-rep
 SASS research/**/profiling/**/*.nsys-rep

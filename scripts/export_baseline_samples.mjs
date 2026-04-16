@@ -21,7 +21,7 @@ const REPORT_XLSX_CANDIDATES = [
 ]
 
 const BATCH_SUMMARY_CANDIDATES = [
-  path.resolve(ROOT, 'target', 'workflow_regression_summary.json'),
+  path.resolve(ROOT, 'output', 'benchmarks', 'workflow_regression_summary.json'),
   path.resolve(ROOT, 'scripts', 'baselines', 'workflow_regression_baseline.json'),
 ]
 

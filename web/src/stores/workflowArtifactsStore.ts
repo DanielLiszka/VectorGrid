@@ -58,6 +58,7 @@ export interface WorkflowArtifactsApplyResult {
 export interface WorkflowMlSignalArtifact {
   stage: string;
   bundleId: string;
+  sourceBundleManifestPath: string;
   datasetExportPath: string;
   exportManifestPath: string;
   splitManifestPath: string;
@@ -302,6 +303,8 @@ function normalizeMlSignalArtifact(
     scoreCacheProvenance?: unknown;
     source_bundle_id?: unknown;
     sourceBundleId?: unknown;
+    source_bundle_manifest_path?: unknown;
+    sourceBundleManifestPath?: unknown;
     source_bundle_manifest_hash?: unknown;
     sourceBundleManifestHash?: unknown;
     threshold_policy?: unknown;
@@ -435,6 +438,10 @@ function normalizeMlSignalArtifact(
     compactMetadataRecord([
       ["source_bundle_id", row.source_bundle_id ?? row.sourceBundleId],
       [
+        "source_bundle_manifest_path",
+        row.source_bundle_manifest_path ?? row.sourceBundleManifestPath,
+      ],
+      [
         "source_bundle_manifest_hash",
         row.source_bundle_manifest_hash ?? row.sourceBundleManifestHash,
       ],
@@ -469,6 +476,12 @@ function normalizeMlSignalArtifact(
   const out = {
     stage: normalizeText(row.stage),
     bundleId: normalizeText(row.bundle_id ?? row.bundleId),
+    sourceBundleManifestPath: normalizeText(
+      row.source_bundle_manifest_path ??
+        row.sourceBundleManifestPath ??
+        scoreCacheProvenance?.source_bundle_manifest_path ??
+        scoreCacheProvenance?.sourceBundleManifestPath,
+    ),
     datasetExportPath: normalizeText(
       row.dataset_export_path ?? row.datasetExportPath,
     ),

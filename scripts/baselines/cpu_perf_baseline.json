@@ -15,7 +15,7 @@
                      "timing_boundary":  "workflow-regression",
                      "timing_boundary_note":  "total deterministic workflow wall time including optimize, validate, meta-select, and holdout",
                      "build_profile":  "release",
-                     "summary_path":  "target/workflow_regression_summary.json",
+                     "summary_path":  "output/benchmarks/workflow_regression_summary.json",
                      "baseline_path":  "scripts/baselines/workflow_regression_baseline.json",
                      "runtime_ms":  230,
                      "result":  {

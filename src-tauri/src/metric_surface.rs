@@ -275,7 +275,42 @@ fn detect_exact_gpu_kernel_surface_kind(artifact: &Value) -> Option<Optimization
     Some(OptimizationMetricSurfaceKind::Legacy)
 }
 
+fn heuristic_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
+    if let Some(exact_gpu_kind) = detect_exact_gpu_kernel_surface_kind(artifact) {
+        return exact_gpu_kind;
+    }
+
+    if !strategy_kind_supports_core17(artifact) {
+        return OptimizationMetricSurfaceKind::Legacy;
+    }
+
+    if artifact_requested_trade22(artifact) && strategy_kind_supports_trade22(artifact) {
+        return OptimizationMetricSurfaceKind::Trade22;
+    }
+
+    OptimizationMetricSurfaceKind::Core17
+}
+
+fn rebuild_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
+    if let Some(runtime_kind) = artifact_runtime_metric_surface_kind(artifact) {
+        return runtime_kind;
+    }
+
+    if has_current_metric_surface_metadata(artifact) {
+        if let Some(current_kind) = artifact
+            .pointer("/optimization_metric_surface/surface")
+            .and_then(Value::as_str)
+            .and_then(parse_surface_label)
+        {
+            return current_kind;
+        }
+    }
+
+    heuristic_surface_kind(artifact)
+}
+
 fn metrics_mean(metrics: &Metrics) -> f64 {
+    // Sidecar rows keep the historical `mean = sharpe * volatility` contract.
     metrics.sharpe * metrics.volatility
 }
 
@@ -341,19 +376,7 @@ fn detect_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
         return runtime_kind;
     }
 
-    if let Some(exact_gpu_kind) = detect_exact_gpu_kernel_surface_kind(artifact) {
-        return exact_gpu_kind;
-    }
-
-    if !strategy_kind_supports_core17(artifact) {
-        return OptimizationMetricSurfaceKind::Legacy;
-    }
-
-    if artifact_requested_trade22(artifact) && strategy_kind_supports_trade22(artifact) {
-        return OptimizationMetricSurfaceKind::Trade22;
-    }
-
-    OptimizationMetricSurfaceKind::Core17
+    heuristic_surface_kind(artifact)
 }
 
 fn parse_surface_label(label: &str) -> Option<OptimizationMetricSurfaceKind> {
@@ -416,7 +439,7 @@ fn parse_metrics(value: Option<&Value>) -> Option<Metrics> {
 pub(crate) fn build_optimization_metric_surface_artifact(
     artifact: &Value,
 ) -> OptimizationMetricSurfaceArtifact {
-    let surface_kind = detect_surface_kind(artifact);
+    let surface_kind = rebuild_surface_kind(artifact);
     let fields = surface_fields(surface_kind)
         .iter()
         .map(|field| (*field).to_string())
@@ -460,13 +483,15 @@ pub(crate) fn build_optimization_metric_surface_artifact(
 
 pub(crate) fn build_optimization_metric_surface_artifact_value(artifact: &Value) -> Option<Value> {
     artifact.pointer("/run/res")?;
+    // Non-finite `f64` row cells serialize as JSON `null` through `serde_json::to_value`.
     serde_json::to_value(build_optimization_metric_surface_artifact(artifact)).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_optimization_metric_surface_artifact, project_metrics_row,
+        build_optimization_metric_surface_artifact,
+        build_optimization_metric_surface_artifact_value, parse_surface_label, project_metrics_row,
         summarize_artifact_metric_surfaces, Metrics, OptimizationMetricSurfaceKind, CORE17_FIELDS,
         TRADE22_FIELDS,
     };
@@ -1493,5 +1518,160 @@ mod tests {
         let summary = summarize_artifact_metric_surfaces(&[artifact]);
         assert_eq!(summary.legacy, 1);
         assert_eq!(summary.missing_metadata, 1);
+    }
+
+    #[test]
+    fn build_metric_surface_artifact_prefers_current_surface_metadata_when_runtime_hint_is_absent()
+    {
+        let artifact = json!({
+            "optimization_metric_surface": {
+                "schema_version": 2,
+                "surface": "core17"
+            },
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeTrend",
+                    "metric_contract": null,
+                    "include_trade_metrics": false
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuHybridKernel",
+                    "best_metrics": sample_metrics(),
+                    "top": []
+                }
+            }
+        });
+
+        let rebuilt = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            rebuilt.surface,
+            OptimizationMetricSurfaceKind::Core17.as_str()
+        );
+        assert_eq!(rebuilt.fields.len(), CORE17_FIELDS.len());
+    }
+
+    #[test]
+    fn build_metric_surface_artifact_handles_regime_hybrid_exact_gpu_metric_contract() {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "RegimeHybrid",
+                    "metric_contract": null,
+                    "include_trade_metrics": false
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "route_diagnostics": ["gpu_kernel.metrics_count=17"],
+                    "best_metrics": sample_metrics(),
+                    "top": []
+                }
+            }
+        });
+
+        let rebuilt = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            rebuilt.surface,
+            OptimizationMetricSurfaceKind::Core17.as_str()
+        );
+    }
+
+    #[test]
+    fn build_metric_surface_artifact_falls_back_when_current_surface_label_is_invalid() {
+        let artifact = json!({
+            "optimization_metric_surface": {
+                "schema_version": 2,
+                "surface": "bogus"
+            },
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeTrend",
+                    "metric_contract": null,
+                    "include_trade_metrics": false
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "route_diagnostics": ["gpu_kernel.metrics_count=17"],
+                    "best_metrics": sample_metrics(),
+                    "top": []
+                }
+            }
+        });
+
+        let rebuilt = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            rebuilt.surface,
+            OptimizationMetricSurfaceKind::Core17.as_str()
+        );
+    }
+
+    #[test]
+    fn parse_surface_label_accepts_current_alias_spellings() {
+        assert_eq!(
+            parse_surface_label("core_17"),
+            Some(OptimizationMetricSurfaceKind::Core17)
+        );
+        assert_eq!(
+            parse_surface_label("core-17"),
+            Some(OptimizationMetricSurfaceKind::Core17)
+        );
+        assert_eq!(
+            parse_surface_label("trade_22"),
+            Some(OptimizationMetricSurfaceKind::Trade22)
+        );
+        assert_eq!(
+            parse_surface_label("trade-22"),
+            Some(OptimizationMetricSurfaceKind::Trade22)
+        );
+    }
+
+    #[test]
+    fn metric_surface_row_serialization_turns_non_finite_cells_into_null() {
+        let mut metrics: Metrics = serde_json::from_value(sample_metrics()).expect("metrics");
+        metrics.pnl = f64::NAN;
+
+        let artifact_value = serde_json::to_value(super::OptimizationMetricSurfaceArtifact {
+            schema_version: 2,
+            surface: OptimizationMetricSurfaceKind::Core17.as_str().to_string(),
+            fields: CORE17_FIELDS
+                .iter()
+                .map(|field| (*field).to_string())
+                .collect(),
+            best_metrics_row: project_metrics_row(&metrics, OptimizationMetricSurfaceKind::Core17),
+            top_metric_rows: Vec::new(),
+        })
+        .expect("surface artifact should serialize");
+
+        assert_eq!(
+            artifact_value.pointer("/best_metrics_row/0"),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    #[test]
+    fn build_metric_surface_artifact_value_keeps_non_finite_rows_serializable() {
+        let mut metrics: Metrics = serde_json::from_value(sample_metrics()).expect("metrics");
+        metrics.pnl = f64::INFINITY;
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "metric_contract": "full17",
+                    "include_trade_metrics": false
+                },
+                "res": {
+                    "backend_used": "Cpu",
+                    "backend_route": "CpuOnly",
+                    "best_metrics": serde_json::to_value(metrics).expect("metrics json"),
+                    "top": []
+                }
+            }
+        });
+
+        let built = build_optimization_metric_surface_artifact_value(&artifact)
+            .expect("surface artifact should build");
+        assert!(built.pointer("/best_metrics_row").is_none());
     }
 }

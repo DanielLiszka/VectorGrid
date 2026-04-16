@@ -131,6 +131,7 @@ Benchmark or faceoff evidence may be linked, but should stay subordinate to oper
   - core shell/report-opening flows are broken
   - the published asset does not match the documented variant
 - Use `scripts/post_release_telemetry_review.mjs` as supplemental follow-up evidence, not as the sole release gate.
+- Keep retained local benchmark/profiling evidence under `output/`; do not rely on `target/` for anything you want to survive routine build-cache cleanup.
 
 ## Vue + Vite Migration Notes (2026-02-26)
 
@@ -140,6 +141,7 @@ This release line includes the completed frontend migration from the legacy stat
 
 - Frontend source/build now lives under `web/` and is built into `web/dist`.
 - Tauri config points to `web/dist`, with `src-tauri/tauri.conf.json` using `../web/dist` and the root `tauri.conf.json` mirror using `./web/dist`.
+- Windows packaging now also uses `src-tauri/tauri.windows.conf.json` and the root `tauri.windows.conf.json` mirror for app-shipped native resources such as the CPU CatBoost `MlSignal` DLL.
 - UI runtime is now Vue-owned; legacy frontend runtime files under `web/src/legacy/*` have been retired.
 - Task feedback has been expanded with a global task center (progress, cancellation, timeline, completion/failure toasts).
 - Large result surfaces use lazy mounting and row-window virtualization to reduce render overhead.

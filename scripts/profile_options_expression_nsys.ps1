@@ -4,7 +4,7 @@ param(
   [string]$ImportCsv,
   [string]$ImportRootSymbol,
   [string]$AppLocalDataDir = "$env:LOCALAPPDATA\dev.vectoralpha.vectorgrid",
-  [string]$OutputPrefix = "target/nsight/options_expression_nsys",
+  [string]$OutputPrefix = "output/profiling/nsight/options_expression_nsys",
   [ValidateSet("auto", "cpu_reference", "gpu_compiled_tensor")]
   [string]$BackendPreference = "auto",
   [ValidateSet("event_chronological", "session_chronological")]

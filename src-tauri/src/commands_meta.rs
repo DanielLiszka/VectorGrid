@@ -7,6 +7,7 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -275,21 +276,76 @@ fn normalize_ml_scope(mut scope: MlConfidenceScope) -> Result<MlConfidenceScope,
     Ok(scope)
 }
 
-fn ml_confidence_models_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn ml_confidence_models_base_dir<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let dir = base.join("models").join("confidence");
+    Ok(base.join("models").join("confidence"))
+}
+
+fn ml_confidence_models_dir<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
+    let dir = ml_confidence_models_base_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
-fn ml_confidence_model_path(
-    scope: &MlConfidenceScope,
-    app: &tauri::AppHandle,
-) -> Result<std::path::PathBuf, String> {
-    let dir = ml_confidence_models_dir(app)?;
+fn ml_confidence_model_path_in_dir(scope: &MlConfidenceScope, dir: PathBuf) -> std::path::PathBuf {
     let sk = sanitize_filename_component(&scope.strategy_kind);
     let tf = sanitize_filename_component(&scope.timeframe);
-    Ok(dir.join(format!("ml_confidence_{sk}_{tf}.json")))
+    dir.join(format!("ml_confidence_{sk}_{tf}.json"))
+}
+
+fn ml_confidence_model_path(
+    scope: &MlConfidenceScope,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<std::path::PathBuf, String> {
+    Ok(ml_confidence_model_path_in_dir(
+        scope,
+        ml_confidence_models_dir(app)?,
+    ))
+}
+
+fn ml_confidence_model_path_read_only(
+    scope: &MlConfidenceScope,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<std::path::PathBuf, String> {
+    Ok(ml_confidence_model_path_in_dir(
+        scope,
+        ml_confidence_models_base_dir(app)?,
+    ))
+}
+
+fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = {
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("artifact.json");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        path.with_file_name(format!("{file_name}.tmp.{}.{}", std::process::id(), nanos))
+    };
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.flush().map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn classify_ml_confidence_model_state(
@@ -897,7 +953,7 @@ fn ml_confidence_model_status_blocking(
     app: &tauri::AppHandle,
 ) -> Result<MlConfidenceModelStatus, String> {
     let scope = normalize_ml_scope(scope)?;
-    let path = ml_confidence_model_path(&scope, app)?;
+    let path = ml_confidence_model_path_read_only(&scope, app)?;
     let model_path = path.to_string_lossy().to_string();
     let exists = path.exists();
 
@@ -963,7 +1019,7 @@ pub async fn train_ml_confidence_model(
 
         let path = ml_confidence_model_path(&model.scope, &app)?;
         let bytes = serde_json::to_vec_pretty(&model).map_err(|e| e.to_string())?;
-        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+        write_bytes_atomically(&path, &bytes)?;
         let model_summary = MlConfidenceModelSummary::from(&model);
         let meta_summary = summarize_meta_artifacts_for_scope(&metas, &scope, &model.label);
         let status = build_ml_confidence_status(
@@ -996,7 +1052,7 @@ pub async fn apply_ml_confidence_model(
 ) -> Result<ApplyMlConfidenceResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let scope = normalize_ml_scope(scope)?;
-        let path = ml_confidence_model_path(&scope, &app)?;
+        let path = ml_confidence_model_path_read_only(&scope, &app)?;
         if !path.exists() {
             return Err("ML confidence model not found. Train it first.".to_string());
         }
@@ -1037,7 +1093,7 @@ pub async fn delete_ml_confidence_model(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let scope = normalize_ml_scope(scope)?;
-        let path = ml_confidence_model_path(&scope, &app)?;
+        let path = ml_confidence_model_path_read_only(&scope, &app)?;
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
         }
@@ -1185,6 +1241,13 @@ fn group_rank_score(group: &Value) -> f64 {
         .unwrap_or(f64::NEG_INFINITY)
 }
 
+fn group_policy_eval_meta_score(group: &Value) -> f64 {
+    group
+        .get("meta_score")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(f64::NEG_INFINITY)
+}
+
 fn normalize_ml_policy_evaluation_request(
     mut req: MlConfidencePolicyEvaluationRequest,
 ) -> Result<MlConfidencePolicyEvaluationRequest, String> {
@@ -1215,26 +1278,38 @@ fn normalize_ml_policy_evaluation_request(
     Ok(req)
 }
 
+#[derive(Clone, Copy)]
+enum PolicyEvalTieBreak {
+    PreserveInputOrder,
+    MetaThenInputOrder,
+}
+
 fn select_top_labels_by_metric<F>(
     candidates: &[PolicyEvalCandidate],
     top_k: usize,
+    tie_break: PolicyEvalTieBreak,
     mut score_of: F,
 ) -> Vec<f64>
 where
     F: FnMut(&PolicyEvalCandidate) -> f64,
 {
-    let mut ranked: Vec<&PolicyEvalCandidate> = candidates.iter().collect();
-    ranked.sort_by(|a, b| {
+    let mut ranked: Vec<(usize, &PolicyEvalCandidate)> = candidates.iter().enumerate().collect();
+    ranked.sort_by(|(lhs_idx, a), (rhs_idx, b)| {
         let lhs = score_of(a);
         let rhs = score_of(b);
-        rhs.total_cmp(&lhs)
-            .then_with(|| b.ml_confidence.total_cmp(&a.ml_confidence))
-            .then_with(|| b.meta_score.total_cmp(&a.meta_score))
+        let tie_break = match tie_break {
+            PolicyEvalTieBreak::PreserveInputOrder => lhs_idx.cmp(rhs_idx),
+            PolicyEvalTieBreak::MetaThenInputOrder => b
+                .meta_score
+                .total_cmp(&a.meta_score)
+                .then_with(|| lhs_idx.cmp(rhs_idx)),
+        };
+        rhs.total_cmp(&lhs).then_with(|| tie_break)
     });
     ranked
         .into_iter()
         .take(top_k)
-        .map(|candidate| candidate.label)
+        .map(|(_, candidate)| candidate.label)
         .collect()
 }
 
@@ -1242,10 +1317,18 @@ fn evaluate_policy_candidates(
     req: &MlConfidencePolicyEvaluationRequest,
     candidates: &[PolicyEvalCandidate],
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let meta_labels =
-        select_top_labels_by_metric(candidates, req.top_k, |candidate| candidate.meta_score);
-    let ml_labels =
-        select_top_labels_by_metric(candidates, req.top_k, |candidate| candidate.ml_confidence);
+    let meta_labels = select_top_labels_by_metric(
+        candidates,
+        req.top_k,
+        PolicyEvalTieBreak::PreserveInputOrder,
+        |candidate| candidate.meta_score,
+    );
+    let ml_labels = select_top_labels_by_metric(
+        candidates,
+        req.top_k,
+        PolicyEvalTieBreak::MetaThenInputOrder,
+        |candidate| candidate.ml_confidence,
+    );
 
     let candidate_indices: Vec<usize> = candidates
         .iter()
@@ -1386,7 +1469,7 @@ fn evaluate_ml_confidence_policy_from_scoped_metas(
             else {
                 continue;
             };
-            let raw_meta_score = group_rank_score(group);
+            let raw_meta_score = group_policy_eval_meta_score(group);
             let meta_score = if raw_meta_score.is_finite() {
                 raw_meta_score
             } else {
@@ -1547,7 +1630,7 @@ pub(super) fn run_meta_stage4_experimental_blocking(
         {
             Ok((trained_model, _metrics)) => {
                 let bytes = serde_json::to_vec_pretty(&trained_model).map_err(|e| e.to_string())?;
-                std::fs::write(&model_path, &bytes).map_err(|e| e.to_string())?;
+                write_bytes_atomically(&model_path, &bytes)?;
                 let meta_summary =
                     summarize_meta_artifacts_for_scope(&all_metas, &scope, &trained_model.label);
                 model = Some(trained_model);
@@ -1945,7 +2028,7 @@ pub async fn run_meta_selection(
         .map_err(|e| e.to_string())?
 }
 
-fn reports_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn reports_dir(app: &tauri::AppHandle<impl tauri::Runtime>) -> Result<std::path::PathBuf, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let dir = base.join("reports");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1954,7 +2037,7 @@ fn reports_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 
 fn suggest_meta_report_path(
     ts: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     ext: &'static str,
 ) -> Result<std::path::PathBuf, String> {
     let dir = reports_dir(app)?;
@@ -1971,6 +2054,11 @@ fn suggest_meta_report_path(
             path = p;
             break;
         }
+    }
+    if path.exists() {
+        return Err(format!(
+            "failed to allocate a unique meta report path for timestamp '{safe_ts}'"
+        ));
     }
     Ok(path)
 }
@@ -2014,11 +2102,13 @@ pub(super) fn run_meta_selection_blocking(
     let sink = TauriProgressSink { app: app.clone() };
     let mut train_artifacts: Vec<Value> = Vec::with_capacity(paths.len());
     let mut holdout_artifacts: Vec<Value> = Vec::new();
+    let mut unreadable_artifact_count = 0usize;
     for (i, p) in paths.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
         let Some(v) = read_json_value(p) else {
+            unreadable_artifact_count = unreadable_artifact_count.saturating_add(1);
             ta_app_core::progress::emit_double_ma_progress(
                 Some(&sink),
                 i + 1,
@@ -2125,6 +2215,11 @@ pub(super) fn run_meta_selection_blocking(
     for warning in build_metric_surface_meta_warnings(&train_artifacts, &holdout_artifacts) {
         result.warnings.push(warning);
     }
+    if unreadable_artifact_count > 0 {
+        result.warnings.push(format!(
+            "Skipped {unreadable_artifact_count} unreadable run artifact(s) while scanning meta-selection inputs."
+        ));
+    }
     if let Some(w) = auto_tf_warning {
         result.warnings.push(w);
     }
@@ -2167,7 +2262,7 @@ pub(super) fn run_meta_selection_blocking(
                         strategy_kind: req.strategy_kind.clone(),
                         timeframe: normalize_timeframe_label(tf),
                     };
-                    if let Ok(path) = ml_confidence_model_path(&scope, &app) {
+                    if let Ok(path) = ml_confidence_model_path_read_only(&scope, &app) {
                         if path.exists() {
                             if let Ok(raw) = std::fs::read_to_string(&path) {
                                 if let Ok(model) = serde_json::from_str::<MlConfidenceModel>(&raw) {
@@ -3088,6 +3183,13 @@ fn apply_holdout_evaluation(
 
     let datasets = total.saturating_sub(skipped);
     if datasets == 0 {
+        result.holdout = Some(ta_app_core::HoldoutSummary {
+            datasets: 0,
+            skipped,
+        });
+        result.warnings.push(format!(
+            "Holdout evaluation produced zero usable dataset results for tag='{holdout_tag}'. Review dataset paths and validation failures before trusting holdout-adjusted ranking."
+        ));
         return Ok(());
     }
 
@@ -3112,16 +3214,19 @@ mod tests {
         artifact_matches_meta_req_relaxed, build_metric_surface_meta_summary,
         build_metric_surface_meta_warnings, build_ml_confidence_status,
         evaluate_ml_confidence_policy_from_scoped_metas, evaluate_policy_candidates,
-        group_holdout_label, group_rank_score, is_known_non_run_artifact_filename,
+        group_holdout_label, group_policy_eval_meta_score, group_rank_score,
+        is_known_non_run_artifact_filename, ml_confidence_model_path_read_only,
         ml_uncertainty_from_prob, normalize_ml_policy_evaluation_request, normalize_ml_scope,
         should_block_stage4_for_unhealthy_model, stable_logit, stage4_autotrain_failure_fallback,
         stage4_training_metas_excluding_source, strategy_supports_holdout,
-        strategy_uses_double_ma_validation, update_policy_arm_metrics, HoldoutAcc,
-        MlConfidenceModelState, MlConfidencePolicyArmMetrics, MlConfidencePolicyEvaluationRequest,
-        MlConfidencePolicyEvaluationResult, MlMetaScopeSummary,
+        strategy_uses_double_ma_validation, suggest_meta_report_path, update_policy_arm_metrics,
+        write_bytes_atomically, HoldoutAcc, MlConfidenceModelState, MlConfidencePolicyArmMetrics,
+        MlConfidencePolicyEvaluationRequest, MlConfidencePolicyEvaluationResult,
+        MlMetaScopeSummary,
     };
     use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
     use serde_json::{json, Value};
+    use std::fs;
     use std::path::PathBuf;
     use ta_app_core::ml_confidence::MlConfidenceModelMeta;
     use ta_app_core::{
@@ -3130,6 +3235,24 @@ mod tests {
         MetaSelectionResult, MlConfidenceLabelConfig, MlConfidenceModelKind,
         MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
     };
+
+    fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        let unique = format!(
+            "commands_meta_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        context.config_mut().product_name = Some(unique.clone());
+        context.config_mut().identifier = format!("com.test.{unique}");
+        tauri::test::mock_builder()
+            .manage(crate::state::AppState::default())
+            .build(context)
+            .expect("failed to build tauri mock app")
+    }
 
     fn test_meta_req() -> MetaSelectionRequest {
         MetaSelectionRequest {
@@ -3317,7 +3440,7 @@ mod tests {
                 else {
                     continue;
                 };
-                let raw_meta_score = group_rank_score(group);
+                let raw_meta_score = group_policy_eval_meta_score(group);
                 let meta_score = if raw_meta_score.is_finite() {
                     raw_meta_score
                 } else {
@@ -3739,6 +3862,113 @@ mod tests {
         assert!(status.model_summary.is_some());
         assert_eq!(status.model_healthy, Some(true));
         assert_eq!(status.state, MlConfidenceModelState::Warning);
+    }
+
+    #[test]
+    fn policy_eval_meta_score_ignores_holdout_adjusted_final_score() {
+        let group = json!({
+            "meta_score": 0.35,
+            "final_score": 99.0
+        });
+
+        assert_eq!(group_policy_eval_meta_score(&group), 0.35);
+        assert_eq!(group_rank_score(&group), 99.0);
+    }
+
+    #[test]
+    fn meta_only_policy_ranking_does_not_use_ml_confidence_as_tie_break() {
+        let req = MlConfidencePolicyEvaluationRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            top_k: 2,
+            min_ml_confidence: 0.0,
+            meta_weight: 1.0,
+            ml_weight: 0.0,
+            uncertainty_weight: 0.0,
+            require_healthy_model: false,
+            fallback_to_meta_if_empty: true,
+            label: None,
+        };
+        let candidates = vec![
+            super::PolicyEvalCandidate {
+                label: 1.0,
+                meta_score: 0.5,
+                ml_confidence: 0.1,
+                ml_logit: stable_logit(0.1),
+                ml_uncertainty: ml_uncertainty_from_prob(0.1),
+            },
+            super::PolicyEvalCandidate {
+                label: 2.0,
+                meta_score: 0.5,
+                ml_confidence: 0.9,
+                ml_logit: stable_logit(0.9),
+                ml_uncertainty: ml_uncertainty_from_prob(0.9),
+            },
+        ];
+
+        let (meta_labels, ml_labels, _) = evaluate_policy_candidates(&req, &candidates);
+
+        assert_eq!(meta_labels, vec![1.0, 2.0]);
+        assert_eq!(ml_labels, vec![2.0, 1.0]);
+    }
+
+    #[test]
+    fn read_only_model_path_does_not_create_parent_directory() {
+        let app = build_mock_app();
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let model_path =
+            ml_confidence_model_path_read_only(&scope, app.handle()).expect("model path");
+        let parent = model_path.parent().expect("parent").to_path_buf();
+        let _ = fs::remove_dir_all(&parent);
+
+        let model_path =
+            ml_confidence_model_path_read_only(&scope, app.handle()).expect("model path");
+
+        assert_eq!(model_path.parent(), Some(parent.as_path()));
+        assert!(!parent.exists());
+    }
+
+    #[test]
+    fn atomic_model_write_replaces_existing_file_contents() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "commands_meta_atomic_write_{}_{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+
+        fs::write(&path, b"{\"old\":true}").expect("seed file");
+        write_bytes_atomically(&path, b"{\"new\":true}").expect("atomic write");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("read file"),
+            "{\"new\":true}"
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn suggest_meta_report_path_errors_after_suffix_space_is_exhausted() {
+        let app = build_mock_app();
+        let reports = super::reports_dir(app.handle()).expect("reports dir");
+        let ts = "2026-04-16T00:00:00Z";
+        let safe_ts = crate::sanitize_filename_component(ts);
+        let base_name = format!("vectorgrid_meta_{safe_ts}");
+        fs::write(reports.join(format!("{base_name}.xlsx")), b"base").expect("base report");
+        for i in 2..=999u32 {
+            fs::write(reports.join(format!("{base_name}_{i}.xlsx")), b"suffix")
+                .expect("suffix report");
+        }
+
+        let err = suggest_meta_report_path(ts, app.handle(), "xlsx").unwrap_err();
+        assert!(err.contains("failed to allocate a unique meta report path"));
     }
 
     #[test]
