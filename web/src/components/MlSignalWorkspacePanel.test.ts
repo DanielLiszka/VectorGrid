@@ -226,6 +226,56 @@ describe("MlSignalWorkspacePanel", () => {
     );
   });
 
+  it("surfaces native score-cache backend provenance in the current artifact summary", () => {
+    const workflowArtifacts = useWorkflowArtifactsStore();
+    workflowArtifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-03-20T10:00:00.000Z",
+        artifact_path: "runs/vectorgrid_run_ml_signal_native.json",
+        csv_path: "C:\\data\\prices.csv",
+        ml_signal: {
+          stage: "score_cache",
+          score_cache_path: "C:\\data\\score_cache.json",
+          score_manifest_path: "C:\\data\\score_cache.manifest.json",
+          feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
+          feature_schema_version: 1,
+          feature_schema_hash: "schemahash0123456789abcdef",
+          native_backend_used: "native_cpu",
+          native_gpu_device_id: 1,
+          native_fallback_reason: "EnableGPUEvaluation unavailable",
+          score_space: "Probability",
+          score_scope: "FullDataset",
+          matched_rows: 75,
+          skipped_rows: 0,
+          bars_scored: 75,
+          coverage_ratio: 0.75,
+          duplicate_timestamps: 0,
+          score_cache_provenance: {
+            producer_kind: "catboost_native_cpu",
+            native_backend_requested: "native_cuda",
+            native_backend_used: "native_cpu",
+            native_library_path: "C:\\catboost\\catboostmodel.dll",
+            native_gpu_device_id: 1,
+            native_fallback_reason: "EnableGPUEvaluation unavailable",
+          },
+        },
+        req: {},
+        res: {},
+      },
+      currentValidation: null,
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+
+    expect(wrapper.text()).toContain("native native_cpu");
+    expect(wrapper.text()).toContain("gpu 1");
+    expect(wrapper.text()).toContain(
+      "fallback EnableGPUEvaluation unavailable",
+    );
+  });
+
   it("keeps stage buttons disabled until the matching ML prerequisites exist", async () => {
     const optimize = useOptimizeStore();
 
@@ -263,6 +313,50 @@ describe("MlSignalWorkspacePanel", () => {
     expect(buildButton?.attributes("disabled")).toBeUndefined();
     expect(validateButton?.attributes("disabled")).toBeUndefined();
     expect(sweepButton?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("switches Stage 2 between CSV import and native bundle controls", async () => {
+    const data = useDataStore();
+    const optimize = useOptimizeStore();
+
+    data.dataId = "data-1";
+    optimize.mlSignalScoreCachePath = "C:\\data\\score_cache.json";
+    optimize.mlSignalScoreInputPath = "C:\\scores\\model_scores.csv";
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+
+    const sourceSelect = wrapper.get("#mlSignalScoreSource");
+    const buildButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().trim() === "Build score cache");
+
+    expect(wrapper.find("#mlSignalScoreInputPath").exists()).toBe(true);
+    expect(wrapper.find("#mlSignalNativeBackend").exists()).toBe(false);
+    expect(buildButton?.attributes("disabled")).toBeUndefined();
+
+    await sourceSelect.setValue("native");
+    await nextTick();
+
+    expect(optimize.mlSignalScoreSource).toBe("native");
+    expect(wrapper.find("#mlSignalScoreInputPath").exists()).toBe(false);
+    expect(wrapper.find("#mlSignalNativeBackend").exists()).toBe(true);
+    expect(wrapper.find("#mlSignalNativeLibraryPath").exists()).toBe(true);
+    expect(wrapper.find("#mlSignalNativeGpuDeviceId").exists()).toBe(true);
+    expect(wrapper.text()).toContain("Native bundle inference");
+    expect(wrapper.text()).toContain(
+      "Bundle selection is required for native score-cache generation.",
+    );
+    expect(wrapper.text()).toContain(
+      "Native mode still emits the standard cache artifact",
+    );
+    expect(buildButton?.attributes("disabled")).toBeDefined();
+
+    optimize.mlSignalModelBundleId = "bundle-a";
+    await nextTick();
+
+    expect(buildButton?.attributes("disabled")).toBeUndefined();
   });
 
   it("summarizes split-plan, ticker-holdout, and export sidecars in the dataset export stage", () => {
@@ -369,6 +463,9 @@ describe("MlSignalWorkspacePanel", () => {
     expect(text).toContain(
       "Model bundles are discovered from the desktop app-local inventory.",
     );
+    expect(text).toContain("Score source");
+    expect(text).toContain("CSV import");
+    expect(text).toContain("Native bundle inference");
     expect(text).toContain("timestamp");
     expect(text).toContain("p_long");
     expect(text).toContain("raw_long");

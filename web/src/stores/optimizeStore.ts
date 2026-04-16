@@ -3,11 +3,13 @@ import { useWorkflowStore } from "./workflowStore";
 import { resolveRuntimePinia } from "./runtimePinia";
 import { mlSignalPrimaryActionForStep } from "../utils/core/workflowModel";
 
-let optimizeServicePromise:
-  | Promise<typeof import("../services/optimizeService")>
-  | null = null;
+let optimizeServicePromise: Promise<
+  typeof import("../services/optimizeService")
+> | null = null;
 
-function loadOptimizeService(): Promise<typeof import("../services/optimizeService")> {
+function loadOptimizeService(): Promise<
+  typeof import("../services/optimizeService")
+> {
   if (!optimizeServicePromise) {
     optimizeServicePromise = import("../services/optimizeService");
   }
@@ -298,6 +300,18 @@ function applyVueFieldUpdate(
     case "mlSignalModelBundleId":
       state.mlSignalModelBundleId = next;
       return true;
+    case "mlSignalScoreSource":
+      state.mlSignalScoreSource = next || "csv";
+      return true;
+    case "mlSignalNativeBackend":
+      state.mlSignalNativeBackend = next || "auto";
+      return true;
+    case "mlSignalNativeLibraryPath":
+      state.mlSignalNativeLibraryPath = next;
+      return true;
+    case "mlSignalNativeGpuDeviceId":
+      state.mlSignalNativeGpuDeviceId = next;
+      return true;
     case "mlSignalModelStatus":
       state.mlSignalModelStatus = next;
       return true;
@@ -491,6 +505,10 @@ interface OptimizeState {
   mlSignalScoreInputPath: string;
   mlSignalScoreCachePath: string;
   mlSignalModelBundleId: string;
+  mlSignalScoreSource: string;
+  mlSignalNativeBackend: string;
+  mlSignalNativeLibraryPath: string;
+  mlSignalNativeGpuDeviceId: string;
   mlSignalModelStatus: string;
   mlSignalDatasetMeta: string;
   mlSignalScoreMeta: string;
@@ -591,6 +609,10 @@ export const useOptimizeStore = defineStore("optimize", {
     mlSignalScoreInputPath: "",
     mlSignalScoreCachePath: "",
     mlSignalModelBundleId: "",
+    mlSignalScoreSource: "csv",
+    mlSignalNativeBackend: "auto",
+    mlSignalNativeLibraryPath: "",
+    mlSignalNativeGpuDeviceId: "",
     mlSignalModelStatus: "Model bundle: —",
     mlSignalDatasetMeta: "Dataset export: —",
     mlSignalScoreMeta: "Score cache: —",
@@ -777,6 +799,22 @@ export const useOptimizeStore = defineStore("optimize", {
       );
       this.mlSignalModelBundleId = String(
         snapshot.mlSignalModelBundleId ?? this.mlSignalModelBundleId ?? "",
+      );
+      this.mlSignalScoreSource = String(
+        snapshot.mlSignalScoreSource ?? this.mlSignalScoreSource ?? "csv",
+      );
+      this.mlSignalNativeBackend = String(
+        snapshot.mlSignalNativeBackend ?? this.mlSignalNativeBackend ?? "auto",
+      );
+      this.mlSignalNativeLibraryPath = String(
+        snapshot.mlSignalNativeLibraryPath ??
+          this.mlSignalNativeLibraryPath ??
+          "",
+      );
+      this.mlSignalNativeGpuDeviceId = String(
+        snapshot.mlSignalNativeGpuDeviceId ??
+          this.mlSignalNativeGpuDeviceId ??
+          "",
       );
       this.mlSignalModelStatus =
         String(
@@ -1072,8 +1110,13 @@ export const useOptimizeStore = defineStore("optimize", {
 
     runOptimization(): void {
       const pinia = resolveRuntimePinia();
-      if (pinia && String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal") {
-        const workflowStep = String(useWorkflowStore(pinia).workflowStep || "").trim();
+      if (
+        pinia &&
+        String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal"
+      ) {
+        const workflowStep = String(
+          useWorkflowStore(pinia).workflowStep || "",
+        ).trim();
         const action = mlSignalPrimaryActionForStep(workflowStep);
         void import("../services/mlSignalService").then(
           ({
@@ -1121,7 +1164,10 @@ export const useOptimizeStore = defineStore("optimize", {
 
     runValidation(): void {
       const pinia = resolveRuntimePinia();
-      if (pinia && String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal") {
+      if (
+        pinia &&
+        String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal"
+      ) {
         void import("../services/mlSignalService").then(
           ({ runMlSignalValidation }) => runMlSignalValidation(),
         );

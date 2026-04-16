@@ -4119,6 +4119,8 @@ mod tests {
             ml_calibration_state: None,
             ml_threshold_policy: None,
             ml_producer_kind: None,
+            ml_native_backend_used: None,
+            ml_native_fallback_reason: None,
             ml_score_contract_version: None,
             ml_source_bundle_manifest_hash: None,
             ml_score_space: None,

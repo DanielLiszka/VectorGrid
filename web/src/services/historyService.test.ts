@@ -676,6 +676,51 @@ describe("historyService", () => {
     expect(data.dataTimeframe).toBe("1d");
   });
 
+  it("applies native MlSignal saved run request into Vue optimize/data stores", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      strategyKind: "MlSignal",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "data-ml",
+        input_path: "",
+        output_path: "C:/runs/ml_score_cache.json",
+        model_bundle_id: "bundle-native",
+        native_backend_preference: "native_cuda",
+        native_library_path: "C:/catboost/catboostmodel.dll",
+        native_gpu_device_id: 1,
+      },
+      mlSignalStage: "validation",
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.61,
+            t_short: 0.57,
+            delta: 0.09,
+            max_hold_bars: 9,
+          },
+        ],
+      },
+    });
+
+    await applySavedRun(" C:/runs/ml_signal_native.json ");
+
+    const optimize = useOptimizeStore(pinia);
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
+    expect(optimize.mlSignalScoreSource).toBe("native");
+    expect(optimize.mlSignalScoreInputPath).toBe("");
+    expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
+    expect(optimize.mlSignalModelBundleId).toBe("bundle-native");
+    expect(optimize.mlSignalNativeBackend).toBe("native_cuda");
+    expect(optimize.mlSignalNativeLibraryPath).toBe(
+      "C:/catboost/catboostmodel.dll",
+    );
+    expect(optimize.mlSignalNativeGpuDeviceId).toBe("1");
+  });
+
   it("reruns saved run by loading data, optional resample, then executing optimization", async () => {
     useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
@@ -746,6 +791,53 @@ describe("historyService", () => {
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
     expect(optimize.mlSignalModelBundleId).toBe("bundle-a");
+  });
+
+  it("reruns native MlSignal saved validation artifact through score-cache build then validation", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "stale-id",
+        input_path: "",
+        output_path: "C:/runs/ml_score_cache.json",
+        model_bundle_id: "bundle-native",
+        native_backend_preference: "native_cuda",
+        native_library_path: "C:/catboost/catboostmodel.dll",
+        native_gpu_device_id: 2,
+      },
+      mlSignalStage: "validation",
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.62,
+            t_short: 0.56,
+            delta: 0.08,
+            max_hold_bars: 10,
+          },
+        ],
+      },
+    });
+
+    await rerunSavedRun(" C:/runs/ml_signal_native.json ");
+
+    expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/spy.csv");
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
+    expect(generateMlSignalScoreCacheMock).toHaveBeenCalledTimes(1);
+    expect(runMlSignalValidationMock).toHaveBeenCalledTimes(1);
+    const optimize = useOptimizeStore(pinia);
+    expect(optimize.mlSignalScoreSource).toBe("native");
+    expect(optimize.mlSignalScoreInputPath).toBe("");
+    expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
+    expect(optimize.mlSignalModelBundleId).toBe("bundle-native");
+    expect(optimize.mlSignalNativeBackend).toBe("native_cuda");
+    expect(optimize.mlSignalNativeLibraryPath).toBe(
+      "C:/catboost/catboostmodel.dll",
+    );
+    expect(optimize.mlSignalNativeGpuDeviceId).toBe("2");
   });
 
   it("reruns MlSignal dataset-export artifact through dataset export only", async () => {
@@ -1015,6 +1107,56 @@ describe("historyService", () => {
         "policy delta: 0.1",
         "policy max_hold_bars: 10",
       ].join("\n"),
+    });
+  });
+
+  it("loads native MlSignal saved-run detail with backend note", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      strategyKind: "MlSignal",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      reportPath: "",
+      hasValidation: true,
+      tags: ["ml", "native"],
+      mlBundleId: "bundle-native",
+      mlNativeBackendRequested: "native_cuda",
+      mlNativeBackendUsed: "native_cpu",
+      mlNativeLibraryPath: "C:/catboost/catboostmodel.dll",
+      mlNativeGpuDeviceId: 0,
+      mlNativeFallbackReason: "EnableGPUEvaluation unavailable",
+      mlScoreCachePath: "C:/runs/ml_score_cache.json",
+      mlScoreManifestPath: "C:/runs/ml_score_cache.manifest.json",
+      mlFeatureSchemaPath: "C:/runs/ml_dataset.feature_schema.json",
+      mlFeatureSchemaVersion: "1",
+      mlScoreSpace: "Probability",
+      mlScoreScope: "CalibrationSlice",
+      mlScoreContractSummary: "Probability • CalibrationSlice",
+      mlScoreNote:
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
+      mlPolicySummary: "t_long=0.61 | t_short=0.57 | delta=0.09 | hold=9",
+      mlPolicySweepSummary: "",
+      mlRunVerdictSummary: "",
+      mlTopCandidatesSummary: "",
+      paramsText: [
+        "strategy: MlSignal",
+        "data id: data-ml",
+        "dataset/score output: C:/runs/ml_score_cache.json",
+        "model bundle: bundle-native",
+      ].join("\n"),
+    });
+
+    const detail = await loadSavedRunDetail(" C:/runs/ml_signal_native.json ");
+
+    expect(detail).toMatchObject({
+      strategyKind: "MlSignal",
+      mlBundleId: "bundle-native",
+      mlNativeBackendRequested: "native_cuda",
+      mlNativeBackendUsed: "native_cpu",
+      mlNativeLibraryPath: "C:/catboost/catboostmodel.dll",
+      mlNativeGpuDeviceId: 0,
+      mlNativeFallbackReason: "EnableGPUEvaluation unavailable",
+      mlScoreNote:
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • native backend native_cpu • fallback EnableGPUEvaluation unavailable",
     });
   });
 

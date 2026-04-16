@@ -127,6 +127,61 @@ function hasMlSignalSweepShape(
   );
 }
 
+function inferMlSignalScoreSource(
+  req: Record<string, unknown> | null | undefined,
+  isDatasetExportStage: boolean,
+): "csv" | "native" {
+  if (isDatasetExportStage) return "csv";
+  const inputPath = normalizeText(req?.input_path ?? req?.inputPath);
+  const bundleId = normalizeText(req?.model_bundle_id ?? req?.modelBundleId);
+  const nativeBackendPreference = normalizeText(
+    req?.native_backend_preference ?? req?.nativeBackendPreference,
+  ).toLowerCase();
+  if (
+    !inputPath &&
+    (bundleId ||
+      (nativeBackendPreference &&
+        nativeBackendPreference !== "score_cache_only"))
+  ) {
+    return "native";
+  }
+  return "csv";
+}
+
+function applyMlSignalScoreCacheRequestFields(
+  optimizeStore: ReturnType<typeof useOptimizeStore>,
+  req: Record<string, unknown> | null | undefined,
+  isDatasetExportStage: boolean,
+): void {
+  const scoreSource = inferMlSignalScoreSource(req, isDatasetExportStage);
+  optimizeStore.mlSignalScoreSource = scoreSource;
+
+  const inputPath = normalizeText(req?.input_path ?? req?.inputPath);
+  optimizeStore.mlSignalScoreInputPath = scoreSource === "csv" ? inputPath : "";
+
+  optimizeStore.mlSignalModelBundleId = normalizeText(
+    req?.model_bundle_id ?? req?.modelBundleId,
+  );
+
+  const nativeBackendPreference = normalizeText(
+    req?.native_backend_preference ?? req?.nativeBackendPreference,
+  );
+  optimizeStore.mlSignalNativeBackend =
+    scoreSource === "native" ? nativeBackendPreference || "auto" : "auto";
+  optimizeStore.mlSignalNativeLibraryPath =
+    scoreSource === "native"
+      ? normalizeText(req?.native_library_path ?? req?.nativeLibraryPath)
+      : "";
+
+  const nativeGpuDeviceId = normalizeOptionalNumber(
+    req?.native_gpu_device_id ?? req?.nativeGpuDeviceId,
+  );
+  optimizeStore.mlSignalNativeGpuDeviceId =
+    scoreSource === "native" && nativeGpuDeviceId != null
+      ? String(Math.floor(nativeGpuDeviceId))
+      : "";
+}
+
 function inferMlSignalWorkflowStep(
   req: Record<string, unknown> | null | undefined,
   validationReq?: Record<string, unknown> | null,
@@ -349,6 +404,8 @@ interface RunArtifactSummaryResponse {
   ml_score_scope?: unknown;
   ml_score_contract_summary?: unknown;
   ml_score_note?: unknown;
+  ml_native_backend_used?: unknown;
+  ml_native_fallback_reason?: unknown;
 }
 
 export interface HistorySavedRunSummary {
@@ -372,6 +429,8 @@ export interface HistorySavedRunSummary {
   mlScoreScope?: string;
   mlScoreContractSummary?: string;
   mlScoreNote?: string;
+  mlNativeBackendUsed?: string;
+  mlNativeFallbackReason?: string;
   tags: string[];
 }
 
@@ -399,6 +458,11 @@ export interface HistorySavedRunDetail {
   validationAdmissionDetail?: string;
   tags: string[];
   mlBundleId?: string;
+  mlNativeBackendRequested?: string;
+  mlNativeBackendUsed?: string;
+  mlNativeLibraryPath?: string;
+  mlNativeGpuDeviceId?: number | null;
+  mlNativeFallbackReason?: string;
   mlScoreCachePath?: string;
   mlScoreManifestPath?: string;
   mlFeatureSchemaPath?: string;
@@ -668,6 +732,19 @@ function buildMlScoreNote(
   return notes.join(" ");
 }
 
+function buildMlNativeScoreNote(
+  nativeBackendUsed: unknown,
+  nativeFallbackReason: unknown,
+): string {
+  const backendUsed = normalizeText(nativeBackendUsed);
+  const fallbackReason = normalizeText(nativeFallbackReason);
+  const parts = [
+    backendUsed ? `native backend ${backendUsed}` : "",
+    fallbackReason ? `fallback ${fallbackReason}` : "",
+  ].filter((part) => part.length > 0);
+  return parts.join(" • ");
+}
+
 function firstBooleanFromList(value: unknown): boolean | null {
   if (!Array.isArray(value) || value.length === 0) return null;
   return parseBooleanLike(value[0]);
@@ -816,12 +893,8 @@ function updateStoresFromRunRequest(
   }
   if (mlSignalStrategy) {
     const outputPath = normalizeText(req.output_path ?? req.outputPath);
-    const inputPath = normalizeText(req.input_path ?? req.inputPath);
     const scoreCachePath = normalizeText(
       req.score_cache_path ?? req.scoreCachePath,
-    );
-    const modelBundleId = normalizeText(
-      req.model_bundle_id ?? req.modelBundleId,
     );
     const splitPlan = asRecord(req.split_plan ?? req.splitPlan);
     const tickerHoldout = asRecord(req.ticker_holdout ?? req.tickerHoldout);
@@ -844,14 +917,17 @@ function updateStoresFromRunRequest(
       Number.isFinite(Number(req.horizon_bars ?? req.horizonBars));
     const maSourceValue = normalizeText(req.ma_source ?? req.maSource);
     const horizonBars = asNumber(req.horizon_bars ?? req.horizonBars);
-    if (inputPath) optimizeStore.mlSignalScoreInputPath = inputPath;
     if (hasDatasetExportShape) {
       if (outputPath) optimizeStore.mlSignalDatasetExportPath = outputPath;
     } else if (outputPath) {
       optimizeStore.mlSignalScoreCachePath = outputPath;
     }
     if (scoreCachePath) optimizeStore.mlSignalScoreCachePath = scoreCachePath;
-    if (modelBundleId) optimizeStore.mlSignalModelBundleId = modelBundleId;
+    applyMlSignalScoreCacheRequestFields(
+      optimizeStore,
+      req,
+      hasDatasetExportShape,
+    );
     if (maSourceValue) optimizeStore.mlSignalMaSource = maSourceValue;
     if (Number.isFinite(horizonBars) && horizonBars > 0) {
       optimizeStore.mlSignalHorizonBars = String(Math.floor(horizonBars));
@@ -1249,6 +1325,16 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
         const bytes = Number(row.bytes);
         const mlScoreSpace = canonicalMlScoreSpace(row.ml_score_space);
         const mlScoreScope = canonicalMlScoreScope(row.ml_score_scope);
+        const mlNativeBackendUsed = normalizeText(row.ml_native_backend_used);
+        const mlNativeFallbackReason = normalizeText(
+          row.ml_native_fallback_reason,
+        );
+        const mlScoreNote = [
+          buildMlScoreNote(mlScoreSpace, mlScoreScope, row.ml_score_note),
+          buildMlNativeScoreNote(mlNativeBackendUsed, mlNativeFallbackReason),
+        ]
+          .filter((part) => part.length > 0)
+          .join(" • ");
         runs.push({
           ts: normalizeText(row.ts),
           path,
@@ -1288,15 +1374,9 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
                 ),
               }
             : {}),
-          ...(buildMlScoreNote(mlScoreSpace, mlScoreScope, row.ml_score_note)
-            ? {
-                mlScoreNote: buildMlScoreNote(
-                  mlScoreSpace,
-                  mlScoreScope,
-                  row.ml_score_note,
-                ),
-              }
-            : {}),
+          ...(mlScoreNote ? { mlScoreNote } : {}),
+          ...(mlNativeBackendUsed ? { mlNativeBackendUsed } : {}),
+          ...(mlNativeFallbackReason ? { mlNativeFallbackReason } : {}),
           tags: normalizeStringList(row.tags),
         });
       }
@@ -1411,11 +1491,6 @@ export async function rerunSavedRun(path: string): Promise<void> {
         !normalizeText(request.input_path ?? request.inputPath));
     if (pinia) {
       const optimizeStore = useOptimizeStore(pinia);
-      if (normalizeText(request.input_path ?? request.inputPath)) {
-        optimizeStore.mlSignalScoreInputPath = normalizeText(
-          request.input_path ?? request.inputPath,
-        );
-      }
       if (normalizeText(request.output_path ?? request.outputPath)) {
         if (isDatasetExportStage) {
           optimizeStore.mlSignalDatasetExportPath = normalizeText(
@@ -1427,11 +1502,11 @@ export async function rerunSavedRun(path: string): Promise<void> {
           );
         }
       }
-      if (normalizeText(request.model_bundle_id ?? request.modelBundleId)) {
-        optimizeStore.mlSignalModelBundleId = normalizeText(
-          request.model_bundle_id ?? request.modelBundleId,
-        );
-      }
+      applyMlSignalScoreCacheRequestFields(
+        optimizeStore,
+        request,
+        isDatasetExportStage,
+      );
     }
     const hasSweepReq =
       !!validationReq &&
@@ -1503,6 +1578,34 @@ export async function loadSavedRunDetail(
     mlScoreScope,
     detail.mlScoreNote,
   );
+  const mlNativeBackendRequested = normalizeText(
+    (detail as unknown as Record<string, unknown>).mlNativeBackendRequested ??
+      (detail as unknown as Record<string, unknown>)
+        .ml_native_backend_requested,
+  );
+  const mlNativeBackendUsed = normalizeText(
+    (detail as unknown as Record<string, unknown>).mlNativeBackendUsed ??
+      (detail as unknown as Record<string, unknown>).ml_native_backend_used,
+  );
+  const mlNativeLibraryPath = normalizeText(
+    (detail as unknown as Record<string, unknown>).mlNativeLibraryPath ??
+      (detail as unknown as Record<string, unknown>).ml_native_library_path,
+  );
+  const mlNativeGpuDeviceId = normalizeOptionalNumber(
+    (detail as unknown as Record<string, unknown>).mlNativeGpuDeviceId ??
+      (detail as unknown as Record<string, unknown>).ml_native_gpu_device_id,
+  );
+  const mlNativeFallbackReason = normalizeText(
+    (detail as unknown as Record<string, unknown>).mlNativeFallbackReason ??
+      (detail as unknown as Record<string, unknown>).ml_native_fallback_reason,
+  );
+  const mlNativeScoreNote = buildMlNativeScoreNote(
+    mlNativeBackendUsed,
+    mlNativeFallbackReason,
+  );
+  const combinedMlScoreNote = [mlScoreNote, mlNativeScoreNote]
+    .filter((part) => part.length > 0)
+    .join(" • ");
   const admission = buildValidationAdmissionSummary(validationReq);
   const metricSurface = buildMetricSurfaceSummary(
     asRecord(
@@ -1557,6 +1660,11 @@ export async function loadSavedRunDetail(
       : {}),
     tags: normalizeStringList(detail.tags),
     mlBundleId: normalizeText(detail.mlBundleId),
+    mlNativeBackendRequested,
+    mlNativeBackendUsed,
+    mlNativeLibraryPath,
+    mlNativeGpuDeviceId,
+    mlNativeFallbackReason,
     mlScoreCachePath: normalizeText(detail.mlScoreCachePath),
     mlScoreManifestPath: normalizeText(detail.mlScoreManifestPath),
     mlFeatureSchemaPath: normalizeText(detail.mlFeatureSchemaPath),
@@ -1564,7 +1672,7 @@ export async function loadSavedRunDetail(
     ...(mlScoreSpace ? { mlScoreSpace } : {}),
     ...(mlScoreScope ? { mlScoreScope } : {}),
     ...(mlScoreContractSummary ? { mlScoreContractSummary } : {}),
-    ...(mlScoreNote ? { mlScoreNote } : {}),
+    ...(combinedMlScoreNote ? { mlScoreNote: combinedMlScoreNote } : {}),
     mlPolicySummary: normalizeText(detail.mlPolicySummary),
     mlPolicySweepSummary: normalizeText(detail.mlPolicySweepSummary),
     mlRunVerdictSummary: normalizeText(detail.mlRunVerdictSummary),

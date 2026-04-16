@@ -513,6 +513,79 @@ describe("mlSignalService", () => {
     );
   });
 
+  it("builds native score caches through bundle-backed runtime inference", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalScoreSource = "native";
+    optimize.mlSignalScoreInputPath = "";
+    optimize.mlSignalNativeBackend = "native_cuda";
+    optimize.mlSignalNativeLibraryPath = "C:\\catboost\\catboostmodel.dll";
+    optimize.mlSignalNativeGpuDeviceId = "1";
+
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "generate_ml_signal_score_cache") {
+        return {
+          matched_rows: 75,
+          skipped_rows: 0,
+          model_bundle_id: "bundle-a",
+          manifest_path: "C:\\data\\score_cache.manifest.json",
+          native_backend_requested: "native_cuda",
+          native_backend_used: "native_cpu",
+          native_library_path: "C:\\catboost\\catboostmodel.dll",
+          native_gpu_device_id: 1,
+          native_fallback_reason: "EnableGPUEvaluation unavailable",
+          score_space: "Probability",
+          score_scope: "FullDataset",
+          score_cache_provenance: {
+            source_bundle_id: "bundle-a",
+            producer_kind: "catboost_native_cpu",
+            native_backend_requested: "native_cuda",
+            native_backend_used: "native_cpu",
+            native_library_path: "C:\\catboost\\catboostmodel.dll",
+            native_gpu_device_id: 1,
+            native_fallback_reason: "EnableGPUEvaluation unavailable",
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_ml_signal_native.json" };
+      }
+      return {};
+    });
+
+    await generateMlSignalScoreCache();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "generate_ml_signal_score_cache",
+      {
+        req: expect.objectContaining({
+          data_id: "data-1",
+          input_path: "",
+          output_path: "C:\\data\\score_cache.json",
+          model_bundle_id: "bundle-a",
+          native_backend_preference: "native_cuda",
+          native_library_path: "C:\\catboost\\catboostmodel.dll",
+          native_gpu_device_id: 1,
+        }),
+      },
+    );
+    expect(useOptimizeStore(pinia).mlSignalScoreMeta).toContain(
+      "Native score cache: 75 matched rows -> C:\\data\\score_cache.json",
+    );
+    expect(useOptimizeStore(pinia).mlSignalScoreMeta).toContain("native_cpu");
+    expect(
+      useWorkflowArtifactsStore(pinia).currentRun?.mlSignal
+        ?.scoreCacheProvenance,
+    ).toMatchObject({
+      producer_kind: "catboost_native_cpu",
+      native_backend_requested: "native_cuda",
+      native_backend_used: "native_cpu",
+      native_library_path: "C:\\catboost\\catboostmodel.dll",
+      native_gpu_device_id: 1,
+      native_fallback_reason: "EnableGPUEvaluation unavailable",
+    });
+  });
+
   it("runs ML policy sweep through the dedicated command and persists the best policy", async () => {
     seedStores();
     invokeCommandMock.mockImplementation(async (command) => {

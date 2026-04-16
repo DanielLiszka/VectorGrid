@@ -10,12 +10,14 @@ use crate::validation_pipeline::{
 };
 use crate::validation_shared::{canonical_json_key_bytes, ValidationArtifactContext};
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
+use libloading::Library;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
@@ -81,6 +83,10 @@ fn default_ml_signal_score_contract_version() -> u32 {
     ML_SIGNAL_SCORE_CONTRACT_VERSION
 }
 
+fn default_ml_signal_inference_backend_preference() -> MlSignalInferenceBackendPreference {
+    MlSignalInferenceBackendPreference::Auto
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MlSignalScoreSpace {
@@ -95,6 +101,23 @@ pub enum MlSignalScoreScope {
     CalibrationSlice,
     WalkforwardTest,
     CustomPartial,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlSignalInferenceBackendPreference {
+    Auto,
+    NativeCpu,
+    NativeCuda,
+    ScoreCacheOnly,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlSignalInferenceBackendUsed {
+    ScoreCacheOnly,
+    NativeCpu,
+    NativeCuda,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -124,6 +147,16 @@ pub struct MlSignalScoreCacheSummary {
     pub source_bundle_manifest_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_backend_requested: Option<MlSignalInferenceBackendPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_backend_used: Option<MlSignalInferenceBackendUsed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_library_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_gpu_device_id: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_fallback_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -310,6 +343,12 @@ pub struct MlSignalScoreCacheBuildRequest {
     pub producer_kind: Option<String>,
     #[serde(default)]
     pub score_contract_version: Option<u32>,
+    #[serde(default = "default_ml_signal_inference_backend_preference")]
+    pub native_backend_preference: MlSignalInferenceBackendPreference,
+    #[serde(default)]
+    pub native_library_path: Option<String>,
+    #[serde(default)]
+    pub native_gpu_device_id: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -318,6 +357,12 @@ pub struct MlSignalScoreCacheBuildResult {
     pub input_path: String,
     pub output_path: String,
     pub manifest_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_schema_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export_manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_bundle_manifest_path: Option<String>,
     pub matched_rows: usize,
     pub skipped_rows: usize,
     pub bars_scored: usize,
@@ -345,6 +390,16 @@ pub struct MlSignalScoreCacheBuildResult {
     pub source_bundle_manifest_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_manifest_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_backend_requested: Option<MlSignalInferenceBackendPreference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_backend_used: Option<MlSignalInferenceBackendUsed>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_library_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_gpu_device_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_fallback_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -603,6 +658,16 @@ pub struct MlSignalScoreCacheManifest {
     pub first_timestamp: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_timestamp: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_backend_requested: Option<MlSignalInferenceBackendPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_backend_used: Option<MlSignalInferenceBackendUsed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_library_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_gpu_device_id: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_fallback_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -680,6 +745,37 @@ struct DatasetFeatureFrame {
     adx_2h: Vec<f64>,
     atr_h: Vec<f64>,
     first_valid_bar: usize,
+}
+
+#[derive(Clone, Debug)]
+struct MlSignalInferenceFeatureRows {
+    timestamps: Vec<i64>,
+    float_features_transposed: Vec<Vec<f32>>,
+}
+
+#[derive(Clone, Debug)]
+struct MlSignalNativeBuildMetadata {
+    backend_requested: MlSignalInferenceBackendPreference,
+    backend_used: MlSignalInferenceBackendUsed,
+    library_path: Option<String>,
+    gpu_device_id: Option<i32>,
+    fallback_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct MlSignalNativeScoreBuild {
+    rows: Vec<MlSignalScoreCacheRow>,
+    feature_schema_path: Option<String>,
+    feature_schema_hash: Option<String>,
+    export_manifest_path: Option<String>,
+    source_bundle_manifest_path: Option<String>,
+    source_bundle_manifest_hash: Option<String>,
+    export_manifest_hash: Option<String>,
+    calibration_state: Option<String>,
+    threshold_policy: Option<String>,
+    producer_kind: Option<String>,
+    score_contract_version: Option<u32>,
+    native: MlSignalNativeBuildMetadata,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1041,6 +1137,298 @@ fn feature_names_for_schema(pattern_ids: &[String]) -> Vec<String> {
     feature_names
 }
 
+fn build_ml_signal_inference_feature_rows(
+    candles: &Candles,
+    schema: &MlSignalFeatureSchema,
+) -> Result<MlSignalInferenceFeatureRows, String> {
+    let n = candles.close.len();
+    let h = schema.horizon_bars.max(2);
+    if n < 64 {
+        return Err("not enough candles for native MlSignal inference".to_string());
+    }
+    let frame = feature_frame(candles, &schema.ma_source, h)?;
+    let expected_feature_names = feature_names_for_schema(&frame.pattern_ids);
+    if schema.feature_names != expected_feature_names {
+        return Err(
+            "feature schema feature_names do not match runtime MlSignal feature frame".to_string(),
+        );
+    }
+    let last_label_bar = n.saturating_sub(h.saturating_add(2));
+    if frame.first_valid_bar > last_label_bar {
+        return Err("not enough candles after warmup for native MlSignal inference".to_string());
+    }
+
+    let log_returns = log_returns_from_close(&candles.close);
+    let log_return_prefix = prefix_sum(&log_returns);
+    let log_return_sq_prefix = prefix_sum_squares(&log_returns);
+    let mut pattern_prefix: Vec<Vec<usize>> = Vec::with_capacity(frame.pattern_hits.len());
+    for row in &frame.pattern_hits {
+        let mut prefix = vec![0usize; row.len() + 1];
+        for (idx, value) in row.iter().enumerate() {
+            prefix[idx + 1] = prefix[idx] + usize::from(*value != 0);
+        }
+        pattern_prefix.push(prefix);
+    }
+    let mut last_seen: Vec<Option<usize>> = vec![None; frame.pattern_hits.len()];
+    for idx in 0..frame.first_valid_bar {
+        for (row_idx, row) in frame.pattern_hits.iter().enumerate() {
+            if row.get(idx).copied().unwrap_or(0) != 0 {
+                last_seen[row_idx] = Some(idx);
+            }
+        }
+    }
+
+    let row_count = last_label_bar
+        .saturating_sub(frame.first_valid_bar)
+        .saturating_add(1);
+    let mut timestamps = Vec::with_capacity(row_count);
+    let mut float_features_transposed: Vec<Vec<f32>> = (0..schema.feature_names.len())
+        .map(|_| Vec::with_capacity(row_count))
+        .collect();
+
+    for t in frame.first_valid_bar..=last_label_bar {
+        let prev_close = candles.close[t.saturating_sub(1)];
+        let open = candles.open[t];
+        let high = candles.high[t];
+        let low = candles.low[t];
+        let close = candles.close[t];
+        let range = (high - low).abs();
+        let eps = if close.is_finite() && close.abs() > 1.0e-12 {
+            close.abs() * 1.0e-12
+        } else {
+            1.0e-12
+        };
+        let true_range = if prev_close.is_finite() {
+            (high - low)
+                .abs()
+                .max((high - prev_close).abs())
+                .max((low - prev_close).abs())
+        } else {
+            (high - low).abs()
+        };
+        let body_pct = if open.is_finite() && open != 0.0 {
+            (close - open) / open
+        } else {
+            0.0
+        };
+        let abs_body_frac = (close - open).abs() / (range + eps);
+        let upper_wick_frac = (high - open.max(close)).max(0.0) / (range + eps);
+        let lower_wick_frac = (open.min(close) - low).max(0.0) / (range + eps);
+        let close_location = (close - low) / (range + eps);
+        let gap_pct = if prev_close.is_finite() && prev_close != 0.0 {
+            (open - prev_close) / prev_close
+        } else {
+            0.0
+        };
+        let true_range_pct = if prev_close.is_finite() && prev_close != 0.0 {
+            true_range / prev_close
+        } else {
+            0.0
+        };
+
+        let atr_h = frame.atr_h[t];
+        let alma_h = frame.alma_h[t];
+        let alma_3h = frame.alma_3h[t];
+        let alma_10h = frame.alma_10h[t];
+        let adx_2h = frame.adx_2h[t];
+        let half_h = (h / 2).max(1);
+        let alma_slope_h_half_atr = if t >= half_h && atr_h.is_finite() && atr_h > 0.0 {
+            (frame.alma_h[t] - frame.alma_h[t - half_h]) / atr_h
+        } else {
+            0.0
+        };
+        let alma_slope_3h_h_atr = if t >= h && atr_h.is_finite() && atr_h > 0.0 {
+            (frame.alma_3h[t] - frame.alma_3h[t - h]) / atr_h
+        } else {
+            0.0
+        };
+        let alma_spread_h_3h_atr = if atr_h.is_finite() && atr_h > 0.0 {
+            (alma_h - alma_3h) / atr_h
+        } else {
+            0.0
+        };
+        let alma_spread_3h_10h_atr = if atr_h.is_finite() && atr_h > 0.0 {
+            (alma_3h - alma_10h) / atr_h
+        } else {
+            0.0
+        };
+        let close_minus_alma_3h_atr = if atr_h.is_finite() && atr_h > 0.0 {
+            (close - alma_3h) / atr_h
+        } else {
+            0.0
+        };
+
+        let log_ret_1 = log_returns[t];
+        let log_ret_2 = rolling_sum(&log_return_prefix, t.saturating_sub(1), t + 1);
+        let log_ret_3 = rolling_sum(&log_return_prefix, t.saturating_sub(2), t + 1);
+        let log_ret_5 = rolling_sum(&log_return_prefix, t.saturating_sub(4), t + 1);
+        let log_ret_h = rolling_sum(&log_return_prefix, t + 1 - h.min(t + 1), t + 1);
+        let realized_vol_h = rolling_stddev(
+            &log_return_prefix,
+            &log_return_sq_prefix,
+            t + 1 - h.min(t + 1),
+            t + 1,
+        );
+        let three_h = h.saturating_mul(3);
+        let realized_vol_3h = rolling_stddev(
+            &log_return_prefix,
+            &log_return_sq_prefix,
+            t + 1 - three_h.min(t + 1),
+            t + 1,
+        );
+        let atr_h_over_close = if close.is_finite() && close != 0.0 {
+            atr_h / close
+        } else {
+            0.0
+        };
+
+        timestamps.push(candles.timestamp[t]);
+        let mut column_idx = 0usize;
+        let push_value =
+            |columns: &mut Vec<Vec<f32>>, idx: &mut usize, value: f64| -> Result<(), String> {
+                let out = if value.is_finite() { value as f32 } else { 0.0 };
+                columns
+                    .get_mut(*idx)
+                    .ok_or_else(|| "feature column index overflow".to_string())?
+                    .push(out);
+                *idx = idx.saturating_add(1);
+                Ok(())
+            };
+
+        push_value(&mut float_features_transposed, &mut column_idx, body_pct)?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            abs_body_frac,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            upper_wick_frac,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            lower_wick_frac,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            close_location,
+        )?;
+        push_value(&mut float_features_transposed, &mut column_idx, gap_pct)?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            true_range_pct,
+        )?;
+
+        for (row_idx, row) in frame.pattern_hits.iter().enumerate() {
+            let hit = row[t];
+            if hit != 0 {
+                last_seen[row_idx] = Some(t);
+            }
+            let prefix = &pattern_prefix[row_idx];
+            push_value(
+                &mut float_features_transposed,
+                &mut column_idx,
+                f64::from(hit),
+            )?;
+            push_value(
+                &mut float_features_transposed,
+                &mut column_idx,
+                rolling_count(prefix, t.saturating_sub(2), t + 1) as f64,
+            )?;
+            push_value(
+                &mut float_features_transposed,
+                &mut column_idx,
+                rolling_count(prefix, t.saturating_sub(4), t + 1) as f64,
+            )?;
+            push_value(
+                &mut float_features_transposed,
+                &mut column_idx,
+                rolling_count(prefix, t + 1 - h.min(t + 1), t + 1) as f64,
+            )?;
+            let two_h = h.saturating_mul(2);
+            push_value(
+                &mut float_features_transposed,
+                &mut column_idx,
+                rolling_count(prefix, t + 1 - two_h.min(t + 1), t + 1) as f64,
+            )?;
+            let bars_since = last_seen[row_idx]
+                .map(|last| t.saturating_sub(last))
+                .unwrap_or(h.saturating_mul(4));
+            push_value(
+                &mut float_features_transposed,
+                &mut column_idx,
+                bars_since.min(h.saturating_mul(4)) as f64,
+            )?;
+        }
+
+        push_value(&mut float_features_transposed, &mut column_idx, alma_h)?;
+        push_value(&mut float_features_transposed, &mut column_idx, alma_3h)?;
+        push_value(&mut float_features_transposed, &mut column_idx, alma_10h)?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            alma_spread_h_3h_atr,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            alma_spread_3h_10h_atr,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            alma_slope_h_half_atr,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            alma_slope_3h_h_atr,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            close_minus_alma_3h_atr,
+        )?;
+        push_value(&mut float_features_transposed, &mut column_idx, adx_2h)?;
+        push_value(&mut float_features_transposed, &mut column_idx, log_ret_1)?;
+        push_value(&mut float_features_transposed, &mut column_idx, log_ret_2)?;
+        push_value(&mut float_features_transposed, &mut column_idx, log_ret_3)?;
+        push_value(&mut float_features_transposed, &mut column_idx, log_ret_5)?;
+        push_value(&mut float_features_transposed, &mut column_idx, log_ret_h)?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            realized_vol_h,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            realized_vol_3h,
+        )?;
+        push_value(
+            &mut float_features_transposed,
+            &mut column_idx,
+            atr_h_over_close,
+        )?;
+
+        if column_idx != float_features_transposed.len() {
+            return Err(format!(
+                "feature frame emitted {column_idx} columns but schema expects {}",
+                float_features_transposed.len()
+            ));
+        }
+    }
+
+    Ok(MlSignalInferenceFeatureRows {
+        timestamps,
+        float_features_transposed,
+    })
+}
+
 fn base_path_without_extension(path: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -1206,6 +1594,340 @@ fn json_file_fingerprint(path: &str) -> Result<Option<String>, String> {
         .map_err(|e| format!("parse json for fingerprint '{trimmed}': {e}"))?;
     let bytes = canonical_json_key_bytes(&value)?;
     Ok(Some(fnv1a64_hex(&bytes)))
+}
+
+#[cfg(target_os = "windows")]
+const DEFAULT_CATBOOST_LIBRARY_CANDIDATES: &[&str] = &["catboostmodel.dll"];
+#[cfg(target_os = "linux")]
+const DEFAULT_CATBOOST_LIBRARY_CANDIDATES: &[&str] = &["libcatboostmodel.so"];
+#[cfg(target_os = "macos")]
+const DEFAULT_CATBOOST_LIBRARY_CANDIDATES: &[&str] = &["libcatboostmodel.dylib"];
+
+type ModelCalcerHandle = c_void;
+type ModelCalcerCreateFn = unsafe extern "C" fn() -> *mut ModelCalcerHandle;
+type ModelCalcerDeleteFn = unsafe extern "C" fn(*mut ModelCalcerHandle);
+type GetErrorStringFn = unsafe extern "C" fn() -> *const c_char;
+type LoadFullModelFromFileFn = unsafe extern "C" fn(*mut ModelCalcerHandle, *const c_char) -> bool;
+type EnableGPUEvaluationFn = unsafe extern "C" fn(*mut ModelCalcerHandle, c_int) -> bool;
+type SetPredictionTypeFn = unsafe extern "C" fn(*mut ModelCalcerHandle, c_int) -> bool;
+type CalcModelPredictionFlatTransposedFn = unsafe extern "C" fn(
+    *mut ModelCalcerHandle,
+    usize,
+    *const *const f32,
+    usize,
+    *mut f64,
+    usize,
+) -> bool;
+type GetFloatFeaturesCountFn = unsafe extern "C" fn(*mut ModelCalcerHandle) -> usize;
+
+const CATBOOST_PREDICTION_RAW_FORMULA_VAL: c_int = 0;
+
+struct CatBoostApi {
+    _library: Library,
+    model_calcer_create: ModelCalcerCreateFn,
+    model_calcer_delete: ModelCalcerDeleteFn,
+    get_error_string: GetErrorStringFn,
+    load_full_model_from_file: LoadFullModelFromFileFn,
+    enable_gpu_evaluation: EnableGPUEvaluationFn,
+    set_prediction_type: SetPredictionTypeFn,
+    calc_model_prediction_flat_transposed: CalcModelPredictionFlatTransposedFn,
+    get_float_features_count: GetFloatFeaturesCountFn,
+}
+
+struct CatBoostModelHandle<'a> {
+    api: &'a CatBoostApi,
+    handle: *mut ModelCalcerHandle,
+}
+
+impl CatBoostApi {
+    fn load(explicit_path: Option<&str>) -> Result<(Self, String), String> {
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(path) = explicit_path
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            candidates.push(path.to_string());
+        }
+        if let Ok(path) = std::env::var("CATBOOST_MODEL_INTERFACE_LIB") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() && !candidates.iter().any(|value| value == trimmed) {
+                candidates.push(trimmed.to_string());
+            }
+        }
+        for candidate in DEFAULT_CATBOOST_LIBRARY_CANDIDATES {
+            if !candidates.iter().any(|value| value == candidate) {
+                candidates.push((*candidate).to_string());
+            }
+        }
+
+        let mut load_errors = Vec::new();
+        for candidate in candidates {
+            let library = match unsafe { Library::new(&candidate) } {
+                Ok(value) => value,
+                Err(err) => {
+                    load_errors.push(format!("{candidate}: {err}"));
+                    continue;
+                }
+            };
+            let api =
+                unsafe { Self::from_library(library) }.map_err(|err| format!("{candidate}: {err}"));
+            match api {
+                Ok(value) => return Ok((value, candidate)),
+                Err(err) => load_errors.push(err),
+            }
+        }
+
+        Err(format!(
+            "failed to load CatBoost native applier library: {}",
+            load_errors.join(" | ")
+        ))
+    }
+
+    unsafe fn from_library(library: Library) -> Result<Self, String> {
+        fn load_symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, String> {
+            let symbol = unsafe { library.get::<T>(name) }.map_err(|err| {
+                format!(
+                    "missing symbol {}: {err}",
+                    String::from_utf8_lossy(name).trim_end_matches('\0')
+                )
+            })?;
+            Ok(*symbol)
+        }
+
+        Ok(Self {
+            model_calcer_create: load_symbol(&library, b"ModelCalcerCreate\0")?,
+            model_calcer_delete: load_symbol(&library, b"ModelCalcerDelete\0")?,
+            get_error_string: load_symbol(&library, b"GetErrorString\0")?,
+            load_full_model_from_file: load_symbol(&library, b"LoadFullModelFromFile\0")?,
+            enable_gpu_evaluation: load_symbol(&library, b"EnableGPUEvaluation\0")?,
+            set_prediction_type: load_symbol(&library, b"SetPredictionType\0")?,
+            calc_model_prediction_flat_transposed: load_symbol(
+                &library,
+                b"CalcModelPredictionFlatTransposed\0",
+            )?,
+            get_float_features_count: load_symbol(&library, b"GetFloatFeaturesCount\0")?,
+            _library: library,
+        })
+    }
+
+    fn last_error_string(&self) -> String {
+        let ptr = unsafe { (self.get_error_string)() };
+        if ptr.is_null() {
+            "unknown CatBoost native error".to_string()
+        } else {
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .trim()
+                .to_string()
+        }
+    }
+}
+
+impl<'a> CatBoostModelHandle<'a> {
+    fn new(api: &'a CatBoostApi) -> Result<Self, String> {
+        let handle = unsafe { (api.model_calcer_create)() };
+        if handle.is_null() {
+            return Err(api.last_error_string());
+        }
+        Ok(Self { api, handle })
+    }
+
+    fn load_model_from_file(&self, path: &Path) -> Result<(), String> {
+        let path_str = path.to_string_lossy();
+        let c_path =
+            CString::new(path_str.as_bytes()).map_err(|_| "model path contains NUL".to_string())?;
+        let ok = unsafe { (self.api.load_full_model_from_file)(self.handle, c_path.as_ptr()) };
+        if ok {
+            Ok(())
+        } else {
+            Err(self.api.last_error_string())
+        }
+    }
+
+    fn try_enable_gpu(&self, device_id: i32) -> Result<(), String> {
+        let ok = unsafe { (self.api.enable_gpu_evaluation)(self.handle, device_id as c_int) };
+        if ok {
+            Ok(())
+        } else {
+            Err(self.api.last_error_string())
+        }
+    }
+
+    fn float_feature_count(&self) -> usize {
+        unsafe { (self.api.get_float_features_count)(self.handle) }
+    }
+
+    fn calc_raw_transposed(
+        &self,
+        float_features_transposed: &[Vec<f32>],
+        doc_count: usize,
+    ) -> Result<Vec<f64>, String> {
+        let expected_features = self.float_feature_count();
+        if expected_features != float_features_transposed.len() {
+            return Err(format!(
+                "model expects {expected_features} float features but inference frame provides {}",
+                float_features_transposed.len()
+            ));
+        }
+        if doc_count == 0 {
+            return Ok(Vec::new());
+        }
+        for (idx, feature) in float_features_transposed.iter().enumerate() {
+            if feature.len() != doc_count {
+                return Err(format!(
+                    "feature column {idx} length {} does not match doc_count {doc_count}",
+                    feature.len()
+                ));
+            }
+        }
+        let ok = unsafe {
+            (self.api.set_prediction_type)(self.handle, CATBOOST_PREDICTION_RAW_FORMULA_VAL)
+        };
+        if !ok {
+            return Err(self.api.last_error_string());
+        }
+        let pointers: Vec<*const f32> = float_features_transposed
+            .iter()
+            .map(|column| column.as_ptr())
+            .collect();
+        let mut out = vec![0.0_f64; doc_count];
+        let ok = unsafe {
+            (self.api.calc_model_prediction_flat_transposed)(
+                self.handle,
+                doc_count,
+                pointers.as_ptr(),
+                pointers.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        if ok {
+            Ok(out)
+        } else {
+            Err(self.api.last_error_string())
+        }
+    }
+}
+
+impl Drop for CatBoostModelHandle<'_> {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                (self.api.model_calcer_delete)(self.handle);
+            }
+        }
+    }
+}
+
+fn resolve_bundle_child_path(
+    manifest_path: &Path,
+    manifest_rel: Option<&str>,
+    default_name: &str,
+) -> PathBuf {
+    let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    manifest_rel
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| base_dir.join(value))
+        .unwrap_or_else(|| base_dir.join(default_name))
+}
+
+fn read_feature_schema_from_path(path: &Path) -> Result<MlSignalFeatureSchema, String> {
+    let file =
+        File::open(path).map_err(|e| format!("open feature schema '{}': {e}", path.display()))?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| format!("parse feature schema '{}': {e}", path.display()))
+}
+
+fn read_json_value_file(path: &Path, context: &str) -> Result<JsonValue, String> {
+    let file = File::open(path).map_err(|e| format!("open {context} '{}': {e}", path.display()))?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| format!("parse {context} '{}': {e}", path.display()))
+}
+
+fn clip_probability(value: f64) -> f64 {
+    value.clamp(1.0e-6, 1.0 - 1.0e-6)
+}
+
+fn raw_margin_probability(raw: f64) -> f64 {
+    let clipped = raw.clamp(-40.0, 40.0);
+    clip_probability(1.0 / (1.0 + (-clipped).exp()))
+}
+
+fn apply_sigmoid_calibration(raw: f64, coef: f64, intercept: f64) -> f64 {
+    let margin = ((raw * coef) + intercept).clamp(-40.0, 40.0);
+    clip_probability(1.0 / (1.0 + (-margin).exp()))
+}
+
+fn apply_isotonic_calibration(raw: f64, xs: &[f64], ys: &[f64]) -> Option<f64> {
+    if xs.is_empty() || ys.is_empty() || xs.len() != ys.len() {
+        return None;
+    }
+    if raw <= xs[0] {
+        return Some(clip_probability(ys[0]));
+    }
+    if raw >= xs[xs.len() - 1] {
+        return Some(clip_probability(ys[ys.len() - 1]));
+    }
+    match xs.binary_search_by(|probe| probe.partial_cmp(&raw).unwrap_or(std::cmp::Ordering::Less)) {
+        Ok(idx) => Some(clip_probability(ys[idx])),
+        Err(idx) => {
+            if idx == 0 || idx >= xs.len() {
+                return None;
+            }
+            let x0 = xs[idx - 1];
+            let x1 = xs[idx];
+            let y0 = ys[idx - 1];
+            let y1 = ys[idx];
+            let span = x1 - x0;
+            if !span.is_finite() || span.abs() <= f64::EPSILON {
+                return Some(clip_probability(y0));
+            }
+            let ratio = ((raw - x0) / span).clamp(0.0, 1.0);
+            Some(clip_probability(y0 + ((y1 - y0) * ratio)))
+        }
+    }
+}
+
+fn apply_calibration_probability(raw: f64, config: Option<&JsonValue>) -> f64 {
+    let Some(config) = config.and_then(JsonValue::as_object) else {
+        return raw_margin_probability(raw);
+    };
+    let method = config
+        .get("method")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if method == "sigmoid" || (config.contains_key("coef") && config.contains_key("intercept")) {
+        let coef = config
+            .get("coef")
+            .and_then(JsonValue::as_f64)
+            .unwrap_or(1.0);
+        let intercept = config
+            .get("intercept")
+            .and_then(JsonValue::as_f64)
+            .unwrap_or(0.0);
+        return apply_sigmoid_calibration(raw, coef, intercept);
+    }
+    if method == "isotonic"
+        || (config.contains_key("x_thresholds") && config.contains_key("y_thresholds"))
+    {
+        let xs: Vec<f64> = config
+            .get("x_thresholds")
+            .and_then(JsonValue::as_array)
+            .map(|values| values.iter().filter_map(JsonValue::as_f64).collect())
+            .unwrap_or_default();
+        let ys: Vec<f64> = config
+            .get("y_thresholds")
+            .and_then(JsonValue::as_array)
+            .map(|values| values.iter().filter_map(JsonValue::as_f64).collect())
+            .unwrap_or_default();
+        if let Some(value) = apply_isotonic_calibration(raw, &xs, &ys) {
+            return value;
+        }
+    }
+    raw_margin_probability(raw)
 }
 
 fn build_ml_signal_indicator_config(
@@ -1621,6 +2343,240 @@ struct MlSignalScoreCacheRow {
     raw_short: Option<f64>,
 }
 
+fn manifest_threshold_policy_kind(manifest: &MlSignalModelBundleManifest) -> Option<String> {
+    manifest
+        .threshold_policy_default
+        .as_ref()
+        .and_then(JsonValue::as_object)
+        .and_then(|value| value.get("kind").or_else(|| value.get("threshold_policy")))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn manifest_score_contract_version(manifest: &MlSignalModelBundleManifest) -> Option<u32> {
+    manifest
+        .score_contract
+        .as_ref()
+        .and_then(JsonValue::as_object)
+        .and_then(|value| {
+            value
+                .get("score_contract_version")
+                .or_else(|| value.get("scoreContractVersion"))
+        })
+        .and_then(JsonValue::as_u64)
+        .map(|value| value as u32)
+}
+
+fn manifest_calibration_state(manifest: &MlSignalModelBundleManifest) -> Option<String> {
+    manifest
+        .calibration_summary
+        .as_ref()
+        .and_then(JsonValue::as_object)
+        .and_then(|value| {
+            value
+                .get("calibration_state")
+                .or_else(|| value.get("calibrationState"))
+                .or_else(|| value.get("status"))
+                .or_else(|| value.get("kind"))
+        })
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            manifest
+                .calibration_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|_| "bundle_calibration_attached".to_string())
+        })
+}
+
+fn build_ml_signal_native_score_cache(
+    req: &MlSignalScoreCacheBuildRequest,
+    candles: &Candles,
+    _cancel: &AtomicBool,
+) -> Result<MlSignalNativeScoreBuild, String> {
+    let manifest_path = req
+        .source_bundle_manifest_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            "native score-cache generation requires a resolved source bundle manifest path"
+                .to_string()
+        })?;
+    let manifest = read_ml_signal_manifest(&manifest_path)?;
+    if manifest.model_family.trim() != "catboost_binary_pair" {
+        return Err(format!(
+            "native MlSignal inference supports model_family 'catboost_binary_pair', got '{}'",
+            manifest.model_family
+        ));
+    }
+    if manifest.model_format.trim() != "cbm" {
+        return Err(format!(
+            "native MlSignal inference supports model_format 'cbm', got '{}'",
+            manifest.model_format
+        ));
+    }
+
+    let feature_schema_path = resolve_bundle_child_path(
+        &manifest_path,
+        manifest.feature_schema_path.as_deref(),
+        "feature_schema.json",
+    );
+    let feature_schema = read_feature_schema_from_path(&feature_schema_path)?;
+    let export_manifest_path = resolve_bundle_child_path(
+        &manifest_path,
+        manifest.export_manifest_path.as_deref(),
+        "export_manifest.json",
+    );
+    let calibration_path = manifest
+        .calibration_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| resolve_bundle_child_path(&manifest_path, Some(value), value));
+    let long_model_path = resolve_bundle_child_path(
+        &manifest_path,
+        manifest.long_model_path.as_deref(),
+        "model_long.cbm",
+    );
+    let short_model_path = resolve_bundle_child_path(
+        &manifest_path,
+        manifest.short_model_path.as_deref(),
+        "model_short.cbm",
+    );
+
+    let inference_rows = build_ml_signal_inference_feature_rows(candles, &feature_schema)?;
+    let calibration_json = calibration_path
+        .as_ref()
+        .filter(|path| path.exists())
+        .map(|path| read_json_value_file(path, "calibration"))
+        .transpose()?;
+    let long_calibration = calibration_json
+        .as_ref()
+        .and_then(|value| value.get("long"));
+    let short_calibration = calibration_json
+        .as_ref()
+        .and_then(|value| value.get("short"));
+
+    let backend_requested = req.native_backend_preference;
+    let (api, library_path) = CatBoostApi::load(req.native_library_path.as_deref())?;
+    let long_model = CatBoostModelHandle::new(&api)?;
+    long_model.load_model_from_file(&long_model_path)?;
+    let short_model = CatBoostModelHandle::new(&api)?;
+    short_model.load_model_from_file(&short_model_path)?;
+
+    let requested_gpu_id = req.native_gpu_device_id.unwrap_or(0);
+    let mut backend_used = MlSignalInferenceBackendUsed::NativeCpu;
+    let mut fallback_reason = None;
+    match backend_requested {
+        MlSignalInferenceBackendPreference::NativeCuda
+        | MlSignalInferenceBackendPreference::Auto => {
+            let long_gpu = long_model.try_enable_gpu(requested_gpu_id);
+            let short_gpu = short_model.try_enable_gpu(requested_gpu_id);
+            match (long_gpu, short_gpu) {
+                (Ok(()), Ok(())) => {
+                    backend_used = MlSignalInferenceBackendUsed::NativeCuda;
+                }
+                (left, right) => {
+                    if backend_requested == MlSignalInferenceBackendPreference::NativeCuda {
+                        fallback_reason = Some(format!(
+                            "native CUDA evaluation unavailable; long={:?} short={:?}; falling back to CPU",
+                            left.err(),
+                            right.err()
+                        ));
+                    } else if left.is_err() || right.is_err() {
+                        fallback_reason = Some(
+                            "native CUDA evaluation unavailable; falling back to CPU".to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        MlSignalInferenceBackendPreference::NativeCpu
+        | MlSignalInferenceBackendPreference::ScoreCacheOnly => {}
+    }
+
+    let raw_long = long_model.calc_raw_transposed(
+        &inference_rows.float_features_transposed,
+        inference_rows.timestamps.len(),
+    )?;
+    let raw_short = short_model.calc_raw_transposed(
+        &inference_rows.float_features_transposed,
+        inference_rows.timestamps.len(),
+    )?;
+    if raw_long.len() != inference_rows.timestamps.len()
+        || raw_short.len() != inference_rows.timestamps.len()
+    {
+        return Err(
+            "native CatBoost inference returned row counts that do not match timestamps"
+                .to_string(),
+        );
+    }
+
+    let rows: Vec<MlSignalScoreCacheRow> = inference_rows
+        .timestamps
+        .iter()
+        .enumerate()
+        .map(|(idx, timestamp)| {
+            let long_raw = raw_long[idx];
+            let short_raw = raw_short[idx];
+            MlSignalScoreCacheRow {
+                timestamp: *timestamp,
+                p_long: Some(apply_calibration_probability(long_raw, long_calibration)),
+                p_short: Some(apply_calibration_probability(short_raw, short_calibration)),
+                raw_long: Some(long_raw),
+                raw_short: Some(short_raw),
+            }
+        })
+        .collect();
+
+    Ok(MlSignalNativeScoreBuild {
+        rows,
+        feature_schema_path: Some(feature_schema_path.to_string_lossy().to_string()),
+        feature_schema_hash: if feature_schema.schema_hash.trim().is_empty() {
+            manifest.source_feature_schema_hash.clone()
+        } else {
+            Some(feature_schema.schema_hash.clone())
+        },
+        export_manifest_path: export_manifest_path
+            .exists()
+            .then(|| export_manifest_path.to_string_lossy().to_string()),
+        source_bundle_manifest_path: Some(manifest_path.to_string_lossy().to_string()),
+        source_bundle_manifest_hash: json_file_fingerprint(&manifest_path.to_string_lossy())?,
+        export_manifest_hash: if export_manifest_path.exists() {
+            json_file_fingerprint(&export_manifest_path.to_string_lossy())?
+        } else {
+            None
+        },
+        calibration_state: manifest_calibration_state(&manifest),
+        threshold_policy: manifest_threshold_policy_kind(&manifest),
+        producer_kind: Some(
+            match backend_used {
+                MlSignalInferenceBackendUsed::NativeCpu => "catboost_native_cpu",
+                MlSignalInferenceBackendUsed::NativeCuda => "catboost_native_cuda",
+                MlSignalInferenceBackendUsed::ScoreCacheOnly => "score_cache_only",
+            }
+            .to_string(),
+        ),
+        score_contract_version: manifest_score_contract_version(&manifest),
+        native: MlSignalNativeBuildMetadata {
+            backend_requested,
+            backend_used,
+            library_path: Some(library_path),
+            gpu_device_id: (backend_used == MlSignalInferenceBackendUsed::NativeCuda)
+                .then_some(requested_gpu_id),
+            fallback_reason,
+        },
+    })
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct MlSignalScoreCacheFile {
     version: u32,
@@ -1664,6 +2620,16 @@ struct MlSignalScoreCacheFile {
     first_timestamp: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_timestamp: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_backend_requested: Option<MlSignalInferenceBackendPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_backend_used: Option<MlSignalInferenceBackendUsed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_library_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_gpu_device_id: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_fallback_reason: Option<String>,
     scores: Vec<MlSignalScoreCacheRow>,
 }
 
@@ -1872,6 +2838,178 @@ fn read_score_rows_csv(input_path: &str) -> Result<ParsedScoreCsv, String> {
     })
 }
 
+fn write_ml_signal_score_cache(
+    req: MlSignalScoreCacheBuildRequest,
+    candles: &Candles,
+    score_space: MlSignalScoreSpace,
+    requested_scope: Option<MlSignalScoreScope>,
+    rows: Vec<MlSignalScoreCacheRow>,
+    feature_schema_path: Option<String>,
+    feature_schema_hash: Option<String>,
+    export_manifest_path: Option<String>,
+    source_bundle_manifest_path: Option<String>,
+    source_bundle_manifest_hash: Option<String>,
+    export_manifest_hash: Option<String>,
+    calibration_state: Option<String>,
+    threshold_policy: Option<String>,
+    producer_kind: Option<String>,
+    score_contract_version: Option<u32>,
+    native_metadata: Option<MlSignalNativeBuildMetadata>,
+) -> Result<MlSignalScoreCacheBuildResult, String> {
+    let timestamp_to_index: HashMap<i64, usize> = candles
+        .timestamp
+        .iter()
+        .enumerate()
+        .map(|(idx, ts)| (*ts, idx))
+        .collect();
+    let mut matched: HashMap<i64, MlSignalScoreCacheRow> = HashMap::new();
+    let mut skipped_rows = 0usize;
+    let mut duplicate_timestamps = 0usize;
+    let mut seen_timestamps = HashSet::new();
+
+    for row in rows {
+        if !seen_timestamps.insert(row.timestamp) {
+            duplicate_timestamps = duplicate_timestamps.saturating_add(1);
+        }
+        if !timestamp_to_index.contains_key(&row.timestamp) {
+            skipped_rows = skipped_rows.saturating_add(1);
+            continue;
+        }
+        matched.insert(row.timestamp, row);
+    }
+
+    let mut scores: Vec<MlSignalScoreCacheRow> = matched.into_values().collect();
+    scores.sort_by_key(|row| row.timestamp);
+    let bars_scored = scores.len();
+    let coverage_ratio = if candles.close.is_empty() {
+        0.0
+    } else {
+        (bars_scored as f64 / candles.close.len() as f64).clamp(0.0, 1.0)
+    };
+    let score_scope = infer_score_scope(
+        &req.input_path,
+        requested_scope,
+        bars_scored,
+        candles.close.len(),
+    );
+    let native_backend_requested = native_metadata.as_ref().map(|meta| meta.backend_requested);
+    let native_backend_used = native_metadata.as_ref().map(|meta| meta.backend_used);
+    let native_library_path = native_metadata
+        .as_ref()
+        .and_then(|meta| meta.library_path.clone());
+    let native_gpu_device_id = native_metadata.as_ref().and_then(|meta| meta.gpu_device_id);
+    let native_fallback_reason = native_metadata
+        .as_ref()
+        .and_then(|meta| meta.fallback_reason.clone());
+
+    let cache = MlSignalScoreCacheFile {
+        version: ML_SIGNAL_SCORE_CACHE_VERSION,
+        kind: "vectorgrid_ml_signal_score_cache".to_string(),
+        strategy_kind: "MlSignal".to_string(),
+        feature_schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
+        data_id: req.data_id.clone(),
+        input_path: req.input_path.clone(),
+        score_space,
+        score_scope,
+        model_bundle_id: req.model_bundle_id.clone(),
+        feature_schema_hash: feature_schema_hash.clone(),
+        export_manifest_path: export_manifest_path.clone(),
+        source_bundle_manifest_path: source_bundle_manifest_path.clone(),
+        source_bundle_manifest_hash: source_bundle_manifest_hash.clone(),
+        export_manifest_hash: export_manifest_hash.clone(),
+        calibration_state: calibration_state.clone(),
+        threshold_policy: threshold_policy.clone(),
+        producer_kind: producer_kind.clone(),
+        score_contract_version: score_contract_version.unwrap_or(ML_SIGNAL_SCORE_CONTRACT_VERSION),
+        matched_rows: bars_scored,
+        skipped_rows,
+        bars_scored,
+        duplicate_timestamps,
+        coverage_ratio,
+        first_timestamp: scores.first().map(|row| row.timestamp),
+        last_timestamp: scores.last().map(|row| row.timestamp),
+        native_backend_requested,
+        native_backend_used,
+        native_library_path: native_library_path.clone(),
+        native_gpu_device_id,
+        native_fallback_reason: native_fallback_reason.clone(),
+        scores,
+    };
+    ensure_parent_dir(&req.output_path)?;
+    let file = File::create(&req.output_path).map_err(|e| format!("create score cache: {e}"))?;
+    serde_json::to_writer_pretty(BufWriter::new(file), &cache)
+        .map_err(|e| format!("write score cache json: {e}"))?;
+
+    let manifest = MlSignalScoreCacheManifest {
+        version: cache.version,
+        kind: cache.kind.clone(),
+        strategy_kind: cache.strategy_kind.clone(),
+        data_id: cache.data_id.clone(),
+        input_path: cache.input_path.clone(),
+        feature_schema_version: cache.feature_schema_version,
+        score_space: cache.score_space,
+        score_scope: cache.score_scope,
+        feature_schema_path: feature_schema_path.clone(),
+        model_bundle_id: cache.model_bundle_id.clone(),
+        feature_schema_hash: cache.feature_schema_hash.clone(),
+        export_manifest_path: cache.export_manifest_path.clone(),
+        source_bundle_manifest_path: cache.source_bundle_manifest_path.clone(),
+        source_bundle_manifest_hash: cache.source_bundle_manifest_hash.clone(),
+        export_manifest_hash: cache.export_manifest_hash.clone(),
+        calibration_state: cache.calibration_state.clone(),
+        threshold_policy: cache.threshold_policy.clone(),
+        producer_kind: cache.producer_kind.clone(),
+        score_contract_version: cache.score_contract_version,
+        matched_rows: cache.matched_rows,
+        skipped_rows: cache.skipped_rows,
+        bars_scored: cache.bars_scored,
+        duplicate_timestamps: cache.duplicate_timestamps,
+        coverage_ratio: cache.coverage_ratio,
+        first_timestamp: cache.first_timestamp,
+        last_timestamp: cache.last_timestamp,
+        native_backend_requested,
+        native_backend_used,
+        native_library_path: native_library_path.clone(),
+        native_gpu_device_id,
+        native_fallback_reason: native_fallback_reason.clone(),
+    };
+    let manifest_path = score_manifest_path_for_cache(&req.output_path);
+    write_json_file(&manifest_path, &manifest, "score cache manifest")?;
+
+    Ok(MlSignalScoreCacheBuildResult {
+        data_id: req.data_id,
+        input_path: req.input_path,
+        output_path: req.output_path,
+        manifest_path,
+        feature_schema_path,
+        export_manifest_path: cache.export_manifest_path.clone(),
+        source_bundle_manifest_path: cache.source_bundle_manifest_path.clone(),
+        matched_rows: cache.matched_rows,
+        skipped_rows: cache.skipped_rows,
+        bars_scored: cache.bars_scored,
+        duplicate_timestamps: cache.duplicate_timestamps,
+        coverage_ratio: cache.coverage_ratio,
+        score_space: cache.score_space,
+        score_scope: cache.score_scope,
+        first_timestamp: cache.first_timestamp,
+        last_timestamp: cache.last_timestamp,
+        model_bundle_id: req.model_bundle_id,
+        version: cache.version,
+        feature_schema_hash: cache.feature_schema_hash,
+        calibration_state: cache.calibration_state,
+        threshold_policy: cache.threshold_policy,
+        producer_kind: cache.producer_kind,
+        score_contract_version: Some(cache.score_contract_version),
+        source_bundle_manifest_hash: cache.source_bundle_manifest_hash,
+        export_manifest_hash: cache.export_manifest_hash,
+        native_backend_requested,
+        native_backend_used,
+        native_library_path,
+        native_gpu_device_id,
+        native_fallback_reason,
+    })
+}
+
 pub fn build_ml_signal_score_cache_from_csv(
     req: MlSignalScoreCacheBuildRequest,
     candles: &Candles,
@@ -1880,11 +3018,35 @@ pub fn build_ml_signal_score_cache_from_csv(
     if req.data_id.trim().is_empty() {
         return Err("data_id is required".to_string());
     }
-    if req.input_path.trim().is_empty() {
+    if req.input_path.trim().is_empty()
+        && req.native_backend_preference == MlSignalInferenceBackendPreference::ScoreCacheOnly
+    {
         return Err("input_path is required".to_string());
     }
     if req.output_path.trim().is_empty() {
         return Err("output_path is required".to_string());
+    }
+
+    if req.input_path.trim().is_empty() {
+        let native = build_ml_signal_native_score_cache(&req, candles, cancel)?;
+        return write_ml_signal_score_cache(
+            req,
+            candles,
+            MlSignalScoreSpace::Probability,
+            Some(MlSignalScoreScope::CustomPartial),
+            native.rows,
+            native.feature_schema_path,
+            native.feature_schema_hash,
+            native.export_manifest_path,
+            native.source_bundle_manifest_path,
+            native.source_bundle_manifest_hash,
+            native.export_manifest_hash,
+            native.calibration_state,
+            native.threshold_policy,
+            native.producer_kind,
+            native.score_contract_version,
+            Some(native.native),
+        );
     }
 
     let feature_schema_hash = if let Some(hash) = req
@@ -1924,146 +3086,46 @@ pub fn build_ml_signal_score_cache_from_csv(
     } else {
         None
     };
-
-    let parsed = read_score_rows_csv(&req.input_path)?;
-    let timestamp_to_index: HashMap<i64, usize> = candles
-        .timestamp
-        .iter()
-        .enumerate()
-        .map(|(idx, ts)| (*ts, idx))
-        .collect();
-    let mut matched: HashMap<i64, MlSignalScoreCacheRow> = HashMap::new();
-    let mut skipped_rows = 0usize;
-    let mut duplicate_timestamps = 0usize;
-    let mut seen_timestamps = HashSet::new();
-
-    for row in parsed.rows {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-        if !seen_timestamps.insert(row.timestamp) {
-            duplicate_timestamps = duplicate_timestamps.saturating_add(1);
-        }
-        if !timestamp_to_index.contains_key(&row.timestamp) {
-            skipped_rows = skipped_rows.saturating_add(1);
-            continue;
-        }
-        matched.insert(
-            row.timestamp,
-            MlSignalScoreCacheRow {
-                timestamp: row.timestamp,
-                p_long: row.p_long,
-                p_short: row.p_short,
-                raw_long: row.raw_long,
-                raw_short: row.raw_short,
-            },
-        );
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
     }
-
-    let mut scores: Vec<MlSignalScoreCacheRow> = matched.into_values().collect();
-    scores.sort_by_key(|row| row.timestamp);
-    let bars_scored = scores.len();
-    let coverage_ratio = if candles.close.is_empty() {
-        0.0
-    } else {
-        (bars_scored as f64 / candles.close.len() as f64).clamp(0.0, 1.0)
-    };
-    let score_scope = infer_score_scope(
-        &req.input_path,
+    let parsed = read_score_rows_csv(&req.input_path)?;
+    let rows: Vec<MlSignalScoreCacheRow> = parsed
+        .rows
+        .into_iter()
+        .map(|row| MlSignalScoreCacheRow {
+            timestamp: row.timestamp,
+            p_long: row.p_long,
+            p_short: row.p_short,
+            raw_long: row.raw_long,
+            raw_short: row.raw_short,
+        })
+        .collect();
+    let feature_schema_path = req.feature_schema_path.clone();
+    let export_manifest_path = req.export_manifest_path.clone();
+    let source_bundle_manifest_path = req.source_bundle_manifest_path.clone();
+    let calibration_state = req.calibration_state.clone();
+    let threshold_policy = req.threshold_policy.clone();
+    let producer_kind = req.producer_kind.clone();
+    let score_contract_version = req.score_contract_version;
+    write_ml_signal_score_cache(
+        req,
+        candles,
+        parsed.score_space,
         parsed.score_scope,
-        bars_scored,
-        candles.close.len(),
-    );
-    let cache = MlSignalScoreCacheFile {
-        version: ML_SIGNAL_SCORE_CACHE_VERSION,
-        kind: "vectorgrid_ml_signal_score_cache".to_string(),
-        strategy_kind: "MlSignal".to_string(),
-        feature_schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
-        data_id: req.data_id.clone(),
-        input_path: req.input_path.clone(),
-        score_space: parsed.score_space,
-        score_scope,
-        model_bundle_id: req.model_bundle_id.clone(),
-        feature_schema_hash: feature_schema_hash.clone(),
-        export_manifest_path: req.export_manifest_path.clone(),
-        source_bundle_manifest_path: req.source_bundle_manifest_path.clone(),
-        source_bundle_manifest_hash: source_bundle_manifest_hash.clone(),
-        export_manifest_hash: export_manifest_hash.clone(),
-        calibration_state: req.calibration_state.clone(),
-        threshold_policy: req.threshold_policy.clone(),
-        producer_kind: req.producer_kind.clone(),
-        score_contract_version: req
-            .score_contract_version
-            .unwrap_or(ML_SIGNAL_SCORE_CONTRACT_VERSION),
-        matched_rows: bars_scored,
-        skipped_rows,
-        bars_scored,
-        duplicate_timestamps,
-        coverage_ratio,
-        first_timestamp: scores.first().map(|row| row.timestamp),
-        last_timestamp: scores.last().map(|row| row.timestamp),
-        scores,
-    };
-    ensure_parent_dir(&req.output_path)?;
-    let file = File::create(&req.output_path).map_err(|e| format!("create score cache: {e}"))?;
-    serde_json::to_writer_pretty(BufWriter::new(file), &cache)
-        .map_err(|e| format!("write score cache json: {e}"))?;
-
-    let manifest = MlSignalScoreCacheManifest {
-        version: cache.version,
-        kind: cache.kind.clone(),
-        strategy_kind: cache.strategy_kind.clone(),
-        data_id: cache.data_id.clone(),
-        input_path: cache.input_path.clone(),
-        feature_schema_version: cache.feature_schema_version,
-        score_space: cache.score_space,
-        score_scope: cache.score_scope,
-        feature_schema_path: None,
-        model_bundle_id: cache.model_bundle_id.clone(),
-        feature_schema_hash: cache.feature_schema_hash.clone(),
-        export_manifest_path: cache.export_manifest_path.clone(),
-        source_bundle_manifest_path: cache.source_bundle_manifest_path.clone(),
-        source_bundle_manifest_hash: cache.source_bundle_manifest_hash.clone(),
-        export_manifest_hash: cache.export_manifest_hash.clone(),
-        calibration_state: cache.calibration_state.clone(),
-        threshold_policy: cache.threshold_policy.clone(),
-        producer_kind: cache.producer_kind.clone(),
-        score_contract_version: cache.score_contract_version,
-        matched_rows: cache.matched_rows,
-        skipped_rows: cache.skipped_rows,
-        bars_scored: cache.bars_scored,
-        duplicate_timestamps: cache.duplicate_timestamps,
-        coverage_ratio: cache.coverage_ratio,
-        first_timestamp: cache.first_timestamp,
-        last_timestamp: cache.last_timestamp,
-    };
-    let manifest_path = score_manifest_path_for_cache(&req.output_path);
-    write_json_file(&manifest_path, &manifest, "score cache manifest")?;
-
-    Ok(MlSignalScoreCacheBuildResult {
-        data_id: req.data_id,
-        input_path: req.input_path,
-        output_path: req.output_path,
-        manifest_path,
-        matched_rows: cache.matched_rows,
-        skipped_rows: cache.skipped_rows,
-        bars_scored: cache.bars_scored,
-        duplicate_timestamps: cache.duplicate_timestamps,
-        coverage_ratio: cache.coverage_ratio,
-        score_space: cache.score_space,
-        score_scope: cache.score_scope,
-        first_timestamp: cache.first_timestamp,
-        last_timestamp: cache.last_timestamp,
-        model_bundle_id: req.model_bundle_id,
-        version: cache.version,
-        feature_schema_hash: cache.feature_schema_hash,
-        calibration_state: cache.calibration_state,
-        threshold_policy: cache.threshold_policy,
-        producer_kind: cache.producer_kind,
-        score_contract_version: Some(cache.score_contract_version),
-        source_bundle_manifest_hash: cache.source_bundle_manifest_hash,
-        export_manifest_hash: cache.export_manifest_hash,
-    })
+        rows,
+        feature_schema_path,
+        feature_schema_hash,
+        export_manifest_path,
+        source_bundle_manifest_path,
+        source_bundle_manifest_hash,
+        export_manifest_hash,
+        calibration_state,
+        threshold_policy,
+        producer_kind,
+        score_contract_version,
+        None,
+    )
 }
 
 fn load_score_cache(
@@ -2189,6 +3251,11 @@ fn load_score_cache(
             score_contract_version: Some(cache.score_contract_version),
             source_bundle_manifest_hash: cache.source_bundle_manifest_hash,
             export_manifest_hash: cache.export_manifest_hash,
+            native_backend_requested: cache.native_backend_requested,
+            native_backend_used: cache.native_backend_used,
+            native_library_path: cache.native_library_path,
+            native_gpu_device_id: cache.native_gpu_device_id,
+            native_fallback_reason: cache.native_fallback_reason,
         },
         has_probability_long,
         has_probability_short,
@@ -2982,6 +4049,9 @@ mod tests {
             threshold_policy: None,
             producer_kind: None,
             score_contract_version: None,
+            native_backend_preference: MlSignalInferenceBackendPreference::ScoreCacheOnly,
+            native_library_path: None,
+            native_gpu_device_id: None,
         }
     }
 

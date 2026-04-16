@@ -76,6 +76,11 @@ export interface WorkflowMlSignalArtifact {
   scoreContractVersion: string;
   scoreCacheProvenance: Record<string, unknown> | null;
   bundleStatus: Record<string, unknown> | null;
+  nativeBackendRequested: string;
+  nativeBackendUsed: string;
+  nativeLibraryPath: string;
+  nativeGpuDeviceId: number | null;
+  nativeFallbackReason: string;
   scoreSpace: string;
   scoreScope: string;
   matchedRows: number | null;
@@ -303,6 +308,16 @@ function normalizeMlSignalArtifact(
     thresholdPolicy?: unknown;
     producer_kind?: unknown;
     producerKind?: unknown;
+    native_backend_requested?: unknown;
+    nativeBackendRequested?: unknown;
+    native_backend_used?: unknown;
+    nativeBackendUsed?: unknown;
+    native_library_path?: unknown;
+    nativeLibraryPath?: unknown;
+    native_gpu_device_id?: unknown;
+    nativeGpuDeviceId?: unknown;
+    native_fallback_reason?: unknown;
+    nativeFallbackReason?: unknown;
     bundle_status?: unknown;
     bundleStatus?: unknown;
     bundle_status_details?: unknown;
@@ -427,6 +442,20 @@ function normalizeMlSignalArtifact(
       ["threshold_policy", row.threshold_policy ?? row.thresholdPolicy],
       ["producer_kind", row.producer_kind ?? row.producerKind],
       [
+        "native_backend_requested",
+        row.native_backend_requested ?? row.nativeBackendRequested,
+      ],
+      ["native_backend_used", row.native_backend_used ?? row.nativeBackendUsed],
+      ["native_library_path", row.native_library_path ?? row.nativeLibraryPath],
+      [
+        "native_gpu_device_id",
+        row.native_gpu_device_id ?? row.nativeGpuDeviceId,
+      ],
+      [
+        "native_fallback_reason",
+        row.native_fallback_reason ?? row.nativeFallbackReason,
+      ],
+      [
         "score_contract_version",
         row.score_contract_version ?? row.scoreContractVersion,
       ],
@@ -483,6 +512,36 @@ function normalizeMlSignalArtifact(
     ),
     scoreCacheProvenance: markRawUnknown(scoreCacheProvenance),
     bundleStatus: markRawUnknown(bundleStatus),
+    nativeBackendRequested: normalizeText(
+      row.native_backend_requested ??
+        row.nativeBackendRequested ??
+        scoreCacheProvenance?.native_backend_requested ??
+        scoreCacheProvenance?.nativeBackendRequested,
+    ),
+    nativeBackendUsed: normalizeText(
+      row.native_backend_used ??
+        row.nativeBackendUsed ??
+        scoreCacheProvenance?.native_backend_used ??
+        scoreCacheProvenance?.nativeBackendUsed,
+    ),
+    nativeLibraryPath: normalizeText(
+      row.native_library_path ??
+        row.nativeLibraryPath ??
+        scoreCacheProvenance?.native_library_path ??
+        scoreCacheProvenance?.nativeLibraryPath,
+    ),
+    nativeGpuDeviceId: normalizeOptionalNumber(
+      row.native_gpu_device_id ??
+        row.nativeGpuDeviceId ??
+        scoreCacheProvenance?.native_gpu_device_id ??
+        scoreCacheProvenance?.nativeGpuDeviceId,
+    ),
+    nativeFallbackReason: normalizeText(
+      row.native_fallback_reason ??
+        row.nativeFallbackReason ??
+        scoreCacheProvenance?.native_fallback_reason ??
+        scoreCacheProvenance?.nativeFallbackReason,
+    ),
     scoreSpace: normalizeText(row.score_space ?? row.scoreSpace),
     scoreScope: normalizeText(row.score_scope ?? row.scoreScope),
     matchedRows: normalizeOptionalNumber(row.matched_rows ?? row.matchedRows),

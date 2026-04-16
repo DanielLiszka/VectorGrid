@@ -168,6 +168,10 @@ pub struct RunArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_producer_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_native_backend_used: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_native_fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_score_contract_version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_source_bundle_manifest_hash: Option<String>,
@@ -446,6 +450,16 @@ pub struct RunArtifactDetailResponse {
     pub ml_threshold_policy: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ml_producer_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_native_backend_requested: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_native_backend_used: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_native_library_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_native_gpu_device_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_native_fallback_reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_score_contract_version: Option<u32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1561,6 +1575,24 @@ fn ml_signal_u32_value(artifact: &Value, field: &str) -> Option<u32> {
     normalize_u32_value(artifact.pointer(&format!("/ml_signal/{field}")))
 }
 
+fn ml_signal_provenance_text_value(artifact: &Value, field: &str) -> String {
+    ml_signal_optional_provenance_text_value(artifact, field).unwrap_or_default()
+}
+
+fn ml_signal_optional_provenance_text_value(artifact: &Value, field: &str) -> Option<String> {
+    ml_signal_optional_text_value(artifact, field).or_else(|| {
+        normalize_optional_text_value(
+            artifact.pointer(&format!("/ml_signal/score_cache_provenance/{field}")),
+        )
+    })
+}
+
+fn ml_signal_provenance_u32_value(artifact: &Value, field: &str) -> Option<u32> {
+    ml_signal_u32_value(artifact, field).or_else(|| {
+        normalize_u32_value(artifact.pointer(&format!("/ml_signal/score_cache_provenance/{field}")))
+    })
+}
+
 fn canonical_ml_score_space_text(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "probability" | "probabilities" => "Probability".to_string(),
@@ -2095,6 +2127,17 @@ fn build_run_artifact_detail_response(
         ml_calibration_state: ml_signal_text_value(artifact, "calibration_state"),
         ml_threshold_policy: ml_signal_text_value(artifact, "threshold_policy"),
         ml_producer_kind: ml_signal_text_value(artifact, "producer_kind"),
+        ml_native_backend_requested: ml_signal_provenance_text_value(
+            artifact,
+            "native_backend_requested",
+        ),
+        ml_native_backend_used: ml_signal_provenance_text_value(artifact, "native_backend_used"),
+        ml_native_library_path: ml_signal_provenance_text_value(artifact, "native_library_path"),
+        ml_native_gpu_device_id: ml_signal_provenance_u32_value(artifact, "native_gpu_device_id"),
+        ml_native_fallback_reason: ml_signal_provenance_text_value(
+            artifact,
+            "native_fallback_reason",
+        ),
         ml_score_contract_version: ml_signal_u32_value(artifact, "score_contract_version"),
         ml_score_space,
         ml_score_scope,
@@ -2368,6 +2411,11 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         ml_calibration_state: ml_signal_optional_text_value(v, "calibration_state"),
         ml_threshold_policy: ml_signal_optional_text_value(v, "threshold_policy"),
         ml_producer_kind: ml_signal_optional_text_value(v, "producer_kind"),
+        ml_native_backend_used: ml_signal_optional_provenance_text_value(v, "native_backend_used"),
+        ml_native_fallback_reason: ml_signal_optional_provenance_text_value(
+            v,
+            "native_fallback_reason",
+        ),
         ml_score_contract_version: ml_signal_u32_value(v, "score_contract_version"),
         ml_source_bundle_manifest_hash: ml_signal_optional_text_value(
             v,
@@ -3828,6 +3876,10 @@ mod tests {
                 "calibration_state": "calibrated_probability",
                 "threshold_policy": "desktop_probability_threshold_only",
                 "producer_kind": "python_research_harness",
+                "score_cache_provenance": {
+                    "native_backend_used": "native_cpu",
+                    "native_fallback_reason": "EnableGPUEvaluation unavailable"
+                },
                 "score_contract_version": 3,
                 "source_bundle_manifest_hash": "fnv1a64-bundle-aabbccdd",
                 "score_space": "Probability",
@@ -3861,6 +3913,14 @@ mod tests {
         assert_eq!(
             summary.ml_producer_kind.as_deref(),
             Some("python_research_harness")
+        );
+        assert_eq!(
+            summary.ml_native_backend_used.as_deref(),
+            Some("native_cpu")
+        );
+        assert_eq!(
+            summary.ml_native_fallback_reason.as_deref(),
+            Some("EnableGPUEvaluation unavailable")
         );
         assert_eq!(summary.ml_score_contract_version, Some(3));
         assert_eq!(
@@ -3904,6 +3964,13 @@ mod tests {
                 "calibration_state": "calibrated_probability",
                 "threshold_policy": "desktop_probability_threshold_only",
                 "producer_kind": "python_research_harness",
+                "score_cache_provenance": {
+                    "native_backend_requested": "native_cuda",
+                    "native_backend_used": "native_cpu",
+                    "native_library_path": "C:/catboost/catboostmodel.dll",
+                    "native_gpu_device_id": 1,
+                    "native_fallback_reason": "EnableGPUEvaluation unavailable"
+                },
                 "score_contract_version": 3,
                 "score_space": "Probability",
                 "score_scope": "CalibrationSlice",
@@ -3989,6 +4056,17 @@ mod tests {
             "desktop_probability_threshold_only"
         );
         assert_eq!(detail.ml_producer_kind, "python_research_harness");
+        assert_eq!(detail.ml_native_backend_requested, "native_cuda");
+        assert_eq!(detail.ml_native_backend_used, "native_cpu");
+        assert_eq!(
+            detail.ml_native_library_path,
+            "C:/catboost/catboostmodel.dll"
+        );
+        assert_eq!(detail.ml_native_gpu_device_id, Some(1));
+        assert_eq!(
+            detail.ml_native_fallback_reason,
+            "EnableGPUEvaluation unavailable"
+        );
         assert_eq!(detail.ml_score_contract_version, Some(3));
         assert_eq!(detail.ml_score_space, "Probability");
         assert_eq!(detail.ml_score_scope, "CalibrationSlice");

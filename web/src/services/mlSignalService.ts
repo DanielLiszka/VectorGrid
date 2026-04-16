@@ -131,6 +131,16 @@ interface MlSignalArtifactLike {
   thresholdPolicy?: unknown;
   producer_kind?: unknown;
   producerKind?: unknown;
+  native_backend_requested?: unknown;
+  nativeBackendRequested?: unknown;
+  native_backend_used?: unknown;
+  nativeBackendUsed?: unknown;
+  native_library_path?: unknown;
+  nativeLibraryPath?: unknown;
+  native_gpu_device_id?: unknown;
+  nativeGpuDeviceId?: unknown;
+  native_fallback_reason?: unknown;
+  nativeFallbackReason?: unknown;
   bundle_status?: unknown;
   bundleStatus?: unknown;
   bundle_status_details?: unknown;
@@ -178,6 +188,10 @@ function parseOptionalInteger(value: unknown): number | null {
   if (!Number.isFinite(parsed)) return null;
   const floored = Math.floor(parsed);
   return floored >= 0 ? floored : null;
+}
+
+function isMlNativeScoreSource(value: unknown): boolean {
+  return normalizeText(value).toLowerCase() === "native";
 }
 
 function parseOptionalNumber(value: unknown): number | null {
@@ -898,6 +912,61 @@ function buildMlSignalArtifactPayload(
           prior.scoreContractVersion,
         ),
       ],
+      [
+        "native_backend_requested",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_backend_requested,
+          validationScoreSummary?.nativeBackendRequested,
+          runResRecord?.native_backend_requested,
+          runResRecord?.nativeBackendRequested,
+          prior.native_backend_requested,
+          prior.nativeBackendRequested,
+        ),
+      ],
+      [
+        "native_backend_used",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_backend_used,
+          validationScoreSummary?.nativeBackendUsed,
+          runResRecord?.native_backend_used,
+          runResRecord?.nativeBackendUsed,
+          prior.native_backend_used,
+          prior.nativeBackendUsed,
+        ),
+      ],
+      [
+        "native_library_path",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_library_path,
+          validationScoreSummary?.nativeLibraryPath,
+          runResRecord?.native_library_path,
+          runResRecord?.nativeLibraryPath,
+          prior.native_library_path,
+          prior.nativeLibraryPath,
+        ),
+      ],
+      [
+        "native_gpu_device_id",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_gpu_device_id,
+          validationScoreSummary?.nativeGpuDeviceId,
+          runResRecord?.native_gpu_device_id,
+          runResRecord?.nativeGpuDeviceId,
+          prior.native_gpu_device_id,
+          prior.nativeGpuDeviceId,
+        ),
+      ],
+      [
+        "native_fallback_reason",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_fallback_reason,
+          validationScoreSummary?.nativeFallbackReason,
+          runResRecord?.native_fallback_reason,
+          runResRecord?.nativeFallbackReason,
+          prior.native_fallback_reason,
+          prior.nativeFallbackReason,
+        ),
+      ],
     ],
   );
   const scoreCacheProvenance = resolveMlArtifactMetadataRecord(
@@ -1164,6 +1233,56 @@ function buildMlSignalArtifactPayload(
     bars_scored: barsScored,
     coverage_ratio: coverageRatio,
     duplicate_timestamps: duplicateTimestamps,
+    native_backend_requested: normalizeText(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_backend_requested,
+        validationScoreSummary?.nativeBackendRequested,
+        runResRecord?.native_backend_requested,
+        runResRecord?.nativeBackendRequested,
+        prior.native_backend_requested,
+        prior.nativeBackendRequested,
+      ),
+    ),
+    native_backend_used: normalizeText(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_backend_used,
+        validationScoreSummary?.nativeBackendUsed,
+        runResRecord?.native_backend_used,
+        runResRecord?.nativeBackendUsed,
+        prior.native_backend_used,
+        prior.nativeBackendUsed,
+      ),
+    ),
+    native_library_path: normalizeText(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_library_path,
+        validationScoreSummary?.nativeLibraryPath,
+        runResRecord?.native_library_path,
+        runResRecord?.nativeLibraryPath,
+        prior.native_library_path,
+        prior.nativeLibraryPath,
+      ),
+    ),
+    native_gpu_device_id: parseOptionalInteger(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_gpu_device_id,
+        validationScoreSummary?.nativeGpuDeviceId,
+        runResRecord?.native_gpu_device_id,
+        runResRecord?.nativeGpuDeviceId,
+        prior.native_gpu_device_id,
+        prior.nativeGpuDeviceId,
+      ),
+    ),
+    native_fallback_reason: normalizeText(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_fallback_reason,
+        validationScoreSummary?.nativeFallbackReason,
+        runResRecord?.native_fallback_reason,
+        runResRecord?.nativeFallbackReason,
+        prior.native_fallback_reason,
+        prior.nativeFallbackReason,
+      ),
+    ),
     policy:
       validationReq && validationRes
         ? extractMlPolicy(validationReq, validationRes)
@@ -1500,9 +1619,14 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
   if (!pinia) throw new Error("Pinia is not active.");
   const optimize = useOptimizeStore(pinia);
   const data = requireDataContext();
+  const nativeScoreSource = isMlNativeScoreSource(optimize.mlSignalScoreSource);
   const inputPath = normalizeText(optimize.mlSignalScoreInputPath);
   const outputPath = normalizeText(optimize.mlSignalScoreCachePath);
-  if (!inputPath) throw new Error("Choose a model-score CSV input path first.");
+  if (!nativeScoreSource && !inputPath)
+    throw new Error("Choose a model-score CSV input path first.");
+  if (nativeScoreSource && !normalizeText(optimize.mlSignalModelBundleId)) {
+    throw new Error("Choose a model bundle before using native ML scoring.");
+  }
   if (!outputPath) throw new Error("Choose a score-cache output path first.");
 
   const currentArtifact = currentMlArtifactSnapshot();
@@ -1511,7 +1635,7 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
   );
   const req = {
     data_id: data.dataId,
-    input_path: inputPath,
+    input_path: nativeScoreSource ? "" : inputPath,
     output_path: outputPath,
     model_bundle_id: normalizeText(optimize.mlSignalModelBundleId) || null,
     feature_schema_path:
@@ -1558,11 +1682,24 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
         scoreContract?.scoreContractVersion,
       ),
     ),
+    native_backend_preference: nativeScoreSource
+      ? normalizeText(optimize.mlSignalNativeBackend || "auto") || "auto"
+      : "score_cache_only",
+    native_library_path: nativeScoreSource
+      ? normalizeText(optimize.mlSignalNativeLibraryPath) || null
+      : null,
+    native_gpu_device_id: nativeScoreSource
+      ? parseOptionalInteger(optimize.mlSignalNativeGpuDeviceId)
+      : null,
     strategy_kind: "MlSignal",
   };
   const runTs = new Date().toISOString();
 
-  setMlBusy("Generating ML score cache…");
+  setMlBusy(
+    nativeScoreSource
+      ? "Generating ML score cache from native bundle inference…"
+      : "Generating ML score cache…",
+  );
   try {
     const res = await invokeCommand("generate_ml_signal_score_cache", { req });
     const resRecord =
@@ -1571,13 +1708,25 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
     const scoreCoverageMeta = formatMlScoreCoverageMeta(resRecord);
     patchOptimizeState({
       mlSignalScoreMeta: [
-        `Score cache: ${matchedRows.toFixed(0)} matched rows -> ${outputPath}`,
+        nativeScoreSource
+          ? `Native score cache: ${matchedRows.toFixed(0)} matched rows -> ${outputPath}`
+          : `Score cache: ${matchedRows.toFixed(0)} matched rows -> ${outputPath}`,
         scoreCoverageMeta,
+        normalizeText(
+          resRecord?.native_backend_used ?? resRecord?.nativeBackendUsed,
+        ),
       ]
         .filter((part) => part)
         .join(" • "),
-      progressMeta: `ML score cache • ${matchedRows.toFixed(0)} rows`,
-      statusLine: formatMlStageStatus("ML score cache generated.", resRecord),
+      progressMeta: nativeScoreSource
+        ? `ML native score cache • ${matchedRows.toFixed(0)} rows`
+        : `ML score cache • ${matchedRows.toFixed(0)} rows`,
+      statusLine: formatMlStageStatus(
+        nativeScoreSource
+          ? "ML native score cache generated."
+          : "ML score cache generated.",
+        resRecord,
+      ),
     });
     const persisted = await persistRunArtifact(req, res, runTs);
     applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);

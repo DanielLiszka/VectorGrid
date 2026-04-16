@@ -205,6 +205,11 @@ describe("workflowArtifactsStore", () => {
             score_cache_provenance: {
               source_bundle_id: "bundle-a",
               producer_kind: "catboost_pair",
+              native_backend_requested: "native_cuda",
+              native_backend_used: "native_cpu",
+              native_library_path: "C:/catboost/catboostmodel.dll",
+              native_gpu_device_id: 0,
+              native_fallback_reason: "EnableGPUEvaluation unavailable",
             },
             bundle_status_details: {
               state: "warning",
@@ -239,11 +244,21 @@ describe("workflowArtifactsStore", () => {
       scoreCacheProvenance: {
         source_bundle_id: "bundle-a",
         producer_kind: "catboost_pair",
+        native_backend_requested: "native_cuda",
+        native_backend_used: "native_cpu",
+        native_library_path: "C:/catboost/catboostmodel.dll",
+        native_gpu_device_id: 0,
+        native_fallback_reason: "EnableGPUEvaluation unavailable",
       },
       bundleStatus: {
         state: "warning",
         issues: ["schema hash mismatch"],
       },
+      nativeBackendRequested: "native_cuda",
+      nativeBackendUsed: "native_cpu",
+      nativeLibraryPath: "C:/catboost/catboostmodel.dll",
+      nativeGpuDeviceId: 0,
+      nativeFallbackReason: "EnableGPUEvaluation unavailable",
     });
   });
 

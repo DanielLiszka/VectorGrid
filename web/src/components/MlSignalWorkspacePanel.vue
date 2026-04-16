@@ -36,6 +36,10 @@ const {
   mlSignalScoreInputPath,
   mlSignalScoreCachePath,
   mlSignalModelBundleId,
+  mlSignalScoreSource,
+  mlSignalNativeBackend,
+  mlSignalNativeLibraryPath,
+  mlSignalNativeGpuDeviceId,
   mlSignalModelStatus,
   mlSignalDatasetMeta,
   mlSignalScoreMeta,
@@ -123,8 +127,10 @@ const canExportDataset = computed(
 const canBuildScoreCache = computed(
   () =>
     datasetLoaded.value &&
-    !!String(mlSignalScoreInputPath.value || "").trim() &&
     !!String(mlSignalScoreCachePath.value || "").trim() &&
+    (String(mlSignalScoreSource.value || "").trim() === "native"
+      ? !!String(mlSignalModelBundleId.value || "").trim()
+      : !!String(mlSignalScoreInputPath.value || "").trim()) &&
     !runDisabled.value,
 );
 const canRunValidation = computed(
@@ -138,6 +144,9 @@ const canRunSweep = computed(
     datasetLoaded.value &&
     !!String(mlSignalScoreCachePath.value || "").trim() &&
     !validateDisabled.value,
+);
+const nativeScoreSource = computed(
+  () => String(mlSignalScoreSource.value || "").trim() === "native",
 );
 
 function basename(path: string): string {
@@ -470,6 +479,11 @@ const currentArtifactProvenanceSummary = computed(() => {
           calibration?.calibrationState,
         )}`
       : "",
+    artifact.nativeBackendUsed
+      ? `native ${artifact.nativeBackendUsed}`
+      : artifact.nativeBackendRequested
+        ? `native req ${artifact.nativeBackendRequested}`
+        : "",
     firstText(bundleStatus?.state)
       ? `bundle ${firstText(bundleStatus?.state)}`
       : "",
@@ -582,6 +596,7 @@ const currentScoreContractScopeNotice = computed(() => {
 });
 
 const currentCacheLineageSummary = computed(() => {
+  const artifact = currentMlArtifact.value;
   const provenance = currentArtifactProvenanceRecord.value;
   const scoreCacheProvenance = currentArtifactScoreCacheProvenance.value;
   const parts = [
@@ -640,6 +655,12 @@ const currentCacheLineageSummary = computed(() => {
           ),
         )}`
       : "",
+    artifact?.nativeGpuDeviceId != null
+      ? `gpu ${Math.max(0, Math.floor(Number(artifact.nativeGpuDeviceId)))}`
+      : "",
+    artifact?.nativeFallbackReason
+      ? `fallback ${artifact.nativeFallbackReason}`
+      : "",
   ].filter((part) => part);
   return parts.join(" • ");
 });
@@ -694,6 +715,7 @@ const currentScoreCoverageSummary = computed(() => {
           Math.floor(Number(artifact.duplicateTimestamps)),
         )}`
       : "",
+    artifact.nativeBackendUsed ? `native ${artifact.nativeBackendUsed}` : "",
   ].filter((part) => part);
   return parts.join(" • ") || "No score-cache summary attached yet.";
 });
@@ -1187,6 +1209,29 @@ onMounted(() => {
       </div>
       <div class="gridTwo">
         <div>
+          <label for="mlSignalScoreSource">Score source</label>
+          <select
+            id="mlSignalScoreSource"
+            :value="mlSignalScoreSource"
+            @change="
+              optimizeStore.setInputField(
+                'mlSignalScoreSource',
+                String(($event.target as HTMLSelectElement).value || ''),
+              )
+            "
+          >
+            <option value="csv">CSV import</option>
+            <option value="native">Native bundle inference</option>
+          </select>
+        </div>
+        <div class="muted">
+          CSV import preserves the existing offline score-cache flow. Native
+          bundle inference builds the same cache shape from the selected model
+          bundle at runtime.
+        </div>
+      </div>
+      <div class="gridTwo">
+        <div>
           <label for="mlSignalBundleId">Model bundle</label>
           <select
             id="mlSignalBundleId"
@@ -1198,7 +1243,9 @@ onMounted(() => {
               )
             "
           >
-            <option value="">Optional</option>
+            <option value="">
+              {{ nativeScoreSource ? "Required" : "Optional" }}
+            </option>
             <option
               v-for="option in bundleOptions"
               :key="`ml_bundle_${option.bundleId}`"
@@ -1222,39 +1269,110 @@ onMounted(() => {
       <div class="muted mono">{{ mlSignalModelStatus }}</div>
       <div class="muted">
         Model bundles are discovered from the desktop app-local inventory.
-        Bundle selection is optional for score-cache-backed validation. When a
-        bundle is selected, the status line above should name the current bundle
-        state and manifest path.
+        {{
+          nativeScoreSource
+            ? "Bundle selection is required for native score-cache generation. The status line above should name the current bundle state and manifest path before you build."
+            : "Bundle selection is optional for score-cache-backed validation. When a bundle is selected, the status line above should name the current bundle state and manifest path."
+        }}
       </div>
-      <label for="mlSignalScoreInputPath">Model score CSV input</label>
-      <div class="inputWithAction">
-        <input
-          id="mlSignalScoreInputPath"
-          :value="mlSignalScoreInputPath"
-          @input="
-            optimizeStore.setInputField(
-              'mlSignalScoreInputPath',
-              String(($event.target as HTMLInputElement).value || ''),
-            )
-          "
-        />
-        <button
-          type="button"
-          :disabled="!hasTauriRuntime"
-          @click="void browseInputCsv()"
-        >
-          Browse
-        </button>
+      <div v-if="!nativeScoreSource">
+        <label for="mlSignalScoreInputPath">Model score CSV input</label>
+        <div class="inputWithAction">
+          <input
+            id="mlSignalScoreInputPath"
+            :value="mlSignalScoreInputPath"
+            @input="
+              optimizeStore.setInputField(
+                'mlSignalScoreInputPath',
+                String(($event.target as HTMLInputElement).value || ''),
+              )
+            "
+          />
+          <button
+            type="button"
+            :disabled="!hasTauriRuntime"
+            @click="void browseInputCsv()"
+          >
+            Browse
+          </button>
+        </div>
+        <div class="muted">
+          Score CSV ingest contract: include
+          <span class="mono">timestamp</span> plus at least one of
+          <span class="mono">p_long</span>, <span class="mono">p_short</span>,
+          <span class="mono">raw_long</span>, or
+          <span class="mono">raw_short</span>. If calibrated columns like
+          <span class="mono">p_long_cal</span> /
+          <span class="mono">p_short_cal</span> are present, they take priority
+          over the uncalibrated probability columns.
+        </div>
       </div>
-      <div class="muted">
-        Score CSV ingest contract: include
-        <span class="mono">timestamp</span> plus at least one of
-        <span class="mono">p_long</span>, <span class="mono">p_short</span>,
-        <span class="mono">raw_long</span>, or
-        <span class="mono">raw_short</span>. If calibrated columns like
-        <span class="mono">p_long_cal</span> /
-        <span class="mono">p_short_cal</span> are present, they take priority
-        over the uncalibrated probability columns.
+      <div v-else>
+        <div class="gridTwo">
+          <div>
+            <label for="mlSignalNativeBackend">Native backend</label>
+            <select
+              id="mlSignalNativeBackend"
+              :value="mlSignalNativeBackend"
+              @change="
+                optimizeStore.setInputField(
+                  'mlSignalNativeBackend',
+                  String(($event.target as HTMLSelectElement).value || ''),
+                )
+              "
+            >
+              <option value="auto">Auto</option>
+              <option value="native_cuda">Native CUDA</option>
+              <option value="native_cpu">Native CPU</option>
+            </select>
+          </div>
+          <div class="muted">
+            Auto prefers CUDA when the native CatBoost runtime exposes GPU
+            evaluation, then falls back to CPU while preserving the same score
+            cache contract.
+          </div>
+        </div>
+        <div class="gridTwo">
+          <div>
+            <label for="mlSignalNativeLibraryPath">
+              Native library override
+            </label>
+            <input
+              id="mlSignalNativeLibraryPath"
+              :value="mlSignalNativeLibraryPath"
+              placeholder="Optional CatBoost model interface library path"
+              @input="
+                optimizeStore.setInputField(
+                  'mlSignalNativeLibraryPath',
+                  String(($event.target as HTMLInputElement).value || ''),
+                )
+              "
+            />
+          </div>
+          <div>
+            <label for="mlSignalNativeGpuDeviceId">GPU device id</label>
+            <input
+              id="mlSignalNativeGpuDeviceId"
+              type="number"
+              min="0"
+              step="1"
+              :value="mlSignalNativeGpuDeviceId"
+              placeholder="Optional"
+              @input="
+                optimizeStore.setInputField(
+                  'mlSignalNativeGpuDeviceId',
+                  String(($event.target as HTMLInputElement).value || ''),
+                )
+              "
+            />
+          </div>
+        </div>
+        <div class="muted">
+          Native bundle inference reads the selected bundle manifest plus its
+          model, schema, export-manifest, and calibration sidecars, then writes
+          a normal score cache and manifest. Leave the library override blank to
+          use the default native loader search path.
+        </div>
       </div>
       <label for="mlSignalScoreCachePath">Score cache output</label>
       <div class="inputWithAction">
@@ -1293,9 +1411,16 @@ onMounted(() => {
       </div>
       <div class="muted">
         Score-cache build writes a JSON cache plus a
-        <span class="mono">.manifest.json</span> sidecar. Raw-margin-only caches
-        can build successfully, but threshold validation and policy sweep later
-        require probability scores.
+        <span class="mono">.manifest.json</span> sidecar.
+        <template v-if="nativeScoreSource">
+          Native mode still emits the standard cache artifact, so downstream ML
+          validation, policy sweep, replay, and saved-run reopen continue to use
+          the existing Stage 2 contract.
+        </template>
+        <template v-else>
+          Raw-margin-only caches can build successfully, but threshold
+          validation and policy sweep later require probability scores.
+        </template>
       </div>
       <div class="muted mono">{{ mlSignalScoreMeta }}</div>
     </section>
