@@ -179,7 +179,9 @@ describe("mlSignalService", () => {
     expect(workflowArtifacts.currentRun?.artifactPath).toBe(
       "runs/vectorgrid_ml_dataset.json",
     );
-    expect(workflowArtifacts.currentRun?.mlSignal?.stage).toBe("dataset_export");
+    expect(workflowArtifacts.currentRun?.mlSignal?.stage).toBe(
+      "dataset_export",
+    );
     expect(workflowArtifacts.currentRun?.mlSignal?.datasetExportPath).toBe(
       "C:\\data\\ml_dataset.csv",
     );
@@ -231,7 +233,9 @@ describe("mlSignalService", () => {
         },
       }),
     });
-    expect(useOptimizeStore(pinia).mlSignalDatasetMeta).not.toContain("splits ");
+    expect(useOptimizeStore(pinia).mlSignalDatasetMeta).not.toContain(
+      "splits ",
+    );
     expect(useWorkflowArtifactsStore(pinia).currentRun?.artifactPath).toBe(
       "runs/vectorgrid_ml_dataset_plain.json",
     );
@@ -312,6 +316,7 @@ describe("mlSignalService", () => {
           split_manifest_path: "C:\\data\\ml_dataset.split_manifest.json",
           feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
           feature_schema_version: 1,
+          feature_schema_hash: "schemahash-source-abcdef",
           row_count: 321,
           split_count: 3,
         },
@@ -325,6 +330,29 @@ describe("mlSignalService", () => {
           skipped_rows: 4,
           model_bundle_id: "bundle-a",
           manifest_path: "C:\\data\\score_cache.manifest.json",
+          feature_schema_hash: "schemahash0123456789abcdef",
+          exporter: {
+            exporter_version: "desktop-ml-exporter@2026.04.15",
+          },
+          provenance: {
+            data_timeframe: "1d",
+            source_export_manifest_hash: "exporthash0123456789abcdef",
+          },
+          score_contract: {
+            validation_scores_scope: "calibration_slice",
+            validation_scores_preferred_probability_columns_after_calibration: [
+              "p_long_cal",
+              "p_short_cal",
+            ],
+          },
+          score_contract_version: 3,
+          score_cache_provenance: {
+            source_bundle_id: "bundle-a",
+            source_bundle_manifest_hash: "bundlehash0123456789abcdef",
+            calibration_state: "calibrated",
+            threshold_policy: "probability_threshold_only",
+            producer_kind: "catboost_pair",
+          },
           score_space: "Probability",
           score_scope: "CalibrationSlice",
           coverage_ratio: 0.75,
@@ -342,6 +370,7 @@ describe("mlSignalService", () => {
           run_verdict: {
             approved_candidate_count: 1,
             candidates_survived_hard_gates: 1,
+            warning_flags: ["score_scope_calibration_slice"],
           },
         };
       }
@@ -361,6 +390,9 @@ describe("mlSignalService", () => {
           data_id: "data-1",
           input_path: "C:\\data\\scores.csv",
           output_path: "C:\\data\\score_cache.json",
+          feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
+          feature_schema_hash: "schemahash-source-abcdef",
+          export_manifest_path: "C:\\data\\ml_dataset.export_manifest.json",
         }),
       },
     );
@@ -395,7 +427,9 @@ describe("mlSignalService", () => {
         }),
         ml_signal: expect.objectContaining({
           stage: "validation",
+          feature_schema_hash: "schemahash0123456789abcdef",
           score_cache_path: "C:\\data\\score_cache.json",
+          score_contract_version: "3",
           score_space: "Probability",
           score_scope: "CalibrationSlice",
         }),
@@ -424,6 +458,33 @@ describe("mlSignalService", () => {
     expect(
       Number(workflowArtifacts.currentRun?.mlSignal?.featureSchemaVersion),
     ).toBe(1);
+    expect(workflowArtifacts.currentRun?.mlSignal?.featureSchemaHash).toBe(
+      "schemahash0123456789abcdef",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.exporter).toMatchObject({
+      exporter_version: "desktop-ml-exporter@2026.04.15",
+    });
+    expect(workflowArtifacts.currentRun?.mlSignal?.provenance).toMatchObject({
+      data_timeframe: "1d",
+      source_export_manifest_hash: "exporthash0123456789abcdef",
+    });
+    expect(workflowArtifacts.currentRun?.mlSignal?.scoreContract).toMatchObject(
+      {
+        validation_scores_scope: "calibration_slice",
+      },
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.scoreContractVersion).toBe(
+      "3",
+    );
+    expect(
+      workflowArtifacts.currentRun?.mlSignal?.scoreCacheProvenance,
+    ).toMatchObject({
+      source_bundle_id: "bundle-a",
+      source_bundle_manifest_hash: "bundlehash0123456789abcdef",
+      calibration_state: "calibrated",
+      threshold_policy: "probability_threshold_only",
+      producer_kind: "catboost_pair",
+    });
     expect(workflowArtifacts.currentRun?.mlSignal?.scoreSpace).toBe(
       "Probability",
     );
@@ -444,6 +505,12 @@ describe("mlSignalService", () => {
     expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
       "coverage 75.0%",
     );
+    expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
+      "calibration-only score scope",
+    );
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "calibration-only score scope",
+    );
   });
 
   it("runs ML policy sweep through the dedicated command and persists the best policy", async () => {
@@ -455,6 +522,9 @@ describe("mlSignalService", () => {
           top_k: 4,
           validation: {
             runtime_ms: 24,
+            run_verdict: {
+              warning_flags: ["score_scope_custom_partial"],
+            },
             candidates: [
               {
                 robust_score: 1.44,
@@ -550,6 +620,10 @@ describe("mlSignalService", () => {
     expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
       "27 candidates",
     );
+    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
+      "partial score scope",
+    );
+    expect(useOptimizeStore(pinia).statusLine).toContain("partial score scope");
     expect(workflowArtifacts.currentRun?.mlSignal?.policy).toMatchObject({
       label: "best_sweep",
       t_long: 0.6,
@@ -623,7 +697,64 @@ describe("mlSignalService", () => {
     });
     expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain("bundle-a");
     expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain("healthy");
-    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain("manifest.json");
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain(
+      "manifest.json",
+    );
+  });
+
+  it("hydrates bundle status details onto the current ML artifact when status is refreshed", async () => {
+    seedStores();
+    const workflowArtifacts = useWorkflowArtifactsStore(pinia);
+    workflowArtifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-03-20T10:00:00.000Z",
+        artifact_path: "runs/vectorgrid_run_ml_signal.json",
+        csv_path: "C:\\data\\prices.csv",
+        ml_signal: {
+          stage: "score_cache",
+          bundle_id: "bundle-a",
+          score_cache_path: "C:\\data\\score_cache.json",
+        },
+        req: {},
+        res: {},
+      },
+      currentValidation: null,
+    });
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "ml_signal_model_status") {
+        return {
+          models_dir: "C:\\models\\ml_signal",
+          status: {
+            bundle_id: "bundle-a",
+            state: "warning",
+            manifest_path: "C:\\models\\ml_signal\\bundle-a\\manifest.json",
+            manifest: {
+              model_family: "catboost_binary_pair",
+              model_format: "cbm",
+              calibration_path: "calibration.json",
+              score_contract: {
+                score_contract_version: 3,
+              },
+            },
+            issues: ["schema hash mismatch"],
+          },
+        };
+      }
+      return {};
+    });
+
+    await refreshMlSignalModelStatus();
+
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain(
+      "contract v3",
+    );
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain(
+      "schema hash mismatch",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.bundleStatus).toMatchObject({
+      state: "warning",
+      issues: ["schema hash mismatch"],
+    });
   });
 
   it("keeps bundle status optional when no bundle is selected", async () => {
@@ -715,7 +846,9 @@ describe("mlSignalService", () => {
           sweep_size: 9,
           top_k: 3,
           validation: {
-            candidates: [{ params: { label: "best_sweep" }, robust_score: 1.2 }],
+            candidates: [
+              { params: { label: "best_sweep" }, robust_score: 1.2 },
+            ],
           },
         };
       }

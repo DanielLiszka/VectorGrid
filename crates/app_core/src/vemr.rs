@@ -1149,6 +1149,31 @@ pub fn build_vemr_desired_positions(
 ) -> Vec<i32> {
     let n = close.len();
     let mut desired = vec![0i32; n];
+    debug_assert_eq!(
+        fast.zscore.len(),
+        n,
+        "VEMR zscore length should align with close length"
+    );
+    debug_assert_eq!(
+        fast.bb_upper.len(),
+        n,
+        "VEMR upper band length should align with close length"
+    );
+    debug_assert_eq!(
+        fast.bb_middle.len(),
+        n,
+        "VEMR middle band length should align with close length"
+    );
+    debug_assert_eq!(
+        fast.bb_lower.len(),
+        n,
+        "VEMR lower band length should align with close length"
+    );
+    debug_assert_eq!(
+        risk.atr.len(),
+        n,
+        "VEMR ATR length should align with close length"
+    );
     if start_t >= n {
         return desired;
     }
@@ -1302,8 +1327,74 @@ mod tests {
     use super::*;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     use crate::dynamic_indicator_adapter::PreparedCudaIndicatorInputs;
+    use crate::indicator_catalog::IndicatorDescriptor;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     use vector_ta::utilities::data_loader::Candles;
+
+    fn test_strategy(long_only: bool, allow_flip: bool, trade_on_next_bar: bool) -> StrategyConfig {
+        StrategyConfig {
+            long_only,
+            allow_flip,
+            trade_on_next_bar,
+            ..StrategyConfig::default()
+        }
+    }
+
+    fn test_fast_signals(
+        zscore: &[f64],
+        bb_upper: &[f64],
+        bb_middle: &[f64],
+        bb_lower: &[f64],
+    ) -> VemrFastSignals {
+        VemrFastSignals {
+            zscore: zscore.to_vec(),
+            bb_upper: bb_upper.to_vec(),
+            bb_middle: bb_middle.to_vec(),
+            bb_lower: bb_lower.to_vec(),
+            first_valid: 0,
+        }
+    }
+
+    fn test_risk_signals(atr: &[f64]) -> VemrRiskSignals {
+        VemrRiskSignals {
+            atr: atr.to_vec(),
+            first_valid: 0,
+        }
+    }
+
+    fn test_cfg() -> VemrStrategyParams {
+        VemrStrategyParams {
+            require_band_touch: false,
+            ..VemrStrategyParams::default()
+        }
+    }
+
+    fn assert_descriptor_has_param(descriptor: &IndicatorDescriptor, key: &str) {
+        assert!(
+            descriptor.params.iter().any(|param| param.key == key),
+            "expected descriptor params {:?} to contain key {key}",
+            descriptor
+                .params
+                .iter()
+                .map(|param| param.key.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn assert_descriptor_has_output(descriptor: &IndicatorDescriptor, output_id: &str) {
+        assert!(
+            descriptor
+                .outputs
+                .iter()
+                .any(|output| output.id == output_id),
+            "expected descriptor outputs {:?} to contain output {output_id}",
+            descriptor
+                .outputs
+                .iter()
+                .map(|output| output.id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn resolve_vemr_periods_maps_fast_and_slow_when_enabled() {
@@ -1320,6 +1411,279 @@ mod tests {
         cfg.max_trade_bars = 0;
         let err = validate_vemr_params(&cfg).expect_err("should reject max_trade_bars=0");
         assert!(err.contains("max_trade_bars"));
+    }
+
+    #[test]
+    fn resolve_vemr_periods_clamps_zero_mapped_lengths_to_one() {
+        let cfg = VemrStrategyParams::default();
+        let p = resolve_vemr_periods(&cfg, 0, 0);
+        assert_eq!(p.z, 1);
+        assert_eq!(p.bb, 1);
+        assert_eq!(p.atr, 1);
+    }
+
+    #[test]
+    fn validate_vemr_params_rejects_edge_case_table() {
+        let cases = vec![
+            {
+                let mut cfg = VemrStrategyParams::default();
+                cfg.z_entry = 1.5;
+                cfg.z_exit = 1.6;
+                ("z_exit_gt_z_entry", cfg, "z_exit")
+            },
+            {
+                let mut cfg = VemrStrategyParams::default();
+                cfg.z_ma_type = "   ".to_string();
+                ("empty_z_ma_type", cfg, "z_ma_type")
+            },
+            {
+                let mut cfg = VemrStrategyParams::default();
+                cfg.map_fast_to_z_period = true;
+                cfg.z_period = 0;
+                ("mapped_z_period_zero", cfg, "z_period")
+            },
+            {
+                let mut cfg = VemrStrategyParams::default();
+                cfg.map_fast_to_bb_period = true;
+                cfg.bb_period = 0;
+                ("mapped_bb_period_zero", cfg, "bb_period")
+            },
+            {
+                let mut cfg = VemrStrategyParams::default();
+                cfg.map_slow_to_atr_period = true;
+                cfg.atr_period = 0;
+                ("mapped_atr_period_zero", cfg, "atr_period")
+            },
+        ];
+
+        for (label, cfg, expected) in cases {
+            let err = validate_vemr_params(&cfg)
+                .expect_err(&format!("case {label} should have failed validation"));
+            assert!(
+                err.contains(expected),
+                "case {label} expected error containing {expected}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_vemr_start_t_honors_max_period_next_bar_and_saturation() {
+        assert_eq!(compute_vemr_start_t(2, 5, 4, 3, 4, false), 8);
+        assert_eq!(compute_vemr_start_t(2, 5, 4, 3, 4, true), 9);
+        assert_eq!(compute_vemr_start_t(7, 7, 7, 7, 0, false), 7);
+        assert_eq!(
+            compute_vemr_start_t(usize::MAX - 1, 0, 0, 0, 4, true),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn build_vemr_positions_requires_confirmation_streak() {
+        let close = vec![10.0, 10.0, 10.0];
+        let fast = test_fast_signals(
+            &[-3.0, -3.0, -3.0],
+            &[12.0, 12.0, 12.0],
+            &[20.0, 20.0, 20.0],
+            &[8.0, 8.0, 8.0],
+        );
+        let risk = test_risk_signals(&[100.0, 100.0, 100.0]);
+        let mut cfg = test_cfg();
+        cfg.confirm_bars = 1;
+
+        let desired = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            0,
+            &test_strategy(true, true, false),
+            &cfg,
+        );
+
+        assert_eq!(desired, vec![0, 1, 1]);
+    }
+
+    #[test]
+    fn build_vemr_positions_respects_trade_on_next_bar() {
+        let close = vec![10.0, 10.0, 10.0];
+        let fast = test_fast_signals(
+            &[-3.0, -3.0, -3.0],
+            &[12.0, 12.0, 12.0],
+            &[20.0, 20.0, 20.0],
+            &[8.0, 8.0, 8.0],
+        );
+        let risk = test_risk_signals(&[100.0, 100.0, 100.0]);
+        let cfg = test_cfg();
+
+        let same_bar = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            0,
+            &test_strategy(true, true, false),
+            &cfg,
+        );
+        let next_bar = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            1,
+            &test_strategy(true, true, true),
+            &cfg,
+        );
+
+        assert_eq!(same_bar, vec![1, 1, 1]);
+        assert_eq!(next_bar, vec![0, 1, 1]);
+    }
+
+    #[test]
+    fn build_vemr_positions_flips_when_allowed() {
+        let close = vec![10.0, 10.0, 10.0];
+        let fast = test_fast_signals(
+            &[-3.0, 3.0, 3.0],
+            &[12.0, 12.0, 12.0],
+            &[20.0, 5.0, 5.0],
+            &[8.0, 8.0, 8.0],
+        );
+        let risk = test_risk_signals(&[100.0, 100.0, 100.0]);
+        let cfg = test_cfg();
+
+        let desired = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            0,
+            &test_strategy(false, true, false),
+            &cfg,
+        );
+
+        assert_eq!(desired, vec![1, -1, -1]);
+    }
+
+    #[test]
+    fn build_vemr_positions_respects_long_only() {
+        let close = vec![10.0, 10.0, 10.0];
+        let fast = test_fast_signals(
+            &[3.0, 3.0, 3.0],
+            &[12.0, 12.0, 12.0],
+            &[5.0, 5.0, 5.0],
+            &[8.0, 8.0, 8.0],
+        );
+        let risk = test_risk_signals(&[100.0, 100.0, 100.0]);
+        let cfg = test_cfg();
+
+        let desired = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            0,
+            &test_strategy(true, true, false),
+            &cfg,
+        );
+
+        assert_eq!(desired, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn build_vemr_positions_exit_on_atr_stop() {
+        let close = vec![10.0, 7.0, 7.0];
+        let fast = test_fast_signals(
+            &[-3.0, -3.0, 0.0],
+            &[12.0, 12.0, 12.0],
+            &[20.0, 20.0, 20.0],
+            &[8.0, 8.0, 8.0],
+        );
+        let risk = test_risk_signals(&[1.0, 1.0, 1.0]);
+        let mut cfg = test_cfg();
+        cfg.atr_stop_mult = 2.0;
+
+        let desired = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            0,
+            &test_strategy(true, true, false),
+            &cfg,
+        );
+
+        assert_eq!(desired, vec![1, 0, 0]);
+    }
+
+    #[test]
+    fn build_vemr_positions_exit_on_mean_reversion() {
+        let close = vec![10.0, 10.0, 10.0];
+        let fast = test_fast_signals(
+            &[-3.0, 0.0, 0.0],
+            &[12.0, 12.0, 12.0],
+            &[20.0, 20.0, 20.0],
+            &[8.0, 8.0, 8.0],
+        );
+        let risk = test_risk_signals(&[100.0, 100.0, 100.0]);
+        let cfg = test_cfg();
+
+        let desired = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            0,
+            &test_strategy(true, true, false),
+            &cfg,
+        );
+
+        assert_eq!(desired, vec![1, 0, 0]);
+    }
+
+    #[test]
+    fn build_vemr_positions_exit_on_max_trade_bars() {
+        let close = vec![10.0, 10.0, 10.0];
+        let fast = test_fast_signals(
+            &[-3.0, -3.0, -3.0],
+            &[12.0, 12.0, 12.0],
+            &[20.0, 20.0, 20.0],
+            &[8.0, 8.0, 8.0],
+        );
+        let risk = test_risk_signals(&[100.0, 100.0, 100.0]);
+        let mut cfg = test_cfg();
+        cfg.max_trade_bars = 2;
+
+        let desired = build_vemr_desired_positions(
+            &close,
+            &fast,
+            &risk,
+            0,
+            &test_strategy(true, true, false),
+            &cfg,
+        );
+
+        assert_eq!(desired, vec![1, 1, 0]);
+    }
+
+    #[test]
+    fn vemr_indicator_ids_bind_to_registered_descriptors() {
+        let ids = vemr_indicator_ids().expect("VEMR indicator ids should resolve");
+        let zscore = find_dynamic_indicator_descriptor("zscore")
+            .expect("zscore descriptor should be registered");
+        let bollinger = find_dynamic_indicator_descriptor("bollinger_bands")
+            .expect("bollinger bands descriptor should be registered");
+        let atr = find_dynamic_indicator_descriptor("atr").expect("atr descriptor should exist");
+
+        assert_eq!(ids.zscore_input_kind, zscore.input_kind);
+        assert_descriptor_has_param(zscore, ids.zscore_period_key.as_str());
+        assert_descriptor_has_param(zscore, ids.zscore_ma_type_key.as_str());
+        assert_descriptor_has_param(zscore, ids.zscore_nbdev_key.as_str());
+        assert_descriptor_has_param(zscore, ids.zscore_devtype_key.as_str());
+        assert_descriptor_has_output(zscore, ids.zscore_output.as_str());
+
+        assert_descriptor_has_param(bollinger, ids.bollinger_period_key.as_str());
+        assert_descriptor_has_param(bollinger, ids.bollinger_devup_key.as_str());
+        assert_descriptor_has_param(bollinger, ids.bollinger_devdn_key.as_str());
+        assert_descriptor_has_output(bollinger, ids.bollinger_upper_output.as_str());
+        assert_descriptor_has_output(bollinger, ids.bollinger_middle_output.as_str());
+        assert_descriptor_has_output(bollinger, ids.bollinger_lower_output.as_str());
+        assert_ne!(ids.bollinger_upper_output, ids.bollinger_middle_output);
+        assert_ne!(ids.bollinger_middle_output, ids.bollinger_lower_output);
+
+        assert_descriptor_has_param(atr, ids.atr_period_key.as_str());
+        assert_descriptor_has_output(atr, ids.atr_output.as_str());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

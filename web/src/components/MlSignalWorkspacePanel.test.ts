@@ -47,6 +47,42 @@ describe("MlSignalWorkspacePanel", () => {
           score_manifest_path: "C:\\data\\score_cache.manifest.json",
           feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
           feature_schema_version: 1,
+          feature_schema_hash: "schemahash0123456789abcdef",
+          exporter: {
+            exporter_version: "desktop-ml-exporter@2026.04.15",
+          },
+          provenance: {
+            data_timeframe: "1d",
+            source_export_manifest_hash: "exporthash0123456789abcdef",
+            source_feature_schema_hash: "sourcefeaturehash0123456789abcdef",
+            threshold_policy_default: "probability_threshold_only",
+          },
+          score_contract: {
+            validation_scores_scope: "calibration_slice",
+            validation_scores_preferred_probability_columns_after_calibration: [
+              "p_long_cal",
+              "p_short_cal",
+            ],
+            raw_margin_columns: ["raw_long", "raw_short"],
+            desktop_validation_requires_probability_columns: true,
+          },
+          score_contract_version: "3",
+          score_cache_provenance: {
+            source_bundle_id: "bundle-a",
+            source_bundle_manifest_hash: "bundlehash0123456789abcdef",
+            calibration_state: "calibrated",
+            threshold_policy: "probability_threshold_only",
+            producer_kind: "catboost_pair",
+          },
+          bundle_status: {
+            state: "warning",
+            manifest: {
+              model_family: "catboost_binary_pair",
+              model_format: "cbm",
+              calibration_path: "calibration.json",
+            },
+            issues: ["schema hash mismatch"],
+          },
           score_space: "Probability",
           score_scope: "CalibrationSlice",
           matched_rows: 75,
@@ -125,7 +161,25 @@ describe("MlSignalWorkspacePanel", () => {
     expect(wrapper.text()).toContain("score_cache.json");
     expect(wrapper.text()).toContain("ml_dataset.feature_schema.json");
     expect(wrapper.text()).toContain("Schema version");
-    expect(wrapper.text()).toContain("Schema v1 is required for score-cache compatibility and saved-run reopen consistency.");
+    expect(wrapper.text()).toContain(
+      "Schema v1 • hash schemahash…abcdef is required for score-cache compatibility and saved-run reopen consistency.",
+    );
+    expect(wrapper.text()).toContain("Provenance");
+    expect(wrapper.text()).toContain(
+      "schema schemahash…abcdef • exporter desktop-ml-exporter@2026.04.15 • timeframe 1d • contract v3 • source bundle-a • calibration calibrated • bundle warning",
+    );
+    expect(wrapper.text()).toContain("Score contract");
+    expect(wrapper.text()).toContain(
+      "v3 • validation calibration_slice • prefer p_long_cal/p_short_cal • raw raw_long/raw_short • probability required",
+    );
+    expect(wrapper.text()).toContain("Cache lineage");
+    expect(wrapper.text()).toContain(
+      "producer catboost_pair • threshold probability_threshold_only • bundle manifest bundlehash…abcdef • export exporthash…abcdef • source schema sourcefeat…abcdef",
+    );
+    expect(wrapper.text()).toContain("Bundle status");
+    expect(wrapper.text()).toContain(
+      "warning • catboost_binary_pair • cbm • calibration file • schema hash mismatch",
+    );
     expect(wrapper.text()).toContain(
       "Probability • CalibrationSlice • matched 75 • skipped 4 • bars 75 • coverage 75.0% • duplicates 2",
     );
@@ -140,6 +194,36 @@ describe("MlSignalWorkspacePanel", () => {
     expect(wrapper.text()).toContain("approved 1");
     expect(wrapper.text()).toContain("sharpe 1.2300");
     expect(wrapper.text()).toContain("psr 0.7200");
+  });
+
+  it("shows a score-contract mismatch note when the artifact scope disagrees with the declared lanes", () => {
+    const workflowArtifacts = useWorkflowArtifactsStore();
+    workflowArtifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-03-20T10:00:00.000Z",
+        artifact_path: "runs/vectorgrid_run_ml_signal_mismatch.json",
+        csv_path: "C:\\data\\prices.csv",
+        ml_signal: {
+          stage: "validation",
+          score_scope: "CustomPartial",
+          score_contract: {
+            validation_scores_scope: "calibration_slice",
+            walkforward_scores_scope: "walkforward_test",
+          },
+        },
+        req: {},
+        res: {},
+      },
+      currentValidation: null,
+    });
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+
+    expect(wrapper.text()).toContain(
+      "Score scope CustomPartial does not match the declared score-contract lanes (calibration_slice / walkforward_test).",
+    );
   });
 
   it("keeps stage buttons disabled until the matching ML prerequisites exist", async () => {
@@ -282,18 +366,26 @@ describe("MlSignalWorkspacePanel", () => {
     });
 
     const text = wrapper.text();
-    expect(text).toContain("Model bundles are discovered from the desktop app-local inventory.");
+    expect(text).toContain(
+      "Model bundles are discovered from the desktop app-local inventory.",
+    );
     expect(text).toContain("timestamp");
     expect(text).toContain("p_long");
     expect(text).toContain("raw_long");
     expect(text).toContain("p_long_cal");
     expect(text).toContain("Raw-margin-only caches can build successfully");
     expect(text).toContain("Validation context");
-    expect(text).toContain("MlSignal • prices.csv • timeframe 1d • csv prices.csv");
+    expect(text).toContain(
+      "MlSignal • prices.csv • timeframe 1d • csv prices.csv",
+    );
     expect(text).toContain("Current policy");
     expect(text).toContain("tL 0.63 • tS 0.58 • d 0.07 • hold 11");
-    expect(text).toContain("Current strategy is long+short, so validation requires both long and short probability coverage.");
+    expect(text).toContain(
+      "Current strategy is long+short, so validation requires both long and short probability coverage.",
+    );
     expect(text).toContain("Sweep axes");
-    expect(text).toContain("UI retain top 10. Rust still defaults top_k to 25 when omitted");
+    expect(text).toContain(
+      "UI retain top 10. Rust still defaults top_k to 25 when omitted",
+    );
   });
 });

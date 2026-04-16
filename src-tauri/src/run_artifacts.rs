@@ -159,6 +159,18 @@ pub struct RunArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<ArtifactLineageSummary>,
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_feature_schema_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_calibration_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_threshold_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_producer_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_score_contract_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_source_bundle_manifest_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -412,6 +424,22 @@ pub struct RunArtifactDetailResponse {
     pub ml_score_manifest_path: String,
     pub ml_feature_schema_path: String,
     pub ml_feature_schema_version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_feature_schema_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_export_manifest_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_source_bundle_manifest_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_source_bundle_manifest_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_calibration_state: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_threshold_policy: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_producer_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_score_contract_version: Option<u32>,
     pub ml_policy_summary: String,
     pub ml_policy_sweep_summary: String,
     pub ml_run_verdict_summary: String,
@@ -1440,6 +1468,35 @@ fn normalize_text_value(value: Option<&Value>) -> String {
     }
 }
 
+fn normalize_optional_text_value(value: Option<&Value>) -> Option<String> {
+    let text = normalize_text_value(value);
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn normalize_u32_value(value: Option<&Value>) -> Option<u32> {
+    match value {
+        Some(Value::Number(number)) => number.as_u64().map(|value| value as u32),
+        Some(Value::String(text)) => text.trim().parse::<u32>().ok(),
+        _ => None,
+    }
+}
+
+fn ml_signal_text_value(artifact: &Value, field: &str) -> String {
+    normalize_text_value(artifact.pointer(&format!("/ml_signal/{field}")))
+}
+
+fn ml_signal_optional_text_value(artifact: &Value, field: &str) -> Option<String> {
+    normalize_optional_text_value(artifact.pointer(&format!("/ml_signal/{field}")))
+}
+
+fn ml_signal_u32_value(artifact: &Value, field: &str) -> Option<u32> {
+    normalize_u32_value(artifact.pointer(&format!("/ml_signal/{field}")))
+}
+
 fn normalize_string_list(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
@@ -1852,6 +1909,20 @@ fn build_run_artifact_detail_response(
         ml_feature_schema_version: normalize_text_value(
             artifact.pointer("/ml_signal/feature_schema_version"),
         ),
+        ml_feature_schema_hash: ml_signal_text_value(artifact, "feature_schema_hash"),
+        ml_export_manifest_path: ml_signal_text_value(artifact, "export_manifest_path"),
+        ml_source_bundle_manifest_path: ml_signal_text_value(
+            artifact,
+            "source_bundle_manifest_path",
+        ),
+        ml_source_bundle_manifest_hash: ml_signal_text_value(
+            artifact,
+            "source_bundle_manifest_hash",
+        ),
+        ml_calibration_state: ml_signal_text_value(artifact, "calibration_state"),
+        ml_threshold_policy: ml_signal_text_value(artifact, "threshold_policy"),
+        ml_producer_kind: ml_signal_text_value(artifact, "producer_kind"),
+        ml_score_contract_version: ml_signal_u32_value(artifact, "score_contract_version"),
         ml_policy_summary: format_ml_policy_summary(artifact.pointer("/ml_signal/policy")),
         ml_policy_sweep_summary: format_ml_policy_sweep_summary(
             artifact.pointer("/ml_signal/policy_sweep"),
@@ -2127,6 +2198,15 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         route_provenance,
         lineage,
         tags: normalized_tags(v),
+        ml_feature_schema_hash: ml_signal_optional_text_value(v, "feature_schema_hash"),
+        ml_calibration_state: ml_signal_optional_text_value(v, "calibration_state"),
+        ml_threshold_policy: ml_signal_optional_text_value(v, "threshold_policy"),
+        ml_producer_kind: ml_signal_optional_text_value(v, "producer_kind"),
+        ml_score_contract_version: ml_signal_u32_value(v, "score_contract_version"),
+        ml_source_bundle_manifest_hash: ml_signal_optional_text_value(
+            v,
+            "source_bundle_manifest_hash",
+        ),
     })
 }
 
@@ -3568,6 +3648,56 @@ mod tests {
     }
 
     #[test]
+    fn run_artifact_summary_surfaces_ml_signal_provenance_fields_when_present() {
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "ml_signal": {
+                "feature_schema_hash": "fnv1a64-feature-0011",
+                "calibration_state": "calibrated_probability",
+                "threshold_policy": "desktop_probability_threshold_only",
+                "producer_kind": "python_research_harness",
+                "score_contract_version": 3,
+                "source_bundle_manifest_hash": "fnv1a64-bundle-aabbccdd"
+            },
+            "run": {
+                "req": { "strategy_kind": "MlSignal" },
+                "res": { "matched_rows": 123 }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            std::path::Path::new("C:/runs/vectorgrid_run_test.json"),
+            4096,
+            &artifact,
+        )
+        .expect("summary");
+
+        assert_eq!(
+            summary.ml_feature_schema_hash.as_deref(),
+            Some("fnv1a64-feature-0011")
+        );
+        assert_eq!(
+            summary.ml_calibration_state.as_deref(),
+            Some("calibrated_probability")
+        );
+        assert_eq!(
+            summary.ml_threshold_policy.as_deref(),
+            Some("desktop_probability_threshold_only")
+        );
+        assert_eq!(
+            summary.ml_producer_kind.as_deref(),
+            Some("python_research_harness")
+        );
+        assert_eq!(summary.ml_score_contract_version, Some(3));
+        assert_eq!(
+            summary.ml_source_bundle_manifest_hash.as_deref(),
+            Some("fnv1a64-bundle-aabbccdd")
+        );
+    }
+
+    #[test]
     fn run_artifact_detail_response_formats_ml_summaries() {
         let artifact = json!({
             "ts": "2026-04-02T12:00:00Z",
@@ -3583,6 +3713,14 @@ mod tests {
                 "score_manifest_path": "C:/runs/cache.manifest.json",
                 "feature_schema_path": "C:/runs/schema.json",
                 "feature_schema_version": 1,
+                "feature_schema_hash": "fnv1a64-feature-0011",
+                "export_manifest_path": "C:/runs/export.manifest.json",
+                "source_bundle_manifest_path": "C:/runs/bundle.manifest.json",
+                "source_bundle_manifest_hash": "fnv1a64-bundle-aabbccdd",
+                "calibration_state": "calibrated_probability",
+                "threshold_policy": "desktop_probability_threshold_only",
+                "producer_kind": "python_research_harness",
+                "score_contract_version": 3,
                 "policy": {
                     "t_long": 0.6,
                     "t_short": 0.55,
@@ -3646,6 +3784,26 @@ mod tests {
         assert_eq!(detail.report_path, "C:/runs/report.xlsx");
         assert_eq!(detail.ml_signal_stage, "validation");
         assert_eq!(detail.ml_bundle_id, "bundle-a");
+        assert_eq!(detail.ml_feature_schema_hash, "fnv1a64-feature-0011");
+        assert_eq!(
+            detail.ml_export_manifest_path,
+            "C:/runs/export.manifest.json"
+        );
+        assert_eq!(
+            detail.ml_source_bundle_manifest_path,
+            "C:/runs/bundle.manifest.json"
+        );
+        assert_eq!(
+            detail.ml_source_bundle_manifest_hash,
+            "fnv1a64-bundle-aabbccdd"
+        );
+        assert_eq!(detail.ml_calibration_state, "calibrated_probability");
+        assert_eq!(
+            detail.ml_threshold_policy,
+            "desktop_probability_threshold_only"
+        );
+        assert_eq!(detail.ml_producer_kind, "python_research_harness");
+        assert_eq!(detail.ml_score_contract_version, Some(3));
         assert_eq!(
             detail.ml_policy_summary,
             "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10"
@@ -3759,6 +3917,10 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("fnv1a64-full-deadbeefdeadbeef")
         );
+
+        let encoded = serde_json::to_value(detail).expect("serialize detail");
+        assert!(encoded.pointer("/mlFeatureSchemaHash").is_none());
+        assert!(encoded.pointer("/mlScoreContractVersion").is_none());
     }
 
     #[test]

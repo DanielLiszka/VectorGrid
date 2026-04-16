@@ -32,7 +32,18 @@ use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::Candles;
 
 const VCET_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE;
+// Keep these Rust-side bits aligned with the shared `double_crossover.cu` strategy ABI.
+const STRAT_LONG_ONLY: u32 = 1u32 << 0;
+const STRAT_NO_FLIP: u32 = 1u32 << 1;
+const STRAT_TRADE_ON_NEXT_BAR: u32 = 1u32 << 2;
+const STRAT_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
+/// Borrowed DTO for the low-level VCET CUDA entrypoint.
+///
+/// All device pointers in this struct must belong to the same CUDA device identified by the
+/// `device_id` argument passed to `eval_vcet_metrics_gpu_kernel_device_rows`. That entrypoint
+/// makes its cached context current before launch; callers must not mix pointers from another
+/// device/context. The pointer owners must remain alive until the entrypoint returns.
 pub struct VcetGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
     pub close_device_ptr: u64,
@@ -44,6 +55,9 @@ pub struct VcetGpuDeviceSignalMatrices<'a> {
     pub ce_rows: usize,
 }
 
+/// Borrowed host-side combo descriptors for the low-level VCET CUDA entrypoint.
+///
+/// The combo slices must remain alive until `eval_vcet_metrics_gpu_kernel_device_rows` returns.
 pub struct VcetGpuComboBatch<'a> {
     pub vidya_row_index: &'a [i32],
     pub ce_row_index: &'a [i32],
@@ -141,7 +155,12 @@ impl VcetGpuOwnedSignalTables {
     }
 }
 
+/// Prepared VCET GPU batch bound to the CUDA device used during `prepare()`.
+///
+/// The owned signal tables keep the underlying device allocations alive for later
+/// `eval_metrics()` calls on that same device.
 pub struct PreparedVcetGpuKernelBatch {
+    prepared_device_id: u32,
     prepared_cuda_inputs: PreparedCudaIndicatorInputs,
     signal_tables: VcetGpuOwnedSignalTables,
     combo_vidya_row_idx: Vec<i32>,
@@ -313,6 +332,7 @@ impl PreparedVcetGpuKernelBatch {
         )?;
 
         Ok(Self {
+            prepared_device_id: device_id,
             prepared_cuda_inputs,
             signal_tables,
             combo_vidya_row_idx,
@@ -337,6 +357,7 @@ impl PreparedVcetGpuKernelBatch {
         strategy: &StrategyConfig,
         vcet: &VcetStrategyParams,
     ) -> Result<Vec<Metrics>, String> {
+        validate_prepared_device_id(self.prepared_device_id, device_id)?;
         let signals = self.signal_tables.as_signal_matrices(
             self.prepared_cuda_inputs.close(),
             self.prepared_cuda_inputs
@@ -357,6 +378,18 @@ impl PreparedVcetGpuKernelBatch {
 
 fn first_finite_idx_f64(values: &[f64]) -> Option<usize> {
     values.iter().position(|value| value.is_finite())
+}
+
+fn validate_prepared_device_id(
+    prepared_device_id: u32,
+    requested_device_id: u32,
+) -> Result<(), String> {
+    if prepared_device_id != requested_device_id {
+        return Err(format!(
+            "VCET GPU batch was prepared on device {prepared_device_id} but eval_metrics requested device {requested_device_id}"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -608,6 +641,7 @@ fn ensure_resident_close_lr<'a>(
             let close_ptr = d_close.as_device_ptr().as_raw();
             (close_ptr, Some(d_close))
         };
+        // The kernel fully overwrites this log-return buffer before any read observes it.
         let mut d_lr = unsafe { DeviceBuffer::<f32>::uninitialized(signals.cols) }
             .map_err(|e| e.to_string())?;
         launch_compute_log_returns_f32(rt, close_ptr, &mut d_lr, signals.cols)?;
@@ -628,6 +662,12 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
+/// Evaluates a borrowed VCET device-row batch on `device_id`.
+///
+/// Contract:
+/// - `signals.close_device_ptr` and every row pointer must reference allocations on `device_id`.
+/// - This function switches the cached runtime context for `device_id` to current before launch.
+/// - Any allocation owning those device pointers must outlive this call.
 pub fn eval_vcet_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &VcetGpuDeviceSignalMatrices<'_>,
@@ -802,15 +842,15 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
 
         let mut flags: u32 = 0;
         if strategy.long_only {
-            flags |= 1u32 << 0;
+            flags |= STRAT_LONG_ONLY;
         }
         if !strategy.allow_flip {
-            flags |= 1u32 << 1;
+            flags |= STRAT_NO_FLIP;
         }
         if strategy.trade_on_next_bar {
-            flags |= 1u32 << 2;
+            flags |= STRAT_TRADE_ON_NEXT_BAR;
         }
-        flags |= 1u32 << 4;
+        flags |= STRAT_SIGNED_EXPOSURE;
 
         let commission = strategy.effective_commission().clamp(0.0, 0.95) as f32;
 
@@ -939,7 +979,10 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_inputs, VcetGpuComboBatch, VcetGpuDeviceSignalMatrices};
+    use super::{
+        validate_inputs, validate_prepared_device_id, VcetGpuComboBatch,
+        VcetGpuDeviceSignalMatrices,
+    };
 
     #[test]
     fn validate_inputs_rejects_negative_start_t() {
@@ -1017,5 +1060,13 @@ mod tests {
 
         let err = validate_inputs(&signals, &combos).expect_err("row index out of bounds");
         assert!(err.contains("vidya_row_index"));
+    }
+
+    #[test]
+    fn validate_prepared_device_id_rejects_mismatch() {
+        let err =
+            validate_prepared_device_id(2, 3).expect_err("mismatched prepared/requested device");
+        assert!(err.contains("prepared on device 2"));
+        assert!(err.contains("requested device 3"));
     }
 }

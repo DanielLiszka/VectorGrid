@@ -1,3 +1,8 @@
+/// Normalizes a probability-style gate into the closed `[0.0, 1.0]` range.
+///
+/// Finite inputs are clamped so callers can pass permissive values like `-1.0`
+/// or strict values like `2.0` without changing downstream comparison logic.
+/// Non-finite inputs are treated as unavailable and return `None`.
 pub fn sanitize_probability_gate(v: Option<f64>) -> Option<f64> {
     v.and_then(|x| {
         if x.is_finite() {
@@ -8,6 +13,11 @@ pub fn sanitize_probability_gate(v: Option<f64>) -> Option<f64> {
     })
 }
 
+/// Computes bounded PSR/DSR values for a candidate.
+///
+/// The raw Sharpe-derived outputs are kept as `Option<f64>` so non-finite
+/// calculations remain unavailable. Finite results are clamped into
+/// `[0.0, 1.0]` before returning.
 pub fn compute_psr_dsr(
     sharpe: f64,
     obs: usize,
@@ -33,6 +43,11 @@ pub fn compute_psr_dsr(
     (psr_out, dsr_out)
 }
 
+/// Evaluates optional PSR/DSR gates without changing missing-value semantics.
+///
+/// When a threshold is present, a missing PSR/DSR is compared as `0.0`. This
+/// means a strict positive threshold rejects missing stats, while a `0.0`
+/// threshold remains permissive.
 pub fn passes_probability_gates(
     psr: Option<f64>,
     dsr: Option<f64>,
@@ -92,5 +107,12 @@ mod tests {
         assert!(!passes_probability_gates(None, Some(0.8), Some(0.7), None));
         assert!(!passes_probability_gates(Some(0.8), None, None, Some(0.7)));
         assert!(passes_probability_gates(None, None, None, None));
+    }
+
+    #[test]
+    fn probability_gates_allow_missing_stats_at_zero_threshold() {
+        assert!(passes_probability_gates(None, Some(0.8), Some(0.0), None));
+        assert!(passes_probability_gates(Some(0.8), None, None, Some(0.0)));
+        assert!(passes_probability_gates(None, None, Some(0.0), Some(0.0)));
     }
 }

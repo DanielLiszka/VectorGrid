@@ -146,9 +146,44 @@ function basename(path: string): string {
   return normalized.split(/[\\/]/).pop() || normalized;
 }
 
+function normalizeText(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
 function parseNumber(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length > 0 ? row : null;
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    const next = normalizeText(value);
+    if (next) return next;
+  }
+  return "";
+}
+
+function listPreview(value: unknown, limit = 2): string {
+  if (!Array.isArray(value)) return "";
+  const items = value
+    .map((entry) => normalizeText(entry))
+    .filter((entry) => entry.length > 0);
+  if (!items.length) return "";
+  const head = items.slice(0, limit).join("/");
+  return items.length > limit ? `${head} +${items.length - limit}` : head;
+}
+
+function formatHash(value: unknown): string {
+  const text = normalizeText(value);
+  if (!text) return "";
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 10)}…${text.slice(-6)}`;
 }
 
 function formatPolicySummary(
@@ -216,6 +251,46 @@ function formatNestedMetric(
 }
 
 const currentMlArtifact = computed(() => currentRun.value?.mlSignal || null);
+const currentArtifactExporter = computed(() =>
+  asRecord(currentMlArtifact.value?.exporter),
+);
+const currentArtifactProvenanceRecord = computed(() =>
+  asRecord(currentMlArtifact.value?.provenance),
+);
+const currentArtifactBundleStatus = computed(() =>
+  asRecord(currentMlArtifact.value?.bundleStatus),
+);
+const currentArtifactBundleManifest = computed(() =>
+  asRecord(currentArtifactBundleStatus.value?.manifest),
+);
+const currentArtifactCalibration = computed(() => {
+  const artifact = asRecord(currentMlArtifact.value?.calibration);
+  if (artifact) return artifact;
+  return asRecord(
+    currentArtifactBundleManifest.value?.calibration_summary ??
+      currentArtifactBundleManifest.value?.calibrationSummary,
+  );
+});
+const currentArtifactScoreContract = computed(() => {
+  const artifact = asRecord(currentMlArtifact.value?.scoreContract);
+  if (artifact) return artifact;
+  return asRecord(
+    currentArtifactBundleManifest.value?.score_contract ??
+      currentArtifactBundleManifest.value?.scoreContract,
+  );
+});
+const currentArtifactScoreCacheProvenance = computed(() =>
+  asRecord(currentMlArtifact.value?.scoreCacheProvenance),
+);
+const currentArtifactScoreContractVersion = computed(() =>
+  firstText(
+    currentMlArtifact.value?.scoreContractVersion,
+    currentArtifactScoreContract.value?.score_contract_version,
+    currentArtifactScoreContract.value?.scoreContractVersion,
+    currentArtifactScoreCacheProvenance.value?.score_contract_version,
+    currentArtifactScoreCacheProvenance.value?.scoreContractVersion,
+  ),
+);
 const currentValidationResult = computed(() => {
   const validation = currentValidation.value;
   if (!validation?.res || typeof validation.res !== "object") return null;
@@ -298,7 +373,10 @@ const datasetExportSplitSummary = computed(() => {
 const datasetExportHoldoutSummary = computed(() => {
   const modulus = Math.max(0, Number(mlSignalHoldoutModulus.value || 0) || 0);
   if (modulus <= 0) return "Ticker holdout off";
-  const residueRaw = Math.max(0, Number(mlSignalHoldoutResidue.value || 0) || 0);
+  const residueRaw = Math.max(
+    0,
+    Number(mlSignalHoldoutResidue.value || 0) || 0,
+  );
   const residue = modulus > 0 ? residueRaw % modulus : 0;
   return `ticker_id % ${Math.floor(modulus)} == ${Math.floor(residue)}`;
 });
@@ -308,9 +386,12 @@ const datasetExportArtifactSummary = computed(() => {
   const exportPath = String(artifact?.datasetExportPath || "").trim();
   if (!exportPath) return "No dataset export artifact attached yet.";
   const parts = [basename(exportPath)];
-  if (artifact?.featureSchemaPath) parts.push(`schema ${basename(String(artifact.featureSchemaPath))}`);
-  if (artifact?.exportManifestPath) parts.push(`manifest ${basename(String(artifact.exportManifestPath))}`);
-  if (artifact?.splitManifestPath) parts.push(`splits ${basename(String(artifact.splitManifestPath))}`);
+  if (artifact?.featureSchemaPath)
+    parts.push(`schema ${basename(String(artifact.featureSchemaPath))}`);
+  if (artifact?.exportManifestPath)
+    parts.push(`manifest ${basename(String(artifact.exportManifestPath))}`);
+  if (artifact?.splitManifestPath)
+    parts.push(`splits ${basename(String(artifact.splitManifestPath))}`);
   return parts.join(" • ");
 });
 
@@ -318,13 +399,275 @@ const featureSchemaContractSummary = computed(() => {
   const artifact = currentMlArtifact.value;
   const schemaPath = String(artifact?.featureSchemaPath || "").trim();
   const version = Number(artifact?.featureSchemaVersion);
+  const schemaHash = formatHash(artifact?.featureSchemaHash);
   if (schemaPath && Number.isFinite(version) && version > 0) {
-    return `Schema v${Math.floor(version)} is required for score-cache compatibility and saved-run reopen consistency.`;
+    return schemaHash
+      ? `Schema v${Math.floor(version)} • hash ${schemaHash} is required for score-cache compatibility and saved-run reopen consistency.`
+      : `Schema v${Math.floor(version)} is required for score-cache compatibility and saved-run reopen consistency.`;
   }
   if (schemaPath) {
     return "Feature schema path is attached, but the schema version is missing.";
   }
+  if (schemaHash) {
+    return `Feature schema hash ${schemaHash} is attached, but the schema path/version metadata is incomplete.`;
+  }
   return "No feature schema attached to the current ML artifact.";
+});
+
+const currentArtifactProvenanceSummary = computed(() => {
+  const artifact = currentMlArtifact.value;
+  if (!artifact) return "No additive provenance metadata attached yet.";
+  const provenance = currentArtifactProvenanceRecord.value;
+  const exporter = currentArtifactExporter.value;
+  const scoreCacheProvenance = currentArtifactScoreCacheProvenance.value;
+  const calibration = currentArtifactCalibration.value;
+  const bundleStatus = currentArtifactBundleStatus.value;
+  const parts = [
+    artifact.featureSchemaHash
+      ? `schema ${formatHash(artifact.featureSchemaHash)}`
+      : "",
+    firstText(
+      exporter?.exporter_version,
+      exporter?.exporterVersion,
+      provenance?.exporter_version,
+      provenance?.exporterVersion,
+    )
+      ? `exporter ${firstText(
+          exporter?.exporter_version,
+          exporter?.exporterVersion,
+          provenance?.exporter_version,
+          provenance?.exporterVersion,
+        )}`
+      : "",
+    firstText(provenance?.data_timeframe, provenance?.dataTimeframe)
+      ? `timeframe ${firstText(
+          provenance?.data_timeframe,
+          provenance?.dataTimeframe,
+        )}`
+      : "",
+    currentArtifactScoreContractVersion.value
+      ? `contract v${currentArtifactScoreContractVersion.value}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.source_bundle_id,
+      scoreCacheProvenance?.sourceBundleId,
+    )
+      ? `source ${firstText(
+          scoreCacheProvenance?.source_bundle_id,
+          scoreCacheProvenance?.sourceBundleId,
+        )}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.calibration_state,
+      scoreCacheProvenance?.calibrationState,
+      calibration?.calibration_state,
+      calibration?.calibrationState,
+    )
+      ? `calibration ${firstText(
+          scoreCacheProvenance?.calibration_state,
+          scoreCacheProvenance?.calibrationState,
+          calibration?.calibration_state,
+          calibration?.calibrationState,
+        )}`
+      : "",
+    firstText(bundleStatus?.state)
+      ? `bundle ${firstText(bundleStatus?.state)}`
+      : "",
+  ].filter((part) => part);
+  return parts.join(" • ") || "No additive provenance metadata attached yet.";
+});
+
+const currentScoreContractSummary = computed(() => {
+  const contract = currentArtifactScoreContract.value;
+  if (!contract) return "";
+  const parts = [
+    currentArtifactScoreContractVersion.value
+      ? `v${currentArtifactScoreContractVersion.value}`
+      : "",
+    firstText(
+      contract.validation_scores_scope,
+      contract.validationScoresScope,
+      contract.validation_score_scope,
+      contract.validationScoreScope,
+    )
+      ? `validation ${firstText(
+          contract.validation_scores_scope,
+          contract.validationScoresScope,
+          contract.validation_score_scope,
+          contract.validationScoreScope,
+        )}`
+      : "",
+    firstText(
+      contract.walkforward_score_scope,
+      contract.walkforwardScoreScope,
+      contract.walkforward_scores_scope,
+      contract.walkforwardScoresScope,
+    )
+      ? `walkforward ${firstText(
+          contract.walkforward_score_scope,
+          contract.walkforwardScoreScope,
+          contract.walkforward_scores_scope,
+          contract.walkforwardScoresScope,
+        )}`
+      : "",
+    listPreview(
+      contract.validation_scores_preferred_probability_columns ??
+        contract.validationScoresPreferredProbabilityColumns ??
+        contract.validation_scores_preferred_probability_columns_after_calibration ??
+        contract.validationScoresPreferredProbabilityColumnsAfterCalibration,
+    )
+      ? `prefer ${listPreview(
+          contract.validation_scores_preferred_probability_columns ??
+            contract.validationScoresPreferredProbabilityColumns ??
+            contract.validation_scores_preferred_probability_columns_after_calibration ??
+            contract.validationScoresPreferredProbabilityColumnsAfterCalibration,
+        )}`
+      : "",
+    listPreview(contract.raw_margin_columns ?? contract.rawMarginColumns)
+      ? `raw ${listPreview(
+          contract.raw_margin_columns ?? contract.rawMarginColumns,
+        )}`
+      : "",
+    firstText(
+      contract.desktop_policy_validation,
+      contract.desktopPolicyValidation,
+    )
+      ? `policy ${firstText(
+          contract.desktop_policy_validation,
+          contract.desktopPolicyValidation,
+        )}`
+      : "",
+    contract.desktop_validation_requires_probability_columns === true
+      ? "probability required"
+      : "",
+  ].filter((part) => part);
+  return parts.join(" • ");
+});
+
+const currentScoreContractScopeNotice = computed(() => {
+  const artifact = currentMlArtifact.value;
+  const contract = currentArtifactScoreContract.value;
+  if (!artifact || !contract) return "";
+  const actualScope = firstText(artifact.scoreScope);
+  if (!actualScope) return "";
+  const normalizeScope = (value: unknown) =>
+    String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  const expectedScopeValues = [
+    firstText(
+      contract.validation_scores_scope,
+      contract.validationScoresScope,
+      contract.validation_score_scope,
+      contract.validationScoreScope,
+    ),
+    firstText(
+      contract.walkforward_score_scope,
+      contract.walkforwardScoreScope,
+      contract.walkforward_scores_scope,
+      contract.walkforwardScoresScope,
+    ),
+  ].filter((value) => value) as string[];
+  const expectedScopes = expectedScopeValues.map((value) =>
+    normalizeScope(value),
+  );
+  if (
+    expectedScopes.length === 0 ||
+    expectedScopes.includes(normalizeScope(actualScope))
+  ) {
+    return "";
+  }
+  return `Score scope ${actualScope} does not match the declared score-contract lanes (${expectedScopeValues.join(" / ")}).`;
+});
+
+const currentCacheLineageSummary = computed(() => {
+  const provenance = currentArtifactProvenanceRecord.value;
+  const scoreCacheProvenance = currentArtifactScoreCacheProvenance.value;
+  const parts = [
+    firstText(
+      scoreCacheProvenance?.producer_kind,
+      scoreCacheProvenance?.producerKind,
+    )
+      ? `producer ${firstText(
+          scoreCacheProvenance?.producer_kind,
+          scoreCacheProvenance?.producerKind,
+        )}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.threshold_policy,
+      scoreCacheProvenance?.thresholdPolicy,
+      provenance?.threshold_policy_default,
+      provenance?.thresholdPolicyDefault,
+    )
+      ? `threshold ${firstText(
+          scoreCacheProvenance?.threshold_policy,
+          scoreCacheProvenance?.thresholdPolicy,
+          provenance?.threshold_policy_default,
+          provenance?.thresholdPolicyDefault,
+        )}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.source_bundle_manifest_hash,
+      scoreCacheProvenance?.sourceBundleManifestHash,
+    )
+      ? `bundle manifest ${formatHash(
+          firstText(
+            scoreCacheProvenance?.source_bundle_manifest_hash,
+            scoreCacheProvenance?.sourceBundleManifestHash,
+          ),
+        )}`
+      : "",
+    firstText(
+      provenance?.source_export_manifest_hash,
+      provenance?.sourceExportManifestHash,
+    )
+      ? `export ${formatHash(
+          firstText(
+            provenance?.source_export_manifest_hash,
+            provenance?.sourceExportManifestHash,
+          ),
+        )}`
+      : "",
+    firstText(
+      provenance?.source_feature_schema_hash,
+      provenance?.sourceFeatureSchemaHash,
+    )
+      ? `source schema ${formatHash(
+          firstText(
+            provenance?.source_feature_schema_hash,
+            provenance?.sourceFeatureSchemaHash,
+          ),
+        )}`
+      : "",
+  ].filter((part) => part);
+  return parts.join(" • ");
+});
+
+const currentBundleStatusSummary = computed(() => {
+  const status = currentArtifactBundleStatus.value;
+  if (!status) return "";
+  const issues = Array.isArray(status.issues) ? status.issues : [];
+  const parts = [
+    firstText(status.state),
+    firstText(
+      currentArtifactBundleManifest.value?.model_family,
+      currentArtifactBundleManifest.value?.modelFamily,
+    ),
+    firstText(
+      currentArtifactBundleManifest.value?.model_format,
+      currentArtifactBundleManifest.value?.modelFormat,
+    ),
+    firstText(
+      currentArtifactBundleManifest.value?.calibration_path,
+      currentArtifactBundleManifest.value?.calibrationPath,
+    )
+      ? "calibration file"
+      : "",
+    issues.length === 1 ? firstText(issues[0]) : "",
+    issues.length > 1 ? `${issues.length} issues` : "",
+  ].filter((part) => part);
+  return parts.join(" • ");
 });
 
 const currentScoreCoverageSummary = computed(() => {
@@ -395,16 +738,14 @@ const currentSweepAxisSummary = computed(() => {
       mlSignalSweepLongEnd.value,
       0.7,
     ).toFixed(2)}@${parseNumber(mlSignalSweepLongStep.value, 0.1).toFixed(2)}`,
-    `short ${parseNumber(
-      mlSignalSweepShortStart.value,
-      0.5,
-    ).toFixed(2)}-${parseNumber(mlSignalSweepShortEnd.value, 0.7).toFixed(
+    `short ${parseNumber(mlSignalSweepShortStart.value, 0.5).toFixed(
+      2,
+    )}-${parseNumber(mlSignalSweepShortEnd.value, 0.7).toFixed(
       2,
     )}@${parseNumber(mlSignalSweepShortStep.value, 0.1).toFixed(2)}`,
-    `delta ${parseNumber(
-      mlSignalSweepDeltaStart.value,
-      0,
-    ).toFixed(2)}-${parseNumber(mlSignalSweepDeltaEnd.value, 0.1).toFixed(
+    `delta ${parseNumber(mlSignalSweepDeltaStart.value, 0).toFixed(
+      2,
+    )}-${parseNumber(mlSignalSweepDeltaEnd.value, 0.1).toFixed(
       2,
     )}@${parseNumber(mlSignalSweepDeltaStep.value, 0.05).toFixed(2)}`,
     `hold ${Math.max(
@@ -413,15 +754,15 @@ const currentSweepAxisSummary = computed(() => {
     )}-${Math.max(
       1,
       Math.floor(parseNumber(mlSignalSweepHoldEnd.value, 15)),
-    )}@${Math.max(
-      1,
-      Math.floor(parseNumber(mlSignalSweepHoldStep.value, 5)),
-    )}`,
+    )}@${Math.max(1, Math.floor(parseNumber(mlSignalSweepHoldStep.value, 5)))}`,
   ].join(" • ");
 });
 
 const currentSweepBudgetSummary = computed(() => {
-  const topK = Math.max(1, Math.floor(parseNumber(mlSignalSweepTopK.value, 10)));
+  const topK = Math.max(
+    1,
+    Math.floor(parseNumber(mlSignalSweepTopK.value, 10)),
+  );
   return `UI retain top ${topK}. Rust still defaults top_k to 25 when omitted, but this panel always sends an explicit top_k. Candidate expansion stays capped at 20,000.`;
 });
 
@@ -638,26 +979,35 @@ onMounted(() => {
       <div class="summaryGrid" aria-label="ML dataset export contract">
         <article>
           <div class="panelMetricKey">Split plan</div>
-          <div class="panelMetricValue mono">{{ datasetExportSplitSummary }}</div>
+          <div class="panelMetricValue mono">
+            {{ datasetExportSplitSummary }}
+          </div>
         </article>
         <article>
           <div class="panelMetricKey">Ticker holdout</div>
-          <div class="panelMetricValue mono">{{ datasetExportHoldoutSummary }}</div>
+          <div class="panelMetricValue mono">
+            {{ datasetExportHoldoutSummary }}
+          </div>
         </article>
         <article>
           <div class="panelMetricKey">Current export artifact</div>
-          <div class="panelMetricValue mono">{{ datasetExportArtifactSummary }}</div>
+          <div class="panelMetricValue mono">
+            {{ datasetExportArtifactSummary }}
+          </div>
         </article>
       </div>
       <div class="muted">
-        Gap bars separate train to calibration and calibration to test windows. Step bars move the next emitted split window forward when split-manifest generation is active. In the current export contract, blank gap and step fields resolve to gap 0 and step 1.
+        Gap bars separate train to calibration and calibration to test windows.
+        Step bars move the next emitted split window forward when split-manifest
+        generation is active. In the current export contract, blank gap and step
+        fields resolve to gap 0 and step 1.
       </div>
       <div class="muted">
         Dataset export always writes the CSV, feature schema, and
         <span class="mono">.export_manifest.json</span> sidecar. The
         <span class="mono">.split_manifest.json</span> sidecar is emitted only
-        when the split-plan fields are active. Score-cache manifests are Stage
-        2 artifacts and remain separate from dataset-export manifests.
+        when the split-plan fields are active. Score-cache manifests are Stage 2
+        artifacts and remain separate from dataset-export manifests.
       </div>
       <div class="gridTwo">
         <div>
@@ -899,8 +1249,7 @@ onMounted(() => {
       <div class="muted">
         Score CSV ingest contract: include
         <span class="mono">timestamp</span> plus at least one of
-        <span class="mono">p_long</span>,
-        <span class="mono">p_short</span>,
+        <span class="mono">p_long</span>, <span class="mono">p_short</span>,
         <span class="mono">raw_long</span>, or
         <span class="mono">raw_short</span>. If calibrated columns like
         <span class="mono">p_long_cal</span> /
@@ -1068,7 +1417,9 @@ onMounted(() => {
       <div class="summaryGrid" aria-label="ML validation contract">
         <article>
           <div class="panelMetricKey">Validation context</div>
-          <div class="panelMetricValue mono">{{ validationContextSummary }}</div>
+          <div class="panelMetricValue mono">
+            {{ validationContextSummary }}
+          </div>
         </article>
         <article>
           <div class="panelMetricKey">Current policy</div>
@@ -1128,7 +1479,9 @@ onMounted(() => {
       </div>
       <div class="muted mono">{{ mlSignalValidationMeta }}</div>
       <div class="muted mono">{{ progressMeta || "—" }}</div>
-      <div class="muted mono" role="status" aria-live="polite">{{ statusLine }}</div>
+      <div class="muted mono" role="status" aria-live="polite">
+        {{ statusLine }}
+      </div>
     </section>
 
     <section class="pane" data-ml-stage="analyze">
@@ -1155,7 +1508,9 @@ onMounted(() => {
         </article>
         <article>
           <div class="panelMetricKey">Budget</div>
-          <div class="panelMetricValue mono">{{ currentSweepBudgetSummary }}</div>
+          <div class="panelMetricValue mono">
+            {{ currentSweepBudgetSummary }}
+          </div>
         </article>
       </div>
       <div class="gridThree">
@@ -1663,8 +2018,37 @@ onMounted(() => {
           </span>
         </div>
         <div class="summaryRow">
+          <span class="summaryKey">Provenance</span>
+          <span class="summaryValue mono">
+            {{ currentArtifactProvenanceSummary }}
+          </span>
+        </div>
+        <div v-if="currentScoreContractSummary" class="summaryRow">
+          <span class="summaryKey">Score contract</span>
+          <span class="summaryValue mono">
+            {{ currentScoreContractSummary }}
+          </span>
+        </div>
+        <div v-if="currentScoreContractScopeNotice" class="muted">
+          {{ currentScoreContractScopeNotice }}
+        </div>
+        <div v-if="currentCacheLineageSummary" class="summaryRow">
+          <span class="summaryKey">Cache lineage</span>
+          <span class="summaryValue mono">
+            {{ currentCacheLineageSummary }}
+          </span>
+        </div>
+        <div v-if="currentBundleStatusSummary" class="summaryRow">
+          <span class="summaryKey">Bundle status</span>
+          <span class="summaryValue mono">
+            {{ currentBundleStatusSummary }}
+          </span>
+        </div>
+        <div class="summaryRow">
           <span class="summaryKey">Score summary</span>
-          <span class="summaryValue mono">{{ currentScoreCoverageSummary }}</span>
+          <span class="summaryValue mono">{{
+            currentScoreCoverageSummary
+          }}</span>
         </div>
         <div class="muted">
           {{ featureSchemaContractSummary }}

@@ -95,6 +95,9 @@ pub fn orc_strategy_for_kernel() -> StrategyConfig {
     s
 }
 
+// This is a curated subset of representative double-like presets for grouped route tests.
+// `VFCT` and `MARRT` are part of the live preset surface, but they are intentionally covered by
+// direct smoke tests below instead of this shared grouped loop.
 pub fn double_like_kernel_strategy_cases() -> Vec<(&'static str, StrategyConfig)> {
     vec![
         ("composite_trend", trend_quality_strategy_for_kernel()),
@@ -130,6 +133,47 @@ mod tests {
                 "duplicate preset label found in double-like kernel cases: {label}"
             );
         }
+    }
+
+    #[test]
+    fn regime_hybrid_strategy_for_kernel_keeps_expected_default_backed_thresholds() {
+        let strategy = regime_hybrid_strategy_for_kernel();
+
+        assert!(!strategy.long_only);
+        assert!(strategy.regime_hybrid_enable);
+        assert_eq!(strategy.regime_hybrid_adx_period, 14);
+        assert_eq!(strategy.regime_hybrid_adx_enter, 22.0);
+        assert_eq!(strategy.regime_hybrid_adx_exit, 18.0);
+        assert_eq!(strategy.regime_hybrid_reversion_entry_rel, 0.0035);
+        assert_eq!(strategy.regime_hybrid_reversion_exit_rel, 0.0012);
+    }
+
+    #[test]
+    fn vfct_strategy_for_kernel_smoke_covers_direct_preset_surface() {
+        let strategy = vfct_strategy_for_kernel();
+
+        assert!(!strategy.long_only);
+        assert!(strategy.volume_flow_confirm_enable);
+        assert_eq!(strategy.volume_flow_obv_smooth_period, 8);
+        assert_eq!(strategy.volume_flow_mfi_period, 10);
+        assert_eq!(strategy.volume_flow_mfi_long_min, 52.0);
+        assert_eq!(strategy.volume_flow_mfi_short_max, 48.0);
+        assert_eq!(strategy.volume_flow_confirm_bars, 1);
+    }
+
+    #[test]
+    fn marrt_strategy_for_kernel_smoke_preserves_thin_default_shape() {
+        let strategy = marrt_strategy_for_kernel();
+
+        assert!(!strategy.long_only);
+        assert!(strategy.allow_flip);
+        assert!(strategy.trade_on_next_bar);
+        assert_eq!(
+            strategy.exit_mode,
+            ta_strategies::double_ma::ExitMode::Cross
+        );
+        assert!(!strategy.regime_hybrid_enable);
+        assert!(!strategy.breakout_momentum_enable);
     }
 
     #[test]

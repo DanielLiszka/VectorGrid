@@ -60,9 +60,7 @@ describe("workflowArtifactsStore", () => {
   });
 
   it("reports validation changes when validation arrives later for the same run", () => {
-    vi.spyOn(Date, "now")
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(2_000);
+    vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(2_000);
     const store = useWorkflowArtifactsStore(pinia);
     const baseRun = {
       ts: "2026-04-01T12:00:00Z",
@@ -175,6 +173,76 @@ describe("workflowArtifactsStore", () => {
         stage: "validation",
         bundleId: "bundle-a",
         scoreCachePath: "C:/runs/cache.json",
+      },
+    });
+  });
+
+  it("normalizes additive ML provenance metadata from hydrated artifacts", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+
+    applyWorkflowArtifactsPayload(
+      {
+        currentRun: {
+          ts: "2026-04-01T12:00:00Z",
+          artifact_path: "C:/runs/ml_signal.json",
+          ml_signal: {
+            stage: "score_cache",
+            feature_schema_hash: "schemahash0123456789abcdef",
+            exporter: {
+              exporter_version: "desktop-ml-exporter@2026.04.15",
+            },
+            provenance: {
+              data_timeframe: "1d",
+              source_export_manifest_hash: "exporthash0123456789abcdef",
+            },
+            calibration: {
+              calibration_state: "calibrated",
+            },
+            score_contract: {
+              validation_scores_scope: "calibration_slice",
+            },
+            score_contract_version: 3,
+            score_cache_provenance: {
+              source_bundle_id: "bundle-a",
+              producer_kind: "catboost_pair",
+            },
+            bundle_status_details: {
+              state: "warning",
+              issues: ["schema hash mismatch"],
+            },
+          },
+          req: { strategy_kind: "MlSignal" },
+          res: { matched_rows: 123 },
+        },
+        currentValidation: null,
+      },
+      "vue",
+    );
+
+    expect(store.currentRun?.mlSignal).toMatchObject({
+      stage: "score_cache",
+      featureSchemaHash: "schemahash0123456789abcdef",
+      exporter: {
+        exporter_version: "desktop-ml-exporter@2026.04.15",
+      },
+      provenance: {
+        data_timeframe: "1d",
+        source_export_manifest_hash: "exporthash0123456789abcdef",
+      },
+      calibration: {
+        calibration_state: "calibrated",
+      },
+      scoreContract: {
+        validation_scores_scope: "calibration_slice",
+      },
+      scoreContractVersion: "3",
+      scoreCacheProvenance: {
+        source_bundle_id: "bundle-a",
+        producer_kind: "catboost_pair",
+      },
+      bundleStatus: {
+        state: "warning",
+        issues: ["schema hash mismatch"],
       },
     });
   });

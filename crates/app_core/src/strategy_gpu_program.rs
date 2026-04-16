@@ -64,9 +64,13 @@ pub struct GpuIndicatorSlot {
 pub struct CompiledGpuPredicateProgram {
     pub schema_version: u16,
     pub profile: StrategyProfileKind,
+    /// Stable identity of the source IR, not the compiled GPU plan.
     pub plan_fingerprint_hex: String,
+    /// Identity of the compiled plan after backend/routing decisions.
     #[serde(default)]
     pub compiled_plan_fingerprint_hex: String,
+    /// Runtime executable/cache identity. This intentionally covers more than the compact uploaded
+    /// ABI payload because cache keys also depend on compiled-route shape.
     #[serde(default)]
     pub executable_fingerprint_hex: String,
     pub indicator_slots: Vec<GpuIndicatorSlot>,
@@ -119,9 +123,12 @@ pub struct GpuIndicatorSlotAbi {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CompiledGpuPredicateProgramAbi {
     pub abi_version: u32,
+    /// Stable identity of the source IR, carried through for diagnostics and compatibility checks.
     pub plan_fingerprint_hex: String,
+    /// Identity of the compiled plan that produced this ABI payload.
     #[serde(default)]
     pub compiled_plan_fingerprint_hex: String,
+    /// Runtime executable/cache identity. This remains broader than the compact ABI payload today.
     #[serde(default)]
     pub executable_fingerprint_hex: String,
     pub indicator_slots: Vec<GpuIndicatorSlotAbi>,
@@ -131,6 +138,8 @@ pub struct CompiledGpuPredicateProgramAbi {
     pub signals: GpuSignalBindingsAbi,
 }
 
+// Safety: these ABI structs are `repr(C)` scalar containers with no references or drop glue.
+// The tests below are only Rust-side drift tripwires; they do not prove CUDA-side ABI agreement.
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 unsafe impl cust::memory::DeviceCopy for GpuValueOperandAbi {}
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -177,8 +186,13 @@ fn encode_indicator_route(route: IndicatorRouteKind) -> u32 {
     }
 }
 
-fn encode_optional_group_binding(value: Option<u32>) -> i32 {
-    value.map(|v| v as i32).unwrap_or(-1)
+fn encode_optional_group_binding(value: Option<u32>, label: &str) -> i32 {
+    value
+        .map(|v| {
+            i32::try_from(v)
+                .unwrap_or_else(|_| panic!("signal binding '{label}' exceeds i32 ABI range: {v}"))
+        })
+        .unwrap_or(-1)
 }
 
 fn fingerprint_serialized<T: Serialize>(value: &T, label: &str) -> Result<String, String> {
@@ -226,9 +240,64 @@ fn fingerprint_gpu_predicate_program_executable(
     )
 }
 
+fn validate_nonempty_fingerprint(value: &str, label: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{label} must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_optional_group_binding_fits_i32(value: Option<u32>, label: &str) -> Result<(), String> {
+    if let Some(binding) = value {
+        i32::try_from(binding)
+            .map(|_| ())
+            .map_err(|_| format!("signal binding '{label}' exceeds i32 ABI range: {binding}"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Validates the subset of program invariants that the compact ABI encoder relies on.
+///
+/// This is intentionally local hardening only. It helps catch malformed or partially populated
+/// serialized programs before ABI encoding, but it is not a proof of full Rust/CUDA compatibility.
+pub fn validate_compiled_gpu_predicate_program_abi_inputs(
+    program: &CompiledGpuPredicateProgram,
+) -> Result<(), String> {
+    validate_nonempty_fingerprint(
+        program.plan_fingerprint_hex.as_str(),
+        "plan_fingerprint_hex",
+    )?;
+    validate_nonempty_fingerprint(
+        program.compiled_plan_fingerprint_hex.as_str(),
+        "compiled_plan_fingerprint_hex",
+    )?;
+    validate_nonempty_fingerprint(
+        program.executable_fingerprint_hex.as_str(),
+        "executable_fingerprint_hex",
+    )?;
+    validate_optional_group_binding_fits_i32(program.signals.long_entry_group, "long_entry_group")?;
+    validate_optional_group_binding_fits_i32(program.signals.long_exit_group, "long_exit_group")?;
+    validate_optional_group_binding_fits_i32(
+        program.signals.short_entry_group,
+        "short_entry_group",
+    )?;
+    validate_optional_group_binding_fits_i32(program.signals.short_exit_group, "short_exit_group")?;
+    Ok(())
+}
+
+/// Encodes the compact runtime ABI for a compiler-emitted or prevalidated GPU predicate program.
+///
+/// The returned ABI keeps the existing serialized fingerprint fields unchanged:
+/// `plan_fingerprint_hex` tracks IR identity, `compiled_plan_fingerprint_hex` tracks compiled-plan
+/// identity, and `executable_fingerprint_hex` remains the broader executable/cache identity used by
+/// runtime caches today.
 pub fn compile_gpu_predicate_program_abi(
     program: &CompiledGpuPredicateProgram,
 ) -> CompiledGpuPredicateProgramAbi {
+    validate_compiled_gpu_predicate_program_abi_inputs(program)
+        .expect("compiled gpu predicate program must be validated before ABI encoding");
     let indicator_slots = program
         .indicator_slots
         .iter()
@@ -264,10 +333,22 @@ pub fn compile_gpu_predicate_program_abi(
         })
         .collect();
     let signals = GpuSignalBindingsAbi {
-        long_entry_group: encode_optional_group_binding(program.signals.long_entry_group),
-        long_exit_group: encode_optional_group_binding(program.signals.long_exit_group),
-        short_entry_group: encode_optional_group_binding(program.signals.short_entry_group),
-        short_exit_group: encode_optional_group_binding(program.signals.short_exit_group),
+        long_entry_group: encode_optional_group_binding(
+            program.signals.long_entry_group,
+            "long_entry_group",
+        ),
+        long_exit_group: encode_optional_group_binding(
+            program.signals.long_exit_group,
+            "long_exit_group",
+        ),
+        short_entry_group: encode_optional_group_binding(
+            program.signals.short_entry_group,
+            "short_entry_group",
+        ),
+        short_exit_group: encode_optional_group_binding(
+            program.signals.short_exit_group,
+            "short_exit_group",
+        ),
     };
 
     CompiledGpuPredicateProgramAbi {
@@ -388,6 +469,9 @@ pub fn compile_gpu_predicate_program(
     }
 
     let group_count = groups.len();
+    if group_count > i32::MAX as usize {
+        return Err("too many groups for i32 ABI signal bindings".to_string());
+    }
     let signals = GpuSignalBindings {
         long_entry_group: validate_group_binding(
             plan.signals.long_entry_group,
@@ -424,6 +508,7 @@ pub fn compile_gpu_predicate_program(
         signals,
     };
     program.executable_fingerprint_hex = fingerprint_gpu_predicate_program_executable(&program)?;
+    validate_compiled_gpu_predicate_program_abi_inputs(&program)?;
     Ok(program)
 }
 
@@ -432,6 +517,7 @@ mod tests {
     use super::*;
     use crate::strategy_ir::{build_static_strategy_ir, StaticStrategyIrInput};
     use crate::strategy_plan::{compile_strategy_plan, CompiledValueRef};
+    use std::mem::{align_of, size_of};
     use ta_strategies::double_ma::StrategyConfig;
 
     fn make_plan(
@@ -534,6 +620,74 @@ mod tests {
             abi.group_condition_indexes.len(),
             program.group_condition_indexes.len()
         );
+    }
+
+    #[test]
+    fn abi_numeric_encodings_and_sentinels_are_stable() {
+        assert_eq!(encode_value_source_kind(GpuValueSourceKind::Indicator), 0);
+        assert_eq!(encode_value_source_kind(GpuValueSourceKind::MaSource), 1);
+        assert_eq!(encode_value_source_kind(GpuValueSourceKind::Close), 2);
+        assert_eq!(encode_value_source_kind(GpuValueSourceKind::Constant), 3);
+
+        assert_eq!(encode_condition_op(ConditionOp::Gt), 0);
+        assert_eq!(encode_condition_op(ConditionOp::Ge), 1);
+        assert_eq!(encode_condition_op(ConditionOp::Lt), 2);
+        assert_eq!(encode_condition_op(ConditionOp::Le), 3);
+        assert_eq!(encode_condition_op(ConditionOp::CrossUp), 4);
+        assert_eq!(encode_condition_op(ConditionOp::CrossDown), 5);
+
+        assert_eq!(encode_group_mode(ConditionGroupMode::All), 0);
+        assert_eq!(encode_group_mode(ConditionGroupMode::Any), 1);
+
+        assert_eq!(encode_indicator_route(IndicatorRouteKind::Cpu), 0);
+        assert_eq!(encode_indicator_route(IndicatorRouteKind::GpuKernel), 1);
+        assert_eq!(encode_indicator_route(IndicatorRouteKind::GpuSingle), 2);
+
+        assert_eq!(encode_optional_group_binding(None, "test"), -1);
+        assert_eq!(encode_optional_group_binding(Some(0), "test"), 0);
+        assert_eq!(encode_optional_group_binding(Some(7), "test"), 7);
+    }
+
+    #[test]
+    fn abi_input_validation_rejects_blank_fingerprints() {
+        let plan = make_plan(
+            StrategyProfileKind::DoubleMa,
+            StrategyPlanBackend::GpuUnified,
+        );
+        let mut program = compile_gpu_predicate_program(&plan).expect("gpu program should compile");
+        program.executable_fingerprint_hex.clear();
+
+        let err = validate_compiled_gpu_predicate_program_abi_inputs(&program)
+            .expect_err("blank executable fingerprint must be rejected");
+        assert!(err.contains("executable_fingerprint_hex"));
+    }
+
+    #[test]
+    fn abi_input_validation_rejects_out_of_range_signal_binding() {
+        let plan = make_plan(
+            StrategyProfileKind::DoubleMa,
+            StrategyPlanBackend::GpuUnified,
+        );
+        let mut program = compile_gpu_predicate_program(&plan).expect("gpu program should compile");
+        program.signals.long_entry_group = Some(i32::MAX as u32 + 1);
+
+        let err = validate_compiled_gpu_predicate_program_abi_inputs(&program)
+            .expect_err("oversized signal binding must be rejected");
+        assert!(err.contains("long_entry_group"));
+    }
+
+    #[test]
+    fn abi_layout_tripwires_match_current_rust_side_contract() {
+        assert_eq!(size_of::<GpuValueOperandAbi>(), 16);
+        assert_eq!(align_of::<GpuValueOperandAbi>(), 8);
+        assert_eq!(size_of::<GpuConditionAbi>(), 40);
+        assert_eq!(align_of::<GpuConditionAbi>(), 8);
+        assert_eq!(size_of::<GpuConditionGroupAbi>(), 12);
+        assert_eq!(align_of::<GpuConditionGroupAbi>(), 4);
+        assert_eq!(size_of::<GpuSignalBindingsAbi>(), 16);
+        assert_eq!(align_of::<GpuSignalBindingsAbi>(), 4);
+        assert_eq!(size_of::<GpuIndicatorSlotAbi>(), 8);
+        assert_eq!(align_of::<GpuIndicatorSlotAbi>(), 4);
     }
 
     #[test]

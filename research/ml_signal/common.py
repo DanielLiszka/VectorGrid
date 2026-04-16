@@ -23,6 +23,17 @@ class DatasetBundle:
     first_valid_bar: int
 
 
+@dataclass(slots=True, frozen=True)
+class NormalizedSplitWindow:
+    split_id: str
+    train_start: int
+    train_end: int
+    calibration_start: int
+    calibration_end: int
+    test_start: int
+    test_end: int
+
+
 def _read_json(path: Path | None) -> dict[str, Any] | None:
     if path is None or not path.exists():
         return None
@@ -80,38 +91,144 @@ def load_dataset_bundle(
     )
 
 
+def _clamp_window(start: int, end: int, row_count: int) -> tuple[int, int]:
+    clamped_start = min(max(0, int(start)), row_count)
+    clamped_end = min(max(clamped_start, int(end)), row_count)
+    return clamped_start, clamped_end
+
+
+def _validate_window_sequence(
+    *,
+    split_id: str,
+    train_start: int,
+    train_end: int,
+    calibration_start: int,
+    calibration_end: int,
+    test_start: int,
+    test_end: int,
+) -> None:
+    if train_start > train_end:
+        raise ValueError(f"{split_id}: train_start must be <= train_end")
+    if calibration_start > calibration_end:
+        raise ValueError(f"{split_id}: calibration_start must be <= calibration_end")
+    if test_start > test_end:
+        raise ValueError(f"{split_id}: test_start must be <= test_end")
+    if train_end > calibration_start:
+        raise ValueError(f"{split_id}: train/calibration windows overlap")
+    if calibration_end > test_start:
+        raise ValueError(f"{split_id}: calibration/test windows overlap")
+
+
+def normalize_split_windows(bundle: DatasetBundle) -> list[NormalizedSplitWindow]:
+    row_count = len(bundle.dataset)
+    if row_count == 0:
+        return []
+
+    split_manifest = bundle.split_manifest or {}
+    windows = split_manifest.get("windows")
+    if not isinstance(windows, list) or not windows:
+        return []
+
+    export_manifest = bundle.export_manifest or {}
+    first_valid_bar = int(export_manifest.get("first_valid_bar", bundle.first_valid_bar) or 0)
+    normalized: list[NormalizedSplitWindow] = []
+
+    last_test_start: int | None = None
+    for idx, raw_window in enumerate(windows):
+        if not isinstance(raw_window, dict):
+            raise ValueError(f"split window #{idx} must be an object")
+        split_id = str(raw_window.get("split_id", f"roll_{idx:03}")).strip() or f"roll_{idx:03}"
+        shifted_train_start = int(raw_window.get("train_start", 0)) - first_valid_bar
+        shifted_train_end = int(raw_window.get("train_end", 0)) - first_valid_bar
+        shifted_calibration_start = int(raw_window.get("calibration_start", 0)) - first_valid_bar
+        shifted_calibration_end = int(raw_window.get("calibration_end", 0)) - first_valid_bar
+        shifted_test_start = int(raw_window.get("test_start", 0)) - first_valid_bar
+        shifted_test_end = int(raw_window.get("test_end", row_count)) - first_valid_bar
+        _validate_window_sequence(
+            split_id=split_id,
+            train_start=shifted_train_start,
+            train_end=shifted_train_end,
+            calibration_start=shifted_calibration_start,
+            calibration_end=shifted_calibration_end,
+            test_start=shifted_test_start,
+            test_end=shifted_test_end,
+        )
+        if last_test_start is not None and shifted_test_start < last_test_start:
+            raise ValueError(f"{split_id}: split windows must be ordered by nondecreasing test_start")
+        train_start, train_end = _clamp_window(
+            shifted_train_start,
+            shifted_train_end,
+            row_count,
+        )
+        calibration_start, calibration_end = _clamp_window(
+            shifted_calibration_start,
+            shifted_calibration_end,
+            row_count,
+        )
+        test_start, test_end = _clamp_window(
+            shifted_test_start,
+            shifted_test_end,
+            row_count,
+        )
+        normalized.append(
+            NormalizedSplitWindow(
+                split_id=split_id,
+                train_start=train_start,
+                train_end=train_end,
+                calibration_start=calibration_start,
+                calibration_end=calibration_end,
+                test_start=test_start,
+                test_end=test_end,
+            ),
+        )
+        last_test_start = shifted_test_start
+    return normalized
+
+
+def build_fallback_split_window(row_count: int) -> NormalizedSplitWindow:
+    train_start, train_end = _clamp_window(0, max(1, int(row_count * 0.7)), row_count)
+    calibration_start, calibration_end = _clamp_window(
+        train_end,
+        max(train_end + 1, int(row_count * 0.85)),
+        row_count,
+    )
+    test_start, test_end = _clamp_window(calibration_end, row_count, row_count)
+    return NormalizedSplitWindow(
+        split_id="fallback_test",
+        train_start=train_start,
+        train_end=train_end,
+        calibration_start=calibration_start,
+        calibration_end=calibration_end,
+        test_start=test_start,
+        test_end=test_end,
+    )
+
+
+def split_window_masks(row_count: int, window: NormalizedSplitWindow) -> dict[str, np.ndarray]:
+    idx = np.arange(row_count)
+    return {
+        "train": (idx >= window.train_start) & (idx < window.train_end),
+        "calibration": (idx >= window.calibration_start) & (idx < window.calibration_end),
+        "test": (idx >= window.test_start) & (idx < window.test_end),
+    }
+
+
+def resolve_walkforward_windows(bundle: DatasetBundle) -> list[NormalizedSplitWindow]:
+    windows = normalize_split_windows(bundle)
+    if windows:
+        return windows
+    return [build_fallback_split_window(len(bundle.dataset))]
+
+
 def resolve_split_masks(bundle: DatasetBundle) -> dict[str, np.ndarray]:
     row_count = len(bundle.dataset)
     if row_count == 0:
         raise ValueError("dataset is empty")
 
-    split_manifest = bundle.split_manifest or {}
-    windows = split_manifest.get("windows")
-    if isinstance(windows, list) and windows:
-        export_manifest = bundle.export_manifest or {}
-        first_valid_bar = int(export_manifest.get("first_valid_bar", bundle.first_valid_bar) or 0)
-        last_window = windows[-1]
-        train_start = max(0, int(last_window.get("train_start", 0)) - first_valid_bar)
-        train_end = max(train_start, int(last_window.get("train_end", 0)) - first_valid_bar)
-        calibration_start = max(0, int(last_window.get("calibration_start", 0)) - first_valid_bar)
-        calibration_end = max(calibration_start, int(last_window.get("calibration_end", 0)) - first_valid_bar)
-        test_start = max(0, int(last_window.get("test_start", 0)) - first_valid_bar)
-        test_end = max(test_start, int(last_window.get("test_end", row_count)) - first_valid_bar)
-        idx = np.arange(row_count)
-        return {
-            "train": (idx >= train_start) & (idx < min(train_end, row_count)),
-            "calibration": (idx >= calibration_start) & (idx < min(calibration_end, row_count)),
-            "test": (idx >= test_start) & (idx < min(test_end, row_count)),
-        }
-
-    train_end = max(1, int(row_count * 0.7))
-    calibration_end = max(train_end + 1, int(row_count * 0.85))
-    idx = np.arange(row_count)
-    return {
-        "train": idx < train_end,
-        "calibration": (idx >= train_end) & (idx < calibration_end),
-        "test": idx >= calibration_end,
-    }
+    windows = normalize_split_windows(bundle)
+    if windows:
+        return split_window_masks(row_count, windows[-1])
+    return split_window_masks(row_count, build_fallback_split_window(row_count))
 
 
 def build_feature_frame(bundle: DatasetBundle) -> pd.DataFrame:
@@ -136,6 +253,30 @@ def dump_json(path: Path, value: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def stable_json_dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def fnv1a64_hex_bytes(raw: bytes) -> str:
+    hash_value = 0xCBF29CE484222325
+    for byte in raw:
+        hash_value ^= byte
+        hash_value = (hash_value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"fnv1a64-{hash_value:016x}"
+
+
+def json_fingerprint(value: Any) -> str:
+    return fnv1a64_hex_bytes(stable_json_dumps(value).encode("utf-8"))
+
+
+def json_file_fingerprint(path: Path | None) -> str | None:
+    if path is None or not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    return json_fingerprint(raw)
 
 
 def stable_hash_mod(text: str, modulus: int) -> int | None:

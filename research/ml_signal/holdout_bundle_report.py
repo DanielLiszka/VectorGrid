@@ -57,8 +57,16 @@ def summarize_group(label: str, frame: pd.DataFrame) -> dict[str, Any]:
             "mean_positive_ticker_rate": 0.0,
             "mean_active_share": 0.0,
             "gate_pass_rate": 0.0,
+            "evaluation_modes": [],
         }
     gate_values = pd.to_numeric(frame["gate_passed"], errors="coerce").fillna(0)
+    evaluation_modes = sorted(
+        {
+            str(value).strip()
+            for value in frame["evaluation_mode"].fillna("").tolist()
+            if str(value).strip()
+        },
+    )
     return {
         "group": label,
         "bundle_count": int(len(frame)),
@@ -70,7 +78,14 @@ def summarize_group(label: str, frame: pd.DataFrame) -> dict[str, Any]:
         "mean_positive_ticker_rate": float(pd.to_numeric(frame["positive_ticker_rate"], errors="coerce").fillna(0).mean()),
         "mean_active_share": float(pd.to_numeric(frame["active_share"], errors="coerce").fillna(0).mean()),
         "gate_pass_rate": float(gate_values.mean()) if len(gate_values) else 0.0,
+        "evaluation_modes": evaluation_modes,
     }
+
+
+def summarize_group_mode(label: str, evaluation_mode: str, frame: pd.DataFrame) -> dict[str, Any]:
+    summary = summarize_group(label, frame)
+    summary["evaluation_mode"] = evaluation_mode
+    return summary
 
 
 def main() -> int:
@@ -96,6 +111,7 @@ def main() -> int:
                 "ticker_holdout_group": normalize_holdout_group(
                     walkforward.get("ticker_holdout"),
                 ),
+                "evaluation_mode": str(walkforward.get("evaluation_mode") or ""),
                 "rows_scored": walkforward.get("rows_scored"),
                 "sum_policy_return": walkforward.get("sum_policy_return"),
                 "positive_roll_rate": walkforward.get("positive_roll_rate"),
@@ -120,11 +136,36 @@ def main() -> int:
         summarize_group(label, group_frame.copy())
         for label, group_frame in frame.groupby("ticker_holdout_group", sort=True)
     ]
+    group_mode_summaries = [
+        summarize_group_mode(str(label), str(evaluation_mode), group_frame.copy())
+        for (label, evaluation_mode), group_frame in frame.groupby(
+            ["ticker_holdout_group", "evaluation_mode"],
+            sort=True,
+        )
+    ]
+    mixed_evaluation_mode_groups = {
+        str(label): sorted(
+            {
+                str(value).strip()
+                for value in group_frame["evaluation_mode"].fillna("").tolist()
+                if str(value).strip()
+            },
+        )
+        for label, group_frame in frame.groupby("ticker_holdout_group", sort=True)
+        if group_frame["evaluation_mode"].fillna("").astype(str).nunique() > 1
+    }
 
     report = {
         "bundle_count": int(len(frame)),
         "bundle_rows_path": str(out_path.with_name("holdout_bundle_rows.csv")),
+        "evaluation_mode_counts": (
+            frame["evaluation_mode"].fillna("").astype(str).value_counts().sort_index().to_dict()
+            if "evaluation_mode" in frame.columns
+            else {}
+        ),
         "groups": group_summaries,
+        "groups_by_mode": group_mode_summaries,
+        "mixed_evaluation_mode_groups": mixed_evaluation_mode_groups,
     }
 
     dump_json(out_path, report)
@@ -132,12 +173,24 @@ def main() -> int:
 
     md_lines = [
         f"bundle_count: {len(frame)}",
+        f"evaluation_mode_counts: {report['evaluation_mode_counts']}",
+        f"mixed_evaluation_mode_groups: {report['mixed_evaluation_mode_groups']}",
         "",
         "groups:",
     ]
     for row in group_summaries:
         md_lines.append(
-            f"- {row['group']}: bundles={row['bundle_count']} rows_scored_total={row['rows_scored_total']} mean_sum_policy_return={row['mean_sum_policy_return']:.6f} mean_positive_roll_rate={row['mean_positive_roll_rate']:.4f} gate_pass_rate={row['gate_pass_rate']:.4f}",
+            f"- {row['group']}: bundles={row['bundle_count']} rows_scored_total={row['rows_scored_total']} mean_sum_policy_return={row['mean_sum_policy_return']:.6f} mean_positive_roll_rate={row['mean_positive_roll_rate']:.4f} gate_pass_rate={row['gate_pass_rate']:.4f} evaluation_modes={row['evaluation_modes']}",
+        )
+    md_lines.extend(
+        [
+            "",
+            "groups_by_mode:",
+        ],
+    )
+    for row in group_mode_summaries:
+        md_lines.append(
+            f"- {row['group']}|{row['evaluation_mode']}: bundles={row['bundle_count']} rows_scored_total={row['rows_scored_total']} mean_sum_policy_return={row['mean_sum_policy_return']:.6f} mean_positive_roll_rate={row['mean_positive_roll_rate']:.4f} gate_pass_rate={row['gate_pass_rate']:.4f}",
         )
     out_path.with_suffix(".md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 

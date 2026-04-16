@@ -8,10 +8,13 @@ import pandas as pd
 from sklearn.metrics import log_loss, roc_auc_score
 
 from common import (
+    build_fallback_split_window,
     build_feature_frame,
     choose_sample_weight,
     dump_json,
+    json_file_fingerprint,
     load_dataset_bundle,
+    normalize_split_windows,
     resolve_split_masks,
 )
 
@@ -21,6 +24,29 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "catboost is required for train_catboost.py. Install research/ml_signal dependencies first.",
     ) from exc
+
+
+DEFAULT_ITERATIONS = 1500
+DEFAULT_LEARNING_RATE = 0.03
+DEFAULT_DEPTH = 6
+DEFAULT_RANDOM_SEED = 42
+DEFAULT_SCORE_CONTRACT_VERSION = 1
+DEFAULT_SCORE_CONTRACT = {
+    "score_contract_version": DEFAULT_SCORE_CONTRACT_VERSION,
+    "validation_scores_scope": "calibration_slice",
+    "validation_scores_probability_columns": ["p_long", "p_short"],
+    "validation_scores_preferred_probability_columns": ["p_long_cal", "p_short_cal"],
+    "validation_scores_preferred_probability_columns_after_calibration": [
+        "p_long_cal",
+        "p_short_cal",
+    ],
+    "raw_margin_columns": ["raw_long", "raw_short"],
+    "walkforward_scores_scope": "walkforward_test",
+    "desktop_validation_requires_probability_columns": True,
+    "desktop_policy_validation": "probability_threshold_only",
+    "walkforward_supported_modes": ["proxy", "rolling"],
+    "walkforward_recommended_mode": "rolling",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,10 +61,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional feature schema JSON path. Defaults to the sidecar next to the dataset.",
     )
     parser.add_argument("--bundle-id", default="", help="Optional explicit bundle id.")
-    parser.add_argument("--iterations", type=int, default=1500)
-    parser.add_argument("--learning-rate", type=float, default=0.03)
-    parser.add_argument("--depth", type=int, default=6)
-    parser.add_argument("--random-seed", type=int, default=42)
+    parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    parser.add_argument("--depth", type=int, default=DEFAULT_DEPTH)
+    parser.add_argument("--random-seed", type=int, default=DEFAULT_RANDOM_SEED)
     return parser.parse_args()
 
 
@@ -58,9 +84,55 @@ def _safe_logloss(y_true: pd.Series, y_prob: pd.Series) -> float | None:
         return None
 
 
+def _require_binary_target_slice(name: str, slice_name: str, target: pd.Series) -> None:
+    if target.nunique(dropna=True) < 2:
+        raise ValueError(f"{name} {slice_name} target requires both classes")
+
+
+def _score_contract() -> dict[str, object]:
+    return {
+        key: list(value) if isinstance(value, list) else value
+        for key, value in DEFAULT_SCORE_CONTRACT.items()
+    }
+
+
+def _window_to_dict(window) -> dict[str, int | str]:
+    return {
+        "split_id": window.split_id,
+        "train_start": int(window.train_start),
+        "train_end": int(window.train_end),
+        "calibration_start": int(window.calibration_start),
+        "calibration_end": int(window.calibration_end),
+        "test_start": int(window.test_start),
+        "test_end": int(window.test_end),
+    }
+
+
+def _build_feature_importance_artifact(
+    model: CatBoostClassifier,
+    feature_cols: list[str],
+    out_path: Path,
+) -> tuple[str, list[dict[str, float | str]]] | None:
+    if not hasattr(model, "get_feature_importance"):
+        return None
+    values = model.get_feature_importance()
+    if len(values) != len(feature_cols):
+        return None
+    frame = pd.DataFrame(
+        {
+            "feature_name": feature_cols,
+            "importance": [float(value) for value in values],
+        },
+    ).sort_values("importance", ascending=False, kind="stable")
+    frame.to_csv(out_path, index=False)
+    top_rows = frame.head(10).to_dict(orient="records")
+    return out_path.name, top_rows
+
+
 def train_model(
     name: str,
     frame: pd.DataFrame,
+    feature_cols: list[str],
     masks: dict[str, pd.Series],
     sample_weight: pd.Series,
     iterations: int,
@@ -82,24 +154,8 @@ def train_model(
         raise ValueError(f"not enough training rows for {name}")
     if int(calibration_mask.sum()) < 10:
         raise ValueError(f"not enough calibration rows for {name}")
-
-    feature_cols = [
-        column
-        for column in frame.columns
-        if column
-        not in {
-            "timestamp",
-            "ticker_id",
-            "split_id",
-            "sample_weight",
-            "r_long",
-            "r_short",
-            "y_long",
-            "y_short",
-            "keep_long",
-            "keep_short",
-        }
-    ]
+    _require_binary_target_slice(name, "train", frame.loc[train_mask, target_col])
+    _require_binary_target_slice(name, "calibration", frame.loc[calibration_mask, target_col])
 
     model = CatBoostClassifier(
         loss_function="Logloss",
@@ -108,6 +164,8 @@ def train_model(
         learning_rate=learning_rate,
         depth=depth,
         grow_policy="SymmetricTree",
+        has_time=True,
+        allow_writing_files=False,
         verbose=False,
         random_seed=random_seed,
     )
@@ -162,6 +220,8 @@ def main() -> int:
 
     bundle = load_dataset_bundle(args.dataset, args.schema or None)
     masks_np = resolve_split_masks(bundle)
+    split_windows = normalize_split_windows(bundle)
+    selected_window = split_windows[-1] if split_windows else build_fallback_split_window(len(bundle.dataset))
     base_frame = bundle.dataset.copy()
     features = build_feature_frame(bundle)
     for column in bundle.feature_names:
@@ -173,6 +233,7 @@ def main() -> int:
     long_model, long_scores, long_metrics = train_model(
         "long",
         base_frame,
+        bundle.feature_names,
         masks,
         sample_weight,
         args.iterations,
@@ -183,6 +244,7 @@ def main() -> int:
     short_model, short_scores, short_metrics = train_model(
         "short",
         base_frame,
+        bundle.feature_names,
         masks,
         sample_weight,
         args.iterations,
@@ -205,6 +267,24 @@ def main() -> int:
     validation_scores_path = out_dir / "validation_scores.csv"
     merged_scores.to_csv(validation_scores_path, index=False)
 
+    explainability_artifacts: dict[str, object] = {}
+    long_importance = _build_feature_importance_artifact(
+        long_model,
+        bundle.feature_names,
+        out_dir / "feature_importance_long.csv",
+    )
+    if long_importance is not None:
+        explainability_artifacts["long_feature_importance_csv"] = long_importance[0]
+        explainability_artifacts["long_top_features"] = long_importance[1]
+    short_importance = _build_feature_importance_artifact(
+        short_model,
+        bundle.feature_names,
+        out_dir / "feature_importance_short.csv",
+    )
+    if short_importance is not None:
+        explainability_artifacts["short_feature_importance_csv"] = short_importance[0]
+        explainability_artifacts["short_top_features"] = short_importance[1]
+
     shutil.copyfile(bundle.schema_path, out_dir / "feature_schema.json")
     if bundle.export_manifest_path:
         shutil.copyfile(bundle.export_manifest_path, out_dir / "export_manifest.json")
@@ -212,6 +292,54 @@ def main() -> int:
         shutil.copyfile(bundle.split_manifest_path, out_dir / "split_manifest.json")
 
     bundle_id = args.bundle_id.strip() or f"mlsig_{bundle.dataset_path.stem}_cbm_v1"
+    source_feature_schema_hash = str(
+        bundle.schema.get("schema_hash")
+        or json_file_fingerprint(bundle.schema_path)
+        or ""
+    )
+    source_export_manifest_hash = json_file_fingerprint(bundle.export_manifest_path)
+    score_contract = _score_contract()
+    training_mode = "single_fit_last_window" if split_windows else "single_fit_fallback"
+    selected_split_id = selected_window.split_id
+    training_config = {
+        "loss_function": "Logloss",
+        "eval_metric": "Logloss",
+        "iterations": int(args.iterations),
+        "learning_rate": float(args.learning_rate),
+        "depth": int(args.depth),
+        "grow_policy": "SymmetricTree",
+        "use_best_model": True,
+        "has_time": True,
+        "allow_writing_files": False,
+        "long_random_seed": int(args.random_seed),
+        "short_random_seed": int(args.random_seed + 1),
+        "feature_count": int(len(bundle.feature_names)),
+    }
+    training_windows_summary = {
+        "window_count": int(len(split_windows)),
+        "fallback_used": not split_windows,
+        "selected_window": _window_to_dict(selected_window),
+        "selected_split_id": selected_split_id,
+        "selected_window_index": int(len(split_windows) - 1) if split_windows else 0,
+        "available_split_ids": [window.split_id for window in split_windows] if split_windows else [selected_split_id],
+        "train_rows": int(masks["train"].sum()),
+        "calibration_rows": int(masks["calibration"].sum()),
+        "test_rows": int(masks["test"].sum()),
+    }
+    class_balance_policy = (
+        "dataset_sample_weight_nonuniform_no_class_rebalancing"
+        if sample_weight.nunique(dropna=False) > 1
+        else "uniform_sample_weight_no_class_rebalancing"
+    )
+    calibration_summary = {
+        "kind": "not_calibrated_yet",
+        "status": "pending_calibration_script",
+        "validation_scores_scope": "calibration_slice",
+        "rows": {
+            "long": int(long_metrics["calibration_rows"]),
+            "short": int(short_metrics["calibration_rows"]),
+        },
+    }
     dump_json(
         out_dir / "manifest.json",
         {
@@ -222,16 +350,21 @@ def main() -> int:
             "model_format": "cbm",
             "long_model_path": "model_long.cbm",
             "short_model_path": "model_short.cbm",
-            "score_contract": {
-                "validation_scores_scope": "calibration_slice",
-                "validation_scores_probability_columns": ["p_long", "p_short"],
-                "validation_scores_preferred_probability_columns_after_calibration": [
-                    "p_long_cal",
-                    "p_short_cal",
-                ],
-                "raw_margin_columns": ["raw_long", "raw_short"],
-                "desktop_validation_requires_probability_columns": True,
+            "source_export_manifest_hash": source_export_manifest_hash,
+            "source_feature_schema_hash": source_feature_schema_hash,
+            "training_config": training_config,
+            "training_windows_summary": training_windows_summary,
+            "calibration_summary": calibration_summary,
+            "class_balance_policy": class_balance_policy,
+            "threshold_policy_default": {
+                "kind": "defer_to_desktop_validation_request",
             },
+            "explainability_artifacts": explainability_artifacts or None,
+            "bundle_parent_id": None,
+            "score_contract": score_contract,
+            "bundle_training_mode": training_mode,
+            "bundle_training_split_id": selected_split_id,
+            "split_window_count": len(split_windows),
             "notes": "Trained from exported MlSignal dataset CSV.",
         },
     )
@@ -253,15 +386,21 @@ def main() -> int:
             "export_manifest": str(bundle.export_manifest_path) if bundle.export_manifest_path else "",
             "split_manifest": str(bundle.split_manifest_path) if bundle.split_manifest_path else "",
             "bundle_id": bundle_id,
+            "source_feature_schema_hash": source_feature_schema_hash,
+            "source_export_manifest_hash": source_export_manifest_hash,
             "iterations": args.iterations,
             "learning_rate": args.learning_rate,
             "depth": args.depth,
             "random_seed": args.random_seed,
-            "score_contract": {
-                "validation_scores_scope": "calibration_slice",
-                "walkforward_scores_scope": "walkforward_test",
-                "desktop_policy_validation": "probability_threshold_only",
-            },
+            "training_config": training_config,
+            "training_windows_summary": training_windows_summary,
+            "class_balance_policy": class_balance_policy,
+            "bundle_training_mode": training_mode,
+            "bundle_training_split_id": selected_split_id,
+            "split_window_count": len(split_windows),
+            "score_contract": score_contract,
+            "calibration_summary": calibration_summary,
+            "explainability_artifacts": explainability_artifacts or None,
         },
     )
 

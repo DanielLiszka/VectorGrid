@@ -104,12 +104,40 @@ def main() -> int:
     rolls = walkforward_rolls.get("rolls") if isinstance(walkforward_rolls.get("rolls"), list) else []
 
     rows_scored = as_int(walkforward.get("rows_scored")) or 0
+    evaluation_mode = str(walkforward.get("evaluation_mode") or "proxy")
+    rolling_calibration = (
+        walkforward.get("rolling_calibration_summary")
+        if isinstance(walkforward.get("rolling_calibration_summary"), dict)
+        else {}
+    )
     positive_roll_rate = as_float(walkforward.get("positive_roll_rate")) or 0.0
     active_share = as_float(walkforward.get("active_share")) or 0.0
     mean_policy_return = as_float(walkforward.get("mean_policy_return")) or 0.0
     sum_policy_return = as_float(walkforward.get("sum_policy_return")) or 0.0
-    long_auc = as_float(long_metrics.get("auc_calibration"))
-    short_auc = as_float(short_metrics.get("auc_calibration"))
+    if evaluation_mode == "rolling":
+        long_auc = as_float(rolling_calibration.get("long_auc_calibration_mean"))
+        short_auc = as_float(rolling_calibration.get("short_auc_calibration_mean"))
+        auc_source = "rolling_calibration_summary.mean"
+    else:
+        long_auc = as_float(long_metrics.get("auc_calibration"))
+        short_auc = as_float(short_metrics.get("auc_calibration"))
+        auc_source = "metrics.json"
+
+    auxiliary_mode_warnings: list[str] = []
+    if isinstance(baseline_comparison, dict):
+        baseline_mode = str(baseline_comparison.get("ml_evaluation_mode") or "").strip()
+        if baseline_mode and baseline_mode != evaluation_mode:
+            auxiliary_mode_warnings.append(
+                f"baseline_comparison evaluation_mode mismatch: {baseline_mode} vs {evaluation_mode}",
+            )
+    if isinstance(holdout_report, dict):
+        holdout_modes = holdout_report.get("evaluation_modes")
+        if isinstance(holdout_modes, list) and holdout_modes:
+            normalized_modes = sorted({str(value).strip() for value in holdout_modes if str(value).strip()})
+            if normalized_modes and evaluation_mode not in normalized_modes:
+                auxiliary_mode_warnings.append(
+                    f"holdout_report evaluation_modes mismatch: {normalized_modes} vs {evaluation_mode}",
+                )
 
     checks = [
         summarize_check(
@@ -154,7 +182,10 @@ def main() -> int:
         "failed_checks": failed_names,
         "checks": checks,
         "summary": {
+            "evaluation_mode": evaluation_mode,
             "rows_scored": rows_scored,
+            "expected_splits": as_int(walkforward.get("expected_splits")) or 0,
+            "skipped_roll_count": as_int(walkforward.get("skipped_roll_count")) or 0,
             "splits_scored": as_int(walkforward.get("splits_scored")) or 0,
             "positive_roll_rate": positive_roll_rate,
             "active_share": active_share,
@@ -162,6 +193,7 @@ def main() -> int:
             "sum_policy_return": sum_policy_return,
             "long_auc": long_auc,
             "short_auc": short_auc,
+            "auc_source": auc_source,
             "roll_count": len(rolls),
         },
         "baseline_comparison_present": bool(baseline_comparison),
@@ -171,9 +203,11 @@ def main() -> int:
             "This report is a research gate only. It does not replace deterministic baseline comparison.",
             "Ticker-holdout comparison remains a separate research step.",
             "Threshold-stability review still requires comparing multiple policy outputs across rolls.",
-            "validation_scores.csv is a calibration-slice artifact, while walkforward_test_scores.csv is a walk-forward proxy artifact with a different scope.",
+            "validation_scores.csv is a calibration-slice artifact, while walkforward_test_scores.csv is a walk-forward research artifact with a different scope.",
+            f"Current walk-forward evaluation_mode={evaluation_mode}.",
             "Research walk-forward outputs do not prove desktop parity by themselves; desktop validation and policy sweep remain separate surfaces.",
         ],
+        "auxiliary_mode_warnings": auxiliary_mode_warnings,
     }
     if isinstance(baseline_comparison, dict):
         report["baseline_summary"] = {
@@ -200,6 +234,8 @@ def main() -> int:
     lines = [
         f"bundle_id: {report['bundle_id']}",
         f"passed: {str(passed).lower()}",
+        f"evaluation_mode: {evaluation_mode}",
+        f"auc_source: {auc_source}",
         "",
         "checks:",
     ]
@@ -212,10 +248,21 @@ def main() -> int:
             "notes:",
             "- This report is a research gate only.",
             "- Deterministic baseline and ticker-holdout comparisons are still required.",
-            "- validation_scores.csv covers calibration-slice scoring, while walkforward_test_scores.csv covers walk-forward proxy scoring.",
+            "- validation_scores.csv covers calibration-slice scoring, while walkforward_test_scores.csv covers walk-forward research scoring.",
+            f"- Current walk-forward evaluation_mode is {evaluation_mode}.",
+            f"- AUC source is {auc_source}.",
             "- Research walk-forward artifacts are not desktop validation or policy-sweep parity evidence on their own.",
         ],
     )
+    if auxiliary_mode_warnings:
+        lines.extend(
+            [
+                "",
+                "auxiliary_mode_warnings:",
+            ],
+        )
+        for warning in auxiliary_mode_warnings:
+            lines.append(f"- {warning}")
     if isinstance(holdout_report, dict):
         lines.extend(
             [

@@ -61,11 +61,11 @@ fn normal_inv_cdf(p: f64) -> f64 {
 
     if pp < plow {
         let q = (-2.0 * pp.ln()).sqrt();
-        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     } else if pp > phigh {
         let q = (-2.0 * (1.0 - pp).ln()).sqrt();
-        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     } else {
         let q = pp - 0.5;
@@ -75,6 +75,10 @@ fn normal_inv_cdf(p: f64) -> f64 {
     }
 }
 
+/// Computes the Sharpe-family exceedance probability against a benchmark Sharpe ratio.
+///
+/// `kurtosis` is interpreted as raw Pearson kurtosis, not excess kurtosis. This helper keeps
+/// the current `0.5` invalid-input fallback because wrapper-level policy still depends on it.
 pub fn probabilistic_sharpe_ratio(
     sr_hat: f64,
     benchmark_sr: f64,
@@ -120,6 +124,8 @@ pub fn mean_std(xs: &[f64]) -> (f64, f64) {
     (mean, (m2 / (n - 1.0)).sqrt())
 }
 
+/// Estimates the expected maximum Sharpe ratio across peer trials using the same normal-quantile
+/// helper as `deflated_sharpe_ratio`.
 pub fn expected_max_sharpe(num_trials: usize, sr_mean: f64, sr_std: f64) -> f64 {
     if num_trials <= 1 || !sr_mean.is_finite() || !sr_std.is_finite() {
         return sr_mean;
@@ -181,6 +187,13 @@ pub fn minimum_track_record_length(
 mod tests {
     use super::*;
 
+    fn approx_eq(left: f64, right: f64, tolerance: f64) {
+        assert!(
+            (left - right).abs() <= tolerance,
+            "left={left}, right={right}, tolerance={tolerance}"
+        );
+    }
+
     #[test]
     fn psr_monotonic_in_sr() {
         let a = probabilistic_sharpe_ratio(0.2, 0.0, 100, 0.0, 3.0);
@@ -196,10 +209,48 @@ mod tests {
     }
 
     #[test]
+    fn normal_inv_cdf_tail_signs_match_probability_tail() {
+        assert!(normal_inv_cdf(1e-6) < 0.0);
+        assert!(normal_inv_cdf(1.0 - 1e-6) > 0.0);
+    }
+
+    #[test]
+    fn normal_inv_cdf_round_trips_tail_and_central_probabilities() {
+        for probability in [1e-6, 1e-3, 0.2, 0.5, 0.8, 1.0 - 1e-3, 1.0 - 1e-6] {
+            let quantile = normal_inv_cdf(probability);
+            approx_eq(normal_cdf(quantile), probability, 5e-7);
+        }
+    }
+
+    #[test]
     fn expected_max_sharpe_is_deterministic() {
         let a = expected_max_sharpe(42, 0.4, 0.2);
         let b = expected_max_sharpe(42, 0.4, 0.2);
         assert!((a - b).abs() < 1e-15);
+    }
+
+    #[test]
+    fn expected_max_sharpe_is_monotonic_in_trial_count() {
+        let counts = [1, 2, 5, 10, 50, 250];
+        let mut last = f64::NEG_INFINITY;
+        for count in counts {
+            let value = expected_max_sharpe(count, 0.4, 0.2);
+            assert!(value >= last, "count={count}, value={value}, last={last}");
+            last = value;
+        }
+    }
+
+    #[test]
+    fn probabilistic_sharpe_ratio_preserves_invalid_input_fallback() {
+        assert_eq!(
+            probabilistic_sharpe_ratio(f64::NAN, 0.0, 100, 0.0, 3.0),
+            0.5
+        );
+        assert_eq!(
+            probabilistic_sharpe_ratio(0.5, f64::NAN, 100, 0.0, 3.0),
+            0.5
+        );
+        assert_eq!(probabilistic_sharpe_ratio(0.5, 0.0, 1, 0.0, 3.0), 0.5);
     }
 
     #[test]

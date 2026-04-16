@@ -133,10 +133,7 @@ pub struct GpuStrategyExecutable {
 
 impl GpuStrategyExecutable {
     pub fn from_handle(handle: &StrategyHandle, device_id: u32) -> Result<Self, String> {
-        let abi = handle
-            .gpu_program_abi
-            .as_ref()
-            .ok_or_else(|| "strategy handle does not contain a GPU program ABI".to_string())?;
+        let abi = validated_gpu_program_abi(handle)?;
         Ok(Self {
             plan_fingerprint_hex: abi.plan_fingerprint_hex.clone(),
             compiled_plan_fingerprint_hex: abi.compiled_plan_fingerprint_hex.clone(),
@@ -177,12 +174,71 @@ thread_local! {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StrategyExecutableCacheStats {
     pub compiled_bundle_hits: u64,
+    /// Actual process-global compiled-bundle insertions, not cold-path attempts that lost a race.
     pub compiled_bundle_misses: u64,
     pub compiled_bundle_entries: usize,
     pub hits: u64,
+    /// Actual process-global executable-cache insertions, not cold-path attempts that lost a race.
     pub misses: u64,
     pub entries: usize,
+    /// Uploads cached for the current thread only.
     pub uploaded_thread_entries: usize,
+}
+
+fn ensure_non_empty_fingerprint(value: &str, field: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!(
+            "strategy handle gpu program ABI has an empty {field}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validated_gpu_program_abi(
+    handle: &StrategyHandle,
+) -> Result<&CompiledGpuPredicateProgramAbi, String> {
+    let abi = handle
+        .gpu_program_abi
+        .as_ref()
+        .ok_or_else(|| "strategy handle does not contain a GPU program ABI".to_string())?;
+    if abi.abi_version != STRATEGY_GPU_EXECUTABLE_ABI_VERSION {
+        return Err(format!(
+            "strategy handle gpu program ABI version {} does not match runtime version {}",
+            abi.abi_version, STRATEGY_GPU_EXECUTABLE_ABI_VERSION
+        ));
+    }
+    ensure_non_empty_fingerprint(
+        abi.compiled_plan_fingerprint_hex.as_str(),
+        "compiled_plan_fingerprint_hex",
+    )?;
+    ensure_non_empty_fingerprint(
+        abi.executable_fingerprint_hex.as_str(),
+        "executable_fingerprint_hex",
+    )?;
+
+    if let Some(program) = handle.gpu_program.as_ref() {
+        if program.plan_fingerprint_hex != abi.plan_fingerprint_hex {
+            return Err(
+                "strategy handle gpu program fingerprint does not match ABI plan fingerprint"
+                    .to_string(),
+            );
+        }
+        if program.compiled_plan_fingerprint_hex != abi.compiled_plan_fingerprint_hex {
+            return Err(
+                "strategy handle gpu program fingerprint does not match ABI compiled-plan fingerprint"
+                    .to_string(),
+            );
+        }
+        if program.executable_fingerprint_hex != abi.executable_fingerprint_hex {
+            return Err(
+                "strategy handle gpu program fingerprint does not match ABI executable fingerprint"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(abi)
 }
 
 fn get_or_build_compiled_gpu_predicate_bundle(
@@ -215,11 +271,22 @@ fn get_or_build_compiled_gpu_predicate_bundle(
     let mut guard = cache
         .lock()
         .map_err(|_| "gpu predicate bundle cache lock poisoned".to_string())?;
-    let entry = guard.entry(key).or_insert_with(|| bundle.clone()).clone();
-    GPU_STRATEGY_COMPILED_BUNDLE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+    let entry = match guard.entry(key) {
+        std::collections::hash_map::Entry::Occupied(existing) => {
+            GPU_STRATEGY_COMPILED_BUNDLE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+            existing.get().clone()
+        }
+        std::collections::hash_map::Entry::Vacant(vacant) => {
+            GPU_STRATEGY_COMPILED_BUNDLE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            vacant.insert(bundle).clone()
+        }
+    };
     Ok(entry)
 }
 
+/// Clear the process-global compiled/executable caches and the upload cache for the current thread.
+///
+/// This does not invalidate uploads that may remain cached in other threads.
 pub fn reset_gpu_strategy_executable_cache() {
     if let Some(cache) = GPU_STRATEGY_COMPILED_BUNDLE_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
@@ -241,6 +308,8 @@ pub fn reset_gpu_strategy_executable_cache() {
     GPU_STRATEGY_EXECUTABLE_CACHE_MISSES.store(0, Ordering::Relaxed);
 }
 
+/// Return cache stats for the process-global compiled/executable caches plus the current thread's
+/// uploaded-executable cache entry count.
 pub fn gpu_strategy_executable_cache_stats() -> StrategyExecutableCacheStats {
     let compiled_bundle_entries = GPU_STRATEGY_COMPILED_BUNDLE_CACHE
         .get()
@@ -272,10 +341,7 @@ fn ensure_uploaded_gpu_strategy_executable_for_current_thread(
     device_id: u32,
     handle: &StrategyHandle,
 ) -> Result<(), String> {
-    let abi = handle
-        .gpu_program_abi
-        .as_ref()
-        .ok_or_else(|| "strategy handle missing GPU program ABI for upload".to_string())?;
+    let abi = validated_gpu_program_abi(handle)?;
     let key_for_upload = key.clone();
     GPU_STRATEGY_EXECUTABLE_UPLOAD_CACHE.with(|cell| -> Result<(), String> {
         let mut map = cell.borrow_mut();
@@ -305,12 +371,8 @@ pub fn get_or_build_gpu_strategy_executable(
     handle: &StrategyHandle,
     device_id: u32,
 ) -> Result<GpuStrategyExecutable, String> {
-    let executable_fingerprint_hex = handle
-        .gpu_program_abi
-        .as_ref()
-        .ok_or_else(|| "strategy handle does not contain a GPU program ABI".to_string())?
-        .executable_fingerprint_hex
-        .clone();
+    let abi = validated_gpu_program_abi(handle)?;
+    let executable_fingerprint_hex = abi.executable_fingerprint_hex.clone();
     let key = GpuStrategyExecutableCacheKey::new(executable_fingerprint_hex, device_id);
     let cache = GPU_STRATEGY_EXECUTABLE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
@@ -334,8 +396,16 @@ pub fn get_or_build_gpu_strategy_executable(
     let mut guard = cache
         .lock()
         .map_err(|_| "gpu strategy executable cache lock poisoned".to_string())?;
-    let entry = guard.entry(key).or_insert_with(|| exec.clone()).clone();
-    GPU_STRATEGY_EXECUTABLE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+    let entry = match guard.entry(key) {
+        std::collections::hash_map::Entry::Occupied(existing) => {
+            GPU_STRATEGY_EXECUTABLE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+            existing.get().clone()
+        }
+        std::collections::hash_map::Entry::Vacant(vacant) => {
+            GPU_STRATEGY_EXECUTABLE_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            vacant.insert(exec).clone()
+        }
+    };
     Ok(entry)
 }
 
@@ -414,6 +484,103 @@ mod tests {
 
         assert!(handle.gpu_program.is_none());
         assert!(handle.gpu_program_abi.is_none());
+    }
+
+    #[test]
+    fn executable_cache_rejects_empty_compiled_plan_fingerprint_from_abi() {
+        let _guard = lock_strategy_executable_cache_test();
+        reset_gpu_strategy_executable_cache();
+        let plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &StrategyConfig::default(),
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile dynamic plan");
+        let mut handle =
+            StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+                .expect("build strategy handle");
+        handle
+            .gpu_program_abi
+            .as_mut()
+            .expect("abi expected")
+            .compiled_plan_fingerprint_hex
+            .clear();
+
+        let err = get_or_build_gpu_strategy_executable(&handle, 0)
+            .expect_err("empty compiled-plan fingerprint should fail");
+        assert!(err.contains("empty compiled_plan_fingerprint_hex"));
+
+        let stats = gpu_strategy_executable_cache_stats();
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.misses, 0);
+    }
+
+    #[test]
+    fn executable_cache_rejects_non_current_abi_version() {
+        let _guard = lock_strategy_executable_cache_test();
+        reset_gpu_strategy_executable_cache();
+        let plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &StrategyConfig::default(),
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile dynamic plan");
+        let mut handle =
+            StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+                .expect("build strategy handle");
+        handle
+            .gpu_program_abi
+            .as_mut()
+            .expect("abi expected")
+            .abi_version += 1;
+
+        let err = get_or_build_gpu_strategy_executable(&handle, 0)
+            .expect_err("abi version mismatch should fail");
+        assert!(err.contains("does not match runtime version"));
+
+        let stats = gpu_strategy_executable_cache_stats();
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.misses, 0);
+    }
+
+    #[test]
+    fn executable_cache_rejects_program_and_abi_fingerprint_mismatch() {
+        let _guard = lock_strategy_executable_cache_test();
+        reset_gpu_strategy_executable_cache();
+        let plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &StrategyConfig::default(),
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile dynamic plan");
+        let mut handle =
+            StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+                .expect("build strategy handle");
+        handle
+            .gpu_program_abi
+            .as_mut()
+            .expect("abi expected")
+            .executable_fingerprint_hex
+            .push_str("_mismatch");
+
+        let err = get_or_build_gpu_strategy_executable(&handle, 0)
+            .expect_err("program/abi fingerprint mismatch should fail");
+        assert!(err.contains("does not match ABI executable fingerprint"));
     }
 
     #[test]

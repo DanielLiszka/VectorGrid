@@ -6,7 +6,7 @@ Current scope:
 
 - train external long/short tabular models from exported ML datasets
 - calibrate model outputs into score/probability columns
-- evaluate walk-forward rolls outside the Tauri runtime
+- evaluate both proxy and rolling walk-forward rolls outside the Tauri runtime
 - assemble model bundles that the app can inspect and later score natively
 
 ## Environment
@@ -39,13 +39,29 @@ python calibrate.py `
   --scores-csv C:\data\ml_signal\bundle_dev\validation_scores.csv
 ```
 
-4. Run walk-forward evaluation:
+4. Run walk-forward evaluation.
+
+Preferred research path: rolling mode retrains and recalibrates per split window.
 
 ```powershell
 python evaluate_walkforward.py `
   --dataset C:\data\ml_dataset.csv `
-  --bundle-dir C:\data\ml_signal\bundle_dev
+  --bundle-dir C:\data\ml_signal\bundle_dev `
+  --mode rolling `
+  --artifact-suffix rolling
 ```
+
+Legacy compatibility path: proxy mode reuses the saved bundle models and slices test windows without retraining.
+
+```powershell
+python evaluate_walkforward.py `
+  --dataset C:\data\ml_dataset.csv `
+  --bundle-dir C:\data\ml_signal\bundle_dev `
+  --mode proxy `
+  --artifact-suffix proxy
+```
+
+Use distinct bundle directories or distinct `--artifact-suffix` values if you want to keep both proxy and rolling outputs. The walk-forward scripts and downstream reports otherwise write fixed filenames and later runs will overwrite earlier artifacts.
 
 5. Generate a research gate report:
 
@@ -87,6 +103,8 @@ python calibration_slice_report.py `
   --top-tickers 25
 ```
 
+This step reviews bundle validation-slice calibration only. It does not currently emit per-roll rolling-mode calibration diagnostics.
+
 10. Aggregate multiple bundle summaries by exported holdout cohort:
 
 ```powershell
@@ -108,16 +126,20 @@ Current capabilities:
   - writes `model_long.cbm`, `model_short.cbm`, `validation_scores.csv`, `metrics.json`, `train_metadata.json`, and `manifest.json`
 - `calibrate.py`
   - fits sigmoid calibration from validation raw scores
+  - handles side-specific validation rows when `keep_long` and `keep_short` diverge
   - writes `calibration.json`
   - rewrites `validation_scores.csv` with preferred calibrated probability columns `p_long_cal` / `p_short_cal`
   - updates `manifest.json`
 - `evaluate_walkforward.py`
-  - loads the saved bundle
-  - scores the dataset once and evaluates each split-window test slice when a split manifest is present
-  - applies optional calibration
+  - loads the saved bundle plus bundle-side copied schema/export/split manifests when present
+  - supports `--mode proxy` and `--mode rolling`
+  - supports `--artifact-suffix` so multiple walk-forward modes can coexist in one bundle directory
+  - `proxy` mode scores the dataset once with the saved bundle models, applies optional bundle calibration, and evaluates each split-window test slice
+  - `rolling` mode retrains long/short models on each split-window train slice, fits sigmoid calibration on that split-window calibration slice, and scores only that split-window test slice
   - writes `walkforward_test_scores.csv`, `walkforward_rolls.json`, `walkforward_tickers.json`, and `walkforward_summary.json`
 - `gate_report.py`
   - reads `metrics.json`, `walkforward_summary.json`, `walkforward_rolls.json`, and `manifest.json`
+  - uses `metrics.json` AUCs for `proxy` mode and rolling calibration-summary AUCs for `rolling` mode
   - applies repo-oriented research gates for scored rows, positive-roll rate, active share, and calibration AUC
   - folds in `baseline_comparison.json`, `holdout_report.json`, and `stability_report.json` when they are present
   - writes `gate_report.json` and `gate_report.md`
@@ -134,6 +156,7 @@ Current capabilities:
   - writes `stability_report.json` and `stability_report.md`
 - `calibration_slice_report.py`
   - reads `validation_scores.csv`
+  - prefers calibrated probability columns `p_long_cal` / `p_short_cal` when they are present
   - summarizes long/short calibration quality overall, by split, by holdout when present, and for the largest ticker slices
   - writes `validation_slice_metrics.json`, `validation_slice_metrics.csv`, and `validation_slice_metrics.md`
 - `holdout_bundle_report.py`
@@ -154,5 +177,8 @@ Still open:
 - `validation_scores.csv` is a calibration-slice artifact produced from the calibration rows used by the offline training harness.
 - After `calibrate.py` runs, `p_long_cal` / `p_short_cal` are the preferred probability columns for `validation_scores.csv`.
 - `raw_long` / `raw_short` remain diagnostic raw-margin columns; they are not the preferred desktop validation contract.
-- `walkforward_test_scores.csv` is a walk-forward proxy artifact produced by the Python harness. It is useful for research review, but it is not itself a desktop validation or policy-sweep artifact.
+- `walkforward_test_scores.csv` is still a research artifact. Check `walkforward_summary.json.evaluation_mode` to determine whether it came from `proxy` or `rolling` evaluation.
+- When you keep multiple mode variants, the artifact suffix becomes part of the filename, for example `walkforward_summary.proxy.json` or `walkforward_summary.rolling.json`.
+- `proxy` mode is a one-shot fixed-model approximation. It is useful for continuity with older bundles, but it is not a no-future-leak rolling evaluation.
+- `rolling` mode retrains and recalibrates per split window. It is the preferred offline research path when causal walk-forward behavior matters.
 - Desktop `MlSignal` validation/policy sweep is still a separate score-cache-backed runtime surface and should be reviewed separately when parity matters.

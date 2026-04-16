@@ -1827,6 +1827,62 @@ mod tests {
     }
 
     #[test]
+    fn compute_probability_metrics_falls_back_to_two_obs_when_sample_obs_is_short_or_too_small() {
+        let mut out = vec![
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.20,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 1.2,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.00,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 1.0,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 0.80,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 0.8,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+        ];
+
+        compute_probability_metrics(&mut out, &[0, 7]);
+
+        assert_eq!(out[0].track_record_bars, 2);
+        assert_eq!(out[1].track_record_bars, 7);
+        assert_eq!(out[2].track_record_bars, 2);
+        assert!(out.iter().all(|cand| cand.psr.is_some()));
+        assert!(out.iter().all(|cand| cand.dsr.is_some()));
+    }
+
+    #[test]
     fn mark_robust_pareto_uses_same_dominance_rules_with_walk_forward_data() {
         let mut out = vec![
             DummyCandidate {
@@ -2232,6 +2288,58 @@ mod tests {
             ValidationRecommendation::EvidenceTooShortMinTrackRecord
         );
         assert_eq!(verdict.approved_candidate_count, 0);
+    }
+
+    #[test]
+    fn run_verdict_preserves_rank_one_stats_when_later_candidate_is_first_approved() {
+        let gates = ValidationHardGateConfig {
+            min_psr: Some(0.70),
+            ..ValidationHardGateConfig::default()
+        };
+        let mut out = vec![
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.4,
+                    ..Metrics::default()
+                },
+                psr: Some(0.40),
+                dsr: Some(0.95),
+                track_record_bars: 256,
+                min_track_record_length_bars: Some(64),
+                robust_score: 1.4,
+                robust_pareto: true,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.1,
+                    ..Metrics::default()
+                },
+                psr: Some(0.92),
+                dsr: Some(0.90),
+                track_record_bars: 256,
+                min_track_record_length_bars: Some(64),
+                robust_score: 1.1,
+                robust_pareto: true,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+        ];
+        apply_candidate_hard_gates(&mut out, &gates, None);
+
+        let verdict = build_run_verdict(&out, 2, &gates, None, None);
+
+        assert!(verdict.approved);
+        assert_eq!(verdict.candidates_survived_hard_gates, 1);
+        assert_eq!(verdict.approved_candidate_count, 1);
+        assert_eq!(verdict.first_approved_rank, Some(2));
+        assert_eq!(verdict.top_candidate_psr, Some(0.40));
+        assert_eq!(verdict.top_candidate_dsr, Some(0.95));
+        assert_eq!(
+            verdict.final_recommendation,
+            ValidationRecommendation::ApprovedWithWarnings
+        );
     }
 
     #[test]

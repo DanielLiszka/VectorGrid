@@ -8,9 +8,10 @@ use crate::validation_pipeline::{
     robust_score_from_metrics, sanitize_hard_gates, ValidationCandidateVerdict,
     ValidationPostCandidate, ValidationRunVerdict,
 };
-use crate::validation_shared::ValidationArtifactContext;
+use crate::validation_shared::{canonical_json_key_bytes, ValidationArtifactContext};
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
@@ -25,6 +26,8 @@ const ML_SIGNAL_FEATURE_SCHEMA_VERSION: u32 = 1;
 const ML_SIGNAL_SCORE_CACHE_VERSION: u32 = 1;
 const ML_SIGNAL_EXPORT_MANIFEST_VERSION: u32 = 1;
 const ML_SIGNAL_SPLIT_PLAN_VERSION: u32 = 1;
+const ML_SIGNAL_EXPORTER_VERSION: &str = "ml_signal_export_v2";
+const ML_SIGNAL_SCORE_CONTRACT_VERSION: u32 = 1;
 
 fn default_horizon_bars() -> usize {
     10
@@ -70,6 +73,14 @@ fn default_ml_signal_score_scope() -> MlSignalScoreScope {
     MlSignalScoreScope::CustomPartial
 }
 
+fn default_ml_signal_exporter_version() -> String {
+    ML_SIGNAL_EXPORTER_VERSION.to_string()
+}
+
+fn default_ml_signal_score_contract_version() -> u32 {
+    ML_SIGNAL_SCORE_CONTRACT_VERSION
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MlSignalScoreSpace {
@@ -99,6 +110,52 @@ pub struct MlSignalScoreCacheSummary {
     pub first_timestamp: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_timestamp: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_schema_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_contract_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bundle_manifest_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MlSignalIndicatorConfig {
+    pub ma_source: String,
+    pub horizon_bars: usize,
+    pub alma_periods: Vec<usize>,
+    pub adx_period: usize,
+    pub atr_period: usize,
+    pub pattern_semantics: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MlSignalWarmupPolicy {
+    pub kind: String,
+    pub first_valid_bar: usize,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MlSignalLabelPolicy {
+    pub kind: String,
+    pub horizon_bars: usize,
+    pub round_trip_cost_bps: f64,
+    pub deadband_kind: String,
+    pub long_rule: String,
+    pub short_rule: String,
+    pub keep_rule: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MlSignalSampleWeightPolicy {
+    pub kind: String,
+    pub description: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -110,6 +167,18 @@ pub struct MlSignalFeatureSchema {
     pub first_valid_bar: usize,
     pub feature_names: Vec<String>,
     pub pattern_ids: Vec<String>,
+    #[serde(default)]
+    pub schema_hash: String,
+    #[serde(default = "default_ml_signal_exporter_version")]
+    pub exporter_version: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub feature_block_versions: HashMap<String, u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indicator_config: Option<MlSignalIndicatorConfig>,
+    #[serde(default)]
+    pub label_horizon_bars: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_valid_reasoning: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -163,6 +232,20 @@ pub struct MlSignalDatasetExportManifest {
     pub first_timestamp: Option<i64>,
     pub last_timestamp: Option<i64>,
     pub ticker_holdout: Option<bool>,
+    #[serde(default)]
+    pub feature_schema_hash: String,
+    #[serde(default = "default_ml_signal_exporter_version")]
+    pub exporter_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indicator_config: Option<MlSignalIndicatorConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warmup_policy: Option<MlSignalWarmupPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_policy: Option<MlSignalLabelPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_weight_policy: Option<MlSignalSampleWeightPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -192,6 +275,8 @@ pub struct MlSignalDatasetExportResult {
     pub row_count: usize,
     pub feature_count: usize,
     pub feature_schema_version: u32,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub feature_schema_hash: String,
     pub pattern_count: usize,
     pub first_valid_bar: usize,
     pub horizon_bars: usize,
@@ -207,6 +292,22 @@ pub struct MlSignalScoreCacheBuildRequest {
     pub output_path: String,
     #[serde(default)]
     pub model_bundle_id: Option<String>,
+    #[serde(default)]
+    pub feature_schema_path: Option<String>,
+    #[serde(default)]
+    pub feature_schema_hash: Option<String>,
+    #[serde(default)]
+    pub export_manifest_path: Option<String>,
+    #[serde(default)]
+    pub source_bundle_manifest_path: Option<String>,
+    #[serde(default)]
+    pub calibration_state: Option<String>,
+    #[serde(default)]
+    pub threshold_policy: Option<String>,
+    #[serde(default)]
+    pub producer_kind: Option<String>,
+    #[serde(default)]
+    pub score_contract_version: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -228,6 +329,18 @@ pub struct MlSignalScoreCacheBuildResult {
     pub last_timestamp: Option<i64>,
     pub model_bundle_id: Option<String>,
     pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_schema_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calibration_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threshold_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub producer_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_contract_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_bundle_manifest_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -457,6 +570,22 @@ pub struct MlSignalScoreCacheManifest {
     pub feature_schema_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_bundle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_schema_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export_manifest_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bundle_manifest_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bundle_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_kind: Option<String>,
+    #[serde(default = "default_ml_signal_score_contract_version")]
+    pub score_contract_version: u32,
     pub matched_rows: usize,
     pub skipped_rows: usize,
     pub bars_scored: usize,
@@ -485,6 +614,26 @@ pub struct MlSignalModelBundleManifest {
     pub calibration_path: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub source_export_manifest_hash: Option<String>,
+    #[serde(default)]
+    pub source_feature_schema_hash: Option<String>,
+    #[serde(default)]
+    pub training_config: Option<JsonValue>,
+    #[serde(default)]
+    pub training_windows_summary: Option<JsonValue>,
+    #[serde(default)]
+    pub calibration_summary: Option<JsonValue>,
+    #[serde(default)]
+    pub class_balance_policy: Option<String>,
+    #[serde(default)]
+    pub threshold_policy_default: Option<JsonValue>,
+    #[serde(default)]
+    pub explainability_artifacts: Option<JsonValue>,
+    #[serde(default)]
+    pub bundle_parent_id: Option<String>,
+    #[serde(default)]
+    pub score_contract: Option<JsonValue>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -580,6 +729,13 @@ fn period_params(period: usize) -> Vec<IndicatorParamKV> {
     vec![IndicatorParamKV {
         key: "period".to_string(),
         value: IndicatorParamValue::Int(period as i64),
+    }]
+}
+
+fn length_params(length: usize) -> Vec<IndicatorParamKV> {
+    vec![IndicatorParamKV {
+        key: "length".to_string(),
+        value: IndicatorParamValue::Int(length as i64),
     }]
 }
 
@@ -745,7 +901,7 @@ fn feature_frame(
             ma_source,
             "atr",
             None,
-            period_params(h).as_slice(),
+            length_params(h).as_slice(),
             Kernel::Auto,
         )
         .map_err(|e| format!("atr(H) failed: {e}"))?,
@@ -1007,6 +1163,83 @@ fn current_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64-{hash:016x}")
+}
+
+fn ml_signal_feature_schema_hash(schema: &MlSignalFeatureSchema) -> Result<String, String> {
+    let mut hash_input = schema.clone();
+    hash_input.schema_hash.clear();
+    let bytes = canonical_json_key_bytes(&hash_input)?;
+    Ok(fnv1a64_hex(&bytes))
+}
+
+fn json_file_fingerprint(path: &str) -> Result<Option<String>, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let file =
+        File::open(trimmed).map_err(|e| format!("open json for fingerprint '{trimmed}': {e}"))?;
+    let value: JsonValue = serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| format!("parse json for fingerprint '{trimmed}': {e}"))?;
+    let bytes = canonical_json_key_bytes(&value)?;
+    Ok(Some(fnv1a64_hex(&bytes)))
+}
+
+fn build_ml_signal_indicator_config(
+    ma_source: &str,
+    horizon_bars: usize,
+) -> MlSignalIndicatorConfig {
+    MlSignalIndicatorConfig {
+        ma_source: ma_source.trim().to_string(),
+        horizon_bars,
+        alma_periods: vec![
+            horizon_bars.max(1),
+            horizon_bars.saturating_mul(3).max(1),
+            horizon_bars.saturating_mul(10).max(1),
+        ],
+        adx_period: horizon_bars.saturating_mul(2).max(1),
+        atr_period: horizon_bars.max(1),
+        pattern_semantics: "binary_hit_plus_signed_raw_indicator_columns".to_string(),
+    }
+}
+
+fn build_ml_signal_label_policy(
+    round_trip_cost_bps: f64,
+    horizon_bars: usize,
+) -> MlSignalLabelPolicy {
+    MlSignalLabelPolicy {
+        kind: "binary_return_above_deadband".to_string(),
+        horizon_bars,
+        round_trip_cost_bps,
+        deadband_kind: "round_trip_cost_plus_atr_scaled_floor".to_string(),
+        long_rule: "y_long = 1 when r_long > deadband".to_string(),
+        short_rule: "y_short = 1 when r_short > deadband".to_string(),
+        keep_rule: "keep_side = false when side_return in [0, deadband]".to_string(),
+    }
+}
+
+fn build_ml_signal_warmup_policy(first_valid_bar: usize) -> MlSignalWarmupPolicy {
+    MlSignalWarmupPolicy {
+        kind: "feature_frame_warmup".to_string(),
+        first_valid_bar,
+        reason: "pattern-recognition, ALMA, ADX, ATR, and rolling-return features require warmup before labels are valid".to_string(),
+    }
+}
+
+fn build_ml_signal_sample_weight_policy() -> MlSignalSampleWeightPolicy {
+    MlSignalSampleWeightPolicy {
+        kind: "constant_1_0_placeholder".to_string(),
+        description: "export currently emits sample_weight=1.0 for every row; weighting policy is reserved for future revisions".to_string(),
+    }
+}
+
 pub fn export_ml_signal_dataset_with_candles(
     req: MlSignalDatasetExportRequest,
     candles: &Candles,
@@ -1030,7 +1263,12 @@ pub fn export_ml_signal_dataset_with_candles(
     }
 
     let feature_names = feature_names_for_schema(&frame.pattern_ids);
-    let feature_schema = MlSignalFeatureSchema {
+    let mut feature_block_versions = HashMap::new();
+    feature_block_versions.insert("candlestick_context".to_string(), 1);
+    feature_block_versions.insert("pattern_recognition".to_string(), 1);
+    feature_block_versions.insert("trend_regime".to_string(), 1);
+    feature_block_versions.insert("return_volatility".to_string(), 1);
+    let mut feature_schema = MlSignalFeatureSchema {
         schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
         strategy_kind: "MlSignal".to_string(),
         horizon_bars: h,
@@ -1038,7 +1276,17 @@ pub fn export_ml_signal_dataset_with_candles(
         first_valid_bar: frame.first_valid_bar,
         feature_names: feature_names.clone(),
         pattern_ids: frame.pattern_ids.clone(),
+        schema_hash: String::new(),
+        exporter_version: ML_SIGNAL_EXPORTER_VERSION.to_string(),
+        feature_block_versions,
+        indicator_config: Some(build_ml_signal_indicator_config(&req.ma_source, h)),
+        label_horizon_bars: h,
+        first_valid_reasoning: Some(
+            "first_valid_bar is set by feature_frame warmup requirements before label generation begins"
+                .to_string(),
+        ),
     };
+    feature_schema.schema_hash = ml_signal_feature_schema_hash(&feature_schema)?;
     let schema_path = feature_schema_path_for_export(&req.output_path);
     write_json_file(&schema_path, &feature_schema, "feature schema")?;
 
@@ -1315,6 +1563,13 @@ pub fn export_ml_signal_dataset_with_candles(
         first_timestamp: candles.timestamp.first().copied(),
         last_timestamp: candles.timestamp.last().copied(),
         ticker_holdout,
+        feature_schema_hash: feature_schema.schema_hash.clone(),
+        exporter_version: ML_SIGNAL_EXPORTER_VERSION.to_string(),
+        indicator_config: feature_schema.indicator_config.clone(),
+        warmup_policy: Some(build_ml_signal_warmup_policy(frame.first_valid_bar)),
+        label_policy: Some(build_ml_signal_label_policy(req.round_trip_cost_bps, h)),
+        sample_weight_policy: Some(build_ml_signal_sample_weight_policy()),
+        created_at_unix_ms: Some(current_unix_ms()),
     };
     let export_manifest_path = export_manifest_path_for_export(&req.output_path);
     write_json_file(&export_manifest_path, &export_manifest, "export manifest")?;
@@ -1328,6 +1583,7 @@ pub fn export_ml_signal_dataset_with_candles(
         row_count,
         feature_count: feature_names.len(),
         feature_schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
+        feature_schema_hash: feature_schema.schema_hash,
         pattern_count: frame.pattern_ids.len(),
         first_valid_bar: frame.first_valid_bar,
         horizon_bars: h,
@@ -1363,6 +1619,22 @@ struct MlSignalScoreCacheFile {
     score_scope: MlSignalScoreScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model_bundle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    feature_schema_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    export_manifest_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_bundle_manifest_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_bundle_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    calibration_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    threshold_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    producer_kind: Option<String>,
+    #[serde(default = "default_ml_signal_score_contract_version")]
+    score_contract_version: u32,
     matched_rows: usize,
     skipped_rows: usize,
     bars_scored: usize,
@@ -1597,6 +1869,34 @@ pub fn build_ml_signal_score_cache_from_csv(
         return Err("output_path is required".to_string());
     }
 
+    let feature_schema_hash = if let Some(hash) = req
+        .feature_schema_hash
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        Some(hash.to_string())
+    } else if let Some(path) = req
+        .feature_schema_path
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        json_file_fingerprint(path)?
+    } else {
+        None
+    };
+    let source_bundle_manifest_hash = if let Some(path) = req
+        .source_bundle_manifest_path
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        json_file_fingerprint(path)?
+    } else {
+        None
+    };
+
     let parsed = read_score_rows_csv(&req.input_path)?;
     let timestamp_to_index: HashMap<i64, usize> = candles
         .timestamp
@@ -1656,6 +1956,16 @@ pub fn build_ml_signal_score_cache_from_csv(
         score_space: parsed.score_space,
         score_scope,
         model_bundle_id: req.model_bundle_id.clone(),
+        feature_schema_hash: feature_schema_hash.clone(),
+        export_manifest_path: req.export_manifest_path.clone(),
+        source_bundle_manifest_path: req.source_bundle_manifest_path.clone(),
+        source_bundle_manifest_hash: source_bundle_manifest_hash.clone(),
+        calibration_state: req.calibration_state.clone(),
+        threshold_policy: req.threshold_policy.clone(),
+        producer_kind: req.producer_kind.clone(),
+        score_contract_version: req
+            .score_contract_version
+            .unwrap_or(ML_SIGNAL_SCORE_CONTRACT_VERSION),
         matched_rows: bars_scored,
         skipped_rows,
         bars_scored,
@@ -1681,6 +1991,14 @@ pub fn build_ml_signal_score_cache_from_csv(
         score_scope: cache.score_scope,
         feature_schema_path: None,
         model_bundle_id: cache.model_bundle_id.clone(),
+        feature_schema_hash: cache.feature_schema_hash.clone(),
+        export_manifest_path: cache.export_manifest_path.clone(),
+        source_bundle_manifest_path: cache.source_bundle_manifest_path.clone(),
+        source_bundle_manifest_hash: cache.source_bundle_manifest_hash.clone(),
+        calibration_state: cache.calibration_state.clone(),
+        threshold_policy: cache.threshold_policy.clone(),
+        producer_kind: cache.producer_kind.clone(),
+        score_contract_version: cache.score_contract_version,
         matched_rows: cache.matched_rows,
         skipped_rows: cache.skipped_rows,
         bars_scored: cache.bars_scored,
@@ -1708,6 +2026,12 @@ pub fn build_ml_signal_score_cache_from_csv(
         last_timestamp: cache.last_timestamp,
         model_bundle_id: req.model_bundle_id,
         version: cache.version,
+        feature_schema_hash: cache.feature_schema_hash,
+        calibration_state: cache.calibration_state,
+        threshold_policy: cache.threshold_policy,
+        producer_kind: cache.producer_kind,
+        score_contract_version: Some(cache.score_contract_version),
+        source_bundle_manifest_hash: cache.source_bundle_manifest_hash,
     })
 }
 
@@ -1805,6 +2129,12 @@ fn load_score_cache(
             score_scope: cache.score_scope,
             first_timestamp: cache.first_timestamp,
             last_timestamp: cache.last_timestamp,
+            feature_schema_hash: cache.feature_schema_hash,
+            calibration_state: cache.calibration_state,
+            threshold_policy: cache.threshold_policy,
+            producer_kind: cache.producer_kind,
+            score_contract_version: Some(cache.score_contract_version),
+            source_bundle_manifest_hash: cache.source_bundle_manifest_hash,
         },
         has_probability_long,
         has_probability_short,
@@ -2064,7 +2394,8 @@ fn validate_ml_signal_candidates(
     compute_probability_metrics(&mut out, &sample_obs);
     mark_robust_pareto(&mut out);
     apply_candidate_hard_gates(&mut out, &gates, None);
-    let run_verdict = build_run_verdict(&out, out.len(), &gates, None, None);
+    let mut run_verdict = build_run_verdict(&out, out.len(), &gates, None, None);
+    append_score_scope_warning_flag(&mut run_verdict, &score_summary);
 
     Ok(MlSignalValidationResult {
         data_id,
@@ -2177,6 +2508,31 @@ fn validate_score_cache_contract(
         ));
     }
     Ok(())
+}
+
+fn score_scope_warning_flag(scope: MlSignalScoreScope) -> Option<&'static str> {
+    match scope {
+        MlSignalScoreScope::WalkforwardTest => None,
+        MlSignalScoreScope::CalibrationSlice => Some("score_scope_calibration_slice"),
+        MlSignalScoreScope::FullDataset => Some("score_scope_full_dataset"),
+        MlSignalScoreScope::CustomPartial => Some("score_scope_custom_partial"),
+    }
+}
+
+fn append_score_scope_warning_flag(
+    run_verdict: &mut ValidationRunVerdict,
+    score_summary: &MlSignalScoreCacheSummary,
+) {
+    let Some(flag) = score_scope_warning_flag(score_summary.score_scope) else {
+        return;
+    };
+    if !run_verdict
+        .warning_flags
+        .iter()
+        .any(|existing| existing == flag)
+    {
+        run_verdict.warning_flags.push(flag.to_string());
+    }
 }
 
 pub fn run_ml_signal_validation_blocking_with_candles(
@@ -2309,6 +2665,7 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
         None,
         None,
     );
+    append_score_scope_warning_flag(&mut validation.run_verdict, &validation.score_summary);
     Ok(MlSignalPolicySweepResult {
         sweep_size,
         top_k: req.top_k,
@@ -2358,6 +2715,30 @@ pub fn classify_ml_signal_manifest(
         if !path.trim().is_empty() && !base_dir.join(path).exists() {
             issues.push("calibration file missing".to_string());
         }
+    }
+    if manifest
+        .source_feature_schema_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        issues.push("recommended source_feature_schema_hash missing".to_string());
+    }
+    if manifest
+        .source_export_manifest_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        issues.push("recommended source_export_manifest_hash missing".to_string());
+    }
+    if manifest.training_config.is_none() {
+        issues.push("recommended training_config missing".to_string());
+    }
+    if manifest.score_contract.is_none() {
+        issues.push("recommended score_contract missing".to_string());
     }
 
     let state = if issues.is_empty() {
@@ -2438,6 +2819,28 @@ mod tests {
             .join(format!("ta_ml_signal_{name}_{nonce}.{ext}"))
             .to_string_lossy()
             .to_string()
+    }
+
+    fn score_cache_build_request(
+        data_id: &str,
+        input_path: &str,
+        output_path: &str,
+        model_bundle_id: Option<&str>,
+    ) -> MlSignalScoreCacheBuildRequest {
+        MlSignalScoreCacheBuildRequest {
+            data_id: data_id.to_string(),
+            input_path: input_path.to_string(),
+            output_path: output_path.to_string(),
+            model_bundle_id: model_bundle_id.map(str::to_string),
+            feature_schema_path: None,
+            feature_schema_hash: None,
+            export_manifest_path: None,
+            source_bundle_manifest_path: None,
+            calibration_state: None,
+            threshold_policy: None,
+            producer_kind: None,
+            score_contract_version: None,
+        }
     }
 
     fn sample_candles(len: usize) -> Candles {
@@ -2734,12 +3137,7 @@ mod tests {
         writer.flush().expect("flush score csv");
 
         let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: Some("bundle-a".to_string()),
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, Some("bundle-a")),
             &candles,
             &cancel,
         )
@@ -2787,12 +3185,7 @@ mod tests {
         writer.flush().expect("flush score csv");
 
         let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: None,
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
             &candles,
             &cancel,
         )
@@ -2843,12 +3236,7 @@ mod tests {
         writer.flush().expect("flush score csv");
 
         let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: Some("bundle-a".to_string()),
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, Some("bundle-a")),
             &candles,
             &cancel,
         )
@@ -2917,12 +3305,7 @@ mod tests {
         writer.flush().expect("flush score csv");
 
         let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: None,
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
             &candles,
             &cancel,
         )
@@ -2982,12 +3365,7 @@ mod tests {
         writer.flush().expect("flush score csv");
 
         let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: Some("bundle-a".to_string()),
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, Some("bundle-a")),
             &candles,
             &cancel,
         )
@@ -3083,17 +3461,23 @@ mod tests {
             .expect("unmatched row");
         writer.flush().expect("flush score csv");
 
-        let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: Some("bundle-a".to_string()),
-            },
-            &candles,
-            &cancel,
+        let bundle_manifest_path = temp_file_path("ml_bundle_manifest", "json");
+        std::fs::write(
+            &bundle_manifest_path,
+            r#"{"bundle_id":"bundle-a","schema_version":1}"#,
         )
-        .expect("build score cache");
+        .expect("write bundle manifest");
+        let mut req =
+            score_cache_build_request("data-1", &input_path, &cache_path, Some("bundle-a"));
+        req.feature_schema_hash = Some("fnv1a64-feature-schema".to_string());
+        req.export_manifest_path = Some("C:/data/ml_dataset.export_manifest.json".to_string());
+        req.source_bundle_manifest_path = Some(bundle_manifest_path.clone());
+        req.calibration_state = Some("calibrated_probability".to_string());
+        req.threshold_policy = Some("desktop_probability_threshold_only".to_string());
+        req.producer_kind = Some("python_research_harness".to_string());
+        req.score_contract_version = Some(3);
+        let build = build_ml_signal_score_cache_from_csv(req, &candles, &cancel)
+            .expect("build score cache");
         assert_eq!(build.score_space, MlSignalScoreSpace::Probability);
         assert_eq!(build.score_scope, MlSignalScoreScope::CalibrationSlice);
         assert_eq!(build.duplicate_timestamps, 1);
@@ -3116,10 +3500,75 @@ mod tests {
         assert_eq!(manifest.score_space, MlSignalScoreSpace::Probability);
         assert_eq!(manifest.score_scope, MlSignalScoreScope::CalibrationSlice);
         assert_eq!(manifest.duplicate_timestamps, 1);
+        assert_eq!(
+            manifest.feature_schema_hash.as_deref(),
+            Some("fnv1a64-feature-schema")
+        );
+        assert_eq!(
+            manifest.calibration_state.as_deref(),
+            Some("calibrated_probability")
+        );
+        assert_eq!(
+            manifest.threshold_policy.as_deref(),
+            Some("desktop_probability_threshold_only")
+        );
+        assert_eq!(
+            manifest.producer_kind.as_deref(),
+            Some("python_research_harness")
+        );
+        assert_eq!(manifest.score_contract_version, 3);
+        assert!(manifest.source_bundle_manifest_hash.is_some());
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
         let _ = fs::remove_file(&build.manifest_path);
+        let _ = fs::remove_file(&bundle_manifest_path);
+    }
+
+    #[test]
+    fn dataset_export_writes_schema_hash_and_provenance_metadata() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(160);
+        let output_path = temp_file_path("ml_dataset_export", "csv");
+        let cancel = AtomicBool::new(false);
+
+        let export = export_ml_signal_dataset_with_candles(
+            MlSignalDatasetExportRequest {
+                data_id: "data-ml".to_string(),
+                output_path: output_path.clone(),
+                ma_source: "close".to_string(),
+                horizon_bars: 10,
+                round_trip_cost_bps: 12.5,
+                split_plan: None,
+                ticker_holdout: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("export dataset");
+
+        assert!(!export.feature_schema_hash.trim().is_empty());
+        let schema: MlSignalFeatureSchema = serde_json::from_reader(BufReader::new(
+            File::open(&export.feature_schema_path).expect("open feature schema"),
+        ))
+        .expect("parse feature schema");
+        assert_eq!(schema.schema_hash, export.feature_schema_hash);
+        assert_eq!(schema.exporter_version, ML_SIGNAL_EXPORTER_VERSION);
+        assert!(schema.indicator_config.is_some());
+
+        let manifest: MlSignalDatasetExportManifest = serde_json::from_reader(BufReader::new(
+            File::open(&export.export_manifest_path).expect("open export manifest"),
+        ))
+        .expect("parse export manifest");
+        assert_eq!(manifest.feature_schema_hash, export.feature_schema_hash);
+        assert_eq!(manifest.exporter_version, ML_SIGNAL_EXPORTER_VERSION);
+        assert!(manifest.label_policy.is_some());
+        assert!(manifest.sample_weight_policy.is_some());
+        assert!(manifest.created_at_unix_ms.is_some());
+
+        let _ = fs::remove_file(&output_path);
+        let _ = fs::remove_file(&export.feature_schema_path);
+        let _ = fs::remove_file(&export.export_manifest_path);
     }
 
     #[test]
@@ -3144,12 +3593,7 @@ mod tests {
         }
         writer.flush().expect("flush score csv");
         build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: None,
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
             &candles,
             &cancel,
         )
@@ -3202,12 +3646,7 @@ mod tests {
         }
         writer.flush().expect("flush score csv");
         let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: None,
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
             &candles,
             &cancel,
         )
@@ -3258,6 +3697,124 @@ mod tests {
         )
         .expect_err("two-sided validation should reject missing short scores");
         assert!(err.contains("short probability"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_adds_score_scope_warning_flags_without_rejecting_probability_cache() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(32);
+        let input_path = temp_file_path("scope_warning_scores_in", "csv");
+        let cache_path = temp_file_path("scope_warning_scores_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short", "score_scope"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(3).take(12) {
+            writer
+                .write_record([
+                    ts.to_string(),
+                    "0.81".to_string(),
+                    "0.19".to_string(),
+                    "CalibrationSlice".to_string(),
+                ])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+        let build = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect("build cache");
+        assert_eq!(build.score_scope, MlSignalScoreScope::CalibrationSlice);
+
+        let validation = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("validation should succeed");
+        assert!(validation
+            .run_verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "score_scope_calibration_slice"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn walkforward_scope_does_not_add_extra_warning_flag() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(32);
+        let input_path = temp_file_path("scope_walkforward_scores_in", "csv");
+        let cache_path = temp_file_path("scope_walkforward_scores_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short", "score_scope"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(3).take(12) {
+            writer
+                .write_record([
+                    ts.to_string(),
+                    "0.81".to_string(),
+                    "0.19".to_string(),
+                    "WalkforwardTest".to_string(),
+                ])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+        let build = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect("build cache");
+        assert_eq!(build.score_scope, MlSignalScoreScope::WalkforwardTest);
+
+        let validation = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("validation should succeed");
+        assert!(!validation
+            .run_verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag.starts_with("score_scope_")));
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
@@ -3327,12 +3884,7 @@ mod tests {
         writer.flush().expect("flush score csv");
 
         let build = build_ml_signal_score_cache_from_csv(
-            MlSignalScoreCacheBuildRequest {
-                data_id: "data-1".to_string(),
-                input_path: input_path.clone(),
-                output_path: cache_path.clone(),
-                model_bundle_id: Some("bundle-a".to_string()),
-            },
+            score_cache_build_request("data-1", &input_path, &cache_path, Some("bundle-a")),
             &candles,
             &cancel,
         )

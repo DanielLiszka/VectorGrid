@@ -64,6 +64,77 @@ interface MlSignalArtifactLike {
   featureSchemaPath?: unknown;
   feature_schema_version?: unknown;
   featureSchemaVersion?: unknown;
+  feature_schema_hash?: unknown;
+  featureSchemaHash?: unknown;
+  schema_hash?: unknown;
+  schemaHash?: unknown;
+  exporter?: unknown;
+  exporter_metadata?: unknown;
+  exporterMetadata?: unknown;
+  exporter_version?: unknown;
+  exporterVersion?: unknown;
+  provenance?: unknown;
+  indicator_config?: unknown;
+  indicatorConfig?: unknown;
+  warmup_policy?: unknown;
+  warmupPolicy?: unknown;
+  label_policy?: unknown;
+  labelPolicy?: unknown;
+  deadband_policy?: unknown;
+  deadbandPolicy?: unknown;
+  sample_weight_policy?: unknown;
+  sampleWeightPolicy?: unknown;
+  data_timeframe?: unknown;
+  dataTimeframe?: unknown;
+  created_at?: unknown;
+  createdAt?: unknown;
+  source_export_manifest_hash?: unknown;
+  sourceExportManifestHash?: unknown;
+  source_feature_schema_hash?: unknown;
+  sourceFeatureSchemaHash?: unknown;
+  training_config?: unknown;
+  trainingConfig?: unknown;
+  training_windows_summary?: unknown;
+  trainingWindowsSummary?: unknown;
+  calibration?: unknown;
+  calibration_summary?: unknown;
+  calibrationSummary?: unknown;
+  calibration_state?: unknown;
+  calibrationState?: unknown;
+  class_balance_policy?: unknown;
+  classBalancePolicy?: unknown;
+  threshold_policy_default?: unknown;
+  thresholdPolicyDefault?: unknown;
+  explainability_artifacts?: unknown;
+  explainabilityArtifacts?: unknown;
+  bundle_parent_id?: unknown;
+  bundleParentId?: unknown;
+  feature_block_versions?: unknown;
+  featureBlockVersions?: unknown;
+  indicator_params?: unknown;
+  indicatorParams?: unknown;
+  label_horizon_bars?: unknown;
+  labelHorizonBars?: unknown;
+  first_valid_reasoning?: unknown;
+  firstValidReasoning?: unknown;
+  score_contract?: unknown;
+  scoreContract?: unknown;
+  score_contract_version?: unknown;
+  scoreContractVersion?: unknown;
+  score_cache_provenance?: unknown;
+  scoreCacheProvenance?: unknown;
+  source_bundle_id?: unknown;
+  sourceBundleId?: unknown;
+  source_bundle_manifest_hash?: unknown;
+  sourceBundleManifestHash?: unknown;
+  threshold_policy?: unknown;
+  thresholdPolicy?: unknown;
+  producer_kind?: unknown;
+  producerKind?: unknown;
+  bundle_status?: unknown;
+  bundleStatus?: unknown;
+  bundle_status_details?: unknown;
+  bundleStatusDetails?: unknown;
   score_space?: unknown;
   scoreSpace?: unknown;
   score_scope?: unknown;
@@ -112,6 +183,60 @@ function parseOptionalInteger(value: unknown): number | null {
 function parseOptionalNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readOptionalRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length > 0 ? row : null;
+}
+
+function hasMeaningfulMetadataValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return normalizeText(value).length > 0;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length > 0;
+  }
+  return true;
+}
+
+function compactMetadataRecord(
+  entries: Array<[string, unknown]>,
+): Record<string, unknown> | null {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of entries) {
+    if (!hasMeaningfulMetadataValue(value)) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function firstMeaningfulValue(...values: unknown[]): unknown {
+  for (const value of values) {
+    if (hasMeaningfulMetadataValue(value)) return value;
+  }
+  return undefined;
+}
+
+function resolveMlArtifactMetadataRecord(
+  directCandidates: unknown[],
+  fallbackEntries: Array<[string, unknown]>,
+): Record<string, unknown> | null {
+  for (const candidate of directCandidates) {
+    const record = readOptionalRecord(candidate);
+    if (record) return record;
+  }
+  return compactMetadataRecord(fallbackEntries);
+}
+
+function readStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => normalizeText(entry))
+    .filter((entry) => entry.length > 0);
 }
 
 function basename(path: string): string {
@@ -188,6 +313,40 @@ function readCandidateRows(value: unknown): Array<Record<string, unknown>> {
   return [];
 }
 
+function resolveMlRunVerdictRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (row.run_verdict && typeof row.run_verdict === "object") {
+    return row.run_verdict as Record<string, unknown>;
+  }
+  const validation =
+    row.validation && typeof row.validation === "object"
+      ? (row.validation as Record<string, unknown>)
+      : null;
+  if (validation?.run_verdict && typeof validation.run_verdict === "object") {
+    return validation.run_verdict as Record<string, unknown>;
+  }
+  return null;
+}
+
+function formatMlScoreScopeAdvisory(value: unknown): string {
+  const verdict = resolveMlRunVerdictRecord(value);
+  if (!verdict) return "";
+  const flags = readStringList(verdict.warning_flags ?? verdict.warningFlags);
+  if (flags.includes("score_scope_calibration_slice")) {
+    return "calibration-only score scope";
+  }
+  if (flags.includes("score_scope_full_dataset")) {
+    return "full-dataset score scope";
+  }
+  if (flags.includes("score_scope_custom_partial")) {
+    return "partial score scope";
+  }
+  return "";
+}
+
 function extractMlPolicy(
   validationReq: Record<string, unknown>,
   validationRes: unknown,
@@ -237,6 +396,15 @@ function readPiniaState(storeId: string): Record<string, unknown> | null {
   return row as Record<string, unknown>;
 }
 
+function currentMlArtifactSnapshot(): MlSignalArtifactLike | null {
+  const pinia = resolveRuntimePinia();
+  if (!pinia) return null;
+  const artifacts = useWorkflowArtifactsStore(pinia);
+  const artifact = artifacts.currentRun?.mlSignal;
+  if (!artifact || typeof artifact !== "object") return null;
+  return artifact as MlSignalArtifactLike;
+}
+
 function markOptimizeUpdated(): void {
   const pinia = resolveRuntimePinia();
   if (!pinia) return;
@@ -252,6 +420,26 @@ function patchOptimizeState(patch: Record<string, unknown>): void {
   Object.assign(optimize, patch);
   optimize.source = "vue";
   optimize.updatedAtUnixMs = Date.now();
+}
+
+function patchCurrentMlSignalArtifact(patch: Record<string, unknown>): void {
+  const pinia = resolveRuntimePinia();
+  if (!pinia) return;
+  const artifacts = useWorkflowArtifactsStore(pinia);
+  if (!artifacts.currentRun) return;
+  applyWorkflowArtifactsPayload(
+    {
+      currentRun: {
+        ...artifacts.currentRun,
+        ml_signal: {
+          ...(artifacts.currentRun.mlSignal ?? {}),
+          ...patch,
+        },
+      },
+      currentValidation: artifacts.currentValidation,
+    },
+    "vue",
+  );
 }
 
 function setMlBusy(message: string): void {
@@ -400,8 +588,420 @@ function buildMlSignalArtifactPayload(
     validationRes && typeof validationRes === "object"
       ? (validationRes as Record<string, unknown>)
       : null;
-  const validationScoreSummary = resolveMlScoreSummaryRecord(validationResRecord);
+  const validationScoreSummary =
+    resolveMlScoreSummaryRecord(validationResRecord);
   const prior = (priorMlSignal ?? {}) as MlSignalArtifactLike;
+  const exporter = resolveMlArtifactMetadataRecord(
+    [
+      validationScoreSummary?.exporter,
+      validationScoreSummary?.exporter_metadata,
+      runResRecord?.exporter,
+      runResRecord?.exporter_metadata,
+      prior.exporter,
+      prior.exporter_metadata,
+      prior.exporterMetadata,
+    ],
+    [
+      [
+        "exporter_version",
+        firstMeaningfulValue(
+          validationScoreSummary?.exporter_version,
+          validationScoreSummary?.exporterVersion,
+          runResRecord?.exporter_version,
+          runResRecord?.exporterVersion,
+          prior.exporter_version,
+          prior.exporterVersion,
+          readOptionalRecord(prior.exporter)?.exporter_version,
+        ),
+      ],
+      [
+        "created_at",
+        firstMeaningfulValue(
+          validationScoreSummary?.created_at,
+          validationScoreSummary?.createdAt,
+          runResRecord?.created_at,
+          runResRecord?.createdAt,
+          prior.created_at,
+          prior.createdAt,
+          readOptionalRecord(prior.exporter)?.created_at,
+        ),
+      ],
+    ],
+  );
+  const provenance = resolveMlArtifactMetadataRecord(
+    [
+      validationScoreSummary?.provenance,
+      runResRecord?.provenance,
+      prior.provenance,
+    ],
+    [
+      [
+        "indicator_config",
+        firstMeaningfulValue(
+          validationScoreSummary?.indicator_config,
+          validationScoreSummary?.indicatorConfig,
+          runResRecord?.indicator_config,
+          runResRecord?.indicatorConfig,
+          prior.indicator_config,
+          prior.indicatorConfig,
+        ),
+      ],
+      [
+        "warmup_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.warmup_policy,
+          validationScoreSummary?.warmupPolicy,
+          runResRecord?.warmup_policy,
+          runResRecord?.warmupPolicy,
+          prior.warmup_policy,
+          prior.warmupPolicy,
+        ),
+      ],
+      [
+        "label_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.label_policy,
+          validationScoreSummary?.labelPolicy,
+          runResRecord?.label_policy,
+          runResRecord?.labelPolicy,
+          prior.label_policy,
+          prior.labelPolicy,
+        ),
+      ],
+      [
+        "deadband_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.deadband_policy,
+          validationScoreSummary?.deadbandPolicy,
+          runResRecord?.deadband_policy,
+          runResRecord?.deadbandPolicy,
+          prior.deadband_policy,
+          prior.deadbandPolicy,
+        ),
+      ],
+      [
+        "sample_weight_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.sample_weight_policy,
+          validationScoreSummary?.sampleWeightPolicy,
+          runResRecord?.sample_weight_policy,
+          runResRecord?.sampleWeightPolicy,
+          prior.sample_weight_policy,
+          prior.sampleWeightPolicy,
+        ),
+      ],
+      [
+        "data_timeframe",
+        firstMeaningfulValue(
+          validationScoreSummary?.data_timeframe,
+          validationScoreSummary?.dataTimeframe,
+          runResRecord?.data_timeframe,
+          runResRecord?.dataTimeframe,
+          prior.data_timeframe,
+          prior.dataTimeframe,
+        ),
+      ],
+      [
+        "source_export_manifest_hash",
+        firstMeaningfulValue(
+          validationScoreSummary?.source_export_manifest_hash,
+          validationScoreSummary?.sourceExportManifestHash,
+          runResRecord?.source_export_manifest_hash,
+          runResRecord?.sourceExportManifestHash,
+          prior.source_export_manifest_hash,
+          prior.sourceExportManifestHash,
+        ),
+      ],
+      [
+        "source_feature_schema_hash",
+        firstMeaningfulValue(
+          validationScoreSummary?.source_feature_schema_hash,
+          validationScoreSummary?.sourceFeatureSchemaHash,
+          runResRecord?.source_feature_schema_hash,
+          runResRecord?.sourceFeatureSchemaHash,
+          prior.source_feature_schema_hash,
+          prior.sourceFeatureSchemaHash,
+        ),
+      ],
+      [
+        "training_config",
+        firstMeaningfulValue(
+          validationScoreSummary?.training_config,
+          validationScoreSummary?.trainingConfig,
+          runResRecord?.training_config,
+          runResRecord?.trainingConfig,
+          prior.training_config,
+          prior.trainingConfig,
+        ),
+      ],
+      [
+        "training_windows_summary",
+        firstMeaningfulValue(
+          validationScoreSummary?.training_windows_summary,
+          validationScoreSummary?.trainingWindowsSummary,
+          runResRecord?.training_windows_summary,
+          runResRecord?.trainingWindowsSummary,
+          prior.training_windows_summary,
+          prior.trainingWindowsSummary,
+        ),
+      ],
+      [
+        "calibration_summary",
+        firstMeaningfulValue(
+          validationScoreSummary?.calibration_summary,
+          validationScoreSummary?.calibrationSummary,
+          runResRecord?.calibration_summary,
+          runResRecord?.calibrationSummary,
+          prior.calibration_summary,
+          prior.calibrationSummary,
+        ),
+      ],
+      [
+        "class_balance_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.class_balance_policy,
+          validationScoreSummary?.classBalancePolicy,
+          runResRecord?.class_balance_policy,
+          runResRecord?.classBalancePolicy,
+          prior.class_balance_policy,
+          prior.classBalancePolicy,
+        ),
+      ],
+      [
+        "threshold_policy_default",
+        firstMeaningfulValue(
+          validationScoreSummary?.threshold_policy_default,
+          validationScoreSummary?.thresholdPolicyDefault,
+          runResRecord?.threshold_policy_default,
+          runResRecord?.thresholdPolicyDefault,
+          prior.threshold_policy_default,
+          prior.thresholdPolicyDefault,
+        ),
+      ],
+      [
+        "explainability_artifacts",
+        firstMeaningfulValue(
+          validationScoreSummary?.explainability_artifacts,
+          validationScoreSummary?.explainabilityArtifacts,
+          runResRecord?.explainability_artifacts,
+          runResRecord?.explainabilityArtifacts,
+          prior.explainability_artifacts,
+          prior.explainabilityArtifacts,
+        ),
+      ],
+      [
+        "bundle_parent_id",
+        firstMeaningfulValue(
+          validationScoreSummary?.bundle_parent_id,
+          validationScoreSummary?.bundleParentId,
+          runResRecord?.bundle_parent_id,
+          runResRecord?.bundleParentId,
+          prior.bundle_parent_id,
+          prior.bundleParentId,
+        ),
+      ],
+      [
+        "feature_block_versions",
+        firstMeaningfulValue(
+          validationScoreSummary?.feature_block_versions,
+          validationScoreSummary?.featureBlockVersions,
+          runResRecord?.feature_block_versions,
+          runResRecord?.featureBlockVersions,
+          prior.feature_block_versions,
+          prior.featureBlockVersions,
+        ),
+      ],
+      [
+        "indicator_params",
+        firstMeaningfulValue(
+          validationScoreSummary?.indicator_params,
+          validationScoreSummary?.indicatorParams,
+          runResRecord?.indicator_params,
+          runResRecord?.indicatorParams,
+          prior.indicator_params,
+          prior.indicatorParams,
+        ),
+      ],
+      [
+        "label_horizon_bars",
+        firstMeaningfulValue(
+          validationScoreSummary?.label_horizon_bars,
+          validationScoreSummary?.labelHorizonBars,
+          runResRecord?.label_horizon_bars,
+          runResRecord?.labelHorizonBars,
+          prior.label_horizon_bars,
+          prior.labelHorizonBars,
+        ),
+      ],
+      [
+        "first_valid_reasoning",
+        firstMeaningfulValue(
+          validationScoreSummary?.first_valid_reasoning,
+          validationScoreSummary?.firstValidReasoning,
+          runResRecord?.first_valid_reasoning,
+          runResRecord?.firstValidReasoning,
+          prior.first_valid_reasoning,
+          prior.firstValidReasoning,
+        ),
+      ],
+    ],
+  );
+  const calibration = resolveMlArtifactMetadataRecord(
+    [
+      validationScoreSummary?.calibration,
+      runResRecord?.calibration,
+      prior.calibration,
+    ],
+    [
+      [
+        "calibration_summary",
+        firstMeaningfulValue(
+          validationScoreSummary?.calibration_summary,
+          validationScoreSummary?.calibrationSummary,
+          runResRecord?.calibration_summary,
+          runResRecord?.calibrationSummary,
+          prior.calibration_summary,
+          prior.calibrationSummary,
+          readOptionalRecord(prior.calibration)?.calibration_summary,
+        ),
+      ],
+      [
+        "calibration_state",
+        firstMeaningfulValue(
+          validationScoreSummary?.calibration_state,
+          validationScoreSummary?.calibrationState,
+          runResRecord?.calibration_state,
+          runResRecord?.calibrationState,
+          prior.calibration_state,
+          prior.calibrationState,
+          readOptionalRecord(prior.calibration)?.calibration_state,
+        ),
+      ],
+    ],
+  );
+  const scoreContract = resolveMlArtifactMetadataRecord(
+    [
+      validationScoreSummary?.score_contract,
+      runResRecord?.score_contract,
+      prior.score_contract,
+      prior.scoreContract,
+    ],
+    [
+      [
+        "score_contract_version",
+        firstMeaningfulValue(
+          validationScoreSummary?.score_contract_version,
+          validationScoreSummary?.scoreContractVersion,
+          runResRecord?.score_contract_version,
+          runResRecord?.scoreContractVersion,
+          prior.score_contract_version,
+          prior.scoreContractVersion,
+        ),
+      ],
+    ],
+  );
+  const scoreCacheProvenance = resolveMlArtifactMetadataRecord(
+    [
+      validationScoreSummary?.score_cache_provenance,
+      runResRecord?.score_cache_provenance,
+      prior.score_cache_provenance,
+      prior.scoreCacheProvenance,
+    ],
+    [
+      [
+        "source_bundle_id",
+        firstMeaningfulValue(
+          validationScoreSummary?.source_bundle_id,
+          validationScoreSummary?.sourceBundleId,
+          runResRecord?.source_bundle_id,
+          runResRecord?.sourceBundleId,
+          prior.source_bundle_id,
+          prior.sourceBundleId,
+        ),
+      ],
+      [
+        "source_bundle_manifest_hash",
+        firstMeaningfulValue(
+          validationScoreSummary?.source_bundle_manifest_hash,
+          validationScoreSummary?.sourceBundleManifestHash,
+          runResRecord?.source_bundle_manifest_hash,
+          runResRecord?.sourceBundleManifestHash,
+          prior.source_bundle_manifest_hash,
+          prior.sourceBundleManifestHash,
+        ),
+      ],
+      [
+        "calibration_state",
+        firstMeaningfulValue(
+          validationScoreSummary?.calibration_state,
+          validationScoreSummary?.calibrationState,
+          runResRecord?.calibration_state,
+          runResRecord?.calibrationState,
+          prior.calibration_state,
+          prior.calibrationState,
+          readOptionalRecord(prior.score_cache_provenance)?.calibration_state,
+        ),
+      ],
+      [
+        "threshold_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.threshold_policy,
+          validationScoreSummary?.thresholdPolicy,
+          runResRecord?.threshold_policy,
+          runResRecord?.thresholdPolicy,
+          prior.threshold_policy,
+          prior.thresholdPolicy,
+        ),
+      ],
+      [
+        "producer_kind",
+        firstMeaningfulValue(
+          validationScoreSummary?.producer_kind,
+          validationScoreSummary?.producerKind,
+          runResRecord?.producer_kind,
+          runResRecord?.producerKind,
+          prior.producer_kind,
+          prior.producerKind,
+        ),
+      ],
+      [
+        "score_contract_version",
+        firstMeaningfulValue(
+          validationScoreSummary?.score_contract_version,
+          validationScoreSummary?.scoreContractVersion,
+          runResRecord?.score_contract_version,
+          runResRecord?.scoreContractVersion,
+          prior.score_contract_version,
+          prior.scoreContractVersion,
+        ),
+      ],
+    ],
+  );
+  const bundleStatus = resolveMlArtifactMetadataRecord(
+    [
+      validationScoreSummary?.bundle_status_details,
+      validationScoreSummary?.bundle_status,
+      runResRecord?.bundle_status_details,
+      runResRecord?.bundle_status,
+      prior.bundle_status_details,
+      prior.bundle_status,
+      prior.bundleStatusDetails,
+      prior.bundleStatus,
+    ],
+    [],
+  );
+  const scoreContractVersion = normalizeText(
+    firstMeaningfulValue(
+      validationScoreSummary?.score_contract_version,
+      validationScoreSummary?.scoreContractVersion,
+      runResRecord?.score_contract_version,
+      runResRecord?.scoreContractVersion,
+      prior.score_contract_version,
+      prior.scoreContractVersion,
+      scoreContract?.score_contract_version,
+      scoreCacheProvenance?.score_contract_version,
+    ),
+  );
   const stage =
     validationReq && validationRes
       ? Array.isArray(validationReq.candidates)
@@ -451,19 +1051,43 @@ function buildMlSignalArtifactPayload(
       prior.duplicate_timestamps ??
       prior.duplicateTimestamps,
   );
+  const featureSchemaHash = normalizeText(
+    firstMeaningfulValue(
+      validationScoreSummary?.feature_schema_hash,
+      validationScoreSummary?.featureSchemaHash,
+      validationScoreSummary?.schema_hash,
+      validationScoreSummary?.schemaHash,
+      runResRecord?.feature_schema_hash,
+      runResRecord?.featureSchemaHash,
+      runResRecord?.schema_hash,
+      runResRecord?.schemaHash,
+      prior.feature_schema_hash,
+      prior.featureSchemaHash,
+      prior.schema_hash,
+      prior.schemaHash,
+    ),
+  );
   const scoreCachePath =
     stage === "dataset_export"
       ? normalizeText(prior.score_cache_path ?? prior.scoreCachePath ?? "")
       : normalizeText(validationReq?.score_cache_path) ||
         normalizeText(
-          runResRecord?.output_path ?? runReq.output_path ?? runReq.outputPath ?? "",
+          runResRecord?.output_path ??
+            runReq.output_path ??
+            runReq.outputPath ??
+            "",
         ) ||
         normalizeText(prior.score_cache_path ?? prior.scoreCachePath ?? "");
   return {
     stage,
     bundle_id:
       normalizeText(runReq.model_bundle_id) ||
-      normalizeText(runResRecord?.model_bundle_id ?? prior.bundle_id ?? prior.bundleId ?? ""),
+      normalizeText(
+        runResRecord?.model_bundle_id ??
+          prior.bundle_id ??
+          prior.bundleId ??
+          "",
+      ),
     dataset_export_path:
       stage === "dataset_export"
         ? normalizeText(
@@ -499,12 +1123,20 @@ function buildMlSignalArtifactPayload(
         1,
       1,
     ),
+    feature_schema_hash: featureSchemaHash,
     feature_schema_path: normalizeText(
       runResRecord?.feature_schema_path ??
         prior.feature_schema_path ??
         prior.featureSchemaPath ??
         "",
     ),
+    exporter,
+    provenance,
+    calibration,
+    score_contract: scoreContract,
+    score_contract_version: scoreContractVersion,
+    score_cache_provenance: scoreCacheProvenance,
+    bundle_status: bundleStatus,
     score_cache_path: scoreCachePath,
     score_manifest_path: normalizeText(
       runResRecord?.manifest_path ??
@@ -738,7 +1370,9 @@ function resolveMlScoreSummaryRecord(
     : row;
 }
 
-function formatMlScoreCoverageMeta(row: Record<string, unknown> | null): string {
+function formatMlScoreCoverageMeta(
+  row: Record<string, unknown> | null,
+): string {
   const summary = resolveMlScoreSummaryRecord(row);
   if (!summary) return "";
   const parts: string[] = [];
@@ -830,10 +1464,7 @@ export async function exportMlSignalDataset(): Promise<unknown> {
     const runTs = new Date().toISOString();
     const resRecord =
       res && typeof res === "object" ? (res as Record<string, unknown>) : null;
-    const rowCount = parseNumber(
-      resRecord?.row_count,
-      0,
-    );
+    const rowCount = parseNumber(resRecord?.row_count, 0);
     const splitCount = parseOptionalInteger(resRecord?.split_count);
     const splitManifestPath = normalizeText(resRecord?.split_manifest_path);
     const tickerHoldoutEnabled = Boolean(resRecord?.ticker_holdout);
@@ -848,7 +1479,10 @@ export async function exportMlSignalDataset(): Promise<unknown> {
     patchOptimizeState({
       mlSignalDatasetMeta: metaParts.join(" • "),
       progressMeta: `ML dataset export • ${rowCount.toFixed(0)} rows`,
-      statusLine: formatMlStageStatus("ML feature dataset exported.", resRecord),
+      statusLine: formatMlStageStatus(
+        "ML feature dataset exported.",
+        resRecord,
+      ),
     });
     return res;
   } catch (error) {
@@ -871,11 +1505,59 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
   if (!inputPath) throw new Error("Choose a model-score CSV input path first.");
   if (!outputPath) throw new Error("Choose a score-cache output path first.");
 
+  const currentArtifact = currentMlArtifactSnapshot();
+  const scoreContract = readOptionalRecord(
+    currentArtifact?.scoreContract ?? currentArtifact?.score_contract,
+  );
   const req = {
     data_id: data.dataId,
     input_path: inputPath,
     output_path: outputPath,
     model_bundle_id: normalizeText(optimize.mlSignalModelBundleId) || null,
+    feature_schema_path:
+      normalizeText(
+        currentArtifact?.featureSchemaPath ??
+          currentArtifact?.feature_schema_path,
+      ) || null,
+    feature_schema_hash:
+      normalizeText(
+        currentArtifact?.featureSchemaHash ??
+          currentArtifact?.feature_schema_hash,
+      ) || null,
+    export_manifest_path:
+      normalizeText(
+        currentArtifact?.exportManifestPath ??
+          currentArtifact?.export_manifest_path,
+      ) || null,
+    calibration_state:
+      normalizeText(
+        firstMeaningfulValue(
+          currentArtifact?.calibration_state,
+          currentArtifact?.calibrationState,
+        ),
+      ) || null,
+    threshold_policy:
+      normalizeText(
+        firstMeaningfulValue(
+          currentArtifact?.threshold_policy,
+          currentArtifact?.thresholdPolicy,
+        ),
+      ) || null,
+    producer_kind:
+      normalizeText(
+        firstMeaningfulValue(
+          currentArtifact?.producer_kind,
+          currentArtifact?.producerKind,
+        ),
+      ) || null,
+    score_contract_version: parseOptionalInteger(
+      firstMeaningfulValue(
+        currentArtifact?.score_contract_version,
+        currentArtifact?.scoreContractVersion,
+        scoreContract?.score_contract_version,
+        scoreContract?.scoreContractVersion,
+      ),
+    ),
     strategy_kind: "MlSignal",
   };
   const runTs = new Date().toISOString();
@@ -885,10 +1567,7 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
     const res = await invokeCommand("generate_ml_signal_score_cache", { req });
     const resRecord =
       res && typeof res === "object" ? (res as Record<string, unknown>) : null;
-    const matchedRows = parseNumber(
-      resRecord?.matched_rows,
-      0,
-    );
+    const matchedRows = parseNumber(resRecord?.matched_rows, 0);
     const scoreCoverageMeta = formatMlScoreCoverageMeta(resRecord);
     patchOptimizeState({
       mlSignalScoreMeta: [
@@ -963,24 +1642,26 @@ export async function runMlSignalValidation(): Promise<unknown> {
       validationRes && typeof validationRes === "object"
         ? (validationRes as Record<string, unknown>)
         : null;
-    const candidates = Array.isArray(
-      validationRecord?.candidates,
-    )
+    const candidates = Array.isArray(validationRecord?.candidates)
       ? ((validationRecord as Record<string, unknown>).candidates as unknown[])
       : [];
     const scoreCoverageMeta = formatMlScoreCoverageMeta(validationRecord);
+    const scopeAdvisory = formatMlScoreScopeAdvisory(validationRecord);
     patchOptimizeState({
       mlSignalValidationMeta: [
         `ML validation: ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} tested`,
         scoreCoverageMeta,
+        scopeAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),
       progressMeta: `ML validation • ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`,
-      statusLine: formatMlStageStatus(
-        "ML validation completed.",
-        validationRecord,
-      ),
+      statusLine: [
+        formatMlStageStatus("ML validation completed.", validationRecord),
+        scopeAdvisory,
+      ]
+        .filter((part) => part)
+        .join(" • "),
     });
 
     const runSnapshot = currentRunSnapshot();
@@ -1087,23 +1768,31 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
         : "",
     );
     const scoreCoverageMeta = formatMlScoreCoverageMeta(sweepRow);
+    const scopeAdvisory = formatMlScoreScopeAdvisory(sweepRow);
     patchOptimizeState({
       mlSignalSweepMeta: [
         `ML policy sweep: ${sweepSize.toFixed(0)} candidates`,
         Number.isFinite(bestScore) ? `best ${bestScore.toFixed(4)}` : "",
         bestLabel || "",
         scoreCoverageMeta,
+        scopeAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),
       mlSignalValidationMeta: [
         `ML validation: ${candidates.length} sweep candidate${candidates.length === 1 ? "" : "s"} retained`,
         scoreCoverageMeta,
+        scopeAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),
       progressMeta: `ML policy sweep • ${sweepSize.toFixed(0)} candidate${sweepSize === 1 ? "" : "s"}`,
-      statusLine: formatMlStageStatus("ML policy sweep completed.", sweepRow),
+      statusLine: [
+        formatMlStageStatus("ML policy sweep completed.", sweepRow),
+        scopeAdvisory,
+      ]
+        .filter((part) => part)
+        .join(" • "),
     });
 
     const runSnapshot = currentRunSnapshot();
@@ -1183,12 +1872,40 @@ export async function refreshMlSignalModelStatus(): Promise<unknown> {
       ? (raw.status as Record<string, unknown>)
       : null;
   const state = normalizeText(status?.state) || "missing";
-  const manifestPath = normalizeText(status?.manifest_path);
+  const manifestPath = normalizeText(
+    status?.manifest_path ?? status?.manifestPath,
+  );
+  const manifest = readOptionalRecord(status?.manifest);
+  const issues = readStringList(status?.issues);
+  const modelFamily = normalizeText(manifest?.model_family);
+  const modelFormat = normalizeText(manifest?.model_format);
+  const scoreContract = readOptionalRecord(
+    manifest?.score_contract ?? manifest?.scoreContract,
+  );
+  const scoreContractVersion = normalizeText(
+    scoreContract?.score_contract_version ??
+      scoreContract?.scoreContractVersion,
+  );
+  const calibrationPath = normalizeText(
+    manifest?.calibration_path ?? manifest?.calibrationPath,
+  );
+  const statusParts = [`Model bundle: ${bundleId}`, state];
+  if (modelFamily) statusParts.push(modelFamily);
+  if (modelFormat) statusParts.push(modelFormat);
+  if (scoreContractVersion)
+    statusParts.push(`contract v${scoreContractVersion}`);
+  if (calibrationPath) statusParts.push("calibration attached");
+  if (issues.length === 1 && issues[0]) statusParts.push(issues[0]);
+  if (issues.length > 1) statusParts.push(`${issues.length} issues`);
+  if (manifestPath) statusParts.push(manifestPath);
   patchOptimizeState({
-    mlSignalModelStatus: manifestPath
-      ? `Model bundle: ${bundleId} • ${state} • ${manifestPath}`
-      : `Model bundle: ${bundleId} • ${state}`,
+    mlSignalModelStatus: statusParts.join(" • "),
   });
+  if (status) {
+    patchCurrentMlSignalArtifact({
+      bundle_status: status,
+    });
+  }
   return raw;
 }
 

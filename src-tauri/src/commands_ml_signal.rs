@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ta_app_core::{
     build_ml_signal_score_cache_from_csv, classify_ml_signal_manifest,
     export_ml_signal_dataset_with_candles, list_ml_signal_model_bundle_summaries,
-    run_ml_signal_policy_sweep_blocking_with_candles,
+    read_ml_signal_manifest, run_ml_signal_policy_sweep_blocking_with_candles,
     run_ml_signal_validation_blocking_with_candles, MlSignalDatasetExportRequest,
     MlSignalDatasetExportResult, MlSignalModelBundleStatus, MlSignalModelBundleSummary,
     MlSignalPolicySweepRequest, MlSignalPolicySweepResult, MlSignalScoreCacheBuildRequest,
@@ -110,12 +110,99 @@ pub async fn export_ml_signal_dataset(
 
 #[tauri::command]
 pub async fn generate_ml_signal_score_cache(
-    req: MlSignalScoreCacheBuildRequest,
+    mut req: MlSignalScoreCacheBuildRequest,
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<MlSignalScoreCacheBuildResult, String> {
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
     let candles = state.get_candles(&req.data_id)?;
+    if req
+        .source_bundle_manifest_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        if let Some(bundle_id) = req
+            .model_bundle_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let models_dir = ml_signal_models_dir(&app)?;
+            let manifest_path = bundle_manifest_path(&models_dir, bundle_id);
+            if manifest_path.exists() {
+                req.source_bundle_manifest_path = Some(manifest_path.to_string_lossy().to_string());
+            }
+        }
+    }
+    if let Some(manifest_path) = req
+        .source_bundle_manifest_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(manifest) = read_ml_signal_manifest(Path::new(manifest_path)) {
+            if req.score_contract_version.is_none() {
+                req.score_contract_version = manifest
+                    .score_contract
+                    .as_ref()
+                    .and_then(|value| value.as_object())
+                    .and_then(|row| {
+                        row.get("score_contract_version")
+                            .or_else(|| row.get("scoreContractVersion"))
+                    })
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as u32);
+            }
+            if req.calibration_state.is_none() {
+                req.calibration_state = manifest
+                    .calibration_summary
+                    .as_ref()
+                    .and_then(|value| value.as_object())
+                    .and_then(|row| {
+                        row.get("calibration_state")
+                            .or_else(|| row.get("calibrationState"))
+                            .or_else(|| row.get("status"))
+                            .or_else(|| row.get("kind"))
+                    })
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        manifest
+                            .calibration_path
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(|_| "calibration_attached".to_string())
+                    });
+            }
+            if req.producer_kind.is_none() {
+                let model_family = manifest.model_family.trim();
+                if !model_family.is_empty() {
+                    req.producer_kind = Some(model_family.to_string());
+                }
+            }
+            if req.threshold_policy.is_none() {
+                req.threshold_policy = manifest
+                    .threshold_policy_default
+                    .as_ref()
+                    .and_then(|value| value.as_object())
+                    .and_then(|row| {
+                        row.get("kind")
+                            .or_else(|| row.get("threshold_policy"))
+                            .or_else(|| row.get("thresholdPolicy"))
+                    })
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+            }
+        }
+    }
 
     tauri::async_runtime::spawn_blocking(move || {
         build_ml_signal_score_cache_from_csv(req, &candles, cancel.as_ref())

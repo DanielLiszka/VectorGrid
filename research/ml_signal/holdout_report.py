@@ -112,6 +112,11 @@ def main() -> int:
 
     holdout_frame = scored.loc[scored["holdout_group"]].copy()
     non_holdout_frame = scored.loc[~scored["holdout_group"]].copy()
+    evaluation_modes = []
+    if "evaluation_mode" in scored.columns:
+        evaluation_modes = sorted(
+            {str(value).strip() for value in scored["evaluation_mode"].dropna().tolist() if str(value).strip()},
+        )
 
     holdout_summary = summarize_group("holdout", holdout_frame)
     non_holdout_summary = summarize_group("non_holdout", non_holdout_frame)
@@ -129,6 +134,7 @@ def main() -> int:
     report = {
         "scores_path": str(scores_path),
         "holdout_source": holdout_source,
+        "evaluation_modes": evaluation_modes,
         "groups": {
             "holdout": holdout_summary,
             "non_holdout": non_holdout_summary,
@@ -141,6 +147,7 @@ def main() -> int:
     lines = [
         f"scores_path: {scores_path}",
         f"holdout_source: {holdout_source}",
+        f"evaluation_modes: {', '.join(evaluation_modes) if evaluation_modes else 'unknown'}",
         "",
         "groups:",
         f"- holdout: rows={holdout_summary['rows_scored']} tickers={holdout_summary['ticker_count']} active_share={holdout_summary['active_share']:.4f} sum_return={holdout_summary['sum_policy_return']:.6f} positive_ticker_rate={holdout_summary['positive_ticker_rate']:.4f}",

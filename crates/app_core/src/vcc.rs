@@ -276,6 +276,12 @@ impl VccPeriodSweepDevice {
         self.matrix.device_ptr.checked_add(offset)
     }
 
+    /// Returns the indicator-local first valid row offset for `period`.
+    ///
+    /// This is only the sweep row's own period-derived offset (`period - 1`).
+    /// It does not apply the full VCC warmup/start gate, which also depends on
+    /// momentum-bollinger warmup, other signal families, and
+    /// [`compute_vcc_start_t`].
     pub fn first_valid_for_period(&self, period: u16) -> usize {
         usize::from(period.saturating_sub(1))
     }
@@ -896,6 +902,7 @@ pub fn compute_vcc_trend_signals(
     })
 }
 
+/// Combines the per-series first-valid bars into the first tradable VCC bar.
 pub fn compute_vcc_start_t(
     first_valid_close: usize,
     first_valid_source: usize,
@@ -916,6 +923,11 @@ pub fn compute_vcc_start_t(
     }
 }
 
+/// Returns the fast-signal warmup gate before trend/close/source alignment.
+///
+/// This is not the final bar where VCC can begin trading. Use
+/// [`compute_vcc_start_t`] to combine this with the other signal families and
+/// the execution offset.
 pub fn compute_vcc_fast_first_valid(
     cfg: &VccStrategyParams,
     squeeze_period: u16,
@@ -939,6 +951,21 @@ pub fn build_vcc_desired_positions(
     cfg: &VccStrategyParams,
 ) -> Vec<i32> {
     let n = close.len();
+    debug_assert_eq!(
+        fast.squeeze_state.len(),
+        n,
+        "VCC squeeze_state length must match close length"
+    );
+    debug_assert_eq!(
+        fast.momentum.len(),
+        n,
+        "VCC momentum length must match close length"
+    );
+    debug_assert_eq!(
+        trend.trend_state.len(),
+        n,
+        "VCC trend_state length must match close length"
+    );
     let mut desired = vec![0i32; n];
     if start_t >= n {
         return desired;
@@ -1064,6 +1091,106 @@ mod tests {
         cfg.max_trade_bars = 0;
         let err = validate_vcc_params(&cfg).expect_err("should reject max_trade_bars=0");
         assert!(err.contains("max_trade_bars"));
+    }
+
+    fn test_vcc_fast_signals(squeeze_state: &[f64], momentum: &[f64]) -> VccFastSignals {
+        VccFastSignals {
+            squeeze_state: squeeze_state.to_vec(),
+            momentum: momentum.to_vec(),
+            first_valid: 0,
+        }
+    }
+
+    fn test_vcc_trend_signals(trend_state: &[f64]) -> VccTrendSignals {
+        VccTrendSignals {
+            trend_state: trend_state.to_vec(),
+            first_valid: 0,
+        }
+    }
+
+    #[test]
+    fn build_vcc_desired_positions_can_enter_while_flat_before_any_squeeze_release() {
+        let close = vec![100.0; 5];
+        let fast = test_vcc_fast_signals(&[1.0, 1.0, 1.0, 1.0, 1.0], &[0.1, 0.2, 0.3, 0.2, 0.1]);
+        let trend = test_vcc_trend_signals(&[1.0, 1.0, 1.0, 1.0, 1.0]);
+        let strategy = StrategyConfig {
+            trade_on_next_bar: false,
+            ..StrategyConfig::default()
+        };
+        let cfg = VccStrategyParams {
+            confirm_bars: 3,
+            require_momentum_accel: false,
+            ..VccStrategyParams::default()
+        };
+
+        let desired = build_vcc_desired_positions(&close, &fast, &trend, 1, &strategy, &cfg);
+
+        assert_eq!(&desired[..1], &[0]);
+        assert_eq!(desired[1], 1);
+        assert_eq!(desired[2], 1);
+    }
+
+    #[test]
+    fn build_vcc_desired_positions_confirm_bars_reopen_entry_window_after_release_delay() {
+        let close = vec![100.0; 6];
+        let fast = test_vcc_fast_signals(
+            &[1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            &[-0.2, -0.1, 0.0, 0.6, 0.7, 0.8],
+        );
+        let trend = test_vcc_trend_signals(&[0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+        let strategy = StrategyConfig {
+            trade_on_next_bar: false,
+            ..StrategyConfig::default()
+        };
+        let cfg = VccStrategyParams {
+            confirm_bars: 2,
+            require_momentum_accel: false,
+            ..VccStrategyParams::default()
+        };
+
+        let desired = build_vcc_desired_positions(&close, &fast, &trend, 1, &strategy, &cfg);
+
+        assert_eq!(
+            desired[2], 0,
+            "release bar should still fail without positive momentum"
+        );
+        assert_eq!(
+            desired[3], 0,
+            "confirm_bars should keep the window closed one bar later"
+        );
+        assert_eq!(
+            desired[4], 1,
+            "entry window should reopen after the configured delay"
+        );
+        assert_eq!(desired[5], 1);
+    }
+
+    #[test]
+    fn compute_vcc_start_t_extends_fast_first_valid_by_max_period_and_trade_offset() {
+        let cfg = VccStrategyParams {
+            momentum_bb_period: 20,
+            ..VccStrategyParams::default()
+        };
+        let fast_first_valid = compute_vcc_fast_first_valid(&cfg, 6, 8);
+        let max_period = 12usize;
+
+        let start_same_bar = compute_vcc_start_t(2, 3, fast_first_valid, 7, max_period, false);
+        let start_next_bar = compute_vcc_start_t(2, 3, fast_first_valid, 7, max_period, true);
+
+        assert_eq!(fast_first_valid, 19);
+        assert_eq!(start_same_bar, fast_first_valid + (max_period - 1));
+        assert_eq!(start_next_bar, start_same_bar + 1);
+    }
+
+    #[test]
+    fn vcc_momentum_roundtrip_parity_fixture_is_fp32_stable() {
+        let momentum = [f64::NAN, -1.25, -0.5, 0.0, 0.25, 1.5];
+
+        let parity = vcc_momentum_roundtrip_parity(&momentum);
+
+        assert_eq!(parity.sign_mismatch_count, 0);
+        assert_eq!(parity.delta_sign_mismatch_count, 0);
+        assert!(vcc_momentum_roundtrip_is_fp32_stable(&momentum));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

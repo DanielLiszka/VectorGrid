@@ -68,6 +68,14 @@ export interface WorkflowMlSignalArtifact {
   scoreManifestPath: string;
   featureSchemaPath: string;
   featureSchemaVersion: string;
+  featureSchemaHash: string;
+  exporter: Record<string, unknown> | null;
+  provenance: Record<string, unknown> | null;
+  calibration: Record<string, unknown> | null;
+  scoreContract: Record<string, unknown> | null;
+  scoreContractVersion: string;
+  scoreCacheProvenance: Record<string, unknown> | null;
+  bundleStatus: Record<string, unknown> | null;
   scoreSpace: string;
   scoreScope: string;
   matchedRows: number | null;
@@ -169,6 +177,37 @@ function markRawUnknown<T>(value: T): T {
   return markRaw(value);
 }
 
+function normalizeOptionalRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length > 0 ? row : null;
+}
+
+function hasMeaningfulMetadataValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return normalizeText(value).length > 0;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length > 0;
+  }
+  return true;
+}
+
+function compactMetadataRecord(
+  entries: Array<[string, unknown]>,
+): Record<string, unknown> | null {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of entries) {
+    if (!hasMeaningfulMetadataValue(value)) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 function normalizeMlSignalArtifact(
   value: unknown,
 ): WorkflowMlSignalArtifact | null {
@@ -197,6 +236,77 @@ function normalizeMlSignalArtifact(
     featureSchemaPath?: unknown;
     feature_schema_version?: unknown;
     featureSchemaVersion?: unknown;
+    feature_schema_hash?: unknown;
+    featureSchemaHash?: unknown;
+    schema_hash?: unknown;
+    schemaHash?: unknown;
+    exporter?: unknown;
+    exporter_metadata?: unknown;
+    exporterMetadata?: unknown;
+    exporter_version?: unknown;
+    exporterVersion?: unknown;
+    provenance?: unknown;
+    indicator_config?: unknown;
+    indicatorConfig?: unknown;
+    warmup_policy?: unknown;
+    warmupPolicy?: unknown;
+    label_policy?: unknown;
+    labelPolicy?: unknown;
+    deadband_policy?: unknown;
+    deadbandPolicy?: unknown;
+    sample_weight_policy?: unknown;
+    sampleWeightPolicy?: unknown;
+    data_timeframe?: unknown;
+    dataTimeframe?: unknown;
+    created_at?: unknown;
+    createdAt?: unknown;
+    source_export_manifest_hash?: unknown;
+    sourceExportManifestHash?: unknown;
+    source_feature_schema_hash?: unknown;
+    sourceFeatureSchemaHash?: unknown;
+    training_config?: unknown;
+    trainingConfig?: unknown;
+    training_windows_summary?: unknown;
+    trainingWindowsSummary?: unknown;
+    calibration?: unknown;
+    calibration_summary?: unknown;
+    calibrationSummary?: unknown;
+    calibration_state?: unknown;
+    calibrationState?: unknown;
+    class_balance_policy?: unknown;
+    classBalancePolicy?: unknown;
+    threshold_policy_default?: unknown;
+    thresholdPolicyDefault?: unknown;
+    explainability_artifacts?: unknown;
+    explainabilityArtifacts?: unknown;
+    bundle_parent_id?: unknown;
+    bundleParentId?: unknown;
+    feature_block_versions?: unknown;
+    featureBlockVersions?: unknown;
+    indicator_params?: unknown;
+    indicatorParams?: unknown;
+    label_horizon_bars?: unknown;
+    labelHorizonBars?: unknown;
+    first_valid_reasoning?: unknown;
+    firstValidReasoning?: unknown;
+    score_contract?: unknown;
+    scoreContract?: unknown;
+    score_contract_version?: unknown;
+    scoreContractVersion?: unknown;
+    score_cache_provenance?: unknown;
+    scoreCacheProvenance?: unknown;
+    source_bundle_id?: unknown;
+    sourceBundleId?: unknown;
+    source_bundle_manifest_hash?: unknown;
+    sourceBundleManifestHash?: unknown;
+    threshold_policy?: unknown;
+    thresholdPolicy?: unknown;
+    producer_kind?: unknown;
+    producerKind?: unknown;
+    bundle_status?: unknown;
+    bundleStatus?: unknown;
+    bundle_status_details?: unknown;
+    bundleStatusDetails?: unknown;
     score_space?: unknown;
     scoreSpace?: unknown;
     score_scope?: unknown;
@@ -225,6 +335,108 @@ function normalizeMlSignalArtifact(
       : row.policySweep && typeof row.policySweep === "object"
         ? (row.policySweep as Record<string, unknown>)
         : null;
+  const exporter =
+    normalizeOptionalRecord(
+      row.exporter ?? row.exporter_metadata ?? row.exporterMetadata,
+    ) ??
+    compactMetadataRecord([
+      ["exporter_version", row.exporter_version ?? row.exporterVersion],
+      ["created_at", row.created_at ?? row.createdAt],
+    ]);
+  const provenance =
+    normalizeOptionalRecord(row.provenance) ??
+    compactMetadataRecord([
+      ["indicator_config", row.indicator_config ?? row.indicatorConfig],
+      ["warmup_policy", row.warmup_policy ?? row.warmupPolicy],
+      ["label_policy", row.label_policy ?? row.labelPolicy],
+      ["deadband_policy", row.deadband_policy ?? row.deadbandPolicy],
+      [
+        "sample_weight_policy",
+        row.sample_weight_policy ?? row.sampleWeightPolicy,
+      ],
+      ["data_timeframe", row.data_timeframe ?? row.dataTimeframe],
+      [
+        "source_export_manifest_hash",
+        row.source_export_manifest_hash ?? row.sourceExportManifestHash,
+      ],
+      [
+        "source_feature_schema_hash",
+        row.source_feature_schema_hash ?? row.sourceFeatureSchemaHash,
+      ],
+      ["training_config", row.training_config ?? row.trainingConfig],
+      [
+        "training_windows_summary",
+        row.training_windows_summary ?? row.trainingWindowsSummary,
+      ],
+      [
+        "calibration_summary",
+        row.calibration_summary ?? row.calibrationSummary,
+      ],
+      [
+        "class_balance_policy",
+        row.class_balance_policy ?? row.classBalancePolicy,
+      ],
+      [
+        "threshold_policy_default",
+        row.threshold_policy_default ?? row.thresholdPolicyDefault,
+      ],
+      [
+        "explainability_artifacts",
+        row.explainability_artifacts ?? row.explainabilityArtifacts,
+      ],
+      ["bundle_parent_id", row.bundle_parent_id ?? row.bundleParentId],
+      [
+        "feature_block_versions",
+        row.feature_block_versions ?? row.featureBlockVersions,
+      ],
+      ["indicator_params", row.indicator_params ?? row.indicatorParams],
+      ["label_horizon_bars", row.label_horizon_bars ?? row.labelHorizonBars],
+      [
+        "first_valid_reasoning",
+        row.first_valid_reasoning ?? row.firstValidReasoning,
+      ],
+    ]);
+  const calibration =
+    normalizeOptionalRecord(row.calibration) ??
+    compactMetadataRecord([
+      [
+        "calibration_summary",
+        row.calibration_summary ?? row.calibrationSummary,
+      ],
+      ["calibration_state", row.calibration_state ?? row.calibrationState],
+    ]);
+  const scoreContract =
+    normalizeOptionalRecord(row.score_contract ?? row.scoreContract) ??
+    compactMetadataRecord([
+      [
+        "score_contract_version",
+        row.score_contract_version ?? row.scoreContractVersion,
+      ],
+    ]);
+  const scoreCacheProvenance =
+    normalizeOptionalRecord(
+      row.score_cache_provenance ?? row.scoreCacheProvenance,
+    ) ??
+    compactMetadataRecord([
+      ["source_bundle_id", row.source_bundle_id ?? row.sourceBundleId],
+      [
+        "source_bundle_manifest_hash",
+        row.source_bundle_manifest_hash ?? row.sourceBundleManifestHash,
+      ],
+      ["calibration_state", row.calibration_state ?? row.calibrationState],
+      ["threshold_policy", row.threshold_policy ?? row.thresholdPolicy],
+      ["producer_kind", row.producer_kind ?? row.producerKind],
+      [
+        "score_contract_version",
+        row.score_contract_version ?? row.scoreContractVersion,
+      ],
+    ]);
+  const bundleStatus = normalizeOptionalRecord(
+    row.bundle_status_details ??
+      row.bundleStatusDetails ??
+      row.bundle_status ??
+      row.bundleStatus,
+  );
   const out = {
     stage: normalizeText(row.stage),
     bundleId: normalizeText(row.bundle_id ?? row.bundleId),
@@ -252,6 +464,25 @@ function normalizeMlSignalArtifact(
     featureSchemaVersion: normalizeText(
       row.feature_schema_version ?? row.featureSchemaVersion,
     ),
+    featureSchemaHash: normalizeText(
+      row.feature_schema_hash ??
+        row.featureSchemaHash ??
+        row.schema_hash ??
+        row.schemaHash,
+    ),
+    exporter: markRawUnknown(exporter),
+    provenance: markRawUnknown(provenance),
+    calibration: markRawUnknown(calibration),
+    scoreContract: markRawUnknown(scoreContract),
+    scoreContractVersion: normalizeText(
+      row.score_contract_version ??
+        row.scoreContractVersion ??
+        scoreContract?.score_contract_version ??
+        scoreContract?.scoreContractVersion ??
+        scoreCacheProvenance?.score_contract_version,
+    ),
+    scoreCacheProvenance: markRawUnknown(scoreCacheProvenance),
+    bundleStatus: markRawUnknown(bundleStatus),
     scoreSpace: normalizeText(row.score_space ?? row.scoreSpace),
     scoreScope: normalizeText(row.score_scope ?? row.scoreScope),
     matchedRows: normalizeOptionalNumber(row.matched_rows ?? row.matchedRows),
@@ -279,6 +510,14 @@ function normalizeMlSignalArtifact(
     !out.scoreManifestPath &&
     !out.featureSchemaPath &&
     !out.featureSchemaVersion &&
+    !out.featureSchemaHash &&
+    !out.exporter &&
+    !out.provenance &&
+    !out.calibration &&
+    !out.scoreContract &&
+    !out.scoreContractVersion &&
+    !out.scoreCacheProvenance &&
+    !out.bundleStatus &&
     !out.scoreSpace &&
     !out.scoreScope &&
     out.matchedRows == null &&

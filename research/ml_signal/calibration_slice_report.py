@@ -49,18 +49,26 @@ def safe_logloss(y_true: pd.Series, y_prob: pd.Series) -> float | None:
         return None
 
 
+def probability_column(name: str, frame: pd.DataFrame) -> str:
+    calibrated = f"p_{name}_cal"
+    return calibrated if calibrated in frame.columns else f"p_{name}"
+
+
 def summarize_target(name: str, frame: pd.DataFrame) -> dict[str, Any]:
     y_col = f"y_{name}"
-    p_col = f"p_{name}"
+    p_col = probability_column(name, frame)
     raw_col = f"raw_{name}"
-    rows = len(frame)
+    valid = frame[y_col].notna() & frame[p_col].notna()
+    valid_frame = frame.loc[valid].copy()
+    rows = len(valid_frame)
     return {
         "rows": int(rows),
-        "positive_rate": float(frame[y_col].mean()) if rows else 0.0,
-        "auc": safe_auc(frame[y_col], frame[p_col]) if rows else None,
-        "logloss": safe_logloss(frame[y_col], frame[p_col]) if rows else None,
-        "mean_probability": float(frame[p_col].mean()) if rows else 0.0,
-        "mean_raw_score": float(frame[raw_col].mean()) if rows and raw_col in frame.columns else 0.0,
+        "probability_column": p_col,
+        "positive_rate": float(valid_frame[y_col].mean()) if rows else 0.0,
+        "auc": safe_auc(valid_frame[y_col], valid_frame[p_col]) if rows else None,
+        "logloss": safe_logloss(valid_frame[y_col], valid_frame[p_col]) if rows else None,
+        "mean_probability": float(valid_frame[p_col].mean()) if rows else 0.0,
+        "mean_raw_score": float(valid_frame[raw_col].mean()) if rows and raw_col in valid_frame.columns else 0.0,
     }
 
 
@@ -87,15 +95,17 @@ def main() -> int:
         "ticker_id",
         "split_id",
         "y_long",
-        "p_long",
         "raw_long",
         "y_short",
-        "p_short",
         "raw_short",
     }
     missing = sorted(required.difference(frame.columns))
     if missing:
         raise SystemExit(f"validation scores are missing required columns: {missing}")
+    if "p_long" not in frame.columns and "p_long_cal" not in frame.columns:
+        raise SystemExit("validation scores are missing both p_long and p_long_cal")
+    if "p_short" not in frame.columns and "p_short_cal" not in frame.columns:
+        raise SystemExit("validation scores are missing both p_short and p_short_cal")
 
     summary = {
         "scores_path": str(scores_path),
@@ -167,6 +177,8 @@ def main() -> int:
 
     markdown_lines = [
         f"scores_path: {scores_path}",
+        f"preferred_long_probability_column: {summary['overall']['long']['probability_column']}",
+        f"preferred_short_probability_column: {summary['overall']['short']['probability_column']}",
         "",
         "overall:",
         f"- long_auc: {summary['overall']['long']['auc']}",

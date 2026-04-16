@@ -50,11 +50,16 @@ pub struct PreparedDynamicCpuContext {
 pub type DynamicIndicatorStagingProgressFn<'a> =
     dyn FnMut(usize, usize, &str, crate::strategy_plan::IndicatorRouteKind, bool) + 'a;
 
+/// Preview metadata for a dynamic Double-MA strategy request.
+///
+/// `plan_fingerprint_hex` intentionally reflects the resolved IR identity that the preview was
+/// built from. It is not the compiled-plan fingerprint used by GPU executable caching.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DynamicDoubleMaStrategyIrPreview {
     pub capability: StrategyCapabilityReport,
     pub requested_backend: StrategyPlanBackend,
     pub resolved_backend: StrategyPlanBackend,
+    /// IR-level identity for the resolved preview plan.
     pub plan_fingerprint_hex: String,
     pub indicator_count: usize,
     pub condition_count: usize,
@@ -215,32 +220,37 @@ fn enforce_dynamic_double_ma_v1_output_refs(
     Ok(())
 }
 
-fn enforce_dynamic_double_ma_product_caps(
+/// Enforce the product-surface limits for previewing a dynamic Double-MA strategy.
+///
+/// This is broader than runnable GPU-kernel eligibility. Passing these checks means the request is
+/// in the supported product slice, not that the resolved plan is guaranteed to satisfy the narrower
+/// `validate_dynamic_double_ma_gpu_handle_v1(...)` contract.
+fn enforce_dynamic_double_ma_preview_product_caps(
     ir: &crate::strategy_ir::StrategyIr,
 ) -> Result<(), String> {
     let indicators = ir.program.indicators.len();
     if indicators > DYNAMIC_V1_MAX_INDICATORS {
         return Err(format!(
-            "dynamic gpu v1 supports at most {DYNAMIC_V1_MAX_INDICATORS} indicators, got {indicators}"
+            "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_INDICATORS} indicators, got {indicators}"
         ));
     }
     let conditions = ir.program.conditions.len();
     if conditions > DYNAMIC_V1_MAX_CONDITIONS {
         return Err(format!(
-            "dynamic gpu v1 supports at most {DYNAMIC_V1_MAX_CONDITIONS} conditions, got {conditions}"
+            "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_CONDITIONS} conditions, got {conditions}"
         ));
     }
     let groups = ir.program.groups.len();
     if groups > DYNAMIC_V1_MAX_GROUPS {
         return Err(format!(
-            "dynamic gpu v1 supports at most {DYNAMIC_V1_MAX_GROUPS} groups, got {groups}"
+            "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_GROUPS} groups, got {groups}"
         ));
     }
     for group in &ir.program.groups {
         let group_conditions = group.condition_ids.len();
         if group_conditions > DYNAMIC_V1_MAX_GROUP_CONDITIONS {
             return Err(format!(
-                "dynamic gpu v1 group '{}' exceeds max condition count ({group_conditions} > {DYNAMIC_V1_MAX_GROUP_CONDITIONS})",
+                "dynamic double-ma preview group '{}' exceeds max condition count ({group_conditions} > {DYNAMIC_V1_MAX_GROUP_CONDITIONS})",
                 group.id
             ));
         }
@@ -248,7 +258,7 @@ fn enforce_dynamic_double_ma_product_caps(
 
     if !ir.execution.strategy.long_only && ir.program.signals.short_entry_group.is_none() {
         return Err(
-            "dynamic gpu v1 bidirectional plans must bind short_entry_group explicitly".to_string(),
+            "dynamic double-ma preview requires bidirectional plans to bind short_entry_group explicitly".to_string(),
         );
     }
 
@@ -295,6 +305,11 @@ fn validate_dynamic_indicator_output_for_gpu_v1(
     Ok(())
 }
 
+/// Validate the narrower runnable GPU-kernel contract for a resolved dynamic Double-MA handle.
+///
+/// This is intentionally stricter than the product-surface preview caps: a request can remain in
+/// the shipped dynamic product slice and still fall back to CPU because the resolved GPU handle is
+/// not runnable by the current kernel.
 pub(crate) fn validate_dynamic_double_ma_gpu_handle_v1(
     handle: &StrategyHandle,
 ) -> Result<(), String> {
@@ -357,7 +372,7 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
     include_all: bool,
 ) -> Result<ResolvedDynamicDoubleMaPreview, String> {
     validate_strategy_cfg(&ir.execution.strategy)?;
-    enforce_dynamic_double_ma_product_caps(ir)?;
+    enforce_dynamic_double_ma_preview_product_caps(ir)?;
 
     let regime_filter_present =
         ir.execution.halftrend_filter.is_some() || ir.execution.halftrend.is_some();
@@ -424,6 +439,10 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
     })
 }
 
+/// Resolve the preview route for a dynamic Double-MA strategy request.
+///
+/// The preview first applies broad product-surface caps, then may still fall back to CPU if the
+/// resolved GPU handle fails the narrower kernel-specific eligibility checks.
 pub fn preview_dynamic_double_ma_strategy_ir(
     ir: &crate::strategy_ir::StrategyIr,
     requested_backend: StrategyPlanBackend,
@@ -441,24 +460,13 @@ pub fn preview_dynamic_double_ma_strategy_ir(
     .preview)
 }
 
-pub fn prepare_runnable_dynamic_double_ma_plan(
+fn build_runnable_dynamic_double_ma_plan(
     ir: crate::strategy_ir::StrategyIr,
-    requested_backend: StrategyPlanBackend,
-    objective: ta_optimizer::ObjectiveKind,
-    top_k: usize,
-    include_all: bool,
+    preview: DynamicDoubleMaStrategyIrPreview,
+    resolved_plan: CompiledStrategyPlan,
+    resolved_gpu_handle: Option<StrategyHandle>,
     candles: &Candles,
 ) -> Result<RunnableDynamicDoubleMaPlan, String> {
-    let resolved = resolve_dynamic_double_ma_strategy_ir_preview(
-        &ir,
-        requested_backend,
-        objective,
-        top_k,
-        include_all,
-    )?;
-    let preview = resolved.preview;
-    let resolved_plan = resolved.resolved_plan;
-    let resolved_gpu_handle = resolved.gpu_handle;
     let stored_resolved_plan = resolved_plan.clone();
     let cpu_fallback_plan = if preview.resolved_backend == StrategyPlanBackend::Cpu {
         LazyCompiledCpuFallbackPlan::eager(resolved_plan.clone())
@@ -475,12 +483,10 @@ pub fn prepare_runnable_dynamic_double_ma_plan(
         LazyPreparedDynamicCpuContext::deferred(ir.ma_source.as_str())
     };
     let gpu_handle = if preview.resolved_backend == StrategyPlanBackend::GpuUnified {
-        resolved_gpu_handle.or_else(|| {
-            Some(
-                StrategyHandle::from_plan(resolved_plan, preview.capability.clone())
-                    .expect("resolved GPU preview should produce a GPU handle"),
-            )
-        })
+        Some(resolved_gpu_handle.ok_or_else(|| {
+            "resolved GPU preview is missing a runnable gpu handle; expected CPU fallback or a validated handle"
+                .to_string()
+        })?)
     } else {
         None
     };
@@ -492,6 +498,30 @@ pub fn prepare_runnable_dynamic_double_ma_plan(
         cpu_context,
         gpu_handle,
     })
+}
+
+pub fn prepare_runnable_dynamic_double_ma_plan(
+    ir: crate::strategy_ir::StrategyIr,
+    requested_backend: StrategyPlanBackend,
+    objective: ta_optimizer::ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+    candles: &Candles,
+) -> Result<RunnableDynamicDoubleMaPlan, String> {
+    let resolved = resolve_dynamic_double_ma_strategy_ir_preview(
+        &ir,
+        requested_backend,
+        objective,
+        top_k,
+        include_all,
+    )?;
+    build_runnable_dynamic_double_ma_plan(
+        ir,
+        resolved.preview,
+        resolved.resolved_plan,
+        resolved.gpu_handle,
+        candles,
+    )
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -3464,6 +3494,36 @@ mod tests {
     }
 
     #[test]
+    fn preview_dynamic_double_ma_strategy_ir_reports_ir_fingerprint_identity() {
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let compiled = compile_strategy_plan_for_dynamic(&ir, StrategyPlanBackend::GpuUnified)
+            .expect("compiled plan should build");
+
+        let preview = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect("preview should succeed");
+
+        assert_eq!(preview.plan_fingerprint_hex, compiled.ir_fingerprint_hex);
+    }
+
+    #[test]
     fn preview_dynamic_double_ma_strategy_ir_keeps_gpu_backend_for_plain_v1_shape() {
         let ir = build_static_strategy_ir(
             StrategyProfileKind::DoubleMa,
@@ -3491,6 +3551,51 @@ mod tests {
         assert!(preview.capability.gpu_dynamic_supported);
         assert_eq!(preview.resolved_backend, StrategyPlanBackend::GpuUnified);
         assert!(!preview.plan_fingerprint_hex.is_empty());
+    }
+
+    #[test]
+    fn prepare_runnable_dynamic_double_ma_plan_rejects_missing_gpu_handle_without_panicking() {
+        let _guard = lock_test_env();
+        let candles = make_trending_candles(128);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+
+        let resolved = resolve_dynamic_double_ma_strategy_ir_preview(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect("preview resolution should succeed");
+        assert_eq!(
+            resolved.preview.resolved_backend,
+            StrategyPlanBackend::GpuUnified
+        );
+        assert!(resolved.gpu_handle.is_some());
+
+        let err = match build_runnable_dynamic_double_ma_plan(
+            ir,
+            resolved.preview,
+            resolved.resolved_plan,
+            None,
+            &candles,
+        ) {
+            Ok(_) => panic!("missing GPU handle should return an error"),
+            Err(err) => err,
+        };
+        assert!(err.contains("missing a runnable gpu handle"));
     }
 
     #[test]
@@ -3534,6 +3639,61 @@ mod tests {
             .expect("deferred cpu context should build on first access");
         assert_eq!(compile_dynamic_strategy_plan_call_count(), 2);
         assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
+    }
+
+    #[test]
+    fn eval_dynamic_double_ma_metrics_with_candles_matches_cpu_eval() {
+        let candles = make_trending_candles(1024);
+        let strategy = StrategyConfig::default();
+        let plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &strategy,
+            None,
+            StrategyPlanBackend::Cpu,
+        )
+        .expect("plan should compile");
+        let context =
+            prepare_dynamic_cpu_context(&plan, &candles, "close").expect("context should prepare");
+        let (fast_mat, cols_fast) =
+            ma_matrix_cpu_f64(&candles, "sma", "close", &[10_u16], None, 0.85, 6.0)
+                .expect("fast matrix");
+        let (slow_mat, cols_slow) =
+            ma_matrix_cpu_f64(&candles, "sma", "close", &[30_u16], None, 0.85, 6.0)
+                .expect("slow matrix");
+        assert_eq!(cols_fast, cols_slow);
+
+        let start_t = 64;
+        let direct = eval_dynamic_plan_metrics_cpu(
+            &plan,
+            &context,
+            &fast_mat[..cols_fast],
+            &slow_mat[..cols_fast],
+            start_t,
+            true,
+        )
+        .expect("direct eval should succeed");
+        let with_candles = eval_dynamic_plan_metrics_cpu_with_candles(
+            &plan,
+            &candles,
+            &context,
+            &fast_mat[..cols_fast],
+            &slow_mat[..cols_fast],
+            start_t,
+            true,
+        )
+        .expect("candles eval should succeed");
+
+        assert_eq!(direct.trades, with_candles.trades);
+        assert_eq!(direct.closed_trades, with_candles.closed_trades);
+        assert!(approx_eq(direct.sharpe, with_candles.sharpe));
+        assert!(approx_eq(direct.pnl, with_candles.pnl));
+        assert!(approx_eq(direct.max_dd, with_candles.max_dd));
+        assert!(approx_eq(direct.gross_profit, with_candles.gross_profit));
+        assert!(approx_eq(direct.gross_loss, with_candles.gross_loss));
     }
 
     #[test]
@@ -3742,7 +3902,7 @@ mod tests {
         )
         .expect_err("product cap overflow should fail preview");
         assert!(
-            err.contains("at most 12 indicators"),
+            err.contains("preview supports at most 12 indicators"),
             "unexpected error: {err}"
         );
     }
@@ -3776,7 +3936,7 @@ mod tests {
         )
         .expect_err("bidirectional missing short entry should fail preview");
         assert!(
-            err.contains("bidirectional plans must bind short_entry_group"),
+            err.contains("preview requires bidirectional plans to bind short_entry_group"),
             "unexpected error: {err}"
         );
     }

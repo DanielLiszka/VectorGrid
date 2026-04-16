@@ -87,6 +87,8 @@ def main() -> int:
         "ml_summary_path": str(ml_path),
         "baseline_summary_path": str(baseline_path),
         "baseline_label": args.label,
+        "ml_evaluation_mode": str(ml_summary.get("evaluation_mode") or ""),
+        "baseline_evaluation_mode": str(baseline_summary.get("evaluation_mode") or ""),
         "metrics": comparison_metrics,
         "ml_wins": ml_wins,
         "comparable_metrics": comparable,
@@ -99,6 +101,8 @@ def main() -> int:
 
     lines = [
         f"baseline_label: {args.label}",
+        f"ml_evaluation_mode: {report['ml_evaluation_mode']}",
+        f"baseline_evaluation_mode: {report['baseline_evaluation_mode']}",
         f"ml_beats_baseline_on_majority: {str(report['ml_beats_baseline_on_majority']).lower()}",
         "",
         "metrics:",
