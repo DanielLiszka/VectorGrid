@@ -43,7 +43,15 @@ pub trait CrossTickerCandidate {
 }
 
 pub fn normalize_path_key(raw: &str) -> String {
-    raw.trim().replace('/', "\\").to_ascii_lowercase()
+    let trimmed = raw.trim();
+    #[cfg(target_os = "windows")]
+    {
+        trimmed.replace('/', "\\").to_ascii_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        trimmed.to_string()
+    }
 }
 
 impl CrossTickerCandidate for CompositeValidationCandidateResult {
@@ -311,6 +319,21 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
         if ds_n == 0 {
             continue;
         }
+        debug_assert_eq!(
+            acc.dds.len(),
+            ds_n,
+            "cross-ticker drawdown accumulator length must match sharpe length"
+        );
+        debug_assert_eq!(
+            acc.pnls.len(),
+            ds_n,
+            "cross-ticker pnl accumulator length must match sharpe length"
+        );
+        debug_assert_eq!(
+            acc.trades.len(),
+            ds_n,
+            "cross-ticker trades accumulator length must match sharpe length"
+        );
 
         acc.sharpes.sort_by(|a, b| a.total_cmp(b));
         acc.dds.sort_by(|a, b| a.total_cmp(b));
@@ -439,9 +462,47 @@ mod tests {
 
         sanitize_cross_ticker_config(&mut cfg);
 
-        assert_eq!(cfg.datasets.len(), 2);
-        assert_eq!(cfg.datasets[0].label, "first");
-        assert_eq!(cfg.datasets[1].label, "third");
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(cfg.datasets.len(), 2);
+            assert_eq!(cfg.datasets[0].label, "first");
+            assert_eq!(cfg.datasets[1].label, "third");
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(cfg.datasets.len(), 3);
+            assert_eq!(cfg.datasets[0].label, "first");
+            assert_eq!(cfg.datasets[1].label, "second");
+            assert_eq!(cfg.datasets[2].label, "third");
+        }
+    }
+
+    #[test]
+    fn normalize_path_key_is_platform_aware() {
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(
+                normalize_path_key(" C:/Data/AAPL.csv "),
+                "c:\\data\\aapl.csv"
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(normalize_path_key(" /Data/AAPL.csv "), "/Data/AAPL.csv");
+            assert_ne!(
+                normalize_path_key("/Data/AAPL.csv"),
+                normalize_path_key("/data/aapl.csv")
+            );
+        }
+    }
+
+    #[test]
+    fn quantile_and_median_preserve_current_nearest_rank_behavior() {
+        let sorted = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(quantile(&sorted, 0.0), 1.0);
+        assert_eq!(quantile(&sorted, 0.5), 3.0);
+        assert_eq!(quantile(&sorted, f64::NAN), 1.0);
+        assert_eq!(median(&sorted), 3.0);
     }
 
     #[test]
@@ -568,6 +629,83 @@ mod tests {
         assert!((candidates[1].robust_score - 0.2).abs() < 1e-12);
         assert!(candidates[0].cross_ticker_pareto.is_some());
         assert!(candidates[1].cross_ticker_pareto.is_some());
+    }
+
+    #[test]
+    fn finalize_cross_ticker_candidates_keeps_candidates_without_accumulators_unset() {
+        let mut candidates = vec![
+            TestCandidate {
+                params: TestParams { id: 1 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: 1.0,
+            },
+            TestCandidate {
+                params: TestParams { id: 2 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: 0.5,
+            },
+        ];
+        let accs = vec![CrossTickerAcc {
+            sharpes: vec![0.4, 0.4],
+            dds: vec![0.1, 0.1],
+            pnls: vec![0.1, 0.1],
+            trades: vec![10, 10],
+            pnl_pos: 2,
+        }];
+
+        finalize_cross_ticker_candidates(&mut candidates, accs);
+
+        assert!(candidates
+            .iter()
+            .any(|cand| cand.params.id == 1 && cand.cross_ticker.is_some()));
+        assert!(candidates
+            .iter()
+            .any(|cand| cand.params.id == 2 && cand.cross_ticker.is_none()));
+    }
+
+    #[test]
+    fn finalize_cross_ticker_candidates_preserves_stable_order_for_equal_scores() {
+        let mut candidates = vec![
+            TestCandidate {
+                params: TestParams { id: 1 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: f64::NAN,
+            },
+            TestCandidate {
+                params: TestParams { id: 2 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: f64::NAN,
+            },
+        ];
+        let accs = vec![
+            CrossTickerAcc {
+                sharpes: vec![1.0, 1.0],
+                dds: vec![0.2, 0.2],
+                pnls: vec![0.1, 0.1],
+                trades: vec![10, 10],
+                pnl_pos: 2,
+            },
+            CrossTickerAcc {
+                sharpes: vec![1.0, 1.0],
+                dds: vec![0.2, 0.2],
+                pnls: vec![0.1, 0.1],
+                trades: vec![10, 10],
+                pnl_pos: 2,
+            },
+        ];
+
+        finalize_cross_ticker_candidates(&mut candidates, accs);
+
+        assert_eq!(candidates[0].params.id, 1);
+        assert_eq!(candidates[1].params.id, 2);
     }
 
     #[test]

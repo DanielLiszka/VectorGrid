@@ -697,15 +697,11 @@ fn approval_label_and_reason(
 
 fn parse_run_verdict(validation_res: &Value) -> Option<ExportRunVerdict> {
     let verdict = validation_res.get("run_verdict")?.as_object()?;
+    let passed = verdict.get("passed").and_then(Value::as_bool)?;
+    let approved = verdict.get("approved").and_then(Value::as_bool)?;
     Some(ExportRunVerdict {
-        passed: verdict
-            .get("passed")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        approved: verdict
-            .get("approved")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        passed,
+        approved,
         candidates_tested: verdict
             .get("candidates_tested")
             .and_then(Value::as_u64)
@@ -2305,6 +2301,13 @@ fn sort_rows(rows: &mut [ExportCandidateRow]) {
     });
     for (idx, row) in rows.iter_mut().enumerate() {
         row.rank = idx + 1;
+        let approval_label = row.approval_label.clone();
+        let params_summary = row.params_summary.clone();
+        for bucket in &mut row.regime_bucket_rows {
+            bucket.rank = row.rank;
+            bucket.approval_label = approval_label.clone();
+            bucket.params_summary = params_summary.clone();
+        }
     }
 }
 
@@ -2322,10 +2325,7 @@ fn build_rows(validation_res: &Value) -> Result<(Vec<ExportCandidateRow>, bool),
             .and_then(Value::as_bool)
             .is_some()
     });
-    let has_run_verdict = validation_res
-        .get("run_verdict")
-        .and_then(Value::as_object)
-        .is_some();
+    let has_run_verdict = parse_run_verdict(validation_res).is_some();
     let compatibility_mode = !(has_candidate_verdicts && has_run_verdict);
 
     let mut rows: Vec<ExportCandidateRow> = candidates
@@ -2732,6 +2732,44 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn test_candidate(
+        robust_score: f64,
+        passed: bool,
+        track_record_bars: u64,
+        min_track_record_length_bars: u64,
+        params: Value,
+        trend_pnl: f64,
+        trend_sharpe: f64,
+    ) -> Value {
+        json!({
+            "params": params,
+            "validation_verdict": {
+                "passed": passed
+            },
+            "track_record_bars": track_record_bars,
+            "min_track_record_length_bars": min_track_record_length_bars,
+            "robust_score": robust_score,
+            "in_sample": {
+                "pnl": robust_score * 10.0,
+                "sharpe": robust_score,
+                "max_dd": -0.25,
+                "trades": 12.0
+            },
+            "regime_slice_robustness": {
+                "trend": {
+                    "pnl": trend_pnl,
+                    "sharpe": trend_sharpe,
+                    "bars": 50
+                },
+                "range": {
+                    "pnl": 0.1,
+                    "sharpe": 0.05,
+                    "bars": 40
+                }
+            }
+        })
+    }
+
     #[test]
     fn composite_lightweight_cross_summary_matches_frontend_policy() {
         let req = json!({
@@ -2919,5 +2957,178 @@ mod tests {
         assert!(gpu_only_summary
             .module_summary
             .contains("Expected CPU fallback route (BreakoutMomentum):"));
+    }
+
+    #[test]
+    fn parse_run_verdict_requires_explicit_passed_and_approved_flags() {
+        let placeholder = json!({
+            "run_verdict": {
+                "approved_candidate_count": 1
+            }
+        });
+        assert!(parse_run_verdict(&placeholder).is_none());
+
+        let partial = json!({
+            "run_verdict": {
+                "passed": true,
+                "approved_candidate_count": 2
+            }
+        });
+        assert!(parse_run_verdict(&partial).is_none());
+
+        let complete = json!({
+            "run_verdict": {
+                "passed": true,
+                "approved": false,
+                "approved_candidate_count": 2
+            }
+        });
+        let verdict = parse_run_verdict(&complete).expect("complete run verdict should parse");
+        assert!(verdict.passed);
+        assert!(!verdict.approved);
+        assert_eq!(verdict.approved_candidate_count, 2);
+    }
+
+    #[test]
+    fn build_model_ignores_placeholder_run_verdict_for_run_level_rejection() {
+        let validation_res = json!({
+            "data_id": "dataset",
+            "candidates": [
+                test_candidate(
+                    1.0,
+                    true,
+                    120,
+                    60,
+                    json!({
+                        "fast_ma_type": "ema",
+                        "slow_ma_type": "sma",
+                        "fast_len": 10,
+                        "slow_len": 20
+                    }),
+                    0.4,
+                    0.2
+                )
+            ],
+            "run_verdict": {
+                "approved_candidate_count": 1
+            }
+        });
+
+        let model = build_model_from_validation_res(&validation_res, None)
+            .expect("placeholder run_verdict should remain compatible");
+        assert!(model.run_verdict.is_none());
+        assert_eq!(model.all_rows.len(), 1);
+        assert!(model.all_rows[0].final_approved);
+        assert_eq!(model.all_rows[0].approval_label, "approved");
+    }
+
+    #[test]
+    fn sort_rows_resynchronizes_nested_regime_bucket_metadata() {
+        let validation_res = json!({
+            "data_id": "dataset",
+            "candidates": [
+                test_candidate(
+                    0.5,
+                    true,
+                    120,
+                    60,
+                    json!({
+                        "fast_ma_type": "ema",
+                        "slow_ma_type": "sma",
+                        "fast_len": 9,
+                        "slow_len": 21
+                    }),
+                    0.2,
+                    0.1
+                ),
+                test_candidate(
+                    1.5,
+                    true,
+                    140,
+                    60,
+                    json!({
+                        "fast_ma_type": "wma",
+                        "slow_ma_type": "ema",
+                        "fast_len": 7,
+                        "slow_len": 31
+                    }),
+                    0.6,
+                    0.3
+                )
+            ],
+            "run_verdict": {
+                "passed": true,
+                "approved": true
+            }
+        });
+
+        let model = build_model_from_validation_res(&validation_res, None)
+            .expect("report model should build");
+        assert_eq!(model.all_rows.len(), 2);
+        let top_row = &model.all_rows[0];
+        assert_eq!(top_row.rank, 1);
+        assert_eq!(top_row.params_summary, "wma(7) / ema(31)");
+        assert_eq!(top_row.approval_label, "approved");
+        assert!(!top_row.regime_bucket_rows.is_empty());
+        assert!(top_row
+            .regime_bucket_rows
+            .iter()
+            .all(|bucket| bucket.rank == 1));
+        assert!(top_row
+            .regime_bucket_rows
+            .iter()
+            .all(|bucket| bucket.approval_label == top_row.approval_label));
+        assert!(top_row
+            .regime_bucket_rows
+            .iter()
+            .all(|bucket| bucket.params_summary == top_row.params_summary));
+    }
+
+    #[test]
+    fn run_level_rejection_resynchronizes_nested_regime_bucket_metadata() {
+        let validation_res = json!({
+            "data_id": "dataset",
+            "candidates": [
+                test_candidate(
+                    1.0,
+                    true,
+                    120,
+                    60,
+                    json!({
+                        "fast_ma_type": "ema",
+                        "slow_ma_type": "sma",
+                        "fast_len": 10,
+                        "slow_len": 20
+                    }),
+                    0.4,
+                    0.2
+                )
+            ],
+            "run_verdict": {
+                "passed": false,
+                "approved": false,
+                "fail_reasons": ["cscv_pbo"]
+            }
+        });
+
+        let model = build_model_from_validation_res(&validation_res, None)
+            .expect("report model should build");
+        let row = &model.all_rows[0];
+        assert!(!row.final_approved);
+        assert_eq!(row.approval_label, "not_approved");
+        assert_eq!(row.approval_reason, "run verdict: cscv_pbo");
+        assert!(!row.regime_bucket_rows.is_empty());
+        assert!(row
+            .regime_bucket_rows
+            .iter()
+            .all(|bucket| bucket.rank == row.rank));
+        assert!(row
+            .regime_bucket_rows
+            .iter()
+            .all(|bucket| bucket.approval_label == row.approval_label));
+        assert!(row
+            .regime_bucket_rows
+            .iter()
+            .all(|bucket| bucket.params_summary == row.params_summary));
     }
 }

@@ -314,6 +314,9 @@ where
             let Some(&idx) = key_to_idx.get(&key) else {
                 continue;
             };
+            // Cross-ticker aggregation is success-only by design: failed reruns
+            // contribute no evidence and are filtered later via missing stats
+            // rather than by injecting an explicit penalty record here.
             if c.validation_passed() {
                 validation_common::push_metrics(&mut accs[idx], c.cross_ticker_metrics());
             }
@@ -452,6 +455,10 @@ pub(crate) fn apply_cross_ticker_validation(
         cross_cfg.mode,
         ta_app_core::CrossTickerMode::PreservedFinalists
     );
+    // Preserve the original validation contract: cross-ticker filtering may
+    // change the surviving set, but `candidates_tested` should continue to
+    // describe the base validation run rather than the post-filter remainder.
+    let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
     if preserved_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
     }
@@ -522,7 +529,7 @@ pub(crate) fn apply_cross_ticker_validation(
     );
     res.run_verdict = ta_app_core::validation_pipeline::build_run_verdict(
         &res.candidates,
-        res.candidates.len(),
+        original_candidates_tested,
         &hard_gates,
         res.cscv_pbo.as_ref(),
         res.spa.as_ref(),
@@ -702,6 +709,10 @@ fn apply_cross_ticker_validation_double_ma(
         cross_cfg.mode,
         ta_app_core::CrossTickerMode::PreservedFinalists
     );
+    // Preserve the original validation contract: cross-ticker filtering may
+    // change the surviving set, but `candidates_tested` should continue to
+    // describe the base validation run rather than the post-filter remainder.
+    let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
     if preserved_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
     }
@@ -781,7 +792,7 @@ fn apply_cross_ticker_validation_double_ma(
     );
     res.run_verdict = ta_app_core::validation_pipeline::build_run_verdict(
         &res.candidates,
-        res.candidates.len(),
+        original_candidates_tested,
         &hard_gates,
         res.cscv_pbo.as_ref(),
         res.spa.as_ref(),
@@ -1073,8 +1084,11 @@ pub async fn get_price_bars(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
+    use ta_app_core::CrossTickerStats;
+    use ta_strategies::double_ma::Metrics;
 
     fn data_csv(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1146,6 +1160,82 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Serialize)]
+    struct MockCrossParams {
+        id: u32,
+    }
+
+    #[derive(Clone)]
+    struct MockCrossCandidate {
+        params: MockCrossParams,
+        metrics: Metrics,
+        validation_passed: bool,
+        cross_ticker: Option<CrossTickerStats>,
+        cross_ticker_pareto: Option<bool>,
+        robust_score: f64,
+    }
+
+    struct MockCrossResult {
+        candidates: Vec<MockCrossCandidate>,
+        summary: Option<ta_app_core::CrossTickerValidationSummary>,
+    }
+
+    impl validation_common::CrossTickerCandidate for MockCrossCandidate {
+        type Params = MockCrossParams;
+
+        fn params(&self) -> &Self::Params {
+            &self.params
+        }
+
+        fn cross_ticker_metrics(&self) -> &Metrics {
+            &self.metrics
+        }
+
+        fn validation_passed(&self) -> bool {
+            self.validation_passed
+        }
+
+        fn cross_ticker(&self) -> Option<&CrossTickerStats> {
+            self.cross_ticker.as_ref()
+        }
+
+        fn cross_ticker_pareto(&self) -> Option<bool> {
+            self.cross_ticker_pareto
+        }
+
+        fn set_cross_ticker(&mut self, stats: CrossTickerStats) {
+            self.cross_ticker = Some(stats);
+        }
+
+        fn set_cross_ticker_pareto(&mut self, is_pareto: bool) {
+            self.cross_ticker_pareto = Some(is_pareto);
+        }
+
+        fn robust_score(&self) -> f64 {
+            self.robust_score
+        }
+
+        fn set_robust_score(&mut self, score: f64) {
+            self.robust_score = score;
+        }
+    }
+
+    impl CrossTickerValidationResultExt for MockCrossResult {
+        type Candidate = MockCrossCandidate;
+
+        fn candidates(&self) -> &Vec<Self::Candidate> {
+            &self.candidates
+        }
+
+        fn candidates_mut(&mut self) -> &mut Vec<Self::Candidate> {
+            &mut self.candidates
+        }
+
+        fn set_cross_ticker_summary(&mut self, summary: ta_app_core::CrossTickerValidationSummary) {
+            self.summary = Some(summary);
+        }
+    }
+
     #[test]
     fn validation_context_rejects_dataset_mismatch() {
         let ctx = ta_app_core::ValidationArtifactContext {
@@ -1203,6 +1293,86 @@ mod tests {
         let aligned = align_cross_ticker_candles_to_base_horizon(&base, &cross);
 
         assert!(matches!(aligned, AlignedCandles::Borrowed(_)));
+    }
+
+    #[test]
+    fn cross_ticker_alignment_without_overlap_uses_cross_tail_when_cross_is_longer() {
+        let base = candles_with_ts(100, 10);
+        let cross = candles_with_ts(0, 30);
+        let aligned = align_cross_ticker_candles_to_base_horizon(&base, &cross);
+
+        assert_eq!(aligned.as_ref().timestamp.first().copied(), Some(20));
+        assert_eq!(aligned.as_ref().timestamp.last().copied(), Some(29));
+        assert_eq!(aligned.as_ref().close.len(), 10);
+    }
+
+    #[test]
+    fn cross_ticker_generic_accumulates_only_successful_reruns() {
+        let candles = load_candles(&data_csv("AAPL.csv"));
+        let cancel = AtomicBool::new(false);
+        let mut res = MockCrossResult {
+            candidates: vec![MockCrossCandidate {
+                params: MockCrossParams { id: 1 },
+                metrics: Metrics {
+                    pnl: 1.0,
+                    sharpe: 1.0,
+                    max_dd: 0.1,
+                    trades: 10,
+                    ..Metrics::default()
+                },
+                validation_passed: true,
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: 1.0,
+            }],
+            summary: None,
+        };
+        let cross_cfg = ta_app_core::CrossTickerConfig {
+            datasets: vec![ta_app_core::CrossTickerDataset {
+                csv_path: data_csv("NVDA.csv").to_string_lossy().to_string(),
+                label: "NVDA".to_string(),
+            }],
+            max_datasets: 1,
+            mode: ta_app_core::CrossTickerMode::Lightweight,
+            gate: ta_app_core::CrossTickerGateConfig::default(),
+        };
+
+        apply_cross_ticker_validation_generic(
+            &mut res,
+            cross_cfg,
+            &candles,
+            &make_cache_dir(),
+            &cancel,
+            None,
+            "mock_cross",
+            |_dataset_index, _total_candidates, candidates| candidates,
+            |req2: Vec<MockCrossParams>, _candles2, _cancel2, _progress2| {
+                Ok(MockCrossResult {
+                    candidates: req2
+                        .into_iter()
+                        .map(|params| MockCrossCandidate {
+                            params,
+                            metrics: Metrics {
+                                pnl: 100.0,
+                                sharpe: 10.0,
+                                max_dd: 0.01,
+                                trades: 99,
+                                ..Metrics::default()
+                            },
+                            validation_passed: false,
+                            cross_ticker: None,
+                            cross_ticker_pareto: None,
+                            robust_score: 5.0,
+                        })
+                        .collect(),
+                    summary: None,
+                })
+            },
+        )
+        .expect("cross-ticker generic mock");
+
+        assert!(res.candidates.is_empty());
+        assert_eq!(res.summary.as_ref().map(|s| s.datasets.len()), Some(1));
     }
 
     #[test]
@@ -1430,6 +1600,22 @@ mod tests {
     }
 
     #[test]
+    fn validation_context_currently_accepts_dynamic_double_ma_for_double_ma_validation() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "DynamicDoubleMa".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa"],
+        )
+        .expect("current DynamicDoubleMa normalization should still map to DoubleMa");
+    }
+
+    #[test]
     fn cross_ticker_headless_double_ma_smoke_applies_stats() {
         let candles = load_candles(&data_csv("AAPL.csv"));
         let cancel = AtomicBool::new(false);
@@ -1570,7 +1756,8 @@ mod tests {
             req, &candles, &cancel, None,
         )
         .expect("base double-ma validation");
-        assert_eq!(res.run_verdict.approved_candidate_count, 1);
+        let base_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
+        assert_eq!(base_candidates_tested, 1);
 
         let cross_cfg = ta_app_core::CrossTickerConfig {
             datasets: vec![ta_app_core::CrossTickerDataset {
@@ -1614,6 +1801,7 @@ mod tests {
         .expect("cross-ticker double-ma");
 
         assert!(res.candidates.is_empty());
+        assert_eq!(res.run_verdict.candidates_tested, base_candidates_tested);
         assert_eq!(res.run_verdict.approved_candidate_count, 0);
         assert!(!res.run_verdict.approved);
     }
@@ -2010,7 +2198,9 @@ mod tests {
             req, &candles, &cancel, None,
         )
         .expect("base composite validation");
-        assert_eq!(res.run_verdict.approved_candidate_count, 1);
+        let base_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
+        let base_pbo = res.run_verdict.pbo;
+        assert_eq!(base_candidates_tested, 1);
 
         let cross_cfg = ta_app_core::CrossTickerConfig {
             datasets: vec![ta_app_core::CrossTickerDataset {
@@ -2054,8 +2244,10 @@ mod tests {
         .expect("cross-ticker composite preserved finalists");
 
         assert!(res.candidates.is_empty());
+        assert_eq!(res.run_verdict.candidates_tested, base_candidates_tested);
         assert_eq!(res.run_verdict.approved_candidate_count, 0);
         assert!(!res.run_verdict.approved);
+        assert_eq!(res.run_verdict.pbo, base_pbo);
         let summary = res.cross_ticker.as_ref().expect("cross summary");
         assert_eq!(
             summary.mode,

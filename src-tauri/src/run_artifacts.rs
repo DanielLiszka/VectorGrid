@@ -602,6 +602,47 @@ fn existing_run_artifact_target_path<R: tauri::Runtime>(
     Ok(path)
 }
 
+fn normalized_config_fingerprint_fields(artifact: &Value) -> (String, Option<u32>) {
+    let config_fingerprint = artifact
+        .get("config_fingerprint")
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| compute_config_fingerprint_from_artifact(artifact));
+    let config_fingerprint_version = artifact
+        .get("config_fingerprint_version")
+        .and_then(Value::as_u64)
+        .map(|value| value as u32)
+        .or_else(|| {
+            if config_fingerprint.starts_with("cfg1-") {
+                Some(1)
+            } else {
+                None
+            }
+        });
+    (config_fingerprint, config_fingerprint_version)
+}
+
+fn run_artifact_file_recency_key(file_name: &str) -> Option<(String, u32)> {
+    let stem = Path::new(file_name).file_stem()?.to_str()?.trim();
+    let ts_and_suffix = stem
+        .strip_prefix("vectorbt_run_")
+        .or_else(|| stem.strip_prefix("vectorgrid_run_"))?;
+    if ts_and_suffix.is_empty() {
+        return None;
+    }
+
+    if let Some((base_ts, suffix)) = ts_and_suffix.rsplit_once('_') {
+        if let Ok(parsed_suffix) = suffix.parse::<u32>() {
+            if parsed_suffix >= 2 && !base_ts.is_empty() {
+                return Some((base_ts.to_string(), parsed_suffix));
+            }
+        }
+    }
+
+    Some((ts_and_suffix.to_string(), 1))
+}
+
 fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!(
@@ -1047,10 +1088,10 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     existing_path: Option<String>,
 ) -> Result<SaveRunArtifactResponse, String> {
-    let path = existing_path
-        .as_deref()
-        .and_then(|value| existing_run_artifact_target_path(value, &app).ok())
-        .unwrap_or(run_artifact_path(&artifact, &app)?);
+    let path = match existing_path.as_deref() {
+        Some(value) => existing_run_artifact_target_path(value, &app)?,
+        None => run_artifact_path(&artifact, &app)?,
+    };
 
     // Best-effort enrichment for reproducibility and batch "skip completed" correctness.
     if let Value::Object(root) = &mut artifact {
@@ -1390,7 +1431,14 @@ fn load_latest_run_artifact_entry_blocking(
         candidate_paths.push((path, file_name));
     }
 
-    candidate_paths.sort_by(|lhs, rhs| rhs.0.cmp(&lhs.0));
+    candidate_paths.sort_by(|lhs, rhs| {
+        let lhs_key = run_artifact_file_recency_key(&lhs.1);
+        let rhs_key = run_artifact_file_recency_key(&rhs.1);
+        rhs_key
+            .cmp(&lhs_key)
+            .then_with(|| rhs.1.cmp(&lhs.1))
+            .then_with(|| rhs.0.cmp(&lhs.0))
+    });
     for (path, file_name) in candidate_paths {
         let Some(entry) = read_artifact_scan_entry(path, file_name) else {
             continue;
@@ -1933,6 +1981,8 @@ fn build_workflow_artifacts_hydration_payload(
         .cloned()
         .ok_or_else(|| "Saved run artifact is missing run.res.".to_string())?;
     let ts = normalize_text_value(artifact.get("ts"));
+    let (config_fingerprint, config_fingerprint_version) =
+        normalized_config_fingerprint_fields(artifact);
     let current_run = WorkflowArtifactRunPayload {
         ts: if ts.is_empty() {
             chrono::Utc::now().to_rfc3339()
@@ -1942,16 +1992,8 @@ fn build_workflow_artifacts_hydration_payload(
         artifact_path: artifact_path.to_string(),
         report_xlsx_path: normalize_text_value(artifact.get("report_xlsx_path")),
         csv_path: resolve_run_artifact_csv_path(artifact),
-        config_fingerprint: artifact
-            .get("config_fingerprint")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string(),
-        config_fingerprint_version: artifact
-            .get("config_fingerprint_version")
-            .and_then(Value::as_u64)
-            .map(|value| value as u32),
+        config_fingerprint,
+        config_fingerprint_version,
         dataset_meta: artifact.pointer("/dataset_meta").cloned(),
         route_provenance: extract_route_provenance_from_artifact(artifact),
         lineage: extract_artifact_lineage_from_artifact(artifact),
@@ -1989,16 +2031,8 @@ fn build_run_artifact_detail_response(
     let run_res = artifact.pointer("/run/res").cloned();
     let validation_req = artifact.pointer("/validation/req").cloned();
     let validation_res = artifact.pointer("/validation/res").cloned();
-    let config_fingerprint = artifact
-        .get("config_fingerprint")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let config_fingerprint_version = artifact
-        .get("config_fingerprint_version")
-        .and_then(Value::as_u64)
-        .map(|value| value as u32);
+    let (config_fingerprint, config_fingerprint_version) =
+        normalized_config_fingerprint_fields(artifact);
     let ml_score_space = extract_ml_score_space(artifact).unwrap_or_default();
     let ml_score_scope = extract_ml_score_scope(artifact).unwrap_or_default();
     let ml_score_contract_summary = format_ml_score_contract_summary(
@@ -2252,23 +2286,7 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         .unwrap_or("")
         .to_string();
     let strategy_kind = resolve_run_artifact_strategy_kind(v);
-    let config_fingerprint = v
-        .get("config_fingerprint")
-        .and_then(|x| x.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| compute_config_fingerprint_from_artifact(v));
-    let config_fingerprint_version = v
-        .get("config_fingerprint_version")
-        .and_then(|x| x.as_u64())
-        .map(|x| x as u32)
-        .or_else(|| {
-            if config_fingerprint.starts_with("cfg1-") {
-                Some(1)
-            } else {
-                None
-            }
-        });
+    let (config_fingerprint, config_fingerprint_version) = normalized_config_fingerprint_fields(v);
     let has_validation = v.pointer("/validation/res").is_some();
     let report_xlsx_path = v
         .get("report_xlsx_path")
@@ -4447,6 +4465,33 @@ mod tests {
     }
 
     #[test]
+    fn save_run_artifact_blocking_errors_for_invalid_existing_path_instead_of_falling_back() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("overwrite_invalid_existing_artifact");
+        let outside_dir = make_temp_dir("run_artifact_invalid_overwrite_target");
+        let invalid_target = outside_dir.join("outside_runs_dir.json");
+
+        let err = save_run_artifact_blocking(
+            minimal_run_artifact(&ts),
+            handle.clone(),
+            Some(invalid_target.to_string_lossy().to_string()),
+        )
+        .expect_err("invalid overwrite target should fail");
+
+        assert!(err.contains("outside app runs dir"));
+        let dir = runs_dir(&handle).expect("runs dir");
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .expect("runs dir entries")
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            files.is_empty(),
+            "invalid overwrite target should not create a fresh artifact"
+        );
+    }
+
+    #[test]
     fn load_latest_run_artifact_summary_prefers_latest_run_file_without_scanning_meta_history() {
         let app = build_mock_app();
         let handle = app.handle().clone();
@@ -4481,6 +4526,44 @@ mod tests {
 
         assert_eq!(summary.ts, "2026-04-10T12:00:00Z");
         assert_eq!(summary.path, latest.path);
+    }
+
+    #[test]
+    fn load_latest_run_artifact_summary_prefers_newer_timestamp_across_supported_prefixes() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let older_vectorgrid = dir.join("vectorgrid_run_2026-04-10T12-00-00Z.json");
+        let newer_vectorbt = dir.join("vectorbt_run_2026-04-10T13-00-00Z.json");
+
+        std::fs::write(
+            &older_vectorgrid,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "ts": "2026-04-10T12:00:00Z",
+                "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
+            }))
+            .expect("vectorgrid json"),
+        )
+        .expect("write vectorgrid run");
+        std::fs::write(
+            &newer_vectorbt,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorbt_run_artifact",
+                "ts": "2026-04-10T13:00:00Z",
+                "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
+            }))
+            .expect("vectorbt json"),
+        )
+        .expect("write vectorbt run");
+
+        let summary = load_latest_run_artifact_summary_blocking(handle)
+            .expect("latest run summary")
+            .expect("summary should exist");
+
+        assert_eq!(summary.ts, "2026-04-10T13:00:00Z");
+        assert_eq!(summary.path, newer_vectorbt.to_string_lossy().to_string());
+        assert_eq!(summary.kind, "vectorbt_run_artifact");
     }
 
     #[test]
@@ -4551,6 +4634,38 @@ mod tests {
         assert_eq!(response.summary.ts, "2026-04-10T12:00:00Z");
         assert_eq!(response.summary.path, latest.path);
         assert_eq!(response.hydration.current_run.artifact_path, latest.path);
+    }
+
+    #[test]
+    fn load_latest_run_artifact_hydration_reuses_summary_fingerprint_normalization() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save run");
+
+        let response = load_latest_run_artifact_hydration_blocking(handle)
+            .expect("latest hydration")
+            .expect("response should exist");
+
+        assert_eq!(
+            response.hydration.current_run.config_fingerprint,
+            response.summary.config_fingerprint
+        );
+        assert_eq!(
+            response.hydration.current_run.config_fingerprint_version,
+            response.summary.config_fingerprint_version
+        );
+        assert!(!response
+            .hydration
+            .current_run
+            .config_fingerprint
+            .trim()
+            .is_empty());
     }
 
     #[test]

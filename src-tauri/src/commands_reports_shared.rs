@@ -16,17 +16,28 @@ pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
 }
 
 fn existing_path(path: String) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
+    if path.trim().is_empty() {
         return Err("path must not be empty".to_string());
     }
 
-    let path = PathBuf::from(trimmed);
+    let path = PathBuf::from(path);
     if !path.exists() {
         return Err(format!("path does not exist: {}", path.to_string_lossy()));
     }
 
     Ok(path)
+}
+
+#[cfg(target_os = "linux")]
+fn reveal_target_path(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        return path.to_path_buf();
+    }
+
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
 }
 
 pub(crate) fn reveal_path_blocking(path: String) -> Result<(), String> {
@@ -70,13 +81,7 @@ pub(crate) fn reveal_path_blocking(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        let target = if path.is_dir() {
-            path
-        } else {
-            path.parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .to_path_buf()
-        };
+        let target = reveal_target_path(&path);
         Command::new("xdg-open")
             .arg(target.as_os_str())
             .spawn()
@@ -228,6 +233,55 @@ mod tests {
             reveal_path_blocking(missing.to_string_lossy().to_string()).expect_err("missing path");
         assert!(err.contains("path does not exist"));
         assert!(err.contains("missing.xlsx"));
+    }
+
+    #[test]
+    fn existing_path_rejects_whitespace_only_input() {
+        let err = existing_path("   \n\t  ".to_string()).expect_err("whitespace-only path");
+        assert_eq!(err, "path must not be empty");
+    }
+
+    #[test]
+    fn existing_path_preserves_exact_input_bytes_instead_of_trimming() {
+        let dir = make_temp_dir("existing_path_preserve_bytes");
+        let file = dir.join("report.xlsx");
+        std::fs::write(&file, b"report").expect("seed report");
+
+        let padded = format!(" {} ", file.to_string_lossy());
+        let err = existing_path(padded.clone()).expect_err("padded path should not be trimmed");
+        assert!(err.contains("path does not exist"));
+        assert!(err.contains(&padded));
+
+        let resolved = existing_path(file.to_string_lossy().to_string()).expect("exact path");
+        assert_eq!(resolved, file);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reveal_target_path_falls_back_to_current_directory_for_one_component_relative_files() {
+        let dir = make_temp_dir("reveal_target_path");
+        let nested_dir = dir.join("nested");
+        let nested_file = nested_dir.join("report.xlsx");
+        std::fs::create_dir_all(&nested_dir).expect("create nested dir");
+        std::fs::write(&nested_file, b"report").expect("create nested file");
+
+        assert_eq!(
+            reveal_target_path(Path::new("report.xlsx")),
+            PathBuf::from(".")
+        );
+        assert_eq!(reveal_target_path(&nested_file), nested_dir);
+        assert_eq!(reveal_target_path(&nested_dir), nested_dir);
+    }
+
+    #[test]
+    fn quantile_preserves_current_edge_case_semantics() {
+        let sorted = [10.0, 20.0, 30.0, 40.0];
+
+        assert_eq!(quantile(&[], 0.5), 0.0);
+        assert_eq!(quantile(&[7.5], 0.5), 7.5);
+        assert_eq!(quantile(&sorted, -1.0), 10.0);
+        assert_eq!(quantile(&sorted, 2.0), 40.0);
+        assert_eq!(quantile(&sorted, f64::NAN), 10.0);
     }
 
     #[test]
