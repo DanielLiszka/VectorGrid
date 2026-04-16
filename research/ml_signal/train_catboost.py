@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import platform
 import shutil
 from pathlib import Path
 
@@ -30,6 +32,13 @@ DEFAULT_ITERATIONS = 1500
 DEFAULT_LEARNING_RATE = 0.03
 DEFAULT_DEPTH = 6
 DEFAULT_RANDOM_SEED = 42
+DEFAULT_LOSS_FUNCTION = "Logloss"
+DEFAULT_EVAL_METRIC = "Logloss"
+DEFAULT_GROW_POLICY = "SymmetricTree"
+DEFAULT_USE_BEST_MODEL = True
+DEFAULT_HAS_TIME = True
+DEFAULT_ALLOW_WRITING_FILES = False
+DEFAULT_VERBOSE = False
 DEFAULT_SCORE_CONTRACT_VERSION = 1
 DEFAULT_SCORE_CONTRACT = {
     "score_contract_version": DEFAULT_SCORE_CONTRACT_VERSION,
@@ -129,6 +138,64 @@ def _build_feature_importance_artifact(
     return out_path.name, top_rows
 
 
+def _as_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _build_training_config(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "loss_function": DEFAULT_LOSS_FUNCTION,
+        "eval_metric": DEFAULT_EVAL_METRIC,
+        "iterations": int(args.iterations),
+        "learning_rate": float(args.learning_rate),
+        "depth": int(args.depth),
+        "grow_policy": DEFAULT_GROW_POLICY,
+        "use_best_model": DEFAULT_USE_BEST_MODEL,
+        "has_time": DEFAULT_HAS_TIME,
+        "allow_writing_files": DEFAULT_ALLOW_WRITING_FILES,
+        "verbose": DEFAULT_VERBOSE,
+        "long_random_seed": int(args.random_seed),
+        "short_random_seed": int(args.random_seed + 1),
+    }
+
+
+def _dependency_version(module_name: str) -> str | None:
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return None
+    version = getattr(module, "__version__", None)
+    return str(version) if version is not None else None
+
+
+def _build_python_environment() -> dict[str, object]:
+    dependency_versions = {
+        "catboost": _dependency_version("catboost"),
+        "numpy": _dependency_version("numpy"),
+        "pandas": _dependency_version("pandas"),
+        "scikit_learn": _dependency_version("sklearn"),
+    }
+    return {
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+        "dependency_versions": {
+            key: value for key, value in dependency_versions.items() if value is not None
+        },
+    }
+
+
 def train_model(
     name: str,
     frame: pd.DataFrame,
@@ -139,6 +206,7 @@ def train_model(
     learning_rate: float,
     depth: int,
     random_seed: int,
+    training_config: dict[str, object] | None = None,
 ) -> tuple[CatBoostClassifier, pd.DataFrame, dict[str, float | int | None]]:
     target_col = f"y_{name}"
     keep_col = f"keep_{name}"
@@ -157,17 +225,21 @@ def train_model(
     _require_binary_target_slice(name, "train", frame.loc[train_mask, target_col])
     _require_binary_target_slice(name, "calibration", frame.loc[calibration_mask, target_col])
 
+    config = training_config or {}
     model = CatBoostClassifier(
-        loss_function="Logloss",
-        eval_metric="Logloss",
-        iterations=iterations,
-        learning_rate=learning_rate,
-        depth=depth,
-        grow_policy="SymmetricTree",
-        has_time=True,
-        allow_writing_files=False,
-        verbose=False,
-        random_seed=random_seed,
+        loss_function=str(config.get("loss_function", DEFAULT_LOSS_FUNCTION)),
+        eval_metric=str(config.get("eval_metric", DEFAULT_EVAL_METRIC)),
+        iterations=int(config.get("iterations", iterations)),
+        learning_rate=float(config.get("learning_rate", learning_rate)),
+        depth=int(config.get("depth", depth)),
+        grow_policy=str(config.get("grow_policy", DEFAULT_GROW_POLICY)),
+        has_time=_as_bool(config.get("has_time"), DEFAULT_HAS_TIME),
+        allow_writing_files=_as_bool(
+            config.get("allow_writing_files"),
+            DEFAULT_ALLOW_WRITING_FILES,
+        ),
+        verbose=config.get("verbose", DEFAULT_VERBOSE),
+        random_seed=int(random_seed),
     )
     model.fit(
         frame.loc[train_mask, feature_cols],
@@ -177,7 +249,7 @@ def train_model(
             frame.loc[calibration_mask, feature_cols],
             frame.loc[calibration_mask, target_col].astype(int),
         ),
-        use_best_model=True,
+        use_best_model=_as_bool(config.get("use_best_model"), DEFAULT_USE_BEST_MODEL),
     )
 
     score_frame = pd.DataFrame(
@@ -229,6 +301,8 @@ def main() -> int:
 
     masks = {name: pd.Series(mask, index=base_frame.index) for name, mask in masks_np.items()}
     sample_weight = pd.Series(choose_sample_weight(bundle), index=base_frame.index)
+    training_config = _build_training_config(args)
+    python_environment = _build_python_environment()
 
     long_model, long_scores, long_metrics = train_model(
         "long",
@@ -239,7 +313,8 @@ def main() -> int:
         args.iterations,
         args.learning_rate,
         args.depth,
-        args.random_seed,
+        int(training_config["long_random_seed"]),
+        training_config=training_config,
     )
     short_model, short_scores, short_metrics = train_model(
         "short",
@@ -250,7 +325,8 @@ def main() -> int:
         args.iterations,
         args.learning_rate,
         args.depth,
-        args.random_seed + 1,
+        int(training_config["short_random_seed"]),
+        training_config=training_config,
     )
 
     long_model_path = out_dir / "model_long.cbm"
@@ -301,20 +377,7 @@ def main() -> int:
     score_contract = _score_contract()
     training_mode = "single_fit_last_window" if split_windows else "single_fit_fallback"
     selected_split_id = selected_window.split_id
-    training_config = {
-        "loss_function": "Logloss",
-        "eval_metric": "Logloss",
-        "iterations": int(args.iterations),
-        "learning_rate": float(args.learning_rate),
-        "depth": int(args.depth),
-        "grow_policy": "SymmetricTree",
-        "use_best_model": True,
-        "has_time": True,
-        "allow_writing_files": False,
-        "long_random_seed": int(args.random_seed),
-        "short_random_seed": int(args.random_seed + 1),
-        "feature_count": int(len(bundle.feature_names)),
-    }
+    training_config["feature_count"] = int(len(bundle.feature_names))
     training_windows_summary = {
         "window_count": int(len(split_windows)),
         "fallback_used": not split_windows,
@@ -352,6 +415,10 @@ def main() -> int:
             "short_model_path": "model_short.cbm",
             "source_export_manifest_hash": source_export_manifest_hash,
             "source_feature_schema_hash": source_feature_schema_hash,
+            "feature_schema_path": "feature_schema.json",
+            "export_manifest_path": "export_manifest.json" if bundle.export_manifest_path else None,
+            "split_manifest_path": "split_manifest.json" if bundle.split_manifest_path else None,
+            "validation_scores_path": validation_scores_path.name,
             "training_config": training_config,
             "training_windows_summary": training_windows_summary,
             "calibration_summary": calibration_summary,
@@ -360,6 +427,7 @@ def main() -> int:
                 "kind": "defer_to_desktop_validation_request",
             },
             "explainability_artifacts": explainability_artifacts or None,
+            "python_environment": python_environment,
             "bundle_parent_id": None,
             "score_contract": score_contract,
             "bundle_training_mode": training_mode,
@@ -388,6 +456,14 @@ def main() -> int:
             "bundle_id": bundle_id,
             "source_feature_schema_hash": source_feature_schema_hash,
             "source_export_manifest_hash": source_export_manifest_hash,
+            "bundle_feature_schema_path": str(out_dir / "feature_schema.json"),
+            "bundle_export_manifest_path": str(out_dir / "export_manifest.json")
+            if bundle.export_manifest_path
+            else "",
+            "bundle_split_manifest_path": str(out_dir / "split_manifest.json")
+            if bundle.split_manifest_path
+            else "",
+            "bundle_validation_scores_path": str(validation_scores_path),
             "iterations": args.iterations,
             "learning_rate": args.learning_rate,
             "depth": args.depth,
@@ -401,6 +477,7 @@ def main() -> int:
             "score_contract": score_contract,
             "calibration_summary": calibration_summary,
             "explainability_artifacts": explainability_artifacts or None,
+            "python_environment": python_environment,
         },
     )
 

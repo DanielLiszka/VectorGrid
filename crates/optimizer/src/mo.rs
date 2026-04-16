@@ -8,6 +8,9 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
+const INVALID_OBJECTIVE_VALUE: f64 = -f64::MAX;
+const INVALID_CONSTRAINT_VIOLATION: f64 = f64::MAX;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ParamDomain {
     IntRange {
@@ -168,6 +171,9 @@ impl SearchSpace {
     /// - any `FloatRange` with `low != high` (no step is defined in `ParamDomain`)
     /// - any axis with more than `max_axis_values` discrete values
     /// - any grid whose total combinations exceeds `max_combos`
+    ///
+    /// `Bool` axes are always treated as a fixed two-value axis (`false`, `true`) even when
+    /// `max_axis_values < 2`.
     pub fn grid_iter(
         &self,
         max_axis_values: usize,
@@ -186,6 +192,9 @@ impl SearchSpace {
 
     /// Expand each parameter domain into a discrete list and expose the full Cartesian product as
     /// a stable, indexable grid.
+    ///
+    /// `Bool` axes are always treated as a fixed two-value axis (`false`, `true`) even when
+    /// `max_axis_values < 2`.
     pub fn grid(
         &self,
         max_axis_values: usize,
@@ -210,6 +219,7 @@ pub fn bounded_exact_grid(
 ) -> Result<Option<SearchSpaceGrid>, String> {
     let max_axis_values = max_axis_values.max(1);
     let max_combos = max_combos.max(1);
+    // Bool axes are intentionally exempt from max_axis_values and always enumerate both states.
     space.validate()?;
 
     let mut total = 1usize;
@@ -625,13 +635,38 @@ impl Objectives2 {
     }
 }
 
+fn sanitize_objective(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        INVALID_OBJECTIVE_VALUE
+    }
+}
+
 fn overall_violation(constraints: &[f64]) -> f64 {
-    constraints
-        .iter()
-        .copied()
-        .map(|v| if v.is_finite() { v } else { 0.0 })
-        .map(|v| v.max(0.0))
-        .sum::<f64>()
+    let mut total = 0.0;
+    for &value in constraints {
+        if !value.is_finite() {
+            return INVALID_CONSTRAINT_VIOLATION;
+        }
+        total += value.max(0.0);
+        if !total.is_finite() {
+            return INVALID_CONSTRAINT_VIOLATION;
+        }
+    }
+    total
+}
+
+fn mo_point_from_outcome<T>(values: Vec<ParamValue>, out: EvalOutcome<T>) -> MoPoint<T> {
+    MoPoint {
+        values,
+        objectives: [
+            sanitize_objective(out.objectives[0]),
+            sanitize_objective(out.objectives[1]),
+        ],
+        violation: overall_violation(&out.constraints),
+        payload: out.payload,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -998,16 +1033,7 @@ where
 
     let newly_evaluated: Vec<MoPoint<T>> = pending_unique
         .par_iter()
-        .map(|values| {
-            let out = eval(values);
-            let violation = overall_violation(&out.constraints);
-            MoPoint {
-                values: values.clone(),
-                objectives: out.objectives,
-                violation,
-                payload: out.payload,
-            }
-        })
+        .map(|values| mo_point_from_outcome(values.clone(), eval(values)))
         .collect();
 
     for (pending_idx, point) in newly_evaluated.iter().cloned().enumerate() {
@@ -1478,6 +1504,12 @@ where
         }
         QmcSequence::Sobol => {
             let params = JoeKuoD6::minimal();
+            if dim > params.max_dims {
+                return Err(format!(
+                    "sobol sequence supports at most {} dimensions, got {}",
+                    params.max_dims, dim
+                ));
+            }
             let mut seq = Sobol::<f64>::new(dim, &params);
 
             let mut shift_rng = StdRng::seed_from_u64(cfg.seed);
@@ -2317,16 +2349,7 @@ where
 
         let batch_eval: Vec<MoPoint<T>> = values
             .par_iter()
-            .map(|v| {
-                let out = eval(v);
-                let violation = overall_violation(&out.constraints);
-                MoPoint {
-                    values: v.clone(),
-                    objectives: out.objectives,
-                    violation,
-                    payload: out.payload,
-                }
-            })
+            .map(|v| mo_point_from_outcome(v.clone(), eval(v)))
             .collect();
         evaluated.extend(batch_eval);
         unique_evaluations = seen.len();
@@ -3340,5 +3363,133 @@ mod tests {
             .collect();
 
         assert_eq!(exact_front, bounded_front);
+    }
+
+    #[test]
+    fn bounded_exact_grid_bool_axis_ignores_max_axis_values_cap() {
+        let space = SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "x".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 3,
+                        high: 3,
+                        step: 1,
+                        log: false,
+                    },
+                },
+                ParamDef {
+                    name: "flag".to_string(),
+                    domain: ParamDomain::Bool,
+                },
+            ],
+        };
+
+        let grid = bounded_exact_grid(&space, 1, 8)
+            .expect("grid helper should not error")
+            .expect("bool axis should still enumerate both states");
+        assert_eq!(grid.len(), 2);
+        assert_eq!(
+            grid.iter().collect::<Vec<_>>(),
+            vec![
+                vec![ParamValue::Int(3), ParamValue::Bool(false)],
+                vec![ParamValue::Int(3), ParamValue::Bool(true)],
+            ]
+        );
+    }
+
+    #[test]
+    fn candidate_search_treats_non_finite_constraints_as_max_violation() {
+        let candidates = vec![vec![ParamValue::Int(0)], vec![ParamValue::Int(1)]];
+        let res = candidate_set_mo_search_with_stats(
+            candidates,
+            2,
+            |_values| {},
+            |values| match values[0] {
+                ParamValue::Int(0) => EvalOutcome {
+                    objectives: [10.0, 10.0],
+                    constraints: vec![f64::NAN],
+                    payload: (),
+                },
+                ParamValue::Int(1) => EvalOutcome {
+                    objectives: [0.5, 0.25],
+                    constraints: vec![0.0],
+                    payload: (),
+                },
+                _ => unreachable!("test only uses integer candidates"),
+            },
+        )
+        .expect("candidate search should succeed");
+
+        assert_eq!(res.pareto.len(), 1);
+        assert_eq!(res.pareto[0].values, vec![ParamValue::Int(1)]);
+        assert_eq!(res.pareto[0].violation, 0.0);
+    }
+
+    #[test]
+    fn candidate_search_keeps_frontier_non_empty_when_objectives_are_non_finite() {
+        let candidates = vec![vec![ParamValue::Int(0)], vec![ParamValue::Int(1)]];
+        let res = candidate_set_mo_search_with_stats(
+            candidates,
+            2,
+            |_values| {},
+            |values| match values[0] {
+                ParamValue::Int(0) => EvalOutcome {
+                    objectives: [1.0, f64::NAN],
+                    constraints: vec![],
+                    payload: (),
+                },
+                ParamValue::Int(1) => EvalOutcome {
+                    objectives: [0.5, f64::NEG_INFINITY],
+                    constraints: vec![],
+                    payload: (),
+                },
+                _ => unreachable!("test only uses integer candidates"),
+            },
+        )
+        .expect("candidate search should succeed");
+
+        assert_eq!(res.pareto.len(), 1);
+        assert_eq!(res.pareto[0].values, vec![ParamValue::Int(0)]);
+        assert!(res.pareto[0].objectives[0].is_finite());
+        assert!(res.pareto[0].objectives[1].is_finite());
+    }
+
+    #[test]
+    fn qmc_sobol_rejects_spaces_above_minimal_dimension_limit() {
+        let space = SearchSpace {
+            params: (0..101)
+                .map(|idx| ParamDef {
+                    name: format!("x_{idx}"),
+                    domain: ParamDomain::FloatRange {
+                        low: 0.0,
+                        high: 1.0,
+                        log: false,
+                    },
+                })
+                .collect(),
+        };
+        let cfg = QmcMoConfig {
+            seed: 7,
+            trials: 1,
+            sequence: QmcSequence::Sobol,
+        };
+
+        let err = qmc_mo_search_with_stats(
+            &space,
+            cfg,
+            |_values| {},
+            |_values| EvalOutcome {
+                objectives: [0.0, 0.0],
+                constraints: vec![],
+                payload: (),
+            },
+        )
+        .expect_err("oversize Sobol spaces should error instead of panicking");
+
+        assert!(
+            err.contains("at most 100 dimensions"),
+            "unexpected error: {err}"
+        );
     }
 }

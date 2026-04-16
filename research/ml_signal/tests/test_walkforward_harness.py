@@ -19,10 +19,12 @@ if str(ROOT) not in sys.path:
 
 class FakeCatBoostClassifier:
     fit_history: list[dict[str, object]] = []
+    init_history: list[dict[str, object]] = []
 
     def __init__(self, *args, **kwargs) -> None:
         self.args = args
         self.kwargs = kwargs
+        FakeCatBoostClassifier.init_history.append(dict(kwargs))
 
     def fit(self, features, target, sample_weight=None, eval_set=None, use_best_model=None):
         eval_features, eval_target = eval_set
@@ -93,6 +95,7 @@ def _build_dataset(path: Path, row_count: int) -> None:
 class WalkforwardHarnessTest(unittest.TestCase):
     def setUp(self) -> None:
         FakeCatBoostClassifier.fit_history.clear()
+        FakeCatBoostClassifier.init_history.clear()
 
     def test_train_model_uses_only_train_and_calibration_rows(self) -> None:
         module = _import_module("train_catboost")
@@ -247,8 +250,14 @@ class WalkforwardHarnessTest(unittest.TestCase):
             self.assertEqual(manifest["bundle_id"], "bundle_provenance_test")
             self.assertEqual(manifest["source_feature_schema_hash"], "schemahash-source-abcdef")
             self.assertIn("source_export_manifest_hash", manifest)
+            self.assertEqual(manifest["feature_schema_path"], "feature_schema.json")
+            self.assertEqual(manifest["export_manifest_path"], "export_manifest.json")
+            self.assertEqual(manifest["split_manifest_path"], "split_manifest.json")
             self.assertEqual(manifest["training_config"]["has_time"], True)
+            self.assertEqual(manifest["training_config"]["grow_policy"], "SymmetricTree")
             self.assertEqual(manifest["class_balance_policy"], "uniform_sample_weight_no_class_rebalancing")
+            self.assertEqual(manifest["validation_scores_path"], "validation_scores.csv")
+            self.assertEqual(manifest["python_environment"]["dependency_versions"]["pandas"], pd.__version__)
             self.assertEqual(
                 manifest["training_windows_summary"]["selected_split_id"],
                 "roll_000",
@@ -262,6 +271,10 @@ class WalkforwardHarnessTest(unittest.TestCase):
                 train_metadata["source_feature_schema_hash"],
                 "schemahash-source-abcdef",
             )
+            self.assertTrue(train_metadata["bundle_feature_schema_path"].endswith("feature_schema.json"))
+            self.assertTrue(train_metadata["bundle_export_manifest_path"].endswith("export_manifest.json"))
+            self.assertTrue(train_metadata["bundle_split_manifest_path"].endswith("split_manifest.json"))
+            self.assertIn("python_environment", train_metadata)
             self.assertIn("score_contract", train_metadata)
 
     def test_proxy_mode_uses_bundle_sidecars_and_only_scores_test_windows(self) -> None:
@@ -437,10 +450,18 @@ class WalkforwardHarnessTest(unittest.TestCase):
             _write_json(
                 bundle_dir / "train_metadata.json",
                 {
-                    "iterations": 20,
-                    "learning_rate": 0.1,
-                    "depth": 4,
-                    "random_seed": 11,
+                    "training_config": {
+                        "iterations": 20,
+                        "learning_rate": 0.1,
+                        "depth": 4,
+                        "grow_policy": "SymmetricTree",
+                        "use_best_model": True,
+                        "has_time": True,
+                        "allow_writing_files": False,
+                        "verbose": False,
+                        "long_random_seed": 11,
+                        "short_random_seed": 12,
+                    },
                 },
             )
             _write_json(bundle_dir / "manifest.json", {"bundle_id": "bundle_rolling_test"})
@@ -474,6 +495,13 @@ class WalkforwardHarnessTest(unittest.TestCase):
             self.assertEqual(summary["evaluation_mode"], "rolling")
             self.assertEqual(summary["splits_scored"], 2)
             self.assertEqual(summary["calibrated_rolls"], 2)
+            self.assertEqual(summary["replay_training_config_source"], "train_metadata.training_config")
+            self.assertEqual(summary["replay_training_config"]["grow_policy"], "SymmetricTree")
+            self.assertEqual(FakeCatBoostClassifier.init_history[0]["grow_policy"], "SymmetricTree")
+            self.assertEqual(FakeCatBoostClassifier.init_history[0]["random_seed"], 11)
+            self.assertEqual(FakeCatBoostClassifier.init_history[1]["random_seed"], 12)
+            self.assertEqual(FakeCatBoostClassifier.init_history[2]["random_seed"], 13)
+            self.assertEqual(FakeCatBoostClassifier.init_history[3]["random_seed"], 14)
 
 
 if __name__ == "__main__":

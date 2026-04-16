@@ -171,6 +171,14 @@ pub struct RunArtifactSummary {
     pub ml_score_contract_version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_source_bundle_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_score_space: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_score_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_score_contract_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_score_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -440,6 +448,14 @@ pub struct RunArtifactDetailResponse {
     pub ml_producer_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_score_contract_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_score_space: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_score_scope: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_score_contract_summary: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ml_score_note: String,
     pub ml_policy_summary: String,
     pub ml_policy_sweep_summary: String,
     pub ml_run_verdict_summary: String,
@@ -1497,6 +1513,117 @@ fn ml_signal_u32_value(artifact: &Value, field: &str) -> Option<u32> {
     normalize_u32_value(artifact.pointer(&format!("/ml_signal/{field}")))
 }
 
+fn canonical_ml_score_space_text(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "probability" | "probabilities" => "Probability".to_string(),
+        "rawmargin" | "raw_margin" | "raw-margin" | "margin" => "RawMargin".to_string(),
+        _ => raw.trim().to_string(),
+    }
+}
+
+fn canonical_ml_score_scope_text(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "fulldataset" | "full_dataset" | "full-dataset" => "FullDataset".to_string(),
+        "calibrationslice" | "calibration_slice" | "calibration-slice" => {
+            "CalibrationSlice".to_string()
+        }
+        "walkforwardtest" | "walkforward_test" | "walk-forward-test" | "walk_forward_test" => {
+            "WalkforwardTest".to_string()
+        }
+        "custompartial" | "custom_partial" | "custom-partial" => "CustomPartial".to_string(),
+        _ => raw.trim().to_string(),
+    }
+}
+
+fn normalize_ml_score_text(value: Option<&Value>, scope: bool) -> Option<String> {
+    let raw = normalize_text_value(value);
+    if raw.is_empty() {
+        return None;
+    }
+    Some(if scope {
+        canonical_ml_score_scope_text(&raw)
+    } else {
+        canonical_ml_score_space_text(&raw)
+    })
+}
+
+fn extract_ml_score_space(artifact: &Value) -> Option<String> {
+    for pointer in [
+        "/ml_signal/score_space",
+        "/validation/res/score_summary/score_space",
+        "/run/res/score_space",
+    ] {
+        if let Some(text) = normalize_ml_score_text(artifact.pointer(pointer), false) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+fn extract_ml_score_scope(artifact: &Value) -> Option<String> {
+    for pointer in [
+        "/ml_signal/score_scope",
+        "/validation/res/score_summary/score_scope",
+        "/run/res/score_scope",
+    ] {
+        if let Some(text) = normalize_ml_score_text(artifact.pointer(pointer), true) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+fn format_ml_score_contract_summary(
+    score_space: Option<&str>,
+    score_scope: Option<&str>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(space) = score_space.filter(|value| !value.trim().is_empty()) {
+        parts.push(space.trim().to_string());
+    }
+    if let Some(scope) = score_scope.filter(|value| !value.trim().is_empty()) {
+        parts.push(scope.trim().to_string());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" • "))
+    }
+}
+
+fn format_ml_score_note(score_space: Option<&str>, score_scope: Option<&str>) -> Option<String> {
+    let mut notes = Vec::new();
+    match score_space.map(|value| value.trim()) {
+        Some("RawMargin") => notes.push(
+            "Raw-margin scores are ranking-oriented only; threshold validation expects probability columns."
+                .to_string(),
+        ),
+        _ => {}
+    }
+    match score_scope.map(|value| value.trim()) {
+        Some("WalkforwardTest") => {
+            notes.push("Held-out walk-forward test scores.".to_string());
+        }
+        Some("CalibrationSlice") => notes.push(
+            "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence."
+                .to_string(),
+        ),
+        Some("FullDataset") => notes.push(
+            "Full-dataset scores; saved validation metrics are in-sample, not holdout-like evidence."
+                .to_string(),
+        ),
+        Some("CustomPartial") => {
+            notes.push("Partial-score cache; saved metrics only apply to the scored subset.".to_string())
+        }
+        _ => {}
+    }
+    if notes.is_empty() {
+        None
+    } else {
+        Some(notes.join(" "))
+    }
+}
+
 fn normalize_string_list(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
@@ -1872,6 +1999,18 @@ fn build_run_artifact_detail_response(
         .get("config_fingerprint_version")
         .and_then(Value::as_u64)
         .map(|value| value as u32);
+    let ml_score_space = extract_ml_score_space(artifact).unwrap_or_default();
+    let ml_score_scope = extract_ml_score_scope(artifact).unwrap_or_default();
+    let ml_score_contract_summary = format_ml_score_contract_summary(
+        (!ml_score_space.is_empty()).then_some(ml_score_space.as_str()),
+        (!ml_score_scope.is_empty()).then_some(ml_score_scope.as_str()),
+    )
+    .unwrap_or_default();
+    let ml_score_note = format_ml_score_note(
+        (!ml_score_space.is_empty()).then_some(ml_score_space.as_str()),
+        (!ml_score_scope.is_empty()).then_some(ml_score_scope.as_str()),
+    )
+    .unwrap_or_default();
 
     Ok(RunArtifactDetailResponse {
         ts: if ts.is_empty() {
@@ -1923,6 +2062,10 @@ fn build_run_artifact_detail_response(
         ml_threshold_policy: ml_signal_text_value(artifact, "threshold_policy"),
         ml_producer_kind: ml_signal_text_value(artifact, "producer_kind"),
         ml_score_contract_version: ml_signal_u32_value(artifact, "score_contract_version"),
+        ml_score_space,
+        ml_score_scope,
+        ml_score_contract_summary,
+        ml_score_note,
         ml_policy_summary: format_ml_policy_summary(artifact.pointer("/ml_signal/policy")),
         ml_policy_sweep_summary: format_ml_policy_sweep_summary(
             artifact.pointer("/ml_signal/policy_sweep"),
@@ -2174,6 +2317,11 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         .filter(|s| !s.is_empty());
     let route_provenance = extract_route_provenance_from_artifact(v);
     let lineage = extract_artifact_lineage_from_artifact(v);
+    let ml_score_space = extract_ml_score_space(v);
+    let ml_score_scope = extract_ml_score_scope(v);
+    let ml_score_contract_summary =
+        format_ml_score_contract_summary(ml_score_space.as_deref(), ml_score_scope.as_deref());
+    let ml_score_note = format_ml_score_note(ml_score_space.as_deref(), ml_score_scope.as_deref());
 
     Some(RunArtifactSummary {
         ts,
@@ -2207,6 +2355,10 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
             v,
             "source_bundle_manifest_hash",
         ),
+        ml_score_space,
+        ml_score_scope,
+        ml_score_contract_summary,
+        ml_score_note,
     })
 }
 
@@ -3659,7 +3811,9 @@ mod tests {
                 "threshold_policy": "desktop_probability_threshold_only",
                 "producer_kind": "python_research_harness",
                 "score_contract_version": 3,
-                "source_bundle_manifest_hash": "fnv1a64-bundle-aabbccdd"
+                "source_bundle_manifest_hash": "fnv1a64-bundle-aabbccdd",
+                "score_space": "Probability",
+                "score_scope": "CalibrationSlice"
             },
             "run": {
                 "req": { "strategy_kind": "MlSignal" },
@@ -3695,6 +3849,18 @@ mod tests {
             summary.ml_source_bundle_manifest_hash.as_deref(),
             Some("fnv1a64-bundle-aabbccdd")
         );
+        assert_eq!(summary.ml_score_space.as_deref(), Some("Probability"));
+        assert_eq!(summary.ml_score_scope.as_deref(), Some("CalibrationSlice"));
+        assert_eq!(
+            summary.ml_score_contract_summary.as_deref(),
+            Some("Probability • CalibrationSlice")
+        );
+        assert_eq!(
+            summary.ml_score_note.as_deref(),
+            Some(
+                "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence."
+            )
+        );
     }
 
     #[test]
@@ -3721,6 +3887,8 @@ mod tests {
                 "threshold_policy": "desktop_probability_threshold_only",
                 "producer_kind": "python_research_harness",
                 "score_contract_version": 3,
+                "score_space": "Probability",
+                "score_scope": "CalibrationSlice",
                 "policy": {
                     "t_long": 0.6,
                     "t_short": 0.55,
@@ -3804,6 +3972,16 @@ mod tests {
         );
         assert_eq!(detail.ml_producer_kind, "python_research_harness");
         assert_eq!(detail.ml_score_contract_version, Some(3));
+        assert_eq!(detail.ml_score_space, "Probability");
+        assert_eq!(detail.ml_score_scope, "CalibrationSlice");
+        assert_eq!(
+            detail.ml_score_contract_summary,
+            "Probability • CalibrationSlice"
+        );
+        assert_eq!(
+            detail.ml_score_note,
+            "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence."
+        );
         assert_eq!(
             detail.ml_policy_summary,
             "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10"
@@ -3921,6 +4099,10 @@ mod tests {
         let encoded = serde_json::to_value(detail).expect("serialize detail");
         assert!(encoded.pointer("/mlFeatureSchemaHash").is_none());
         assert!(encoded.pointer("/mlScoreContractVersion").is_none());
+        assert!(encoded.pointer("/mlScoreSpace").is_none());
+        assert!(encoded.pointer("/mlScoreScope").is_none());
+        assert!(encoded.pointer("/mlScoreContractSummary").is_none());
+        assert!(encoded.pointer("/mlScoreNote").is_none());
     }
 
     #[test]

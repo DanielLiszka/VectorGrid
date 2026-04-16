@@ -17,11 +17,13 @@ import {
   type RunComparisonTarget,
 } from "../utils/core/runArtifactReview";
 
-let historyServicePromise:
-  | Promise<typeof import("../services/historyService")>
-  | null = null;
+let historyServicePromise: Promise<
+  typeof import("../services/historyService")
+> | null = null;
 
-function loadHistoryService(): Promise<typeof import("../services/historyService")> {
+function loadHistoryService(): Promise<
+  typeof import("../services/historyService")
+> {
   if (!historyServicePromise) {
     historyServicePromise = import("../services/historyService");
   }
@@ -222,17 +224,23 @@ function filterSavedRunsEntries(
           for (const field of fields) {
             if (!field) continue;
             if (field === token) tokenScore = Math.max(tokenScore, 9);
-            else if (field.startsWith(token)) tokenScore = Math.max(tokenScore, 7);
-            else if (field.includes(token)) tokenScore = Math.max(tokenScore, 4);
+            else if (field.startsWith(token))
+              tokenScore = Math.max(tokenScore, 7);
+            else if (field.includes(token))
+              tokenScore = Math.max(tokenScore, 4);
           }
           if (tokenScore < 0) return null;
           totalScore += tokenScore;
         }
         return { record, totalScore };
       })
-      .filter((row): row is { record: SavedRunSearchRecord; totalScore: number } => row !== null)
+      .filter(
+        (row): row is { record: SavedRunSearchRecord; totalScore: number } =>
+          row !== null,
+      )
       .sort((left, right) => {
-        if (right.totalScore !== left.totalScore) return right.totalScore - left.totalScore;
+        if (right.totalScore !== left.totalScore)
+          return right.totalScore - left.totalScore;
         return left.record.index - right.record.index;
       });
     return scored.map((row) => row.record.entry);
@@ -246,8 +254,10 @@ function filterSavedRunsEntries(
   const results = fuse.search(query);
   if (!results.length) return shortQueryMatches();
 
-  const strictTokenMatches = results.filter(({ item }) =>
-    tokens.length <= 1 || tokens.every((token) => item.searchText.includes(token)),
+  const strictTokenMatches = results.filter(
+    ({ item }) =>
+      tokens.length <= 1 ||
+      tokens.every((token) => item.searchText.includes(token)),
   );
   const ranked = strictTokenMatches.length > 0 ? strictTokenMatches : results;
   return ranked.map(({ item }) => item.entry);
@@ -296,6 +306,8 @@ interface HistoryState {
   savedRunDetailMlBundle: string;
   savedRunDetailMlScoreCache: string;
   savedRunDetailMlFeatureSchema: string;
+  savedRunDetailMlScoreContract: string;
+  savedRunDetailMlScoreNote: string;
   savedRunDetailMlPolicy: string;
   savedRunDetailMlSweep: string;
   savedRunDetailMlVerdict: string;
@@ -383,6 +395,10 @@ function sanitizeSavedRunsArray(value: unknown): HistorySavedRunEntry[] {
       resampleApplied:
         typed.resampleApplied == null ? null : Boolean(typed.resampleApplied),
       sourceContentFingerprint: normalizeText(typed.sourceContentFingerprint),
+      mlScoreSpace: normalizeText(typed.mlScoreSpace),
+      mlScoreScope: normalizeText(typed.mlScoreScope),
+      mlScoreContractSummary: normalizeText(typed.mlScoreContractSummary),
+      mlScoreNote: normalizeText(typed.mlScoreNote),
       routeProvenance:
         (typed.routeProvenance as RouteProvenanceSummary | null) ?? null,
       lineage: (typed.lineage as ArtifactLineageSummary | null) ?? null,
@@ -459,7 +475,10 @@ function buildSavedRunCompareOptions(
   const options: HistoryOption[] = [
     {
       value: "",
-      label: entries.length > 1 ? "Compare against another saved run..." : "Need another saved run",
+      label:
+        entries.length > 1
+          ? "Compare against another saved run..."
+          : "Need another saved run",
       disabled: false,
     },
   ];
@@ -486,7 +505,11 @@ function buildOverviewCompareOptions(
   ];
   for (const entry of entries) {
     const path = normalizePath(entry.path);
-    const value = path ? `disk:${path}` : normalizeText(entry.ts) ? `hist:${normalizeText(entry.ts)}` : "";
+    const value = path
+      ? `disk:${path}`
+      : normalizeText(entry.ts)
+        ? `hist:${normalizeText(entry.ts)}`
+        : "";
     if (!value) continue;
     options.push({
       value,
@@ -587,6 +610,8 @@ export const useHistoryStore = defineStore("history", {
     savedRunDetailMlBundle: "—",
     savedRunDetailMlScoreCache: "—",
     savedRunDetailMlFeatureSchema: "—",
+    savedRunDetailMlScoreContract: "—",
+    savedRunDetailMlScoreNote: "—",
     savedRunDetailMlPolicy: "—",
     savedRunDetailMlSweep: "—",
     savedRunDetailMlVerdict: "—",
@@ -824,6 +849,18 @@ export const useHistoryStore = defineStore("history", {
             this.savedRunDetailMlFeatureSchema ??
             "—",
         ).trim() || "—";
+      this.savedRunDetailMlScoreContract =
+        String(
+          snapshot.savedRunDetailMlScoreContract ??
+            this.savedRunDetailMlScoreContract ??
+            "—",
+        ).trim() || "—";
+      this.savedRunDetailMlScoreNote =
+        String(
+          snapshot.savedRunDetailMlScoreNote ??
+            this.savedRunDetailMlScoreNote ??
+            "—",
+        ).trim() || "—";
       this.savedRunDetailMlPolicy =
         String(
           snapshot.savedRunDetailMlPolicy ?? this.savedRunDetailMlPolicy ?? "—",
@@ -925,7 +962,9 @@ export const useHistoryStore = defineStore("history", {
       const options: HistoryOption[] = [
         {
           value: "",
-          label: filtered.length ? "Select a saved run..." : "No saved runs yet",
+          label: filtered.length
+            ? "Select a saved run..."
+            : "No saved runs yet",
           disabled: false,
         },
       ];
@@ -937,7 +976,9 @@ export const useHistoryStore = defineStore("history", {
         });
       }
 
-      const requestedPath = normalizePath(preferredPath ?? this.savedSelectedValue);
+      const requestedPath = normalizePath(
+        preferredPath ?? this.savedSelectedValue,
+      );
       const selectedPath =
         requestedPath && filtered.some((entry) => entry.path === requestedPath)
           ? requestedPath
@@ -951,7 +992,9 @@ export const useHistoryStore = defineStore("history", {
       this.compareOptions = buildOverviewCompareOptions(this.savedRunsRaw);
       this.compareRunCount = Math.max(0, this.compareOptions.length - 1);
       const validCompareValues = new Set(
-        this.compareOptions.map((option) => normalizeText(option.value)).filter(Boolean),
+        this.compareOptions
+          .map((option) => normalizeText(option.value))
+          .filter(Boolean),
       );
       if (!validCompareValues.has(normalizeText(this.compareSelectedValue))) {
         this.compareSelectedValue = "";
@@ -960,7 +1003,9 @@ export const useHistoryStore = defineStore("history", {
       this.savedSelectedLabel = selectedEntry
         ? savedRunLabel(selectedEntry)
         : "No saved runs";
-      this.savedRunsTagsDraft = selectedEntry ? selectedEntry.tags.join(", ") : "";
+      this.savedRunsTagsDraft = selectedEntry
+        ? selectedEntry.tags.join(", ")
+        : "";
 
       const selectedDetail = selectedEntry
         ? this.savedRunDetailCache[selectedEntry.path]
@@ -1007,6 +1052,8 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailMlBundle = "—";
         this.savedRunDetailMlScoreCache = "—";
         this.savedRunDetailMlFeatureSchema = "—";
+        this.savedRunDetailMlScoreContract = "—";
+        this.savedRunDetailMlScoreNote = "—";
         this.savedRunDetailMlPolicy = "—";
         this.savedRunDetailMlSweep = "—";
         this.savedRunDetailMlVerdict = "—";
@@ -1040,6 +1087,13 @@ export const useHistoryStore = defineStore("history", {
         const mlFeatureSchemaPath = normalizePath(
           selectedDetail?.mlFeatureSchemaPath || "",
         );
+        const mlScoreContractSummary = normalizeText(
+          selectedDetail?.mlScoreContractSummary ??
+            selectedEntry.mlScoreContractSummary,
+        );
+        const mlScoreNote = normalizeText(
+          selectedDetail?.mlScoreNote ?? selectedEntry.mlScoreNote,
+        );
         const mlPolicySummary = normalizeText(selectedDetail?.mlPolicySummary);
         const mlPolicySweepSummary = normalizeText(
           selectedDetail?.mlPolicySweepSummary,
@@ -1048,7 +1102,9 @@ export const useHistoryStore = defineStore("history", {
           selectedDetail?.configFingerprint || selectedEntry.configFingerprint,
         );
         const provenanceText = formatRouteProvenanceCompact(
-          selectedDetail?.routeProvenance ?? selectedEntry.routeProvenance ?? null,
+          selectedDetail?.routeProvenance ??
+            selectedEntry.routeProvenance ??
+            null,
         );
         const lineageText = formatArtifactLineageCompact(
           selectedDetail?.lineage ?? selectedEntry.lineage ?? null,
@@ -1059,6 +1115,8 @@ export const useHistoryStore = defineStore("history", {
         if (strategyKind) parts.push(`strategy=${strategyKind}`);
         if (hasValidation) parts.push("validation=yes");
         if (strategyKind === "MlSignal") parts.push("ml/cache");
+        if (mlScoreContractSummary)
+          parts.push(`score=${mlScoreContractSummary}`);
         if (reportPath) parts.push("xlsx=yes");
         if (csvPath) parts.push(`csv=${csvPath}`);
         if (tags.length) parts.push(`tags=${tags.join(",")}`);
@@ -1086,7 +1144,8 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailReport = reportPath
           ? "XLSX available"
           : "Not exported";
-        this.savedRunDetailSize = formatBytesCompact(selectedEntry.bytes) || "—";
+        this.savedRunDetailSize =
+          formatBytesCompact(selectedEntry.bytes) || "—";
         this.savedRunDetailTags = tags.length ? tags.join(", ") : "—";
         this.savedRunDetailMlBundle = mlBundleId || "—";
         this.savedRunDetailMlScoreCache = mlScoreCachePath
@@ -1095,6 +1154,8 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailMlFeatureSchema = mlFeatureSchemaPath
           ? fileBasename(mlFeatureSchemaPath) || mlFeatureSchemaPath
           : "—";
+        this.savedRunDetailMlScoreContract = mlScoreContractSummary || "—";
+        this.savedRunDetailMlScoreNote = mlScoreNote || "—";
         this.savedRunDetailMlPolicy = mlPolicySummary || "—";
         this.savedRunDetailMlSweep = mlPolicySweepSummary || "—";
         this.savedRunDetailMlVerdict =
@@ -1221,6 +1282,12 @@ export const useHistoryStore = defineStore("history", {
             mlFeatureSchemaVersion: normalizeText(
               detail?.mlFeatureSchemaVersion || "",
             ),
+            mlScoreSpace: normalizeText(detail?.mlScoreSpace || ""),
+            mlScoreScope: normalizeText(detail?.mlScoreScope || ""),
+            mlScoreContractSummary: normalizeText(
+              detail?.mlScoreContractSummary || "",
+            ),
+            mlScoreNote: normalizeText(detail?.mlScoreNote || ""),
             mlPolicySummary: normalizeText(detail?.mlPolicySummary || ""),
             mlPolicySweepSummary: normalizeText(
               detail?.mlPolicySweepSummary || "",
@@ -1250,7 +1317,8 @@ export const useHistoryStore = defineStore("history", {
               `Failed to load artifact:\n${String(error || "")}`.trim();
           }
           if (this.savedRunCompareSelected === nextPath) {
-            this.savedRunCompareSummary = `Compare failed: ${String(error || "")}`.trim();
+            this.savedRunCompareSummary =
+              `Compare failed: ${String(error || "")}`.trim();
           }
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
@@ -1416,7 +1484,9 @@ export const useHistoryStore = defineStore("history", {
     loadSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) => service.loadSavedRun(nextPath));
+      void loadHistoryService().then((service) =>
+        service.loadSavedRun(nextPath),
+      );
     },
 
     applySavedRun(path: string): void {
@@ -1430,7 +1500,9 @@ export const useHistoryStore = defineStore("history", {
     rerunSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) => service.rerunSavedRun(nextPath));
+      void loadHistoryService().then((service) =>
+        service.rerunSavedRun(nextPath),
+      );
     },
 
     openSavedRunReport(path: string): void {
@@ -1444,7 +1516,9 @@ export const useHistoryStore = defineStore("history", {
     revealSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) => service.revealSavedRun(nextPath));
+      void loadHistoryService().then((service) =>
+        service.revealSavedRun(nextPath),
+      );
     },
 
     deleteSavedRun(path: string): void {

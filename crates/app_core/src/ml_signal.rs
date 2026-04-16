@@ -122,6 +122,8 @@ pub struct MlSignalScoreCacheSummary {
     pub score_contract_version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_bundle_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export_manifest_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -341,6 +343,8 @@ pub struct MlSignalScoreCacheBuildResult {
     pub score_contract_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_bundle_manifest_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export_manifest_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -579,6 +583,8 @@ pub struct MlSignalScoreCacheManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_bundle_manifest_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calibration_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_policy: Option<String>,
@@ -612,6 +618,12 @@ pub struct MlSignalModelBundleManifest {
     pub short_model_path: Option<String>,
     #[serde(default)]
     pub calibration_path: Option<String>,
+    #[serde(default)]
+    pub feature_schema_path: Option<String>,
+    #[serde(default)]
+    pub export_manifest_path: Option<String>,
+    #[serde(default)]
+    pub split_manifest_path: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
@@ -1184,8 +1196,12 @@ fn json_file_fingerprint(path: &str) -> Result<Option<String>, String> {
     if trimmed.is_empty() {
         return Ok(None);
     }
+    let path_ref = Path::new(trimmed);
+    if !path_ref.exists() {
+        return Ok(None);
+    }
     let file =
-        File::open(trimmed).map_err(|e| format!("open json for fingerprint '{trimmed}': {e}"))?;
+        File::open(path_ref).map_err(|e| format!("open json for fingerprint '{trimmed}': {e}"))?;
     let value: JsonValue = serde_json::from_reader(BufReader::new(file))
         .map_err(|e| format!("parse json for fingerprint '{trimmed}': {e}"))?;
     let bytes = canonical_json_key_bytes(&value)?;
@@ -1628,6 +1644,8 @@ struct MlSignalScoreCacheFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_bundle_manifest_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    export_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     calibration_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     threshold_policy: Option<String>,
@@ -1896,6 +1914,16 @@ pub fn build_ml_signal_score_cache_from_csv(
     } else {
         None
     };
+    let export_manifest_hash = if let Some(path) = req
+        .export_manifest_path
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        json_file_fingerprint(path)?
+    } else {
+        None
+    };
 
     let parsed = read_score_rows_csv(&req.input_path)?;
     let timestamp_to_index: HashMap<i64, usize> = candles
@@ -1960,6 +1988,7 @@ pub fn build_ml_signal_score_cache_from_csv(
         export_manifest_path: req.export_manifest_path.clone(),
         source_bundle_manifest_path: req.source_bundle_manifest_path.clone(),
         source_bundle_manifest_hash: source_bundle_manifest_hash.clone(),
+        export_manifest_hash: export_manifest_hash.clone(),
         calibration_state: req.calibration_state.clone(),
         threshold_policy: req.threshold_policy.clone(),
         producer_kind: req.producer_kind.clone(),
@@ -1995,6 +2024,7 @@ pub fn build_ml_signal_score_cache_from_csv(
         export_manifest_path: cache.export_manifest_path.clone(),
         source_bundle_manifest_path: cache.source_bundle_manifest_path.clone(),
         source_bundle_manifest_hash: cache.source_bundle_manifest_hash.clone(),
+        export_manifest_hash: cache.export_manifest_hash.clone(),
         calibration_state: cache.calibration_state.clone(),
         threshold_policy: cache.threshold_policy.clone(),
         producer_kind: cache.producer_kind.clone(),
@@ -2032,6 +2062,7 @@ pub fn build_ml_signal_score_cache_from_csv(
         producer_kind: cache.producer_kind,
         score_contract_version: Some(cache.score_contract_version),
         source_bundle_manifest_hash: cache.source_bundle_manifest_hash,
+        export_manifest_hash: cache.export_manifest_hash,
     })
 }
 
@@ -2069,6 +2100,12 @@ fn load_score_cache(
         return Err(format!(
             "score cache data_id '{}' does not match requested '{}'",
             cache.data_id, expected_data_id
+        ));
+    }
+    if cache.duplicate_timestamps > 0 {
+        return Err(format!(
+            "score cache contains {} duplicate timestamps; rebuild from deduplicated scores",
+            cache.duplicate_timestamps
         ));
     }
 
@@ -2117,6 +2154,22 @@ fn load_score_cache(
     } else {
         (cache.bars_scored as f64 / candles.close.len() as f64).clamp(0.0, 1.0)
     };
+    if cache.score_scope == MlSignalScoreScope::FullDataset && !candles.timestamp.is_empty() {
+        let expected_first = candles.timestamp.first().copied();
+        let expected_last = candles.timestamp.last().copied();
+        if cache.first_timestamp != expected_first || cache.last_timestamp != expected_last {
+            return Err(
+                "full_dataset score cache timestamp span does not match the loaded candles"
+                    .to_string(),
+            );
+        }
+        if coverage_ratio < 0.95 {
+            return Err(format!(
+                "full_dataset score cache coverage_ratio {:.4} is too low for full-dataset validation",
+                coverage_ratio
+            ));
+        }
+    }
     Ok(LoadedScoreCache {
         points: out,
         summary: MlSignalScoreCacheSummary {
@@ -2135,6 +2188,7 @@ fn load_score_cache(
             producer_kind: cache.producer_kind,
             score_contract_version: Some(cache.score_contract_version),
             source_bundle_manifest_hash: cache.source_bundle_manifest_hash,
+            export_manifest_hash: cache.export_manifest_hash,
         },
         has_probability_long,
         has_probability_short,
@@ -2689,6 +2743,13 @@ fn manifest_child_exists(base_dir: &Path, rel_path: Option<&String>) -> bool {
         .unwrap_or(false)
 }
 
+fn manifest_json_field_present(value: Option<&JsonValue>, key: &str) -> bool {
+    value
+        .and_then(JsonValue::as_object)
+        .and_then(|row| row.get(key))
+        .is_some()
+}
+
 pub fn classify_ml_signal_manifest(
     manifest_path: &Path,
 ) -> Result<MlSignalModelBundleStatus, String> {
@@ -2737,8 +2798,78 @@ pub fn classify_ml_signal_manifest(
     if manifest.training_config.is_none() {
         issues.push("recommended training_config missing".to_string());
     }
+    if manifest
+        .feature_schema_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        issues.push("recommended feature_schema_path missing".to_string());
+    } else if !manifest_child_exists(base_dir, manifest.feature_schema_path.as_ref()) {
+        issues.push("feature schema sidecar missing".to_string());
+    }
+    if manifest
+        .export_manifest_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        issues.push("recommended export_manifest_path missing".to_string());
+    } else if !manifest_child_exists(base_dir, manifest.export_manifest_path.as_ref()) {
+        issues.push("export manifest sidecar missing".to_string());
+    }
+    if manifest
+        .split_manifest_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        issues.push("recommended split_manifest_path missing".to_string());
+    } else if !manifest_child_exists(base_dir, manifest.split_manifest_path.as_ref()) {
+        issues.push("split manifest sidecar missing".to_string());
+    }
     if manifest.score_contract.is_none() {
         issues.push("recommended score_contract missing".to_string());
+    } else {
+        if !manifest_json_field_present(manifest.score_contract.as_ref(), "score_contract_version")
+            && !manifest_json_field_present(
+                manifest.score_contract.as_ref(),
+                "scoreContractVersion",
+            )
+        {
+            issues.push("recommended score_contract_version missing".to_string());
+        }
+        if !manifest_json_field_present(
+            manifest.score_contract.as_ref(),
+            "walkforward_recommended_mode",
+        ) && !manifest_json_field_present(
+            manifest.score_contract.as_ref(),
+            "walkforwardRecommendedMode",
+        ) {
+            issues.push("recommended walkforward_recommended_mode missing".to_string());
+        }
+    }
+    if manifest.training_windows_summary.is_none() {
+        issues.push("recommended training_windows_summary missing".to_string());
+    }
+    if manifest.class_balance_policy.is_none() {
+        issues.push("recommended class_balance_policy missing".to_string());
+    }
+    if manifest.explainability_artifacts.is_none() {
+        issues.push("recommended explainability_artifacts missing".to_string());
+    }
+    if manifest
+        .calibration_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+        && manifest.calibration_summary.is_none()
+    {
+        issues.push("recommended calibration_summary missing".to_string());
     }
 
     let state = if issues.is_empty() {
@@ -2817,6 +2948,17 @@ mod tests {
             .as_nanos();
         std::env::temp_dir()
             .join(format!("ta_ml_signal_{name}_{nonce}.{ext}"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn temp_dir_path(name: &str) -> String {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("ta_ml_signal_{name}_{nonce}"))
             .to_string_lossy()
             .to_string()
     }
@@ -3467,10 +3609,16 @@ mod tests {
             r#"{"bundle_id":"bundle-a","schema_version":1}"#,
         )
         .expect("write bundle manifest");
+        let export_manifest_path = temp_file_path("ml_export_manifest", "json");
+        std::fs::write(
+            &export_manifest_path,
+            r#"{"data_id":"data-1","schema_hash":"fnv1a64-feature-schema"}"#,
+        )
+        .expect("write export manifest");
         let mut req =
             score_cache_build_request("data-1", &input_path, &cache_path, Some("bundle-a"));
         req.feature_schema_hash = Some("fnv1a64-feature-schema".to_string());
-        req.export_manifest_path = Some("C:/data/ml_dataset.export_manifest.json".to_string());
+        req.export_manifest_path = Some(export_manifest_path.clone());
         req.source_bundle_manifest_path = Some(bundle_manifest_path.clone());
         req.calibration_state = Some("calibrated_probability".to_string());
         req.threshold_policy = Some("desktop_probability_threshold_only".to_string());
@@ -3518,11 +3666,13 @@ mod tests {
         );
         assert_eq!(manifest.score_contract_version, 3);
         assert!(manifest.source_bundle_manifest_hash.is_some());
+        assert!(manifest.export_manifest_hash.is_some());
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
         let _ = fs::remove_file(&build.manifest_path);
         let _ = fs::remove_file(&bundle_manifest_path);
+        let _ = fs::remove_file(&export_manifest_path);
     }
 
     #[test]
@@ -3822,6 +3972,83 @@ mod tests {
     }
 
     #[test]
+    fn classify_manifest_reports_missing_recommended_metadata() {
+        let _guard = lock_test_env();
+        let bundle_dir = Path::new(&temp_dir_path("mlsig_manifest_status")).to_path_buf();
+        fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        fs::write(bundle_dir.join("model_long.cbm"), b"long").expect("write long model");
+        fs::write(bundle_dir.join("model_short.cbm"), b"short").expect("write short model");
+        fs::write(bundle_dir.join("calibration.json"), b"{}").expect("write calibration");
+        let manifest_path = bundle_dir.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "bundle_id": "bundle_status_test",
+                "schema_version": 1,
+                "feature_schema_version": 1,
+                "model_family": "catboost_binary_pair",
+                "model_format": "cbm",
+                "long_model_path": "model_long.cbm",
+                "short_model_path": "model_short.cbm",
+                "calibration_path": "calibration.json",
+                "source_feature_schema_hash": "schemahash-ok",
+                "source_export_manifest_hash": "exporthash-ok",
+                "training_config": { "iterations": 100 },
+                "score_contract": {
+                    "validation_scores_scope": "calibration_slice"
+                }
+            }))
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let status = classify_ml_signal_manifest(&manifest_path).expect("classify manifest");
+        assert_eq!(status.state, "warning");
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended feature_schema_path missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended export_manifest_path missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended split_manifest_path missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended score_contract_version missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended walkforward_recommended_mode missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended training_windows_summary missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended class_balance_policy missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended explainability_artifacts missing"));
+        assert!(status
+            .issues
+            .iter()
+            .any(|issue| issue == "recommended calibration_summary missing"));
+
+        let _ = fs::remove_file(bundle_dir.join("model_long.cbm"));
+        let _ = fs::remove_file(bundle_dir.join("model_short.cbm"));
+        let _ = fs::remove_file(bundle_dir.join("calibration.json"));
+        let _ = fs::remove_file(&manifest_path);
+        let _ = fs::remove_dir(&bundle_dir);
+    }
+
+    #[test]
     fn build_split_windows_generates_rolls() {
         let windows = build_ml_signal_split_windows(
             300,
@@ -3931,6 +4158,111 @@ mod tests {
         assert_eq!(sweep.top_k, 3);
         assert!(sweep.sweep_size >= 8);
         assert_eq!(sweep.validation.candidates.len(), 3);
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_timestamp_score_cache() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("scores_duplicate_in", "csv");
+        let cache_path = temp_file_path("scores_duplicate_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short"])
+            .expect("header");
+        let ts = candles.timestamp[5].to_string();
+        writer
+            .write_record([ts.clone(), "0.80".to_string(), "0.20".to_string()])
+            .expect("row a");
+        writer
+            .write_record([ts, "0.81".to_string(), "0.19".to_string()])
+            .expect("row b");
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect("build cache");
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("duplicate cache should fail validation");
+        assert!(err.contains("duplicate timestamps"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_rejects_full_dataset_scope_with_partial_coverage() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("scores_partial_full_dataset_in", "csv");
+        let cache_path = temp_file_path("scores_partial_full_dataset_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short", "score_scope"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(3).take(10) {
+            writer
+                .write_record([
+                    ts.to_string(),
+                    "0.80".to_string(),
+                    "0.20".to_string(),
+                    "FullDataset".to_string(),
+                ])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect("build cache");
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("partial full-dataset cache should fail validation");
+        assert!(err.contains("full_dataset"));
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);

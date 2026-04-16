@@ -7,3 +7,6 @@ edition = "2021"
 serde = { version = "1", features = ["derive"] }
 rayon = "1.10.0"
 vector-ta = "0.2.4"
+
+[dev-dependencies]
+serde_json = "1"

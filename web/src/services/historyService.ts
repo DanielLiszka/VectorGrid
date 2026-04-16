@@ -88,8 +88,8 @@ function parseBooleanLike(value: unknown): boolean | null {
 }
 
 function normalizeOptionalNumber(value: unknown): number | null {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isMlSignalStrategyKind(value: unknown): boolean {
@@ -345,6 +345,10 @@ interface RunArtifactSummaryResponse {
   route_provenance?: unknown;
   lineage?: unknown;
   tags?: unknown;
+  ml_score_space?: unknown;
+  ml_score_scope?: unknown;
+  ml_score_contract_summary?: unknown;
+  ml_score_note?: unknown;
 }
 
 export interface HistorySavedRunSummary {
@@ -364,6 +368,10 @@ export interface HistorySavedRunSummary {
   sourceContentFingerprint?: string;
   routeProvenance?: RouteProvenanceSummary | null;
   lineage?: ArtifactLineageSummary | null;
+  mlScoreSpace?: string;
+  mlScoreScope?: string;
+  mlScoreContractSummary?: string;
+  mlScoreNote?: string;
   tags: string[];
 }
 
@@ -395,6 +403,10 @@ export interface HistorySavedRunDetail {
   mlScoreManifestPath?: string;
   mlFeatureSchemaPath?: string;
   mlFeatureSchemaVersion?: string;
+  mlScoreSpace?: string;
+  mlScoreScope?: string;
+  mlScoreContractSummary?: string;
+  mlScoreNote?: string;
   mlPolicySummary?: string;
   mlPolicySweepSummary?: string;
   mlRunVerdictSummary?: string;
@@ -525,9 +537,11 @@ function buildValidationAdmissionSummary(
   }
 
   const detailParts: string[] = [];
-  if (requested && requested !== admissionPolicy) detailParts.push(`req=${requested}`);
+  if (requested && requested !== admissionPolicy)
+    detailParts.push(`req=${requested}`);
   if (sourceKind) detailParts.push(`src=${sourceKind}`);
-  if (heads.length > 0) detailParts.push(`heads=${heads.slice(0, 4).join("/")}`);
+  if (heads.length > 0)
+    detailParts.push(`heads=${heads.slice(0, 4).join("/")}`);
 
   return {
     summary: summaryParts.join(" • "),
@@ -556,12 +570,102 @@ function buildMetricSurfaceSummary(
   if (!summary) return { summary: "", detail: "" };
   if (!fields.length) return { summary, detail: "" };
   const preview = fields.slice(0, 6).join(", ");
-  const suffix =
-    fields.length > 6 ? ` +${fields.length - 6} more` : "";
+  const suffix = fields.length > 6 ? ` +${fields.length - 6} more` : "";
   return {
     summary,
     detail: `fields=${preview}${suffix}`,
   };
+}
+
+function canonicalMlScoreSpace(value: unknown): string {
+  const raw = normalizeText(value).toLowerCase();
+  if (!raw) return "";
+  if (raw === "probability" || raw === "probabilities") return "Probability";
+  if (
+    raw === "rawmargin" ||
+    raw === "raw_margin" ||
+    raw === "raw-margin" ||
+    raw === "margin"
+  ) {
+    return "RawMargin";
+  }
+  return normalizeText(value);
+}
+
+function canonicalMlScoreScope(value: unknown): string {
+  const raw = normalizeText(value).toLowerCase();
+  if (!raw) return "";
+  if (
+    raw === "fulldataset" ||
+    raw === "full_dataset" ||
+    raw === "full-dataset"
+  ) {
+    return "FullDataset";
+  }
+  if (
+    raw === "calibrationslice" ||
+    raw === "calibration_slice" ||
+    raw === "calibration-slice"
+  ) {
+    return "CalibrationSlice";
+  }
+  if (
+    raw === "walkforwardtest" ||
+    raw === "walkforward_test" ||
+    raw === "walk-forward-test" ||
+    raw === "walk_forward_test"
+  ) {
+    return "WalkforwardTest";
+  }
+  if (
+    raw === "custompartial" ||
+    raw === "custom_partial" ||
+    raw === "custom-partial"
+  ) {
+    return "CustomPartial";
+  }
+  return normalizeText(value);
+}
+
+function buildMlScoreContractSummary(
+  scoreSpace: string,
+  scoreScope: string,
+  fallback: unknown,
+): string {
+  const fallbackText = normalizeText(fallback);
+  if (fallbackText) return fallbackText;
+  return [scoreSpace, scoreScope].filter((part) => part.length > 0).join(" • ");
+}
+
+function buildMlScoreNote(
+  scoreSpace: string,
+  scoreScope: string,
+  fallback: unknown,
+): string {
+  const fallbackText = normalizeText(fallback);
+  if (fallbackText) return fallbackText;
+  const notes: string[] = [];
+  if (scoreSpace === "RawMargin") {
+    notes.push(
+      "Raw-margin scores are ranking-oriented only; threshold validation expects probability columns.",
+    );
+  }
+  if (scoreScope === "WalkforwardTest") {
+    notes.push("Held-out walk-forward test scores.");
+  } else if (scoreScope === "CalibrationSlice") {
+    notes.push(
+      "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
+    );
+  } else if (scoreScope === "FullDataset") {
+    notes.push(
+      "Full-dataset scores; saved validation metrics are in-sample, not holdout-like evidence.",
+    );
+  } else if (scoreScope === "CustomPartial") {
+    notes.push(
+      "Partial-score cache; saved metrics only apply to the scored subset.",
+    );
+  }
+  return notes.join(" ");
 }
 
 function firstBooleanFromList(value: unknown): boolean | null {
@@ -596,7 +700,8 @@ function applyMlStrategyConfigToStores(
   );
   const epsRel = asNumber(config.eps_rel ?? config.epsRel);
   if (costPreset) strategyStore.setSelectField("costPreset", costPreset);
-  if (Number.isFinite(feeBps)) strategyStore.setInputField("feeBps", String(feeBps));
+  if (Number.isFinite(feeBps))
+    strategyStore.setInputField("feeBps", String(feeBps));
   if (Number.isFinite(spreadBps)) {
     strategyStore.setInputField("spreadBps", String(spreadBps));
   }
@@ -610,7 +715,10 @@ function applyMlStrategyConfigToStores(
     strategyStore.setInputField("takeProfitPct", String(takeProfitPct));
   }
   if (Number.isFinite(cooldownBars)) {
-    strategyStore.setInputField("cooldownBars", String(Math.floor(cooldownBars)));
+    strategyStore.setInputField(
+      "cooldownBars",
+      String(Math.floor(cooldownBars)),
+    );
   }
   if (Number.isFinite(persistenceBars)) {
     strategyStore.setInputField(
@@ -618,7 +726,8 @@ function applyMlStrategyConfigToStores(
       String(Math.max(1, Math.floor(persistenceBars))),
     );
   }
-  if (Number.isFinite(epsRel)) strategyStore.setInputField("epsRel", String(epsRel));
+  if (Number.isFinite(epsRel))
+    strategyStore.setInputField("epsRel", String(epsRel));
   if (longOnly != null) strategyStore.setCheckboxField("longOnly", longOnly);
   if (allowFlip != null) strategyStore.setCheckboxField("allowFlip", allowFlip);
   if (tradeOnNext != null) {
@@ -791,7 +900,8 @@ function updateStoresFromRunRequest(
       const maxHoldBars = asNumber(firstCandidate.max_hold_bars);
       const exitOnFlat = parseBooleanLike(firstCandidate.exit_on_flat);
       const exitOnOpposite = parseBooleanLike(firstCandidate.exit_on_opposite);
-      if (Number.isFinite(tLong)) optimizeStore.mlSignalLongThreshold = String(tLong);
+      if (Number.isFinite(tLong))
+        optimizeStore.mlSignalLongThreshold = String(tLong);
       if (Number.isFinite(tShort))
         optimizeStore.mlSignalShortThreshold = String(tShort);
       if (Number.isFinite(delta)) optimizeStore.mlSignalDelta = String(delta);
@@ -808,7 +918,9 @@ function updateStoresFromRunRequest(
       const delta = asRecord(validationReq.delta);
       const hold = asRecord(validationReq.max_hold_bars);
       const topK = asNumber(validationReq.top_k);
-      const exitOnFlat = firstBooleanFromList(validationReq.exit_on_flat_values);
+      const exitOnFlat = firstBooleanFromList(
+        validationReq.exit_on_flat_values,
+      );
       const exitOnOpposite = firstBooleanFromList(
         validationReq.exit_on_opposite_values,
       );
@@ -877,7 +989,9 @@ function updateStoresFromRunRequest(
     shortlistUnionMode,
     shortlistSliceMode,
     shortlistSliceBenchmark,
-    shortlistNeighborhoodRadius: Number.isFinite(shortlistNeighborhoodRadiusValue)
+    shortlistNeighborhoodRadius: Number.isFinite(
+      shortlistNeighborhoodRadiusValue,
+    )
       ? String(Math.floor(shortlistNeighborhoodRadiusValue))
       : "",
     shortlistNeighborhoodStep: Number.isFinite(shortlistNeighborhoodStepValue)
@@ -1133,6 +1247,8 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
         if (!path) continue;
 
         const bytes = Number(row.bytes);
+        const mlScoreSpace = canonicalMlScoreSpace(row.ml_score_space);
+        const mlScoreScope = canonicalMlScoreScope(row.ml_score_scope);
         runs.push({
           ts: normalizeText(row.ts),
           path,
@@ -1152,9 +1268,35 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
             row.resample_applied == null
               ? null
               : parseBooleanLike(row.resample_applied),
-          sourceContentFingerprint: normalizeText(row.source_content_fingerprint),
+          sourceContentFingerprint: normalizeText(
+            row.source_content_fingerprint,
+          ),
           routeProvenance: parseRouteProvenance(row.route_provenance),
           lineage: parseArtifactLineage(row.lineage),
+          ...(mlScoreSpace ? { mlScoreSpace } : {}),
+          ...(mlScoreScope ? { mlScoreScope } : {}),
+          ...(buildMlScoreContractSummary(
+            mlScoreSpace,
+            mlScoreScope,
+            row.ml_score_contract_summary,
+          )
+            ? {
+                mlScoreContractSummary: buildMlScoreContractSummary(
+                  mlScoreSpace,
+                  mlScoreScope,
+                  row.ml_score_contract_summary,
+                ),
+              }
+            : {}),
+          ...(buildMlScoreNote(mlScoreSpace, mlScoreScope, row.ml_score_note)
+            ? {
+                mlScoreNote: buildMlScoreNote(
+                  mlScoreSpace,
+                  mlScoreScope,
+                  row.ml_score_note,
+                ),
+              }
+            : {}),
           tags: normalizeStringList(row.tags),
         });
       }
@@ -1191,9 +1333,7 @@ export async function loadSavedRun(path: string): Promise<void> {
   selectShellStateForRunRequest(
     runReq,
     payload.currentValidation && typeof payload.currentValidation === "object"
-      ? asRecord(
-          (payload.currentValidation as Record<string, unknown>).req,
-        )
+      ? asRecord((payload.currentValidation as Record<string, unknown>).req)
       : null,
     currentRun?.mlSignal?.stage,
   );
@@ -1351,11 +1491,25 @@ export async function loadSavedRunDetail(
   const loaded = await loadRunArtifactDetailRecord(path);
   const detail = loaded.detail;
   const validationReq = asRecord(detail.validationReq);
+  const mlScoreSpace = canonicalMlScoreSpace(detail.mlScoreSpace);
+  const mlScoreScope = canonicalMlScoreScope(detail.mlScoreScope);
+  const mlScoreContractSummary = buildMlScoreContractSummary(
+    mlScoreSpace,
+    mlScoreScope,
+    detail.mlScoreContractSummary,
+  );
+  const mlScoreNote = buildMlScoreNote(
+    mlScoreSpace,
+    mlScoreScope,
+    detail.mlScoreNote,
+  );
   const admission = buildValidationAdmissionSummary(validationReq);
   const metricSurface = buildMetricSurfaceSummary(
     asRecord(
-      (detail as unknown as Record<string, unknown>).optimizationMetricSurface ??
-        (detail as unknown as Record<string, unknown>).optimization_metric_surface,
+      (detail as unknown as Record<string, unknown>)
+        .optimizationMetricSurface ??
+        (detail as unknown as Record<string, unknown>)
+          .optimization_metric_surface,
     ),
   );
   return {
@@ -1366,7 +1520,8 @@ export async function loadSavedRunDetail(
     ),
     configFingerprintVersion: normalizeOptionalNumber(
       detail.configFingerprintVersion ??
-        (detail as unknown as Record<string, unknown>).config_fingerprint_version,
+        (detail as unknown as Record<string, unknown>)
+          .config_fingerprint_version,
     ),
     timeframe: normalizeText(detail.timeframe),
     csvPath: normalizeText(detail.csvPath),
@@ -1383,14 +1538,17 @@ export async function loadSavedRunDetail(
     lineage: parseArtifactLineage(detail.lineage),
     optimizationMetricSurface: asRecord(
       detail.optimizationMetricSurface ??
-        (detail as unknown as Record<string, unknown>).optimization_metric_surface,
+        (detail as unknown as Record<string, unknown>)
+          .optimization_metric_surface,
     ),
     runReq: asRecord(detail.runReq),
     runRes: asRecord(detail.runRes),
     ...(metricSurface.summary
       ? { metricSurfaceSummary: metricSurface.summary }
       : {}),
-    ...(metricSurface.detail ? { metricSurfaceDetail: metricSurface.detail } : {}),
+    ...(metricSurface.detail
+      ? { metricSurfaceDetail: metricSurface.detail }
+      : {}),
     ...(admission.summary
       ? { validationAdmissionSummary: admission.summary }
       : {}),
@@ -1403,6 +1561,10 @@ export async function loadSavedRunDetail(
     mlScoreManifestPath: normalizeText(detail.mlScoreManifestPath),
     mlFeatureSchemaPath: normalizeText(detail.mlFeatureSchemaPath),
     mlFeatureSchemaVersion: normalizeText(detail.mlFeatureSchemaVersion),
+    ...(mlScoreSpace ? { mlScoreSpace } : {}),
+    ...(mlScoreScope ? { mlScoreScope } : {}),
+    ...(mlScoreContractSummary ? { mlScoreContractSummary } : {}),
+    ...(mlScoreNote ? { mlScoreNote } : {}),
     mlPolicySummary: normalizeText(detail.mlPolicySummary),
     mlPolicySweepSummary: normalizeText(detail.mlPolicySweepSummary),
     mlRunVerdictSummary: normalizeText(detail.mlRunVerdictSummary),

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from baseline_walkforward import run_baseline_walkforward
 from common import dump_json
 
 
@@ -15,13 +16,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ml-summary", required=True, help="Path to ML walkforward_summary.json.")
     parser.add_argument(
         "--baseline-summary",
-        required=True,
+        default="",
         help="Path to deterministic baseline summary JSON.",
     )
     parser.add_argument(
         "--label",
         default="deterministic_baseline",
         help="Label for the baseline strategy in the comparison report.",
+    )
+    parser.add_argument(
+        "--built-in-baseline",
+        choices=["logistic_regression", "class_prior"],
+        default="",
+        help="Optional built-in baseline to generate before comparing.",
+    )
+    parser.add_argument("--dataset", default="", help="Dataset CSV used for built-in baseline generation.")
+    parser.add_argument("--bundle-dir", default="", help="Bundle directory used for built-in baseline generation.")
+    parser.add_argument(
+        "--baseline-mode",
+        choices=["auto", "proxy", "rolling"],
+        default="auto",
+        help="Evaluation mode for built-in baseline generation. Defaults to the ML summary mode.",
+    )
+    parser.add_argument("--t-long", type=float, default=None, help="Override long threshold for built-in baseline.")
+    parser.add_argument("--t-short", type=float, default=None, help="Override short threshold for built-in baseline.")
+    parser.add_argument("--delta", type=float, default=None, help="Override delta threshold for built-in baseline.")
+    parser.add_argument(
+        "--artifact-suffix",
+        default="",
+        help="Optional suffix appended to built-in baseline artifact filenames.",
     )
     return parser.parse_args()
 
@@ -50,13 +73,50 @@ def metric_delta(ml_value: float | None, baseline_value: float | None) -> float 
     return ml_value - baseline_value
 
 
+def resolve_threshold(value: float | None, summary: dict[str, Any], key: str, fallback: float) -> float:
+    if value is not None:
+        return float(value)
+    thresholds = summary.get("thresholds")
+    if isinstance(thresholds, dict):
+        parsed = thresholds.get(key)
+        if parsed is not None:
+            return float(parsed)
+    return float(fallback)
+
+
 def main() -> int:
     args = parse_args()
     ml_path = Path(args.ml_summary)
-    baseline_path = Path(args.baseline_summary)
-
     ml_summary = read_json(ml_path)
-    baseline_summary = read_json(baseline_path)
+    baseline_generation: dict[str, Any] | None = None
+
+    if str(args.baseline_summary).strip():
+        baseline_path = Path(args.baseline_summary)
+        baseline_summary = read_json(baseline_path)
+    else:
+        if not str(args.built_in_baseline).strip():
+            raise SystemExit("either --baseline-summary or --built-in-baseline is required")
+        if not str(args.dataset).strip():
+            raise SystemExit("--dataset is required when using --built-in-baseline")
+        if not str(args.bundle_dir).strip():
+            raise SystemExit("--bundle-dir is required when using --built-in-baseline")
+        baseline_mode = (
+            str(ml_summary.get("evaluation_mode") or "proxy")
+            if args.baseline_mode == "auto"
+            else args.baseline_mode
+        )
+        baseline_generation = run_baseline_walkforward(
+            dataset=args.dataset,
+            bundle_dir=args.bundle_dir,
+            baseline_kind=args.built_in_baseline,
+            mode=baseline_mode,
+            t_long=resolve_threshold(args.t_long, ml_summary, "t_long", 0.6),
+            t_short=resolve_threshold(args.t_short, ml_summary, "t_short", 0.6),
+            delta=resolve_threshold(args.delta, ml_summary, "delta", 0.1),
+            artifact_suffix=args.artifact_suffix,
+        )
+        baseline_path = Path(str(baseline_generation["summary_path"]))
+        baseline_summary = baseline_generation["summary"]
 
     metrics = [
         "sum_policy_return",
@@ -94,13 +154,20 @@ def main() -> int:
         "comparable_metrics": comparable,
         "ml_beats_baseline_on_majority": bool(comparable > 0 and ml_wins > (comparable / 2.0)),
     }
+    if baseline_generation is not None:
+        report["built_in_baseline"] = {
+            "kind": args.built_in_baseline,
+            "generation": baseline_generation,
+        }
+        if args.label == "deterministic_baseline":
+            report["baseline_label"] = f"built_in_{args.built_in_baseline}"
 
     output_json = ml_path.with_name("baseline_comparison.json")
     output_md = ml_path.with_name("baseline_comparison.md")
     dump_json(output_json, report)
 
     lines = [
-        f"baseline_label: {args.label}",
+        f"baseline_label: {report['baseline_label']}",
         f"ml_evaluation_mode: {report['ml_evaluation_mode']}",
         f"baseline_evaluation_mode: {report['baseline_evaluation_mode']}",
         f"ml_beats_baseline_on_majority: {str(report['ml_beats_baseline_on_majority']).lower()}",
@@ -111,6 +178,15 @@ def main() -> int:
         row = comparison_metrics[key]
         lines.append(
             f"- {key}: ml={row['ml']} baseline={row['baseline']} delta={row['delta']}"
+        )
+    if baseline_generation is not None:
+        lines.extend(
+            [
+                "",
+                "built_in_baseline:",
+                f"- kind: {args.built_in_baseline}",
+                f"- summary_path: {baseline_generation['summary_path']}",
+            ],
         )
     output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

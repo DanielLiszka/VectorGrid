@@ -5,10 +5,14 @@ import json
 from pathlib import Path
 
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
-from common import apply_sigmoid
+from calibration_utils import (
+    apply_calibration_config,
+    fit_calibration_config,
+    fit_sigmoid,
+    infer_calibration_method,
+    summarize_calibration_diagnostics,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,46 +21,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--bundle-dir", required=True, help="Model bundle directory.")
     parser.add_argument("--scores-csv", default="", help="Validation score CSV.")
+    parser.add_argument(
+        "--method",
+        choices=["sigmoid", "isotonic"],
+        default="sigmoid",
+        help="Calibration method fitted from raw model margins.",
+    )
     return parser.parse_args()
-
-
-def fit_sigmoid(raw: pd.Series, target: pd.Series) -> tuple[float, float]:
-    if len(raw) == 0 or len(target) == 0:
-        raise ValueError("calibration slice is empty")
-    if target.nunique(dropna=True) < 2:
-        raise ValueError("calibration target requires both classes")
-    model = LogisticRegression(solver="lbfgs", max_iter=200)
-    model.fit(raw.to_frame(name="raw"), target.astype(int))
-    return float(model.coef_[0][0]), float(model.intercept_[0])
-
-
-def _safe_auc(y_true: pd.Series, y_prob: pd.Series) -> float | None:
-    try:
-        if y_true.nunique(dropna=True) < 2:
-            return None
-        return float(roc_auc_score(y_true.astype(int), y_prob.astype(float)))
-    except Exception:
-        return None
-
-
-def _safe_logloss(y_true: pd.Series, y_prob: pd.Series) -> float | None:
-    try:
-        return float(log_loss(y_true.astype(int), y_prob.astype(float), labels=[0, 1]))
-    except Exception:
-        return None
-
-
-def _safe_brier(y_true: pd.Series, y_prob: pd.Series) -> float | None:
-    try:
-        return float(brier_score_loss(y_true.astype(int), y_prob.astype(float)))
-    except Exception:
-        return None
-
-
-def _optional_series(frame: pd.DataFrame, column: str, mask: pd.Series) -> pd.Series | None:
-    if column not in frame.columns:
-        return None
-    return frame.loc[mask, column]
 
 
 def main() -> int:
@@ -82,72 +53,57 @@ def main() -> int:
     if int(short_valid.sum()) == 0:
         raise SystemExit("scores csv has no valid short calibration rows")
 
-    long_coef, long_intercept = fit_sigmoid(frame.loc[long_valid, "raw_long"], frame.loc[long_valid, "y_long"])
-    short_coef, short_intercept = fit_sigmoid(frame.loc[short_valid, "raw_short"], frame.loc[short_valid, "y_short"])
+    long_config = fit_calibration_config(
+        args.method,
+        frame.loc[long_valid, "raw_long"],
+        frame.loc[long_valid, "y_long"],
+    )
+    short_config = fit_calibration_config(
+        args.method,
+        frame.loc[short_valid, "raw_short"],
+        frame.loc[short_valid, "y_short"],
+    )
+    method = infer_calibration_method(long_config, default=args.method)
 
     frame["p_long_cal"] = pd.NA
     frame["p_short_cal"] = pd.NA
-    frame.loc[long_valid, "p_long_cal"] = apply_sigmoid(
+    frame.loc[long_valid, "p_long_cal"] = apply_calibration_config(
         frame.loc[long_valid, "raw_long"].to_numpy(),
-        long_coef,
-        long_intercept,
+        long_config,
     )
-    frame.loc[short_valid, "p_short_cal"] = apply_sigmoid(
+    frame.loc[short_valid, "p_short_cal"] = apply_calibration_config(
         frame.loc[short_valid, "raw_short"].to_numpy(),
-        short_coef,
-        short_intercept,
+        short_config,
     )
 
     calibration = {
-        "kind": "sigmoid_pair",
+        "kind": f"{method}_pair",
+        "method": method,
         "rows_used": {
             "long": int(long_valid.sum()),
             "short": int(short_valid.sum()),
         },
-        "long": {"coef": long_coef, "intercept": long_intercept},
-        "short": {"coef": short_coef, "intercept": short_intercept},
+        "long": long_config,
+        "short": short_config,
     }
     calibration_summary = {
-        "kind": "sigmoid_pair",
+        "kind": f"{method}_pair",
+        "method": method,
         "validation_scores_scope": "calibration_slice",
-        "long": {
-            "rows_used": int(long_valid.sum()),
-            "raw_auc": _safe_auc(frame.loc[long_valid, "y_long"], frame.loc[long_valid, "raw_long"]),
-            "calibrated_auc": _safe_auc(frame.loc[long_valid, "y_long"], frame.loc[long_valid, "p_long_cal"]),
-            "raw_logloss": _safe_logloss(
-                frame.loc[long_valid, "y_long"],
-                _optional_series(frame, "p_long", long_valid),
-            )
-            if "p_long" in frame.columns
-            else None,
-            "calibrated_logloss": _safe_logloss(frame.loc[long_valid, "y_long"], frame.loc[long_valid, "p_long_cal"]),
-            "raw_brier": _safe_brier(
-                frame.loc[long_valid, "y_long"],
-                _optional_series(frame, "p_long", long_valid),
-            )
-            if "p_long" in frame.columns
-            else None,
-            "calibrated_brier": _safe_brier(frame.loc[long_valid, "y_long"], frame.loc[long_valid, "p_long_cal"]),
-        },
-        "short": {
-            "rows_used": int(short_valid.sum()),
-            "raw_auc": _safe_auc(frame.loc[short_valid, "y_short"], frame.loc[short_valid, "raw_short"]),
-            "calibrated_auc": _safe_auc(frame.loc[short_valid, "y_short"], frame.loc[short_valid, "p_short_cal"]),
-            "raw_logloss": _safe_logloss(
-                frame.loc[short_valid, "y_short"],
-                _optional_series(frame, "p_short", short_valid),
-            )
-            if "p_short" in frame.columns
-            else None,
-            "calibrated_logloss": _safe_logloss(frame.loc[short_valid, "y_short"], frame.loc[short_valid, "p_short_cal"]),
-            "raw_brier": _safe_brier(
-                frame.loc[short_valid, "y_short"],
-                _optional_series(frame, "p_short", short_valid),
-            )
-            if "p_short" in frame.columns
-            else None,
-            "calibrated_brier": _safe_brier(frame.loc[short_valid, "y_short"], frame.loc[short_valid, "p_short_cal"]),
-        },
+        "long": summarize_calibration_diagnostics(
+            method=method,
+            y_true=frame.loc[long_valid, "y_long"],
+            raw_score=frame.loc[long_valid, "raw_long"],
+            raw_probability=frame.loc[long_valid, "p_long"] if "p_long" in frame.columns else None,
+            calibrated_probability=frame.loc[long_valid, "p_long_cal"],
+        ),
+        "short": summarize_calibration_diagnostics(
+            method=method,
+            y_true=frame.loc[short_valid, "y_short"],
+            raw_score=frame.loc[short_valid, "raw_short"],
+            raw_probability=frame.loc[short_valid, "p_short"] if "p_short" in frame.columns else None,
+            calibrated_probability=frame.loc[short_valid, "p_short_cal"],
+        ),
     }
     calibration_path = bundle_dir / "calibration.json"
     with calibration_path.open("w", encoding="utf-8") as handle:
@@ -177,7 +133,8 @@ def main() -> int:
             ]
             score_contract["raw_margin_columns"] = ["raw_long", "raw_short"]
             score_contract["desktop_validation_requires_probability_columns"] = True
-            score_contract["calibration_kind"] = "sigmoid_pair"
+            score_contract["calibration_kind"] = f"{method}_pair"
+            score_contract["calibration_method"] = method
             manifest["score_contract"] = score_contract
             manifest["calibration_summary"] = calibration_summary
             with manifest_path.open("w", encoding="utf-8") as handle:

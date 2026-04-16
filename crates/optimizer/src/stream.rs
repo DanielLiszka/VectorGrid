@@ -137,6 +137,15 @@ impl HeatmapAgg {
             sample_counts: Some(self.count_values),
         }
     }
+
+    fn matches_layout(&self, other: &Self) -> bool {
+        self.bins_fast == other.bins_fast
+            && self.bins_slow == other.bins_slow
+            && self.fast_min == other.fast_min
+            && self.fast_max == other.fast_max
+            && self.slow_min == other.slow_min
+            && self.slow_max == other.slow_max
+    }
 }
 
 impl PartialEq for ScoredCombo {
@@ -316,10 +325,26 @@ impl StreamAggregator {
             return;
         }
 
+        let self_had_combos = self.num_combos;
+        let other_had_combos = other.num_combos;
         self.num_combos = self.num_combos.saturating_add(other.num_combos);
 
-        if let (Some(a), Some(mut b)) = (self.all.as_mut(), other.all) {
-            a.append(&mut b);
+        let all_truthful = match (self.all.as_mut(), other.all) {
+            (Some(a), Some(mut b)) => {
+                a.append(&mut b);
+                true
+            }
+            (Some(_), None) => other_had_combos == 0,
+            (None, Some(b)) => {
+                if self_had_combos == 0 {
+                    self.all = Some(b);
+                }
+                true
+            }
+            (None, None) => true,
+        };
+        if !all_truthful {
+            self.all = None;
         }
 
         match (self.best.take(), other.best) {
@@ -347,33 +372,43 @@ impl StreamAggregator {
             }
         }
 
-        match (self.heatmap.as_mut(), other.heatmap) {
+        let heatmap_truthful = match (self.heatmap.as_mut(), other.heatmap) {
             (Some(a), Some(b)) => {
-                if a.bins_fast != b.bins_fast
-                    || a.bins_slow != b.bins_slow
-                    || a.fast_min != b.fast_min
-                    || a.fast_max != b.fast_max
-                    || a.slow_min != b.slow_min
-                    || a.slow_max != b.slow_max
-                {
-                    return;
-                }
-                for (dst, src) in a.values.iter_mut().zip(b.values.into_iter()) {
-                    if src > *dst {
-                        *dst = src;
+                if !a.matches_layout(&b) {
+                    if self_had_combos == 0 {
+                        self.heatmap = Some(b);
+                        true
+                    } else if other_had_combos == 0 {
+                        true
+                    } else {
+                        false
                     }
-                }
-                for (dst, src) in a.sum_values.iter_mut().zip(b.sum_values.into_iter()) {
-                    *dst += src;
-                }
-                for (dst, src) in a.count_values.iter_mut().zip(b.count_values.into_iter()) {
-                    *dst = dst.saturating_add(src);
+                } else {
+                    for (dst, src) in a.values.iter_mut().zip(b.values.into_iter()) {
+                        if src > *dst {
+                            *dst = src;
+                        }
+                    }
+                    for (dst, src) in a.sum_values.iter_mut().zip(b.sum_values.into_iter()) {
+                        *dst += src;
+                    }
+                    for (dst, src) in a.count_values.iter_mut().zip(b.count_values.into_iter()) {
+                        *dst = dst.saturating_add(src);
+                    }
+                    true
                 }
             }
             (None, Some(b)) => {
-                self.heatmap = Some(b);
+                if self_had_combos == 0 {
+                    self.heatmap = Some(b);
+                }
+                true
             }
-            _ => {}
+            (Some(_), None) => other_had_combos == 0,
+            (None, None) => true,
+        };
+        if !heatmap_truthful {
+            self.heatmap = None;
         }
     }
 
@@ -520,5 +555,89 @@ mod tests {
             vec![(6, 24), (8, 30)]
         );
         assert_eq!(result.top_scores, Some(vec![1.5, 1.0]));
+    }
+
+    #[test]
+    fn merge_invalidates_all_when_nonempty_side_lacks_full_detail() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 2, true, 100);
+        left.push(params(5, 20), metrics_with_sharpe(1.0));
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100);
+        right.push(params(8, 30), metrics_with_sharpe(3.0));
+
+        left.merge(right);
+        let result = left.finalize().expect("result");
+        assert_eq!(result.best_params.fast_len, 8);
+        assert_eq!(result.num_combos, 2);
+        assert!(result.all.is_none());
+    }
+
+    #[test]
+    fn merge_keeps_all_none_when_receiver_has_data_but_other_side_has_detail() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100);
+        left.push(params(5, 20), metrics_with_sharpe(1.0));
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 2, true, 100);
+        right.push(params(8, 30), metrics_with_sharpe(3.0));
+
+        left.merge(right);
+        let result = left.finalize().expect("result");
+        assert_eq!(result.best_params.fast_len, 8);
+        assert_eq!(result.num_combos, 2);
+        assert!(result.all.is_none());
+    }
+
+    #[test]
+    fn merge_adopts_all_from_nonempty_other_when_receiver_is_empty() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100);
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 2, true, 100);
+        right.push(params(8, 30), metrics_with_sharpe(3.0));
+
+        left.merge(right);
+        let result = left.finalize().expect("result");
+        assert_eq!(
+            result
+                .all
+                .expect("empty receiver can adopt truthful all rows")
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(8, 30)]
+        );
+    }
+
+    #[test]
+    fn merge_invalidates_heatmap_when_nonempty_inputs_use_mismatched_layouts() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100)
+            .with_heatmap(2, 2, 5, 15, 20, 30);
+        left.push(params(5, 20), metrics_with_sharpe(1.0));
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100)
+            .with_heatmap(3, 2, 5, 15, 20, 30);
+        right.push(params(8, 30), metrics_with_sharpe(3.0));
+
+        left.merge(right);
+        let result = left.finalize().expect("result");
+        assert_eq!(result.best_params.fast_len, 8);
+        assert_eq!(result.num_combos, 2);
+        assert!(result.heatmap.is_none());
+    }
+
+    #[test]
+    fn merge_adopts_heatmap_from_nonempty_other_when_receiver_is_empty() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100);
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100)
+            .with_heatmap(2, 2, 5, 15, 20, 30);
+        right.push(params(8, 30), metrics_with_sharpe(3.0));
+
+        left.merge(right);
+        let result = left.finalize().expect("result");
+        let heatmap = result
+            .heatmap
+            .expect("empty receiver can adopt truthful heatmap");
+        assert_eq!(heatmap.values[1], Some(3.0));
+        assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[1], 1);
     }
 }

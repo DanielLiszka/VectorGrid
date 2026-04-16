@@ -37,7 +37,20 @@ def parse_args() -> argparse.Namespace:
         default=100,
         help="Minimum acceptable number of evaluated walk-forward rows.",
     )
+    parser.add_argument(
+        "--artifact-suffix",
+        default="",
+        help="Optional suffix for walk-forward artifacts, for example 'rolling'.",
+    )
     return parser.parse_args()
+
+
+def artifact_path(bundle_dir: Path, base_name: str, suffix: str) -> Path:
+    base = Path(base_name)
+    clean_suffix = str(suffix).strip().strip(".")
+    if not clean_suffix:
+        return bundle_dir / base_name
+    return bundle_dir / f"{base.stem}.{clean_suffix}{base.suffix}"
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -81,8 +94,8 @@ def main() -> int:
 
     manifest = read_json(bundle_dir / "manifest.json")
     metrics = read_json(bundle_dir / "metrics.json")
-    walkforward = read_json(bundle_dir / "walkforward_summary.json")
-    walkforward_rolls = read_json(bundle_dir / "walkforward_rolls.json")
+    walkforward = read_json(artifact_path(bundle_dir, "walkforward_summary.json", args.artifact_suffix))
+    walkforward_rolls = read_json(artifact_path(bundle_dir, "walkforward_rolls.json", args.artifact_suffix))
     holdout_report = (
         read_json(bundle_dir / "holdout_report.json")
         if (bundle_dir / "holdout_report.json").exists()
@@ -96,6 +109,11 @@ def main() -> int:
     stability_report = (
         read_json(bundle_dir / "stability_report.json")
         if (bundle_dir / "stability_report.json").exists()
+        else None
+    )
+    rolling_calibration_report = (
+        read_json(artifact_path(bundle_dir, "rolling_calibration_report.json", args.artifact_suffix))
+        if artifact_path(bundle_dir, "rolling_calibration_report.json", args.artifact_suffix).exists()
         else None
     )
 
@@ -115,12 +133,39 @@ def main() -> int:
     mean_policy_return = as_float(walkforward.get("mean_policy_return")) or 0.0
     sum_policy_return = as_float(walkforward.get("sum_policy_return")) or 0.0
     if evaluation_mode == "rolling":
-        long_auc = as_float(rolling_calibration.get("long_auc_calibration_mean"))
-        short_auc = as_float(rolling_calibration.get("short_auc_calibration_mean"))
-        auc_source = "rolling_calibration_summary.mean"
+        if isinstance(rolling_calibration_report, dict) and isinstance(rolling_calibration_report.get("summary"), dict):
+            per_side = rolling_calibration_report["summary"].get("per_side")
+            if isinstance(per_side, dict):
+                long_auc = as_float(((per_side.get("long") or {}).get("calibrated_auc") or {}).get("mean"))
+                short_auc = as_float(((per_side.get("short") or {}).get("calibrated_auc") or {}).get("mean"))
+                long_logloss = as_float(((per_side.get("long") or {}).get("calibrated_logloss") or {}).get("mean"))
+                short_logloss = as_float(((per_side.get("short") or {}).get("calibrated_logloss") or {}).get("mean"))
+                long_brier = as_float(((per_side.get("long") or {}).get("calibrated_brier") or {}).get("mean"))
+                short_brier = as_float(((per_side.get("short") or {}).get("calibrated_brier") or {}).get("mean"))
+                auc_source = "rolling_calibration_report.summary.per_side"
+            else:
+                long_auc = as_float(rolling_calibration.get("long_auc_calibration_mean"))
+                short_auc = as_float(rolling_calibration.get("short_auc_calibration_mean"))
+                long_logloss = as_float(rolling_calibration.get("long_logloss_calibration_mean"))
+                short_logloss = as_float(rolling_calibration.get("short_logloss_calibration_mean"))
+                long_brier = as_float(rolling_calibration.get("long_brier_calibration_mean"))
+                short_brier = as_float(rolling_calibration.get("short_brier_calibration_mean"))
+                auc_source = "rolling_calibration_summary.mean"
+        else:
+            long_auc = as_float(rolling_calibration.get("long_auc_calibration_mean"))
+            short_auc = as_float(rolling_calibration.get("short_auc_calibration_mean"))
+            long_logloss = as_float(rolling_calibration.get("long_logloss_calibration_mean"))
+            short_logloss = as_float(rolling_calibration.get("short_logloss_calibration_mean"))
+            long_brier = as_float(rolling_calibration.get("long_brier_calibration_mean"))
+            short_brier = as_float(rolling_calibration.get("short_brier_calibration_mean"))
+            auc_source = "rolling_calibration_summary.mean"
     else:
         long_auc = as_float(long_metrics.get("auc_calibration"))
         short_auc = as_float(short_metrics.get("auc_calibration"))
+        long_logloss = as_float(long_metrics.get("logloss_calibration"))
+        short_logloss = as_float(short_metrics.get("logloss_calibration"))
+        long_brier = None
+        short_brier = None
         auc_source = "metrics.json"
 
     auxiliary_mode_warnings: list[str] = []
@@ -193,12 +238,17 @@ def main() -> int:
             "sum_policy_return": sum_policy_return,
             "long_auc": long_auc,
             "short_auc": short_auc,
+            "long_logloss": long_logloss,
+            "short_logloss": short_logloss,
+            "long_brier": long_brier,
+            "short_brier": short_brier,
             "auc_source": auc_source,
             "roll_count": len(rolls),
         },
         "baseline_comparison_present": bool(baseline_comparison),
         "holdout_report_present": bool(holdout_report),
         "stability_report_present": bool(stability_report),
+        "rolling_calibration_report_present": bool(rolling_calibration_report),
         "notes": [
             "This report is a research gate only. It does not replace deterministic baseline comparison.",
             "Ticker-holdout comparison remains a separate research step.",
@@ -229,7 +279,9 @@ def main() -> int:
             "most_common_exact_top_policy": stability_report.get("most_common_exact_top_policy"),
         }
 
-    dump_json(bundle_dir / "gate_report.json", report)
+    output_json = artifact_path(bundle_dir, "gate_report.json", args.artifact_suffix)
+    output_md = artifact_path(bundle_dir, "gate_report.md", args.artifact_suffix)
+    dump_json(output_json, report)
 
     lines = [
         f"bundle_id: {report['bundle_id']}",
@@ -251,6 +303,10 @@ def main() -> int:
             "- validation_scores.csv covers calibration-slice scoring, while walkforward_test_scores.csv covers walk-forward research scoring.",
             f"- Current walk-forward evaluation_mode is {evaluation_mode}.",
             f"- AUC source is {auc_source}.",
+            f"- long_logloss: {long_logloss}",
+            f"- short_logloss: {short_logloss}",
+            f"- long_brier: {long_brier}",
+            f"- short_brier: {short_brier}",
             "- Research walk-forward artifacts are not desktop validation or policy-sweep parity evidence on their own.",
         ],
     )
@@ -295,10 +351,10 @@ def main() -> int:
                 else "- exact_top_policy_stability: n/a",
             ],
         )
-    (bundle_dir / "gate_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    print(f"wrote gate report -> {bundle_dir / 'gate_report.json'}")
-    print(f"wrote gate markdown -> {bundle_dir / 'gate_report.md'}")
+    print(f"wrote gate report -> {output_json}")
+    print(f"wrote gate markdown -> {output_md}")
     return 0
 
 

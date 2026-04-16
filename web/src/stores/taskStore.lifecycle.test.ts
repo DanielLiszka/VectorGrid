@@ -3,13 +3,17 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import {
   activeTasksCount,
   beginTrackedCommand,
+  cancelCommandFor,
   completeTrackedCommand,
   dismissToast,
   failTrackedCommand,
   hydrateTaskCenterForTests,
+  markTasksCancellingForCommand,
   markTaskCancelling,
   persistTaskCenterForTests,
   resetTaskStoreForTests,
+  shouldGuardDesktopCloseForTask,
+  shouldTrackCommandLifecycle,
   taskPostureSnapshot,
   useTaskStore,
 } from './taskStore'
@@ -291,5 +295,23 @@ describe('task-store lifecycle smoke', () => {
       status: 'success',
     })
     expect(store.toasts).toHaveLength(0)
+  })
+
+  it('keeps analysis commands tracked but non-cancelable', () => {
+    const taskId = beginTrackedCommand('compute_double_ma_drilldown')
+
+    expect(shouldTrackCommandLifecycle('compute_double_ma_drilldown')).toBe(true)
+    expect(cancelCommandFor('compute_double_ma_drilldown')).toBe(null)
+    expect(
+      shouldGuardDesktopCloseForTask({
+        command: 'compute_double_ma_drilldown',
+        status: 'running',
+      }),
+    ).toBe(true)
+
+    const touchedTaskIds = markTasksCancellingForCommand('cancel_current_run')
+    const store = useTaskStore(pinia)
+    expect(touchedTaskIds).not.toContain(taskId)
+    expect(store.activeById[taskId]?.status).toBe('running')
   })
 })

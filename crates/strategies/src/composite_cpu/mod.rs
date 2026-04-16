@@ -300,6 +300,10 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
     )
 }
 
+/// `start_t` must already point at the first executable bar after indicator warmup and any
+/// caller-chosen `trade_on_next_bar` offset. This evaluator still reads signals from
+/// `t.saturating_sub(trade_offset)` internally, so callers should not pass the first raw signal
+/// bar here.
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
     lr: &[f64],
     ott_prices: &[f64],
@@ -746,6 +750,10 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
     )
 }
 
+/// `start_t` must already point at the first executable bar after indicator warmup and any
+/// caller-chosen `trade_on_next_bar` offset. This evaluator still reads signals from
+/// `t.saturating_sub(trade_offset)` internally, so callers should not pass the first raw signal
+/// bar here.
 pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
     lr: &[f64],
     ott_prices: &[f64],
@@ -789,6 +797,25 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
     }
 
     let commission = cfg.effective_commission();
+    if !(0.0..1.0).contains(&commission) && commission != 0.0 {
+        return DoubleMaCurves {
+            equity: MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            drawdown: MinMaxBins {
+                start_t,
+                end_t: n_total,
+                bins: 0,
+                minmax: Vec::new(),
+            },
+            trades: Vec::new(),
+            trade_stats: None,
+            indicator_bars: Vec::new(),
+        };
+    }
     let trade_offset = if cfg.trade_on_next_bar {
         1usize
     } else {
@@ -1119,6 +1146,8 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
+    use serde_json::{from_str, to_string};
 
     fn compute_log_returns(prices: &[f64]) -> Vec<f64> {
         let mut lr = Vec::with_capacity(prices.len());
@@ -1130,6 +1159,12 @@ mod tests {
             lr.push((w[1] / w[0]).ln());
         }
         lr
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct ModeHolder {
+        #[serde(default)]
+        signal_mode: CompositeSignalMode,
     }
 
     #[test]
@@ -1181,6 +1216,76 @@ mod tests {
             CompositeSignalMode::HardGate,
         );
         assert_eq!(sign, 0);
+    }
+
+    #[test]
+    fn composite_signal_mode_serde_uses_snake_case_wire_contract() {
+        assert_eq!(
+            to_string(&CompositeSignalMode::HardGate).unwrap(),
+            "\"hard_gate\""
+        );
+        assert_eq!(
+            to_string(&CompositeSignalMode::EntryCoreExitOverlay).unwrap(),
+            "\"entry_core_exit_overlay\""
+        );
+        assert_eq!(
+            to_string(&CompositeSignalMode::TrendPullbackReversion).unwrap(),
+            "\"trend_pullback_reversion\""
+        );
+
+        let overlay: CompositeSignalMode = from_str("\"entry_core_exit_overlay\"").unwrap();
+        let reversion: CompositeSignalMode = from_str("\"trend_pullback_reversion\"").unwrap();
+        assert_eq!(overlay, CompositeSignalMode::EntryCoreExitOverlay);
+        assert_eq!(reversion, CompositeSignalMode::TrendPullbackReversion);
+    }
+
+    #[test]
+    fn composite_signal_mode_omitted_field_defaults_to_hard_gate() {
+        let holder: ModeHolder = from_str("{}").unwrap();
+        assert_eq!(holder.signal_mode, CompositeSignalMode::HardGate);
+    }
+
+    #[test]
+    fn overlay_signal_persistence_requires_consecutive_confirmation() {
+        let params = ExecutionOverlayParams {
+            cooldown_bars: 0,
+            persistence_bars: 2,
+        };
+        let mut state = ExecutionOverlayState::default();
+
+        assert_eq!(
+            overlay_apply_signal_persistence(1, 0, &params, &mut state),
+            0
+        );
+        assert_eq!(
+            overlay_apply_signal_persistence(1, 0, &params, &mut state),
+            1
+        );
+        assert_eq!(
+            overlay_apply_signal_persistence(0, 1, &params, &mut state),
+            0
+        );
+        assert_eq!(state.pending_sign, 0);
+        assert_eq!(state.pending_count, 0);
+    }
+
+    #[test]
+    fn overlay_entry_cooldown_blocks_flat_reentry_until_cooldown_expires() {
+        let params = ExecutionOverlayParams {
+            cooldown_bars: 2,
+            persistence_bars: 1,
+        };
+        let mut state = ExecutionOverlayState::default();
+        overlay_on_trade_close(&mut state, &params);
+
+        assert_eq!(overlay_apply_entry_cooldown(1, 0, &state), 0);
+
+        overlay_on_bar_start(&mut state);
+        assert_eq!(overlay_apply_entry_cooldown(1, 0, &state), 0);
+
+        overlay_on_bar_start(&mut state);
+        assert_eq!(overlay_apply_entry_cooldown(1, 0, &state), 1);
+        assert_eq!(overlay_apply_entry_cooldown(-1, 1, &state), -1);
     }
 
     #[test]
@@ -1335,6 +1440,94 @@ mod tests {
             CompositeSignalMode::TrendPullbackReversion,
         );
         assert_eq!(sign, 0);
+    }
+
+    #[test]
+    fn entry_core_exit_overlay_allow_flip_false_closes_then_reopens_next_bar() {
+        let lr = vec![0.0; 6];
+        let fast = vec![2.0, 2.0, 2.0, 0.0, 0.0, 0.0];
+        let slow = vec![1.0; lr.len()];
+        let ht = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let macz = vec![1.0, 1.0, 1.0, -1.0, -1.0, -1.0];
+        let ott_line = vec![1.0; lr.len()];
+        let ott_prices = vec![2.0, 2.0, 2.0, 0.0, 0.0, 0.0];
+        let cfg = StrategyConfig {
+            long_only: false,
+            allow_flip: false,
+            trade_on_next_bar: false,
+            ..StrategyConfig::default()
+        };
+
+        let curves = eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &cfg,
+            4,
+            CompositeSignalMode::EntryCoreExitOverlay,
+        );
+
+        assert_eq!(curves.trades.len(), 2);
+        assert_eq!(curves.trades[0].direction, 1);
+        assert_eq!(curves.trades[0].exit_t, 3);
+        assert!(!curves.trades[0].open);
+        assert_eq!(curves.trades[1].direction, -1);
+        assert_eq!(curves.trades[1].entry_t, 4);
+        assert!(curves.trades[1].open);
+    }
+
+    #[test]
+    fn invalid_commission_returns_empty_curves_like_zero_metrics() {
+        let lr = vec![0.0, 0.01, -0.01, 0.02];
+        let fast = vec![2.0; lr.len()];
+        let slow = vec![1.0; lr.len()];
+        let ht = vec![0.0; lr.len()];
+        let macz = vec![1.0; lr.len()];
+        let ott_line = vec![1.0; lr.len()];
+        let ott_prices = vec![2.0; lr.len()];
+        let cfg = StrategyConfig {
+            commission: 1.1,
+            trade_on_next_bar: false,
+            ..StrategyConfig::default()
+        };
+
+        let metrics = eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &cfg,
+            CompositeSignalMode::HardGate,
+        );
+        let curves = eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &cfg,
+            8,
+            CompositeSignalMode::HardGate,
+        );
+
+        assert_eq!(metrics.pnl, 0.0);
+        assert_eq!(metrics.trades, 0);
+        assert_eq!(curves.equity.bins, 0);
+        assert_eq!(curves.drawdown.bins, 0);
+        assert!(curves.trades.is_empty());
+        assert!(curves.trade_stats.is_none());
     }
 
     #[test]

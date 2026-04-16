@@ -61,6 +61,9 @@ describe("HistoryWorkspacePanel", () => {
     history.savedRunDetailMlBundle = "bundle-a";
     history.savedRunDetailMlScoreCache = "ml_score_cache.json";
     history.savedRunDetailMlFeatureSchema = "ml_dataset.feature_schema.json";
+    history.savedRunDetailMlScoreContract = "Probability • CalibrationSlice";
+    history.savedRunDetailMlScoreNote =
+      "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.";
     history.savedRunDetailMlPolicy =
       "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10";
     history.savedRunDetailMlSweep =
@@ -81,6 +84,12 @@ describe("HistoryWorkspacePanel", () => {
     const bodyText = document.body.textContent || "";
     expect(bodyText).toContain("Verdict");
     expect(bodyText).toContain("approved=1 | survived=1 | considered=27");
+    expect(bodyText).toContain("Score Contract");
+    expect(bodyText).toContain("Probability • CalibrationSlice");
+    expect(bodyText).toContain("Score Note");
+    expect(bodyText).toContain(
+      "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
+    );
     expect(bodyText).toContain("Admission");
     expect(bodyText).toContain("scalar_union • kept 16/20");
     expect(bodyText).toContain("Metric Surface");
@@ -94,6 +103,50 @@ describe("HistoryWorkspacePanel", () => {
     expect(bodyText).toContain("Top Candidates");
     expect(bodyText).toContain(
       "best_sweep | robust=1.44 | psr=0.72 | dsr=0.68",
+    );
+  });
+
+  it("shows MlSignal score contract pills in the saved-run list with caveat tooltips", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+    history.savedRunsVisible = [
+      {
+        ts: "2026-03-21T10:00:00Z",
+        path: "C:/runs/ml_signal.json",
+        bytes: 1024,
+        strategyKind: "MlSignal",
+        hasValidation: true,
+        reportXlsxPath: "",
+        csvPath: "C:/data/spy.csv",
+        mlScoreContractSummary: "Probability • CalibrationSlice",
+        mlScoreNote:
+          "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
+        tags: ["ml"],
+      },
+    ];
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const bodyText = document.body.textContent || "";
+    expect(bodyText).toContain("Probability • CalibrationSlice");
+    const contractPill = Array.from(
+      document.querySelectorAll(".pill.subtle"),
+    ).find((node) =>
+      (node.textContent || "").includes("Probability • CalibrationSlice"),
+    ) as HTMLElement | undefined;
+    expect(contractPill).toBeDefined();
+    expect(contractPill?.getAttribute("title") || "").toContain(
+      "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
     );
   });
 
@@ -146,9 +199,11 @@ describe("HistoryWorkspacePanel", () => {
     expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
     expect(clearSpy).not.toHaveBeenCalled();
 
-    const confirmClearButton = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Confirm clear",
-    ) as HTMLButtonElement | undefined;
+    const confirmClearButton = Array.from(
+      document.querySelectorAll("button"),
+    ).find((button) => button.textContent?.trim() === "Confirm clear") as
+      | HTMLButtonElement
+      | undefined;
 
     expect(confirmClearButton).toBeDefined();
     confirmClearButton?.click();
@@ -164,9 +219,11 @@ describe("HistoryWorkspacePanel", () => {
     expect(document.body.textContent || "").toContain("C:/runs/demo.json");
     expect(deleteSpy).not.toHaveBeenCalled();
 
-    const confirmDeleteButton = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Delete artifact",
-    ) as HTMLButtonElement | undefined;
+    const confirmDeleteButton = Array.from(
+      document.querySelectorAll("button"),
+    ).find((button) => button.textContent?.trim() === "Delete artifact") as
+      | HTMLButtonElement
+      | undefined;
 
     expect(confirmDeleteButton).toBeDefined();
     confirmDeleteButton?.click();
@@ -264,7 +321,8 @@ describe("HistoryWorkspacePanel", () => {
           resolvedRoute: "Auto->GpuKernel",
           realizedRoute: "GpuKernel",
           routeChanged: true,
-          fallbackReason: "GPU validation runtime not implemented yet; using CPU validation.",
+          fallbackReason:
+            "GPU validation runtime not implemented yet; using CPU validation.",
         },
         tags: ["a"],
       },
@@ -285,7 +343,9 @@ describe("HistoryWorkspacePanel", () => {
     expect(routePill?.textContent || "").toContain("requested=Auto");
     expect(routePill?.textContent || "").toContain("resolved=Auto->GpuKernel");
     expect(routePill?.textContent || "").toContain("actual=GpuKernel");
-    expect(routePill?.textContent || "").toContain("fallback=GPU validation runtime not implemented yet; using CPU validation.");
+    expect(routePill?.textContent || "").toContain(
+      "fallback=GPU validation runtime not implemented yet; using CPU validation.",
+    );
     expect(routePill?.getAttribute("title") || "").toContain("requested=Auto");
   });
 

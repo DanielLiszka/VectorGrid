@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sklearn.metrics import log_loss, roc_auc_score
 
+from calibration_utils import summarize_probability_metrics
 from common import dump_json
 
 
@@ -33,43 +33,61 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def safe_auc(y_true: pd.Series, y_prob: pd.Series) -> float | None:
-    try:
-        if y_true.nunique(dropna=True) < 2:
-            return None
-        return float(roc_auc_score(y_true, y_prob))
-    except Exception:
-        return None
-
-
-def safe_logloss(y_true: pd.Series, y_prob: pd.Series) -> float | None:
-    try:
-        return float(log_loss(y_true, y_prob, labels=[0, 1]))
-    except Exception:
-        return None
-
-
-def probability_column(name: str, frame: pd.DataFrame) -> str:
+def preferred_probability_column(name: str, frame: pd.DataFrame) -> str:
     calibrated = f"p_{name}_cal"
     return calibrated if calibrated in frame.columns else f"p_{name}"
 
 
+def raw_probability_column(name: str, frame: pd.DataFrame) -> str | None:
+    column = f"p_{name}"
+    return column if column in frame.columns else None
+
+
 def summarize_target(name: str, frame: pd.DataFrame) -> dict[str, Any]:
     y_col = f"y_{name}"
-    p_col = probability_column(name, frame)
+    p_col = preferred_probability_column(name, frame)
+    raw_p_col = raw_probability_column(name, frame)
     raw_col = f"raw_{name}"
     valid = frame[y_col].notna() & frame[p_col].notna()
     valid_frame = frame.loc[valid].copy()
     rows = len(valid_frame)
-    return {
+    summary = summarize_probability_metrics(
+        valid_frame[y_col] if rows else pd.Series(dtype=int),
+        valid_frame[p_col] if rows else pd.Series(dtype=float),
+        bins=10,
+    )
+    target_summary = {
         "rows": int(rows),
+        "preferred_probability_column": p_col,
         "probability_column": p_col,
-        "positive_rate": float(valid_frame[y_col].mean()) if rows else 0.0,
-        "auc": safe_auc(valid_frame[y_col], valid_frame[p_col]) if rows else None,
-        "logloss": safe_logloss(valid_frame[y_col], valid_frame[p_col]) if rows else None,
-        "mean_probability": float(valid_frame[p_col].mean()) if rows else 0.0,
+        "raw_probability_column": raw_p_col,
+        "positive_rate": summary["positive_rate"],
+        "auc": summary["auc"],
+        "logloss": summary["logloss"],
+        "brier": summary["brier"],
+        "mean_probability": summary["mean_probability"],
         "mean_raw_score": float(valid_frame[raw_col].mean()) if rows and raw_col in valid_frame.columns else 0.0,
+        "preferred_probability_metrics": summary,
     }
+    if raw_p_col and raw_p_col != p_col and rows:
+        raw_metrics = summarize_probability_metrics(valid_frame[y_col], valid_frame[raw_p_col], bins=10)
+        target_summary["raw_probability_metrics"] = raw_metrics
+        target_summary["logloss_delta_vs_raw"] = (
+            float(summary["logloss"] - raw_metrics["logloss"])
+            if summary["logloss"] is not None and raw_metrics["logloss"] is not None
+            else None
+        )
+        target_summary["brier_delta_vs_raw"] = (
+            float(summary["brier"] - raw_metrics["brier"])
+            if summary["brier"] is not None and raw_metrics["brier"] is not None
+            else None
+        )
+        target_summary["auc_delta_vs_raw"] = (
+            float(summary["auc"] - raw_metrics["auc"])
+            if summary["auc"] is not None and raw_metrics["auc"] is not None
+            else None
+        )
+    return target_summary
 
 
 def summarize_slice(label: str, frame: pd.DataFrame) -> dict[str, Any]:
@@ -148,8 +166,10 @@ def main() -> int:
                     "slice": row["slice"],
                     "long_auc": row["long"]["auc"],
                     "long_logloss": row["long"]["logloss"],
+                    "long_brier": row["long"]["brier"],
                     "short_auc": row["short"]["auc"],
                     "short_logloss": row["short"]["logloss"],
+                    "short_brier": row["short"]["brier"],
                     "rows_long": row["long"]["rows"],
                     "rows_short": row["short"]["rows"],
                 },
@@ -165,8 +185,10 @@ def main() -> int:
                     "slice": row["slice"],
                     "long_auc": row["long"]["auc"],
                     "long_logloss": row["long"]["logloss"],
+                    "long_brier": row["long"]["brier"],
                     "short_auc": row["short"]["auc"],
                     "short_logloss": row["short"]["logloss"],
+                    "short_brier": row["short"]["brier"],
                     "rows_long": row["long"]["rows"],
                     "rows_short": row["short"]["rows"],
                 },
@@ -185,6 +207,8 @@ def main() -> int:
         f"- short_auc: {summary['overall']['short']['auc']}",
         f"- long_logloss: {summary['overall']['long']['logloss']}",
         f"- short_logloss: {summary['overall']['short']['logloss']}",
+        f"- long_brier: {summary['overall']['long']['brier']}",
+        f"- short_brier: {summary['overall']['short']['brier']}",
         "",
         f"split_slices: {len(summary['by_split'])}",
         f"holdout_slices: {len(summary['by_holdout'])}",

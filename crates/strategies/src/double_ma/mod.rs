@@ -2218,6 +2218,7 @@ impl DoubleMaBatchBuilder {
         expand_grid(&self.range)
     }
 
+    /// Runs the configured grid on the candle close series using the builder's MA type lists.
     pub fn run_cpu(&self, candles: &Candles) -> Vec<Metrics> {
         let combos = self.combos();
         double_ma_batch_cpu(
@@ -2230,6 +2231,9 @@ impl DoubleMaBatchBuilder {
     }
 }
 
+/// Evaluates one legacy MA-id combination against the close series.
+///
+/// The integer ids keep the historical mapping `0 = sma`, `1 = ema`, `2 = alma`.
 pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics {
     let prices = source_type(candles, "close");
     let n = prices.len();
@@ -2282,6 +2286,7 @@ pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics
     )
 }
 
+/// Evaluates one combination against the close series using caller-supplied MA type tables.
 pub fn eval_double_ma_one_with_types(
     candles: &Candles,
     params: &DoubleMaParams,
@@ -3185,12 +3190,14 @@ fn eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_impl<
         } else {
             underwater_run = 0;
         }
-        let dd = if dd_log > 0.0 {
-            -(-dd_log).exp_m1()
-        } else {
-            0.0
-        };
-        ulcer_sum_sq += dd * dd;
+        if COMPUTE_DRAWDOWN_RISK {
+            let dd = if dd_log > 0.0 {
+                -(-dd_log).exp_m1()
+            } else {
+                0.0
+            };
+            ulcer_sum_sq += dd * dd;
+        }
 
         if COMPUTE_SHARPE {
             let step_r = if pos_bar == 0 {
@@ -4395,6 +4402,36 @@ mod tests {
 
         assert!(m1.trades > m0.trades);
         assert!(m1.pnl <= m0.pnl + 1e-12);
+    }
+
+    #[test]
+    fn reduced_halftrend_f64_path_skips_drawdown_only_outputs() {
+        let prices = vec![100.0, 110.0, 120.0, 90.0, 80.0, 85.0, 95.0];
+        let lr = compute_log_returns(&prices);
+        let fast = vec![2.0; lr.len()];
+        let slow = vec![1.0; lr.len()];
+        let halftrend = vec![0.0; lr.len()];
+        let cfg = StrategyConfig {
+            trade_on_next_bar: false,
+            ..StrategyConfig::default()
+        };
+
+        let reduced = eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter(
+            &lr, &fast, &slow, &halftrend, 1, &cfg,
+        );
+        let rich = eval_double_ma_from_log_returns_and_mas_f64_with_halftrend_filter_rich(
+            &lr, &fast, &slow, &halftrend, 1, &cfg,
+        );
+
+        assert!((reduced.pnl - rich.pnl).abs() < 1e-12);
+        assert_eq!(reduced.trades, rich.trades);
+        assert!((reduced.max_dd - rich.max_dd).abs() < 1e-12);
+        assert_eq!(reduced.ulcer_index, 0.0);
+        assert_eq!(reduced.martin_ratio, 0.0);
+        assert_eq!(reduced.underwater_fraction, 0.0);
+        assert_eq!(reduced.max_underwater_duration_bars, 0);
+        assert!(rich.ulcer_index > 0.0);
+        assert!(rich.max_underwater_duration_bars > 0);
     }
 
     #[test]

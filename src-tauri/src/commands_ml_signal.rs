@@ -134,6 +134,34 @@ pub async fn generate_ml_signal_score_cache(
             let manifest_path = bundle_manifest_path(&models_dir, bundle_id);
             if manifest_path.exists() {
                 req.source_bundle_manifest_path = Some(manifest_path.to_string_lossy().to_string());
+                let bundle_dir = manifest_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or(models_dir.clone());
+                if req
+                    .feature_schema_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+                {
+                    let candidate = bundle_dir.join("feature_schema.json");
+                    if candidate.exists() {
+                        req.feature_schema_path = Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+                if req
+                    .export_manifest_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+                {
+                    let candidate = bundle_dir.join("export_manifest.json");
+                    if candidate.exists() {
+                        req.export_manifest_path = Some(candidate.to_string_lossy().to_string());
+                    }
+                }
             }
         }
     }
@@ -185,6 +213,14 @@ pub async fn generate_ml_signal_score_cache(
                 if !model_family.is_empty() {
                     req.producer_kind = Some(model_family.to_string());
                 }
+            }
+            if req.feature_schema_hash.is_none() {
+                req.feature_schema_hash = manifest
+                    .source_feature_schema_hash
+                    .as_ref()
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
             }
             if req.threshold_policy.is_none() {
                 req.threshold_policy = manifest

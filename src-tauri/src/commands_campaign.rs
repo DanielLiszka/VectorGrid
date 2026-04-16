@@ -17,6 +17,8 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -550,6 +552,13 @@ fn normalize_text(value: &str) -> String {
     value.trim().to_string()
 }
 
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+}
+
 fn normalize_strategy_kind(raw: &str) -> String {
     match raw.trim() {
         "" => "DoubleMa".to_string(),
@@ -761,6 +770,36 @@ fn dataset_timeframe_hint(
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or_default()
+}
+
+fn normalize_campaign_datasets(
+    datasets: Vec<ResearchCampaignDatasetInput>,
+) -> Result<Vec<ResearchCampaignDatasetInput>, String> {
+    let mut normalized = Vec::with_capacity(datasets.len());
+    for dataset in datasets {
+        let csv_path = normalize_text(&dataset.csv_path);
+        if csv_path.is_empty() {
+            return Err("campaign dataset csv_path is empty".to_string());
+        }
+        normalized.push(ResearchCampaignDatasetInput {
+            csv_path,
+            label: normalize_optional_text(dataset.label),
+            timeframe: normalize_optional_text(dataset.timeframe)
+                .map(|value| normalize_timeframe_label(&value))
+                .filter(|value| !value.is_empty()),
+            source_size_bytes: dataset.source_size_bytes,
+            source_mtime_utc_ms: dataset.source_mtime_utc_ms,
+            source_content_fingerprint: normalize_optional_text(dataset.source_content_fingerprint),
+        });
+    }
+    Ok(normalized)
+}
+
+fn should_load_existing_artifacts(
+    skip_existing: bool,
+    execution_mode: ResearchCampaignExecutionMode,
+) -> bool {
+    skip_existing || execution_mode == ResearchCampaignExecutionMode::ValidateOnly
 }
 
 fn failed_item(
@@ -1910,9 +1949,9 @@ fn build_campaign_summary(
     }
 }
 
-fn save_campaign_summary_blocking(
+fn save_campaign_summary_blocking<R: tauri::Runtime>(
     summary: &ResearchCampaignSummary,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     existing_path: Option<&str>,
 ) -> Result<(String, usize), String> {
     let path = existing_path
@@ -1923,7 +1962,34 @@ fn save_campaign_summary_blocking(
             app,
         )?);
     let bytes = serde_json::to_vec_pretty(summary).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = {
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("campaign_summary.json");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        path.with_file_name(format!("{file_name}.tmp.{}.{}", std::process::id(), nanos))
+    };
+    let result = (|| -> Result<(), String> {
+        let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        file.flush().map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result?;
     Ok((path.to_string_lossy().to_string(), bytes.len()))
 }
 
@@ -1934,22 +2000,74 @@ fn artifact_stub(run_req: &Value, validation_req: Option<&Value>) -> Value {
     })
 }
 
-fn existing_validation_matches(
-    existing: &[run_artifacts::RunArtifactSummary],
+fn run_artifact_matches_campaign(
+    row: &run_artifacts::RunArtifactSummary,
     strategy_kind: &str,
     config_fingerprint: &str,
     primary_tag: &str,
     prepared: &PreparedCampaignDataset,
 ) -> bool {
-    existing_optimization_match(
-        existing,
-        strategy_kind,
-        config_fingerprint,
-        primary_tag,
-        prepared,
-    )
-    .map(|row| row.has_validation)
-    .unwrap_or(false)
+    let dataset_tf = normalize_timeframe_label(&prepared.timeframe);
+    let dataset_path = normalize_path_key(&prepared.input.csv_path);
+    let strict_fp = prepared
+        .dataset_meta
+        .get("source_content_fingerprint")
+        .and_then(Value::as_str)
+        .map(normalize_text)
+        .filter(|value| !value.is_empty());
+    let prepared_size = prepared
+        .dataset_meta
+        .get("source_size_bytes")
+        .and_then(Value::as_u64);
+    let prepared_mtime = prepared
+        .dataset_meta
+        .get("source_mtime_utc_ms")
+        .and_then(Value::as_i64);
+    if normalize_strategy_kind(&row.strategy_kind) != normalize_strategy_kind(strategy_kind) {
+        return false;
+    }
+    if row.config_fingerprint.trim() != config_fingerprint.trim() {
+        return false;
+    }
+    if !row
+        .tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case(primary_tag))
+    {
+        return false;
+    }
+    if normalize_path_key(&row.csv_path) != dataset_path {
+        return false;
+    }
+    if !dataset_tf.is_empty() && normalize_timeframe_label(&row.timeframe) != dataset_tf {
+        return false;
+    }
+    if let Some(expected_fp) = strict_fp.as_deref() {
+        return row.source_content_fingerprint.as_deref() == Some(expected_fp);
+    }
+    if let (Some(size), Some(mtime)) = (row.source_size_bytes, row.source_mtime_utc_ms) {
+        return prepared_size == Some(size) && prepared_mtime == Some(mtime);
+    }
+    true
+}
+
+fn existing_validation_match<'a>(
+    existing: &'a [run_artifacts::RunArtifactSummary],
+    strategy_kind: &str,
+    config_fingerprint: &str,
+    primary_tag: &str,
+    prepared: &PreparedCampaignDataset,
+) -> Option<&'a run_artifacts::RunArtifactSummary> {
+    existing.iter().find(|row| {
+        row.has_validation
+            && run_artifact_matches_campaign(
+                row,
+                strategy_kind,
+                config_fingerprint,
+                primary_tag,
+                prepared,
+            )
+    })
 }
 
 fn existing_optimization_match<'a>(
@@ -1959,51 +2077,59 @@ fn existing_optimization_match<'a>(
     primary_tag: &str,
     prepared: &PreparedCampaignDataset,
 ) -> Option<&'a run_artifacts::RunArtifactSummary> {
-    let dataset_tf = normalize_timeframe_label(&prepared.timeframe);
-    let dataset_path = normalize_path_key(&prepared.input.csv_path);
-    let strict_fp = prepared
-        .input
-        .source_content_fingerprint
-        .as_deref()
-        .map(normalize_text)
-        .filter(|value| !value.is_empty());
-    for row in existing {
-        if normalize_strategy_kind(&row.strategy_kind) != normalize_strategy_kind(strategy_kind) {
-            continue;
-        }
-        if row.config_fingerprint.trim() != config_fingerprint.trim() {
-            continue;
-        }
-        if !row
-            .tags
-            .iter()
-            .any(|tag| tag.eq_ignore_ascii_case(primary_tag))
-        {
-            continue;
-        }
-        if normalize_path_key(&row.csv_path) != dataset_path {
-            continue;
-        }
-        if !dataset_tf.is_empty() && normalize_timeframe_label(&row.timeframe) != dataset_tf {
-            continue;
-        }
-        if let Some(expected_fp) = strict_fp.as_deref() {
-            if row.source_content_fingerprint.as_deref() == Some(expected_fp) {
-                return Some(row);
-            }
-            continue;
-        }
-        if let (Some(size), Some(mtime)) = (row.source_size_bytes, row.source_mtime_utc_ms) {
-            if prepared.input.source_size_bytes == Some(size)
-                && prepared.input.source_mtime_utc_ms == Some(mtime)
-            {
-                return Some(row);
-            }
-        } else {
-            return Some(row);
+    existing.iter().find(|row| {
+        run_artifact_matches_campaign(
+            row,
+            strategy_kind,
+            config_fingerprint,
+            primary_tag,
+            prepared,
+        )
+    })
+}
+
+fn record_checkpoint_save_ms(
+    items: &mut [ResearchCampaignItemSummary],
+    summary: &mut ResearchCampaignSummary,
+    item_index: usize,
+    checkpoint_save_ms: f64,
+) {
+    if let Some(diagnostics) = items
+        .get_mut(item_index)
+        .and_then(|item| item.diagnostics.as_mut())
+    {
+        diagnostics.checkpoint_save_ms = Some(checkpoint_save_ms);
+    }
+    if let Some(diagnostics) = summary
+        .items
+        .get_mut(item_index)
+        .and_then(|item| item.diagnostics.as_mut())
+    {
+        diagnostics.checkpoint_save_ms = Some(checkpoint_save_ms);
+    }
+}
+
+fn save_campaign_summary_checkpoint_blocking<R: tauri::Runtime>(
+    summary: &mut ResearchCampaignSummary,
+    items: &mut [ResearchCampaignItemSummary],
+    item_index: Option<usize>,
+    app: &tauri::AppHandle<R>,
+    existing_path: Option<&str>,
+) -> Result<(String, usize), String> {
+    let started = std::time::Instant::now();
+    let mut saved = save_campaign_summary_blocking(summary, app, existing_path)?;
+    let checkpoint_save_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if let Some(item_index) = item_index {
+        let has_diagnostics = items
+            .get(item_index)
+            .and_then(|item| item.diagnostics.as_ref())
+            .is_some();
+        if has_diagnostics {
+            record_checkpoint_save_ms(items, summary, item_index, checkpoint_save_ms);
+            saved = save_campaign_summary_blocking(summary, app, existing_path)?;
         }
     }
-    None
+    Ok(saved)
 }
 
 fn can_reuse_optimization_artifact_for_validation(family: CampaignOptimizationFamily) -> bool {
@@ -2081,12 +2207,13 @@ fn build_run_artifact_value(
 }
 
 fn run_research_campaign_blocking_with_mode(
-    req: ResearchCampaignRequest,
+    mut req: ResearchCampaignRequest,
     app: tauri::AppHandle,
     cancel: Arc<AtomicBool>,
     execution_mode: ResearchCampaignExecutionMode,
     mut preloaded_pack: Option<HeadlessPreparedResearchCampaignDatasetPack>,
 ) -> Result<RunResearchCampaignResponse, String> {
+    req.datasets = normalize_campaign_datasets(req.datasets)?;
     let started = std::time::Instant::now();
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let app_cache_dir = data_cache::app_data_cache_dir(&base);
@@ -2139,7 +2266,7 @@ fn run_research_campaign_blocking_with_mode(
         );
     }
 
-    let existing = if req.skip_existing {
+    let existing = if should_load_existing_artifacts(req.skip_existing, execution_mode) {
         run_artifacts::list_run_artifacts_blocking(app.clone()).unwrap_or_default()
     } else {
         Vec::new()
@@ -2213,7 +2340,8 @@ fn run_research_campaign_blocking_with_mode(
         &warnings,
         started.elapsed().as_millis() as u64,
     );
-    let (summary_json_path, _) = save_campaign_summary_blocking(&summary, &app, None)?;
+    let (summary_json_path, _) =
+        save_campaign_summary_checkpoint_blocking(&mut summary, &mut items, None, &app, None)?;
     emit_campaign_progress(
         &app,
         "checkpoint",
@@ -2312,7 +2440,13 @@ fn run_research_campaign_blocking_with_mode(
                     &warnings,
                     started.elapsed().as_millis() as u64,
                 );
-                let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                let _ = save_campaign_summary_checkpoint_blocking(
+                    &mut summary,
+                    &mut items,
+                    Some(index),
+                    &app,
+                    Some(&summary_json_path),
+                )?;
                 continue;
             }
         };
@@ -2424,7 +2558,13 @@ fn run_research_campaign_blocking_with_mode(
                     &warnings,
                     started.elapsed().as_millis() as u64,
                 );
-                let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                let _ = save_campaign_summary_checkpoint_blocking(
+                    &mut summary,
+                    &mut items,
+                    Some(index),
+                    &app,
+                    Some(&summary_json_path),
+                )?;
                 continue;
             };
             existing_optimize_path = Some(existing_run.path.clone());
@@ -2470,8 +2610,13 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ =
-                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ = save_campaign_summary_checkpoint_blocking(
+                        &mut summary,
+                        &mut items,
+                        Some(index),
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
                     continue;
                 }
             };
@@ -2504,8 +2649,13 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ =
-                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ = save_campaign_summary_checkpoint_blocking(
+                        &mut summary,
+                        &mut items,
+                        Some(index),
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
                     continue;
                 }
             };
@@ -2538,8 +2688,13 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ =
-                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ = save_campaign_summary_checkpoint_blocking(
+                        &mut summary,
+                        &mut items,
+                        Some(index),
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
                     continue;
                 }
             }
@@ -2588,8 +2743,13 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ =
-                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ = save_campaign_summary_checkpoint_blocking(
+                        &mut summary,
+                        &mut items,
+                        Some(index),
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
                     continue;
                 }
 
@@ -2682,8 +2842,10 @@ fn run_research_campaign_blocking_with_mode(
                                 &warnings,
                                 started.elapsed().as_millis() as u64,
                             );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
+                            let _ = save_campaign_summary_checkpoint_blocking(
+                                &mut summary,
+                                &mut items,
+                                Some(index),
                                 &app,
                                 Some(&summary_json_path),
                             )?;
@@ -2744,8 +2906,10 @@ fn run_research_campaign_blocking_with_mode(
                                 &warnings,
                                 started.elapsed().as_millis() as u64,
                             );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
+                            let _ = save_campaign_summary_checkpoint_blocking(
+                                &mut summary,
+                                &mut items,
+                                Some(index),
                                 &app,
                                 Some(&summary_json_path),
                             )?;
@@ -2781,8 +2945,10 @@ fn run_research_campaign_blocking_with_mode(
                                 &warnings,
                                 started.elapsed().as_millis() as u64,
                             );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
+                            let _ = save_campaign_summary_checkpoint_blocking(
+                                &mut summary,
+                                &mut items,
+                                Some(index),
                                 &app,
                                 Some(&summary_json_path),
                             )?;
@@ -2818,8 +2984,10 @@ fn run_research_campaign_blocking_with_mode(
                                 &warnings,
                                 started.elapsed().as_millis() as u64,
                             );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
+                            let _ = save_campaign_summary_checkpoint_blocking(
+                                &mut summary,
+                                &mut items,
+                                Some(index),
                                 &app,
                                 Some(&summary_json_path),
                             )?;
@@ -2911,8 +3079,10 @@ fn run_research_campaign_blocking_with_mode(
                             &warnings,
                             started.elapsed().as_millis() as u64,
                         );
-                        let _ = save_campaign_summary_blocking(
-                            &summary,
+                        let _ = save_campaign_summary_checkpoint_blocking(
+                            &mut summary,
+                            &mut items,
+                            Some(index),
                             &app,
                             Some(&summary_json_path),
                         )?;
@@ -3011,8 +3181,13 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ =
-                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ = save_campaign_summary_checkpoint_blocking(
+                        &mut summary,
+                        &mut items,
+                        Some(index),
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
                     continue;
                 }
             };
@@ -3094,8 +3269,13 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ =
-                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ = save_campaign_summary_checkpoint_blocking(
+                        &mut summary,
+                        &mut items,
+                        Some(index),
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
                     continue;
                 }
             }
@@ -3136,7 +3316,13 @@ fn run_research_campaign_blocking_with_mode(
                 &warnings,
                 started.elapsed().as_millis() as u64,
             );
-            let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+            let _ = save_campaign_summary_checkpoint_blocking(
+                &mut summary,
+                &mut items,
+                Some(index),
+                &app,
+                Some(&summary_json_path),
+            )?;
             continue;
         }
 
@@ -3177,21 +3363,31 @@ fn run_research_campaign_blocking_with_mode(
                     &warnings,
                     started.elapsed().as_millis() as u64,
                 );
-                let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                let _ = save_campaign_summary_checkpoint_blocking(
+                    &mut summary,
+                    &mut items,
+                    Some(index),
+                    &app,
+                    Some(&summary_json_path),
+                )?;
                 continue;
             }
         };
         let validation_fingerprint = run_artifacts::compute_config_fingerprint_from_artifact(
             &artifact_stub(&run_req_value, Some(&validation_req_value)),
         );
-        if req.skip_existing
-            && existing_validation_matches(
-                &existing,
-                &strategy_kind,
-                &validation_fingerprint,
-                &primary_tag,
-                &prepared,
-            )
+        if let Some(existing_validation) = req
+            .skip_existing
+            .then(|| {
+                existing_validation_match(
+                    &existing,
+                    &strategy_kind,
+                    &validation_fingerprint,
+                    &primary_tag,
+                    &prepared,
+                )
+            })
+            .flatten()
         {
             counts.skipped = counts.skipped.saturating_add(1);
             items[index] = ResearchCampaignItemSummary {
@@ -3200,7 +3396,7 @@ fn run_research_campaign_blocking_with_mode(
                 timeframe: prepared.timeframe.clone(),
                 is_holdout,
                 status: "skipped".to_string(),
-                artifact_path: Some(artifact_path),
+                artifact_path: Some(existing_validation.path.clone()),
                 report_xlsx_path: None,
                 error: None,
                 diagnostics: Some(build_item_diagnostics(
@@ -3228,7 +3424,13 @@ fn run_research_campaign_blocking_with_mode(
                 &warnings,
                 started.elapsed().as_millis() as u64,
             );
-            let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+            let _ = save_campaign_summary_checkpoint_blocking(
+                &mut summary,
+                &mut items,
+                Some(index),
+                &app,
+                Some(&summary_json_path),
+            )?;
             continue;
         }
 
@@ -3276,8 +3478,10 @@ fn run_research_campaign_blocking_with_mode(
                                 &warnings,
                                 started.elapsed().as_millis() as u64,
                             );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
+                            let _ = save_campaign_summary_checkpoint_blocking(
+                                &mut summary,
+                                &mut items,
+                                Some(index),
                                 &app,
                                 Some(&summary_json_path),
                             )?;
@@ -3320,8 +3524,10 @@ fn run_research_campaign_blocking_with_mode(
                                     &warnings,
                                     started.elapsed().as_millis() as u64,
                                 );
-                                let _ = save_campaign_summary_blocking(
-                                    &summary,
+                                let _ = save_campaign_summary_checkpoint_blocking(
+                                    &mut summary,
+                                    &mut items,
+                                    Some(index),
                                     &app,
                                     Some(&summary_json_path),
                                 )?;
@@ -3356,8 +3562,10 @@ fn run_research_campaign_blocking_with_mode(
                             &warnings,
                             started.elapsed().as_millis() as u64,
                         );
-                        let _ = save_campaign_summary_blocking(
-                            &summary,
+                        let _ = save_campaign_summary_checkpoint_blocking(
+                            &mut summary,
+                            &mut items,
+                            Some(index),
                             &app,
                             Some(&summary_json_path),
                         )?;
@@ -3398,8 +3606,10 @@ fn run_research_campaign_blocking_with_mode(
                                 &warnings,
                                 started.elapsed().as_millis() as u64,
                             );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
+                            let _ = save_campaign_summary_checkpoint_blocking(
+                                &mut summary,
+                                &mut items,
+                                Some(index),
                                 &app,
                                 Some(&summary_json_path),
                             )?;
@@ -3442,8 +3652,10 @@ fn run_research_campaign_blocking_with_mode(
                                     &warnings,
                                     started.elapsed().as_millis() as u64,
                                 );
-                                let _ = save_campaign_summary_blocking(
-                                    &summary,
+                                let _ = save_campaign_summary_checkpoint_blocking(
+                                    &mut summary,
+                                    &mut items,
+                                    Some(index),
                                     &app,
                                     Some(&summary_json_path),
                                 )?;
@@ -3478,8 +3690,10 @@ fn run_research_campaign_blocking_with_mode(
                             &warnings,
                             started.elapsed().as_millis() as u64,
                         );
-                        let _ = save_campaign_summary_blocking(
-                            &summary,
+                        let _ = save_campaign_summary_checkpoint_blocking(
+                            &mut summary,
+                            &mut items,
+                            Some(index),
                             &app,
                             Some(&summary_json_path),
                         )?;
@@ -3531,8 +3745,13 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ =
-                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ = save_campaign_summary_checkpoint_blocking(
+                        &mut summary,
+                        &mut items,
+                        Some(index),
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
                     continue;
                 }
             };
@@ -3570,7 +3789,13 @@ fn run_research_campaign_blocking_with_mode(
             &warnings,
             started.elapsed().as_millis() as u64,
         );
-        let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+        let _ = save_campaign_summary_checkpoint_blocking(
+            &mut summary,
+            &mut items,
+            Some(index),
+            &app,
+            Some(&summary_json_path),
+        )?;
     }
 
     let mut meta_response = None;
@@ -3660,8 +3885,13 @@ fn run_research_campaign_blocking_with_mode(
         &warnings,
         started.elapsed().as_millis() as u64,
     );
-    let (_, summary_json_bytes) =
-        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+    let (_, summary_json_bytes) = save_campaign_summary_checkpoint_blocking(
+        &mut summary,
+        &mut items,
+        None,
+        &app,
+        Some(&summary_json_path),
+    )?;
     Ok(RunResearchCampaignResponse {
         ts,
         summary_json_path,
@@ -3707,7 +3937,8 @@ pub fn preload_research_campaign_dataset_pack_headless(
     req: &ResearchCampaignRequest,
     app: &tauri::AppHandle,
 ) -> Result<HeadlessPreparedResearchCampaignDatasetPack, String> {
-    if req.datasets.is_empty() {
+    let normalized_datasets = normalize_campaign_datasets(req.datasets.clone())?;
+    if normalized_datasets.is_empty() {
         return Err("campaign requires at least one dataset".to_string());
     }
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
@@ -3717,8 +3948,8 @@ pub fn preload_research_campaign_dataset_pack_headless(
         .as_deref()
         .map(normalize_timeframe_label)
         .filter(|value| !value.is_empty());
-    let mut prepared = VecDeque::with_capacity(req.datasets.len());
-    for dataset in req.datasets.iter().cloned() {
+    let mut prepared = VecDeque::with_capacity(normalized_datasets.len());
+    for dataset in normalized_datasets {
         prepared.push_back(prepare_campaign_dataset(
             dataset,
             timeframe_override.as_deref(),
@@ -3761,13 +3992,20 @@ mod tests {
     use super::{
         build_composite_candidate_value, build_doublema_vram_prefetch_config,
         can_reuse_optimization_artifact_for_validation, candidate_selection_from_optimization,
-        candidate_values_from_optimization, is_double_like_kind, normalize_backend_value,
+        candidate_values_from_optimization, existing_optimization_match, existing_validation_match,
+        is_double_like_kind, normalize_backend_value, normalize_campaign_datasets,
         optimization_family_for_kind, optimization_result_from_artifact_value, push_unique_warning,
-        requested_gpu_device_id, resolve_campaign_strategy_kind, Backend,
+        requested_gpu_device_id, resolve_campaign_strategy_kind,
+        save_campaign_summary_checkpoint_blocking, should_load_existing_artifacts, Backend,
         CampaignDoubleMaVramPrefetchConfig, CampaignOptimizationFamily, CampaignOptimizationResult,
-        DatasetPreloadJob, DoubleMaRequest, ResearchCampaignValidationConfig,
+        DatasetPreloadJob, DoubleMaRequest, PreparedCampaignDataset, ResearchCampaignCounts,
+        ResearchCampaignDatasetInput, ResearchCampaignExecutionMode,
+        ResearchCampaignItemDiagnostics, ResearchCampaignItemSummary, ResearchCampaignSummary,
+        ResearchCampaignValidationConfig,
     };
+    use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use ta_app_core::double_ma::GpuExecutionPolicy;
@@ -3799,6 +4037,96 @@ mod tests {
         "RegimeHybrid",
         "BreakoutMomentum",
     ];
+
+    fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(AppState::default())
+            .manage(BackgroundTaskState::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("failed to build tauri mock app")
+    }
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        path.push(format!("{prefix}_{}_{}", std::process::id(), unique));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    fn prepared_dataset_for_matching() -> PreparedCampaignDataset {
+        PreparedCampaignDataset {
+            input: ResearchCampaignDatasetInput {
+                csv_path: "C:/data/AAPL.csv".to_string(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("15m".to_string()),
+                source_size_bytes: Some(10),
+                source_mtime_utc_ms: Some(20),
+                source_content_fingerprint: Some("stale-request-hint".to_string()),
+            },
+            candles: vector_ta::utilities::data_loader::Candles::new(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            dataset_meta: json!({
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m",
+                "source_size_bytes": 2048,
+                "source_mtime_utc_ms": 1712000000000i64,
+                "source_content_fingerprint": "sha256:prepared"
+            }),
+            timeframe: "15m".to_string(),
+            label: "AAPL".to_string(),
+        }
+    }
+
+    fn run_artifact_summary(
+        path: &str,
+        has_validation: bool,
+    ) -> super::run_artifacts::RunArtifactSummary {
+        super::run_artifacts::RunArtifactSummary {
+            ts: "2026-04-15T00:00:00Z".to_string(),
+            path: path.to_string(),
+            bytes: 1024,
+            kind: "vectorgrid_run_artifact".to_string(),
+            strategy_kind: "DoubleMa".to_string(),
+            config_fingerprint: "cfg-1".to_string(),
+            config_fingerprint_version: Some(1),
+            has_validation,
+            report_xlsx_path: String::new(),
+            csv_path: "C:/data/AAPL.csv".to_string(),
+            timeframe: "15m".to_string(),
+            base_timeframe: "15m".to_string(),
+            derived_timeframe: "15m".to_string(),
+            resample_applied: Some(false),
+            resample_rule: String::new(),
+            resample_anchor: String::new(),
+            source_size_bytes: Some(2048),
+            source_mtime_utc_ms: Some(1712000000000),
+            source_content_fingerprint: Some("sha256:prepared".to_string()),
+            route_provenance: None,
+            lineage: None,
+            tags: vec!["campaign-main".to_string()],
+            ml_feature_schema_hash: None,
+            ml_calibration_state: None,
+            ml_threshold_policy: None,
+            ml_producer_kind: None,
+            ml_score_contract_version: None,
+            ml_source_bundle_manifest_hash: None,
+            ml_score_space: None,
+            ml_score_scope: None,
+            ml_score_contract_summary: None,
+            ml_score_note: None,
+        }
+    }
 
     #[test]
     fn dynamic_double_ma_is_rejected_for_campaigns() {
@@ -4202,6 +4530,160 @@ mod tests {
         push_unique_warning(&mut warnings, String::new());
         push_unique_warning(&mut warnings, "new".to_string());
         assert_eq!(warnings, vec!["existing".to_string(), "new".to_string()]);
+    }
+
+    #[test]
+    fn validate_only_always_loads_existing_artifacts_even_without_skip_existing() {
+        assert!(should_load_existing_artifacts(
+            false,
+            ResearchCampaignExecutionMode::ValidateOnly
+        ));
+        assert!(should_load_existing_artifacts(
+            true,
+            ResearchCampaignExecutionMode::Full
+        ));
+        assert!(!should_load_existing_artifacts(
+            false,
+            ResearchCampaignExecutionMode::Full
+        ));
+    }
+
+    #[test]
+    fn normalize_campaign_datasets_trims_fields_and_rejects_blank_paths() {
+        let err = normalize_campaign_datasets(vec![ResearchCampaignDatasetInput {
+            csv_path: "   ".to_string(),
+            label: None,
+            timeframe: None,
+            source_size_bytes: None,
+            source_mtime_utc_ms: None,
+            source_content_fingerprint: None,
+        }])
+        .expect_err("blank csv_path should be rejected");
+        assert!(err.contains("csv_path is empty"));
+
+        let normalized = normalize_campaign_datasets(vec![ResearchCampaignDatasetInput {
+            csv_path: "  C:/data/AAPL.csv  ".to_string(),
+            label: Some("  AAPL  ".to_string()),
+            timeframe: Some(" 15M ".to_string()),
+            source_size_bytes: Some(1),
+            source_mtime_utc_ms: Some(2),
+            source_content_fingerprint: Some("  fp-1  ".to_string()),
+        }])
+        .expect("normalize datasets");
+        assert_eq!(normalized[0].csv_path, "C:/data/AAPL.csv");
+        assert_eq!(normalized[0].label.as_deref(), Some("AAPL"));
+        assert_eq!(normalized[0].timeframe.as_deref(), Some("15m"));
+        assert_eq!(
+            normalized[0].source_content_fingerprint.as_deref(),
+            Some("fp-1")
+        );
+    }
+
+    #[test]
+    fn existing_optimization_match_uses_prepared_dataset_identity() {
+        let prepared = prepared_dataset_for_matching();
+        let existing = vec![run_artifact_summary("C:/runs/opt.json", false)];
+
+        let matched =
+            existing_optimization_match(&existing, "DoubleMa", "cfg-1", "campaign-main", &prepared)
+                .expect("should match using prepared dataset identity");
+
+        assert_eq!(matched.path, "C:/runs/opt.json");
+    }
+
+    #[test]
+    fn existing_validation_match_returns_the_validation_artifact_summary() {
+        let prepared = prepared_dataset_for_matching();
+        let existing = vec![
+            run_artifact_summary("C:/runs/opt_only.json", false),
+            run_artifact_summary("C:/runs/validated.json", true),
+        ];
+
+        let matched =
+            existing_validation_match(&existing, "DoubleMa", "cfg-1", "campaign-main", &prepared)
+                .expect("expected validation match");
+
+        assert_eq!(matched.path, "C:/runs/validated.json");
+        assert!(matched.has_validation);
+    }
+
+    #[test]
+    fn save_campaign_summary_checkpoint_persists_checkpoint_timing() {
+        let app = build_mock_app();
+        let summary_path = make_temp_dir("campaign_summary_checkpoint").join("summary.json");
+        let mut items = vec![ResearchCampaignItemSummary {
+            csv_path: "C:/data/AAPL.csv".to_string(),
+            label: "AAPL".to_string(),
+            timeframe: "15m".to_string(),
+            is_holdout: false,
+            status: "ok".to_string(),
+            artifact_path: Some("C:/runs/validated.json".to_string()),
+            report_xlsx_path: None,
+            error: None,
+            diagnostics: Some(ResearchCampaignItemDiagnostics {
+                prepare_source: Some("sync_prepare".to_string()),
+                prepare_wait_ms: Some(1.0),
+                vram_prefetch_outcome: Some("not_attempted".to_string()),
+                vram_prefetch_note: None,
+                vram_prefetch_wall_ms: Some(0.0),
+                optimize_wall_ms: Some(2.0),
+                optimize_artifact_save_ms: Some(3.0),
+                checkpoint_save_ms: None,
+            }),
+        }];
+        let mut summary = ResearchCampaignSummary {
+            version: 1,
+            kind: "vectorgrid_campaign_summary".to_string(),
+            ts: "2026-04-15T00:00:00Z".to_string(),
+            state: "running".to_string(),
+            strategy_kind: "DoubleMa".to_string(),
+            timeframe: Some("15m".to_string()),
+            tags: vec!["campaign-main".to_string()],
+            holdout_tag: None,
+            holdout_pct: 0,
+            request: json!({}),
+            counts: ResearchCampaignCounts {
+                total: 1,
+                optimized: 1,
+                validated: 1,
+                skipped: 0,
+                failed: 0,
+                cancelled: false,
+            },
+            items: items.clone(),
+            meta_json_path: None,
+            stage5_json_path: None,
+            warnings: Vec::new(),
+            runtime_ms: 42,
+        };
+
+        let _ = save_campaign_summary_checkpoint_blocking(
+            &mut summary,
+            &mut items,
+            Some(0),
+            &app.handle().clone(),
+            Some(summary_path.to_string_lossy().as_ref()),
+        )
+        .expect("save summary with checkpoint timing");
+
+        let checkpoint = items[0]
+            .diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.checkpoint_save_ms);
+        assert!(checkpoint.is_some());
+        assert!(checkpoint.unwrap_or_default() >= 0.0);
+
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(&summary_path).expect("summary json should exist on disk"),
+        )
+        .expect("summary json should parse");
+        assert!(
+            saved
+                .pointer("/items/0/diagnostics/checkpoint_save_ms")
+                .and_then(Value::as_f64)
+                .is_some(),
+            "checkpoint timing should be serialized into the saved summary"
+        );
     }
 
     #[test]

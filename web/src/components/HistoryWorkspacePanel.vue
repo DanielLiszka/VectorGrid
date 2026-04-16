@@ -58,6 +58,8 @@ const {
   savedRunDetailMlBundle,
   savedRunDetailMlScoreCache,
   savedRunDetailMlFeatureSchema,
+  savedRunDetailMlScoreContract,
+  savedRunDetailMlScoreNote,
   savedRunDetailMlPolicy,
   savedRunDetailMlSweep,
   savedRunDetailMlVerdict,
@@ -95,6 +97,8 @@ interface SavedRunListEntry {
   hasValidation: boolean;
   reportXlsxPath: string;
   csvPath: string;
+  mlScoreContractSummary?: string;
+  mlScoreNote?: string;
   routeProvenance?: RouteProvenanceSummary | null;
   tags: string[];
 }
@@ -144,8 +148,8 @@ const visibleSessionRuns = computed<SessionRunListEntry[]>(() =>
   ),
 );
 
-const visibleSavedRuns = computed<SavedRunListEntry[]>(() =>
-  savedRunsVisible.value as SavedRunListEntry[],
+const visibleSavedRuns = computed<SavedRunListEntry[]>(
+  () => savedRunsVisible.value as SavedRunListEntry[],
 );
 const {
   scrollElementRef: savedRunsScrollElementRef,
@@ -157,9 +161,12 @@ const {
   rowHeightPx: 84,
   overscan: 8,
   getItemKey: (_index, row) => String(row.path || _index).trim() || _index,
-})
+});
 const historySummaryChips = computed(() => {
-  const chips = [`${visibleSessionRuns.value.length} session runs`, `${savedRunCount.value} saved runs`];
+  const chips = [
+    `${visibleSessionRuns.value.length} session runs`,
+    `${savedRunCount.value} saved runs`,
+  ];
   if (String(savedRunDetailTitle.value || "").trim().length > 0) {
     chips.push(`Selected ${String(savedRunDetailTitle.value || "").trim()}`);
   }
@@ -169,7 +176,8 @@ const savedRunsSearchSummary = computed(() => {
   const query = String(searchDraft.value || "").trim();
   const visibleCount = visibleSavedRuns.value.length;
   const total = savedRunCount.value;
-  const localHelp = "Search filters the saved-run library only. Use Ctrl+K for global commands.";
+  const localHelp =
+    "Search filters the saved-run library only. Use Ctrl+K for global commands.";
   if (!query) return `${total} saved runs available. ${localHelp}`;
   const label = visibleCount === 1 ? "match" : "matches";
   return `${visibleCount} ${label} for “${query}”. ${localHelp}`;
@@ -195,6 +203,14 @@ function sessionRunMeta(entry: SessionRunListEntry): string {
 function savedRunRouteSummary(entry: SavedRunListEntry): string {
   const summary = formatRouteProvenanceCompact(entry.routeProvenance ?? null);
   return summary === "-" ? "" : summary;
+}
+
+function savedRunMlScoreContract(entry: SavedRunListEntry): string {
+  return String(entry.mlScoreContractSummary || "").trim();
+}
+
+function savedRunMlScoreNote(entry: SavedRunListEntry): string {
+  return String(entry.mlScoreNote || "").trim();
 }
 
 watch(
@@ -269,52 +285,53 @@ const confirmationTitle = computed(() => {
 
 const confirmationBody = computed(() => {
   if (pendingAction.value === "clearSession") {
-    return "This removes the in-memory run list for the current session. Saved run artifacts stay on disk."
+    return "This removes the in-memory run list for the current session. Saved run artifacts stay on disk.";
   }
   if (pendingAction.value === "deleteSavedRun") {
     return pendingDeleteTarget.value
       ? `Delete this saved run artifact from the library?\n\n${pendingDeleteTarget.value}\n\nThis cannot be undone from the run library.`
-      : "Select a saved run before deleting it from the library."
+      : "Select a saved run before deleting it from the library.";
   }
-  return ""
-})
+  return "";
+});
 
 const confirmationConfirmLabel = computed(() => {
-  if (pendingAction.value === "clearSession") return "Confirm clear"
-  if (pendingAction.value === "deleteSavedRun") return "Delete artifact"
-  return "Confirm"
-})
+  if (pendingAction.value === "clearSession") return "Confirm clear";
+  if (pendingAction.value === "deleteSavedRun") return "Delete artifact";
+  return "Confirm";
+});
 
 const canConfirmPendingAction = computed(() => {
-  if (pendingAction.value === "clearSession") return Boolean(canClearHistory.value)
+  if (pendingAction.value === "clearSession")
+    return Boolean(canClearHistory.value);
   if (pendingAction.value === "deleteSavedRun") {
-    return Boolean(canDeleteSavedRun.value && pendingDeleteTarget.value)
+    return Boolean(canDeleteSavedRun.value && pendingDeleteTarget.value);
   }
-  return false
-})
+  return false;
+});
 
 function queueClearSessionConfirmation(): void {
-  pendingAction.value = "clearSession"
+  pendingAction.value = "clearSession";
 }
 
 function queueDeleteSavedRunConfirmation(): void {
-  if (!pendingDeleteTarget.value) return
-  pendingAction.value = "deleteSavedRun"
+  if (!pendingDeleteTarget.value) return;
+  pendingAction.value = "deleteSavedRun";
 }
 
 function cancelPendingAction(): void {
-  pendingAction.value = null
+  pendingAction.value = null;
 }
 
 function confirmPendingAction(): void {
-  const action = pendingAction.value
-  pendingAction.value = null
+  const action = pendingAction.value;
+  pendingAction.value = null;
   if (action === "clearSession") {
-    historyStore.clearSession()
-    return
+    historyStore.clearSession();
+    return;
   }
   if (action === "deleteSavedRun" && pendingDeleteTarget.value) {
-    historyStore.deleteSavedRun(pendingDeleteTarget.value)
+    historyStore.deleteSavedRun(pendingDeleteTarget.value);
   }
 }
 
@@ -353,14 +370,17 @@ function moveRunListFocus(
   const list = button?.closest("ul.runList");
   if (!button || !list) return;
   const buttons = Array.from(
-    list.querySelectorAll<HTMLButtonElement>("button.runListButton:not(:disabled)"),
+    list.querySelectorAll<HTMLButtonElement>(
+      "button.runListButton:not(:disabled)",
+    ),
   );
   if (!buttons.length) return;
   const currentIndex = buttons.indexOf(button as HTMLButtonElement);
   if (currentIndex < 0) return;
   let nextIndex = currentIndex;
   if (direction === "prev") nextIndex = Math.max(0, currentIndex - 1);
-  else if (direction === "next") nextIndex = Math.min(buttons.length - 1, currentIndex + 1);
+  else if (direction === "next")
+    nextIndex = Math.min(buttons.length - 1, currentIndex + 1);
   else if (direction === "first") nextIndex = 0;
   else nextIndex = buttons.length - 1;
   buttons[nextIndex]?.focus();
@@ -418,25 +438,44 @@ onBeforeUnmount(() => {
           <div class="panelEyebrow">Library</div>
           <h2 class="panelTitle">Run History</h2>
           <div class="panelSubtitle">
-            Session artifacts are transient. Save, reload, rerun, and inspect the runs worth keeping from the current workflow.
+            Session artifacts are transient. Save, reload, rerun, and inspect
+            the runs worth keeping from the current workflow.
           </div>
         </div>
-        <div class="panelMeta mono panelNumeric">{{ savedRunCount }} saved · {{ stamp }}</div>
+        <div class="panelMeta mono panelNumeric">
+          {{ savedRunCount }} saved · {{ stamp }}
+        </div>
       </header>
       <div class="panelSummaryChips" aria-label="Run history summary">
-        <span v-for="chip in historySummaryChips" :key="`history_summary_${chip}`" class="panelSummaryChip mono">
+        <span
+          v-for="chip in historySummaryChips"
+          :key="`history_summary_${chip}`"
+          class="panelSummaryChip mono"
+        >
           {{ chip }}
         </span>
       </div>
 
       <section v-if="historyStage === 'no_data'" class="emptyState">
-        <img class="emptyStateIllustration" :src="emptyArtifactLibraryIllustration" alt="" aria-hidden="true" draggable="false" />
+        <img
+          class="emptyStateIllustration"
+          :src="emptyArtifactLibraryIllustration"
+          alt=""
+          aria-hidden="true"
+          draggable="false"
+        />
         <div class="emptyTitle">Run Library is empty.</div>
         <div class="emptyBody">
           Save or rerun an optimization to build a library of artifacts you can
           inspect here.
         </div>
-        <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+        <div
+          class="panelStatus mono panelNumeric"
+          role="status"
+          aria-live="polite"
+        >
+          {{ statusLine }}
+        </div>
       </section>
 
       <section
@@ -458,7 +497,8 @@ onBeforeUnmount(() => {
               <div class="panelEyebrow">Session recall</div>
               <h3 class="panelPaneTitle">Session History</h3>
               <div class="panelSectionLead">
-                These runs live only for the active session unless you export or save them elsewhere.
+                These runs live only for the active session unless you export or
+                save them elsewhere.
               </div>
             </div>
           </div>
@@ -534,7 +574,8 @@ onBeforeUnmount(() => {
               <div class="panelEyebrow">Run library</div>
               <h3 class="panelPaneTitle">Saved Runs</h3>
               <div class="panelSectionLead">
-                Search by strategy, dataset, or tag, then choose one artifact to load, rerun, or inspect in detail below.
+                Search by strategy, dataset, or tag, then choose one artifact to
+                load, rerun, or inspect in detail below.
               </div>
             </div>
           </div>
@@ -553,7 +594,8 @@ onBeforeUnmount(() => {
                 "
               />
               <div class="panelMuted fieldHint">
-                Filters Saved Runs only. Use Ctrl+K for global commands and navigation.
+                Filters Saved Runs only. Use Ctrl+K for global commands and
+                navigation.
               </div>
             </div>
             <div>
@@ -581,7 +623,11 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="sectionMeta panelMuted metaLine mono panelNumeric" role="status" aria-live="polite">
+          <div
+            class="sectionMeta panelMuted metaLine mono panelNumeric"
+            role="status"
+            aria-live="polite"
+          >
             {{ savedRunsMeta }}
           </div>
           <div class="panelMuted searchScopeMeta">
@@ -618,22 +664,53 @@ onBeforeUnmount(() => {
               >
                 <div class="runListPrimary">
                   <span class="mono">{{
-                    virtualRow.row.ts || basename(virtualRow.row.path) || "Saved run"
+                    virtualRow.row.ts ||
+                    basename(virtualRow.row.path) ||
+                    "Saved run"
                   }}</span>
-                  <span class="pill">{{ virtualRow.row.strategyKind || "Unknown" }}</span>
+                  <span class="pill">{{
+                    virtualRow.row.strategyKind || "Unknown"
+                  }}</span>
                 </div>
                 <div class="runListSecondary panelMuted">
-                  {{ basename(virtualRow.row.csvPath) || "Dataset unavailable" }}
+                  {{
+                    basename(virtualRow.row.csvPath) || "Dataset unavailable"
+                  }}
                   <span v-if="formatBytesCompact(virtualRow.row.bytes)">
                     · {{ formatBytesCompact(virtualRow.row.bytes) }}
                   </span>
                 </div>
                 <div class="pillRow">
-                  <span class="pill" :class="{ good: virtualRow.row.hasValidation }">
-                    {{ virtualRow.row.hasValidation ? "validation" : "no validation" }}
+                  <span
+                    class="pill"
+                    :class="{ good: virtualRow.row.hasValidation }"
+                  >
+                    {{
+                      virtualRow.row.hasValidation
+                        ? "validation"
+                        : "no validation"
+                    }}
                   </span>
-                  <span class="pill" :class="{ good: !!virtualRow.row.reportXlsxPath }">
-                    {{ virtualRow.row.reportXlsxPath ? "xlsx" : "artifact only" }}
+                  <span
+                    class="pill"
+                    :class="{ good: !!virtualRow.row.reportXlsxPath }"
+                  >
+                    {{
+                      virtualRow.row.reportXlsxPath ? "xlsx" : "artifact only"
+                    }}
+                  </span>
+                  <span
+                    v-if="
+                      virtualRow.row.strategyKind === 'MlSignal' &&
+                      savedRunMlScoreContract(virtualRow.row)
+                    "
+                    class="pill subtle"
+                    :title="
+                      savedRunMlScoreNote(virtualRow.row) ||
+                      savedRunMlScoreContract(virtualRow.row)
+                    "
+                  >
+                    {{ savedRunMlScoreContract(virtualRow.row) }}
                   </span>
                   <span
                     v-if="savedRunRouteSummary(virtualRow.row)"
@@ -724,12 +801,16 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <section v-if="historyStage === 'ready'" class="detailCard panelProminentPane surfaceFocus selectionRail">
+      <section
+        v-if="historyStage === 'ready'"
+        class="detailCard panelProminentPane surfaceFocus selectionRail"
+      >
         <div class="panelSectionHeader">
           <div>
             <div class="panelEyebrow">Selected run</div>
             <div class="panelSectionLead">
-              Use this snapshot as the decision surface for report review, compare work, and rerun actions.
+              Use this snapshot as the decision surface for report review,
+              compare work, and rerun actions.
             </div>
           </div>
         </div>
@@ -738,75 +819,112 @@ onBeforeUnmount(() => {
         <div class="detailGrid">
           <div>
             <span class="panelMetricKey">Strategy</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailStrategy }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailStrategy
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Config Fingerprint</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailConfigFingerprint }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailConfigFingerprint
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Dataset</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailDataset }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailDataset
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Timeframe</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailTimeframe }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailTimeframe
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Validation</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailValidation }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailValidation
+            }}</span>
           </div>
           <div class="full">
             <span class="panelMetricKey">Execution Route</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailProvenance }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailProvenance
+            }}</span>
           </div>
-          <div
-            v-if="savedRunDetailLineage !== '—'"
-            class="full"
-          >
+          <div v-if="savedRunDetailLineage !== '—'" class="full">
             <span class="panelMetricKey">Lineage</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailLineage }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailLineage
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Metric Surface</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMetricSurface }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailMetricSurface
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Admission</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailAdmission }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailAdmission
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Report</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailReport }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailReport
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Size</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailSize }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailSize
+            }}</span>
           </div>
           <template v-if="savedRunDetailStrategy === 'MlSignal'">
             <div>
               <span class="panelMetricKey">Bundle</span
-              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlBundle }}</span>
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlBundle
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Score Cache</span
-              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlScoreCache }}</span>
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlScoreCache
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Feature Schema</span
-              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlFeatureSchema }}</span>
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlFeatureSchema
+              }}</span>
+            </div>
+            <div>
+              <span class="panelMetricKey">Score Contract</span
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlScoreContract
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Policy</span
-              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlPolicy }}</span>
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlPolicy
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Sweep</span
-              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlSweep }}</span>
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlSweep
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Verdict</span
-              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlVerdict }}</span>
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlVerdict
+              }}</span>
             </div>
             <div class="full">
               <span class="panelMetricKey">Top Candidates</span>
@@ -814,24 +932,26 @@ onBeforeUnmount(() => {
                 savedRunDetailMlCandidates
               }}</pre>
             </div>
+            <div v-if="savedRunDetailMlScoreNote !== '—'" class="full">
+              <span class="panelMetricKey">Score Note</span
+              ><span class="panelMetricValue mono panelNumeric">{{
+                savedRunDetailMlScoreNote
+              }}</span>
+            </div>
           </template>
           <div class="full">
             <span class="panelMetricKey">Tags</span
-            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailTags }}</span>
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailTags
+            }}</span>
           </div>
-          <div
-            v-if="savedRunDetailMetricSurfaceDetail !== '—'"
-            class="full"
-          >
+          <div v-if="savedRunDetailMetricSurfaceDetail !== '—'" class="full">
             <span class="panelMetricKey">Metric Detail</span
             ><span class="panelMetricValue mono panelNumeric">{{
               savedRunDetailMetricSurfaceDetail
             }}</span>
           </div>
-          <div
-            v-if="savedRunDetailAdmissionDetail !== '—'"
-            class="full"
-          >
+          <div v-if="savedRunDetailAdmissionDetail !== '—'" class="full">
             <span class="panelMetricKey">Admission Detail</span
             ><span class="panelMetricValue mono panelNumeric">{{
               savedRunDetailAdmissionDetail
@@ -842,7 +962,8 @@ onBeforeUnmount(() => {
           <summary>Request snapshot</summary>
           <div class="panelDetailsBody">
             <div class="panelMuted">
-              The full request payload stays available for troubleshooting or manual rerun inspection.
+              The full request payload stays available for troubleshooting or
+              manual rerun inspection.
             </div>
             <pre class="mono">{{ savedRunDetailParams }}</pre>
           </div>
@@ -851,7 +972,8 @@ onBeforeUnmount(() => {
           <summary>Saved run compare</summary>
           <div class="panelDetailsBody compareDetailsBody">
             <div class="panelMuted">
-              Compare this saved artifact against another saved run without switching the current workflow winner.
+              Compare this saved artifact against another saved run without
+              switching the current workflow winner.
             </div>
             <label for="historySavedRunCompareSelect">Compare against</label>
             <select
@@ -884,7 +1006,13 @@ onBeforeUnmount(() => {
         :parent-dataset-label="savedRunDetailDataset"
       />
 
-      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+      <div
+        class="panelStatus mono panelNumeric"
+        role="status"
+        aria-live="polite"
+      >
+        {{ statusLine }}
+      </div>
       <ConfirmationDialog
         id-base="history_confirmation"
         :open="pendingAction !== null"
@@ -928,11 +1056,19 @@ onBeforeUnmount(() => {
 }
 
 .historyPaneSession {
-  background: color-mix(in oklab, var(--panel-footer) 92%, var(--surface-sunken));
+  background: color-mix(
+    in oklab,
+    var(--panel-footer) 92%,
+    var(--surface-sunken)
+  );
 }
 
 .historyPaneSaved {
-  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-working) 94%,
+    var(--panel-footer)
+  );
   border-color: color-mix(in oklab, var(--panel-focus-edge) 54%, var(--border));
 }
 
@@ -1041,7 +1177,11 @@ onBeforeUnmount(() => {
 }
 
 .runListButton.active {
-  background: color-mix(in oklab, var(--selection-fill-strong) 82%, var(--surface-working));
+  background: color-mix(
+    in oklab,
+    var(--selection-fill-strong) 82%,
+    var(--surface-working)
+  );
   box-shadow: inset 3px 0 0 var(--selection-rail);
 }
 

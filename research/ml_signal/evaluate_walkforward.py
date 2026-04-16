@@ -7,10 +7,17 @@ from typing import Any
 
 import pandas as pd
 
-from calibrate import fit_sigmoid
+from calibration_utils import (
+    apply_calibration_config,
+    fit_calibration_config,
+    infer_calibration_method,
+    safe_auc,
+    safe_brier,
+    safe_logloss,
+    summarize_calibration_diagnostics,
+)
 from common import (
     NormalizedSplitWindow,
-    apply_sigmoid,
     build_feature_frame,
     choose_sample_weight,
     dump_json,
@@ -19,10 +26,17 @@ from common import (
     split_window_masks,
 )
 from train_catboost import (
+    DEFAULT_ALLOW_WRITING_FILES,
     DEFAULT_DEPTH,
+    DEFAULT_EVAL_METRIC,
+    DEFAULT_GROW_POLICY,
+    DEFAULT_HAS_TIME,
     DEFAULT_ITERATIONS,
     DEFAULT_LEARNING_RATE,
+    DEFAULT_LOSS_FUNCTION,
     DEFAULT_RANDOM_SEED,
+    DEFAULT_USE_BEST_MODEL,
+    DEFAULT_VERBOSE,
     train_model,
 )
 
@@ -54,6 +68,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional suffix appended to walk-forward artifact filenames, for example 'proxy' or 'rolling'.",
     )
+    parser.add_argument(
+        "--calibration-method",
+        choices=["auto", "sigmoid", "isotonic", "none"],
+        default="auto",
+        help="Rolling-mode calibration method. 'auto' prefers the bundle calibration method when available, otherwise sigmoid.",
+    )
     return parser.parse_args()
 
 
@@ -80,26 +100,48 @@ def _artifact_path(bundle_dir: Path, base_name: str, suffix: str) -> Path:
     return bundle_dir / f"{base.stem}.{clean_suffix}{base.suffix}"
 
 
-def _load_training_config(bundle_dir: Path) -> dict[str, float | int]:
-    config: dict[str, float | int] = {
+def _load_training_config(bundle_dir: Path) -> tuple[dict[str, Any], str]:
+    config: dict[str, Any] = {
+        "loss_function": DEFAULT_LOSS_FUNCTION,
+        "eval_metric": DEFAULT_EVAL_METRIC,
         "iterations": DEFAULT_ITERATIONS,
         "learning_rate": DEFAULT_LEARNING_RATE,
         "depth": DEFAULT_DEPTH,
-        "random_seed": DEFAULT_RANDOM_SEED,
+        "grow_policy": DEFAULT_GROW_POLICY,
+        "use_best_model": DEFAULT_USE_BEST_MODEL,
+        "has_time": DEFAULT_HAS_TIME,
+        "allow_writing_files": DEFAULT_ALLOW_WRITING_FILES,
+        "verbose": DEFAULT_VERBOSE,
+        "long_random_seed": DEFAULT_RANDOM_SEED,
+        "short_random_seed": DEFAULT_RANDOM_SEED + 1,
     }
+    source = "defaults"
+    manifest = _read_json(bundle_dir / "manifest.json")
     metadata = _read_json(bundle_dir / "train_metadata.json")
-    if not isinstance(metadata, dict):
-        return config
+    nested = None
+    if isinstance(metadata, dict) and isinstance(metadata.get("training_config"), dict):
+        nested = metadata.get("training_config")
+        source = "train_metadata.training_config"
+    elif isinstance(manifest, dict) and isinstance(manifest.get("training_config"), dict):
+        nested = manifest.get("training_config")
+        source = "manifest.training_config"
+    if isinstance(nested, dict):
+        config.update(nested)
+        return config, source
 
-    if "iterations" in metadata:
-        config["iterations"] = int(metadata["iterations"])
-    if "learning_rate" in metadata:
-        config["learning_rate"] = float(metadata["learning_rate"])
-    if "depth" in metadata:
-        config["depth"] = int(metadata["depth"])
-    if "random_seed" in metadata:
-        config["random_seed"] = int(metadata["random_seed"])
-    return config
+    if isinstance(metadata, dict):
+        if "iterations" in metadata:
+            config["iterations"] = int(metadata["iterations"])
+        if "learning_rate" in metadata:
+            config["learning_rate"] = float(metadata["learning_rate"])
+        if "depth" in metadata:
+            config["depth"] = int(metadata["depth"])
+        if "random_seed" in metadata:
+            config["long_random_seed"] = int(metadata["random_seed"])
+            config["short_random_seed"] = int(metadata["random_seed"]) + 1
+        return config, "train_metadata.legacy_fields"
+
+    return config, source
 
 
 def _load_global_calibration(bundle_dir: Path) -> dict[str, Any] | None:
@@ -113,34 +155,6 @@ def _build_base_frame(bundle: Any) -> tuple[pd.DataFrame, pd.DataFrame]:
     for column in bundle.feature_names:
         frame[column] = features[column]
     return frame, features
-
-
-def _safe_auc(y_true: pd.Series, y_prob: pd.Series) -> float | None:
-    try:
-        valid = y_true.notna() & y_prob.notna()
-        if int(valid.sum()) == 0:
-            return None
-        y_valid = y_true.loc[valid]
-        p_valid = y_prob.loc[valid]
-        if y_valid.nunique(dropna=True) < 2:
-            return None
-        from sklearn.metrics import roc_auc_score
-
-        return float(roc_auc_score(y_valid, p_valid))
-    except Exception:
-        return None
-
-
-def _safe_logloss(y_true: pd.Series, y_prob: pd.Series) -> float | None:
-    try:
-        valid = y_true.notna() & y_prob.notna()
-        if int(valid.sum()) == 0:
-            return None
-        from sklearn.metrics import log_loss
-
-        return float(log_loss(y_true.loc[valid], y_prob.loc[valid], labels=[0, 1]))
-    except Exception:
-        return None
 
 
 def _score_frame(
@@ -158,37 +172,51 @@ def _score_frame(
     return scored
 
 
-def _maybe_apply_sigmoid_columns(scored: pd.DataFrame, calibration: dict[str, Any] | None) -> bool:
+def _maybe_apply_calibration_columns(scored: pd.DataFrame, calibration: dict[str, Any] | None) -> tuple[bool, str]:
     if not isinstance(calibration, dict):
-        return False
+        return False, "model_probability"
     applied = False
     long_cfg = calibration.get("long") or {}
     short_cfg = calibration.get("short") or {}
-    if "coef" in long_cfg and "intercept" in long_cfg:
-        scored["p_long"] = apply_sigmoid(
+    if isinstance(long_cfg, dict) and long_cfg:
+        scored["p_long"] = apply_calibration_config(
             scored["raw_long"].to_numpy(),
-            float(long_cfg["coef"]),
-            float(long_cfg["intercept"]),
+            long_cfg,
         )
         applied = True
-    if "coef" in short_cfg and "intercept" in short_cfg:
-        scored["p_short"] = apply_sigmoid(
+    if isinstance(short_cfg, dict) and short_cfg:
+        scored["p_short"] = apply_calibration_config(
             scored["raw_short"].to_numpy(),
-            float(short_cfg["coef"]),
-            float(short_cfg["intercept"]),
+            short_cfg,
         )
         applied = True
-    return applied
+    if not applied:
+        return False, "model_probability"
+    return True, infer_calibration_method(calibration, default="sigmoid")
 
 
-def _fit_sigmoid_config(raw: pd.Series, target: pd.Series) -> dict[str, float] | None:
+def _fit_calibration_config(
+    method: str,
+    raw: pd.Series,
+    target: pd.Series,
+) -> dict[str, Any] | None:
     if target.nunique(dropna=True) < 2:
         return None
     try:
-        coef, intercept = fit_sigmoid(raw, target)
+        return fit_calibration_config(method, raw, target)
     except Exception:
         return None
-    return {"coef": float(coef), "intercept": float(intercept)}
+
+
+def _resolve_requested_calibration_method(
+    requested: str,
+    bundle_calibration: dict[str, Any] | None,
+) -> str:
+    if requested == "auto":
+        if isinstance(bundle_calibration, dict):
+            return infer_calibration_method(bundle_calibration, default="sigmoid")
+        return "sigmoid"
+    return requested
 
 
 def _apply_policy_thresholds(
@@ -221,10 +249,8 @@ def summarize_roll(
     calibration_strategy: str,
     train_rows: int,
     calibration_rows: int,
-    long_auc_calibration: float | None = None,
-    short_auc_calibration: float | None = None,
-    long_logloss_calibration: float | None = None,
-    short_logloss_calibration: float | None = None,
+    long_calibration_diagnostics: dict[str, Any] | None = None,
+    short_calibration_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rows_scored = int(len(scored_slice))
     long_count = int((scored_slice["position"] == 1).sum())
@@ -254,10 +280,38 @@ def summarize_roll(
         "active_share": active_share,
         "mean_policy_return": mean_return,
         "sum_policy_return": sum_return,
-        "long_auc_calibration": long_auc_calibration,
-        "short_auc_calibration": short_auc_calibration,
-        "long_logloss_calibration": long_logloss_calibration,
-        "short_logloss_calibration": short_logloss_calibration,
+        "long_auc_calibration": (
+            long_calibration_diagnostics.get("calibrated_auc")
+            if isinstance(long_calibration_diagnostics, dict)
+            else None
+        ),
+        "short_auc_calibration": (
+            short_calibration_diagnostics.get("calibrated_auc")
+            if isinstance(short_calibration_diagnostics, dict)
+            else None
+        ),
+        "long_logloss_calibration": (
+            long_calibration_diagnostics.get("calibrated_logloss")
+            if isinstance(long_calibration_diagnostics, dict)
+            else None
+        ),
+        "short_logloss_calibration": (
+            short_calibration_diagnostics.get("calibrated_logloss")
+            if isinstance(short_calibration_diagnostics, dict)
+            else None
+        ),
+        "long_brier_calibration": (
+            long_calibration_diagnostics.get("calibrated_brier")
+            if isinstance(long_calibration_diagnostics, dict)
+            else None
+        ),
+        "short_brier_calibration": (
+            short_calibration_diagnostics.get("calibrated_brier")
+            if isinstance(short_calibration_diagnostics, dict)
+            else None
+        ),
+        "long_calibration_diagnostics": long_calibration_diagnostics,
+        "short_calibration_diagnostics": short_calibration_diagnostics,
     }
 
 
@@ -287,23 +341,40 @@ def summarize_ticker(
 
 
 def summarize_rolling_calibration(roll_summaries: list[dict[str, Any]]) -> dict[str, Any]:
-    metric_names = [
-        "long_auc_calibration",
-        "short_auc_calibration",
-        "long_logloss_calibration",
-        "short_logloss_calibration",
-    ]
-    summary: dict[str, Any] = {}
-    for metric_name in metric_names:
-        values = [
-            float(row[metric_name])
+    summary: dict[str, Any] = {"method_counts": {}}
+    metric_map = {
+        "auc_calibration": "calibrated_auc",
+        "logloss_calibration": "calibrated_logloss",
+        "brier_calibration": "calibrated_brier",
+        "raw_probability_auc": "raw_probability_auc",
+        "raw_logloss": "raw_logloss",
+        "raw_brier": "raw_brier",
+        "auc_delta": "auc_delta",
+        "logloss_delta": "logloss_delta",
+        "brier_delta": "brier_delta",
+    }
+    for side in ("long", "short"):
+        for label, source_key in metric_map.items():
+            values = [
+                float(diagnostics[source_key])
+                for row in roll_summaries
+                for diagnostics in [row.get(f"{side}_calibration_diagnostics")]
+                if isinstance(diagnostics, dict) and diagnostics.get(source_key) is not None
+            ]
+            metric_prefix = f"{side}_{label}"
+            summary[f"{metric_prefix}_mean"] = float(sum(values) / len(values)) if values else None
+            summary[f"{metric_prefix}_min"] = float(min(values)) if values else None
+            summary[f"{metric_prefix}_max"] = float(max(values)) if values else None
+            summary[f"{metric_prefix}_count"] = int(len(values))
+        methods = [
+            str(diagnostics.get("method") or "").strip()
             for row in roll_summaries
-            if row.get(metric_name) is not None
+            for diagnostics in [row.get(f"{side}_calibration_diagnostics")]
+            if isinstance(diagnostics, dict) and str(diagnostics.get("method") or "").strip()
         ]
-        summary[f"{metric_name}_mean"] = float(sum(values) / len(values)) if values else None
-        summary[f"{metric_name}_min"] = float(min(values)) if values else None
-        summary[f"{metric_name}_max"] = float(max(values)) if values else None
-        summary[f"{metric_name}_count"] = int(len(values))
+        summary["method_counts"][side] = {
+            method: methods.count(method) for method in sorted(set(methods))
+        }
     return summary
 
 
@@ -328,7 +399,10 @@ def _evaluate_proxy_mode(
         long_model.predict_proba(features)[:, 1],
         short_model.predict_proba(features)[:, 1],
     )
-    calibration_applied = _maybe_apply_sigmoid_columns(scored, _load_global_calibration(bundle_dir))
+    calibration_applied, calibration_method = _maybe_apply_calibration_columns(
+        scored,
+        _load_global_calibration(bundle_dir),
+    )
     scored = _apply_policy_thresholds(scored, t_long, t_short, delta)
 
     roll_frames: list[pd.DataFrame] = []
@@ -350,7 +424,9 @@ def _evaluate_proxy_mode(
                 window,
                 scored_slice,
                 evaluation_mode="proxy",
-                calibration_strategy="bundle_sigmoid" if calibration_applied else "model_probability",
+                calibration_strategy=(
+                    f"bundle_{calibration_method}" if calibration_applied else "model_probability"
+                ),
                 train_rows=window.train_end - window.train_start,
                 calibration_rows=window.calibration_end - window.calibration_start,
             ),
@@ -358,14 +434,18 @@ def _evaluate_proxy_mode(
 
     if not roll_frames:
         return scored.iloc[0:0].copy(), roll_summaries, {
-            "calibration_strategy": "bundle_sigmoid" if calibration_applied else "model_probability",
+            "calibration_strategy": (
+                f"bundle_{calibration_method}" if calibration_applied else "model_probability"
+            ),
             "calibrated_rolls": int(calibration_applied) * len(roll_summaries),
             "uncalibrated_rolls": (0 if calibration_applied else len(roll_summaries)),
             "skipped_rolls": skipped_rolls,
         }
 
     return pd.concat(roll_frames, ignore_index=True), roll_summaries, {
-        "calibration_strategy": "bundle_sigmoid" if calibration_applied else "model_probability",
+        "calibration_strategy": (
+            f"bundle_{calibration_method}" if calibration_applied else "model_probability"
+        ),
         "calibrated_rolls": len(roll_summaries) if calibration_applied else 0,
         "uncalibrated_rolls": 0 if calibration_applied else len(roll_summaries),
         "skipped_rolls": skipped_rolls,
@@ -377,7 +457,8 @@ def _evaluate_rolling_mode(
     frame: pd.DataFrame,
     sample_weight: pd.Series,
     windows: list[NormalizedSplitWindow],
-    training_config: dict[str, float | int],
+    training_config: dict[str, Any],
+    calibration_method: str,
     t_long: float,
     t_short: float,
     delta: float,
@@ -398,7 +479,8 @@ def _evaluate_rolling_mode(
             skipped_rolls.append({"split_id": window.split_id, "reason": "no_test_rows"})
             continue
 
-        base_seed = int(training_config["random_seed"]) + (roll_idx * 2)
+        long_seed = int(training_config.get("long_random_seed", DEFAULT_RANDOM_SEED)) + (roll_idx * 2)
+        short_seed = int(training_config.get("short_random_seed", DEFAULT_RANDOM_SEED + 1)) + (roll_idx * 2)
         try:
             long_model, long_scores, _ = train_model(
                 "long",
@@ -409,7 +491,8 @@ def _evaluate_rolling_mode(
                 int(training_config["iterations"]),
                 float(training_config["learning_rate"]),
                 int(training_config["depth"]),
-                base_seed,
+                long_seed,
+                training_config=training_config,
             )
             short_model, short_scores, _ = train_model(
                 "short",
@@ -420,7 +503,8 @@ def _evaluate_rolling_mode(
                 int(training_config["iterations"]),
                 float(training_config["learning_rate"]),
                 int(training_config["depth"]),
-                base_seed + 1,
+                short_seed,
+                training_config=training_config,
             )
         except Exception as exc:
             skipped_rolls.append({"split_id": window.split_id, "reason": str(exc)})
@@ -434,29 +518,35 @@ def _evaluate_rolling_mode(
             long_model.predict_proba(test_features)[:, 1],
             short_model.predict_proba(test_features)[:, 1],
         )
-        long_calibration = _fit_sigmoid_config(long_scores["raw_long"], long_scores["y_long"])
-        short_calibration = _fit_sigmoid_config(short_scores["raw_short"], short_scores["y_short"])
+        long_calibration = (
+            _fit_calibration_config(calibration_method, long_scores["raw_long"], long_scores["y_long"])
+            if calibration_method != "none"
+            else None
+        )
+        short_calibration = (
+            _fit_calibration_config(calibration_method, short_scores["raw_short"], short_scores["y_short"])
+            if calibration_method != "none"
+            else None
+        )
         applied_count = 0
         if long_calibration is not None:
-            scored_slice["p_long"] = apply_sigmoid(
+            scored_slice["p_long"] = apply_calibration_config(
                 scored_slice["raw_long"].to_numpy(),
-                long_calibration["coef"],
-                long_calibration["intercept"],
+                long_calibration,
             )
             applied_count += 1
         if short_calibration is not None:
-            scored_slice["p_short"] = apply_sigmoid(
+            scored_slice["p_short"] = apply_calibration_config(
                 scored_slice["raw_short"].to_numpy(),
-                short_calibration["coef"],
-                short_calibration["intercept"],
+                short_calibration,
             )
             applied_count += 1
 
         if applied_count == 2:
-            calibration_strategy = "per_roll_sigmoid"
+            calibration_strategy = f"per_roll_{calibration_method}"
             calibrated_rolls += 1
         elif applied_count == 1:
-            calibration_strategy = "mixed_per_roll_sigmoid"
+            calibration_strategy = f"mixed_per_roll_{calibration_method}"
             partially_calibrated_rolls += 1
         else:
             calibration_strategy = "model_probability"
@@ -465,26 +555,36 @@ def _evaluate_rolling_mode(
         short_calibration_prob = short_scores["p_short"].copy()
         if long_calibration is not None:
             long_calibration_prob = pd.Series(
-                apply_sigmoid(
-                    long_scores["raw_long"].to_numpy(),
-                    long_calibration["coef"],
-                    long_calibration["intercept"],
-                ),
+                apply_calibration_config(long_scores["raw_long"].to_numpy(), long_calibration),
                 index=long_scores.index,
             )
         if short_calibration is not None:
             short_calibration_prob = pd.Series(
-                apply_sigmoid(
-                    short_scores["raw_short"].to_numpy(),
-                    short_calibration["coef"],
-                    short_calibration["intercept"],
-                ),
+                apply_calibration_config(short_scores["raw_short"].to_numpy(), short_calibration),
                 index=short_scores.index,
             )
-        long_auc_calibration = _safe_auc(long_scores["y_long"], long_calibration_prob)
-        short_auc_calibration = _safe_auc(short_scores["y_short"], short_calibration_prob)
-        long_logloss_calibration = _safe_logloss(long_scores["y_long"], long_calibration_prob)
-        short_logloss_calibration = _safe_logloss(short_scores["y_short"], short_calibration_prob)
+        long_calibration_diagnostics = summarize_calibration_diagnostics(
+            method=long_calibration.get("method", calibration_method) if isinstance(long_calibration, dict) else "none",
+            y_true=long_scores["y_long"],
+            raw_score=long_scores["raw_long"],
+            raw_probability=long_scores["p_long"],
+            calibrated_probability=long_calibration_prob if long_calibration is not None else long_scores["p_long"],
+        )
+        short_calibration_diagnostics = summarize_calibration_diagnostics(
+            method=short_calibration.get("method", calibration_method) if isinstance(short_calibration, dict) else "none",
+            y_true=short_scores["y_short"],
+            raw_score=short_scores["raw_short"],
+            raw_probability=short_scores["p_short"],
+            calibrated_probability=short_calibration_prob if short_calibration is not None else short_scores["p_short"],
+        )
+        if long_calibration is None:
+            long_calibration_diagnostics["calibrated_auc"] = safe_auc(long_scores["y_long"], long_scores["p_long"])
+            long_calibration_diagnostics["calibrated_logloss"] = safe_logloss(long_scores["y_long"], long_scores["p_long"])
+            long_calibration_diagnostics["calibrated_brier"] = safe_brier(long_scores["y_long"], long_scores["p_long"])
+        if short_calibration is None:
+            short_calibration_diagnostics["calibrated_auc"] = safe_auc(short_scores["y_short"], short_scores["p_short"])
+            short_calibration_diagnostics["calibrated_logloss"] = safe_logloss(short_scores["y_short"], short_scores["p_short"])
+            short_calibration_diagnostics["calibrated_brier"] = safe_brier(short_scores["y_short"], short_scores["p_short"])
 
         scored_slice = _apply_policy_thresholds(scored_slice, t_long, t_short, delta)
         scored_slice["evaluated_split_id"] = window.split_id
@@ -498,10 +598,8 @@ def _evaluate_rolling_mode(
                 calibration_strategy=calibration_strategy,
                 train_rows=train_rows,
                 calibration_rows=calibration_rows,
-                long_auc_calibration=long_auc_calibration,
-                short_auc_calibration=short_auc_calibration,
-                long_logloss_calibration=long_logloss_calibration,
-                short_logloss_calibration=short_logloss_calibration,
+                long_calibration_diagnostics=long_calibration_diagnostics,
+                short_calibration_diagnostics=short_calibration_diagnostics,
             ),
         )
 
@@ -520,7 +618,7 @@ def _evaluate_rolling_mode(
     )
     return pd.concat(roll_frames, ignore_index=True), roll_summaries, {
         "calibration_strategy": (
-            "per_roll_sigmoid"
+            f"per_roll_{calibration_method}"
             if partially_calibrated_rolls == 0 and uncalibrated_rolls == 0
             else "mixed"
         ),
@@ -551,6 +649,12 @@ def main() -> int:
     frame, features = _build_base_frame(bundle)
     sample_weight = pd.Series(choose_sample_weight(bundle), index=frame.index)
     windows = resolve_walkforward_windows(bundle)
+    bundle_calibration = _load_global_calibration(bundle_dir)
+    requested_calibration_method = _resolve_requested_calibration_method(
+        args.calibration_method,
+        bundle_calibration,
+    )
+    replay_training_config, replay_training_config_source = _load_training_config(bundle_dir)
 
     if args.mode == "rolling":
         scored, roll_summaries, roll_metadata = _evaluate_rolling_mode(
@@ -558,7 +662,8 @@ def main() -> int:
             frame,
             sample_weight,
             windows,
-            _load_training_config(bundle_dir),
+            replay_training_config,
+            requested_calibration_method,
             args.t_long,
             args.t_short,
             args.delta,
@@ -604,6 +709,9 @@ def main() -> int:
         "evaluation_mode": args.mode,
         "artifact_suffix": str(args.artifact_suffix or ""),
         "calibration_path_present": bool(calibration_path.exists()),
+        "requested_calibration_method": requested_calibration_method,
+        "replay_training_config_source": replay_training_config_source,
+        "replay_training_config": replay_training_config,
         "calibration_strategy": str(roll_metadata.get("calibration_strategy", "")),
         "calibrated_rolls": int(roll_metadata.get("calibrated_rolls", 0) or 0),
         "partially_calibrated_rolls": int(roll_metadata.get("partially_calibrated_rolls", 0) or 0),
@@ -644,6 +752,7 @@ def main() -> int:
             if calibration_path.exists()
             else ["p_long", "p_short"],
             "walkforward_evaluation_mode": args.mode,
+            "walkforward_requested_calibration_method": requested_calibration_method,
         },
         "parity_notice": {
             "desktop_parity": "proxy_only" if args.mode == "proxy" else "research_only",

@@ -381,9 +381,12 @@ describe("historyService", () => {
 
     const artifacts = useWorkflowArtifactsStore(pinia);
     expect(useWorkflowStore(pinia).mode).toBe("conventional");
-    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_hydration", {
-      path: "C:/runs/run1.json",
-    });
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "load_run_artifact_hydration",
+      {
+        path: "C:/runs/run1.json",
+      },
+    );
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/run1.json");
     expect(artifacts.currentRun?.reportXlsxPath).toBe("C:/runs/run1.xlsx");
     expect(artifacts.currentRun?.csvPath).toBe("C:/data/aapl.csv");
@@ -455,9 +458,7 @@ describe("historyService", () => {
     expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/ml_signal.json");
     expect(artifacts.currentRun?.mlSignal?.stage).toBe("validation");
-    expect(artifacts.currentRun?.mlSignal?.scoreScope).toBe(
-      "CalibrationSlice",
-    );
+    expect(artifacts.currentRun?.mlSignal?.scoreScope).toBe("CalibrationSlice");
     expect(
       (artifacts.currentRun?.req as { strategy_kind?: string } | null)
         ?.strategy_kind,
@@ -797,10 +798,12 @@ describe("historyService", () => {
         ts: "2026-02-25T00:00:00Z",
         path: " C:/runs/run1.json ",
         bytes: 2048,
-        strategy_kind: "DoubleMA",
+        strategy_kind: "MlSignal",
         has_validation: true,
         report_xlsx_path: "C:/runs/run1.xlsx",
         csv_path: "C:/data/aapl.csv",
+        ml_score_space: "Probability",
+        ml_score_scope: "CalibrationSlice",
         tags: ["aapl", " 1m "],
       },
       { path: "" },
@@ -814,10 +817,15 @@ describe("historyService", () => {
       ts: "2026-02-25T00:00:00Z",
       path: "C:/runs/run1.json",
       bytes: 2048,
-      strategyKind: "DoubleMA",
+      strategyKind: "MlSignal",
       hasValidation: true,
       reportXlsxPath: "C:/runs/run1.xlsx",
       csvPath: "C:/data/aapl.csv",
+      mlScoreSpace: "Probability",
+      mlScoreScope: "CalibrationSlice",
+      mlScoreContractSummary: "Probability • CalibrationSlice",
+      mlScoreNote:
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
       tags: ["aapl", "1m"],
     });
     expect(readArtifactHistoryPerfEntries()).toEqual(
@@ -868,10 +876,7 @@ describe("historyService", () => {
           source_kind: "top_rows",
           post_cap_count: 16,
           post_dedupe_count: 20,
-          heads: [
-            { objective: "Sharpe" },
-            { objective: "MaxDrawdown" },
-          ],
+          heads: [{ objective: "Sharpe" }, { objective: "MaxDrawdown" }],
         },
       },
       tags: ["tag1", " tag2 "],
@@ -954,6 +959,11 @@ describe("historyService", () => {
       mlScoreManifestPath: "C:/runs/ml_score_cache.manifest.json",
       mlFeatureSchemaPath: "C:/runs/ml_dataset.feature_schema.json",
       mlFeatureSchemaVersion: "1",
+      mlScoreSpace: "Probability",
+      mlScoreScope: "CalibrationSlice",
+      mlScoreContractSummary: "Probability • CalibrationSlice",
+      mlScoreNote:
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
       mlPolicySummary: "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10",
       mlPolicySweepSummary: "size=27 | top_k=4 | best=best_sweep | score=1.44",
       mlRunVerdictSummary: "approved=1 | survived=1 | considered=27",
@@ -985,6 +995,11 @@ describe("historyService", () => {
       mlScoreManifestPath: "C:/runs/ml_score_cache.manifest.json",
       mlFeatureSchemaPath: "C:/runs/ml_dataset.feature_schema.json",
       mlFeatureSchemaVersion: "1",
+      mlScoreSpace: "Probability",
+      mlScoreScope: "CalibrationSlice",
+      mlScoreContractSummary: "Probability • CalibrationSlice",
+      mlScoreNote:
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
       mlPolicySummary: "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10",
       mlPolicySweepSummary: "size=27 | top_k=4 | best=best_sweep | score=1.44",
       mlRunVerdictSummary: "approved=1 | survived=1 | considered=27",
@@ -1012,9 +1027,13 @@ describe("historyService", () => {
 
     await openSavedRunReport(" C:/runs/run1.json ");
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "load_run_artifact_detail", {
-      path: "C:/runs/run1.json",
-    });
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_run_artifact_detail",
+      {
+        path: "C:/runs/run1.json",
+      },
+    );
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {
       path: "C:/runs/report.xlsx",
     });
@@ -1030,9 +1049,13 @@ describe("historyService", () => {
 
     await openSavedRunReport(" C:/runs/run1.json ");
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "load_run_artifact_detail", {
-      path: "C:/runs/run1.json",
-    });
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_run_artifact_detail",
+      {
+        path: "C:/runs/run1.json",
+      },
+    );
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {
       path: "C:/runs/report.xlsx",
     });
@@ -1053,10 +1076,20 @@ describe("historyService", () => {
       "No report path for this saved run yet",
     );
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "load_run_artifact_detail", {
-      path: "C:/runs/run1.json",
-    });
-    expect(invokeCommandMock).not.toHaveBeenCalledWith("open_path", expect.anything());
-    expect(invokeCommandMock).not.toHaveBeenCalledWith("reveal_path", expect.anything());
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_run_artifact_detail",
+      {
+        path: "C:/runs/run1.json",
+      },
+    );
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "open_path",
+      expect.anything(),
+    );
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "reveal_path",
+      expect.anything(),
+    );
   });
 });

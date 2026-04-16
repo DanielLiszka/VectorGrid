@@ -49,6 +49,11 @@ impl TradeRecord {
 /// A vectorbt-style **record array** for trades:
 /// - **SoA layout** for cache-friendly scans/filters
 /// - includes a `col` field to map records back to a parameter instance ("matrix column")
+///
+/// All columns are expected to stay the same length. `col` is the row-count anchor used by
+/// `len()`, iteration helpers, and stat scans. If `col` grows longer than a sibling vector,
+/// indexed readers such as `get()` can panic; if `col` is shorter, tail values in sibling vectors
+/// become silently unreachable until `validate()` or a debug assertion catches the mismatch.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct TradeRecords {
     pub col: Vec<u32>,
@@ -61,13 +66,33 @@ pub struct TradeRecords {
 }
 
 impl TradeRecords {
+    #[inline]
+    fn debug_assert_consistent_lengths(&self) {
+        debug_assert_eq!(
+            self.entry_t.len(),
+            self.col.len(),
+            "entry_t length mismatch"
+        );
+        debug_assert_eq!(self.exit_t.len(), self.col.len(), "exit_t length mismatch");
+        debug_assert_eq!(
+            self.direction.len(),
+            self.col.len(),
+            "direction length mismatch"
+        );
+        debug_assert_eq!(self.pnl.len(), self.col.len(), "pnl length mismatch");
+        debug_assert_eq!(self.bars.len(), self.col.len(), "bars length mismatch");
+        debug_assert_eq!(self.open.len(), self.col.len(), "open length mismatch");
+    }
+
     pub fn try_from_trades(col: u32, trades: &[Trade]) -> Result<Self, String> {
         let mut out = Self::default();
         out.try_extend_trades(col, trades)?;
         Ok(out)
     }
 
+    /// Returns the row count anchored to the `col` column.
     pub fn len(&self) -> usize {
+        self.debug_assert_consistent_lengths();
         self.col.len()
     }
 
@@ -90,7 +115,9 @@ impl TradeRecords {
         }
     }
 
+    /// Returns the `i`th row when all SoA columns still share the same length.
     pub fn get(&self, i: usize) -> Option<TradeRecord> {
+        self.debug_assert_consistent_lengths();
         if i >= self.len() {
             return None;
         }
@@ -106,6 +133,7 @@ impl TradeRecords {
     }
 
     pub fn push_record(&mut self, record: TradeRecord) {
+        self.debug_assert_consistent_lengths();
         self.col.push(record.col);
         self.entry_t.push(record.entry_t);
         self.exit_t.push(record.exit_t);
@@ -113,6 +141,7 @@ impl TradeRecords {
         self.pnl.push(record.pnl);
         self.bars.push(record.bars);
         self.open.push(record.open);
+        self.debug_assert_consistent_lengths();
     }
 
     pub fn try_push_trade(&mut self, col: u32, trade: &Trade) -> Result<(), String> {
@@ -122,6 +151,7 @@ impl TradeRecords {
     }
 
     pub fn try_extend_trades(&mut self, col: u32, trades: &[Trade]) -> Result<(), String> {
+        self.debug_assert_consistent_lengths();
         self.col.reserve(trades.len());
         self.entry_t.reserve(trades.len());
         self.exit_t.reserve(trades.len());
@@ -132,10 +162,12 @@ impl TradeRecords {
         for tr in trades {
             self.try_push_trade(col, tr)?;
         }
+        self.debug_assert_consistent_lengths();
         Ok(())
     }
 
     pub fn to_trades_for_col(&self, col: u32) -> Vec<Trade> {
+        self.debug_assert_consistent_lengths();
         let mut out: Vec<Trade> = Vec::new();
         for i in 0..self.len() {
             if self.col[i] == col {
@@ -148,6 +180,7 @@ impl TradeRecords {
     }
 
     pub fn trade_stats_for_col(&self, col: u32) -> Option<TradeStats> {
+        self.debug_assert_consistent_lengths();
         let mut open_trades: usize = 0;
         let mut closed_trades: usize = 0;
         let mut wins: usize = 0;
@@ -343,5 +376,68 @@ mod tests {
 
         let err = TradeRecord::try_from_trade(0, &trade).unwrap_err();
         assert!(err.contains("overflow"));
+    }
+
+    #[test]
+    fn trade_records_stats_treat_flat_closed_trades_as_neutral() {
+        let mut recs = TradeRecords::default();
+        recs.try_push_trade(
+            3,
+            &Trade {
+                entry_t: 0,
+                exit_t: 2,
+                direction: 1,
+                pnl: 0.0,
+                bars: 2,
+                open: false,
+            },
+        )
+        .unwrap();
+
+        let stats = recs.trade_stats_for_col(3).expect("col 3 stats");
+        assert_eq!(stats.closed_trades, 1);
+        assert_eq!(stats.open_trades, 0);
+        assert_eq!(stats.wins, 0);
+        assert_eq!(stats.losses, 0);
+        assert_eq!(stats.win_rate, 0.0);
+        assert_eq!(stats.avg_win, 0.0);
+        assert_eq!(stats.avg_loss, 0.0);
+        assert_eq!(stats.profit_factor, 0.0);
+        assert_eq!(stats.expectancy, 0.0);
+    }
+
+    #[test]
+    fn trade_records_stats_report_infinite_profit_factor_when_all_closed_trades_win() {
+        let mut recs = TradeRecords::default();
+        for pnl in [0.15, 0.05] {
+            recs.try_push_trade(
+                9,
+                &Trade {
+                    entry_t: 0,
+                    exit_t: 1,
+                    direction: 1,
+                    pnl,
+                    bars: 1,
+                    open: false,
+                },
+            )
+            .unwrap();
+        }
+
+        let stats = recs.trade_stats_for_col(9).expect("col 9 stats");
+        assert_eq!(stats.closed_trades, 2);
+        assert_eq!(stats.wins, 2);
+        assert_eq!(stats.losses, 0);
+        assert!(stats.profit_factor.is_infinite());
+        assert!(stats.expectancy > 0.0);
+    }
+
+    #[test]
+    fn trade_records_get_panics_when_col_outpaces_sibling_columns() {
+        let mut recs = TradeRecords::default();
+        recs.col.push(42);
+
+        let result = std::panic::catch_unwind(|| recs.get(0));
+        assert!(result.is_err());
     }
 }

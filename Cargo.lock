@@ -4893,6 +4893,7 @@ version = "0.1.0"
 dependencies = [
  "rayon",
  "serde",
+ "serde_json",
  "vector-ta",
 ]
 
