@@ -2,7 +2,8 @@ use super::commands_reports_validation_common::{
     build_model_from_report, run_level_rejection_reason, ExportCandidateRow, ValidationExportModel,
 };
 use rust_xlsxwriter::{
-    Chart, ChartType, Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError,
+    utility::quote_sheet_name, Chart, ChartType, Color, Format, FormatAlign, FormatBorder,
+    Workbook, Worksheet, XlsxError,
 };
 use serde_json::Value;
 
@@ -178,22 +179,38 @@ fn display_regime_support(label: &str) -> &'static str {
 }
 
 fn summary_mentions_module(summary: &str, module: &str) -> bool {
+    fn module_matches_summary_part(part: &str, module: &str) -> bool {
+        let normalized = part.trim();
+        normalized.eq_ignore_ascii_case(module)
+            || normalized
+                .split(':')
+                .next()
+                .map(str::trim)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(module))
+    }
+
     summary
         .split(" + ")
-        .any(|part| part.trim().eq_ignore_ascii_case(module))
+        .any(|part| module_matches_summary_part(part, module))
         || summary
             .split(" | ")
-            .any(|part| part.trim().eq_ignore_ascii_case(module))
+            .any(|part| module_matches_summary_part(part, module))
 }
 
 fn disabled_or_omitted_status(model: &ValidationExportModel, module: &str) -> &'static str {
     if summary_mentions_module(&model.actual_disabled_module_summary, module) {
         "disabled"
+    } else if summary_mentions_module(&model.actual_skipped_module_summary, module) {
+        "skipped"
     } else if summary_mentions_module(&model.actual_cross_omitted_summary, module) {
         "omitted by cross mode"
     } else {
         "not run"
     }
+}
+
+fn internal_sheet_link(sheet_name: &str, cell_ref: &str) -> String {
+    format!("internal:{}!{}", quote_sheet_name(sheet_name), cell_ref)
 }
 
 fn plateau_summary_label(row: &ExportCandidateRow) -> String {
@@ -1488,10 +1505,14 @@ fn build_dashboard(
     dashboard
         .write_string_with_format(13, 0, "Sheet Links", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
-    let _ = dashboard.write_url_with_text(13, 1, "internal:Approved Candidates!A1", "Approved");
-    let _ = dashboard.write_url_with_text(13, 2, "internal:Shortlist!A1", "Shortlist");
-    let _ = dashboard.write_url_with_text(13, 3, "internal:Distributions!A1", "Distributions");
-    let _ = dashboard.write_url_with_text(13, 4, "internal:Audit Data!A1", "Audit Data");
+    let approved_link = internal_sheet_link("Approved Candidates", "A1");
+    let shortlist_link = internal_sheet_link("Shortlist", "A1");
+    let distributions_link = internal_sheet_link("Distributions", "A1");
+    let audit_link = internal_sheet_link("Audit Data", "A1");
+    let _ = dashboard.write_url_with_text(13, 1, approved_link.as_str(), "Approved");
+    let _ = dashboard.write_url_with_text(13, 2, shortlist_link.as_str(), "Shortlist");
+    let _ = dashboard.write_url_with_text(13, 3, distributions_link.as_str(), "Distributions");
+    let _ = dashboard.write_url_with_text(13, 4, audit_link.as_str(), "Audit Data");
 
     dashboard
         .write_string_with_format(15, 0, "Top Candidate Snapshot", label_fmt)
@@ -1750,50 +1771,50 @@ fn build_dashboard(
     }
 
     dashboard
-        .write_string_with_format(73, 5, "Bootstrap Compare", label_fmt)
+        .write_string_with_format(74, 5, "Bootstrap Compare", label_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     if let Some(row) = top_candidate {
         dashboard
-            .write_string_with_format(74, 5, "Mode", label_fmt)
+            .write_string_with_format(75, 5, "Mode", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(74, 6, bootstrap_mode_label(row), text_fmt)
+            .write_string_with_format(75, 6, bootstrap_mode_label(row), text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(75, 5, "Stat Block", label_fmt)
+            .write_string_with_format(76, 5, "Stat Block", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         write_optional_usize(
             dashboard,
-            75,
+            76,
             6,
             row.bootstrap_stationary_mean_block_len,
             int_fmt,
         )?;
         dashboard
-            .write_string_with_format(76, 5, "IID P05", label_fmt)
+            .write_string_with_format(77, 5, "IID P05", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 76, 6, row.bootstrap_pnl_p05, num_fmt)?;
+        write_optional_number(dashboard, 77, 6, row.bootstrap_pnl_p05, num_fmt)?;
         dashboard
-            .write_string_with_format(77, 5, "IID DD95", label_fmt)
+            .write_string_with_format(78, 5, "IID DD95", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 77, 6, row.bootstrap_dd_p95, num_fmt)?;
+        write_optional_number(dashboard, 78, 6, row.bootstrap_dd_p95, num_fmt)?;
         dashboard
-            .write_string_with_format(78, 5, "Stat P05", label_fmt)
+            .write_string_with_format(79, 5, "Stat P05", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 78, 6, row.bootstrap_stationary_pnl_p05, num_fmt)?;
+        write_optional_number(dashboard, 79, 6, row.bootstrap_stationary_pnl_p05, num_fmt)?;
         dashboard
-            .write_string_with_format(79, 5, "Stat DD95", label_fmt)
+            .write_string_with_format(80, 5, "Stat DD95", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
-        write_optional_number(dashboard, 79, 6, row.bootstrap_stationary_dd_p95, num_fmt)?;
+        write_optional_number(dashboard, 80, 6, row.bootstrap_stationary_dd_p95, num_fmt)?;
         dashboard
-            .write_string_with_format(80, 5, "Note", label_fmt)
+            .write_string_with_format(81, 5, "Note", label_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
         dashboard
-            .write_string_with_format(80, 6, &model.bootstrap_mode_summary, text_fmt)
+            .write_string_with_format(81, 6, &model.bootstrap_mode_summary, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     } else {
         dashboard
-            .write_string_with_format(74, 6, "not available", text_fmt)
+            .write_string_with_format(75, 6, "not available", text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
@@ -2631,5 +2652,38 @@ mod tests {
         let workbook = workbook_xml(&bytes);
         assert!(workbook.contains("Dashboard"));
         assert!(workbook.contains("Audit Data"));
+    }
+
+    #[test]
+    fn disabled_or_omitted_status_surfaces_skipped_summary_entries() {
+        let model = ValidationExportModel {
+            actual_skipped_module_summary:
+                "cscv_pbo: cscv_skipped_not_enough_bars | spa: spa_skipped_not_enough_slices"
+                    .to_string(),
+            ..ValidationExportModel::default()
+        };
+
+        assert_eq!(disabled_or_omitted_status(&model, "cscv_pbo"), "skipped");
+        assert_eq!(disabled_or_omitted_status(&model, "spa"), "skipped");
+        assert_eq!(
+            disabled_or_omitted_status(&model, "cross_ticker"),
+            "not run"
+        );
+    }
+
+    #[test]
+    fn internal_sheet_link_quotes_sheet_names_with_spaces() {
+        assert_eq!(
+            internal_sheet_link("Approved Candidates", "A1"),
+            "internal:'Approved Candidates'!A1"
+        );
+        assert_eq!(
+            internal_sheet_link("Audit Data", "A1"),
+            "internal:'Audit Data'!A1"
+        );
+        assert_eq!(
+            internal_sheet_link("Shortlist", "A1"),
+            "internal:Shortlist!A1"
+        );
     }
 }

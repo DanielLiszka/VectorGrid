@@ -194,6 +194,10 @@ impl DetailedTradeOutcome {
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 #[derive(Clone, Debug)]
 pub(crate) struct GpuFlatScoreInputs {
+    // The GPU scorer intentionally consumes a mixed-precision screening view:
+    // exact CPU-prepared outcomes are flattened to f32 here for fast aggregate
+    // accumulation, then retained finalists are exactified on the host before
+    // final reporting and verdict refresh.
     pub(crate) tuple_candidate_offsets: Vec<u32>,
     pub(crate) tuple_summary_offsets: Vec<u32>,
     pub(crate) outcome_valid: Vec<u8>,
@@ -2398,6 +2402,9 @@ fn runtime_auto_backend_decision(
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn options_gpu_combined_scoring_enabled() -> bool {
+    // This env var is a parity/rollback switch for the search+holdout+stress
+    // fusion only. It must not change aggregate math; it only selects between
+    // the combined kernel and the legacy multi-launch lane scorer.
     std::env::var("VECTORGRID_OPTIONS_GPU_DISABLE_COMBINED_SCORING")
         .ok()
         .map(|value| {
@@ -3114,6 +3121,9 @@ fn exactify_ranked_results(
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
 ) -> ExactifyTimingBreakdown {
+    // GPU ranking is intentionally aggregate-first. This exactify pass is the
+    // boundary where retained rows regain exact summary metrics, enrichment,
+    // and exact extreme-stress scoring before robust scores are recomputed.
     let _nvtx_scope = crate::nvtx::scope("engine", "options_exactify_total");
     let total_start = Instant::now();
 
@@ -3286,6 +3296,9 @@ mod gpu_scoring {
         aggregate: OptionsGpuTupleAggregate,
         split_event_count: usize,
     ) -> TupleAggregateMetrics {
+        // This conversion preserves the provisional aggregate view emitted by
+        // the kernel. Any exact median enrichment and exact extreme-stress work
+        // is injected later during `exactify_ranked_results`.
         let valid_trades = aggregate.valid_trades as usize;
         TupleAggregateMetrics {
             valid_trades,
@@ -3405,6 +3418,8 @@ mod gpu_scoring {
         ),
         String,
     > {
+        // Keep the old split launches available for forced parity checks and as
+        // a bounded fallback when the combined kernel is disabled or rejected.
         let holdout_events = prepared.diagnostics.holdout_events;
         let baseline_target_ranges = if holdout_events > 0 {
             vec![search_event_range, holdout_event_range]
@@ -5817,6 +5832,38 @@ mod tests {
     use crate::test_support::lock_test_env;
     use std::sync::atomic::AtomicUsize;
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_deref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     fn next_isolated_cache_test_suffix() -> usize {
         static NEXT: AtomicUsize = AtomicUsize::new(1);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -5965,6 +6012,79 @@ mod tests {
             left.return_on_premium,
             right.return_on_premium
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn assert_optional_metrics_close(
+        left: Option<&OptionsExpressionMetrics>,
+        right: Option<&OptionsExpressionMetrics>,
+        context: &str,
+    ) {
+        match (left, right) {
+            (Some(left), Some(right)) => assert_metrics_close(left, right, context),
+            (None, None) => {}
+            (left, right) => panic!(
+                "{context}: optional metrics presence mismatch left_present={} right_present={}",
+                left.is_some(),
+                right.is_some()
+            ),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn assert_ranked_results_close(
+        left: &[RankedCompiledTuple],
+        right: &[RankedCompiledTuple],
+        context: &str,
+    ) {
+        assert_eq!(left.len(), right.len(), "{context}: ranked length");
+        for (index, (left_row, right_row)) in left.iter().zip(right.iter()).enumerate() {
+            assert_eq!(
+                left_row.result.tuple, right_row.result.tuple,
+                "{context}: tuple at {index}"
+            );
+            assert_eq!(
+                left_row.result.pre_sealed_rank, right_row.result.pre_sealed_rank,
+                "{context}: pre_sealed_rank at {index}"
+            );
+            assert_eq!(
+                left_row.result.sealed_finalist, right_row.result.sealed_finalist,
+                "{context}: sealed_finalist at {index}"
+            );
+            assert_eq!(
+                left_row.result.sealed_final_rank, right_row.result.sealed_final_rank,
+                "{context}: sealed_final_rank at {index}"
+            );
+            assert_metrics_close(
+                &left_row.result.selection_metrics,
+                &right_row.result.selection_metrics,
+                &format!("{context}: selection_metrics at {index}"),
+            );
+            assert_optional_metrics_close(
+                left_row.result.holdout_metrics.as_ref(),
+                right_row.result.holdout_metrics.as_ref(),
+                &format!("{context}: holdout_metrics at {index}"),
+            );
+            assert_optional_metrics_close(
+                left_row.result.stress_metrics.as_ref(),
+                right_row.result.stress_metrics.as_ref(),
+                &format!("{context}: stress_metrics at {index}"),
+            );
+            assert_optional_metrics_close(
+                left_row.result.harsher_stress_metrics.as_ref(),
+                right_row.result.harsher_stress_metrics.as_ref(),
+                &format!("{context}: harsher_stress_metrics at {index}"),
+            );
+            assert_optional_metrics_close(
+                left_row.result.extreme_stress_metrics.as_ref(),
+                right_row.result.extreme_stress_metrics.as_ref(),
+                &format!("{context}: extreme_stress_metrics at {index}"),
+            );
+            assert!(
+                (left_row.result.robust_score - right_row.result.robust_score).abs() < 1e-12,
+                "{context}: robust_score at {index}"
+            );
+        }
     }
 
     #[test]
@@ -7439,6 +7559,75 @@ mod tests {
                 "robust score parity"
             );
         }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_combined_and_legacy_ranking_paths_match_on_small_surface() {
+        let _env = lock_test_env();
+        reset_options_expression_prepare_caches();
+        let Some(device_id) = current_preferred_cuda_device_id() else {
+            return;
+        };
+
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0, 1],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
+            hold_minutes: vec![1, 2],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        };
+        let dataset = test_dataset();
+        let manifest = test_manifest();
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+
+        let combined_ranked = {
+            let _combined_path =
+                ScopedEnvVar::remove("VECTORGRID_OPTIONS_GPU_DISABLE_COMBINED_SCORING");
+            gpu_scoring::rank_compiled_tuples_gpu_with_device(
+                &req,
+                &prepared,
+                &dataset,
+                Some(device_id),
+            )
+            .expect("combined gpu ranking")
+            .expect("combined gpu ranked results")
+        };
+
+        let legacy_ranked = {
+            let _legacy_path =
+                ScopedEnvVar::set("VECTORGRID_OPTIONS_GPU_DISABLE_COMBINED_SCORING", "1");
+            gpu_scoring::rank_compiled_tuples_gpu_with_device(
+                &req,
+                &prepared,
+                &dataset,
+                Some(device_id),
+            )
+            .expect("legacy gpu ranking")
+            .expect("legacy gpu ranked results")
+        };
+
+        assert_ranked_results_close(
+            &combined_ranked.ranked_results,
+            &legacy_ranked.ranked_results,
+            "combined vs legacy gpu ranking",
+        );
     }
 
     #[test]

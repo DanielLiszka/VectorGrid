@@ -49,6 +49,9 @@ pub struct IndicatorParamDescriptor {
     pub default: Option<IndicatorParamValue>,
     pub min: Option<f64>,
     pub max: Option<f64>,
+    /// Optional UI/metadata hint for numeric increment display.
+    ///
+    /// This is not enforced by `normalize_and_validate_indicator_params` today.
     pub step: Option<f64>,
     pub enum_values: Vec<String>,
     pub notes: Option<String>,
@@ -80,7 +83,15 @@ pub struct IndicatorDescriptor {
     pub supports_cuda_single: bool,
     pub supports_cuda_sweep: bool,
     pub supports_cuda_vram: bool,
+    /// App-core routing hint layered on top of registry metadata.
+    ///
+    /// This is not a raw registry capability field; it reflects current
+    /// `ma_policy` kernel-route support for the normalized indicator id.
     pub supports_gpu_kernel: bool,
+    /// App-core routing preference hint layered on top of registry metadata.
+    ///
+    /// This does not guarantee a GPU route. It reflects the current
+    /// `ma_policy` speedup table for the normalized indicator id.
     pub prefers_gpu_by_speedup: bool,
     pub output_count: usize,
     pub outputs: Vec<IndicatorOutputDescriptor>,
@@ -307,6 +318,10 @@ fn normalize_param_value_for_schema(
 ///
 /// This list is sourced from VectorTA unified indicator registry metadata and includes
 /// only dynamic-strategy-eligible indicators.
+///
+/// Each call performs a fresh projection over the current registry metadata and returns
+/// an owned `Vec`. For a process-lifetime cached snapshot, use
+/// [`list_dynamic_indicator_descriptors_cached`].
 pub fn list_dynamic_indicator_descriptors() -> Vec<IndicatorDescriptor> {
     vector_ta::indicators::registry::list_indicators()
         .iter()
@@ -317,12 +332,20 @@ pub fn list_dynamic_indicator_descriptors() -> Vec<IndicatorDescriptor> {
 
 static DYNAMIC_INDICATOR_DESCRIPTORS_CACHE: OnceLock<Vec<IndicatorDescriptor>> = OnceLock::new();
 
+/// Returns a process-lifetime cached snapshot of dynamic indicator descriptors.
+///
+/// The first call projects the registry into owned descriptors and stores the result in a
+/// [`OnceLock`]. Subsequent calls reuse that same snapshot for the remainder of the process.
 pub fn list_dynamic_indicator_descriptors_cached() -> &'static [IndicatorDescriptor] {
     DYNAMIC_INDICATOR_DESCRIPTORS_CACHE
         .get_or_init(list_dynamic_indicator_descriptors)
         .as_slice()
 }
 
+/// Looks up a dynamic indicator descriptor in the cached catalog snapshot.
+///
+/// This uses [`list_dynamic_indicator_descriptors_cached`] rather than rebuilding the catalog
+/// on each lookup.
 pub fn find_dynamic_indicator_descriptor(
     indicator_id: &str,
 ) -> Option<&'static IndicatorDescriptor> {
@@ -496,6 +519,7 @@ pub fn normalize_and_validate_indicator_output_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn dynamic_indicator_descriptors_match_registry_dynamic_count() {
@@ -528,6 +552,85 @@ mod tests {
             assert_eq!(d.output_count, info.outputs.len());
             assert_eq!(d.outputs.len(), info.outputs.len());
         }
+    }
+
+    #[test]
+    fn dynamic_indicator_descriptors_have_unique_normalized_ids() {
+        let descriptors = list_dynamic_indicator_descriptors();
+        let mut seen = BTreeSet::new();
+        for d in descriptors {
+            assert_eq!(d.id, d.id.trim().to_ascii_lowercase());
+            assert!(
+                seen.insert(d.id.clone()),
+                "duplicate normalized descriptor id '{}'",
+                d.id
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_outputs_have_unique_nonempty_ids_within_each_descriptor() {
+        let descriptors = list_dynamic_indicator_descriptors();
+        for d in descriptors {
+            let mut seen = BTreeSet::new();
+            for output in &d.outputs {
+                let normalized = output.id.trim().to_ascii_lowercase();
+                assert!(
+                    !normalized.is_empty(),
+                    "descriptor '{}' has empty output id",
+                    d.id
+                );
+                assert!(
+                    seen.insert(normalized.clone()),
+                    "descriptor '{}' has duplicate normalized output id '{}'",
+                    d.id,
+                    normalized
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn descriptor_defaults_validate_against_their_own_schema() {
+        let descriptors = list_dynamic_indicator_descriptors();
+        for d in descriptors {
+            for param in &d.params {
+                if let Some(default) = &param.default {
+                    let normalized =
+                        normalize_param_value_for_schema(d.id.as_str(), param, default)
+                            .unwrap_or_else(|err| {
+                                panic!(
+                                    "descriptor '{}' default for param '{}' should validate: {err}",
+                                    d.id, param.key
+                                )
+                            });
+                    assert_eq!(&normalized, default);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_step_is_metadata_only_and_not_enforced() {
+        let param = IndicatorParamDescriptor {
+            key: "period".to_string(),
+            label: "Period".to_string(),
+            kind: IndicatorParamKind::Float,
+            required: true,
+            default: None,
+            min: Some(0.0),
+            max: Some(10.0),
+            step: Some(0.5),
+            enum_values: Vec::new(),
+            notes: None,
+        };
+        let normalized = normalize_param_value_for_schema(
+            "test_indicator",
+            &param,
+            &IndicatorParamValue::Float(1.3),
+        )
+        .expect("off-step numeric values should still normalize today");
+        assert_eq!(normalized, IndicatorParamValue::Float(1.3));
     }
 
     #[test]

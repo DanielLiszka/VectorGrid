@@ -35,6 +35,8 @@ pub struct CarmStrategyParams {
     pub apo_slow_period: u16,
     #[serde(default = "default_carm_otto_period")]
     pub otto_period: u16,
+    /// Non-negative OTTO regime-spread threshold magnitude. Under current entry logic, equality
+    /// counts as passing (`>=` for long, `<= -threshold` for short).
     #[serde(default = "default_carm_otto_threshold")]
     pub otto_threshold: f64,
 }
@@ -196,8 +198,8 @@ pub fn validate_carm_params(cfg: &CarmStrategyParams) -> Result<(), String> {
     if cfg.otto_period == 0 {
         return Err("CARM otto_period must be >= 1.".to_string());
     }
-    if !cfg.otto_threshold.is_finite() {
-        return Err("CARM otto_threshold must be finite.".to_string());
+    if !cfg.otto_threshold.is_finite() || cfg.otto_threshold < 0.0 {
+        return Err("CARM otto_threshold must be finite and >= 0.".to_string());
     }
     Ok(())
 }
@@ -1227,6 +1229,11 @@ mod tests {
         let mut cfg = CarmStrategyParams::default();
         cfg.otto_threshold = f64::INFINITY;
         assert!(validate_carm_params(&cfg).is_err());
+
+        let mut cfg = CarmStrategyParams::default();
+        cfg.otto_threshold = -0.01;
+        let err = validate_carm_params(&cfg).expect_err("negative otto threshold");
+        assert!(err.contains("finite and >= 0"));
     }
 
     #[test]
@@ -1252,20 +1259,26 @@ mod tests {
     }
 
     #[test]
-    fn build_carm_desired_positions_keeps_rocr_and_apo_thresholds_strict_but_otto_inclusive() {
+    fn build_carm_desired_positions_keeps_rocr_and_apo_strict_while_allowing_otto_threshold_equality(
+    ) {
         let close = vec![100.0, 100.0, 100.0];
         let mut strategy = StrategyConfig::default();
         strategy.trade_on_next_bar = false;
         strategy.allow_flip = false;
-        let cfg = CarmStrategyParams::default();
+        let cfg = CarmStrategyParams {
+            otto_threshold: 0.2,
+            ..CarmStrategyParams::default()
+        };
+        let equality_spread = otto_regime_spread(close[1], 90.0, 110.0);
+        assert!((equality_spread - cfg.otto_threshold).abs() < 1e-12);
 
         let no_entry_signals = CarmSignals {
             coppock: vec![-0.1, 0.2, 0.2],
             ao: vec![-0.1, 0.3, 0.3],
             rocr: vec![0.99, 1.0, 1.0],
             apo: vec![-0.1, 0.0, 0.0],
-            otto_hott: vec![100.0, 100.0, 100.0],
-            otto_lott: vec![160.0, 160.0, 160.0],
+            otto_hott: vec![100.0, 90.0, 90.0],
+            otto_lott: vec![100.0, 110.0, 110.0],
             first_valid: 0,
         };
         let desired_no_entry =
@@ -1281,7 +1294,7 @@ mod tests {
             build_carm_desired_positions(&close, &long_entry_signals, 1, &strategy, &cfg);
         assert_eq!(
             desired_long_entry[1], 1,
-            "otto threshold equality should still permit the long entry once rocr/apo clear their strict boundaries"
+            "exact OTTO threshold equality should still permit the long entry once ROCR and APO clear their strict boundaries"
         );
     }
 

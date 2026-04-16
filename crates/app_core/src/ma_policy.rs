@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-// Kernel-capable MA ids aligned with vector-ta 0.1.2 VRAM kernel support.
+// Kernel-capable MA ids aligned with the vector-ta 0.2.4 moving-average registry
+// and the VRAM kernel route currently wired through this app.
 const GPU_KERNEL_SUPPORTED_MAS: &[&str] = &[
     "sma",
     "ema",
@@ -79,6 +80,16 @@ const GPU_SPEEDUPS_CSV_EMBEDDED: &str = include_str!("../../../gpu_speedups.csv"
 static GPU_SPEEDUP_INDICATOR_IDS: OnceLock<BTreeSet<String>> = OnceLock::new();
 
 #[inline]
+fn strip_utf8_bom(raw: &str) -> &str {
+    raw.strip_prefix('\u{feff}').unwrap_or(raw)
+}
+
+#[inline]
+fn normalize_indicator_id(raw: &str) -> String {
+    strip_utf8_bom(raw).trim().to_ascii_lowercase()
+}
+
+#[inline]
 fn parse_csv_fields(line: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cell = String::new();
@@ -108,21 +119,25 @@ fn parse_csv_fields(line: &str) -> Vec<String> {
 
 fn parse_gpu_speedup_ids(csv_raw: &str) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
-    for (line_idx, line) in csv_raw.lines().enumerate() {
+    let mut saw_first_non_empty_row = false;
+    for line in csv_raw.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            continue;
-        }
-        if line_idx == 0 && trimmed.to_ascii_lowercase().starts_with("indicator_id,") {
             continue;
         }
         let fields = parse_csv_fields(trimmed);
         if fields.is_empty() {
             continue;
         }
-        let id = fields[0].trim().to_ascii_lowercase();
+        let id = normalize_indicator_id(&fields[0]);
         if id.is_empty() {
             continue;
+        }
+        if !saw_first_non_empty_row {
+            saw_first_non_empty_row = true;
+            if id == "indicator_id" {
+                continue;
+            }
         }
         out.insert(id);
     }
@@ -134,18 +149,19 @@ fn gpu_speedup_indicator_ids() -> &'static BTreeSet<String> {
 }
 
 #[inline]
-fn contains_case_insensitive(set: &[&str], ma_type: &str) -> bool {
-    set.iter().any(|id| id.eq_ignore_ascii_case(ma_type))
+fn normalized_id_is_in_set(set: &[&str], ma_type: &str) -> bool {
+    let id = normalize_indicator_id(ma_type);
+    !id.is_empty() && set.iter().any(|candidate| *candidate == id.as_str())
 }
 
 #[inline]
 pub fn supports_gpu_kernel_ma(ma_type: &str) -> bool {
-    contains_case_insensitive(GPU_KERNEL_SUPPORTED_MAS, ma_type)
+    normalized_id_is_in_set(GPU_KERNEL_SUPPORTED_MAS, ma_type)
 }
 
 #[inline]
 pub fn prefers_gpu_kernel_ma(ma_type: &str) -> bool {
-    let id = ma_type.trim().to_ascii_lowercase();
+    let id = normalize_indicator_id(ma_type);
     if id.is_empty() {
         return false;
     }
@@ -153,9 +169,14 @@ pub fn prefers_gpu_kernel_ma(ma_type: &str) -> bool {
     if !parsed_ids.is_empty() {
         return parsed_ids.contains(id.as_str());
     }
-    contains_case_insensitive(GPU_KERNEL_PREFERRED_MAS, ma_type)
+    normalized_id_is_in_set(GPU_KERNEL_PREFERRED_MAS, ma_type)
 }
 
+/// Advisory preference derived from the embedded GPU speedup table.
+///
+/// This does not guarantee that an indicator is eligible for the direct
+/// `GpuKernel` route. Kernel-route eligibility is still owned by the registry
+/// capability check plus the explicit kernel-capable allowlist.
 #[inline]
 pub fn prefers_gpu_by_speedup_table(ma_type: &str) -> bool {
     prefers_gpu_kernel_ma(ma_type)
@@ -185,6 +206,8 @@ pub enum HybridRouteTier {
 pub struct HybridIndicatorRouteDecision {
     pub indicator_id: String,
     pub capability: HybridCapabilityTier,
+    /// Advisory speedup preference only. This may be `true` for indicators that
+    /// still route through `CpuStaged` because they are not kernel-capable.
     pub gpu_preferred_by_speedup: bool,
     pub route: HybridRouteTier,
 }
@@ -237,13 +260,13 @@ impl HybridIndicatorPartition {
 
 #[inline]
 pub fn classify_hybrid_capability(ma_type: &str) -> HybridCapabilityTier {
-    let id = ma_type.trim();
+    let id = normalize_indicator_id(ma_type);
     if id.is_empty() {
         return HybridCapabilityTier::Unsupported;
     }
     let maybe_info = vector_ta::indicators::moving_averages::registry::list_moving_averages()
         .iter()
-        .find(|entry| entry.id.eq_ignore_ascii_case(id));
+        .find(|entry| entry.id.eq_ignore_ascii_case(id.as_str()));
     let Some(info) = maybe_info else {
         return HybridCapabilityTier::Unsupported;
     };
@@ -265,7 +288,7 @@ where
     // BTreeSet provides deterministic order and removes duplicates.
     let mut unique_ids: BTreeSet<String> = BTreeSet::new();
     for raw in ma_types {
-        let id = raw.trim().to_ascii_lowercase();
+        let id = normalize_indicator_id(raw);
         if id.is_empty() {
             continue;
         }
@@ -284,9 +307,15 @@ where
     out
 }
 
+/// Plans the current hybrid route for one moving-average id.
+///
+/// The embedded speedup table acts as advisory policy input. It can mark an
+/// indicator as GPU-preferred even when the indicator still has to use
+/// `CpuStaged` because only kernel-capable ids can take the direct
+/// `GpuKernel` route in the current model.
 #[inline]
 pub fn plan_hybrid_indicator_route(ma_type: &str) -> HybridIndicatorRouteDecision {
-    let id = ma_type.trim().to_ascii_lowercase();
+    let id = normalize_indicator_id(ma_type);
     let capability = classify_hybrid_capability(id.as_str());
     let gpu_preferred_by_speedup = prefers_gpu_by_speedup_table(id.as_str());
 
@@ -331,6 +360,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kernel_support_and_preference_helpers_normalize_whitespace_and_case() {
+        assert!(supports_gpu_kernel_ma("  SmA  "));
+        assert!(prefers_gpu_kernel_ma("  sMa  "));
+        assert!(prefers_gpu_by_speedup_table("  ALMA  "));
+        assert_eq!(
+            classify_hybrid_capability("  Sma  "),
+            HybridCapabilityTier::GpuKernel
+        );
+        assert_eq!(
+            plan_hybrid_indicator_route("  SmA  ").indicator_id,
+            "sma".to_string()
+        );
+    }
+
+    #[test]
     fn kernel_support_and_preference_sets_are_distinct() {
         assert!(supports_gpu_kernel_ma("sma"));
         assert!(prefers_gpu_kernel_ma("sma"));
@@ -338,6 +382,26 @@ mod tests {
         assert_eq!(
             prefers_gpu_kernel_ma("sma"),
             prefers_gpu_by_speedup_table("sma")
+        );
+    }
+
+    #[test]
+    fn parse_gpu_speedup_ids_skips_bom_quoted_header_on_first_non_empty_row() {
+        let parsed = parse_gpu_speedup_ids(
+            "\n  \n\u{feff}\"indicator_id\",indicator_name,speedup\n \"SMA\" ,Simple,10\n alma ,ALMA,11\n",
+        );
+        assert_eq!(
+            parsed,
+            BTreeSet::from(["alma".to_string(), "sma".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_gpu_speedup_ids_normalizes_bom_and_whitespace_in_data_rows() {
+        let parsed = parse_gpu_speedup_ids("\n \u{feff} EhMa ,EHMA,5\n  \" ALMA \" ,ALMA,10\n");
+        assert_eq!(
+            parsed,
+            BTreeSet::from(["alma".to_string(), "ehma".to_string()])
         );
     }
 
@@ -432,6 +496,29 @@ mod tests {
         let route = plan_hybrid_indicator_route("sma");
         assert_eq!(route.route, HybridRouteTier::GpuKernel);
         assert_eq!(route.capability, HybridCapabilityTier::GpuKernel);
+    }
+
+    #[test]
+    fn speedup_preferred_non_kernel_indicator_still_routes_cpu_staged() {
+        let candidate = vector_ta::indicators::moving_averages::registry::list_moving_averages()
+            .iter()
+            .find(|info| {
+                prefers_gpu_by_speedup_table(info.id)
+                    && !supports_gpu_kernel_ma(info.id)
+                    && (info.supports_cuda_single || info.supports_cpu_single)
+            })
+            .map(|info| info.id.to_string());
+
+        let Some(indicator_id) = candidate else {
+            panic!(
+                "expected at least one speedup-preferred moving average that is not kernel-capable"
+            );
+        };
+
+        let route = plan_hybrid_indicator_route(indicator_id.as_str());
+        assert!(route.gpu_preferred_by_speedup);
+        assert_ne!(route.capability, HybridCapabilityTier::GpuKernel);
+        assert_eq!(route.route, HybridRouteTier::CpuStaged);
     }
 
     #[test]

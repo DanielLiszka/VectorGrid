@@ -2,6 +2,10 @@ use rust_xlsxwriter::{Chart, ChartType, Worksheet};
 use std::collections::{BTreeMap, BTreeSet};
 use ta_app_core::{MetaSelectionResult, TrainDatasetRow};
 
+/// Builds the in-memory XLSX workbook for a meta-selection report.
+///
+/// This module owns workbook bytes, visible sheet structure, and deterministic ordering
+/// for the generated workbook. It does not own artifact persistence or report-path policy.
 pub(crate) fn build_meta_report_xlsx_bytes(
     ts: &str,
     meta: &MetaSelectionResult,
@@ -418,10 +422,11 @@ pub(crate) fn build_meta_report_xlsx_bytes(
             )
             .map_err(|e: XlsxError| e.to_string())?;
 
+        let collision_labels = matrix_dataset_collision_labels(&meta.groups);
         let mut datasets: BTreeSet<String> = BTreeSet::new();
         for g in &meta.groups {
             for tr in &g.train_rows {
-                datasets.insert(tr.dataset.clone());
+                datasets.insert(matrix_dataset_label(tr, &collision_labels));
             }
         }
 
@@ -456,7 +461,7 @@ pub(crate) fn build_meta_report_xlsx_bytes(
             for (i, g) in meta.groups.iter().enumerate() {
                 let r = 3 + i as u32;
                 let final_score = g.final_score.unwrap_or(g.meta_score);
-                let by_ds = median_train_pnl_pct_by_dataset(&g.train_rows);
+                let by_ds = median_train_pnl_pct_by_dataset(&g.train_rows, &collision_labels);
 
                 matrix
                     .write_number_with_format(r, 0, (i + 1) as f64, &int_fmt)
@@ -642,30 +647,62 @@ pub(crate) fn build_meta_report_xlsx_bytes(
         .map_err(|e: rust_xlsxwriter::XlsxError| e.to_string())
 }
 
-fn median_train_pnl_pct_by_dataset(rows: &[TrainDatasetRow]) -> BTreeMap<String, f64> {
+fn matrix_dataset_collision_labels(
+    groups: &[ta_app_core::MetaCandidateAggregate],
+) -> BTreeSet<String> {
+    let mut keys_by_dataset: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for group in groups {
+        for row in &group.train_rows {
+            keys_by_dataset
+                .entry(row.dataset.clone())
+                .or_default()
+                .insert(row.dataset_key.clone());
+        }
+    }
+
+    keys_by_dataset
+        .into_iter()
+        .filter_map(|(dataset, keys)| (keys.len() > 1).then_some(dataset))
+        .collect()
+}
+
+fn matrix_dataset_label(row: &TrainDatasetRow, collision_labels: &BTreeSet<String>) -> String {
+    if collision_labels.contains(&row.dataset) {
+        format!("{} [{}]", row.dataset, row.dataset_key)
+    } else {
+        row.dataset.clone()
+    }
+}
+
+fn median_train_pnl_pct_by_dataset(
+    rows: &[TrainDatasetRow],
+    collision_labels: &BTreeSet<String>,
+) -> BTreeMap<String, f64> {
     let mut map: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     for r in rows {
-        map.entry(r.dataset.clone()).or_default().push(r.pnl_pct);
+        map.entry(matrix_dataset_label(r, collision_labels))
+            .or_default()
+            .push(r.pnl_pct);
     }
 
     let mut out: BTreeMap<String, f64> = BTreeMap::new();
     for (k, mut vs) in map {
         vs.sort_by(|a, b| a.total_cmp(b));
-        out.insert(k, quantile(&vs, 0.5));
+        out.insert(k, median_sorted(&vs));
     }
     out
 }
 
-fn quantile(sorted: &[f64], q: f64) -> f64 {
+fn median_sorted(sorted: &[f64]) -> f64 {
     if sorted.is_empty() {
         return 0.0;
     }
-    if sorted.len() == 1 {
-        return sorted[0];
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[mid]
+    } else {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
     }
-    let qq = q.clamp(0.0, 1.0);
-    let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
 }
 
 fn histogram(values: &[f64], bins: usize) -> Vec<(f64, usize)> {
@@ -788,45 +825,119 @@ mod tests {
     };
     use zip::ZipArchive;
 
-    #[test]
-    fn meta_report_xlsx_smoke() {
-        let params = json!({
+    fn sample_params() -> serde_json::Value {
+        json!({
             "fast_ma_type": "sma",
             "slow_ma_type": "ema",
             "fast_len": 12,
             "slow_len": 48
-        });
+        })
+    }
 
-        let meta = MetaSelectionResult {
+    fn sample_group(
+        key: &str,
+        train_rows: Vec<TrainDatasetRow>,
+        holdout_rows: Vec<HoldoutDatasetRow>,
+        holdout: Option<HoldoutAggregate>,
+    ) -> MetaCandidateAggregate {
+        MetaCandidateAggregate {
+            params: sample_params(),
+            key: key.to_string(),
+            ma_source: "close".to_string(),
+            feature_context: None,
+            run_context: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            representatives: vec![sample_params()],
+            samples: 3,
+            datasets_covered: 3,
+            pass_rate: 1.0,
+            robust_score_median: 0.42,
+            robust_score_p10: 0.21,
+            evidence_flags: Vec::new(),
+            tail_gap: 0.21,
+            max_dd_p90: 0.18,
+            cross_score_median: 0.17,
+            psr_median: 0.63,
+            dsr_median: 0.51,
+            meta_score: 0.33,
+            final_score: Some(0.36),
+            holdout,
+            train_rows,
+            holdout_rows,
+        }
+    }
+
+    fn sample_train_row(dataset: &str, dataset_key: &str, pnl_pct: f64) -> TrainDatasetRow {
+        TrainDatasetRow {
+            dataset: dataset.to_string(),
+            dataset_key: dataset_key.to_string(),
+            robust_score: 0.42,
+            pnl: pnl_pct,
+            pnl_pct,
+            sharpe: 0.8,
+            max_dd: 0.18,
+            trades: 12.0,
+            exposure: 0.55,
+            cross_score: 0.17,
+            cross_pnl_positive_frac: 0.66,
+            psr: 0.63,
+            dsr: 0.51,
+            ts: Some("2026-02-17T00:00:00Z".to_string()),
+        }
+    }
+
+    fn sample_holdout_row(dataset: &str) -> HoldoutDatasetRow {
+        HoldoutDatasetRow {
+            dataset: dataset.to_string(),
+            score_median: 0.10,
+            score_p10: -0.07,
+            sharpe_median: 0.2,
+            max_dd_worst: 0.35,
+            pnl_median: 0.05,
+            pass: true,
+        }
+    }
+
+    fn sample_meta(
+        groups: Vec<MetaCandidateAggregate>,
+        holdout: Option<HoldoutSummary>,
+    ) -> MetaSelectionResult {
+        MetaSelectionResult {
             runtime_ms: 42,
             strategy_kind: "DoubleMa".to_string(),
             timeframe: Some("1m".to_string()),
             artifacts_considered: 3,
             artifacts_used: 3,
             candidates_considered: 12,
-            groups: vec![MetaCandidateAggregate {
-                params: params.clone(),
-                key: "k1".to_string(),
-                ma_source: "close".to_string(),
-                feature_context: None,
-                run_context: None,
-                fast_ma_params: None,
-                slow_ma_params: None,
-                representatives: vec![params],
-                samples: 3,
-                datasets_covered: 3,
-                pass_rate: 1.0,
-                robust_score_median: 0.42,
-                robust_score_p10: 0.21,
-                evidence_flags: Vec::new(),
-                tail_gap: 0.21,
-                max_dd_p90: 0.18,
-                cross_score_median: 0.17,
-                psr_median: 0.63,
-                dsr_median: 0.51,
-                meta_score: 0.33,
-                final_score: Some(0.36),
-                holdout: Some(HoldoutAggregate {
+            groups,
+            warnings: vec!["smoke".to_string()],
+            holdout,
+        }
+    }
+
+    fn open_xlsx(bytes: Vec<u8>) -> ZipArchive<Cursor<Vec<u8>>> {
+        ZipArchive::new(Cursor::new(bytes)).expect("xlsx zip")
+    }
+
+    fn read_zip_text(archive: &mut ZipArchive<Cursor<Vec<u8>>>, path: &str) -> String {
+        let mut text = String::new();
+        archive
+            .by_name(path)
+            .unwrap_or_else(|_| panic!("missing zip entry: {path}"))
+            .read_to_string(&mut text)
+            .unwrap_or_else(|_| panic!("failed reading zip entry: {path}"));
+        text
+    }
+
+    #[test]
+    fn meta_report_xlsx_smoke() {
+        let meta = sample_meta(
+            vec![sample_group(
+                "k1",
+                vec![sample_train_row("AAPL", "csv:aapl.csv", 0.12)],
+                vec![sample_holdout_row("MSFT")],
+                Some(HoldoutAggregate {
                     datasets: 2,
                     pass_rate: 0.5,
                     score_median: 0.12,
@@ -835,38 +946,12 @@ mod tests {
                     max_dd_p90: 0.30,
                     pnl_median: 0.08,
                 }),
-                train_rows: vec![TrainDatasetRow {
-                    dataset: "AAPL".to_string(),
-                    dataset_key: "csv:aapl.csv".to_string(),
-                    robust_score: 0.42,
-                    pnl: 0.12,
-                    pnl_pct: 0.12,
-                    sharpe: 0.8,
-                    max_dd: 0.18,
-                    trades: 12.0,
-                    exposure: 0.55,
-                    cross_score: 0.17,
-                    cross_pnl_positive_frac: 0.66,
-                    psr: 0.63,
-                    dsr: 0.51,
-                    ts: Some("2026-02-17T00:00:00Z".to_string()),
-                }],
-                holdout_rows: vec![HoldoutDatasetRow {
-                    dataset: "MSFT".to_string(),
-                    score_median: 0.10,
-                    score_p10: -0.07,
-                    sharpe_median: 0.2,
-                    max_dd_worst: 0.35,
-                    pnl_median: 0.05,
-                    pass: true,
-                }],
-            }],
-            warnings: vec!["smoke".to_string()],
-            holdout: Some(HoldoutSummary {
+            )],
+            Some(HoldoutSummary {
                 datasets: 2,
                 skipped: 0,
             }),
-        };
+        );
 
         let bytes =
             build_meta_report_xlsx_bytes("2026-02-17T00:00:00Z", &meta).expect("meta report xlsx");
@@ -875,43 +960,12 @@ mod tests {
 
     #[test]
     fn meta_report_xlsx_contains_expected_sheet_names_and_chart_parts() {
-        let params = json!({
-            "fast_ma_type": "sma",
-            "slow_ma_type": "ema",
-            "fast_len": 12,
-            "slow_len": 48
-        });
-
-        let meta = MetaSelectionResult {
-            runtime_ms: 42,
-            strategy_kind: "DoubleMa".to_string(),
-            timeframe: Some("1m".to_string()),
-            artifacts_considered: 3,
-            artifacts_used: 3,
-            candidates_considered: 12,
-            groups: vec![MetaCandidateAggregate {
-                params: params.clone(),
-                key: "k1".to_string(),
-                ma_source: "close".to_string(),
-                feature_context: None,
-                run_context: None,
-                fast_ma_params: None,
-                slow_ma_params: None,
-                representatives: vec![params],
-                samples: 3,
-                datasets_covered: 3,
-                pass_rate: 1.0,
-                robust_score_median: 0.42,
-                robust_score_p10: 0.21,
-                evidence_flags: Vec::new(),
-                tail_gap: 0.21,
-                max_dd_p90: 0.18,
-                cross_score_median: 0.17,
-                psr_median: 0.63,
-                dsr_median: 0.51,
-                meta_score: 0.33,
-                final_score: Some(0.36),
-                holdout: Some(HoldoutAggregate {
+        let meta = sample_meta(
+            vec![sample_group(
+                "k1",
+                vec![sample_train_row("AAPL", "csv:aapl.csv", 0.12)],
+                vec![sample_holdout_row("MSFT")],
+                Some(HoldoutAggregate {
                     datasets: 2,
                     pass_rate: 0.5,
                     score_median: 0.12,
@@ -920,64 +974,113 @@ mod tests {
                     max_dd_p90: 0.30,
                     pnl_median: 0.08,
                 }),
-                train_rows: vec![TrainDatasetRow {
-                    dataset: "AAPL".to_string(),
-                    dataset_key: "csv:aapl.csv".to_string(),
-                    robust_score: 0.42,
-                    pnl: 0.12,
-                    pnl_pct: 0.12,
-                    sharpe: 0.8,
-                    max_dd: 0.18,
-                    trades: 12.0,
-                    exposure: 0.55,
-                    cross_score: 0.17,
-                    cross_pnl_positive_frac: 0.66,
-                    psr: 0.63,
-                    dsr: 0.51,
-                    ts: Some("2026-02-17T00:00:00Z".to_string()),
-                }],
-                holdout_rows: vec![HoldoutDatasetRow {
-                    dataset: "MSFT".to_string(),
-                    score_median: 0.10,
-                    score_p10: -0.07,
-                    sharpe_median: 0.2,
-                    max_dd_worst: 0.35,
-                    pnl_median: 0.05,
-                    pass: true,
-                }],
-            }],
-            warnings: vec!["smoke".to_string()],
-            holdout: Some(HoldoutSummary {
+            )],
+            Some(HoldoutSummary {
                 datasets: 2,
                 skipped: 0,
             }),
-        };
+        );
 
         let bytes =
             build_meta_report_xlsx_bytes("2026-02-17T00:00:00Z", &meta).expect("meta report xlsx");
-        let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("xlsx zip");
+        let mut archive = open_xlsx(bytes);
 
-        let mut workbook_xml = String::new();
-        archive
-            .by_name("xl/workbook.xml")
-            .expect("workbook xml")
-            .read_to_string(&mut workbook_xml)
-            .expect("read workbook xml");
+        let workbook_xml = read_zip_text(&mut archive, "xl/workbook.xml");
         assert!(workbook_xml.contains("Meta Analysis"));
         assert!(workbook_xml.contains("By Asset (Train)"));
         assert!(workbook_xml.contains("Asset Matrix"));
         assert!(workbook_xml.contains("Holdout Rows"));
         assert!(workbook_xml.contains("Distributions"));
 
-        let mut summary_xml = String::new();
-        archive
-            .by_name("xl/worksheets/sheet1.xml")
-            .expect("summary sheet")
-            .read_to_string(&mut summary_xml)
-            .expect("read summary sheet");
+        let summary_xml = read_zip_text(&mut archive, "xl/worksheets/sheet1.xml");
         assert!(summary_xml.contains("<dimension"));
 
-        assert!(archive.by_name("xl/charts/chart1.xml").is_ok());
-        assert!(archive.by_name("xl/charts/chart2.xml").is_ok());
+        let chart1 = read_zip_text(&mut archive, "xl/charts/chart1.xml");
+        let chart2 = read_zip_text(&mut archive, "xl/charts/chart2.xml");
+        let chart3 = read_zip_text(&mut archive, "xl/charts/chart3.xml");
+        let chart4 = read_zip_text(&mut archive, "xl/charts/chart4.xml");
+        let chart5 = read_zip_text(&mut archive, "xl/charts/chart5.xml");
+        let chart6 = read_zip_text(&mut archive, "xl/charts/chart6.xml");
+
+        assert!(chart1.contains("Final score by rank"));
+        assert!(chart2.contains("Pass rate vs robust p10"));
+        assert!(chart3.contains("Final score distribution"));
+        assert!(chart4.contains("Robust p10 distribution"));
+        assert!(chart5.contains("Pass rate distribution"));
+        assert!(chart6.contains("MaxDD p90 distribution"));
+    }
+
+    #[test]
+    fn median_train_pnl_pct_by_dataset_uses_true_even_median_and_collision_labels() {
+        let collision_labels = BTreeSet::from(["AAPL".to_string()]);
+        let rows = vec![
+            sample_train_row("AAPL", "csv:aapl_1.csv", 0.10),
+            sample_train_row("AAPL", "csv:aapl_1.csv", 0.30),
+            sample_train_row("AAPL", "csv:aapl_2.csv", 0.20),
+            sample_train_row("AAPL", "csv:aapl_2.csv", 0.40),
+        ];
+
+        let by_dataset = median_train_pnl_pct_by_dataset(&rows, &collision_labels);
+
+        assert_eq!(by_dataset.len(), 2);
+        let first = by_dataset
+            .get("AAPL [csv:aapl_1.csv]")
+            .expect("first collision bucket");
+        let second = by_dataset
+            .get("AAPL [csv:aapl_2.csv]")
+            .expect("second collision bucket");
+        assert!((*first - 0.20).abs() < 1e-12);
+        assert!((*second - 0.30).abs() < 1e-12);
+    }
+
+    #[test]
+    fn meta_report_xlsx_handles_no_train_or_holdout_rows_and_collision_headers() {
+        let meta = sample_meta(
+            vec![
+                sample_group(
+                    "k1",
+                    vec![
+                        sample_train_row("AAPL", "csv:aapl_primary.csv", 0.10),
+                        sample_train_row("AAPL", "csv:aapl_primary.csv", 0.30),
+                        sample_train_row("AAPL", "csv:aapl_alt.csv", 0.20),
+                        sample_train_row("AAPL", "csv:aapl_alt.csv", 0.40),
+                    ],
+                    Vec::new(),
+                    None,
+                ),
+                sample_group("k2", Vec::new(), Vec::new(), None),
+            ],
+            None,
+        );
+
+        let bytes =
+            build_meta_report_xlsx_bytes("2026-02-17T00:00:00Z", &meta).expect("meta report xlsx");
+        let mut archive = open_xlsx(bytes);
+
+        let workbook_xml = read_zip_text(&mut archive, "xl/workbook.xml");
+        assert!(workbook_xml.contains("Holdout Rows"));
+
+        let shared_strings = read_zip_text(&mut archive, "xl/sharedStrings.xml");
+        assert!(shared_strings.contains("AAPL [csv:aapl_primary.csv]"));
+        assert!(shared_strings.contains("AAPL [csv:aapl_alt.csv]"));
+        assert!(shared_strings.contains("No holdout rows were saved for this run."));
+
+        let asset_matrix_xml = read_zip_text(&mut archive, "xl/worksheets/sheet3.xml");
+        assert!(asset_matrix_xml.contains("0.2"));
+        assert!(asset_matrix_xml.contains("0.3"));
+    }
+
+    #[test]
+    fn meta_report_xlsx_handles_fully_empty_train_and_holdout_sections() {
+        let meta = sample_meta(vec![sample_group("k1", Vec::new(), Vec::new(), None)], None);
+
+        let bytes =
+            build_meta_report_xlsx_bytes("2026-02-17T00:00:00Z", &meta).expect("meta report xlsx");
+        let mut archive = open_xlsx(bytes);
+
+        let shared_strings = read_zip_text(&mut archive, "xl/sharedStrings.xml");
+        assert!(shared_strings.contains("No training rows were captured for this meta run."));
+        assert!(shared_strings.contains("No training rows available."));
+        assert!(shared_strings.contains("No holdout rows were saved for this run."));
     }
 }

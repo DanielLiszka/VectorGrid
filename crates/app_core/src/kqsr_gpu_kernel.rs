@@ -30,6 +30,20 @@ const KQSR_FLAG_DISABLE_FLIP: u32 = 1u32 << 1;
 const KQSR_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
 const KQSR_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
+/// Raw GPU-side signal matrix inputs for the KQSR kernel entrypoint.
+///
+/// All `*_ptr` fields are borrowed raw device pointers in the current CUDA context.
+/// They are not owned or validated for provenance here, so the caller must ensure they
+/// remain valid for the duration of the call and that each row-major matrix shape
+/// matches its corresponding `*_rows` / `*_stride` metadata.
+///
+/// `close_f32` is always required as the host mirror of the close series. The runtime
+/// uses it to derive the resident close/log-return cache identity, even when
+/// `close_device_ptr` is non-zero and already points at device-resident close data.
+///
+/// When `close_device_ptr == 0`, the entrypoint treats that as an explicit host-upload
+/// fallback and uploads `close_f32` into device memory before computing log returns.
+/// All other signal pointers must still be valid non-zero device pointers.
 pub struct KqsrGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
     pub close_device_ptr: u64,
@@ -48,6 +62,11 @@ pub struct KqsrGpuDeviceSignalMatrices<'a> {
     pub prb_lower_row_major_ptr: u64,
 }
 
+/// Borrowed combo-index vectors for a batch KQSR GPU evaluation.
+///
+/// Each slice must have identical length. Empty batches are currently accepted and
+/// return success with an empty metrics vector before any unsupported-feature rejection
+/// or CUDA runtime work begins.
 pub struct KqsrGpuComboBatch<'a> {
     pub fast_row_index: &'a [i32],
     pub slow_row_index: &'a [i32],
@@ -353,6 +372,27 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
+/// Evaluates a batch of KQSR candidate windows against device-resident signal matrices.
+///
+/// This function mutates the calling thread's current CUDA context by setting the
+/// thread-local KQSR runtime context current before reusing or allocating scratch buffers.
+/// Callers must treat that as an observable side effect when mixing multiple CUDA
+/// runtimes on the same thread.
+///
+/// The close-series cache is identity-based rather than deep-validated: it keys resident
+/// close/log-return buffers from the `close_f32` host mirror together with
+/// `close_device_ptr`. If the caller reuses the same pointer for different underlying
+/// device contents without also changing the host mirror, the cached device log returns
+/// may be reused under stale identity assumptions.
+///
+/// `close_f32` is therefore required even in pure device-pointer mode. If
+/// `signals.close_device_ptr == 0`, the function uploads `signals.close_f32` into a
+/// temporary device buffer and uses that uploaded series as the close input for the
+/// log-return prepass. All other signal matrices must already be resident device data.
+///
+/// The raw row-major signal pointers are transport-only inputs. This function does not
+/// narrow visibility, require `unsafe`, or redesign the pointer transport surface; it
+/// only validates obvious null/shape issues before launching the kernel.
 pub fn eval_kqsr_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &KqsrGpuDeviceSignalMatrices<'_>,
@@ -566,10 +606,13 @@ pub fn eval_kqsr_metrics_gpu_kernel_device_rows(
 mod tests {
     use super::*;
 
-    fn sample_signals(close_f32: &[f32]) -> KqsrGpuDeviceSignalMatrices<'_> {
+    fn sample_signals_with_close_ptr(
+        close_f32: &[f32],
+        close_device_ptr: u64,
+    ) -> KqsrGpuDeviceSignalMatrices<'_> {
         KqsrGpuDeviceSignalMatrices {
             close_f32,
-            close_device_ptr: 1,
+            close_device_ptr,
             cols: close_f32.len(),
             j_row_major_ptr: 11,
             fast_rows: 2,
@@ -586,17 +629,25 @@ mod tests {
         }
     }
 
+    fn sample_signals(close_f32: &[f32]) -> KqsrGpuDeviceSignalMatrices<'_> {
+        sample_signals_with_close_ptr(close_f32, 1)
+    }
+
+    fn sample_combo_batch<'a>() -> KqsrGpuComboBatch<'a> {
+        KqsrGpuComboBatch {
+            fast_row_index: &[0],
+            slow_row_index: &[0],
+            start_t: &[1],
+            end_t: &[4],
+        }
+    }
+
     #[test]
     fn validate_inputs_rejects_stride_smaller_than_cols() {
         let close = [100.0f32, 101.0, 102.0, 103.0];
         let mut signals = sample_signals(&close);
         signals.fast_stride = 3;
-        let combos = KqsrGpuComboBatch {
-            fast_row_index: &[0],
-            slow_row_index: &[0],
-            start_t: &[1],
-            end_t: &[4],
-        };
+        let combos = sample_combo_batch();
 
         let err = validate_inputs(&signals, &combos).expect_err("stride bounds");
         assert!(err.contains("stride is smaller than cols"));
@@ -639,6 +690,77 @@ mod tests {
         };
         let err = validate_inputs(&signals, &empty).expect_err("empty window");
         assert!(err.contains("requires start_t < end_t"));
+    }
+
+    #[test]
+    fn validate_inputs_allows_close_device_ptr_zero_host_upload_fallback() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = sample_combo_batch();
+
+        validate_inputs(&signals, &combos).expect("host-upload fallback should validate");
+    }
+
+    #[test]
+    fn validate_inputs_rejects_combo_length_mismatch() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals(&close);
+        let combos = KqsrGpuComboBatch {
+            fast_row_index: &[0, 1],
+            slow_row_index: &[0],
+            start_t: &[1, 1],
+            end_t: &[4, 4],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("combo length mismatch");
+        assert!(err.contains("combo vector length mismatch"));
+    }
+
+    #[test]
+    fn eval_entry_rejects_unsupported_features_for_non_empty_combos() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = sample_combo_batch();
+        let strategy = StrategyConfig {
+            stop_loss_pct: Some(0.02),
+            ..StrategyConfig::default()
+        };
+
+        let err = eval_kqsr_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &KqsrStrategyParams::default(),
+        )
+        .expect_err("unsupported features should be rejected before CUDA runtime work");
+        assert!(err.contains("without overlays/stop-loss/take-profit"));
+    }
+
+    #[test]
+    fn eval_entry_returns_empty_for_empty_combo_batch_before_feature_rejection() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = KqsrGpuComboBatch {
+            fast_row_index: &[],
+            slow_row_index: &[],
+            start_t: &[],
+            end_t: &[],
+        };
+        let strategy = StrategyConfig {
+            stop_loss_pct: Some(0.02),
+            ..StrategyConfig::default()
+        };
+
+        let metrics = eval_kqsr_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &KqsrStrategyParams::default(),
+        )
+        .expect("empty combo batches intentionally short-circuit");
+        assert!(metrics.is_empty());
     }
 
     #[test]

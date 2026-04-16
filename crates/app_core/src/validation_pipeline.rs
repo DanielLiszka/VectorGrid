@@ -285,14 +285,15 @@ pub fn compute_probability_metrics<C: ValidationPostCandidate>(
         let m = cand
             .iterative_in_sample_metrics()
             .unwrap_or_else(|| cand.in_sample_metrics());
-        let obs = sample_obs.get(i).copied().unwrap_or(2).max(2);
+        let requested_obs = sample_obs.get(i).copied().unwrap_or(2);
+        let obs = requested_obs.max(2);
         let (psr, dsr) =
             crate::validation_stats::compute_psr_dsr(m.sharpe, obs, trials, peer_mean, peer_std);
         let mintrl =
             crate::sharpe_stats::minimum_track_record_length(m.sharpe, 0.0, 0.0, 3.0, 0.95);
         cand.set_psr(psr);
         cand.set_dsr(dsr);
-        cand.set_track_record_bars(obs);
+        cand.set_track_record_bars(requested_obs);
         cand.set_min_track_record_length_bars(mintrl);
     }
 }
@@ -1875,11 +1876,32 @@ mod tests {
 
         compute_probability_metrics(&mut out, &[0, 7]);
 
-        assert_eq!(out[0].track_record_bars, 2);
+        assert_eq!(out[0].track_record_bars, 0);
         assert_eq!(out[1].track_record_bars, 7);
         assert_eq!(out[2].track_record_bars, 2);
         assert!(out.iter().all(|cand| cand.psr.is_some()));
         assert!(out.iter().all(|cand| cand.dsr.is_some()));
+    }
+
+    #[test]
+    fn compute_walk_forward_stats_clamps_window_and_step_to_minimums() {
+        let cfg = WalkForwardConfigOptional {
+            window_bars: 0,
+            step_bars: 0,
+        };
+        let mut observed_windows = Vec::new();
+
+        let stats = compute_walk_forward_stats(66, 0, &cfg, |start, end| {
+            observed_windows.push((start, end));
+            Metrics {
+                sharpe: (end - start) as f64,
+                trades: 1,
+                ..Metrics::default()
+            }
+        });
+
+        assert_eq!(observed_windows, vec![(0, 64), (1, 65), (2, 66)]);
+        assert_eq!(stats.windows, 3);
     }
 
     #[test]
@@ -2262,6 +2284,34 @@ mod tests {
         let stats_a = serde_json::to_value(&stats_a).expect("serialize SPA stats");
         let stats_b = serde_json::to_value(&stats_b).expect("serialize SPA stats");
         assert_eq!(stats_a, stats_b);
+    }
+
+    #[test]
+    fn spa_validation_clamps_low_bootstrap_and_block_length_inputs() {
+        let candidate_keys = vec!["a".to_string()];
+        let candidate_slice_returns = vec![vec![0.03, 0.04, 0.05, 0.06]];
+        let benchmark_slice_returns = vec![0.0, 0.0, 0.0, 0.0];
+        let cfg = SpaConfigOptional {
+            slices: 4,
+            bootstrap_samples: 0,
+            block_length: 0,
+            benchmark: crate::validation_shared::SpaBenchmarkKind::BuyAndHold,
+        };
+        let cancel = AtomicBool::new(false);
+
+        let stats = compute_spa_validation_stats(
+            &candidate_keys,
+            &candidate_slice_returns,
+            &benchmark_slice_returns,
+            &cfg,
+            13,
+            &cancel,
+        )
+        .expect("spa stats");
+
+        assert_eq!(stats.slice_count, 4);
+        assert_eq!(stats.bootstrap_samples, 100);
+        assert_eq!(stats.block_length, 1);
     }
 
     #[test]

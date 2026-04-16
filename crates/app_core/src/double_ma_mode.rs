@@ -2,6 +2,34 @@ use ta_optimizer::OptimizationMode;
 
 use crate::double_ma::{GpuExecutionPolicy, OptimizationModeResolved};
 
+#[cfg(test)]
+static GPU_KERNEL_EXECUTION_AVAILABLE_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(feature = "cuda")]
+fn gpu_kernel_execution_available() -> bool {
+    #[cfg(test)]
+    match GPU_KERNEL_EXECUTION_AVAILABLE_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => return false,
+        2 => return true,
+        _ => {}
+    }
+    vector_ta::cuda::cuda_available()
+}
+
+#[cfg(not(feature = "cuda"))]
+fn gpu_kernel_execution_available() -> bool {
+    #[cfg(test)]
+    match GPU_KERNEL_EXECUTION_AVAILABLE_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => return false,
+        2 => return true,
+        _ => {}
+    }
+    false
+}
+
+const AUTO_MODE_LARGE_SEARCH_COMBO_THRESHOLD: usize = 500_000;
+
 pub(crate) struct ModeSelectionContext<'a> {
     pub requested_mode: OptimizationMode,
     pub include_all: bool,
@@ -27,8 +55,9 @@ pub(crate) fn resolve_optimization_mode(
                 return OptimizationModeResolved::Grid;
             }
 
-            let large_search = ctx.total_combos > 500_000;
-            let gpu_route_viable = ctx.gpu_kernel_viable || ctx.gpu_hybrid_viable;
+            let large_search = ctx.total_combos > AUTO_MODE_LARGE_SEARCH_COMBO_THRESHOLD;
+            let gpu_route_viable = (ctx.gpu_kernel_viable && gpu_kernel_execution_available())
+                || ctx.gpu_hybrid_viable;
             if large_search
                 && gpu_route_viable
                 && matches!(
@@ -81,9 +110,29 @@ pub(crate) fn validate_optimization_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_optimization_mode, validate_optimization_mode, ModeSelectionContext};
+    use super::{
+        resolve_optimization_mode, validate_optimization_mode, ModeSelectionContext,
+        AUTO_MODE_LARGE_SEARCH_COMBO_THRESHOLD,
+    };
     use crate::double_ma::{GpuExecutionPolicy, OptimizationModeResolved};
     use ta_optimizer::OptimizationMode;
+
+    struct GpuKernelExecutionAvailabilityGuard;
+
+    impl Drop for GpuKernelExecutionAvailabilityGuard {
+        fn drop(&mut self) {
+            super::GPU_KERNEL_EXECUTION_AVAILABLE_OVERRIDE
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn force_gpu_kernel_execution_available(enabled: bool) -> GpuKernelExecutionAvailabilityGuard {
+        super::GPU_KERNEL_EXECUTION_AVAILABLE_OVERRIDE.store(
+            if enabled { 2 } else { 1 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        GpuKernelExecutionAvailabilityGuard
+    }
 
     fn base_ctx() -> ModeSelectionContext<'static> {
         ModeSelectionContext {
@@ -122,6 +171,7 @@ mod tests {
 
     #[test]
     fn auto_mode_prefers_vdps_for_gpu_resident_large_runs_when_route_is_viable() {
+        let _guard = force_gpu_kernel_execution_available(true);
         let mut ctx = base_ctx();
         ctx.gpu_execution = GpuExecutionPolicy::StrictGpuResident;
         ctx.gpu_hybrid_viable = true;
@@ -129,6 +179,61 @@ mod tests {
             resolve_optimization_mode(&ctx),
             OptimizationModeResolved::GpuVdps
         ));
+    }
+
+    #[test]
+    fn auto_mode_resident_request_requires_executable_gpu_route_for_vdps() {
+        let _guard = force_gpu_kernel_execution_available(false);
+        let mut ctx = base_ctx();
+        ctx.gpu_execution = GpuExecutionPolicy::StrictGpuResident;
+        ctx.gpu_kernel_viable = true;
+        assert!(matches!(
+            resolve_optimization_mode(&ctx),
+            OptimizationModeResolved::CoarseToFine
+        ));
+    }
+
+    #[test]
+    fn auto_mode_large_search_threshold_is_strictly_greater_than_500k() {
+        let _guard = force_gpu_kernel_execution_available(true);
+        let mut ctx = base_ctx();
+        ctx.gpu_execution = GpuExecutionPolicy::StrictGpuResident;
+        ctx.gpu_hybrid_viable = true;
+        ctx.total_combos = AUTO_MODE_LARGE_SEARCH_COMBO_THRESHOLD;
+        assert!(matches!(
+            resolve_optimization_mode(&ctx),
+            OptimizationModeResolved::Grid
+        ));
+
+        ctx.total_combos = AUTO_MODE_LARGE_SEARCH_COMBO_THRESHOLD + 1;
+        assert!(matches!(
+            resolve_optimization_mode(&ctx),
+            OptimizationModeResolved::GpuVdps
+        ));
+    }
+
+    #[test]
+    fn auto_mode_best_effort_does_not_promote_to_vdps() {
+        let _guard = force_gpu_kernel_execution_available(true);
+        let mut ctx = base_ctx();
+        ctx.gpu_execution = GpuExecutionPolicy::BestEffort;
+        ctx.gpu_hybrid_viable = true;
+        assert!(matches!(
+            resolve_optimization_mode(&ctx),
+            OptimizationModeResolved::CoarseToFine
+        ));
+    }
+
+    #[test]
+    fn mode_validation_rejects_export_all_csv_for_gpu_vdps() {
+        let err = validate_optimization_mode(
+            &OptimizationModeResolved::GpuVdps,
+            false,
+            0,
+            Some("export.csv"),
+        )
+        .expect_err("GpuVdps export_all backstop must fail");
+        assert!(err.contains("export_all_csv_path"));
     }
 
     #[test]
@@ -144,9 +249,33 @@ mod tests {
             validate_optimization_mode(&OptimizationModeResolved::CoarseToFine, true, 0, None)
                 .is_err()
         );
+        assert!(validate_optimization_mode(
+            &OptimizationModeResolved::CoarseToFine,
+            false,
+            8,
+            None
+        )
+        .is_err());
+        assert!(validate_optimization_mode(
+            &OptimizationModeResolved::CoarseToFine,
+            false,
+            0,
+            Some("out.csv")
+        )
+        .is_err());
+        assert!(
+            validate_optimization_mode(&OptimizationModeResolved::GpuVdps, true, 0, None).is_err()
+        );
         assert!(
             validate_optimization_mode(&OptimizationModeResolved::GpuVdps, false, 64, None)
                 .is_err()
         );
+        assert!(validate_optimization_mode(
+            &OptimizationModeResolved::GpuVdps,
+            false,
+            0,
+            Some("out.csv")
+        )
+        .is_err());
     }
 }

@@ -343,6 +343,33 @@ fn validate_inputs_device_rows(
                 signals.slow_rows
             ));
         }
+        let fast_idx = fast_row as usize;
+        if signals.fast_squeeze_rows[fast_idx] == 0 {
+            return Err(format!(
+                "ASR GPU fast_squeeze_rows[{fast_idx}] is null for referenced combo row"
+            ));
+        }
+        if signals.fast_momentum_rows[fast_idx] == 0 {
+            return Err(format!(
+                "ASR GPU fast_momentum_rows[{fast_idx}] is null for referenced combo row"
+            ));
+        }
+        let slow_idx = slow_row as usize;
+        if signals.slow_angle_rows[slow_idx] == 0 {
+            return Err(format!(
+                "ASR GPU slow_angle_rows[{slow_idx}] is null for referenced combo row"
+            ));
+        }
+        if signals.slow_er_rows[slow_idx] == 0 {
+            return Err(format!(
+                "ASR GPU slow_er_rows[{slow_idx}] is null for referenced combo row"
+            ));
+        }
+        if signals.slow_z_rows[slow_idx] == 0 {
+            return Err(format!(
+                "ASR GPU slow_z_rows[{slow_idx}] is null for referenced combo row"
+            ));
+        }
         if start_t < 0 || end_t < 0 {
             return Err(format!("ASR GPU time window[{idx}] must be non-negative"));
         }
@@ -499,6 +526,8 @@ fn ensure_resident_close_lr<'a>(
     close_f64: &[f64],
     close_device_ptr: u64,
 ) -> Result<&'a ResidentCloseReturns, String> {
+    // This cache keys off host/device pointer identity plus series length. Callers must treat the
+    // pointed-at close data as immutable while the cached resident close/log-return buffers remain live.
     let key = CloseSeriesKey {
         len: close_f64.len(),
         host_ptr: close_f64.as_ptr() as usize,
@@ -1056,6 +1085,8 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
             "slow z-score rows",
         )?;
 
+        // Packed-row cache entries are keyed by the row-pointer identities already uploaded plus the
+        // column count. The GPU-resident rows those pointers reference must stay immutable while cached.
         let fast_sq_pack_sig = (fast_sq_rows_sig, signals.cols);
         if rt.scratch.fast_sq_packed_sig != Some(fast_sq_pack_sig) {
             let row_ptrs_ptr = rt
@@ -1432,6 +1463,130 @@ mod tests {
         };
         let err = validate_inputs_device_rows(&signals, &empty).expect_err("empty window");
         assert!(err.contains("requires start_t < end_t"));
+    }
+
+    #[test]
+    fn validate_inputs_device_rows_rejects_null_referenced_fast_row_pointers() {
+        let close = [100.0, 101.0, 102.0, 103.0];
+        let fast_squeeze_rows = [21u64, 0];
+        let fast_momentum_rows = [41u64, 42];
+        let slow_rows = [31u64, 32];
+        let signals = AsrGpuDeviceSignalMatrices {
+            close_f64: &close,
+            close_device_ptr: 1,
+            cols: close.len(),
+            fast_rows: fast_squeeze_rows.len(),
+            slow_rows: slow_rows.len(),
+            fast_squeeze_rows: &fast_squeeze_rows,
+            fast_momentum_rows: &fast_momentum_rows,
+            slow_angle_rows: &slow_rows,
+            slow_er_rows: &slow_rows,
+            slow_z_rows: &slow_rows,
+            kaufman_long_row: 11,
+            kaufman_short_row: 12,
+        };
+        let combos = AsrGpuComboBatch {
+            fast_row_index: &[1],
+            slow_row_index: &[0],
+            start_t: &[1],
+            end_t: &[4],
+        };
+
+        let err = validate_inputs_device_rows(&signals, &combos).expect_err("null fast row");
+        assert!(err.contains("fast_squeeze_rows[1]"));
+
+        let fast_squeeze_rows = [21u64, 22];
+        let fast_momentum_rows = [41u64, 0];
+        let signals = AsrGpuDeviceSignalMatrices {
+            close_f64: &close,
+            close_device_ptr: 1,
+            cols: close.len(),
+            fast_rows: fast_squeeze_rows.len(),
+            slow_rows: slow_rows.len(),
+            fast_squeeze_rows: &fast_squeeze_rows,
+            fast_momentum_rows: &fast_momentum_rows,
+            slow_angle_rows: &slow_rows,
+            slow_er_rows: &slow_rows,
+            slow_z_rows: &slow_rows,
+            kaufman_long_row: 11,
+            kaufman_short_row: 12,
+        };
+
+        let err =
+            validate_inputs_device_rows(&signals, &combos).expect_err("null fast momentum row");
+        assert!(err.contains("fast_momentum_rows[1]"));
+    }
+
+    #[test]
+    fn validate_inputs_device_rows_rejects_null_referenced_slow_row_pointers() {
+        let close = [100.0, 101.0, 102.0, 103.0];
+        let fast_rows = [21u64, 22];
+        let combos = AsrGpuComboBatch {
+            fast_row_index: &[0],
+            slow_row_index: &[1],
+            start_t: &[1],
+            end_t: &[4],
+        };
+
+        let slow_angle_rows = [31u64, 0];
+        let slow_er_rows = [41u64, 42];
+        let slow_z_rows = [51u64, 52];
+        let signals = AsrGpuDeviceSignalMatrices {
+            close_f64: &close,
+            close_device_ptr: 1,
+            cols: close.len(),
+            fast_rows: fast_rows.len(),
+            slow_rows: slow_angle_rows.len(),
+            fast_squeeze_rows: &fast_rows,
+            fast_momentum_rows: &fast_rows,
+            slow_angle_rows: &slow_angle_rows,
+            slow_er_rows: &slow_er_rows,
+            slow_z_rows: &slow_z_rows,
+            kaufman_long_row: 11,
+            kaufman_short_row: 12,
+        };
+        let err = validate_inputs_device_rows(&signals, &combos).expect_err("null slow angle row");
+        assert!(err.contains("slow_angle_rows[1]"));
+
+        let slow_angle_rows = [31u64, 32];
+        let slow_er_rows = [41u64, 0];
+        let slow_z_rows = [51u64, 52];
+        let signals = AsrGpuDeviceSignalMatrices {
+            close_f64: &close,
+            close_device_ptr: 1,
+            cols: close.len(),
+            fast_rows: fast_rows.len(),
+            slow_rows: slow_angle_rows.len(),
+            fast_squeeze_rows: &fast_rows,
+            fast_momentum_rows: &fast_rows,
+            slow_angle_rows: &slow_angle_rows,
+            slow_er_rows: &slow_er_rows,
+            slow_z_rows: &slow_z_rows,
+            kaufman_long_row: 11,
+            kaufman_short_row: 12,
+        };
+        let err = validate_inputs_device_rows(&signals, &combos).expect_err("null slow ER row");
+        assert!(err.contains("slow_er_rows[1]"));
+
+        let slow_angle_rows = [31u64, 32];
+        let slow_er_rows = [41u64, 42];
+        let slow_z_rows = [51u64, 0];
+        let signals = AsrGpuDeviceSignalMatrices {
+            close_f64: &close,
+            close_device_ptr: 1,
+            cols: close.len(),
+            fast_rows: fast_rows.len(),
+            slow_rows: slow_angle_rows.len(),
+            fast_squeeze_rows: &fast_rows,
+            fast_momentum_rows: &fast_rows,
+            slow_angle_rows: &slow_angle_rows,
+            slow_er_rows: &slow_er_rows,
+            slow_z_rows: &slow_z_rows,
+            kaufman_long_row: 11,
+            kaufman_short_row: 12,
+        };
+        let err = validate_inputs_device_rows(&signals, &combos).expect_err("null slow row");
+        assert!(err.contains("slow_z_rows[1]"));
     }
 
     #[test]

@@ -1,5 +1,24 @@
 use ta_strategies::double_ma::StrategyConfig;
 
+fn require_positive_raw_u16(name: &str, value: u16) -> Result<(), String> {
+    if value == 0 {
+        Err(format!("{name} must be > 0"))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_positive_finite(name: &str, value: f64) -> Result<(), String> {
+    if !value.is_finite() || value <= 0.0 {
+        Err(format!("{name} must be finite and > 0"))
+    } else {
+        Ok(())
+    }
+}
+
+// This module owns boundary validation for caller-supplied configs. Reject
+// invalid raw fields here; `StrategyConfig` accessors still own internal
+// normalization/repair for already-admitted configs and older artifacts.
 pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> {
     if !cfg.trade_on_next_bar {
         return Err(
@@ -50,117 +69,77 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
     }
 
     if cfg.uses_kaufman_stop_exit() {
-        if cfg.kaufman_stop_period() == 0 {
-            return Err("kaufman_stop_period must be > 0".to_string());
-        }
-        let mult = cfg.kaufman_stop_mult();
-        if !mult.is_finite() || mult <= 0.0 {
-            return Err("kaufman_stop_mult must be finite and > 0".to_string());
-        }
+        require_positive_raw_u16("kaufman_stop_period", cfg.kaufman_stop_period)?;
+        require_positive_finite("kaufman_stop_mult", cfg.kaufman_stop_mult)?;
         if cfg.kaufman_stop_ma_type().trim().is_empty() {
             return Err("kaufman_stop_ma_type cannot be empty".to_string());
         }
     }
 
     if cfg.uses_trend_quality_filter() || cfg.uses_regime_hybrid_filter() {
-        if cfg.trend_quality_linearreg_period() == 0 {
-            return Err("trend_quality_linearreg_period must be > 0".to_string());
-        }
-        let angle_min = cfg.trend_quality_angle_min_deg();
-        if !angle_min.is_finite() || angle_min <= 0.0 {
-            return Err("trend_quality_angle_min_deg must be finite and > 0".to_string());
-        }
-        if cfg.trend_quality_bbw_period() == 0 {
-            return Err("trend_quality_bbw_period must be > 0".to_string());
-        }
-        let bbw_mult = cfg.trend_quality_bbw_mult();
-        if !bbw_mult.is_finite() || bbw_mult <= 0.0 {
-            return Err("trend_quality_bbw_mult must be finite and > 0".to_string());
-        }
-        let bbw_min = cfg.trend_quality_bbw_min();
+        require_positive_raw_u16(
+            "trend_quality_linearreg_period",
+            cfg.trend_quality_linearreg_period,
+        )?;
+        require_positive_finite(
+            "trend_quality_angle_min_deg",
+            cfg.trend_quality_angle_min_deg,
+        )?;
+        require_positive_raw_u16("trend_quality_bbw_period", cfg.trend_quality_bbw_period)?;
+        require_positive_finite("trend_quality_bbw_mult", cfg.trend_quality_bbw_mult)?;
+        let bbw_min = cfg.trend_quality_bbw_min;
         if !bbw_min.is_finite() || bbw_min < 0.0 {
             return Err("trend_quality_bbw_min must be finite and >= 0".to_string());
         }
-        if cfg.trend_quality_use_roc() && cfg.trend_quality_roc_period() == 0 {
+        if cfg.trend_quality_use_roc && cfg.trend_quality_roc_period == 0 {
             return Err(
                 "trend_quality_roc_period must be > 0 when ROC confirmation is enabled".to_string(),
             );
         }
-        if cfg.trend_quality_use_adx() {
-            if cfg.trend_quality_adx_period() == 0 {
-                return Err(
-                    "trend_quality_adx_period must be > 0 when ADX confirmation is enabled"
-                        .to_string(),
-                );
-            }
-            let adx_min = cfg.trend_quality_adx_min();
-            if !adx_min.is_finite() || adx_min <= 0.0 {
-                return Err(
-                    "trend_quality_adx_min must be finite and > 0 when ADX confirmation is enabled"
-                        .to_string(),
-                );
-            }
+        if cfg.trend_quality_use_adx {
+            require_positive_raw_u16("trend_quality_adx_period", cfg.trend_quality_adx_period)?;
+            require_positive_finite("trend_quality_adx_min", cfg.trend_quality_adx_min)?;
         }
     }
 
     if cfg.uses_breakout_momentum_filter() {
-        if cfg.breakout_bbands_period() == 0 {
-            return Err("breakout_bbands_period must be > 0".to_string());
-        }
-        let bb_mult = cfg.breakout_bbands_mult();
-        if !bb_mult.is_finite() || bb_mult <= 0.0 {
-            return Err("breakout_bbands_mult must be finite and > 0".to_string());
-        }
-        if cfg.breakout_confirm_bars() == 0 {
-            return Err("breakout_confirm_bars must be > 0".to_string());
-        }
-        let macd_fast = cfg.breakout_macd_fast_period();
-        let macd_slow = cfg.breakout_macd_slow_period();
-        let macd_signal = cfg.breakout_macd_signal_period();
+        require_positive_raw_u16("breakout_bbands_period", cfg.breakout_bbands_period)?;
+        require_positive_finite("breakout_bbands_mult", cfg.breakout_bbands_mult)?;
+        require_positive_raw_u16("breakout_confirm_bars", cfg.breakout_confirm_bars)?;
+        let macd_fast = cfg.breakout_macd_fast_period;
+        let macd_slow = cfg.breakout_macd_slow_period;
+        let macd_signal = cfg.breakout_macd_signal_period;
         if macd_fast == 0 || macd_slow == 0 || macd_signal == 0 {
             return Err("breakout MACD periods must be > 0 (fast/slow/signal)".to_string());
         }
         if macd_fast >= macd_slow {
             return Err("breakout MACD requires fast period < slow period".to_string());
         }
-        if cfg.breakout_cmo_period() == 0 {
-            return Err("breakout_cmo_period must be > 0".to_string());
-        }
-        let cmo_min_abs = cfg.breakout_cmo_min_abs();
+        require_positive_raw_u16("breakout_cmo_period", cfg.breakout_cmo_period)?;
+        let cmo_min_abs = cfg.breakout_cmo_min_abs;
         if !cmo_min_abs.is_finite() || cmo_min_abs < 0.0 {
             return Err("breakout_cmo_min_abs must be finite and >= 0".to_string());
         }
-        let adosc_short = cfg.breakout_adosc_short_period();
-        let adosc_long = cfg.breakout_adosc_long_period();
+        let adosc_short = cfg.breakout_adosc_short_period;
+        let adosc_long = cfg.breakout_adosc_long_period;
         if adosc_short == 0 || adosc_long == 0 {
             return Err("breakout ADOSC periods must be > 0".to_string());
         }
         if adosc_short >= adosc_long {
             return Err("breakout ADOSC requires short period < long period".to_string());
         }
-        if cfg.breakout_use_adx() {
-            if cfg.breakout_adx_period() == 0 {
-                return Err(
-                    "breakout_adx_period must be > 0 when breakout ADX is enabled".to_string(),
-                );
-            }
-            let adx_min = cfg.breakout_adx_min();
-            if !adx_min.is_finite() || adx_min <= 0.0 {
-                return Err(
-                    "breakout_adx_min must be finite and > 0 when breakout ADX is enabled"
-                        .to_string(),
-                );
-            }
+        if cfg.breakout_use_adx {
+            require_positive_raw_u16("breakout_adx_period", cfg.breakout_adx_period)?;
+            require_positive_finite("breakout_adx_min", cfg.breakout_adx_min)?;
         }
     }
 
     if cfg.uses_volume_flow_confirm_filter() {
-        if cfg.volume_flow_obv_smooth_period() == 0 {
-            return Err("volume_flow_obv_smooth_period must be > 0".to_string());
-        }
-        if cfg.volume_flow_mfi_period() == 0 {
-            return Err("volume_flow_mfi_period must be > 0".to_string());
-        }
+        require_positive_raw_u16(
+            "volume_flow_obv_smooth_period",
+            cfg.volume_flow_obv_smooth_period,
+        )?;
+        require_positive_raw_u16("volume_flow_mfi_period", cfg.volume_flow_mfi_period)?;
         let long_min = cfg.volume_flow_mfi_long_min();
         if !long_min.is_finite() || !(0.0..=100.0).contains(&long_min) {
             return Err("volume_flow_mfi_long_min must be finite and in [0, 100]".to_string());
@@ -174,54 +153,30 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
                 "volume_flow_mfi_short_max must be <= volume_flow_mfi_long_min".to_string(),
             );
         }
-        if cfg.volume_flow_confirm_bars() == 0 {
-            return Err("volume_flow_confirm_bars must be > 0".to_string());
-        }
+        require_positive_raw_u16("volume_flow_confirm_bars", cfg.volume_flow_confirm_bars)?;
     }
 
     if cfg.uses_pressure_impulse_trend_filter() {
-        if cfg.pit_efi_period() == 0 {
-            return Err("pit_efi_period must be > 0".to_string());
-        }
-        if cfg.pit_vosc_short_period() == 0 {
-            return Err("pit_vosc_short_period must be > 0".to_string());
-        }
-        if cfg.pit_vosc_long_period() == 0 {
-            return Err("pit_vosc_long_period must be > 0".to_string());
-        }
-        if cfg.pit_vosc_short_period() >= cfg.pit_vosc_long_period() {
+        require_positive_raw_u16("pit_efi_period", cfg.pit_efi_period)?;
+        require_positive_raw_u16("pit_vosc_short_period", cfg.pit_vosc_short_period)?;
+        require_positive_raw_u16("pit_vosc_long_period", cfg.pit_vosc_long_period)?;
+        if cfg.pit_vosc_short_period >= cfg.pit_vosc_long_period {
             return Err("pit_vosc_short_period must be < pit_vosc_long_period".to_string());
         }
-        if cfg.pit_cfo_period() == 0 {
-            return Err("pit_cfo_period must be > 0".to_string());
-        }
-        let scalar = cfg.pit_cfo_scalar();
-        if !scalar.is_finite() || scalar <= 0.0 {
-            return Err("pit_cfo_scalar must be finite and > 0".to_string());
-        }
-        if cfg.pit_confirm_bars() == 0 {
-            return Err("pit_confirm_bars must be > 0".to_string());
-        }
+        require_positive_raw_u16("pit_cfo_period", cfg.pit_cfo_period)?;
+        require_positive_finite("pit_cfo_scalar", cfg.pit_cfo_scalar)?;
+        require_positive_raw_u16("pit_confirm_bars", cfg.pit_confirm_bars)?;
     }
 
     if cfg.uses_slope_efficiency_trend_filter() {
-        if cfg.set_linearreg_period() == 0 {
-            return Err("set_linearreg_period must be > 0".to_string());
-        }
-        let angle_min = cfg.set_angle_min_deg();
-        if !angle_min.is_finite() || angle_min <= 0.0 {
-            return Err("set_angle_min_deg must be finite and > 0".to_string());
-        }
-        if cfg.set_er_period() == 0 {
-            return Err("set_er_period must be > 0".to_string());
-        }
+        require_positive_raw_u16("set_linearreg_period", cfg.set_linearreg_period)?;
+        require_positive_finite("set_angle_min_deg", cfg.set_angle_min_deg)?;
+        require_positive_raw_u16("set_er_period", cfg.set_er_period)?;
         let er_min = cfg.set_er_min();
         if !er_min.is_finite() || !(0.0..=1.0).contains(&er_min) {
             return Err("set_er_min must be finite and in [0, 1]".to_string());
         }
-        if cfg.set_chop_period() == 0 {
-            return Err("set_chop_period must be > 0".to_string());
-        }
+        require_positive_raw_u16("set_chop_period", cfg.set_chop_period)?;
         let chop_max = cfg.set_chop_max();
         if !chop_max.is_finite() || !(0.0..=100.0).contains(&chop_max) {
             return Err("set_chop_max must be finite and in [0, 100]".to_string());
@@ -229,58 +184,40 @@ pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> 
     }
 
     if cfg.uses_momentum_triple_stack_filter() {
-        if cfg.mts_roc_period() == 0 {
-            return Err("mts_roc_period must be > 0".to_string());
-        }
-        if cfg.mts_mom_period() == 0 {
-            return Err("mts_mom_period must be > 0".to_string());
-        }
-        if cfg.mts_ppo_fast_period() == 0 {
-            return Err("mts_ppo_fast_period must be > 0".to_string());
-        }
-        if cfg.mts_ppo_slow_period() == 0 {
-            return Err("mts_ppo_slow_period must be > 0".to_string());
-        }
-        if cfg.mts_ppo_fast_period() >= cfg.mts_ppo_slow_period() {
+        require_positive_raw_u16("mts_roc_period", cfg.mts_roc_period)?;
+        require_positive_raw_u16("mts_mom_period", cfg.mts_mom_period)?;
+        require_positive_raw_u16("mts_ppo_fast_period", cfg.mts_ppo_fast_period)?;
+        require_positive_raw_u16("mts_ppo_slow_period", cfg.mts_ppo_slow_period)?;
+        if cfg.mts_ppo_fast_period >= cfg.mts_ppo_slow_period {
             return Err("mts_ppo_fast_period must be < mts_ppo_slow_period".to_string());
         }
     }
 
     if cfg.uses_oscillator_reversion_confluence_filter() {
-        if cfg.orc_rsi_period() == 0 {
-            return Err("orc_rsi_period must be > 0".to_string());
-        }
-        if cfg.orc_stoch_fastk_period() == 0 {
-            return Err("orc_stoch_fastk_period must be > 0".to_string());
-        }
-        if cfg.orc_stoch_fastd_period() == 0 {
-            return Err("orc_stoch_fastd_period must be > 0".to_string());
-        }
-        if cfg.orc_willr_period() == 0 {
-            return Err("orc_willr_period must be > 0".to_string());
-        }
+        require_positive_raw_u16("orc_rsi_period", cfg.orc_rsi_period)?;
+        require_positive_raw_u16("orc_stoch_fastk_period", cfg.orc_stoch_fastk_period)?;
+        require_positive_raw_u16("orc_stoch_fastd_period", cfg.orc_stoch_fastd_period)?;
+        require_positive_raw_u16("orc_willr_period", cfg.orc_willr_period)?;
     }
 
     if cfg.uses_regime_hybrid_filter() {
-        if cfg.regime_hybrid_adx_period() == 0 {
-            return Err("regime_hybrid_adx_period must be > 0".to_string());
-        }
-        let adx_enter = cfg.regime_hybrid_adx_enter();
+        require_positive_raw_u16("regime_hybrid_adx_period", cfg.regime_hybrid_adx_period)?;
+        let adx_enter = cfg.regime_hybrid_adx_enter;
         if !adx_enter.is_finite() || adx_enter <= 0.0 {
             return Err("regime_hybrid_adx_enter must be finite and > 0".to_string());
         }
-        let adx_exit = cfg.regime_hybrid_adx_exit();
+        let adx_exit = cfg.regime_hybrid_adx_exit;
         if !adx_exit.is_finite() || adx_exit <= 0.0 || adx_exit > adx_enter {
             return Err(
                 "regime_hybrid_adx_exit must be finite, > 0, and <= regime_hybrid_adx_enter"
                     .to_string(),
             );
         }
-        let rev_entry = cfg.regime_hybrid_reversion_entry_rel();
+        let rev_entry = cfg.regime_hybrid_reversion_entry_rel;
         if !rev_entry.is_finite() || rev_entry <= 0.0 {
             return Err("regime_hybrid_reversion_entry_rel must be finite and > 0".to_string());
         }
-        let rev_exit = cfg.regime_hybrid_reversion_exit_rel();
+        let rev_exit = cfg.regime_hybrid_reversion_exit_rel;
         if !rev_exit.is_finite() || rev_exit < 0.0 || rev_exit > rev_entry {
             return Err(
                 "regime_hybrid_reversion_exit_rel must be finite, >= 0, and <= regime_hybrid_reversion_entry_rel".to_string(),
@@ -382,4 +319,155 @@ pub(crate) fn validate_strategy_cfg_for_optimization(cfg: &StrategyConfig) -> Re
 
 pub(crate) fn strategy_cfg_for_optimization(cfg: StrategyConfig) -> StrategyConfig {
     cfg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ta_strategies::double_ma::ExitMode;
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_kaufman_stop_period_raw_value() {
+        let cfg = StrategyConfig {
+            exit_mode: ExitMode::KaufmanStop,
+            kaufman_stop_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero Kaufman stop period must fail");
+        assert!(err.contains("kaufman_stop_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_kaufman_stop_multiplier_raw_value() {
+        let cfg = StrategyConfig {
+            exit_mode: ExitMode::KaufmanStop,
+            kaufman_stop_mult: 0.0,
+            ..StrategyConfig::default()
+        };
+
+        let err =
+            validate_strategy_cfg(&cfg).expect_err("raw zero Kaufman stop multiplier must fail");
+        assert!(err.contains("kaufman_stop_mult"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_trend_quality_linearreg_period_raw_value() {
+        let cfg = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero trend-quality period must fail");
+        assert!(err.contains("trend_quality_linearreg_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_trend_quality_angle_raw_value() {
+        let cfg = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_angle_min_deg: 0.0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero trend-quality angle must fail");
+        assert!(err.contains("trend_quality_angle_min_deg"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_breakout_bbands_period_raw_value() {
+        let cfg = StrategyConfig {
+            breakout_momentum_enable: true,
+            breakout_bbands_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero breakout period must fail");
+        assert!(err.contains("breakout_bbands_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_volume_flow_period_raw_value() {
+        let cfg = StrategyConfig {
+            volume_flow_confirm_enable: true,
+            volume_flow_obv_smooth_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero volume-flow period must fail");
+        assert!(err.contains("volume_flow_obv_smooth_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_pit_efi_period_raw_value() {
+        let cfg = StrategyConfig {
+            pressure_impulse_trend_enable: true,
+            pit_efi_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero PIT EFI period must fail");
+        assert!(err.contains("pit_efi_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_set_linearreg_period_raw_value() {
+        let cfg = StrategyConfig {
+            slope_efficiency_trend_enable: true,
+            set_linearreg_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero SET period must fail");
+        assert!(err.contains("set_linearreg_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_mts_roc_period_raw_value() {
+        let cfg = StrategyConfig {
+            momentum_triple_stack_enable: true,
+            mts_roc_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero MTS period must fail");
+        assert!(err.contains("mts_roc_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_orc_rsi_period_raw_value() {
+        let cfg = StrategyConfig {
+            oscillator_reversion_confluence_enable: true,
+            orc_rsi_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero ORC period must fail");
+        assert!(err.contains("orc_rsi_period"));
+    }
+
+    #[test]
+    fn validate_strategy_cfg_rejects_zero_regime_hybrid_adx_period_raw_value() {
+        let cfg = StrategyConfig {
+            regime_hybrid_enable: true,
+            regime_hybrid_adx_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        let err = validate_strategy_cfg(&cfg).expect_err("raw zero regime-hybrid period must fail");
+        assert!(err.contains("regime_hybrid_adx_period"));
+    }
+
+    #[test]
+    fn strategy_accessors_still_repair_zero_values_after_boundary_rejection() {
+        let cfg = StrategyConfig {
+            trend_quality_enable: true,
+            trend_quality_linearreg_period: 0,
+            ..StrategyConfig::default()
+        };
+
+        assert!(validate_strategy_cfg(&cfg).is_err());
+        assert_eq!(cfg.trend_quality_linearreg_period(), 1);
+    }
 }

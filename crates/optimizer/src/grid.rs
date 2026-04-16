@@ -2,6 +2,8 @@ use crate::{BacktestEngine, ObjectiveKind, OptimizationResult};
 use std::cmp::Ordering;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
+// Returns the normalized ranking score used by grid and stream aggregation.
+// Risk objectives are negated so "higher is better" stays consistent.
 fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
     let score = match objective {
         ObjectiveKind::Pnl => metrics.pnl,
@@ -19,6 +21,10 @@ fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
     }
 }
 
+/// Evaluates a fixed parameter grid with the same ranking semantics as stream aggregation.
+///
+/// Contract: `engine.eval_batch(combos)` must return exactly one `Metrics` row per input
+/// combo, in the same order. Cardinality mismatches are treated as an invalid batch result.
 pub fn grid_search<E: BacktestEngine>(
     engine: &E,
     combos: &[DoubleMaParams],
@@ -31,7 +37,7 @@ pub fn grid_search<E: BacktestEngine>(
         return None;
     }
     let metrics = engine.eval_batch(combos);
-    if metrics.is_empty() {
+    if metrics.len() != combos.len() {
         return None;
     }
 
@@ -53,6 +59,7 @@ pub fn grid_search<E: BacktestEngine>(
         Vec::new()
     } else {
         let mut idx: Vec<usize> = (0..metrics.len()).collect();
+        // Stable sorting preserves input order for equal-score ties.
         idx.sort_by(|&a, &b| {
             let sa = score(&metrics[a], objective);
             let sb = score(&metrics[b], objective);
@@ -98,8 +105,8 @@ mod tests {
     }
 
     impl BacktestEngine for StubEngine {
-        fn eval_batch(&self, combos: &[DoubleMaParams]) -> Vec<Metrics> {
-            self.metrics[..combos.len()].to_vec()
+        fn eval_batch(&self, _combos: &[DoubleMaParams]) -> Vec<Metrics> {
+            self.metrics.clone()
         }
     }
 
@@ -182,5 +189,93 @@ mod tests {
             grid.all.as_ref().map(Vec::len),
             stream.all.as_ref().map(Vec::len)
         );
+    }
+
+    #[test]
+    fn grid_search_uses_negated_risk_scores_for_ranking() {
+        let combos = vec![params(5, 20), params(6, 24), params(8, 30)];
+        let engine = StubEngine {
+            metrics: vec![
+                Metrics {
+                    volatility: 3.0,
+                    ..Metrics::default()
+                },
+                Metrics {
+                    volatility: 1.0,
+                    ..Metrics::default()
+                },
+                Metrics {
+                    volatility: 2.0,
+                    ..Metrics::default()
+                },
+            ],
+        };
+
+        let result = grid_search(&engine, &combos, ObjectiveKind::Volatility, 512, 3, false)
+            .expect("grid result");
+
+        assert_eq!(result.best_params.fast_len, 6);
+        assert_eq!(result.best_score, Some(-1.0));
+        assert_eq!(result.top_scores, Some(vec![-1.0, -2.0, -3.0]));
+    }
+
+    #[test]
+    fn grid_search_preserves_input_order_for_equal_score_ties() {
+        let combos = vec![params(5, 20), params(6, 24), params(8, 30)];
+        let engine = StubEngine {
+            metrics: vec![
+                metrics_with_sharpe(1.0),
+                metrics_with_sharpe(1.0),
+                metrics_with_sharpe(0.5),
+            ],
+        };
+
+        let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 3, false)
+            .expect("grid result");
+
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(5, 20), (6, 24), (8, 30)]
+        );
+    }
+
+    #[test]
+    fn grid_search_top_k_zero_keeps_empty_top_and_none_all_scores() {
+        let combos = vec![params(5, 20), params(6, 24)];
+        let engine = StubEngine {
+            metrics: vec![metrics_with_sharpe(0.8), metrics_with_sharpe(0.4)],
+        };
+
+        let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 0, true)
+            .expect("grid result");
+
+        assert!(result.top.is_empty());
+        assert_eq!(result.top_scores, Some(Vec::new()));
+        assert!(result.all.is_some());
+        assert_eq!(result.all.as_ref().map(Vec::len), Some(2));
+        assert_eq!(result.all_scores, None);
+    }
+
+    #[test]
+    fn grid_search_rejects_eval_batch_cardinality_mismatch() {
+        let combos = vec![params(5, 20), params(6, 24)];
+
+        let under = StubEngine {
+            metrics: vec![metrics_with_sharpe(1.0)],
+        };
+        assert!(grid_search(&under, &combos, ObjectiveKind::Sharpe, 512, 2, false).is_none());
+
+        let over = StubEngine {
+            metrics: vec![
+                metrics_with_sharpe(1.0),
+                metrics_with_sharpe(0.5),
+                metrics_with_sharpe(0.2),
+            ],
+        };
+        assert!(grid_search(&over, &combos, ObjectiveKind::Sharpe, 512, 2, false).is_none());
     }
 }

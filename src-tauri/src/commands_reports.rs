@@ -48,12 +48,20 @@ pub(crate) fn build_meta_report_xlsx_bytes(
     commands_reports_meta_xlsx::build_meta_report_xlsx_bytes(ts, meta)
 }
 
+fn normalize_max_rows(max_rows: Option<usize>) -> Option<usize> {
+    max_rows.filter(|n| *n > 0)
+}
+
+fn normalize_max_rows_u32(max_rows: Option<u32>) -> Option<usize> {
+    normalize_max_rows(max_rows.map(|n| n as usize))
+}
+
 pub(crate) fn build_report_xlsx_blocking(
     report: Value,
     max_rows: Option<u32>,
 ) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
-    let max_rows = max_rows.map(|n| n as usize).filter(|n| *n > 0);
+    let max_rows = normalize_max_rows_u32(max_rows);
     let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
     Ok(general_purpose::STANDARD.encode(bytes))
 }
@@ -67,7 +75,10 @@ pub fn build_report_xlsx_bytes_headless(
     report: &Value,
     max_rows: Option<usize>,
 ) -> Result<Vec<u8>, String> {
-    commands_reports_validation_xlsx::build_validation_report_xlsx(report, max_rows)
+    commands_reports_validation_xlsx::build_validation_report_xlsx(
+        report,
+        normalize_max_rows(max_rows),
+    )
 }
 
 fn write_report_xlsx_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -85,7 +96,7 @@ pub(crate) fn save_report_xlsx_for_base(
     max_rows: Option<u32>,
     base: &Path,
 ) -> Result<SaveReportXlsxResponse, String> {
-    let max_rows = max_rows.map(|n| n as usize).filter(|n| *n > 0);
+    let max_rows = normalize_max_rows_u32(max_rows);
     let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
     let path = commands_reports_shared::suggest_report_path_for_base(&report, base)?;
     write_report_xlsx_file(&path, &bytes)?;
@@ -216,6 +227,19 @@ fn build_validation_report_from_artifact(artifact: &Value) -> Result<Value, Stri
     }))
 }
 
+fn validate_report_export_artifact_kind(artifact: &Value) -> Result<(), String> {
+    let kind = artifact
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if matches!(kind, "vectorbt_run_artifact" | "vectorgrid_run_artifact") {
+        Ok(())
+    } else {
+        Err(format!("unsupported artifact kind: {kind}"))
+    }
+}
+
 pub(crate) fn save_report_xlsx_from_artifact_blocking(
     path: String,
     max_rows: Option<u32>,
@@ -223,6 +247,7 @@ pub(crate) fn save_report_xlsx_from_artifact_blocking(
 ) -> Result<SaveReportXlsxResponse, String> {
     let artifact_path = path.clone();
     let mut artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
+    validate_report_export_artifact_kind(&artifact)?;
     let report = build_validation_report_from_artifact(&artifact)?;
     let mut saved = save_report_xlsx_blocking(report, max_rows, app.clone())?;
 
@@ -231,6 +256,9 @@ pub(crate) fn save_report_xlsx_from_artifact_blocking(
             "report_xlsx_path".to_string(),
             Value::String(saved.path.clone()),
         );
+        // Keep the current save-back behavior explicit: this reuses the normal run-artifact save
+        // path, so report-path persistence inherits the same enrichment/pruning side effects as a
+        // full artifact rewrite.
         match run_artifacts::save_run_artifact_blocking(artifact, app, Some(artifact_path)) {
             Ok(_) => {
                 saved.artifact_updated = true;
@@ -3139,8 +3167,17 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
 mod tests {
     use super::*;
     use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
+    use crate::state::{AppState, BackgroundTaskState};
     use serde_json::json;
     use std::path::PathBuf;
+
+    fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(AppState::default())
+            .manage(BackgroundTaskState::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("failed to build tauri mock app")
+    }
 
     fn parse_csv_fields(line: &str) -> Vec<String> {
         let mut fields: Vec<String> = Vec::new();
@@ -3396,6 +3433,18 @@ mod tests {
     }
 
     #[test]
+    fn build_report_xlsx_bytes_headless_treats_zero_max_rows_like_unbounded() {
+        let report = minimal_report(&unique_report_ts("headless_zero_max_rows"));
+
+        let explicit_zero =
+            build_report_xlsx_bytes_headless(&report, Some(0)).expect("zero max rows xlsx");
+        let unbounded =
+            build_report_xlsx_bytes_headless(&report, None).expect("unbounded max rows xlsx");
+
+        assert_eq!(explicit_zero, unbounded);
+    }
+
+    #[test]
     fn save_report_xlsx_for_base_uses_collision_suffixes() {
         let base = make_temp_dir("save_report_xlsx_collision");
         let ts = unique_report_ts("collision");
@@ -3559,6 +3608,140 @@ mod tests {
                 .pointer("/data/ctx/resample_applied")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn validate_report_export_artifact_kind_accepts_supported_run_artifacts_only() {
+        assert!(validate_report_export_artifact_kind(&json!({
+            "kind": "vectorgrid_run_artifact"
+        }))
+        .is_ok());
+        assert!(validate_report_export_artifact_kind(&json!({
+            "kind": "vectorbt_run_artifact"
+        }))
+        .is_ok());
+
+        let err = validate_report_export_artifact_kind(&json!({
+            "kind": "vectorbt_meta_selection"
+        }))
+        .expect_err("unsupported artifact kind");
+        assert!(err.contains("unsupported artifact kind"));
+        assert!(err.contains("vectorbt_meta_selection"));
+    }
+
+    #[test]
+    fn save_report_xlsx_from_artifact_blocking_rejects_unsupported_artifact_kind() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let base = handle
+            .path()
+            .app_local_data_dir()
+            .expect("app local data dir");
+        let runs_dir = base.join("runs");
+        std::fs::create_dir_all(&runs_dir).expect("runs dir");
+
+        let artifact_path = runs_dir.join("meta_selection.json");
+        std::fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorbt_meta_selection",
+                "ts": unique_report_ts("unsupported_kind"),
+                "validation": {
+                    "req": {},
+                    "res": { "candidates": [] }
+                }
+            }))
+            .expect("artifact json"),
+        )
+        .expect("write artifact");
+
+        let err = save_report_xlsx_from_artifact_blocking(
+            artifact_path.to_string_lossy().to_string(),
+            Some(1),
+            handle,
+        )
+        .expect_err("unsupported artifact kind should fail");
+        assert!(err.contains("unsupported artifact kind"));
+        assert!(err.contains("vectorbt_meta_selection"));
+    }
+
+    #[test]
+    fn save_report_xlsx_from_artifact_blocking_updates_artifact_and_keeps_it_loadable() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let base = handle
+            .path()
+            .app_local_data_dir()
+            .expect("app local data dir");
+        let runs_dir = base.join("runs");
+        std::fs::create_dir_all(&runs_dir).expect("runs dir");
+
+        let ts = unique_report_ts("artifact_export");
+        let artifact_path = runs_dir.join(format!("vectorgrid_run_{ts}.json"));
+        std::fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "ts": ts,
+                "dataset_meta": {
+                    "csv_path": "C:/data/AAPL.csv",
+                    "timeframe": "1h",
+                    "label": "AAPL artifact",
+                    "symbol": "AAPL"
+                },
+                "run": {
+                    "req": { "strategy_kind": "DoubleMa" },
+                    "res": { "top": [] }
+                },
+                "validation": {
+                    "req": { "candidates": [] },
+                    "res": {
+                        "data_id": "artifact-test",
+                        "candidates": [{
+                            "params": {
+                                "fast_ma_type": "sma",
+                                "fast_len": 9,
+                                "slow_ma_type": "ema",
+                                "slow_len": 21
+                            },
+                            "in_sample": {
+                                "pnl": 1.0,
+                                "sharpe": 2.0,
+                                "max_dd": 0.5,
+                                "trades": 10
+                            },
+                            "robust_score": 1.23,
+                            "robust_pareto": true
+                        }]
+                    }
+                }
+            }))
+            .expect("artifact json"),
+        )
+        .expect("write artifact");
+
+        let saved = save_report_xlsx_from_artifact_blocking(
+            artifact_path.to_string_lossy().to_string(),
+            Some(1),
+            handle.clone(),
+        )
+        .expect("artifact-backed save");
+
+        assert!(Path::new(&saved.path).is_file());
+        assert!(saved.path.contains("reports"));
+        assert!(saved.bytes > 0);
+        assert!(saved.artifact_updated);
+        assert!(saved.artifact_update_warning.is_empty());
+
+        let reloaded = run_artifacts::load_artifact_value_checked_blocking(
+            artifact_path.to_string_lossy().to_string(),
+            handle,
+        )
+        .expect("reload artifact after save-back");
+        assert_eq!(
+            reloaded.get("report_xlsx_path").and_then(Value::as_str),
+            Some(saved.path.as_str())
         );
     }
 

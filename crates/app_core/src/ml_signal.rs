@@ -16,7 +16,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -941,11 +941,45 @@ fn sample_deadband(round_trip_cost_bps: f64, atr_h: f64, open_next: f64) -> f64 
     (2.0 * cost_frac).max(atr_frac)
 }
 
+fn validate_series_len(name: &str, values: &[f64], expected_len: usize) -> Result<(), String> {
+    if values.len() != expected_len {
+        return Err(format!(
+            "{name} returned {} rows for {} candles",
+            values.len(),
+            expected_len
+        ));
+    }
+    Ok(())
+}
+
+fn validate_pattern_rows_len(
+    pattern_ids: &[String],
+    rows: &[Vec<u8>],
+    expected_len: usize,
+) -> Result<(), String> {
+    for (idx, row) in rows.iter().enumerate() {
+        if row.len() != expected_len {
+            let pattern_id = pattern_ids
+                .get(idx)
+                .map(String::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("unknown_pattern");
+            return Err(format!(
+                "pattern_recognition output '{pattern_id}' returned {} rows for {} candles",
+                row.len(),
+                expected_len
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn feature_frame(
     candles: &Candles,
     ma_source: &str,
     horizon_bars: usize,
 ) -> Result<DatasetFeatureFrame, String> {
+    let expected_len = candles.close.len();
     let h = horizon_bars.max(2);
     let pattern_output = compute_dynamic_indicator_cpu(
         candles,
@@ -958,6 +992,7 @@ fn feature_frame(
     .map_err(|e| format!("pattern_recognition failed: {e}"))?;
     let pattern_ids = pattern_output.pattern_ids.clone().unwrap_or_default();
     let pattern_hits = extract_pattern_matrix(&pattern_output, &pattern_ids)?;
+    validate_pattern_rows_len(&pattern_ids, &pattern_hits, expected_len)?;
 
     let alma_h = extract_f64_series(
         compute_dynamic_indicator_cpu(
@@ -1014,6 +1049,11 @@ fn feature_frame(
         )
         .map_err(|e| format!("atr(H) failed: {e}"))?,
     )?;
+    validate_series_len("alma(H)", &alma_h, expected_len)?;
+    validate_series_len("alma(3H)", &alma_3h, expected_len)?;
+    validate_series_len("alma(10H)", &alma_10h, expected_len)?;
+    validate_series_len("adx(2H)", &adx_2h, expected_len)?;
+    validate_series_len("atr(H)", &atr_h, expected_len)?;
 
     let mut first_valid_bar = 1usize;
     first_valid_bar = first_valid_bar.max(first_finite_idx(&alma_h));
@@ -1478,6 +1518,57 @@ fn ensure_parent_dir(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn staged_sibling_path(path: &str, context: &str) -> Result<PathBuf, String> {
+    ensure_parent_dir(path)?;
+    let final_path = Path::new(path);
+    let parent = final_path.parent().unwrap_or_else(|| Path::new(""));
+    let file_name = final_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("ml_signal_artifact");
+    let context_tag: String = context
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    Ok(parent.join(format!(
+        ".{file_name}.{context_tag}.{}.{}.tmp",
+        std::process::id(),
+        nonce
+    )))
+}
+
+fn replace_file_from_staged(
+    staged_path: &Path,
+    final_path: &Path,
+    context: &str,
+) -> Result<(), String> {
+    match fs::rename(staged_path, final_path) {
+        Ok(()) => Ok(()),
+        Err(initial_err) => {
+            if final_path.exists() {
+                fs::remove_file(final_path).map_err(|remove_err| {
+                    let _ = fs::remove_file(staged_path);
+                    format!(
+                        "replace {context}: rename failed ({initial_err}); remove existing failed: {remove_err}"
+                    )
+                })?;
+                fs::rename(staged_path, final_path).map_err(|retry_err| {
+                    let _ = fs::remove_file(staged_path);
+                    format!("replace {context}: {retry_err}")
+                })
+            } else {
+                let _ = fs::remove_file(staged_path);
+                Err(format!("replace {context}: {initial_err}"))
+            }
+        }
+    }
+}
+
 fn stable_hash_mod(text: &str, modulus: usize) -> Option<usize> {
     if modulus == 0 {
         return None;
@@ -1550,10 +1641,22 @@ pub fn build_ml_signal_split_windows(
 }
 
 fn write_json_file<T: Serialize>(path: &str, value: &T, context: &str) -> Result<(), String> {
-    ensure_parent_dir(path)?;
-    let file = File::create(path).map_err(|e| format!("create {context}: {e}"))?;
-    serde_json::to_writer_pretty(BufWriter::new(file), value)
-        .map_err(|e| format!("write {context}: {e}"))
+    let staged_path = staged_sibling_path(path, context)?;
+    let result = (|| -> Result<(), String> {
+        let file = File::create(&staged_path).map_err(|e| format!("create {context}: {e}"))?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, value)
+            .map_err(|e| format!("write {context}: {e}"))?;
+        writer
+            .flush()
+            .map_err(|e| format!("flush {context}: {e}"))?;
+        drop(writer);
+        replace_file_from_staged(&staged_path, Path::new(path), context)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staged_path);
+    }
+    result
 }
 
 fn current_unix_ms() -> i64 {
@@ -2026,33 +2129,29 @@ pub fn export_ml_signal_dataset_with_candles(
     };
     feature_schema.schema_hash = ml_signal_feature_schema_hash(&feature_schema)?;
     let schema_path = feature_schema_path_for_export(&req.output_path);
-    write_json_file(&schema_path, &feature_schema, "feature schema")?;
 
     let split_windows = if let Some(plan) = req.split_plan.as_ref() {
         build_ml_signal_split_windows(last_label_bar + 1, plan)?
     } else {
         Vec::new()
     };
-    let split_manifest_path = if let Some(plan) = req.split_plan.as_ref() {
+    let split_manifest = if let Some(plan) = req.split_plan.as_ref() {
         let mut split_manifest = plan.clone();
         split_manifest.version = ML_SIGNAL_SPLIT_PLAN_VERSION;
         split_manifest.windows = split_windows.clone();
-        let path = split_manifest_path_for_export(&req.output_path);
-        write_json_file(&path, &split_manifest, "split manifest")?;
-        Some(path)
+        Some(split_manifest)
     } else {
         None
     };
+    let split_manifest_path = split_manifest
+        .as_ref()
+        .map(|_| split_manifest_path_for_export(&req.output_path));
     let ticker_holdout = req
         .ticker_holdout
         .as_ref()
         .and_then(|cfg| assign_ml_signal_ticker_holdout(&req.data_id, cfg));
 
-    ensure_parent_dir(&req.output_path)?;
-    let file = File::create(&req.output_path).map_err(|e| format!("create dataset csv: {e}"))?;
-    let mut writer = WriterBuilder::new()
-        .has_headers(true)
-        .from_writer(BufWriter::new(file));
+    let staged_output_path = staged_sibling_path(&req.output_path, "dataset_csv")?;
 
     let mut header: Vec<String> = vec![
         "timestamp".to_string(),
@@ -2069,10 +2168,6 @@ pub fn export_ml_signal_dataset_with_candles(
         "keep_long".to_string(),
         "keep_short".to_string(),
     ]);
-    writer
-        .write_record(header.iter().map(String::as_str))
-        .map_err(|e| format!("write dataset header: {e}"))?;
-
     let log_returns = log_returns_from_close(&candles.close);
     let log_return_prefix = prefix_sum(&log_returns);
     let log_return_sq_prefix = prefix_sum_squares(&log_returns);
@@ -2093,196 +2188,225 @@ pub fn export_ml_signal_dataset_with_candles(
         }
     }
 
-    let mut row_count = 0usize;
-    let mut record: Vec<String> = Vec::with_capacity(4 + feature_names.len() + 6);
-    for t in frame.first_valid_bar..=last_label_bar {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-        let prev_close = candles.close[t.saturating_sub(1)];
-        let open = candles.open[t];
-        let high = candles.high[t];
-        let low = candles.low[t];
-        let close = candles.close[t];
-        let range = (high - low).abs();
-        let eps = if close.is_finite() && close.abs() > 1.0e-12 {
-            close.abs() * 1.0e-12
-        } else {
-            1.0e-12
-        };
-        let true_range = if prev_close.is_finite() {
-            (high - low)
-                .abs()
-                .max((high - prev_close).abs())
-                .max((low - prev_close).abs())
-        } else {
-            (high - low).abs()
-        };
-        let body_pct = if open.is_finite() && open != 0.0 {
-            (close - open) / open
-        } else {
-            0.0
-        };
-        let abs_body_frac = (close - open).abs() / (range + eps);
-        let upper_wick_frac = (high - open.max(close)).max(0.0) / (range + eps);
-        let lower_wick_frac = (open.min(close) - low).max(0.0) / (range + eps);
-        let close_location = (close - low) / (range + eps);
-        let gap_pct = if prev_close.is_finite() && prev_close != 0.0 {
-            (open - prev_close) / prev_close
-        } else {
-            0.0
-        };
-        let true_range_pct = if prev_close.is_finite() && prev_close != 0.0 {
-            true_range / prev_close
-        } else {
-            0.0
-        };
-
-        let atr_h = frame.atr_h[t];
-        let alma_h = frame.alma_h[t];
-        let alma_3h = frame.alma_3h[t];
-        let alma_10h = frame.alma_10h[t];
-        let adx_2h = frame.adx_2h[t];
-        let half_h = (h / 2).max(1);
-        let alma_slope_h_half_atr = if t >= half_h && atr_h.is_finite() && atr_h > 0.0 {
-            (frame.alma_h[t] - frame.alma_h[t - half_h]) / atr_h
-        } else {
-            0.0
-        };
-        let alma_slope_3h_h_atr = if t >= h && atr_h.is_finite() && atr_h > 0.0 {
-            (frame.alma_3h[t] - frame.alma_3h[t - h]) / atr_h
-        } else {
-            0.0
-        };
-        let alma_spread_h_3h_atr = if atr_h.is_finite() && atr_h > 0.0 {
-            (alma_h - alma_3h) / atr_h
-        } else {
-            0.0
-        };
-        let alma_spread_3h_10h_atr = if atr_h.is_finite() && atr_h > 0.0 {
-            (alma_3h - alma_10h) / atr_h
-        } else {
-            0.0
-        };
-        let close_minus_alma_3h_atr = if atr_h.is_finite() && atr_h > 0.0 {
-            (close - alma_3h) / atr_h
-        } else {
-            0.0
-        };
-
-        let log_ret_1 = log_returns[t];
-        let log_ret_2 = rolling_sum(&log_return_prefix, t.saturating_sub(1), t + 1);
-        let log_ret_3 = rolling_sum(&log_return_prefix, t.saturating_sub(2), t + 1);
-        let log_ret_5 = rolling_sum(&log_return_prefix, t.saturating_sub(4), t + 1);
-        let log_ret_h = rolling_sum(&log_return_prefix, t + 1 - h.min(t + 1), t + 1);
-        let realized_vol_h = rolling_stddev(
-            &log_return_prefix,
-            &log_return_sq_prefix,
-            t + 1 - h.min(t + 1),
-            t + 1,
-        );
-        let three_h = h.saturating_mul(3);
-        let realized_vol_3h = rolling_stddev(
-            &log_return_prefix,
-            &log_return_sq_prefix,
-            t + 1 - three_h.min(t + 1),
-            t + 1,
-        );
-        let atr_h_over_close = if close.is_finite() && close != 0.0 {
-            atr_h / close
-        } else {
-            0.0
-        };
-
-        let open_next = candles.open[t + 1];
-        let open_exit = candles.open[t + h + 1];
-        let r_long = if open_next.is_finite() && open_exit.is_finite() && open_next > 0.0 {
-            (open_exit - open_next) / open_next
-        } else {
-            0.0
-        };
-        let r_short = if open_next.is_finite() && open_exit.is_finite() && open_next > 0.0 {
-            (open_next - open_exit) / open_next
-        } else {
-            0.0
-        };
-        let deadband = sample_deadband(req.round_trip_cost_bps, atr_h, open_next);
-        let y_long = if r_long > deadband { 1 } else { 0 };
-        let y_short = if r_short > deadband { 1 } else { 0 };
-        let keep_long = !((0.0..=deadband).contains(&r_long));
-        let keep_short = !((0.0..=deadband).contains(&r_short));
-
-        let split_id = split_windows
-            .iter()
-            .find(|window| t >= window.train_start && t < window.test_end)
-            .map(|window| window.split_id.clone())
-            .unwrap_or_default();
-
-        record.clear();
-        record.push(candles.timestamp[t].to_string());
-        record.push(req.data_id.clone());
-        record.push(split_id);
-        record.push("1.0".to_string());
-        record.push(format_f64(body_pct));
-        record.push(format_f64(abs_body_frac));
-        record.push(format_f64(upper_wick_frac));
-        record.push(format_f64(lower_wick_frac));
-        record.push(format_f64(close_location));
-        record.push(format_f64(gap_pct));
-        record.push(format_f64(true_range_pct));
-
-        for (row_idx, row) in frame.pattern_hits.iter().enumerate() {
-            let hit = row[t];
-            if hit != 0 {
-                last_seen[row_idx] = Some(t);
-            }
-            let prefix = &pattern_prefix[row_idx];
-            record.push(hit.to_string());
-            record.push(rolling_count(prefix, t.saturating_sub(2), t + 1).to_string());
-            record.push(rolling_count(prefix, t.saturating_sub(4), t + 1).to_string());
-            record.push(rolling_count(prefix, t + 1 - h.min(t + 1), t + 1).to_string());
-            let two_h = h.saturating_mul(2);
-            record.push(rolling_count(prefix, t + 1 - two_h.min(t + 1), t + 1).to_string());
-            let bars_since = last_seen[row_idx]
-                .map(|last| t.saturating_sub(last))
-                .unwrap_or(h.saturating_mul(4));
-            record.push(bars_since.min(h.saturating_mul(4)).to_string());
-        }
-
-        record.extend([
-            format_f64(alma_h),
-            format_f64(alma_3h),
-            format_f64(alma_10h),
-            format_f64(alma_spread_h_3h_atr),
-            format_f64(alma_spread_3h_10h_atr),
-            format_f64(alma_slope_h_half_atr),
-            format_f64(alma_slope_3h_h_atr),
-            format_f64(close_minus_alma_3h_atr),
-            format_f64(adx_2h),
-            format_f64(log_ret_1),
-            format_f64(log_ret_2),
-            format_f64(log_ret_3),
-            format_f64(log_ret_5),
-            format_f64(log_ret_h),
-            format_f64(realized_vol_h),
-            format_f64(realized_vol_3h),
-            format_f64(atr_h_over_close),
-            format_f64(r_long),
-            format_f64(r_short),
-            y_long.to_string(),
-            y_short.to_string(),
-            if keep_long { "1" } else { "0" }.to_string(),
-            if keep_short { "1" } else { "0" }.to_string(),
-        ]);
-
+    let row_count = match (|| -> Result<usize, String> {
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&staged_output_path)
+            .map_err(|e| format!("create dataset csv: {e}"))?;
         writer
-            .write_record(record.iter().map(String::as_str))
-            .map_err(|e| format!("write dataset row: {e}"))?;
-        row_count += 1;
+            .write_record(header.iter().map(String::as_str))
+            .map_err(|e| format!("write dataset header: {e}"))?;
+
+        let mut row_count = 0usize;
+        let mut record: Vec<String> = Vec::with_capacity(4 + feature_names.len() + 6);
+        for t in frame.first_valid_bar..=last_label_bar {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+            let prev_close = candles.close[t.saturating_sub(1)];
+            let open = candles.open[t];
+            let high = candles.high[t];
+            let low = candles.low[t];
+            let close = candles.close[t];
+            let range = (high - low).abs();
+            let eps = if close.is_finite() && close.abs() > 1.0e-12 {
+                close.abs() * 1.0e-12
+            } else {
+                1.0e-12
+            };
+            let true_range = if prev_close.is_finite() {
+                (high - low)
+                    .abs()
+                    .max((high - prev_close).abs())
+                    .max((low - prev_close).abs())
+            } else {
+                (high - low).abs()
+            };
+            let body_pct = if open.is_finite() && open != 0.0 {
+                (close - open) / open
+            } else {
+                0.0
+            };
+            let abs_body_frac = (close - open).abs() / (range + eps);
+            let upper_wick_frac = (high - open.max(close)).max(0.0) / (range + eps);
+            let lower_wick_frac = (open.min(close) - low).max(0.0) / (range + eps);
+            let close_location = (close - low) / (range + eps);
+            let gap_pct = if prev_close.is_finite() && prev_close != 0.0 {
+                (open - prev_close) / prev_close
+            } else {
+                0.0
+            };
+            let true_range_pct = if prev_close.is_finite() && prev_close != 0.0 {
+                true_range / prev_close
+            } else {
+                0.0
+            };
+
+            let atr_h = frame.atr_h[t];
+            let alma_h = frame.alma_h[t];
+            let alma_3h = frame.alma_3h[t];
+            let alma_10h = frame.alma_10h[t];
+            let adx_2h = frame.adx_2h[t];
+            let half_h = (h / 2).max(1);
+            let alma_slope_h_half_atr = if t >= half_h && atr_h.is_finite() && atr_h > 0.0 {
+                (frame.alma_h[t] - frame.alma_h[t - half_h]) / atr_h
+            } else {
+                0.0
+            };
+            let alma_slope_3h_h_atr = if t >= h && atr_h.is_finite() && atr_h > 0.0 {
+                (frame.alma_3h[t] - frame.alma_3h[t - h]) / atr_h
+            } else {
+                0.0
+            };
+            let alma_spread_h_3h_atr = if atr_h.is_finite() && atr_h > 0.0 {
+                (alma_h - alma_3h) / atr_h
+            } else {
+                0.0
+            };
+            let alma_spread_3h_10h_atr = if atr_h.is_finite() && atr_h > 0.0 {
+                (alma_3h - alma_10h) / atr_h
+            } else {
+                0.0
+            };
+            let close_minus_alma_3h_atr = if atr_h.is_finite() && atr_h > 0.0 {
+                (close - alma_3h) / atr_h
+            } else {
+                0.0
+            };
+
+            let log_ret_1 = log_returns[t];
+            let log_ret_2 = rolling_sum(&log_return_prefix, t.saturating_sub(1), t + 1);
+            let log_ret_3 = rolling_sum(&log_return_prefix, t.saturating_sub(2), t + 1);
+            let log_ret_5 = rolling_sum(&log_return_prefix, t.saturating_sub(4), t + 1);
+            let log_ret_h = rolling_sum(&log_return_prefix, t + 1 - h.min(t + 1), t + 1);
+            let realized_vol_h = rolling_stddev(
+                &log_return_prefix,
+                &log_return_sq_prefix,
+                t + 1 - h.min(t + 1),
+                t + 1,
+            );
+            let three_h = h.saturating_mul(3);
+            let realized_vol_3h = rolling_stddev(
+                &log_return_prefix,
+                &log_return_sq_prefix,
+                t + 1 - three_h.min(t + 1),
+                t + 1,
+            );
+            let atr_h_over_close = if close.is_finite() && close != 0.0 {
+                atr_h / close
+            } else {
+                0.0
+            };
+
+            let open_next = candles.open[t + 1];
+            let open_exit = candles.open[t + h + 1];
+            let r_long = if open_next.is_finite() && open_exit.is_finite() && open_next > 0.0 {
+                (open_exit - open_next) / open_next
+            } else {
+                0.0
+            };
+            let r_short = if open_next.is_finite() && open_exit.is_finite() && open_next > 0.0 {
+                (open_next - open_exit) / open_next
+            } else {
+                0.0
+            };
+            let deadband = sample_deadband(req.round_trip_cost_bps, atr_h, open_next);
+            let y_long = if r_long > deadband { 1 } else { 0 };
+            let y_short = if r_short > deadband { 1 } else { 0 };
+            let keep_long = !((0.0..=deadband).contains(&r_long));
+            let keep_short = !((0.0..=deadband).contains(&r_short));
+
+            let split_id = split_windows
+                .iter()
+                .find(|window| t >= window.train_start && t < window.test_end)
+                .map(|window| window.split_id.clone())
+                .unwrap_or_default();
+
+            record.clear();
+            record.push(candles.timestamp[t].to_string());
+            record.push(req.data_id.clone());
+            record.push(split_id);
+            record.push("1.0".to_string());
+            record.push(format_f64(body_pct));
+            record.push(format_f64(abs_body_frac));
+            record.push(format_f64(upper_wick_frac));
+            record.push(format_f64(lower_wick_frac));
+            record.push(format_f64(close_location));
+            record.push(format_f64(gap_pct));
+            record.push(format_f64(true_range_pct));
+
+            for (row_idx, row) in frame.pattern_hits.iter().enumerate() {
+                let hit = row[t];
+                if hit != 0 {
+                    last_seen[row_idx] = Some(t);
+                }
+                let prefix = &pattern_prefix[row_idx];
+                record.push(hit.to_string());
+                record.push(rolling_count(prefix, t.saturating_sub(2), t + 1).to_string());
+                record.push(rolling_count(prefix, t.saturating_sub(4), t + 1).to_string());
+                record.push(rolling_count(prefix, t + 1 - h.min(t + 1), t + 1).to_string());
+                let two_h = h.saturating_mul(2);
+                record.push(rolling_count(prefix, t + 1 - two_h.min(t + 1), t + 1).to_string());
+                let bars_since = last_seen[row_idx]
+                    .map(|last| t.saturating_sub(last))
+                    .unwrap_or(h.saturating_mul(4));
+                record.push(bars_since.min(h.saturating_mul(4)).to_string());
+            }
+
+            record.extend([
+                format_f64(alma_h),
+                format_f64(alma_3h),
+                format_f64(alma_10h),
+                format_f64(alma_spread_h_3h_atr),
+                format_f64(alma_spread_3h_10h_atr),
+                format_f64(alma_slope_h_half_atr),
+                format_f64(alma_slope_3h_h_atr),
+                format_f64(close_minus_alma_3h_atr),
+                format_f64(adx_2h),
+                format_f64(log_ret_1),
+                format_f64(log_ret_2),
+                format_f64(log_ret_3),
+                format_f64(log_ret_5),
+                format_f64(log_ret_h),
+                format_f64(realized_vol_h),
+                format_f64(realized_vol_3h),
+                format_f64(atr_h_over_close),
+                format_f64(r_long),
+                format_f64(r_short),
+                y_long.to_string(),
+                y_short.to_string(),
+                if keep_long { "1" } else { "0" }.to_string(),
+                if keep_short { "1" } else { "0" }.to_string(),
+            ]);
+
+            writer
+                .write_record(record.iter().map(String::as_str))
+                .map_err(|e| format!("write dataset row: {e}"))?;
+            row_count += 1;
+        }
+        writer
+            .flush()
+            .map_err(|e| format!("flush dataset csv: {e}"))?;
+        Ok(row_count)
+    })() {
+        Ok(value) => value,
+        Err(err) => {
+            let _ = fs::remove_file(&staged_output_path);
+            return Err(err);
+        }
+    };
+    replace_file_from_staged(
+        &staged_output_path,
+        Path::new(&req.output_path),
+        "dataset csv",
+    )?;
+    write_json_file(&schema_path, &feature_schema, "feature schema")?;
+    if let (Some(path), Some(manifest)) = (split_manifest_path.as_ref(), split_manifest.as_ref()) {
+        write_json_file(path, manifest, "split manifest")?;
     }
-    writer
-        .flush()
-        .map_err(|e| format!("flush dataset csv: {e}"))?;
+
+    let export_first_timestamp = candles.timestamp.get(frame.first_valid_bar).copied();
+    let export_last_timestamp = candles.timestamp.get(last_label_bar).copied();
 
     let export_manifest = MlSignalDatasetExportManifest {
         version: ML_SIGNAL_EXPORT_MANIFEST_VERSION,
@@ -2298,8 +2422,8 @@ pub fn export_ml_signal_dataset_with_candles(
         first_valid_bar: frame.first_valid_bar,
         pattern_count: frame.pattern_ids.len(),
         feature_count: feature_names.len(),
-        first_timestamp: candles.timestamp.first().copied(),
-        last_timestamp: candles.timestamp.last().copied(),
+        first_timestamp: export_first_timestamp,
+        last_timestamp: export_last_timestamp,
         ticker_holdout,
         feature_schema_hash: feature_schema.schema_hash.clone(),
         exporter_version: ML_SIGNAL_EXPORTER_VERSION.to_string(),
@@ -2935,10 +3059,7 @@ fn write_ml_signal_score_cache(
         native_fallback_reason: native_fallback_reason.clone(),
         scores,
     };
-    ensure_parent_dir(&req.output_path)?;
-    let file = File::create(&req.output_path).map_err(|e| format!("create score cache: {e}"))?;
-    serde_json::to_writer_pretty(BufWriter::new(file), &cache)
-        .map_err(|e| format!("write score cache json: {e}"))?;
+    write_json_file(&req.output_path, &cache, "score cache")?;
 
     let manifest = MlSignalScoreCacheManifest {
         version: cache.version,
@@ -3178,48 +3299,53 @@ fn load_score_cache(
     let mut rows_missing_long_probability = 0usize;
     let mut rows_missing_short_probability = 0usize;
     let mut candle_idx = 0usize;
+    let mut matched_rows = 0usize;
+    let mut matched_first_timestamp = None;
+    let mut matched_last_timestamp = None;
     for row in cache.scores {
-        let has_long = row.p_long.filter(|value| value.is_finite()).is_some();
-        let has_short = row.p_short.filter(|value| value.is_finite()).is_some();
-        if has_long {
-            has_probability_long = true;
-        }
-        if has_short {
-            has_probability_short = true;
-        }
-        if has_long || has_short {
-            rows_with_probability = rows_with_probability.saturating_add(1);
-            if !has_long {
-                rows_missing_long_probability = rows_missing_long_probability.saturating_add(1);
-            }
-            if !has_short {
-                rows_missing_short_probability = rows_missing_short_probability.saturating_add(1);
-            }
-        }
         while candle_idx < candles.timestamp.len() && candles.timestamp[candle_idx] < row.timestamp
         {
             candle_idx = candle_idx.saturating_add(1);
         }
         if candle_idx < candles.timestamp.len() && candles.timestamp[candle_idx] == row.timestamp {
+            let has_long = row.p_long.filter(|value| value.is_finite()).is_some();
+            let has_short = row.p_short.filter(|value| value.is_finite()).is_some();
+            if has_long {
+                has_probability_long = true;
+            }
+            if has_short {
+                has_probability_short = true;
+            }
+            if has_long || has_short {
+                rows_with_probability = rows_with_probability.saturating_add(1);
+                if !has_long {
+                    rows_missing_long_probability = rows_missing_long_probability.saturating_add(1);
+                }
+                if !has_short {
+                    rows_missing_short_probability =
+                        rows_missing_short_probability.saturating_add(1);
+                }
+            }
             out[candle_idx] = Some(ScorePoint {
                 p_long: row.p_long,
                 p_short: row.p_short,
                 raw_long: row.raw_long,
                 raw_short: row.raw_short,
             });
+            matched_rows = matched_rows.saturating_add(1);
+            matched_first_timestamp.get_or_insert(row.timestamp);
+            matched_last_timestamp = Some(row.timestamp);
         }
     }
-    let coverage_ratio = if cache.coverage_ratio.is_finite() && cache.coverage_ratio > 0.0 {
-        cache.coverage_ratio
-    } else if candles.close.is_empty() {
+    let coverage_ratio = if candles.close.is_empty() {
         0.0
     } else {
-        (cache.bars_scored as f64 / candles.close.len() as f64).clamp(0.0, 1.0)
+        (matched_rows as f64 / candles.close.len() as f64).clamp(0.0, 1.0)
     };
     if cache.score_scope == MlSignalScoreScope::FullDataset && !candles.timestamp.is_empty() {
         let expected_first = candles.timestamp.first().copied();
         let expected_last = candles.timestamp.last().copied();
-        if cache.first_timestamp != expected_first || cache.last_timestamp != expected_last {
+        if matched_first_timestamp != expected_first || matched_last_timestamp != expected_last {
             return Err(
                 "full_dataset score cache timestamp span does not match the loaded candles"
                     .to_string(),
@@ -3235,15 +3361,15 @@ fn load_score_cache(
     Ok(LoadedScoreCache {
         points: out,
         summary: MlSignalScoreCacheSummary {
-            matched_rows: cache.matched_rows,
+            matched_rows,
             skipped_rows: cache.skipped_rows,
-            bars_scored: cache.bars_scored,
+            bars_scored: matched_rows,
             duplicate_timestamps: cache.duplicate_timestamps,
             coverage_ratio,
             score_space: cache.score_space,
             score_scope: cache.score_scope,
-            first_timestamp: cache.first_timestamp,
-            last_timestamp: cache.last_timestamp,
+            first_timestamp: matched_first_timestamp,
+            last_timestamp: matched_last_timestamp,
             feature_schema_hash: cache.feature_schema_hash,
             calibration_state: cache.calibration_state,
             threshold_policy: cache.threshold_policy,
@@ -3463,11 +3589,7 @@ fn validate_ml_signal_candidates(
     cancel: &AtomicBool,
 ) -> Result<MlSignalValidationResult, String> {
     let started = std::time::Instant::now();
-    let score_obs = score_points
-        .iter()
-        .filter(|point| point.is_some())
-        .count()
-        .max(2);
+    let actual_score_obs = score_points.iter().filter(|point| point.is_some()).count();
     let gates = sanitize_hard_gates(min_psr, min_dsr, None, None, None);
     let lr = log_returns_from_close(&candles.close);
     let mut requested = Vec::new();
@@ -3503,7 +3625,7 @@ fn validate_ml_signal_candidates(
             iterative_in_sample: None,
             psr: None,
             dsr: None,
-            track_record_bars: score_obs,
+            track_record_bars: actual_score_obs,
             min_track_record_length_bars: None,
             validation_verdict: ValidationCandidateVerdict::default(),
             robust_score,
@@ -3511,7 +3633,7 @@ fn validate_ml_signal_candidates(
         });
     }
 
-    let sample_obs = vec![score_obs; out.len()];
+    let sample_obs = vec![actual_score_obs; out.len()];
     compute_probability_metrics(&mut out, &sample_obs);
     mark_robust_pareto(&mut out);
     apply_candidate_hard_gates(&mut out, &gates, None);
@@ -3954,6 +4076,17 @@ pub fn classify_ml_signal_manifest(
     })
 }
 
+fn bundle_id_from_manifest_path(manifest_path: &Path) -> String {
+    manifest_path
+        .parent()
+        .and_then(|path| path.file_name())
+        .or_else(|| manifest_path.file_stem())
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("unknown_bundle")
+        .to_string()
+}
+
 pub fn list_ml_signal_model_bundle_summaries(
     root_dir: &Path,
 ) -> Result<Vec<MlSignalModelBundleSummary>, String> {
@@ -3982,19 +4115,41 @@ pub fn list_ml_signal_model_bundle_summaries(
             continue;
         };
 
-        let status = classify_ml_signal_manifest(&manifest_path)?;
-        let manifest = status
-            .manifest
-            .clone()
-            .ok_or_else(|| "manifest unexpectedly missing".to_string())?;
-        out.push(MlSignalModelBundleSummary {
-            bundle_id: status.bundle_id,
-            manifest_path: status.manifest_path,
-            state: status.state,
-            model_family: manifest.model_family,
-            model_format: manifest.model_format,
-            issues: status.issues,
-        });
+        match classify_ml_signal_manifest(&manifest_path) {
+            Ok(status) => {
+                if let Some(manifest) = status.manifest.clone() {
+                    out.push(MlSignalModelBundleSummary {
+                        bundle_id: status.bundle_id,
+                        manifest_path: status.manifest_path,
+                        state: status.state,
+                        model_family: manifest.model_family,
+                        model_format: manifest.model_format,
+                        issues: status.issues,
+                    });
+                } else {
+                    out.push(MlSignalModelBundleSummary {
+                        bundle_id: status.bundle_id,
+                        manifest_path: status.manifest_path,
+                        state: "warning".to_string(),
+                        model_family: "unknown".to_string(),
+                        model_format: "unknown".to_string(),
+                        issues: vec![
+                            "manifest unexpectedly missing after classification".to_string()
+                        ],
+                    });
+                }
+            }
+            Err(err) => {
+                out.push(MlSignalModelBundleSummary {
+                    bundle_id: bundle_id_from_manifest_path(&manifest_path),
+                    manifest_path: manifest_path.to_string_lossy().to_string(),
+                    state: "warning".to_string(),
+                    model_family: "unknown".to_string(),
+                    model_format: "unknown".to_string(),
+                    issues: vec![format!("manifest classification failed: {err}")],
+                });
+            }
+        }
     }
     out.sort_by(|a, b| a.bundle_id.cmp(&b.bundle_id));
     Ok(out)
@@ -4088,6 +4243,21 @@ mod tests {
                 volume: true,
             },
         )
+    }
+
+    #[test]
+    fn validate_series_len_rejects_length_mismatch() {
+        let err = validate_series_len("alma(H)", &[1.0, 2.0], 3).expect_err("length mismatch");
+        assert!(err.contains("alma(H)"));
+        assert!(err.contains("3 candles"));
+    }
+
+    #[test]
+    fn validate_pattern_rows_len_reports_pattern_id() {
+        let err = validate_pattern_rows_len(&["engulfing".to_string()], &[vec![1u8, 0u8]], 3)
+            .expect_err("pattern mismatch");
+        assert!(err.contains("engulfing"));
+        assert!(err.contains("3 candles"));
     }
 
     #[test]
@@ -4780,11 +4950,23 @@ mod tests {
             File::open(&export.export_manifest_path).expect("open export manifest"),
         ))
         .expect("parse export manifest");
+        let last_label_bar = candles
+            .close
+            .len()
+            .saturating_sub(export.horizon_bars.saturating_add(2));
         assert_eq!(manifest.feature_schema_hash, export.feature_schema_hash);
         assert_eq!(manifest.exporter_version, ML_SIGNAL_EXPORTER_VERSION);
         assert!(manifest.label_policy.is_some());
         assert!(manifest.sample_weight_policy.is_some());
         assert!(manifest.created_at_unix_ms.is_some());
+        assert_eq!(
+            manifest.first_timestamp,
+            candles.timestamp.get(export.first_valid_bar).copied()
+        );
+        assert_eq!(
+            manifest.last_timestamp,
+            candles.timestamp.get(last_label_bar).copied()
+        );
 
         let _ = fs::remove_file(&output_path);
         let _ = fs::remove_file(&export.feature_schema_path);
@@ -5119,6 +5301,62 @@ mod tests {
     }
 
     #[test]
+    fn list_bundle_summaries_tolerates_malformed_manifest_entries() {
+        let _guard = lock_test_env();
+        let root_dir = Path::new(&temp_dir_path("mlsig_manifest_listing")).to_path_buf();
+        let valid_dir = root_dir.join("bundle_valid");
+        let invalid_dir = root_dir.join("bundle_invalid");
+        fs::create_dir_all(&valid_dir).expect("create valid bundle dir");
+        fs::create_dir_all(&invalid_dir).expect("create invalid bundle dir");
+        fs::write(valid_dir.join("model_long.cbm"), b"long").expect("write long model");
+        fs::write(valid_dir.join("model_short.cbm"), b"short").expect("write short model");
+        fs::write(
+            valid_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "bundle_id": "bundle_valid",
+                "schema_version": 1,
+                "feature_schema_version": 1,
+                "model_family": "catboost_binary_pair",
+                "model_format": "cbm",
+                "long_model_path": "model_long.cbm",
+                "short_model_path": "model_short.cbm"
+            }))
+            .expect("serialize manifest"),
+        )
+        .expect("write valid manifest");
+        fs::write(invalid_dir.join("manifest.json"), b"{not-json").expect("write invalid manifest");
+
+        let summaries =
+            list_ml_signal_model_bundle_summaries(&root_dir).expect("list bundle summaries");
+        assert_eq!(summaries.len(), 2);
+
+        let valid = summaries
+            .iter()
+            .find(|summary| summary.bundle_id == "bundle_valid")
+            .expect("valid summary");
+        assert_eq!(valid.model_family, "catboost_binary_pair");
+
+        let invalid = summaries
+            .iter()
+            .find(|summary| summary.bundle_id == "bundle_invalid")
+            .expect("invalid summary");
+        assert_eq!(invalid.state, "warning");
+        assert_eq!(invalid.model_family, "unknown");
+        assert!(invalid
+            .issues
+            .iter()
+            .any(|issue| issue.contains("manifest classification failed")));
+
+        let _ = fs::remove_file(valid_dir.join("model_long.cbm"));
+        let _ = fs::remove_file(valid_dir.join("model_short.cbm"));
+        let _ = fs::remove_file(valid_dir.join("manifest.json"));
+        let _ = fs::remove_file(invalid_dir.join("manifest.json"));
+        let _ = fs::remove_dir(&valid_dir);
+        let _ = fs::remove_dir(&invalid_dir);
+        let _ = fs::remove_dir(&root_dir);
+    }
+
+    #[test]
     fn build_split_windows_generates_rolls() {
         let windows = build_ml_signal_split_windows(
             300,
@@ -5333,6 +5571,126 @@ mod tests {
         )
         .expect_err("partial full-dataset cache should fail validation");
         assert!(err.contains("full_dataset"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_rejects_full_dataset_cache_when_metadata_overstates_coverage() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("scores_overstated_full_dataset_in", "csv");
+        let cache_path = temp_file_path("scores_overstated_full_dataset_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short", "score_scope"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(3).take(10) {
+            writer
+                .write_record([
+                    ts.to_string(),
+                    "0.80".to_string(),
+                    "0.20".to_string(),
+                    "FullDataset".to_string(),
+                ])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect("build cache");
+        let mut cache: MlSignalScoreCacheFile =
+            serde_json::from_reader(BufReader::new(File::open(&cache_path).expect("open cache")))
+                .expect("parse cache");
+        cache.coverage_ratio = 1.0;
+        cache.matched_rows = candles.close.len();
+        cache.bars_scored = candles.close.len();
+        cache.first_timestamp = candles.timestamp.first().copied();
+        cache.last_timestamp = candles.timestamp.last().copied();
+        serde_json::to_writer_pretty(
+            BufWriter::new(File::create(&cache_path).expect("rewrite cache")),
+            &cache,
+        )
+        .expect("rewrite lied cache");
+
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("lied full-dataset cache should still fail");
+        assert!(err.contains("full_dataset"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_uses_actual_track_record_bars_without_clamping_summary_field() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("scores_single_obs_in", "csv");
+        let cache_path = temp_file_path("scores_single_obs_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short"])
+            .expect("header");
+        writer
+            .write_record([
+                candles.timestamp[5].to_string(),
+                "0.82".to_string(),
+                "0.18".to_string(),
+            ])
+            .expect("row");
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &cache_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect("build cache");
+        let validation = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("validation should succeed");
+        assert_eq!(validation.candidates.len(), 1);
+        assert_eq!(validation.candidates[0].track_record_bars, 1);
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);

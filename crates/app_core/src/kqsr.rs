@@ -19,6 +19,14 @@ use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
+/// KQSR strategy parameters.
+///
+/// Current runtime semantics intentionally remain broader than a stricter
+/// product-policy envelope:
+/// - exits in [`build_kqsr_desired_positions`] still pivot around the fixed
+///   neutral `50.0`
+/// - [`validate_kqsr_params`] accepts `prb_threshold` anywhere in `[0, 1]`, so
+///   values above `0.5` create overlapping long/short PRB acceptance regions
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct KqsrStrategyParams {
     #[serde(default = "default_kqsr_kdj_period")]
@@ -153,6 +161,12 @@ impl Default for KqsrStrategyParams {
     }
 }
 
+/// Validates that the persisted/runtime KQSR configuration is structurally
+/// usable without tightening historical compatibility.
+///
+/// This validator does not require `oversold < 50 < overbought` and does not
+/// cap `prb_threshold` at `0.5`; callers that want stricter policy should
+/// enforce it separately from this compatibility-oriented check.
 pub fn validate_kqsr_params(cfg: &KqsrStrategyParams) -> Result<(), String> {
     if cfg.kdj_period == 0 {
         return Err("KQSR kdj_period must be >= 1.".to_string());
@@ -226,6 +240,21 @@ fn max_first_valid_idx_f32(series: &[&[f32]]) -> Option<usize> {
         .iter()
         .filter_map(|values| first_finite_idx_local_f32(values))
         .max()
+}
+
+fn ensure_indicator_series_len(
+    indicator_id: &str,
+    output_id: &str,
+    actual_len: usize,
+    expected_len: usize,
+) -> Result<(), String> {
+    if actual_len == expected_len {
+        Ok(())
+    } else {
+        Err(format!(
+            "KQSR indicator '{indicator_id}/{output_id}' returned {actual_len} values; expected {expected_len}"
+        ))
+    }
 }
 
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
@@ -630,6 +659,16 @@ pub fn compute_kqsr_fast_signals(
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
     )?;
+    let expected_len = candles.close.len();
+    ensure_indicator_series_len("kdj", kdj_j_output.as_str(), j.len(), expected_len)?;
+    ensure_indicator_series_len("srsi", srsi_k_output.as_str(), srsi_k.len(), expected_len)?;
+    ensure_indicator_series_len("srsi", srsi_d_output.as_str(), srsi_d.len(), expected_len)?;
+    ensure_indicator_series_len(
+        "ift_rsi",
+        ift_rsi_output.as_str(),
+        ift_rsi.len(),
+        expected_len,
+    )?;
     let first_valid = max_first_valid_idx(&[
         j.as_slice(),
         srsi_k.as_slice(),
@@ -743,6 +782,31 @@ pub fn compute_kqsr_slow_signals(
         prb_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
+    )?;
+    let expected_len = candles.close.len();
+    ensure_indicator_series_len(
+        "qqe",
+        qqe_fast_output.as_str(),
+        qqe_fast.len(),
+        expected_len,
+    )?;
+    ensure_indicator_series_len(
+        "qqe",
+        qqe_slow_output.as_str(),
+        qqe_slow.len(),
+        expected_len,
+    )?;
+    ensure_indicator_series_len(
+        "prb",
+        prb_upper_output.as_str(),
+        prb_upper.len(),
+        expected_len,
+    )?;
+    ensure_indicator_series_len(
+        "prb",
+        prb_lower_output.as_str(),
+        prb_lower.len(),
+        expected_len,
     )?;
 
     let first_valid = max_first_valid_idx(&[
@@ -863,6 +927,16 @@ pub fn compute_kqsr_fast_signals_f32(
         ift_rsi_params.as_slice(),
         prepared_cuda_inputs,
     )?;
+    let expected_len = candles.close.len();
+    ensure_indicator_series_len("kdj", kdj_j_output.as_str(), j.len(), expected_len)?;
+    ensure_indicator_series_len("srsi", srsi_k_output.as_str(), srsi_k.len(), expected_len)?;
+    ensure_indicator_series_len("srsi", srsi_d_output.as_str(), srsi_d.len(), expected_len)?;
+    ensure_indicator_series_len(
+        "ift_rsi",
+        ift_rsi_output.as_str(),
+        ift_rsi.len(),
+        expected_len,
+    )?;
     let first_valid = max_first_valid_idx_f32(&[
         j.as_slice(),
         srsi_k.as_slice(),
@@ -974,6 +1048,31 @@ pub fn compute_kqsr_slow_signals_f32(
         prb_params.as_slice(),
         prepared_cuda_inputs,
     )?;
+    let expected_len = candles.close.len();
+    ensure_indicator_series_len(
+        "qqe",
+        qqe_fast_output.as_str(),
+        qqe_fast.len(),
+        expected_len,
+    )?;
+    ensure_indicator_series_len(
+        "qqe",
+        qqe_slow_output.as_str(),
+        qqe_slow.len(),
+        expected_len,
+    )?;
+    ensure_indicator_series_len(
+        "prb",
+        prb_upper_output.as_str(),
+        prb_upper.len(),
+        expected_len,
+    )?;
+    ensure_indicator_series_len(
+        "prb",
+        prb_lower_output.as_str(),
+        prb_lower.len(),
+        expected_len,
+    )?;
 
     let first_valid = max_first_valid_idx_f32(&[
         qqe_fast.as_slice(),
@@ -992,6 +1091,12 @@ pub fn compute_kqsr_slow_signals_f32(
     })
 }
 
+/// Computes the first tradeable bar for KQSR evaluation.
+///
+/// When `trade_on_next_bar` is enabled, a valid terminal outcome is
+/// `start_t == close.len()`: the first usable signal may arrive on the last
+/// bar, leaving no remaining tradeable bar. Downstream callers should treat
+/// that as a legitimate all-flat case rather than as an error by itself.
 pub fn compute_kqsr_start_t(
     first_valid_close: usize,
     first_valid_signals: usize,
@@ -1016,6 +1121,17 @@ fn prb_band_fraction(close: f64, lower: f64, upper: f64) -> f64 {
     (close - lower) / width
 }
 
+/// Builds the desired-position vector for the already-computed KQSR signals.
+///
+/// Current semantics are intentionally preserved:
+/// - long and short exits both pivot around the fixed neutral `50.0`
+/// - `prb_threshold > 0.5` creates overlapping PRB acceptance regions for long
+///   and short entry checks
+/// - returning an all-flat vector is legitimate when `start_t >= close.len()`
+///   and no tradeable bar remains
+///
+/// Malformed signal shapes should be rejected earlier by the fallible signal
+/// builders. This helper keeps its flat-output API for compatibility.
 pub fn build_kqsr_desired_positions(
     close: &[f64],
     signals: &KqsrSignals,
@@ -1217,6 +1333,31 @@ mod tests {
         let desired = build_kqsr_desired_positions(&close, &signals, 1, &strategy, &cfg);
         assert_eq!(desired[2], 1);
         assert_eq!(desired[4], 0);
+    }
+
+    #[test]
+    fn build_kqsr_desired_positions_keeps_legitimate_no_trade_terminal_case_flat() {
+        let close = vec![100.0, 100.2, 100.4, 100.6, 100.8];
+        let signals = KqsrSignals {
+            j: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 49.0],
+            srsi_k: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 49.5],
+            srsi_d: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 49.5],
+            ift_rsi: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 0.0],
+            qqe_fast: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 0.0],
+            qqe_slow: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 0.0],
+            prb_upper: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 101.0],
+            prb_lower: vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, 99.0],
+            first_valid: 4,
+        };
+        let mut strategy = StrategyConfig::default();
+        strategy.trade_on_next_bar = true;
+        let cfg = KqsrStrategyParams::default();
+
+        let start_t = compute_kqsr_start_t(4, signals.first_valid, strategy.trade_on_next_bar);
+        assert_eq!(start_t, close.len());
+
+        let desired = build_kqsr_desired_positions(&close, &signals, start_t, &strategy, &cfg);
+        assert_eq!(desired, vec![0; close.len()]);
     }
 
     #[cfg(feature = "cuda")]

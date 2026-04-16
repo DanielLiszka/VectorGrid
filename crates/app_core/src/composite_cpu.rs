@@ -5067,6 +5067,22 @@ fn run_vemr_drilldown(
     })
 }
 
+fn build_local_stability_periods(base_period: u16, radius: u16, step: u16) -> Vec<u16> {
+    let mut periods: Vec<u16> = Vec::new();
+    let mut delta = -(radius as i32);
+    while delta <= radius as i32 {
+        let period = base_period as i32 + delta;
+        if period > 0 {
+            periods.push(period as u16);
+        }
+        delta += step as i32;
+    }
+    periods.push(base_period);
+    periods.sort_unstable();
+    periods.dedup();
+    periods
+}
+
 fn run_asr_local_stability(
     req: CompositeCpuLocalStabilityRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -5120,29 +5136,11 @@ fn run_asr_local_stability(
     let radius = req.radius.unwrap_or(1).min(32);
     let step = req.step.unwrap_or(1).max(1);
 
-    let mut fast_periods: Vec<u16> = Vec::new();
-    let mut df = -(radius as i32);
-    while df <= radius as i32 {
-        let v = base_fast as i32 + df;
-        if v > 0 {
-            fast_periods.push(v as u16);
-        }
-        df += step as i32;
-    }
-    let mut slow_periods: Vec<u16> = Vec::new();
-    let mut ds = -(radius as i32);
-    while ds <= radius as i32 {
-        let v = base_slow as i32 + ds;
-        if v > 0 {
-            slow_periods.push(v as u16);
-        }
-        ds += step as i32;
-    }
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
     if fast_periods.is_empty() || slow_periods.is_empty() {
         return Err("empty neighborhood".to_string());
     }
-    fast_periods.sort_unstable();
-    slow_periods.sort_unstable();
 
     let mut fast_cache: HashMap<u16, crate::asr::AsrFastSignals> = HashMap::new();
     for &fast_len in &fast_periods {
@@ -5264,7 +5262,7 @@ fn run_asr_local_stability(
         .iter()
         .find(|p| p.fast_len == base_fast && p.slow_len == base_slow)
         .map(|p| p.score)
-        .unwrap_or(0.0);
+        .ok_or_else(|| "base neighborhood point missing".to_string())?;
 
     let mut scores: Vec<f64> = points.iter().map(|p| p.score).collect();
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -11640,6 +11638,9 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
     if fast_len == 0 || slow_len == 0 {
         return Err("periods must be > 0".to_string());
     }
+    if fast_len >= slow_len {
+        return Err("invalid params: fast_len must be < slow_len".to_string());
+    }
     if fast_len > n || slow_len > n {
         return Err(format!(
             "period exceeds series length: fast_len={fast_len} slow_len={slow_len} n={n}"
@@ -11730,7 +11731,7 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
     }
 
     let lr = compute_log_returns_f64(close);
-    let bins = req.bins.unwrap_or(1024);
+    let bins = req.bins.unwrap_or(1024).clamp(1, 8192);
     let mut curves =
         ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
             &lr,
@@ -11970,30 +11971,8 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
     let radius = req.radius.unwrap_or(1).min(32);
     let step = req.step.unwrap_or(1).max(1);
 
-    let mut fast_periods: Vec<u16> = Vec::new();
-    let mut df = -(radius as i32);
-    while df <= radius as i32 {
-        let v = base_fast as i32 + df;
-        if v > 0 {
-            fast_periods.push(v as u16);
-        }
-        df += step as i32;
-    }
-    let mut slow_periods: Vec<u16> = Vec::new();
-    let mut ds = -(radius as i32);
-    while ds <= radius as i32 {
-        let v = base_slow as i32 + ds;
-        if v > 0 {
-            slow_periods.push(v as u16);
-        }
-        ds += step as i32;
-    }
-
-    if fast_periods.is_empty() || slow_periods.is_empty() {
-        return Err("empty neighborhood".to_string());
-    }
-    fast_periods.sort_unstable();
-    slow_periods.sort_unstable();
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
 
     // Use a single start_t based on the maximum period in the neighborhood so all points are comparable.
     let trade_offset = if req.strategy.trade_on_next_bar {
@@ -12086,7 +12065,7 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
         .iter()
         .find(|p| p.fast_len == base_fast && p.slow_len == base_slow)
         .map(|p| p.score)
-        .unwrap_or(0.0);
+        .ok_or_else(|| "base neighborhood point missing".to_string())?;
 
     let mut scores: Vec<f64> = points.iter().map(|p| p.score).collect();
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -14725,6 +14704,59 @@ mod tests {
     }
 
     #[test]
+    fn composite_cpu_local_stability_keeps_exact_base_when_step_skips_zero() {
+        let candles = make_trending_candles(4096);
+
+        let req = CompositeCpuLocalStabilityRequest {
+            backend: crate::double_ma::Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "test".to_string(),
+            params: DoubleMaParamsResolved {
+                fast_len: 9,
+                slow_len: 21,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+            },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            radius: Some(2),
+            step: Some(3),
+        };
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("composite local stability");
+
+        let base_point = res
+            .points
+            .iter()
+            .find(|p| p.fast_len == 9 && p.slow_len == 21)
+            .expect("exact base point should be present");
+        assert_eq!(res.summary.base, base_point.score);
+    }
+
+    #[test]
     fn asr_optimization_smoke_runs() {
         let candles = make_trending_candles(5000);
         let cancel = AtomicBool::new(false);
@@ -15995,6 +16027,95 @@ mod tests {
             res.curves.equity.minmax.len(),
             res.curves.equity.bins.saturating_mul(2)
         );
+    }
+
+    #[test]
+    fn composite_cpu_drilldown_rejects_invalid_base_period_order() {
+        let candles = make_trending_candles(512);
+        let req = CompositeCpuDrilldownRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "test".to_string(),
+            params: DoubleMaParamsResolved {
+                fast_len: 21,
+                slow_len: 21,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+            },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            bins: Some(256),
+        };
+
+        let err = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect_err("equal fast/slow lengths must fail");
+        assert!(err.contains("fast_len must be < slow_len"));
+    }
+
+    #[test]
+    fn composite_cpu_drilldown_clamps_zero_bins_to_one() {
+        let candles = make_trending_candles(1024);
+        let req = CompositeCpuDrilldownRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "test".to_string(),
+            params: DoubleMaParamsResolved {
+                fast_len: 9,
+                slow_len: 21,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+            },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            bins: Some(0),
+        };
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("composite drilldown");
+        assert_eq!(res.curves.equity.bins, 1);
+        assert_eq!(res.curves.drawdown.bins, 1);
     }
 
     #[test]

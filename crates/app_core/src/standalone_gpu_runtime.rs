@@ -14,6 +14,8 @@ pub(crate) struct CloseSeriesKey {
 }
 
 impl CloseSeriesKey {
+    // This key is only valid while the caller keeps the same host slice allocation and device
+    // buffer alive. Any reallocation, replacement, or in-place pointer change invalidates it.
     pub(crate) fn from_host_and_device(close_f32: &[f32], close_device_ptr: u64) -> Self {
         Self {
             len: close_f32.len(),
@@ -64,16 +66,29 @@ pub(crate) fn ensure_device_buffer_len<T: DeviceCopy>(
         if let Some(old) = buf.take() {
             old.drop_async(stream).map_err(|e| e.to_string())?;
         }
+        // The caller must fully initialize any newly grown tail before a device read observes it.
         *buf =
             Some(unsafe { DeviceBuffer::<T>::uninitialized(required) }.map_err(|e| e.to_string())?);
     }
     Ok(())
 }
 
+#[inline]
+fn ensure_prefix_fits(label: &str, buffer_len: usize, prefix_len: usize) -> Result<(), String> {
+    if prefix_len > buffer_len {
+        Err(format!(
+            "{label} prefix length {prefix_len} exceeds buffer length {buffer_len}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn copy_host_to_device_prefix<T: DeviceCopy>(
     buf: &mut DeviceBuffer<T>,
     values: &[T],
 ) -> Result<(), String> {
+    ensure_prefix_fits("host-to-device copy", buf.len(), values.len())?;
     let mut prefix = buf.index(..values.len());
     prefix.copy_from(values).map_err(|e| e.to_string())
 }
@@ -82,14 +97,33 @@ pub(crate) fn copy_device_to_host_prefix<T: DeviceCopy>(
     buf: &DeviceBuffer<T>,
     values: &mut [T],
 ) -> Result<(), String> {
+    ensure_prefix_fits("device-to-host copy", buf.len(), values.len())?;
     let prefix = buf.index(..values.len());
     prefix.copy_to(values).map_err(|e| e.to_string())
 }
 
 pub(crate) fn ensure_host_f32_len(buf: &mut Vec<f32>, required: usize) {
+    // The grown tail is intentionally left uninitialized; callers must overwrite it before read.
     if buf.capacity() < required {
         *buf = alloc_uninit_copy(required);
     } else {
         resize_uninit_f32(buf, required);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_prefix_fits;
+
+    #[test]
+    fn ensure_prefix_fits_accepts_in_bounds_copy() {
+        assert_eq!(ensure_prefix_fits("copy", 4, 4), Ok(()));
+        assert_eq!(ensure_prefix_fits("copy", 4, 2), Ok(()));
+    }
+
+    #[test]
+    fn ensure_prefix_fits_rejects_oversize_copy() {
+        let err = ensure_prefix_fits("copy", 3, 5).expect_err("oversize prefix should fail");
+        assert_eq!(err, "copy prefix length 5 exceeds buffer length 3");
     }
 }

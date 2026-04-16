@@ -19,6 +19,13 @@ use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
+/// Serde-backed KVDF strategy configuration.
+///
+/// The default values here participate in the request contract for callers that
+/// omit fields during deserialization. The `vwap_anchor` field accepts the
+/// legacy `"session"` alias, which is normalized to `"1d"` before indicator
+/// dispatch. This file intentionally preserves month anchors such as `"1M"`
+/// rather than lowercasing them into minute anchors.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct KvdfStrategyParams {
     #[serde(default = "default_kvdf_keltner_period")]
@@ -160,6 +167,12 @@ impl Default for KvdfStrategyParams {
     }
 }
 
+/// Validates the basic KVDF parameter contract.
+///
+/// This validates field-level ranges and obvious malformed input, but it does
+/// not guarantee that every downstream helper in this module has already been
+/// called with a fully validated config. Callers that rely on strict
+/// pre-validation should invoke this explicitly before strategy execution.
 pub fn validate_kvdf_params(cfg: &KvdfStrategyParams) -> Result<(), String> {
     if cfg.keltner_period == 0 {
         return Err("KVDF keltner_period must be >= 1.".to_string());
@@ -193,11 +206,40 @@ pub fn normalized_kvdf_dti_threshold(cfg: &KvdfStrategyParams) -> f64 {
     cfg.dti_threshold.abs()
 }
 
+/// Normalizes the public KVDF VWAP anchor string into the form expected by the
+/// underlying VWAP indicator.
+///
+/// This keeps the historical `"session"` alias mapped to `"1d"`, normalizes
+/// day/hour units case-insensitively, and preserves uppercase month anchors
+/// such as `"1M"` so they do not silently turn into minute anchors.
 pub fn normalize_kvdf_vwap_anchor(anchor: &str) -> String {
-    let anchor = anchor.trim().to_ascii_lowercase();
-    match anchor.as_str() {
-        "" | "session" => "1d".to_string(),
-        other => other.to_string(),
+    let trimmed = anchor.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("session") {
+        return "1d".to_string();
+    }
+
+    let unit_start = trimmed
+        .char_indices()
+        .find(|(_, ch)| !ch.is_ascii_digit())
+        .map(|(idx, _)| idx);
+    let Some(unit_start) = unit_start else {
+        return trimmed.to_string();
+    };
+    if unit_start == 0 {
+        return trimmed.to_string();
+    }
+
+    let (qty, unit) = trimmed.split_at(unit_start);
+    if unit.len() != 1 {
+        return trimmed.to_string();
+    }
+
+    match unit.chars().next() {
+        Some('h') | Some('H') => format!("{qty}h"),
+        Some('d') | Some('D') => format!("{qty}d"),
+        Some('m') => format!("{qty}m"),
+        Some('M') => format!("{qty}M"),
+        _ => trimmed.to_string(),
     }
 }
 
@@ -416,6 +458,10 @@ fn compute_indicator_f64(
                         err
                     )),
                 }
+            } else {
+                record_kvdf_route_diagnostic(format!(
+                    "KVDF indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: prepared CUDA inputs missing"
+                ));
             }
         }
     }
@@ -472,6 +518,10 @@ fn compute_indicator_f32(
                     err
                 )),
             }
+        } else {
+            record_kvdf_route_diagnostic(format!(
+                "KVDF indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: prepared CUDA inputs missing"
+            ));
         }
     }
 
@@ -1057,6 +1107,9 @@ pub fn compute_kvdf_fast_signals_f32(
     })
 }
 
+/// Computes the first bar index where KVDF can begin writing desired
+/// positions, combining candle and indicator warmup with the current
+/// `trade_on_next_bar` execution rule.
 pub fn compute_kvdf_start_t(
     first_valid_close: usize,
     first_valid_signals: usize,
@@ -1070,6 +1123,12 @@ pub fn compute_kvdf_start_t(
     }
 }
 
+/// Builds the KVDF desired-position series from precomputed indicator signals.
+///
+/// Callers are expected to provide coherent signal vectors for the same candle
+/// series and to pass a `start_t` derived from the same warmup boundary. This
+/// function intentionally keeps the current entry/exit state-machine behavior
+/// stable and should not be treated as a generic signal-repair layer.
 pub fn build_kvdf_desired_positions(
     close: &[f64],
     signals: &KvdfSignals,
@@ -1245,6 +1304,51 @@ mod tests {
     }
 
     #[test]
+    fn normalize_kvdf_vwap_anchor_preserves_month_units() {
+        assert_eq!(normalize_kvdf_vwap_anchor("session"), "1d");
+        assert_eq!(normalize_kvdf_vwap_anchor("1d"), "1d");
+        assert_eq!(normalize_kvdf_vwap_anchor("1D"), "1d");
+        assert_eq!(normalize_kvdf_vwap_anchor("4H"), "4h");
+        assert_eq!(normalize_kvdf_vwap_anchor("1M"), "1M");
+        assert_eq!(normalize_kvdf_vwap_anchor("2M"), "2M");
+    }
+
+    #[test]
+    fn resolve_kvdf_output_ids_match_current_indicator_catalog_contract() {
+        let cases = [
+            ("keltner", &["upper_band", "upperband", "upper"][..]),
+            ("keltner", &["middle_band", "middleband", "middle"][..]),
+            ("keltner", &["lower_band", "lowerband", "lower"][..]),
+            ("vwap", &["value", "vwap"][..]),
+            ("dti", &["value", "dti"][..]),
+            ("fvg_trailing_stop", &["upper_ts", "upper"][..]),
+            ("fvg_trailing_stop", &["lower_ts", "lower"][..]),
+        ];
+
+        for (indicator_id, preferred_ids) in cases {
+            let resolved = resolve_output_id(indicator_id, preferred_ids).unwrap();
+            assert!(
+                preferred_ids
+                    .iter()
+                    .any(|candidate| resolved.eq_ignore_ascii_case(candidate)),
+                "expected '{indicator_id}' output '{resolved}' to match one of {:?}",
+                preferred_ids
+            );
+
+            let descriptor = find_dynamic_indicator_descriptor(indicator_id)
+                .expect("dynamic indicator descriptor should exist");
+            assert!(
+                descriptor
+                    .outputs
+                    .iter()
+                    .any(|output| output.id.eq_ignore_ascii_case(resolved.as_str())),
+                "resolved output '{resolved}' for '{indicator_id}' is missing from descriptor {:?}",
+                descriptor.outputs
+            );
+        }
+    }
+
+    #[test]
     fn build_kvdf_desired_positions_enters_and_exits_on_breakout_and_stop_rules() {
         let close = vec![100.0, 101.0, 103.0, 105.0, 104.0, 101.0, 99.0];
         let signals = KvdfSignals {
@@ -1275,6 +1379,44 @@ mod tests {
         let desired = build_kvdf_desired_positions(&close, &signals, 1, &strategy, &cfg);
         assert_eq!(desired[2], 1);
         assert_eq!(desired[5], 0);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn compute_kvdf_shared_signals_records_route_diagnostics_when_prepared_inputs_missing() {
+        struct ResetDiagnostics;
+
+        impl Drop for ResetDiagnostics {
+            fn drop(&mut self) {
+                clear_kvdf_route_diagnostics();
+            }
+        }
+
+        clear_kvdf_route_diagnostics();
+        let _reset = ResetDiagnostics;
+
+        let candles = make_trending_candles(256);
+        let cfg = KvdfStrategyParams::default();
+
+        let signals = compute_kvdf_shared_signals(
+            &candles,
+            "close",
+            &Backend::GpuOnly { device_id: 0 },
+            &cfg,
+            None,
+        )
+        .expect("kvdf shared signals with CPU fallback");
+
+        assert_eq!(signals.vwap.len(), candles.close.len());
+        let diagnostics = take_kvdf_route_diagnostics().unwrap_or_default();
+        assert!(
+            diagnostics.iter().any(|entry| {
+                entry.contains("KVDF indicator vwap/value")
+                    && entry.contains("prepared CUDA inputs missing")
+            }),
+            "expected prepared-input fallback diagnostic, got {:?}",
+            diagnostics
+        );
     }
 
     #[cfg(feature = "cuda")]

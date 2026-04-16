@@ -1,3 +1,35 @@
+//! Core optimization, validation, and runtime crate for the desktop application.
+//!
+//! `ta_app_core` is the engine layer behind the Tauri command surface. It owns the
+//! strategy execution backends, validation workflows, GPU/runtime plumbing, and the
+//! shared request/result types that higher layers exchange with the desktop shell.
+//!
+//! Major workflow families exposed from this crate include:
+//! - Double-MA optimization, drilldown, local-stability, and validation flows.
+//! - Composite strategy optimization and validation flows, including multi-objective
+//!   search and strategy-specific GPU kernel routes.
+//! - Dynamic indicator and dynamic strategy compilation/runtime support.
+//! - Meta-selection, ML-confidence, and ML-signal workflows.
+//! - Options dataset, signal-manifest, and expression-evaluation workflows.
+//! - Shared validation, timeframe, statistics, and iterative simulation utilities.
+//!
+//! Availability is split into three source-visible tiers:
+//! - Always available: CPU-first workflows plus shared request/response types,
+//!   catalog helpers, statistics, validation plumbing, and runtime-neutral
+//!   utilities compile in every build.
+//! - `cuda`: additional CUDA-aware indicator and runtime helpers become available,
+//!   while CPU-only builds remain supported without a CUDA toolchain.
+//! - `cuda + cuda-backtest-kernel`: the full kernel-backed GPU execution tier is
+//!   enabled, including VRAM-resident backtest/runtime surfaces and strategy-local
+//!   GPU kernel modules.
+//!
+//! API shape guidance:
+//! - Use crate-root re-exports when you need the main request/result types or
+//!   a stable front-door import path for application code.
+//! - Use namespaced modules when working inside one workflow family and you need
+//!   strategy-local helpers, tests, or lower-level runtime details.
+//! - Cache reset, prewarm, and runtime stats helpers are advanced operational
+//!   surfaces; most callers should start with the higher-level workflow APIs.
 pub(crate) mod alloc_policy;
 pub mod asr;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

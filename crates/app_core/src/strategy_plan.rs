@@ -88,6 +88,10 @@ pub struct CompiledStrategyPlan {
     pub backend: StrategyPlanBackend,
     pub profile: StrategyProfileKind,
     pub ir_schema_version: u16,
+    /// Opaque fingerprint of the serialized source IR.
+    ///
+    /// This tracks IR identity only. Downstream GPU compilation layers derive separate
+    /// compiled-plan and executable fingerprints after routing and ABI shaping decisions.
     pub ir_fingerprint_hex: String,
     pub indicator_plan: Vec<IndicatorComputePlan>,
     pub conditions: Vec<CompiledConditionOp>,
@@ -192,6 +196,15 @@ fn fingerprint_ir(ir: &StrategyIr) -> Result<String, String> {
     Ok(format!("{h:016x}"))
 }
 
+/// Compiles a validated [`StrategyIr`] into planner-ready routing and index structures.
+///
+/// `route_overrides` is a narrow escape hatch keyed by trimmed indicator slot id. Unknown override
+/// keys are ignored. When a key matches, the override value is trusted as-is rather than rechecked
+/// against the planner's default route policy.
+///
+/// The returned [`CompiledStrategyPlan::ir_fingerprint_hex`] intentionally preserves IR-level
+/// identity only. Callers that need compiled-plan or executable/cache identity should use the
+/// downstream GPU-program fingerprint layers instead of overloading this token.
 pub fn compile_strategy_plan(
     ir: &StrategyIr,
     backend: StrategyPlanBackend,
@@ -319,6 +332,9 @@ pub fn compile_strategy_plan(
 mod tests {
     use super::*;
     use crate::indicator_catalog::{list_dynamic_indicator_descriptors_cached, IndicatorParamKV};
+    use crate::strategy_gpu_program::{
+        compile_gpu_predicate_program, fingerprint_compiled_strategy_plan_for_gpu_program,
+    };
     use crate::strategy_ir::{
         build_static_strategy_ir, ConditionGroup, ConditionGroupMode, ConditionNode,
         ExecutionPolicy, IndicatorNode, MovingAverageSpec, SignalBindings, SignalProgramGraph,
@@ -496,6 +512,116 @@ mod tests {
             .find(|p| p.indicator_id == "fast_ma")
             .expect("fast_ma must be present");
         assert_eq!(fast.route, IndicatorRouteKind::Cpu);
+    }
+
+    #[test]
+    fn compile_plan_ignores_unknown_route_override_keys() {
+        let ir = make_ir(StrategyProfileKind::CompositeCpu);
+        let base_plan = compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None)
+            .expect("base plan should compile");
+        let mut overrides: HashMap<String, IndicatorRouteKind> = HashMap::new();
+        overrides.insert(
+            "__missing_slot__".to_string(),
+            IndicatorRouteKind::GpuSingle,
+        );
+        let overridden_plan =
+            compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, Some(&overrides))
+                .expect("plan should compile with unused override");
+        let base_routes = base_plan
+            .indicator_plan
+            .iter()
+            .map(|slot| (&slot.indicator_id, slot.route))
+            .collect::<Vec<_>>();
+        let overridden_routes = overridden_plan
+            .indicator_plan
+            .iter()
+            .map(|slot| (&slot.indicator_id, slot.route))
+            .collect::<Vec<_>>();
+        assert_eq!(overridden_routes, base_routes);
+        assert_eq!(
+            overridden_plan.ir_fingerprint_hex,
+            base_plan.ir_fingerprint_hex
+        );
+    }
+
+    #[test]
+    fn compile_plan_matches_route_override_keys_against_trimmed_indicator_ids() {
+        let mut ir = make_ir(StrategyProfileKind::CompositeCpu);
+        ir.program.indicators[0].id = " fast_ma ".to_string();
+        let mut overrides: HashMap<String, IndicatorRouteKind> = HashMap::new();
+        overrides.insert("fast_ma".to_string(), IndicatorRouteKind::Cpu);
+        let plan = compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, Some(&overrides))
+            .expect("plan should compile");
+        let fast = plan
+            .indicator_plan
+            .iter()
+            .find(|p| p.indicator_id == "fast_ma")
+            .expect("trimmed fast_ma slot must be present");
+        assert_eq!(fast.route, IndicatorRouteKind::Cpu);
+    }
+
+    #[test]
+    fn compile_plan_trusts_route_override_values_as_is() {
+        let ir = make_ir(StrategyProfileKind::CompositeCpu);
+        let mut overrides: HashMap<String, IndicatorRouteKind> = HashMap::new();
+        overrides.insert("fast_ma".to_string(), IndicatorRouteKind::GpuSingle);
+        let plan = compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, Some(&overrides))
+            .expect("plan should compile");
+        let fast = plan
+            .indicator_plan
+            .iter()
+            .find(|p| p.indicator_id == "fast_ma")
+            .expect("fast_ma must be present");
+        assert_eq!(fast.route, IndicatorRouteKind::GpuSingle);
+    }
+
+    #[test]
+    fn compile_plan_preserves_ir_fingerprint_but_changes_downstream_identity_layers() {
+        let ir = make_ir(StrategyProfileKind::CompositeCpu);
+        let base_plan = compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None)
+            .expect("base plan should compile");
+        let mut overrides: HashMap<String, IndicatorRouteKind> = HashMap::new();
+        overrides.insert("fast_ma".to_string(), IndicatorRouteKind::Cpu);
+        let overridden_plan =
+            compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, Some(&overrides))
+                .expect("overridden plan should compile");
+
+        assert_eq!(
+            base_plan.ir_fingerprint_hex,
+            overridden_plan.ir_fingerprint_hex
+        );
+
+        let base_compiled_plan_fingerprint =
+            fingerprint_compiled_strategy_plan_for_gpu_program(&base_plan)
+                .expect("compiled-plan fingerprint should exist");
+        let overridden_compiled_plan_fingerprint =
+            fingerprint_compiled_strategy_plan_for_gpu_program(&overridden_plan)
+                .expect("compiled-plan fingerprint should exist");
+        assert_ne!(
+            base_compiled_plan_fingerprint,
+            overridden_compiled_plan_fingerprint
+        );
+
+        let base_program =
+            compile_gpu_predicate_program(&base_plan).expect("base gpu program should compile");
+        let overridden_program = compile_gpu_predicate_program(&overridden_plan)
+            .expect("overridden gpu program should compile");
+        assert_eq!(
+            base_program.plan_fingerprint_hex,
+            base_plan.ir_fingerprint_hex
+        );
+        assert_eq!(
+            overridden_program.plan_fingerprint_hex,
+            overridden_plan.ir_fingerprint_hex
+        );
+        assert_ne!(
+            base_program.compiled_plan_fingerprint_hex,
+            overridden_program.compiled_plan_fingerprint_hex
+        );
+        assert_ne!(
+            base_program.executable_fingerprint_hex,
+            overridden_program.executable_fingerprint_hex
+        );
     }
 
     #[test]

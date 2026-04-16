@@ -1,8 +1,10 @@
 use std::fs;
+use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::{self, MaybeUninit};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
@@ -153,8 +155,15 @@ fn mask_to_flags(mask: u32) -> CandleFieldFlags {
     }
 }
 
-fn expected_cache_size(len: usize) -> u64 {
-    HEADER_LEN as u64 + (len as u64) * 48u64
+fn checked_cache_payload_bytes(len: usize) -> Option<usize> {
+    len.checked_mul(8)
+}
+
+fn checked_expected_cache_size(len_u64: u64) -> Option<u64> {
+    let len = usize::try_from(len_u64).ok()?;
+    let payload = u64::try_from(checked_cache_payload_bytes(len)?).ok()?;
+    let total_payload = payload.checked_mul(6)?;
+    (HEADER_LEN as u64).checked_add(total_payload)
 }
 
 fn write_header(
@@ -195,6 +204,8 @@ fn read_header(input: &[u8; HEADER_LEN]) -> Option<(u32, u64, u64, i64)> {
 fn write_le_slice_i64(w: &mut dyn Write, v: &[i64]) -> Result<(), String> {
     #[cfg(target_endian = "little")]
     {
+        // SAFETY: `i64` is plain old data, the cast preserves the slice bounds,
+        // and we read exactly `v.len() * size_of::<i64>()` initialized bytes.
         let bytes = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 8) };
         w.write_all(bytes).map_err(|e| e.to_string())
     }
@@ -210,6 +221,8 @@ fn write_le_slice_i64(w: &mut dyn Write, v: &[i64]) -> Result<(), String> {
 fn write_le_slice_f64(w: &mut dyn Write, v: &[f64]) -> Result<(), String> {
     #[cfg(target_endian = "little")]
     {
+        // SAFETY: `f64` is plain old data, the cast preserves the slice bounds,
+        // and we read exactly `v.len() * size_of::<f64>()` initialized bytes.
         let bytes = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 8) };
         w.write_all(bytes).map_err(|e| e.to_string())
     }
@@ -224,17 +237,28 @@ fn write_le_slice_f64(w: &mut dyn Write, v: &[f64]) -> Result<(), String> {
 }
 
 fn read_le_vec_i64(r: &mut dyn Read, len: usize) -> Result<Vec<i64>, String> {
+    let byte_len = checked_cache_payload_bytes(len)
+        .ok_or_else(|| "cache payload byte length overflow".to_string())?;
     let mut out_uninit: Vec<MaybeUninit<i64>> = Vec::with_capacity(len);
     unsafe {
         out_uninit.set_len(len);
     }
+    // SAFETY: `out_uninit` has capacity for `len` elements, we expose exactly
+    // `byte_len` bytes that cover that allocation, and `read_exact` fully
+    // initializes the backing memory before we reconstitute `Vec<i64>`.
     let buf =
-        unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, len * 8) };
+        unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, byte_len) };
     r.read_exact(buf).map_err(|e| e.to_string())?;
     let ptr = out_uninit.as_mut_ptr() as *mut i64;
     let cap = out_uninit.capacity();
     mem::forget(out_uninit);
+    // SAFETY: the allocation originated from `Vec<MaybeUninit<i64>>` with the
+    // same pointer/capacity, and the preceding `read_exact` initialized all
+    // `len` elements.
+    #[cfg(target_endian = "little")]
     let out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
+    #[cfg(target_endian = "big")]
+    let mut out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
 
     #[cfg(target_endian = "big")]
     {
@@ -246,17 +270,28 @@ fn read_le_vec_i64(r: &mut dyn Read, len: usize) -> Result<Vec<i64>, String> {
 }
 
 fn read_le_vec_f64(r: &mut dyn Read, len: usize) -> Result<Vec<f64>, String> {
+    let byte_len = checked_cache_payload_bytes(len)
+        .ok_or_else(|| "cache payload byte length overflow".to_string())?;
     let mut out_uninit: Vec<MaybeUninit<f64>> = Vec::with_capacity(len);
     unsafe {
         out_uninit.set_len(len);
     }
+    // SAFETY: `out_uninit` has capacity for `len` elements, we expose exactly
+    // `byte_len` bytes that cover that allocation, and `read_exact` fully
+    // initializes the backing memory before we reconstitute `Vec<f64>`.
     let buf =
-        unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, len * 8) };
+        unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, byte_len) };
     r.read_exact(buf).map_err(|e| e.to_string())?;
     let ptr = out_uninit.as_mut_ptr() as *mut f64;
     let cap = out_uninit.capacity();
     mem::forget(out_uninit);
+    // SAFETY: the allocation originated from `Vec<MaybeUninit<f64>>` with the
+    // same pointer/capacity, and the preceding `read_exact` initialized all
+    // `len` elements.
+    #[cfg(target_endian = "little")]
     let out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
+    #[cfg(target_endian = "big")]
+    let mut out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
 
     #[cfg(target_endian = "big")]
     {
@@ -322,16 +357,15 @@ pub fn load_or_build_with_identity(
 }
 
 fn try_load_cache(cache_path: &Path, src_id: SourceIdentity) -> Result<Option<Candles>, String> {
-    if !cache_path.exists() {
-        return Ok(None);
-    }
-
-    let md = fs::metadata(cache_path).map_err(|e| e.to_string())?;
+    let mut f = match fs::File::open(cache_path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.to_string()),
+    };
+    let md = f.metadata().map_err(|e| e.to_string())?;
     if md.len() < HEADER_LEN as u64 {
         return Ok(None);
     }
-
-    let mut f = fs::File::open(cache_path).map_err(|e| e.to_string())?;
     let mut header = [0u8; HEADER_LEN];
     f.read_exact(&mut header).map_err(|e| e.to_string())?;
 
@@ -343,8 +377,13 @@ fn try_load_cache(cache_path: &Path, src_id: SourceIdentity) -> Result<Option<Ca
         return Ok(None);
     }
 
-    let len = usize::try_from(len_u64).map_err(|_| "cache len overflows usize".to_string())?;
-    if md.len() != expected_cache_size(len) {
+    let Some(expected_size) = checked_expected_cache_size(len_u64) else {
+        return Ok(None);
+    };
+    let Some(len) = usize::try_from(len_u64).ok() else {
+        return Ok(None);
+    };
+    if md.len() != expected_size {
         return Ok(None);
     }
 
@@ -401,8 +440,7 @@ fn write_cache(cache_path: &Path, candles: &Candles, src_id: SourceIdentity) -> 
         max_ts,
     );
 
-    let tmp = cache_path.with_extension("vta.tmp");
-    let f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let (tmp, f) = create_unique_temp_cache_file(cache_path)?;
     let mut w = std::io::BufWriter::new(f);
 
     w.write_all(&header).map_err(|e| e.to_string())?;
@@ -414,23 +452,82 @@ fn write_cache(cache_path: &Path, candles: &Candles, src_id: SourceIdentity) -> 
     write_le_slice_f64(&mut w, &candles.volume)?;
 
     w.flush().map_err(|e| e.to_string())?;
+    drop(w);
 
-    if cache_path.exists() {
-        let _ = fs::remove_file(cache_path);
+    match fs::rename(&tmp, cache_path) {
+        Ok(()) => Ok(()),
+        Err(rename_err)
+            if matches!(
+                rename_err.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            match fs::remove_file(cache_path) {
+                Ok(()) => {
+                    fs::rename(&tmp, cache_path).map_err(|e| e.to_string())?;
+                    Ok(())
+                }
+                Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => {
+                    fs::rename(&tmp, cache_path).map_err(|e| e.to_string())?;
+                    Ok(())
+                }
+                Err(remove_err) => {
+                    let _ = fs::remove_file(&tmp);
+                    Err(remove_err.to_string())
+                }
+            }
+        }
+        Err(rename_err) => {
+            let _ = fs::remove_file(&tmp);
+            Err(rename_err.to_string())
+        }
     }
-    fs::rename(tmp, cache_path).map_err(|e| e.to_string())?;
-    Ok(())
+}
+
+fn create_unique_temp_cache_file(cache_path: &Path) -> Result<(PathBuf, fs::File), String> {
+    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let parent = cache_path
+        .parent()
+        .ok_or_else(|| "cache path has no parent directory".to_string())?;
+    let file_name = cache_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cache.vta");
+    let pid = std::process::id();
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    for _ in 0..32 {
+        let nonce = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!("{file_name}.{pid}.{seed:016x}.{nonce:016x}.tmp"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+
+    Err("failed to create unique temp cache file".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         content_fingerprint_for_source, fallback_cache_path, identity_for_source, load_or_build,
-        load_or_build_with_identity, write_cache, SourceIdentity,
+        load_or_build_with_identity, write_cache, write_header, SourceIdentity, HEADER_LEN,
     };
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     fn make_temp_dir(prefix: &str) -> PathBuf {
         let pid = std::process::id();
@@ -613,5 +710,90 @@ mod tests {
         assert!(!load.cache_hit);
         assert_eq!(load.candles.timestamp.len(), 3);
         assert!(load.cache_path.is_some());
+    }
+
+    #[test]
+    fn malformed_header_with_oversized_len_is_ignored_and_source_is_reparsed() {
+        let temp = make_temp_dir("data_cache_oversized_header");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+        let src_id = identity_for_source(&csv).expect("source identity");
+        let sidecar = csv.with_extension("vta");
+
+        let mut header = [0u8; HEADER_LEN];
+        write_header(
+            &mut header,
+            0b1_1111,
+            u64::MAX,
+            src_id.size,
+            src_id.mtime_utc_ms,
+            0,
+            0,
+        );
+        fs::write(&sidecar, header).expect("write malformed cache header");
+
+        let load = load_or_build_with_identity(&csv, &cache_dir, src_id)
+            .expect("load after malformed oversized header");
+        assert!(!load.cache_hit);
+        assert_eq!(load.candles.timestamp.len(), 3);
+        assert!(load.cache_path.is_some());
+    }
+
+    #[test]
+    fn write_cache_ignores_legacy_fixed_tmp_path_collision() {
+        let temp = make_temp_dir("data_cache_tmp_collision");
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+        let src_id = identity_for_source(&csv).expect("source identity");
+        let candles =
+            ta_app_core::read_candles_from_csv_compat(csv.to_string_lossy().as_ref()).expect("csv");
+        let cache_path = csv.with_extension("vta");
+        let legacy_tmp = cache_path.with_extension("vta.tmp");
+        fs::write(&legacy_tmp, b"sentinel").expect("write legacy tmp collision file");
+
+        write_cache(&cache_path, &candles, src_id).expect("write cache with fixed tmp collision");
+
+        assert_eq!(fs::read(&legacy_tmp).expect("read legacy tmp"), b"sentinel");
+        assert!(cache_path.exists());
+    }
+
+    #[test]
+    fn write_cache_supports_same_target_concurrent_writers() {
+        let temp = make_temp_dir("data_cache_concurrent_same_target");
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+        let src_id = identity_for_source(&csv).expect("source identity");
+        let cache_path = csv.with_extension("vta");
+        let barrier = Arc::new(Barrier::new(2));
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let csv = csv.clone();
+            let cache_path = cache_path.clone();
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                let candles =
+                    ta_app_core::read_candles_from_csv_compat(csv.to_string_lossy().as_ref())
+                        .expect("read csv");
+                barrier.wait();
+                write_cache(&cache_path, &candles, src_id)
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .expect("join concurrent cache writer")
+                .expect("concurrent cache write");
+        }
+
+        let load = load_or_build_with_identity(&csv, &temp.join("cache"), src_id)
+            .expect("load after concurrent writes");
+        assert!(load.cache_hit);
+        assert_eq!(load.candles.timestamp.len(), 3);
+        assert!(cache_path.exists());
     }
 }

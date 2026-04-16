@@ -30,12 +30,31 @@ const FLAG_DISABLE_FLIP: u32 = 1 << 1;
 const FLAG_TRADE_ON_NEXT_BAR: u32 = 1 << 2;
 const FLAG_ENABLE_STRATEGY_LOGIC: u32 = 1 << 4;
 
+/// Device-resident KVDF signal transport consumed by
+/// [`eval_kvdf_metrics_gpu_kernel_device_rows`].
+///
+/// Caller invariants:
+///
+/// - `close_f32.len()` must equal `cols` even when `close_device_ptr` is non-zero. The host slice
+///   remains part of the resident close/log-return cache identity, and `close_device_ptr == 0`
+///   triggers a host upload fallback from this slice.
+/// - Every non-zero raw pointer field must reference memory on the CUDA device/context selected by
+///   the `device_id` passed to the evaluator.
+/// - Each row-major matrix pointer must address at least `rows * stride` contiguous `f32` values
+///   with `stride >= cols`.
+/// - Externally owned device allocations must remain alive and semantically stable for the full
+///   call and for any later cache hit that reuses the same `close_f32` and `close_device_ptr`
+///   identity on the same thread.
 pub struct KvdfGpuDeviceSignalMatrices<'a> {
+    /// Host close series used for validation, host-upload fallback, and resident cache identity.
     pub close_f32: &'a [f32],
+    /// Raw device pointer for the close series. When zero, the evaluator uploads `close_f32` to
+    /// device memory before computing resident log returns.
     pub close_device_ptr: u64,
     pub cols: usize,
     pub dti_rows: usize,
     pub dti_stride: usize,
+    /// Row-major device pointer for `dti_rows * dti_stride` `f32` values.
     pub keltner_upper_row_major_ptr: u64,
     pub keltner_middle_row_major_ptr: u64,
     pub keltner_lower_row_major_ptr: u64,
@@ -51,6 +70,11 @@ pub struct KvdfGpuDeviceSignalMatrices<'a> {
     pub fast_stride: usize,
 }
 
+/// Elementwise KVDF combo metadata for
+/// [`eval_kvdf_metrics_gpu_kernel_device_rows`].
+///
+/// All slices must have identical length. Each index pair selects one fast row, slow row, DTI row,
+/// and `[start_t, end_t)` window for the corresponding output metrics row.
 pub struct KvdfGpuComboBatch<'a> {
     pub fast_row_index: &'a [i32],
     pub slow_row_index: &'a [i32],
@@ -345,6 +369,25 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
+/// Evaluates KVDF GPU-kernel metrics for precomputed device-row-major signal matrices.
+///
+/// This is a safe wrapper over unsafe CUDA launches. Callers must ensure that all non-zero raw
+/// device pointers in `signals` belong to the CUDA device/context identified by `device_id`, use
+/// the advertised row-major layout, and remain valid for the launch plus any later thread-local
+/// cache reuse keyed by the same `close_f32` and `close_device_ptr`.
+///
+/// Runtime behavior:
+///
+/// - When `signals.close_device_ptr == 0`, the evaluator uploads `signals.close_f32` and computes
+///   resident log returns from that uploaded close series.
+/// - When `signals.close_device_ptr != 0`, the evaluator uses that caller-owned close allocation
+///   directly, but `signals.close_f32` still participates in the resident cache identity.
+/// - CUDA runtime state, scratch buffers, and resident close/log-return reuse are thread-local and
+///   per-device; equivalent calls on another thread build an independent cache.
+/// - Empty combo batches intentionally short-circuit to `Ok(Vec::new())` before unsupported
+///   execution features are checked.
+/// - Overlays, stop-loss, and take-profit are intentionally unsupported on this route and return
+///   `Err` for non-empty combo batches before any CUDA runtime work begins.
 pub fn eval_kvdf_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &KvdfGpuDeviceSignalMatrices<'_>,
@@ -608,14 +651,15 @@ pub fn eval_kvdf_metrics_gpu_kernel_device_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_inputs, KvdfGpuComboBatch, KvdfGpuDeviceSignalMatrices};
+    use super::*;
 
-    #[test]
-    fn validate_inputs_rejects_negative_start_t() {
-        let close = vec![1.0f32; 8];
-        let signals = KvdfGpuDeviceSignalMatrices {
-            close_f32: &close,
-            close_device_ptr: 7,
+    fn sample_signals_with_close_ptr(
+        close: &[f32],
+        close_device_ptr: u64,
+    ) -> KvdfGpuDeviceSignalMatrices<'_> {
+        KvdfGpuDeviceSignalMatrices {
+            close_f32: close,
+            close_device_ptr,
             cols: close.len(),
             dti_rows: 2,
             dti_stride: close.len(),
@@ -632,7 +676,23 @@ mod tests {
             fvg_lower_ts_row_major_ptr: 19,
             fast_rows: 2,
             fast_stride: close.len(),
-        };
+        }
+    }
+
+    fn sample_combo_batch() -> KvdfGpuComboBatch<'static> {
+        KvdfGpuComboBatch {
+            fast_row_index: &[0],
+            slow_row_index: &[0],
+            dti_row_index: &[0],
+            start_t: &[1],
+            end_t: &[6],
+        }
+    }
+
+    #[test]
+    fn validate_inputs_rejects_negative_start_t() {
+        let close = vec![1.0f32; 8];
+        let signals = sample_signals_with_close_ptr(&close, 7);
         let combos = KvdfGpuComboBatch {
             fast_row_index: &[0],
             slow_row_index: &[0],
@@ -648,26 +708,8 @@ mod tests {
     #[test]
     fn validate_inputs_rejects_stride_smaller_than_cols() {
         let close = vec![1.0f32; 8];
-        let signals = KvdfGpuDeviceSignalMatrices {
-            close_f32: &close,
-            close_device_ptr: 7,
-            cols: close.len(),
-            dti_rows: 2,
-            dti_stride: 7,
-            keltner_upper_row_major_ptr: 11,
-            keltner_middle_row_major_ptr: 12,
-            keltner_lower_row_major_ptr: 13,
-            vwap_row_major_ptr: 14,
-            dti_row_major_ptr: 15,
-            slow_rows: 2,
-            slow_stride: close.len(),
-            devstop_long_row_major_ptr: 16,
-            devstop_short_row_major_ptr: 17,
-            fvg_upper_ts_row_major_ptr: 18,
-            fvg_lower_ts_row_major_ptr: 19,
-            fast_rows: 2,
-            fast_stride: close.len(),
-        };
+        let mut signals = sample_signals_with_close_ptr(&close, 7);
+        signals.dti_stride = 7;
         let combos = KvdfGpuComboBatch {
             fast_row_index: &[0],
             slow_row_index: &[0],
@@ -683,26 +725,7 @@ mod tests {
     #[test]
     fn validate_inputs_rejects_row_index_out_of_bounds() {
         let close = vec![1.0f32; 8];
-        let signals = KvdfGpuDeviceSignalMatrices {
-            close_f32: &close,
-            close_device_ptr: 7,
-            cols: close.len(),
-            dti_rows: 2,
-            dti_stride: close.len(),
-            keltner_upper_row_major_ptr: 11,
-            keltner_middle_row_major_ptr: 12,
-            keltner_lower_row_major_ptr: 13,
-            vwap_row_major_ptr: 14,
-            dti_row_major_ptr: 15,
-            slow_rows: 2,
-            slow_stride: close.len(),
-            devstop_long_row_major_ptr: 16,
-            devstop_short_row_major_ptr: 17,
-            fvg_upper_ts_row_major_ptr: 18,
-            fvg_lower_ts_row_major_ptr: 19,
-            fast_rows: 2,
-            fast_stride: close.len(),
-        };
+        let signals = sample_signals_with_close_ptr(&close, 7);
         let combos = KvdfGpuComboBatch {
             fast_row_index: &[2],
             slow_row_index: &[0],
@@ -713,5 +736,85 @@ mod tests {
 
         let err = validate_inputs(&signals, &combos).expect_err("row index out of bounds");
         assert!(err.contains("fast_row_index"));
+    }
+
+    #[test]
+    fn validate_inputs_allows_close_device_ptr_zero_host_upload_fallback() {
+        let close = vec![1.0f32; 8];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = sample_combo_batch();
+
+        validate_inputs(&signals, &combos).expect("host-upload fallback should validate");
+    }
+
+    #[test]
+    fn validate_inputs_rejects_null_signal_pointer() {
+        let close = vec![1.0f32; 8];
+        let mut signals = sample_signals_with_close_ptr(&close, 7);
+        signals.fvg_lower_ts_row_major_ptr = 0;
+        let combos = sample_combo_batch();
+
+        let err = validate_inputs(&signals, &combos).expect_err("null signal pointer");
+        assert!(err.contains("signal pointer is null"));
+    }
+
+    #[test]
+    fn eval_entry_rejects_overlay_stop_loss_and_take_profit_before_cuda_runtime_work() {
+        let close = vec![1.0f32; 8];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = sample_combo_batch();
+        let strategy_cases = [
+            StrategyConfig {
+                cooldown_bars: 1,
+                ..StrategyConfig::default()
+            },
+            StrategyConfig {
+                stop_loss_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+            StrategyConfig {
+                take_profit_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+        ];
+
+        for strategy in strategy_cases {
+            let err = eval_kvdf_metrics_gpu_kernel_device_rows(
+                0,
+                &signals,
+                &combos,
+                &strategy,
+                &KvdfStrategyParams::default(),
+            )
+            .expect_err("unsupported features should be rejected before CUDA runtime work");
+            assert!(err.contains("without overlays/stop-loss/take-profit"));
+        }
+    }
+
+    #[test]
+    fn eval_entry_returns_empty_for_empty_combo_batch_before_feature_rejection() {
+        let close = vec![1.0f32; 8];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = KvdfGpuComboBatch {
+            fast_row_index: &[],
+            slow_row_index: &[],
+            dti_row_index: &[],
+            start_t: &[],
+            end_t: &[],
+        };
+        let strategy = StrategyConfig {
+            stop_loss_pct: Some(0.02),
+            ..StrategyConfig::default()
+        };
+
+        let metrics = eval_kvdf_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &KvdfStrategyParams::default(),
+        )
+        .expect("empty combo batches intentionally short-circuit");
+        assert!(metrics.is_empty());
     }
 }

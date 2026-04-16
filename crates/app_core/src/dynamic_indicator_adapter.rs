@@ -423,12 +423,20 @@ pub(crate) fn reset_test_cuda_input_cache() {
 
 #[cfg(feature = "cuda")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Per-thread counters for prepared-input CUDA dispatch decisions.
+///
+/// These counters are tracked in thread-local storage. Reading them through
+/// [`take_prepared_cuda_dispatch_stats`] resets the current thread's counters.
 pub struct PreparedCudaDispatchStats {
     pub device_path_hits: u64,
     pub device_path_fallbacks: u64,
 }
 
 #[cfg(feature = "cuda")]
+/// Return and reset the current thread's prepared-input CUDA dispatch stats.
+///
+/// The counters are thread-local so tests and callers can sample fallback
+/// behavior without cross-thread contamination.
 pub fn take_prepared_cuda_dispatch_stats() -> PreparedCudaDispatchStats {
     PREPARED_CUDA_DISPATCH_STATS.with(|cell| {
         let mut stats = cell.borrow_mut();
@@ -471,6 +479,33 @@ fn record_prepared_cuda_device_fallback(indicator_id: &str, err: &DynamicIndicat
             "prepared CUDA device path fell back to host-backed CUDA for indicator '{indicator_id}': {err}"
         );
     }
+}
+
+#[cfg(feature = "cuda")]
+#[inline]
+fn compute_failure_error(
+    indicator_id: &str,
+    details: impl Into<String>,
+) -> DynamicIndicatorAdapterError {
+    DynamicIndicatorAdapterError::ComputeFailure {
+        indicator_id: indicator_id.to_string(),
+        details: details.into(),
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[inline]
+fn combine_prepared_cuda_fallback_errors(
+    indicator_id: &str,
+    device_err: &DynamicIndicatorAdapterError,
+    host_err: &DynamicIndicatorAdapterError,
+) -> DynamicIndicatorAdapterError {
+    compute_failure_error(
+        indicator_id,
+        format!(
+            "prepared CUDA device path failed: {device_err}; host-backed CUDA fallback also failed: {host_err}"
+        ),
+    )
 }
 
 #[cfg(feature = "cuda")]
@@ -584,6 +619,15 @@ fn ensure_prepared_cuda_base_fields(
 
 #[cfg(feature = "cuda")]
 #[derive(Debug)]
+/// Prepared host/device indicator inputs for reuse across multiple CUDA
+/// indicator dispatches against the same candle allocation.
+///
+/// This type is intentionally sharp:
+/// - cache reuse is keyed by dataset pointer identity and length, not a broader
+///   mutation/revision contract
+/// - accessors assume the requested field family was materialized up front
+/// - the prepared buffers are best suited for callers that already understand
+///   the descriptor input-kind requirements they will dispatch
 pub struct PreparedCudaIndicatorInputs {
     source_kind: PreparedCudaSourceKind,
     source_override: Option<Arc<Vec<f32>>>,
@@ -610,6 +654,7 @@ pub struct PreparedCudaIndicatorInputs {
 
 #[cfg(feature = "cuda")]
 impl PreparedCudaIndicatorInputs {
+    /// Prepare reusable CUDA indicator inputs on device `0`.
     pub fn from_candles(
         candles: &Candles,
         ma_source: &str,
@@ -617,6 +662,7 @@ impl PreparedCudaIndicatorInputs {
         Self::from_candles_on_device(candles, ma_source, 0)
     }
 
+    /// Prepare reusable CUDA indicator inputs on a specific CUDA device.
     pub fn from_candles_on_device(
         candles: &Candles,
         ma_source: &str,
@@ -1149,6 +1195,11 @@ pub(crate) fn device_slice_ref_from_matrix_row(
 }
 
 #[cfg(feature = "cuda")]
+/// Compute a CUDA-backed dynamic indicator by chaining from a single row of an
+/// existing device matrix.
+///
+/// This helper is limited to slice-input indicators and rejects out-of-range
+/// row indices before dispatch.
 pub fn compute_dynamic_indicator_cuda_from_device_matrix_row(
     indicator_id: &str,
     output_id: Option<&str>,
@@ -1196,10 +1247,7 @@ pub fn compute_dynamic_indicator_cuda_from_device_matrix_row(
         kernel,
         target,
     })
-    .map_err(|e| DynamicIndicatorAdapterError::ComputeFailure {
-        indicator_id: normalized_id.to_string(),
-        details: e.to_string(),
-    })?;
+    .map_err(|e| compute_failure_error(normalized_id, e.to_string()))?;
 
     let series = match out.series {
         IndicatorCudaSeries::DeviceF32(v) => DynamicIndicatorCudaSeries::DeviceF32(v),
@@ -1217,6 +1265,11 @@ pub fn compute_dynamic_indicator_cuda_from_device_matrix_row(
 }
 
 #[cfg(feature = "cuda")]
+/// Compute a dynamic indicator through CUDA using pre-uploaded prepared inputs.
+///
+/// The adapter prefers a device-native dispatch path first. If that path fails,
+/// it records a fallback event and retries through the host-backed CUDA request
+/// path before surfacing an error.
 pub fn compute_dynamic_indicator_cuda_with_inputs(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     indicator_id: &str,
@@ -1259,10 +1312,7 @@ pub fn compute_dynamic_indicator_cuda_with_inputs(
                 kernel,
                 target,
             })
-            .map_err(|e| DynamicIndicatorAdapterError::ComputeFailure {
-                indicator_id: normalized_id.to_string(),
-                details: e.to_string(),
-            })
+            .map_err(|e| compute_failure_error(normalized_id, e.to_string()))
         }) {
         Ok(out) => {
             record_prepared_cuda_device_hit();
@@ -1278,9 +1328,9 @@ pub fn compute_dynamic_indicator_cuda_with_inputs(
                 kernel,
                 target,
             })
-            .map_err(|e| DynamicIndicatorAdapterError::ComputeFailure {
-                indicator_id: normalized_id.to_string(),
-                details: e.to_string(),
+            .map_err(|e| {
+                let host_err = compute_failure_error(normalized_id, e.to_string());
+                combine_prepared_cuda_fallback_errors(normalized_id, &device_err, &host_err)
             })?
         }
     };
@@ -1301,6 +1351,13 @@ pub fn compute_dynamic_indicator_cuda_with_inputs(
 }
 
 #[cfg(feature = "cuda")]
+/// Compute a CUDA-backed dynamic indicator using caller-specified input kind
+/// dispatch over already prepared inputs.
+///
+/// This is a lower-level helper than
+/// [`compute_dynamic_indicator_cuda_with_inputs`]: it trusts the caller to
+/// supply an input kind compatible with `indicator_id` and preserves the same
+/// device-path then host-path fallback behavior.
 pub fn compute_dynamic_indicator_cuda_direct_with_inputs(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     indicator_id: &str,
@@ -1332,14 +1389,11 @@ pub fn compute_dynamic_indicator_cuda_direct_with_inputs(
                 kernel,
                 target,
             })
-            .map_err(|e| DynamicIndicatorAdapterError::ComputeFailure {
-                indicator_id: normalized_id.to_string(),
-                details: e.to_string(),
-            })
+            .map_err(|e| compute_failure_error(normalized_id, e.to_string()))
         },
     ) {
         Ok(out) => out,
-        Err(_) => compute_cuda(IndicatorCudaRequest {
+        Err(device_err) => compute_cuda(IndicatorCudaRequest {
             indicator_id: normalized_id,
             output_id,
             data,
@@ -1347,9 +1401,9 @@ pub fn compute_dynamic_indicator_cuda_direct_with_inputs(
             kernel,
             target,
         })
-        .map_err(|e| DynamicIndicatorAdapterError::ComputeFailure {
-            indicator_id: normalized_id.to_string(),
-            details: e.to_string(),
+        .map_err(|e| {
+            let host_err = compute_failure_error(normalized_id, e.to_string());
+            combine_prepared_cuda_fallback_errors(normalized_id, &device_err, &host_err)
         })?,
     };
 
@@ -1369,6 +1423,8 @@ pub fn compute_dynamic_indicator_cuda_direct_with_inputs(
 }
 
 #[cfg(feature = "cuda")]
+/// Prepare the minimum required CUDA inputs for `indicator_id` from `candles`
+/// and dispatch through [`compute_dynamic_indicator_cuda_with_inputs`].
 pub fn compute_dynamic_indicator_cuda(
     candles: &Candles,
     ma_source: &str,
@@ -1574,6 +1630,79 @@ mod tests {
                 volume: false,
             }
         );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepared_cuda_dispatch_stats_are_thread_local_and_reset_on_read() {
+        reset_test_cuda_input_cache();
+        assert_eq!(
+            take_prepared_cuda_dispatch_stats(),
+            PreparedCudaDispatchStats::default()
+        );
+
+        record_prepared_cuda_device_hit();
+        record_prepared_cuda_device_fallback(
+            "unit_indicator",
+            &DynamicIndicatorAdapterError::CudaPreparation {
+                details: "device path failed".to_string(),
+            },
+        );
+
+        assert_eq!(
+            take_prepared_cuda_dispatch_stats(),
+            PreparedCudaDispatchStats {
+                device_path_hits: 1,
+                device_path_fallbacks: 1,
+            }
+        );
+        assert_eq!(
+            take_prepared_cuda_dispatch_stats(),
+            PreparedCudaDispatchStats::default()
+        );
+
+        let thread_stats = std::thread::spawn(|| {
+            record_prepared_cuda_device_hit();
+            record_prepared_cuda_device_hit();
+            take_prepared_cuda_dispatch_stats()
+        })
+        .join()
+        .expect("thread stats should join");
+        assert_eq!(
+            thread_stats,
+            PreparedCudaDispatchStats {
+                device_path_hits: 2,
+                device_path_fallbacks: 0,
+            }
+        );
+        assert_eq!(
+            take_prepared_cuda_dispatch_stats(),
+            PreparedCudaDispatchStats::default()
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepared_cuda_fallback_error_preserves_device_and_host_context() {
+        let device_err = DynamicIndicatorAdapterError::CudaPreparation {
+            details: "device buffers missing high field".to_string(),
+        };
+        let host_err = compute_failure_error("sma", "host kernel launch failed");
+        let combined = combine_prepared_cuda_fallback_errors("sma", &device_err, &host_err);
+
+        match combined {
+            DynamicIndicatorAdapterError::ComputeFailure {
+                indicator_id,
+                details,
+            } => {
+                assert_eq!(indicator_id, "sma");
+                assert!(details.contains("prepared CUDA device path failed"));
+                assert!(details.contains("device buffers missing high field"));
+                assert!(details.contains("host-backed CUDA fallback also failed"));
+                assert!(details.contains("host kernel launch failed"));
+            }
+            other => panic!("unexpected combined error variant: {other:?}"),
+        }
     }
 
     #[cfg(feature = "cuda")]
@@ -1941,6 +2070,54 @@ mod tests {
                 }
             }
             _ => panic!("expected host f32 output for chained ema"),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn device_matrix_row_helper_rejects_out_of_range_row() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        let candles = make_trending_candles(1024);
+        let prepared_inputs = PreparedCudaIndicatorInputs::from_candles(&candles, "close")
+            .expect("prepared inputs should upload to device");
+        let params = vec![IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(20),
+        }];
+        let sma_device = compute_dynamic_indicator_cuda_with_inputs(
+            &prepared_inputs,
+            "sma",
+            Some("value"),
+            params.as_slice(),
+            Kernel::Auto,
+            vector_ta::indicators::dispatch::CudaOutputTarget::DeviceF32,
+        )
+        .expect("device sma should succeed");
+        let matrix = match sma_device.series {
+            DynamicIndicatorCudaSeries::DeviceF32(matrix) => matrix,
+            other => panic!("expected device matrix output, got {other:?}"),
+        };
+
+        let err = compute_dynamic_indicator_cuda_from_device_matrix_row(
+            "ema",
+            Some("value"),
+            &matrix,
+            matrix.rows,
+            sma_device.warmup.unwrap_or(0),
+            params.as_slice(),
+            Kernel::Auto,
+            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+        )
+        .expect_err("out-of-range row should fail");
+
+        match err {
+            DynamicIndicatorAdapterError::CudaPreparation { details } => {
+                assert!(details.contains("out of range"));
+                assert!(details.contains("rows="));
+            }
+            other => panic!("unexpected out-of-range error variant: {other:?}"),
         }
     }
 

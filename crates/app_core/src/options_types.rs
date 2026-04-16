@@ -284,6 +284,12 @@ pub struct OptionsCandidateAxisCoverage {
     pub moneyness_buckets: Vec<OptionsMoneynessBucketCoverage>,
 }
 
+/// Static candidate filters persisted inside run requests and artifacts.
+///
+/// The omission shape is part of the current compatibility contract:
+/// omitting the whole `filters` object applies `Default`, while providing an
+/// empty object relies on each field's own serde default. That distinction is
+/// currently behavior-bearing for `max_entry_lag_minutes`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsStaticFilterBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -514,6 +520,13 @@ pub enum OptionsExpressionValidationVerdict {
 
 pub const OPTIONS_VALIDATION_STRESS_DROP_THRESHOLD: f64 = 0.03;
 
+/// Persisted evaluation summary for one compiled tuple.
+///
+/// Several fields intentionally duplicate or summarize information that can be
+/// re-derived elsewhere: `validation_verdict` and `robust_score` are persisted
+/// snapshots, while `inferred_validation_verdict()` recomputes the current
+/// local interpretation from the available validation metrics and
+/// sealed-finalist state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionTupleResult {
     pub tuple: OptionsTupleSpec,
@@ -720,6 +733,10 @@ pub struct OptionsExpressionEventPathPoint {
     pub underlying_price: f64,
 }
 
+/// Detailed path inspection result for a single event inside a tuple.
+///
+/// `point_count` is an explicit summary count retained alongside `points` for
+/// compatibility with persisted inspection payloads.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionEventPathInspectionResult {
     pub tuple_index: usize,
@@ -1035,6 +1052,12 @@ pub struct OptionsExpressionFeasibilityReport {
     pub axis_coverage: OptionsCandidateAxisCoverage,
 }
 
+/// Request DTO for one options-expression evaluation run.
+///
+/// This struct crosses persistence and IPC-style seams, so additive defaults are
+/// intentionally encoded in serde attributes instead of ad hoc builder logic.
+/// In particular, `filters` has a whole-struct default whose omission semantics
+/// differ from an explicitly present empty object.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionRunRequest {
     pub parent_artifact_path: String,
@@ -1077,6 +1100,11 @@ pub struct OptionsExpressionRunRequest {
     pub sealed_finalist_count: usize,
 }
 
+/// Top-level run result returned by the evaluator and persisted into artifacts.
+///
+/// `tuple_count` is kept as an explicit summary field even though
+/// `ranked_results.len()` often matches it in fresh outputs; persisted artifacts
+/// may intentionally preserve both values during replay and migration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionRunResult {
     pub diagnostics: OptionsExpressionDiagnostics,
@@ -1207,6 +1235,43 @@ mod tests {
         assert_eq!(req.sealed_finalist_count, 5);
         assert_eq!(req.structure_family, OptionsStructureFamily::LongSingle);
         assert!(!req.delay_minutes.is_empty());
+    }
+
+    #[test]
+    fn run_request_omitted_filters_uses_bundle_default_shape() {
+        let req: OptionsExpressionRunRequest =
+            serde_json::from_str(r#"{"parent_artifact_path":"a","options_dataset_id":"b"}"#)
+                .expect("request");
+
+        assert_eq!(req.filters.max_entry_lag_minutes, Some(5));
+        assert_eq!(req.filters.max_premium, None);
+        assert_eq!(req.filters.min_premium, None);
+        assert_eq!(req.filters.min_volume, None);
+        assert_eq!(req.filters.min_open_interest, None);
+    }
+
+    #[test]
+    fn run_request_empty_filters_object_uses_field_level_defaults() {
+        let req: OptionsExpressionRunRequest = serde_json::from_str(
+            r#"{"parent_artifact_path":"a","options_dataset_id":"b","filters":{}}"#,
+        )
+        .expect("request");
+
+        assert_eq!(req.filters.max_entry_lag_minutes, None);
+        assert_eq!(req.filters.max_premium, None);
+        assert_eq!(req.filters.min_premium, None);
+        assert_eq!(req.filters.min_volume, None);
+        assert_eq!(req.filters.min_open_interest, None);
+    }
+
+    #[test]
+    fn run_request_filters_null_entry_lag_preserves_explicit_none() {
+        let req: OptionsExpressionRunRequest = serde_json::from_str(
+            r#"{"parent_artifact_path":"a","options_dataset_id":"b","filters":{"max_entry_lag_minutes":null}}"#,
+        )
+        .expect("request");
+
+        assert_eq!(req.filters.max_entry_lag_minutes, None);
     }
 
     #[test]
@@ -1366,6 +1431,129 @@ mod tests {
             tuple.inferred_validation_verdict(),
             OptionsExpressionValidationVerdict::HoldoutSupported
         );
+    }
+
+    #[test]
+    fn tuple_result_defaults_missing_persisted_summary_fields() {
+        let tuple: OptionsExpressionTupleResult = serde_json::from_value(serde_json::json!({
+            "tuple": {
+                "structure_family": "long_single",
+                "delay_minutes": 0,
+                "dte_days": 1,
+                "moneyness_bucket": "atm",
+                "hold_minutes": 15,
+                "target_return": 0.25,
+                "stop_return": 0.25,
+                "exit_template": "fixed_hold_or_target_stop",
+                "fill_model": "aggregate_research"
+            },
+            "selection_metrics": {
+                "valid_trades": 4,
+                "invalid_events": 0,
+                "invalid_rate": 0.0,
+                "expectancy_per_trade": 2.0,
+                "expectancy_per_premium": 0.2,
+                "mean_return_on_premium": 0.2,
+                "return_volatility_on_premium": 0.0,
+                "median_return_on_premium": 0.16,
+                "win_rate": 0.5,
+                "total_pnl_per_contract": 20.0
+            }
+        }))
+        .expect("deserialize tuple");
+
+        assert_eq!(
+            tuple.validation_verdict,
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+        assert_eq!(tuple.robust_score, 0.0);
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+    }
+
+    #[test]
+    fn inferred_validation_verdict_is_derived_independently_of_persisted_summary_fields() {
+        let mut tuple = sample_tuple_result();
+        tuple.validation_verdict = OptionsExpressionValidationVerdict::SearchOnly;
+        tuple.robust_score = 42.0;
+        tuple.sealed_finalist = true;
+        tuple.sealed_evaluation_metrics = Some(metrics(0.11));
+        tuple.sealed_stress_metrics = Some(metrics(0.10));
+        tuple.sealed_harsher_stress_metrics = Some(metrics(0.09));
+        tuple.sealed_extreme_stress_metrics = Some(metrics(0.09));
+
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::SealedFinalist
+        );
+        assert_eq!(
+            tuple.validation_verdict,
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+        assert_eq!(tuple.robust_score, 42.0);
+    }
+
+    #[test]
+    fn run_result_preserves_explicit_tuple_count_summary() {
+        let run_result: OptionsExpressionRunResult = serde_json::from_value(serde_json::json!({
+            "diagnostics": {
+                "parent_artifact_path": "artifact.json",
+                "options_dataset_id": "dataset",
+                "root_symbol": "SPY",
+                "total_events": 10,
+                "bullish_events": 5,
+                "bearish_events": 5,
+                "search_events": 6,
+                "holdout_events": 2,
+                "sealed_test_events": 2,
+                "dataset_contracts": 3,
+                "dataset_rows": 100
+            },
+            "backend_used": "cpu_reference",
+            "price_semantics": "minute_aggregate",
+            "tuple_count": 7,
+            "ranked_results": [serde_json::to_value(sample_tuple_result()).expect("tuple value")]
+        }))
+        .expect("deserialize run result");
+
+        assert_eq!(run_result.tuple_count, 7);
+        assert_eq!(run_result.ranked_results.len(), 1);
+    }
+
+    #[test]
+    fn event_path_inspection_preserves_explicit_point_count_summary() {
+        let inspection: OptionsExpressionEventPathInspectionResult =
+            serde_json::from_value(serde_json::json!({
+                "tuple_index": 0,
+                "event_index": 1,
+                "event_id": "evt-1",
+                "row": {
+                    "event_index": 1,
+                    "event_id": "evt-1",
+                    "split": "search",
+                    "side": "bullish",
+                    "decision_timestamp": 1000,
+                    "earliest_tradable_timestamp": 1001,
+                    "requested_entry_timestamp": 1002,
+                    "raw_underlier_price": 500.0,
+                    "status": "executed"
+                },
+                "point_count": 3,
+                "points": [{
+                    "timestamp_ms": 1002,
+                    "option_open": 1.0,
+                    "option_high": 1.1,
+                    "option_low": 0.9,
+                    "option_close": 1.05,
+                    "underlying_price": 500.0
+                }]
+            }))
+            .expect("deserialize inspection result");
+
+        assert_eq!(inspection.point_count, 3);
+        assert_eq!(inspection.points.len(), 1);
     }
 
     #[test]

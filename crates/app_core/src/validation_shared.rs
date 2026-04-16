@@ -262,6 +262,9 @@ pub struct SpaValidationStats {
     pub skipped_reason: Option<String>,
 }
 
+/// Parameter perturbation config.
+///
+/// A fully omitted or zeroed config is treated as disabled work by the validation pipeline.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PerturbConfig {
     #[serde(default)]
@@ -292,6 +295,7 @@ pub struct PerturbStats {
 pub struct TradeBootstrapConfig {
     #[serde(default = "default_mc_sims")]
     pub simulations: usize,
+    /// `Some(0)` is a sentinel for IID-only mode in the validation pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stationary_mean_block_len: Option<usize>,
 }
@@ -462,6 +466,9 @@ pub(crate) fn canonicalize_json_value(value: &JsonValue) -> JsonValue {
     }
 }
 
+/// Canonicalize JSON object-key ordering for deterministic internal key generation.
+///
+/// Arrays intentionally preserve their existing order.
 pub(crate) fn canonical_json_key<T: Serialize>(value: &T) -> Result<String, String> {
     let json = serde_json::to_value(value).map_err(|e| e.to_string())?;
     serde_json::to_string(&canonicalize_json_value(&json)).map_err(|e| e.to_string())
@@ -480,6 +487,7 @@ pub(crate) fn canonical_json_eq<T: Serialize>(a: &T, b: &T) -> Result<bool, Stri
 mod tests {
     use super::*;
     use serde::Serialize;
+    use serde_json::json;
     use std::collections::HashMap;
 
     #[derive(Serialize)]
@@ -516,5 +524,81 @@ mod tests {
         assert!(!mask.underwater_duration);
         assert!(!mask.checkpoint_robustness);
         assert!(!mask.benchmark_slice_summary);
+    }
+
+    #[test]
+    fn cross_ticker_gate_defaults_match_missing_and_empty_gate_forms() {
+        let missing_gate: CrossTickerConfig =
+            serde_json::from_str("{}").expect("deserialize config without gate");
+        let empty_gate: CrossTickerConfig =
+            serde_json::from_str(r#"{"gate":{}}"#).expect("deserialize config with empty gate");
+        let defaults = CrossTickerGateConfig::default();
+
+        assert_eq!(missing_gate.gate.enabled, defaults.enabled);
+        assert_eq!(missing_gate.gate.require_pareto, defaults.require_pareto);
+        assert_eq!(missing_gate.gate.min_score, defaults.min_score);
+        assert_eq!(
+            missing_gate.gate.min_pnl_positive_frac,
+            defaults.min_pnl_positive_frac
+        );
+        assert_eq!(
+            missing_gate.gate.min_sharpe_median,
+            defaults.min_sharpe_median
+        );
+        assert_eq!(missing_gate.gate.max_dd_worst, defaults.max_dd_worst);
+        assert_eq!(missing_gate.gate.min_datasets, defaults.min_datasets);
+
+        assert_eq!(missing_gate.gate.enabled, empty_gate.gate.enabled);
+        assert_eq!(
+            missing_gate.gate.require_pareto,
+            empty_gate.gate.require_pareto
+        );
+        assert_eq!(missing_gate.gate.min_score, empty_gate.gate.min_score);
+        assert_eq!(
+            missing_gate.gate.min_pnl_positive_frac,
+            empty_gate.gate.min_pnl_positive_frac
+        );
+        assert_eq!(
+            missing_gate.gate.min_sharpe_median,
+            empty_gate.gate.min_sharpe_median
+        );
+        assert_eq!(missing_gate.gate.max_dd_worst, empty_gate.gate.max_dd_worst);
+        assert_eq!(missing_gate.gate.min_datasets, empty_gate.gate.min_datasets);
+    }
+
+    #[test]
+    fn perturb_config_omission_defaults_to_disabled_zeroed_shape() {
+        let cfg: PerturbConfig =
+            serde_json::from_str("{}").expect("deserialize perturb config defaults");
+
+        assert_eq!(cfg.iterations, 0);
+        assert_eq!(cfg.pct_min, 0.0);
+        assert_eq!(cfg.pct_max, 0.0);
+        assert_eq!(cfg.flip_bool_prob, 0.0);
+    }
+
+    #[test]
+    fn canonical_json_key_preserves_array_order_and_matches_bytes_output() {
+        let left = json!({
+            "nested": {
+                "b": 2,
+                "a": 1
+            },
+            "items": [3, 2, 1]
+        });
+        let right = json!({
+            "items": [1, 2, 3],
+            "nested": {
+                "a": 1,
+                "b": 2
+            }
+        });
+
+        let left_key = canonical_json_key(&left).expect("left key");
+        let left_bytes = canonical_json_key_bytes(&left).expect("left bytes");
+        let right_key = canonical_json_key(&right).expect("right key");
+
+        assert_eq!(left_key.as_bytes(), left_bytes.as_slice());
+        assert_ne!(left_key, right_key, "array order should remain significant");
     }
 }

@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Default progress phase emitted by the CSCV/PBO evaluation loop.
+///
+/// Keep this value stable unless the downstream progress contract is updated in
+/// lockstep with consumers that classify validation phases by string.
+pub const CSCV_PROGRESS_PHASE: &str = "composite_validate_cscv";
+
 fn default_slices() -> usize {
     16
 }
@@ -20,25 +26,38 @@ fn default_threshold() -> f64 {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CscvPboConfig {
+    /// Requested slice count. The implementation clamps this to `4..=32` and
+    /// forces an even value before any computation begins.
     #[serde(default = "default_slices")]
     pub slices: usize,
+    /// Best-effort cap for the number of CSCV train/test combinations to
+    /// evaluate. A configured value of `0` is coerced to `1`.
     #[serde(default = "default_max_combinations")]
     pub max_combinations: usize,
+    /// Out-of-sample threshold used when computing
+    /// `prob_oos_below_threshold`.
     #[serde(default = "default_threshold")]
     pub threshold: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SliceReturnStats {
+    /// Sum of per-bar returns inside the slice.
     pub sum: f64,
+    /// Sum of squared per-bar returns inside the slice.
     pub sumsq: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CscvCandidatePboStats {
+    /// Fraction of evaluated CSCV splits that selected this candidate in-sample.
     pub is_selected_frac: f64,
+    /// Median out-of-sample rank fraction for the splits that selected this
+    /// candidate. Uses the file-local nearest-by-rounded quantile convention.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oos_rank_frac_p50: Option<f64>,
+    /// Median out-of-sample score for the splits that selected this candidate.
+    /// Uses the file-local nearest-by-rounded quantile convention.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oos_metric_p50: Option<f64>,
 }
@@ -63,6 +82,10 @@ pub struct CscvPboResult {
     pub skipped_reason: Option<String>,
 }
 
+/// Clamp the requested slice count into the supported even range.
+///
+/// The CSCV implementation only supports an even number of slices so that the
+/// train/test split is exactly half-and-half.
 fn sanitize_slices(slices: usize) -> usize {
     let s = slices.clamp(4, 32);
     if (s & 1) == 0 {
@@ -107,6 +130,10 @@ fn all_k_masks(s: usize, k: usize) -> Vec<u64> {
     out
 }
 
+/// Deterministically sample up to `take` unique `k`-of-`s` masks.
+///
+/// This is intentionally best-effort: when the retry budget is exhausted, the
+/// returned set may contain fewer than `take` masks.
 fn sample_k_masks(s: usize, k: usize, take: usize, seed: u64) -> Vec<u64> {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut idx: Vec<u8> = (0..(s as u8)).collect();
@@ -129,6 +156,10 @@ fn sample_k_masks(s: usize, k: usize, take: usize, seed: u64) -> Vec<u64> {
     out
 }
 
+/// Compute the per-slice Sharpe proxy currently used by CSCV/PBO.
+///
+/// Non-finite or non-positive sample variance collapses to `0.0` to preserve
+/// the established scoring contract.
 fn sharpe_from_sum_sumsq(n: usize, sum: f64, sumsq: f64) -> f64 {
     if n < 2 {
         return 0.0;
@@ -142,6 +173,7 @@ fn sharpe_from_sum_sumsq(n: usize, sum: f64, sumsq: f64) -> f64 {
     mean / var.sqrt()
 }
 
+/// Assign 1-based ascending ranks, averaging ties.
 fn ranks_average_ascending(scores: &[f64]) -> Vec<f64> {
     let n = scores.len();
     let mut order: Vec<usize> = (0..n).collect();
@@ -166,6 +198,10 @@ fn ranks_average_ascending(scores: &[f64]) -> Vec<f64> {
     ranks
 }
 
+/// Return the nearest-by-rounded quantile from an already sorted slice.
+///
+/// This is intentionally not an interpolating quantile implementation. Even
+/// length medians select whichever middle index the rounded rank lands on.
 fn quantile(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -233,6 +269,21 @@ impl FiniteOr for f64 {
     }
 }
 
+/// Compute CSCV/PBO summary statistics from pre-aggregated per-candidate slice
+/// return summaries.
+///
+/// Contract notes:
+/// - `cfg.slices` is sanitized to an even value in `4..=32`.
+/// - every candidate must provide exactly that many slice summaries or the
+///   function returns an error.
+/// - `slice_bars < 2`, `candidates < 2`, or zero realized combinations produce
+///   a populated [`CscvPboResult`] with `skipped_reason` and an empty candidate
+///   stats vector.
+/// - `cfg.max_combinations = 0` is treated as `1`.
+/// - when sampling is required, the mask set is deterministic for a given
+///   `seed` but remains best-effort rather than exact-count guaranteed.
+/// - tie handling, rank normalization, and quantile selection intentionally
+///   preserve the current statistical contract.
 pub fn compute_cscv_pbo_from_slices(
     slices_by_candidate: &[Vec<SliceReturnStats>],
     slice_bars: usize,
@@ -240,6 +291,26 @@ pub fn compute_cscv_pbo_from_slices(
     seed: u64,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
+) -> Result<(CscvPboResult, Vec<CscvCandidatePboStats>), String> {
+    compute_cscv_pbo_from_slices_with_phase(
+        slices_by_candidate,
+        slice_bars,
+        cfg,
+        seed,
+        cancel,
+        progress,
+        CSCV_PROGRESS_PHASE,
+    )
+}
+
+fn compute_cscv_pbo_from_slices_with_phase(
+    slices_by_candidate: &[Vec<SliceReturnStats>],
+    slice_bars: usize,
+    cfg: &CscvPboConfig,
+    seed: u64,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    progress_phase: &'static str,
 ) -> Result<(CscvPboResult, Vec<CscvCandidatePboStats>), String> {
     let candidates = slices_by_candidate.len();
     let slices = sanitize_slices(cfg.slices);
@@ -348,7 +419,7 @@ pub fn compute_cscv_pbo_from_slices(
     let mut is_scores: Vec<f64> = vec![0.0; candidates];
     let mut oos_scores: Vec<f64> = vec![0.0; candidates];
 
-    crate::progress::emit_double_ma_progress(progress, 0, combos, "composite_validate_cscv");
+    crate::progress::emit_double_ma_progress(progress, 0, combos, progress_phase);
     for (ci, &mask) in masks.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
@@ -409,12 +480,7 @@ pub fn compute_cscv_pbo_from_slices(
 
         let done = ci.saturating_add(1);
         if (done & 0x3F) == 0 || done == combos {
-            crate::progress::emit_double_ma_progress(
-                progress,
-                done,
-                combos,
-                "composite_validate_cscv",
-            );
+            crate::progress::emit_double_ma_progress(progress, done, combos, progress_phase);
         }
     }
 
@@ -478,6 +544,26 @@ pub fn compute_cscv_pbo_from_slices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::{DoubleMaProgressPayload, ProgressSink};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingProgressSink {
+        events: Mutex<Vec<DoubleMaProgressPayload>>,
+    }
+
+    impl RecordingProgressSink {
+        fn take(&self) -> Vec<DoubleMaProgressPayload> {
+            let mut guard = self.events.lock().expect("progress lock");
+            std::mem::take(&mut *guard)
+        }
+    }
+
+    impl ProgressSink for RecordingProgressSink {
+        fn emit_double_ma_progress(&self, payload: DoubleMaProgressPayload) {
+            self.events.lock().expect("progress lock").push(payload);
+        }
+    }
 
     #[test]
     fn cscv_pbo_overfit_pattern_has_expected_phi() {
@@ -523,5 +609,90 @@ mod tests {
         assert!((cand[1].is_selected_frac - (1.0 / 6.0)).abs() < 1e-9);
         assert!((cand[2].is_selected_frac - 0.0).abs() < 1e-12);
         assert!(cand[2].oos_rank_frac_p50.is_none());
+    }
+
+    #[test]
+    fn cscv_pbo_skips_and_returns_empty_candidate_stats_when_candidates_are_insufficient() {
+        let cfg = CscvPboConfig {
+            slices: 8,
+            max_combinations: 0,
+            threshold: 0.25,
+        };
+        let cancel = AtomicBool::new(false);
+        let (result, candidate_stats) = compute_cscv_pbo_from_slices(
+            &[vec![SliceReturnStats::default(); 8]],
+            16,
+            &cfg,
+            7,
+            &cancel,
+            None,
+        )
+        .expect("skip result");
+
+        assert_eq!(result.slices, 8);
+        assert_eq!(result.combinations, 0);
+        assert_eq!(result.threshold, 0.25);
+        assert_eq!(
+            result.skipped_reason.as_deref(),
+            Some("CSCV/PBO requires at least 2 candidates.")
+        );
+        assert!(candidate_stats.is_empty());
+    }
+
+    #[test]
+    fn cscv_pbo_quantile_uses_nearest_by_rounded_index() {
+        let sorted = [10.0, 20.0, 30.0, 40.0];
+        assert_eq!(quantile(&sorted, 0.5), 30.0);
+        assert_eq!(quantile(&sorted, 0.25), 20.0);
+    }
+
+    #[test]
+    fn cscv_pbo_ranks_average_ties() {
+        let ranks = ranks_average_ascending(&[5.0, 1.0, 5.0, 9.0]);
+        assert_eq!(ranks, vec![2.5, 1.0, 2.5, 4.0]);
+    }
+
+    #[test]
+    fn cscv_pbo_can_emit_progress_under_an_override_phase() {
+        let slices = 4usize;
+        let slice_bars = 10usize;
+        let pos = SliceReturnStats {
+            sum: 10.0,
+            sumsq: 20.0,
+        };
+        let neg = SliceReturnStats {
+            sum: -10.0,
+            sumsq: 20.0,
+        };
+        let zer = SliceReturnStats::default();
+        let by_cand = vec![
+            vec![pos, neg, pos, neg],
+            vec![neg, pos, neg, pos],
+            vec![zer; slices],
+        ];
+        let cfg = CscvPboConfig {
+            slices,
+            max_combinations: 1000,
+            threshold: 0.0,
+        };
+        let cancel = AtomicBool::new(false);
+        let progress = RecordingProgressSink::default();
+
+        let (_result, _candidate_stats) = compute_cscv_pbo_from_slices_with_phase(
+            &by_cand,
+            slice_bars,
+            &cfg,
+            3,
+            &cancel,
+            Some(&progress),
+            "unit_cscv_kernel",
+        )
+        .expect("cscv result");
+
+        let events = progress.take();
+        assert!(!events.is_empty(), "expected progress events");
+        assert!(events.iter().all(|event| event.phase == "unit_cscv_kernel"));
+        assert_eq!(events.first().map(|event| event.processed_pairs), Some(0));
+        assert_eq!(events.last().map(|event| event.processed_pairs), Some(6));
     }
 }

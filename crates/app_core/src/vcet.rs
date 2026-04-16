@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 #[cfg(feature = "cuda")]
 use std::cell::RefCell;
+#[cfg(feature = "cuda")]
 use std::sync::Arc;
 use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
@@ -264,10 +265,14 @@ impl VcetOwnedDeviceMatrix {
         let byte_offset = elem_offset
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| "VCET shared CUDA row byte offset overflow".to_string())?;
+        let device_ptr = owner
+            .device_ptr()
+            .checked_add(byte_offset as u64)
+            .ok_or_else(|| "VCET shared CUDA row device pointer overflow".to_string())?;
         Ok(Self {
             rows: 1,
             cols: owner.cols,
-            device_ptr: owner.device_ptr().saturating_add(byte_offset as u64),
+            device_ptr,
             owner: VcetDeviceMatrixOwner::SharedBuffer(owner),
         })
     }
@@ -527,6 +532,10 @@ fn compute_indicator_f64(
                         }
                     }
                 }
+            } else {
+                record_vcet_route_diagnostic(format!(
+                    "VCET indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: prepared CUDA inputs unavailable"
+                ));
             }
         }
     }
@@ -886,6 +895,133 @@ mod tests {
         assert_eq!(resolved.vidya_short, 8);
         assert_eq!(resolved.vidya_long, 34);
         assert_eq!(resolved.ce, 34);
+    }
+
+    #[test]
+    fn resolve_vcet_periods_respects_mixed_mapping_and_normalizes_long_period() {
+        let cfg = VcetStrategyParams {
+            map_fast_to_vidya_short_period: true,
+            map_slow_to_vidya_long_period: false,
+            map_slow_to_ce_period: false,
+            vidya_long_period: 4,
+            ce_period: 15,
+            ..VcetStrategyParams::default()
+        };
+
+        let resolved = resolve_vcet_periods(&cfg, 8, 34);
+        assert_eq!(resolved.vidya_short, 8);
+        assert_eq!(resolved.vidya_long, 9);
+        assert_eq!(resolved.ce, 15);
+    }
+
+    #[test]
+    fn compute_vcet_start_t_applies_trade_on_next_bar_offset() {
+        assert_eq!(compute_vcet_start_t(0, 3, 1, 2, 4, false), 4);
+        assert_eq!(compute_vcet_start_t(0, 3, 1, 2, 4, true), 5);
+    }
+
+    #[test]
+    fn build_vcet_desired_positions_respects_long_only_even_when_short_signals_fire() {
+        let close = vec![10.0, 9.5, 9.2, 9.0];
+        let vidya = VcetVidyaSignals {
+            values: vec![10.0, 10.0, 9.9, 9.8],
+            first_valid: 1,
+        };
+        let ce = VcetChandelierSignals {
+            long_stop: vec![f64::NAN, 9.0, 8.9, 8.8],
+            short_stop: vec![f64::NAN, 9.8, 9.7, 9.6],
+            first_valid: 1,
+        };
+
+        let desired = build_vcet_desired_positions(
+            &close,
+            &vidya,
+            &ce,
+            1,
+            &StrategyConfig {
+                long_only: true,
+                allow_flip: true,
+                trade_on_next_bar: false,
+                ..StrategyConfig::default()
+            },
+            &VcetStrategyParams {
+                require_vidya_slope: false,
+                ..VcetStrategyParams::default()
+            },
+        );
+
+        assert_eq!(desired, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn build_vcet_desired_positions_exits_without_flipping_when_allow_flip_is_disabled() {
+        let close = vec![10.0, 11.0, 9.0, 8.8];
+        let vidya = VcetVidyaSignals {
+            values: vec![10.0, 10.5, 10.2, 10.0],
+            first_valid: 1,
+        };
+        let ce = VcetChandelierSignals {
+            long_stop: vec![f64::NAN, 10.0, 8.5, 8.4],
+            short_stop: vec![f64::NAN, 12.0, 9.5, 9.2],
+            first_valid: 1,
+        };
+
+        let desired = build_vcet_desired_positions(
+            &close,
+            &vidya,
+            &ce,
+            1,
+            &StrategyConfig {
+                long_only: false,
+                allow_flip: false,
+                trade_on_next_bar: false,
+                ..StrategyConfig::default()
+            },
+            &VcetStrategyParams {
+                require_vidya_slope: false,
+                ..VcetStrategyParams::default()
+            },
+        );
+
+        assert_eq!(desired[1], 1);
+        assert_eq!(desired[2], 0);
+        assert_eq!(desired[3], -1);
+    }
+
+    #[test]
+    fn build_vcet_desired_positions_exits_when_max_trade_bars_is_reached() {
+        let close = vec![10.0, 11.0, 11.2, 11.1, 11.0];
+        let vidya = VcetVidyaSignals {
+            values: vec![10.0, 10.5, 10.6, 10.7, 10.8],
+            first_valid: 1,
+        };
+        let ce = VcetChandelierSignals {
+            long_stop: vec![f64::NAN, 10.1, 10.2, 10.3, 10.4],
+            short_stop: vec![f64::NAN, 12.0, 12.0, 12.0, 12.0],
+            first_valid: 1,
+        };
+
+        let desired = build_vcet_desired_positions(
+            &close,
+            &vidya,
+            &ce,
+            1,
+            &StrategyConfig {
+                long_only: false,
+                allow_flip: true,
+                trade_on_next_bar: false,
+                ..StrategyConfig::default()
+            },
+            &VcetStrategyParams {
+                require_vidya_slope: false,
+                max_trade_bars: 2,
+                ..VcetStrategyParams::default()
+            },
+        );
+
+        assert_eq!(desired[1], 1);
+        assert_eq!(desired[2], 1);
+        assert_eq!(desired[3], 0);
     }
 
     #[test]

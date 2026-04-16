@@ -414,6 +414,9 @@ pub fn validate_asr_params(cfg: &AsrStrategyParams) -> Result<(), String> {
     if cfg.z_exit > cfg.z_entry {
         return Err("ASR z_exit must be <= z_entry".to_string());
     }
+    if !cfg.z_nbdev.is_finite() || cfg.z_nbdev <= 0.0 {
+        return Err("ASR z_nbdev must be finite and > 0".to_string());
+    }
     if cfg.mom_fade_bars == 0 {
         return Err("ASR mom_fade_bars must be > 0".to_string());
     }
@@ -432,6 +435,17 @@ pub fn validate_asr_params(cfg: &AsrStrategyParams) -> Result<(), String> {
 #[cfg(feature = "cuda")]
 thread_local! {
     static ASR_ROUTE_DIAGNOSTICS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(feature = "cuda")]
+fn record_asr_route_diagnostic(message: String) {
+    ASR_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.iter().any(|entry| entry == &message) {
+            return;
+        }
+        diagnostics.push(message);
+    });
 }
 
 #[cfg(feature = "cuda")]
@@ -555,8 +569,11 @@ fn compute_indicator_f64(
                     Kernel::Auto,
                     vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
                 );
-                if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                match out {
+                    Ok(values) => return cuda_series_to_f64(values),
+                    Err(err) => record_asr_route_diagnostic(format!(
+                        "ASR indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: {err}"
+                    )),
                 }
             }
         }
@@ -1110,7 +1127,12 @@ pub fn compute_asr_kaufman_stops_cuda_host(
             output_id.unwrap_or("value"),
             &params_long,
         )
-        .or_else(|_| direct_compute(&params_long))?
+        .or_else(|err| {
+            record_asr_route_diagnostic(format!(
+                "ASR kaufman-stop CUDA helper fell back to direct dispatch (long): {err}"
+            ));
+            direct_compute(&params_long)
+        })?
     } else {
         direct_compute(&params_long)?
     };
@@ -1121,7 +1143,12 @@ pub fn compute_asr_kaufman_stops_cuda_host(
             output_id.unwrap_or("value"),
             &params_short,
         )
-        .or_else(|_| direct_compute(&params_short))?
+        .or_else(|err| {
+            record_asr_route_diagnostic(format!(
+                "ASR kaufman-stop CUDA helper fell back to direct dispatch (short): {err}"
+            ));
+            direct_compute(&params_short)
+        })?
     } else {
         direct_compute(&params_short)?
     };
@@ -1342,7 +1369,10 @@ pub fn compute_asr_kaufman_stops_cuda_device(
                 &sweep,
             )
             .map(|(matrix, _)| AsrOwnedDeviceMatrix::from_raw(matrix))
-            .or_else(|_| {
+            .or_else(|err| {
+                record_asr_route_diagnostic(format!(
+                    "ASR kaufman-stop CUDA device helper fell back to indicator dispatch ({direction}): {err}"
+                ));
                 let params = if direction.eq_ignore_ascii_case("long") {
                     &params_long
                 } else {
@@ -2219,7 +2249,6 @@ fn simulate_from_desired(
     let stop_loss_pct = sim_cfg.stop_loss_pct.or(cfg.stop_loss_pct());
     let take_profit_pct = sim_cfg.take_profit_pct.or(cfg.take_profit_pct());
     let overlays = ExecutionOverlayParams::from_cfg(cfg);
-    let risk_enabled = stop_loss_pct.is_some() || take_profit_pct.is_some();
 
     let mut pos: i32 = 0;
     let mut entry_px: f64 = 0.0;
@@ -2301,11 +2330,12 @@ fn simulate_from_desired(
                 } else {
                     entry_px = 0.0;
                     if cur_dir != 0 {
+                        let closed_trade_log_ret = trade_log_ret + log_cost;
                         trades.push(Trade {
                             entry_t: cur_entry_t,
                             exit_t: t,
                             direction: cur_dir,
-                            pnl: trade_log_ret.exp() - 1.0,
+                            pnl: closed_trade_log_ret.exp() - 1.0,
                             bars: t.saturating_sub(cur_entry_t) as u32,
                             open: false,
                         });
@@ -2321,11 +2351,12 @@ fn simulate_from_desired(
                 }
                 trades_count = trades_count.saturating_add(1);
                 if cur_dir != 0 {
+                    let closed_trade_log_ret = trade_log_ret + log_cost;
                     trades.push(Trade {
                         entry_t: cur_entry_t,
                         exit_t: t,
                         direction: cur_dir,
-                        pnl: trade_log_ret.exp() - 1.0,
+                        pnl: closed_trade_log_ret.exp() - 1.0,
                         bars: t.saturating_sub(cur_entry_t) as u32,
                         open: false,
                     });
@@ -2341,11 +2372,12 @@ fn simulate_from_desired(
                 }
                 trades_count = trades_count.saturating_add(2);
                 if cur_dir != 0 {
+                    let closed_trade_log_ret = trade_log_ret + log_cost;
                     trades.push(Trade {
                         entry_t: cur_entry_t,
                         exit_t: t,
                         direction: cur_dir,
-                        pnl: trade_log_ret.exp() - 1.0,
+                        pnl: closed_trade_log_ret.exp() - 1.0,
                         bars: t.saturating_sub(cur_entry_t) as u32,
                         open: false,
                     });
@@ -2364,6 +2396,7 @@ fn simulate_from_desired(
 
         let mut step_log = if pos == 0 { 0.0 } else { (pos as f64) * lr[t] };
         let pos_bar = pos;
+        let mut trade_step_applied = false;
 
         if pos != 0 {
             if !entry_px.is_finite() || entry_px <= 0.0 {
@@ -2396,6 +2429,7 @@ fn simulate_from_desired(
                     trade_log_ret += log_cost;
                 }
                 trade_log_ret += step_log;
+                trade_step_applied = true;
                 trades_count = trades_count.saturating_add(1);
                 if cur_dir != 0 {
                     trades.push(Trade {
@@ -2416,7 +2450,7 @@ fn simulate_from_desired(
         }
 
         log_eq += step_log;
-        if risk_enabled && pos_bar != 0 && pos != 0 {
+        if pos_bar != 0 && !trade_step_applied {
             trade_log_ret += step_log;
         }
 
@@ -2805,7 +2839,11 @@ pub fn eval_asr_curves_from_desired(
 
 #[cfg(test)]
 mod tests {
-    use super::eval_asr_metrics_from_desired;
+    use super::{
+        eval_asr_metrics_from_desired, simulate_from_desired, validate_asr_params, AsrSimulation,
+        AsrStrategyParams,
+    };
+    use crate::iterative_sim::IterativeSimConfig;
     use ta_strategies::double_ma::StrategyConfig;
     use vector_ta::utilities::data_loader::Candles;
 
@@ -2858,6 +2896,36 @@ mod tests {
         lr
     }
 
+    fn candles_from_close(close: &[f64]) -> Candles {
+        let mut ts = Vec::with_capacity(close.len());
+        let mut open = Vec::with_capacity(close.len());
+        let mut high = Vec::with_capacity(close.len());
+        let mut low = Vec::with_capacity(close.len());
+        let mut volume = Vec::with_capacity(close.len());
+
+        for (idx, &c) in close.iter().enumerate() {
+            let o = if idx == 0 { c } else { close[idx - 1] };
+            ts.push(idx as i64);
+            open.push(o);
+            high.push(o.max(c));
+            low.push(o.min(c));
+            volume.push(1_000.0 + idx as f64);
+        }
+
+        Candles::new(ts, open, high, low, close.to_vec(), volume)
+    }
+
+    fn pnl_from_single_closed_trade(sim: AsrSimulation) -> f64 {
+        let curves = sim.curves.expect("curves");
+        let closed: Vec<_> = curves
+            .trades
+            .into_iter()
+            .filter(|trade| !trade.open)
+            .collect();
+        assert_eq!(closed.len(), 1, "expected exactly one closed trade");
+        closed[0].pnl
+    }
+
     #[test]
     fn asr_metrics_emit_core17_and_trade22_fields_from_desired_positions() {
         let candles = make_wave_candles(96);
@@ -2899,5 +2967,121 @@ mod tests {
         assert!(metrics.winning_trades + metrics.losing_trades <= metrics.closed_trades);
         assert!(metrics.gross_profit >= 0.0);
         assert!(metrics.gross_loss >= 0.0);
+    }
+
+    #[test]
+    fn validate_asr_params_rejects_non_positive_z_nbdev() {
+        let mut zero = AsrStrategyParams::default();
+        zero.z_nbdev = 0.0;
+        let err = validate_asr_params(&zero).expect_err("z_nbdev must be positive");
+        assert!(err.contains("z_nbdev"));
+
+        let mut nan = AsrStrategyParams::default();
+        nan.z_nbdev = f64::NAN;
+        let err = validate_asr_params(&nan).expect_err("z_nbdev must be finite");
+        assert!(err.contains("z_nbdev"));
+    }
+
+    #[test]
+    fn simulate_from_desired_accumulates_trade_pnl_without_risk_management() {
+        let candles = candles_from_close(&[100.0, 110.0, 121.0, 133.1, 133.1, 133.1]);
+        let lr = close_log_returns(&candles);
+        let desired_pos = vec![0, 1, 1, 1, 0, 0];
+        let strategy = StrategyConfig {
+            commission: 0.0,
+            fee_bps: 0.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
+            ..StrategyConfig::default()
+        };
+
+        let sim = simulate_from_desired(
+            &candles,
+            &lr,
+            &desired_pos,
+            1,
+            None,
+            &strategy,
+            &IterativeSimConfig::default(),
+            Some(8),
+        );
+        let pnl = pnl_from_single_closed_trade(sim);
+        let expected = (1.1_f64 * 1.1_f64 * 1.1_f64) - 1.0;
+        assert!(
+            (pnl - expected).abs() < 1.0e-12,
+            "expected {expected}, got {pnl}"
+        );
+    }
+
+    #[test]
+    fn simulate_from_desired_closed_trade_includes_exit_side_commission() {
+        let candles = candles_from_close(&[100.0, 100.0, 100.0, 100.0, 100.0]);
+        let lr = vec![0.0; candles.close.len()];
+        let desired_pos = vec![0, 1, 1, 0, 0];
+        let strategy = StrategyConfig {
+            long_only: false,
+            commission: 0.01,
+            fee_bps: 0.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
+            ..StrategyConfig::default()
+        };
+
+        let sim = simulate_from_desired(
+            &candles,
+            &lr,
+            &desired_pos,
+            1,
+            None,
+            &strategy,
+            &IterativeSimConfig::default(),
+            Some(8),
+        );
+        let pnl = pnl_from_single_closed_trade(sim);
+        let expected = (0.99_f64 * 0.99_f64) - 1.0;
+        assert!(
+            (pnl - expected).abs() < 1.0e-12,
+            "expected {expected}, got {pnl}"
+        );
+    }
+
+    #[test]
+    fn simulate_from_desired_flip_closed_trade_includes_exit_side_commission() {
+        let candles = candles_from_close(&[100.0, 100.0, 100.0, 100.0]);
+        let lr = close_log_returns(&candles);
+        let desired_pos = vec![0, 1, -1, 0];
+        let strategy = StrategyConfig {
+            long_only: false,
+            allow_flip: true,
+            commission: 0.01,
+            fee_bps: 0.0,
+            spread_bps: 0.0,
+            slippage_bps: 0.0,
+            ..StrategyConfig::default()
+        };
+
+        let sim = simulate_from_desired(
+            &candles,
+            &lr,
+            &desired_pos,
+            1,
+            None,
+            &strategy,
+            &IterativeSimConfig::default(),
+            Some(8),
+        );
+        let curves = sim.curves.expect("curves");
+        let closed: Vec<_> = curves
+            .trades
+            .into_iter()
+            .filter(|trade| !trade.open)
+            .collect();
+        let expected = (0.99_f64 * 0.99_f64) - 1.0;
+
+        assert_eq!(closed.len(), 2);
+        assert_eq!(closed[0].direction, 1);
+        assert!((closed[0].pnl - expected).abs() < 1.0e-12);
+        assert_eq!(closed[1].direction, -1);
+        assert!((closed[1].pnl - expected).abs() < 1.0e-12);
     }
 }

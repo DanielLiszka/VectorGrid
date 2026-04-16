@@ -32,12 +32,14 @@ impl ColumnIdx {
     }
 }
 
-fn normalize_header(s: &str) -> String {
-    s.trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim()
-        .to_ascii_lowercase()
+fn normalize_header(s: &str, strip_bom: bool) -> String {
+    let normalized = s.trim().trim_matches('"').trim_matches('\'').trim();
+    let normalized = if strip_bom {
+        normalized.trim_start_matches('\u{feff}')
+    } else {
+        normalized
+    };
+    normalized.to_ascii_lowercase()
 }
 
 fn find_idx(headers: &[String], candidates: &[&str]) -> Option<usize> {
@@ -118,6 +120,10 @@ fn infer_column_mapping(headers: &[String]) -> Result<(ColumnIdx, CandleFieldFla
     Ok((idx, fields))
 }
 
+/// Parse a timestamp field with the legacy CSV compatibility contract.
+///
+/// Integer strings are preferred. Float-form timestamps remain accepted for
+/// compatibility and are rounded to the nearest `i64`.
 fn parse_i64_flexible(s: &str) -> Result<i64, String> {
     let t = s.trim();
     if t.is_empty() {
@@ -174,13 +180,23 @@ fn format_csv_read_error(context: &str, error: csv::Error) -> String {
     }
 }
 
-/// CSV reader used by the desktop app.
+/// Load candle data from a compatibility CSV format used by the desktop app.
 ///
-/// Supports:
-/// - VectorTA positional CSV: `timestamp,open,close,high,low,volume` (or just `timestamp,close`)
-/// - Polygon "raw aggregates" CSV: `v,vw,o,c,h,l,t,n,...` (maps `t,o,c,h,l,v`)
+/// Contract notes:
+/// - a non-empty first row is always consumed as header metadata; headerless
+///   files are therefore not supported and will lose that first data row
+///   instead of being auto-detected.
+/// - named-header mode supports aliases such as `timestamp`/`t` and
+///   `close`/`c`, including Polygon raw aggregate exports.
+/// - positional fallback is only used after that first-row header probe and
+///   interprets columns as `timestamp,close` or
+///   `timestamp,open,close,high,low,volume`.
+/// - blank optional cells become `NaN`, and the returned [`CandleFieldFlags`]
+///   report whether any finite value was observed for each optional column.
+/// - float-form timestamps remain accepted and rounded for compatibility.
 pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> {
-    let file = File::open(file_path).map_err(|e| format!("failed to open CSV: {e}"))?;
+    let file =
+        File::open(file_path).map_err(|e| format!("failed to open CSV '{}': {e}", file_path))?;
     let mut reader = ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
@@ -201,7 +217,11 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
         }
     };
 
-    let headers: Vec<String> = header_record.iter().map(normalize_header).collect();
+    let headers: Vec<String> = header_record
+        .iter()
+        .enumerate()
+        .map(|(index, header)| normalize_header(header, index == 0))
+        .collect();
 
     let (idx, fields_hdr) = infer_column_mapping(&headers)?;
     let wanted_max = idx.max_idx();
@@ -414,5 +434,63 @@ mod tests {
         assert!(!candles.fields.high);
         assert!(!candles.fields.low);
         assert!(!candles.fields.volume);
+    }
+
+    #[test]
+    fn parses_bom_prefixed_first_header_token() {
+        let csv = concat!("\u{feff}timestamp,close\n", "1350460800000,23.5143\n");
+        let tmp = write_temp_csv("vta_csv_compat_test_bom_header", csv);
+
+        let candles = read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("parse bom csv");
+        assert_eq!(candles.timestamp, vec![1350460800000]);
+        assert_eq!(candles.close, vec![23.5143]);
+    }
+
+    #[test]
+    fn headerless_csv_consumes_first_row_as_header_and_only_reads_later_rows() {
+        let csv = concat!("1350460800000,23.5143\n", "1350460860000,23.6143\n");
+        let tmp = write_temp_csv("vta_csv_compat_test_headerless", csv);
+
+        let candles =
+            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("headerless parse result");
+        assert_eq!(candles.timestamp, vec![1350460860000]);
+        assert_eq!(candles.close, vec![23.6143]);
+    }
+
+    #[test]
+    fn float_form_timestamps_are_rounded_for_compatibility() {
+        let csv = concat!("timestamp,close\n", "1350460800000.6,23.5143\n");
+        let tmp = write_temp_csv("vta_csv_compat_test_float_timestamp", csv);
+
+        let candles =
+            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("float timestamp parse");
+        assert_eq!(candles.timestamp, vec![1350460800001]);
+    }
+
+    #[test]
+    fn out_of_range_float_timestamps_are_rejected() {
+        let csv = concat!("timestamp,close\n", "1e40,23.5143\n");
+        let tmp = write_temp_csv("vta_csv_compat_test_oob_timestamp", csv);
+
+        let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect_err("out-of-range timestamp should fail");
+        assert!(error.contains("out of i64 range"));
+    }
+
+    #[test]
+    fn open_failure_includes_requested_file_path() {
+        let missing = std::env::temp_dir().join(format!(
+            "missing_csv_compat_{}_{}.csv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ));
+        let missing_path = missing.to_string_lossy().to_string();
+        let error = read_candles_from_csv_compat(&missing_path)
+            .expect_err("missing file should return open failure");
+        assert!(error.contains(&missing_path));
+        assert!(error.contains("failed to open CSV"));
     }
 }

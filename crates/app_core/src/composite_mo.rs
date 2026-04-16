@@ -184,9 +184,10 @@ pub struct CompositeMoRequest {
     pub constraints: Option<CompositeConstraints>,
 
     /// Optional stage-0 prescan to narrow MA length domains before multiobjective optimization.
+    /// This only materially applies when `fast_len` and `slow_len` use `IntRange` domains.
     pub gpu_prescan: Option<CompositeGpuPrescanConfig>,
 
-    /// Currently unused for multiobjective; present to keep request shape similar.
+    /// Currently ignored for CompositeMo and kept only for request-shape compatibility.
     #[serde(default)]
     pub mode: Option<OptimizationMode>,
 }
@@ -436,7 +437,11 @@ pub struct CompositeMoPrescanTelemetry {
 #[derive(Clone, Debug, Serialize)]
 pub struct CompositeMoSearchTelemetry {
     pub sampler: String,
+    /// Requested search budget. For exact-grid runs, use
+    /// `exact_grid_total_combinations` for the explored candidate count.
     pub requested_evaluations: usize,
+    /// Search-phase evaluations only. This excludes the final CPU `Trade22`
+    /// Pareto enrichment pass performed after search completes.
     pub actual_evaluations: usize,
     pub unique_evaluations: usize,
     pub duplicate_evaluations_avoided: usize,
@@ -1287,6 +1292,18 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     scan_pairs.len()
                 ));
             }
+            let fixed_ma_types =
+                idx.fast_ma_type.is_none() && idx.slow_ma_type.is_none() && cfg.ma_pairs.is_some();
+            if fixed_ma_types
+                && !scan_pairs
+                    .iter()
+                    .any(|pair| pair == &(base_fast_ma.clone(), base_slow_ma.clone()))
+            {
+                return Err(format!(
+                    "gpu_prescan ma_pairs must include the fixed request MA pair ({}, {}) when fast_ma_type/slow_ma_type are not optimized",
+                    base_fast_ma, base_slow_ma
+                ));
+            }
             for (f, s) in &scan_pairs {
                 validate_ma_kind(f)?;
                 validate_ma_kind(s)?;
@@ -2021,6 +2038,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         let fast_bank = match fast_banks.get(&fast_ma_type) {
             Some(v) => v,
             None => {
+                rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                 constraints.push(1.0);
                 let metrics = Metrics::default();
                 let params = CompositeMoParams {
@@ -2044,6 +2062,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         let slow_bank = match slow_banks.get(&slow_ma_type) {
             Some(v) => v,
             None => {
+                rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                 constraints.push(1.0);
                 let metrics = Metrics::default();
                 let params = CompositeMoParams {
@@ -2071,6 +2090,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 &fast_bank.values[off..off + n]
             }
             None => {
+                rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                 constraints.push(1.0);
                 let metrics = Metrics::default();
                 let params = CompositeMoParams {
@@ -2098,6 +2118,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 &slow_bank.values[off..off + n]
             }
             None => {
+                rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                 constraints.push(1.0);
                 let metrics = Metrics::default();
                 let params = CompositeMoParams {
@@ -2270,6 +2291,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
         // If structural constraints already violated, avoid expensive indicator work.
         if constraints.iter().any(|&v| v > 0.0) {
+            rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
             let metrics = Metrics::default();
             let params = CompositeMoParams {
                 fast_ma_type: fast_ma_type.clone(),
@@ -2301,6 +2323,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             let halftrend_trend = match compute_halftrend_trend(candles, &halftrend) {
                 Ok(v) => v,
                 Err(_) => {
+                    rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                     constraints.push(1.0);
                     let metrics = Metrics::default();
                     let params = CompositeMoParams {
@@ -2327,6 +2350,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 match crate::composite_cpu::compute_macz_hist(candles, &ma_source, &macz) {
                     Ok(v) => v,
                     Err(_) => {
+                        rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                         constraints.push(1.0);
                         let metrics = Metrics::default();
                         let params = CompositeMoParams {
@@ -2352,6 +2376,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             let ott_line = match crate::composite_cpu::compute_ott_line(candles, &ma_source, &ott) {
                 Ok(v) => v,
                 Err(_) => {
+                    rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                     constraints.push(1.0);
                     let metrics = Metrics::default();
                     let params = CompositeMoParams {
@@ -2428,6 +2453,11 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
         };
 
+        if constraints.iter().any(|&value| value > 0.0) {
+            rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
+            return invalid_outcome(constraints);
+        }
+
         let eval_static_metrics = || {
             if need_sharpe {
                 ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
@@ -2494,6 +2524,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         Ok(v) => v,
                         Err(_) => {
                             constraints.push(1.0);
+                            rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                             return invalid_outcome(constraints);
                         }
                     };
@@ -2525,6 +2556,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     Ok(v) => v,
                     Err(_) => {
                         constraints.push(1.0);
+                        rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
                         return invalid_outcome(constraints);
                     }
                 };
@@ -4410,5 +4442,237 @@ mod tests {
         assert_eq!(res.total_evaluations, 1);
         assert_eq!(res.telemetry.search.requested_evaluations, 8);
         assert_eq!(res.telemetry.search.actual_evaluations, 1);
+    }
+
+    #[test]
+    fn composite_mo_sampler_deserializes_current_tag_spellings() {
+        let random: CompositeMoSampler = serde_json::from_value(serde_json::json!({
+            "sampler": "Random",
+            "config": { "seed": 1, "trials": 8 }
+        }))
+        .expect("Random sampler");
+        assert!(matches!(random, CompositeMoSampler::Random { .. }));
+
+        let nsga2: CompositeMoSampler = serde_json::from_value(serde_json::json!({
+            "sampler": "Nsga2",
+            "config": { "seed": 1, "population_size": 8, "generations": 2 }
+        }))
+        .expect("Nsga2 sampler");
+        assert!(matches!(nsga2, CompositeMoSampler::Nsga2 { .. }));
+
+        let tpe: CompositeMoSampler = serde_json::from_value(serde_json::json!({
+            "sampler": "Tpe",
+            "config": {
+                "seed": 1,
+                "trials": 8,
+                "startup_trials": 4,
+                "n_ei_candidates": 8,
+                "gamma": 0.25,
+                "batch_size": 4,
+                "max_model_points": 64
+            }
+        }))
+        .expect("Tpe sampler");
+        assert!(matches!(tpe, CompositeMoSampler::Tpe { .. }));
+
+        let qmc: CompositeMoSampler = serde_json::from_value(serde_json::json!({
+            "sampler": "Qmc",
+            "config": { "seed": 1, "trials": 8 }
+        }))
+        .expect("Qmc sampler");
+        assert!(matches!(qmc, CompositeMoSampler::Qmc { .. }));
+    }
+
+    #[test]
+    fn composite_mo_mode_field_is_ignored() {
+        let candles = make_trending_candles(128);
+        let cancel = AtomicBool::new(false);
+
+        let make_req = |mode| CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 6,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 10,
+                            high: 11,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig { seed: 1, trials: 8 },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode,
+        };
+
+        let baseline = run_composite_mo_optimization_blocking_with_candles(
+            make_req(None),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("baseline run");
+        let with_mode = run_composite_mo_optimization_blocking_with_candles(
+            make_req(Some(OptimizationMode::CoarseToFine)),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("mode-ignored run");
+
+        assert_eq!(baseline.total_evaluations, with_mode.total_evaluations);
+        assert_eq!(
+            baseline.telemetry.search.exact_grid_used,
+            with_mode.telemetry.search.exact_grid_used
+        );
+        assert_eq!(baseline.pareto.len(), with_mode.pareto.len());
+    }
+
+    #[test]
+    fn composite_mo_gpu_prescan_rejects_fixed_type_requests_that_exclude_base_pair() {
+        let candles = make_trending_candles(256);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 32,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 40,
+                            high: 80,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig { seed: 9, trials: 8 },
+            },
+            constraints: None,
+            gpu_prescan: Some(CompositeGpuPrescanConfig {
+                top_k: 2,
+                window: 0,
+                predictive_top_k: 0,
+                predictive_stride: 8,
+                device_id: None,
+                require_gpu: false,
+                objectives: CompositeGpuPrescanObjectives::Both,
+                ma_pairs: Some(vec![CompositePrescanMaPair {
+                    fast_ma_type: "ema".to_string(),
+                    slow_ma_type: "ema".to_string(),
+                }]),
+                mode: OptimizationMode::Grid,
+            }),
+            mode: None,
+        };
+
+        let err = run_composite_mo_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect_err("fixed base pair exclusion should fail");
+        assert!(err.contains("gpu_prescan ma_pairs must include the fixed request MA pair"));
+    }
+
+    #[test]
+    fn composite_mo_counts_structurally_invalid_candidates_as_other_constraints() {
+        let candles = make_trending_candles(512);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::Categorical {
+                            choices: vec!["5".to_string()],
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::Categorical {
+                            choices: vec!["20".to_string()],
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "ott_percent".to_string(),
+                        domain: ParamDomain::Categorical {
+                            choices: vec!["0.0".to_string(), "1.4".to_string()],
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig { seed: 5, trials: 4 },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode: None,
+        };
+
+        let res = run_composite_mo_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("structural-invalid run");
+        assert_eq!(res.total_evaluations, 2);
+        assert_eq!(res.telemetry.search.actual_evaluations, 2);
+        assert_eq!(res.telemetry.search.feasible_points, 1);
+        assert_eq!(res.telemetry.search.rejected_decode_or_order, 0);
+        assert_eq!(res.telemetry.search.rejected_prescan_pair, 0);
+        assert_eq!(res.telemetry.search.rejected_other_constraints, 1);
     }
 }

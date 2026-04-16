@@ -6,8 +6,7 @@ use ta_optimizer::{ObjectiveKind, OptimizationResult};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
 use crate::double_ma::{
-    effective_score, estimate_pairs_fast_lt_slow, objective_score, BackendUsed, DoubleMaScoreMode,
-    VdpsTelemetry,
+    effective_score, estimate_pairs_fast_lt_slow, BackendUsed, DoubleMaScoreMode, VdpsTelemetry,
 };
 
 #[inline]
@@ -159,6 +158,7 @@ pub(crate) fn vdps_local_anchor_axes(
 pub(crate) fn vdps_merge_partial_results(
     partials: Vec<OptimizationResult>,
     objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
     top_k: usize,
     num_candles: usize,
 ) -> Option<OptimizationResult> {
@@ -174,13 +174,13 @@ pub(crate) fn vdps_merge_partial_results(
         ranked_input.extend(res.top);
     }
 
-    let ranked = vdps_rank_candidates(ranked_input, objective, None, top_k.max(1));
+    let ranked = vdps_rank_candidates(ranked_input, objective, score_mode, top_k.max(1));
     let (best_params, best_metrics) = ranked.first().cloned()?;
     let top = if top_k > 0 { ranked } else { Vec::new() };
-    let best_score = Some(effective_score(&best_metrics, objective, None));
+    let best_score = Some(effective_score(&best_metrics, objective, score_mode));
     let top_scores = Some(
         top.iter()
-            .map(|(_, metrics)| effective_score(metrics, objective, None))
+            .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
             .collect(),
     );
     Some(OptimizationResult {
@@ -208,9 +208,10 @@ pub(crate) fn vdps_inject_random_seed_pairs(
         return;
     }
     let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
+    let target_seen_len = seen.len().saturating_add(target_count);
     let mut attempts: usize = 0;
     let max_attempts = target_count.saturating_mul(32).max(128);
-    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
+    while attempts < max_attempts && seen.len() < target_seen_len {
         attempts = attempts.saturating_add(1);
         let f = fast[rng.gen_range(0..fast.len())];
         let s = slow[rng.gen_range(0..slow.len())];
@@ -258,11 +259,12 @@ pub(crate) fn vdps_inject_elite_mutation_pairs(
         return;
     }
     let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
+    let target_seen_len = seen.len().saturating_add(target_count);
     let mut attempts: usize = 0;
     let max_attempts = target_count.saturating_mul(48).max(192);
     let f_delta = (f_step.max(1) as i32).saturating_mul(2);
     let s_delta = (s_step.max(1) as i32).saturating_mul(2);
-    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
+    while attempts < max_attempts && seen.len() < target_seen_len {
         attempts = attempts.saturating_add(1);
         let (base_f, base_s) = elite_seeds[rng.gen_range(0..elite_seeds.len())];
         let cand_f = (base_f as i32).saturating_add(rng.gen_range(-f_delta..=f_delta));
@@ -294,9 +296,10 @@ pub(crate) fn vdps_inject_differential_seed_pairs(
         return;
     }
     let mut seen: BTreeSet<(u16, u16)> = current.iter().copied().collect();
+    let target_seen_len = seen.len().saturating_add(target_count);
     let mut attempts: usize = 0;
     let max_attempts = target_count.saturating_mul(64).max(256);
-    while attempts < max_attempts && seen.len() < current.len().saturating_add(target_count) {
+    while attempts < max_attempts && seen.len() < target_seen_len {
         attempts = attempts.saturating_add(1);
         let ia = rng.gen_range(0..elite_seeds.len());
         let ib = rng.gen_range(0..elite_seeds.len());
@@ -373,5 +376,218 @@ pub(crate) fn merge_vdps_telemetry(
         }
     } else {
         *target = Some(inc);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    fn params(fast_len: u16, slow_len: u16) -> DoubleMaParams {
+        DoubleMaParams {
+            fast_len,
+            slow_len,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        }
+    }
+
+    fn robust_metrics() -> Metrics {
+        Metrics {
+            pnl: 0.22,
+            sharpe: 1.31,
+            sortino: 1.92,
+            downside_deviation: 0.10,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 1.01,
+            omega: 1.63,
+            kappa_tau: 0.0,
+            volatility: 0.17,
+            ulcer_index: 0.05,
+            martin_ratio: 2.4,
+            max_dd: 0.11,
+            trades: 35,
+            exposure: 0.58,
+            net_exposure: 0.03,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+        }
+    }
+
+    fn fragile_metrics() -> Metrics {
+        Metrics {
+            pnl: 0.25,
+            sharpe: 1.72,
+            sortino: 1.33,
+            downside_deviation: 0.21,
+            downside_frequency: 0.0,
+            downside_severity: 0.0,
+            calmar: 0.57,
+            omega: 1.10,
+            kappa_tau: 0.0,
+            volatility: 0.30,
+            ulcer_index: 0.14,
+            martin_ratio: 1.0,
+            max_dd: 0.26,
+            trades: 10,
+            exposure: 0.97,
+            net_exposure: 0.69,
+            long_mean_return: 0.0,
+            short_mean_return: 0.0,
+            closed_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            gross_profit: 0.0,
+            gross_loss: 0.0,
+            underwater_fraction: 0.0,
+            max_underwater_duration_bars: 0,
+        }
+    }
+
+    fn partial_result(params: DoubleMaParams, metrics: Metrics, score: f64) -> OptimizationResult {
+        OptimizationResult {
+            best_params: params.clone(),
+            best_metrics: metrics.clone(),
+            best_score: Some(score),
+            top: vec![(params, metrics)],
+            top_scores: Some(vec![score]),
+            all: None,
+            all_scores: None,
+            heatmap: None,
+            num_combos: 64,
+            num_candles: 1000,
+        }
+    }
+
+    #[test]
+    fn random_seed_injection_honors_exact_unique_add_budget() {
+        let fast: Vec<u16> = (5..=40).collect();
+        let slow: Vec<u16> = (50..=120).collect();
+        let mut current = vec![(10, 60)];
+        let seen_before = current.iter().copied().collect::<BTreeSet<_>>().len();
+        let mut rng = StdRng::seed_from_u64(7);
+
+        vdps_inject_random_seed_pairs(&mut current, &fast, &slow, 5, &mut rng);
+
+        let seen_after = current.iter().copied().collect::<BTreeSet<_>>().len();
+        assert_eq!(seen_after.saturating_sub(seen_before), 5);
+        assert_eq!(current.len(), seen_before + 5);
+    }
+
+    #[test]
+    fn elite_mutation_injection_honors_exact_unique_add_budget() {
+        let fast: Vec<u16> = (5..=40).collect();
+        let slow: Vec<u16> = (50..=120).collect();
+        let elite_seeds = vec![(10, 60), (16, 72), (22, 84), (28, 96)];
+        let mut current = vec![(10, 60)];
+        let seen_before = current.iter().copied().collect::<BTreeSet<_>>().len();
+        let mut rng = StdRng::seed_from_u64(11);
+
+        vdps_inject_elite_mutation_pairs(
+            &mut current,
+            &elite_seeds,
+            &fast,
+            &slow,
+            4,
+            2,
+            3,
+            &mut rng,
+        );
+
+        let seen_after = current.iter().copied().collect::<BTreeSet<_>>().len();
+        assert_eq!(seen_after.saturating_sub(seen_before), 4);
+        assert_eq!(current.len(), seen_before + 4);
+    }
+
+    #[test]
+    fn differential_seed_injection_honors_exact_unique_add_budget() {
+        let fast: Vec<u16> = (5..=40).collect();
+        let slow: Vec<u16> = (50..=120).collect();
+        let elite_seeds = vec![(10, 60), (16, 72), (22, 84), (28, 96)];
+        let mut current = vec![(10, 60)];
+        let seen_before = current.iter().copied().collect::<BTreeSet<_>>().len();
+        let mut rng = StdRng::seed_from_u64(19);
+
+        vdps_inject_differential_seed_pairs(&mut current, &elite_seeds, &fast, &slow, 4, &mut rng);
+
+        let seen_after = current.iter().copied().collect::<BTreeSet<_>>().len();
+        assert_eq!(seen_after.saturating_sub(seen_before), 4);
+        assert_eq!(current.len(), seen_before + 4);
+    }
+
+    #[test]
+    fn merge_partial_results_preserves_non_default_score_mode() {
+        let score_mode = Some(DoubleMaScoreMode::BalancedRiskAdjusted10);
+        let robust = robust_metrics();
+        let fragile = fragile_metrics();
+        assert!(fragile.sharpe > robust.sharpe);
+        assert!(
+            effective_score(&robust, ObjectiveKind::Sharpe, score_mode)
+                > effective_score(&fragile, ObjectiveKind::Sharpe, score_mode)
+        );
+
+        let merged = vdps_merge_partial_results(
+            vec![
+                partial_result(params(14, 41), fragile.clone(), fragile.sharpe),
+                partial_result(params(10, 30), robust.clone(), robust.sharpe),
+            ],
+            ObjectiveKind::Sharpe,
+            score_mode,
+            4,
+            1000,
+        )
+        .expect("merged result");
+
+        assert_eq!(
+            (merged.best_params.fast_len, merged.best_params.slow_len),
+            (10, 30)
+        );
+        assert_eq!(
+            merged.best_score,
+            Some(effective_score(&robust, ObjectiveKind::Sharpe, score_mode))
+        );
+        assert_eq!(
+            merged.top.first().map(|(p, _)| (p.fast_len, p.slow_len)),
+            Some((10, 30))
+        );
+    }
+
+    #[test]
+    fn merge_partial_results_keeps_score_mode_winner_when_top_k_zero() {
+        let score_mode = Some(DoubleMaScoreMode::BalancedRiskAdjusted10);
+        let robust = robust_metrics();
+        let fragile = fragile_metrics();
+
+        let merged = vdps_merge_partial_results(
+            vec![
+                partial_result(params(14, 41), fragile.clone(), fragile.sharpe),
+                partial_result(params(10, 30), robust.clone(), robust.sharpe),
+            ],
+            ObjectiveKind::Sharpe,
+            score_mode,
+            0,
+            1000,
+        )
+        .expect("merged result");
+
+        assert_eq!(
+            (merged.best_params.fast_len, merged.best_params.slow_len),
+            (10, 30)
+        );
+        assert!(merged.top.is_empty());
+        assert_eq!(merged.top_scores, Some(Vec::new()));
+        assert_eq!(
+            merged.best_score,
+            Some(effective_score(&robust, ObjectiveKind::Sharpe, score_mode))
+        );
     }
 }

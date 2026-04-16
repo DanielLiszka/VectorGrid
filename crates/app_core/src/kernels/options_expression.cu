@@ -1,3 +1,12 @@
+// Contract notes for the options-expression GPU scorers:
+// - Each CUDA thread owns exactly one tuple lane. There are no cross-thread
+//   reductions, so the tuple_index -> output-slot mapping must stay 1:1.
+// - `outcome_valid != 0` means the host already vetted the slot and guarantees
+//   the paired premium is strictly positive. The kernels intentionally divide by
+//   premium without rechecking or clamping so they preserve legacy-path math.
+// - These kernels only produce fast aggregate screening metrics. Exact median
+//   enrichment and exact extreme-stress scoring remain a host-side exactify
+//   responsibility after ranking, not a kernel responsibility here.
 extern "C" __global__ void options_expression_score_split_f64(
     unsigned int event_start,
     unsigned int event_end,
@@ -58,6 +67,11 @@ extern "C" __global__ void options_expression_score_split_f64(
     out_sumsq_return_on_premium[tuple_index] = sumsq_return_on_premium;
 }
 
+// Shared per-lane accumulator used by the legacy split launches and the
+// combined search/holdout/stress kernel. The helper keeps the old aggregate
+// semantics intact: valid outcomes contribute f32 sums only, invalid outcomes
+// contribute nothing, and return-on-premium assumes the host supplied a
+// positive premium for every valid lane.
 __device__ inline void options_expression_accumulate_lane(
     unsigned int event_index,
     unsigned int candidate_slot_stride,
@@ -92,6 +106,9 @@ __device__ inline void options_expression_accumulate_lane(
     }
 }
 
+// This utility is only the coarse screening term used for GPU shortlist
+// ordering. The exact host pass later recomputes retained rows, including the
+// exact extreme lane that is intentionally absent from this kernel family.
 __device__ inline double options_expression_lane_utility(
     unsigned int split_event_count,
     int valid,
@@ -107,7 +124,6 @@ __device__ inline double options_expression_lane_utility(
         static_cast<double>(total_pnl) / static_cast<double>(total_premium);
     return coverage * expectancy_per_premium;
 }
-
 
 extern "C" __global__ void options_expression_score_search_holdout_stress_f64(
     unsigned int search_end,
@@ -164,6 +180,10 @@ extern "C" __global__ void options_expression_score_search_holdout_stress_f64(
     if (tuple_index >= tuple_count) {
         return;
     }
+
+    // Combined-kernel lane ownership stays tuple-local: one thread walks the
+    // tuple through search, holdout, conservative, and harsher lanes in
+    // sequence so the aggregate outputs match the legacy multi-launch path.
 
     const unsigned int baseline_candidate_offset = baseline_tuple_candidate_offsets[tuple_index];
     const unsigned int baseline_summary_offset = baseline_tuple_summary_offsets[tuple_index];
@@ -331,10 +351,12 @@ extern "C" __global__ void options_expression_score_search_holdout_stress_f64(
             harsher_total_premium
         );
     }
+    // Keep the robust-score mix limited to the four aggregate GPU lanes. The
+    // exact extreme-stress contribution is intentionally injected later by the
+    // host exactify pass after shortlist materialization.
     out_robust_score[tuple_index] =
         0.45 * search_score +
         0.25 * holdout_score +
         0.15 * conservative_score +
         0.15 * harsher_score;
 }
-

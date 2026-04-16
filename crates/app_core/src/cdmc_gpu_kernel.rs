@@ -30,6 +30,10 @@ const CDMC_FLAG_DISABLE_FLIP: u32 = 1u32 << 1;
 const CDMC_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
 const CDMC_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
+/// Borrowed GPU-resident CDMC signal inputs for one evaluation batch.
+///
+/// All non-zero pointers must reference row-major device memory in the current CUDA context.
+/// `cols` is the logical series length, and each stride must be at least `cols`.
 pub struct CdmcGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
     pub close_device_ptr: u64,
@@ -48,6 +52,10 @@ pub struct CdmcGpuDeviceSignalMatrices<'a> {
     pub decycler_stride: usize,
 }
 
+/// Parallel combo vectors describing which precomputed signal rows and time windows to evaluate.
+///
+/// Every slice must have identical length, and each index/window entry must already be bounds-checked
+/// against the matrices in `CdmcGpuDeviceSignalMatrices`.
 pub struct CdmcGpuComboBatch<'a> {
     pub dpo_row_index: &'a [i32],
     pub cycle_row_index: &'a [i32],
@@ -111,6 +119,8 @@ struct CdmcCudaRuntime {
 }
 
 impl CdmcCudaRuntime {
+    /// Creates a per-device CUDA runtime and changes CUDA's current context while the `Context`
+    /// and follow-on stream/module state are being initialized.
     fn new(device_id: u32) -> Result<Self, String> {
         cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
@@ -130,6 +140,10 @@ impl CdmcCudaRuntime {
         })
     }
 
+    /// Makes this runtime's CUDA context current on the calling thread.
+    ///
+    /// This mutates CUDA's thread-local current-context slot, so callers must assume subsequent
+    /// device-pointer and launch work happens against `self.context` until another context is set.
     fn set_current(&self) -> Result<(), String> {
         CurrentContext::set_current(self.context.as_ref()).map_err(|e| e.to_string())
     }
@@ -367,6 +381,13 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
+/// Evaluates a batch of CDMC combos against precomputed GPU signal rows.
+///
+/// Contract:
+/// - all device pointers in `signals` must already be valid in the current device/context pairing
+/// - `combos` slice lengths must match and windows must satisfy `0 <= start_t < end_t <= cols`
+/// - execution overlays, stop-loss, and take-profit remain unsupported on this GPU path
+/// - returned rows decode with the shared non-double-MA 19-float metric layout
 pub fn eval_cdmc_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &CdmcGpuDeviceSignalMatrices<'_>,
@@ -598,6 +619,7 @@ pub fn eval_cdmc_metrics_gpu_kernel_device_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cdmc::CdmcStrategyParams;
 
     fn sample_signals(close_f32: &[f32]) -> CdmcGpuDeviceSignalMatrices<'_> {
         CdmcGpuDeviceSignalMatrices {
@@ -619,18 +641,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn validate_inputs_rejects_stride_smaller_than_cols() {
-        let close = [100.0f32, 101.0, 102.0, 103.0];
-        let mut signals = sample_signals(&close);
-        signals.cycle_stride = 3;
-        let combos = CdmcGpuComboBatch {
+    fn sample_combos() -> CdmcGpuComboBatch<'static> {
+        CdmcGpuComboBatch {
             dpo_row_index: &[0],
             cycle_row_index: &[0],
             decycler_row_index: &[0],
             start_t: &[1],
             end_t: &[4],
-        };
+        }
+    }
+
+    #[test]
+    fn validate_inputs_rejects_stride_smaller_than_cols() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let mut signals = sample_signals(&close);
+        signals.cycle_stride = 3;
+        let combos = sample_combos();
 
         let err = validate_inputs(&signals, &combos).expect_err("stride bounds");
         assert!(err.contains("stride is smaller than cols"));
@@ -650,6 +676,32 @@ mod tests {
 
         let err = validate_inputs(&signals, &combos).expect_err("cycle row bounds");
         assert!(err.contains("cycle_row_index[0]"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_null_signal_pointers() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let mut signals = sample_signals(&close);
+        signals.mama_ptr = 0;
+
+        let err = validate_inputs(&signals, &sample_combos()).expect_err("null pointers");
+        assert!(err.contains("signal pointer is null"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_combo_vector_length_mismatch() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals(&close);
+        let combos = CdmcGpuComboBatch {
+            dpo_row_index: &[0, 1],
+            cycle_row_index: &[0],
+            decycler_row_index: &[0, 1],
+            start_t: &[1, 1],
+            end_t: &[4, 4],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("combo length mismatch");
+        assert!(err.contains("combo vector length mismatch"));
     }
 
     #[test]
@@ -676,6 +728,41 @@ mod tests {
         };
         let err = validate_inputs(&signals, &empty).expect_err("empty window");
         assert!(err.contains("requires start_t < end_t"));
+    }
+
+    fn expect_prelaunch_strategy_rejection(strategy: &StrategyConfig) {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals(&close);
+        let err = eval_cdmc_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &sample_combos(),
+            strategy,
+            &CdmcStrategyParams::default(),
+        )
+        .expect_err("unsupported strategy should reject before runtime setup");
+        assert!(err.contains("without overlays/stop-loss/take-profit"));
+    }
+
+    #[test]
+    fn eval_cdmc_metrics_gpu_kernel_rejects_execution_overlays_before_runtime_setup() {
+        let mut strategy = StrategyConfig::default();
+        strategy.cooldown_bars = 1;
+        expect_prelaunch_strategy_rejection(&strategy);
+    }
+
+    #[test]
+    fn eval_cdmc_metrics_gpu_kernel_rejects_stop_loss_before_runtime_setup() {
+        let mut strategy = StrategyConfig::default();
+        strategy.stop_loss_pct = Some(0.02);
+        expect_prelaunch_strategy_rejection(&strategy);
+    }
+
+    #[test]
+    fn eval_cdmc_metrics_gpu_kernel_rejects_take_profit_before_runtime_setup() {
+        let mut strategy = StrategyConfig::default();
+        strategy.take_profit_pct = Some(0.03);
+        expect_prelaunch_strategy_rejection(&strategy);
     }
 
     #[test]

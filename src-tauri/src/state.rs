@@ -222,6 +222,11 @@ impl AppState {
             data_cache::load_or_build_with_identity(pathbuf, app_cache_dir, source_identity)?;
         let mut candles = outcome.candles;
         normalize_timestamps_to_millis(&mut candles.timestamp)?;
+        #[cfg(test)]
+        run_load_before_insert_hook(self);
+        if let Some(existing) = self.find_matching_loaded_base(path, outcome.source_identity)? {
+            return Ok(existing);
+        }
         let meta = build_price_data_meta(
             &candles,
             infer_timeframe_label(&candles.timestamp),
@@ -356,31 +361,110 @@ impl AppState {
         let base_ctx = self.get_loaded_data_context(base_data_id)?;
         let derived = ta_app_core::resample_candles(base.as_ref(), tf.interval_ms)?;
         let meta = build_price_data_meta(&derived, Some(tf.label.clone()), None, None);
+        #[cfg(test)]
+        run_resample_before_insert_hook(self);
 
-        let evicted_ids = {
+        enum ResampleInsertOutcome {
+            Reused(PriceDataMeta),
+            Inserted(Vec<String>),
+        }
+
+        let insert_outcome = {
             let mut map = self
                 .candles
                 .lock()
                 .map_err(|_| "failed to lock candles map".to_string())?;
-            map.insert(
-                out_id.clone(),
-                DatasetEntry {
-                    candles: Arc::new(derived),
-                    version_meta: DatasetVersionMeta {
-                        version: next_derived_version,
-                        kind: DatasetKind::Derived {
-                            parent_data_id: base_data_id.to_string(),
-                            timeframe: tf.label.clone(),
+            let current_base_version = map
+                .get(base_data_id)
+                .map(|entry| entry.version_meta.version)
+                .ok_or_else(|| format!("unknown data id: {base_data_id}"))?;
+            if current_base_version != base_version {
+                return Err(format!(
+                    "base dataset changed during resample for {base_data_id}; retry the request"
+                ));
+            }
+
+            if let Some(entry) = map.get_mut(&out_id) {
+                let is_fresh = match &entry.version_meta.kind {
+                    DatasetKind::Derived {
+                        parent_data_id,
+                        timeframe,
+                    } => {
+                        parent_data_id == base_data_id
+                            && timeframe == &tf.label
+                            && entry.version_meta.source_version == Some(base_version)
+                    }
+                    DatasetKind::Base => false,
+                };
+                if is_fresh {
+                    entry.last_access_seq = access_seq;
+                    let cached_meta = build_price_data_meta(
+                        entry.candles.as_ref(),
+                        Some(tf.label.clone()),
+                        None,
+                        None,
+                    );
+                    ResampleInsertOutcome::Reused(cached_meta)
+                } else {
+                    map.insert(
+                        out_id.clone(),
+                        DatasetEntry {
+                            candles: Arc::new(derived),
+                            version_meta: DatasetVersionMeta {
+                                version: next_derived_version,
+                                kind: DatasetKind::Derived {
+                                    parent_data_id: base_data_id.to_string(),
+                                    timeframe: tf.label.clone(),
+                                },
+                                source_version: Some(base_version),
+                            },
+                            last_access_seq: access_seq,
                         },
-                        source_version: Some(base_version),
+                    );
+                    let protect_ids = HashSet::from([out_id.clone(), base_data_id.to_string()]);
+                    ResampleInsertOutcome::Inserted(enforce_dataset_retention_locked(
+                        &mut map,
+                        &protect_ids,
+                    ))
+                }
+            } else {
+                map.insert(
+                    out_id.clone(),
+                    DatasetEntry {
+                        candles: Arc::new(derived),
+                        version_meta: DatasetVersionMeta {
+                            version: next_derived_version,
+                            kind: DatasetKind::Derived {
+                                parent_data_id: base_data_id.to_string(),
+                                timeframe: tf.label.clone(),
+                            },
+                            source_version: Some(base_version),
+                        },
+                        last_access_seq: access_seq,
                     },
-                    last_access_seq: access_seq,
-                },
-            );
-            let protect_ids = HashSet::from([out_id.clone(), base_data_id.to_string()]);
-            enforce_dataset_retention_locked(&mut map, &protect_ids)
+                );
+                let protect_ids = HashSet::from([out_id.clone(), base_data_id.to_string()]);
+                ResampleInsertOutcome::Inserted(enforce_dataset_retention_locked(
+                    &mut map,
+                    &protect_ids,
+                ))
+            }
         };
-        self.remove_loaded_context_entries(&evicted_ids)?;
+        let load_source = match insert_outcome {
+            ResampleInsertOutcome::Reused(meta) => {
+                return Ok(LoadPriceDataResponse {
+                    id: out_id,
+                    meta,
+                    cache_hit: true,
+                    cache_path: String::new(),
+                    load_source: LoadSource::DerivedInMemoryReuse,
+                });
+            }
+            ResampleInsertOutcome::Inserted(evicted_ids) => {
+                self.remove_loaded_context_entries(&evicted_ids)?;
+                LoadSource::DerivedFreshResample
+            }
+        };
 
         let mut ctx_map = self
             .loaded_data_context
@@ -401,7 +485,7 @@ impl AppState {
             meta,
             cache_hit: false,
             cache_path: String::new(),
-            load_source: LoadSource::DerivedFreshResample,
+            load_source,
         })
     }
 
@@ -463,6 +547,9 @@ impl AppState {
                 let entry = map
                     .get_mut(data_id)
                     .ok_or_else(|| format!("unknown data id: {data_id}"))?;
+                if entry.version_meta.kind != DatasetKind::Base {
+                    return Err("live bar updates are only supported for base datasets".to_string());
+                }
                 let candles = Arc::make_mut(&mut entry.candles);
                 if candles.timestamp.is_empty() || candles.close.is_empty() {
                     return Err("cannot upsert live bar into an empty dataset".to_string());
@@ -471,16 +558,14 @@ impl AppState {
                     return Err("dataset has no close field".to_string());
                 }
 
-                let use_ms = candles
-                    .timestamp
-                    .last()
-                    .copied()
-                    .map(timestamp_uses_millis)
-                    .unwrap_or(true);
-                let ts = if use_ms {
-                    time_open_unix_ms
-                } else {
-                    time_open_unix_ms.div_euclid(1000)
+                let ts = match classify_dataset_timeline(&candles.timestamp) {
+                    DatasetTimelineKind::EpochMillis => time_open_unix_ms,
+                    DatasetTimelineKind::EpochSeconds => time_open_unix_ms.div_euclid(1000),
+                    DatasetTimelineKind::Relative => {
+                        return Err(
+                            "live bar updates require an epoch-based dataset timeline".to_string()
+                        )
+                    }
                 };
                 if ts <= 0 {
                     return Err("live bar timestamp normalization failed".to_string());
@@ -558,7 +643,7 @@ impl AppState {
 
     pub fn try_begin_run(&self) -> Result<RunGuard, String> {
         if self.running.swap(true, Ordering::SeqCst) {
-            return Err("an optimization run is already in progress".to_string());
+            return Err("a run is already in progress".to_string());
         }
         self.cancel.store(false, Ordering::SeqCst);
         Ok(RunGuard {
@@ -964,13 +1049,16 @@ mod state_residency_tests {
     }
 
     fn make_trending_candles(len: usize, step: f64) -> Candles {
+        make_trending_candles_with_base_ts(len, step, 1_700_000_000_000)
+    }
+
+    fn make_trending_candles_with_base_ts(len: usize, step: f64, base_ts: i64) -> Candles {
         let mut ts = Vec::with_capacity(len);
         let mut open = Vec::with_capacity(len);
         let mut high = Vec::with_capacity(len);
         let mut low = Vec::with_capacity(len);
         let mut close = Vec::with_capacity(len);
         let mut vol = Vec::with_capacity(len);
-        let base_ts: i64 = 1_700_000_000_000;
         for i in 0..len {
             ts.push(base_ts + (i as i64) * 60_000);
             let base = 100.0 + (i as f64) * step;
@@ -1269,6 +1357,154 @@ mod state_residency_tests {
     }
 
     #[test]
+    fn live_upsert_uses_epoch_millis_for_pre_2001_datasets() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_pre_2001_epoch_millis");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(
+            &csv,
+            &make_trending_candles_with_base_ts(24, 0.2, 631_152_000_000),
+        );
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+        let before = state.get_candles(&load.id).expect("base candles");
+        let next_ts = before.timestamp.last().copied().unwrap_or(0) + 60_000;
+
+        state
+            .upsert_live_bar(&load.id, next_ts, 120.0, 121.0, 119.0, 120.5, Some(2_000.0))
+            .expect("upsert live bar");
+
+        let after = state.get_candles(&load.id).expect("updated base candles");
+        assert_eq!(after.timestamp.last().copied(), Some(next_ts));
+    }
+
+    #[test]
+    fn live_upsert_rejects_relative_timeline_datasets() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_reject_relative_live_upsert");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("relative_seconds.csv");
+        write_relative_seconds_csv(&csv, 1_800);
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load relative seconds csv");
+
+        let err = state
+            .upsert_live_bar(
+                &load.id,
+                1_700_000_000_000,
+                120.0,
+                121.0,
+                119.0,
+                120.5,
+                Some(2_000.0),
+            )
+            .expect_err("relative timelines should be rejected");
+        assert!(err.contains("epoch-based dataset timeline"));
+    }
+
+    #[test]
+    fn live_upsert_rejects_derived_dataset_ids() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_reject_derived_live_upsert");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(24, 0.2));
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+        let derived = state
+            .resample_loaded_data(&load.id, "5m")
+            .expect("derive 5m");
+
+        let err = state
+            .upsert_live_bar(
+                &derived.id,
+                1_700_000_000_000,
+                120.0,
+                121.0,
+                119.0,
+                120.5,
+                Some(2_000.0),
+            )
+            .expect_err("derived datasets should reject live upserts");
+        assert!(err.contains("only supported for base datasets"));
+    }
+
+    #[test]
+    fn load_second_check_reuses_base_inserted_during_inflight_load() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_load_second_check");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(48, 0.25));
+
+        let state = AppState::default();
+        let csv_path = csv.to_string_lossy().to_string();
+        let cache_dir_clone = cache_dir.clone();
+        install_load_before_insert_hook(Box::new(move |state| {
+            state
+                .load_price_data(&csv_path, &cache_dir_clone)
+                .expect("hooked concurrent load");
+        }));
+
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("outer load should reuse hooked insert");
+
+        let map = state.candles.lock().expect("lock candles");
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&load.id));
+        assert!(matches!(load.load_source, LoadSource::InMemoryBaseReuse));
+    }
+
+    #[test]
+    fn resample_recheck_rejects_parent_version_changes_before_insert() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_resample_parent_recheck");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_trending_candles(36, 0.2));
+
+        let state = AppState::default();
+        let load = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+        let base_arc = state.get_candles(&load.id).expect("base candles");
+        let next_ts = base_arc.timestamp.last().copied().unwrap_or_default() + 60_000;
+        let base_id = load.id.clone();
+        install_resample_before_insert_hook(Box::new(move |state| {
+            state
+                .upsert_live_bar(&base_id, next_ts, 200.0, 201.0, 199.0, 200.5, Some(3_000.0))
+                .expect("hooked base update");
+        }));
+
+        let err = state
+            .resample_loaded_data(&load.id, "5m")
+            .expect_err("resample should reject stale parent snapshot");
+        assert!(err.contains("changed during resample"));
+        assert!(state.get_candles(&format!("{}@5m", load.id)).is_err());
+    }
+
+    #[test]
     fn retention_limits_can_be_overridden_by_env() {
         let _env_guard = residency_env_lock().lock().expect("lock env");
         let prev_base = std::env::var("VECTORBT_MAX_ACTIVE_BASE_DATASETS").ok();
@@ -1474,6 +1710,13 @@ fn min_max_ts(ts: &[i64]) -> (i64, i64) {
 const MIN_EPOCH_SECONDS: i64 = 315_532_800; // 1980-01-01T00:00:00Z
 const MIN_EPOCH_MILLIS: i64 = MIN_EPOCH_SECONDS * 1000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatasetTimelineKind {
+    EpochMillis,
+    EpochSeconds,
+    Relative,
+}
+
 fn max_abs_ts(ts: &[i64]) -> i64 {
     let mut max_abs = 0i64;
     for &value in ts {
@@ -1506,7 +1749,18 @@ fn positive_median_delta(ts: &[i64]) -> Option<i64> {
 }
 
 fn timestamp_uses_millis(ts: i64) -> bool {
-    ts.abs() >= 1_000_000_000_000
+    ts.abs() >= MIN_EPOCH_MILLIS
+}
+
+fn classify_dataset_timeline(ts: &[i64]) -> DatasetTimelineKind {
+    let max_abs = max_abs_ts(ts);
+    if timestamp_uses_millis(max_abs) {
+        DatasetTimelineKind::EpochMillis
+    } else if max_abs >= MIN_EPOCH_SECONDS {
+        DatasetTimelineKind::EpochSeconds
+    } else {
+        DatasetTimelineKind::Relative
+    }
 }
 
 fn timestamps_look_like_seconds(ts: &[i64]) -> bool {
@@ -1694,12 +1948,31 @@ mod state_guard_tests {
             state.try_begin_run().is_err(),
             "second run guard acquisition should be rejected while active"
         );
+        let err = match state.try_begin_run() {
+            Ok(_guard) => panic!("reentrant run guard acquisition should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err, "a run is already in progress");
 
         drop(guard);
 
         let _guard = state
             .try_begin_run()
             .expect("run guard should be reacquirable after drop");
+    }
+
+    #[test]
+    fn run_guard_uses_generic_run_wording() {
+        let state = AppState::default();
+        let _guard = state
+            .try_begin_run()
+            .expect("first run guard should acquire");
+
+        let err = match state.try_begin_run() {
+            Ok(_guard) => panic!("second run guard should be rejected"),
+            Err(err) => err,
+        };
+        assert_eq!(err, "a run is already in progress");
     }
 
     #[test]
@@ -1724,5 +1997,56 @@ mod state_guard_tests {
         let _guard = state
             .try_begin()
             .expect("background guard should be reacquirable after drop");
+    }
+}
+
+#[cfg(test)]
+type AppStateTestHook = Box<dyn FnOnce(&AppState) + Send + 'static>;
+
+#[cfg(test)]
+fn load_before_insert_hook_slot() -> &'static Mutex<Option<AppStateTestHook>> {
+    static HOOK: std::sync::OnceLock<Mutex<Option<AppStateTestHook>>> = std::sync::OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn resample_before_insert_hook_slot() -> &'static Mutex<Option<AppStateTestHook>> {
+    static HOOK: std::sync::OnceLock<Mutex<Option<AppStateTestHook>>> = std::sync::OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn install_load_before_insert_hook(hook: AppStateTestHook) {
+    *load_before_insert_hook_slot()
+        .lock()
+        .expect("lock load-before-insert hook") = Some(hook);
+}
+
+#[cfg(test)]
+fn install_resample_before_insert_hook(hook: AppStateTestHook) {
+    *resample_before_insert_hook_slot()
+        .lock()
+        .expect("lock resample-before-insert hook") = Some(hook);
+}
+
+#[cfg(test)]
+fn run_load_before_insert_hook(state: &AppState) {
+    let hook = load_before_insert_hook_slot()
+        .lock()
+        .expect("lock load-before-insert hook")
+        .take();
+    if let Some(hook) = hook {
+        hook(state);
+    }
+}
+
+#[cfg(test)]
+fn run_resample_before_insert_hook(state: &AppState) {
+    let hook = resample_before_insert_hook_slot()
+        .lock()
+        .expect("lock resample-before-insert hook")
+        .take();
+    if let Some(hook) = hook {
+        hook(state);
     }
 }

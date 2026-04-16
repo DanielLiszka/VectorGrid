@@ -6753,7 +6753,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                     let mut rung_res = vdps_merge_partial_results(
                         partial_results,
                         objective,
-                        rung_top_k.max(1),
+                        score_mode,
+                        rung_top_k,
                         candles.close.len(),
                     )
                     .ok_or_else(|| "GpuVdps produced no valid rung result".to_string())?;
@@ -21030,8 +21031,9 @@ mod tests {
             num_candles: 1000,
         };
 
-        let merged = vdps_merge_partial_results(vec![res_a, res_b], ObjectiveKind::Sharpe, 4, 1000)
-            .expect("merged result");
+        let merged =
+            vdps_merge_partial_results(vec![res_a, res_b], ObjectiveKind::Sharpe, None, 4, 1000)
+                .expect("merged result");
 
         assert_eq!(
             (merged.best_params.fast_len, merged.best_params.slow_len),

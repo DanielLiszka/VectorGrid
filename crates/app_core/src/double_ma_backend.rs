@@ -37,6 +37,11 @@ fn gpu_kernel_topk_supported(top_k: usize, include_all: bool) -> bool {
     topk_select <= 256
 }
 
+fn cpu_dynamic_supported_for_request(fast_ma: &str, slow_ma: &str) -> bool {
+    crate::double_ma::lookup_ma_info(fast_ma).is_some_and(|info| info.supports_cpu_single)
+        && crate::double_ma::lookup_ma_info(slow_ma).is_some_and(|info| info.supports_cpu_single)
+}
+
 pub(crate) fn gpu_kernel_blockers_for_request(
     fast_ma: &str,
     slow_ma: &str,
@@ -78,7 +83,6 @@ pub(crate) fn gpu_kernel_blockers_for_request(
     blockers
 }
 
-#[allow(dead_code)]
 pub(crate) fn build_strategy_capability_report_for_request(
     fast_ma: &str,
     slow_ma: &str,
@@ -99,10 +103,11 @@ pub(crate) fn build_strategy_capability_report_for_request(
         include_all,
     );
     let gpu_supported = reasons.is_empty();
+    let cpu_supported = cpu_dynamic_supported_for_request(fast_ma, slow_ma);
     StrategyCapabilityReport {
         gpu_static_supported: gpu_supported,
         gpu_dynamic_supported: gpu_supported,
-        cpu_dynamic_supported: true,
+        cpu_dynamic_supported: cpu_supported,
         reasons,
     }
 }
@@ -231,6 +236,14 @@ mod tests {
     }
 
     #[test]
+    fn gpu_kernel_topk_boundary_matches_kernel_contract() {
+        assert!(gpu_kernel_topk_supported(0, false));
+        assert!(gpu_kernel_topk_supported(256, false));
+        assert!(!gpu_kernel_topk_supported(257, false));
+        assert!(gpu_kernel_topk_supported(10_000, true));
+    }
+
+    #[test]
     fn capability_report_allows_omega_for_kernel_capable_request() {
         let report = build_strategy_capability_report_for_request(
             "alma",
@@ -246,6 +259,28 @@ mod tests {
         assert!(report.gpu_dynamic_supported);
         assert!(report.cpu_dynamic_supported);
         assert!(report.reasons.is_empty());
+    }
+
+    #[test]
+    fn capability_report_does_not_claim_cpu_fallback_for_unknown_ma_request() {
+        let report = build_strategy_capability_report_for_request(
+            "__unknown_ma__",
+            "sma",
+            &StrategyConfig::default(),
+            false,
+            ObjectiveKind::Sharpe,
+            None,
+            50,
+            false,
+        );
+
+        assert!(!report.gpu_static_supported);
+        assert!(!report.gpu_dynamic_supported);
+        assert!(!report.cpu_dynamic_supported);
+        assert!(report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("fast MA '__unknown_ma__'")));
     }
 
     #[test]

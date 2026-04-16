@@ -4,6 +4,11 @@ use crate::validation_pipeline::{ValidationHardGateConfig, ValidationPostCandida
 use rand::rngs::StdRng;
 use std::sync::atomic::AtomicBool;
 
+/// Run the shared validation flow.
+///
+/// `process_one` returns `(candidate, candidate_start_t, sample_observations)` where:
+/// - `candidate_start_t` participates in the cross-candidate CSCV alignment max
+/// - `sample_observations` feeds probability metric sample sizing
 pub fn run_validation_candidates<P, C, FProcess, FSliceStats>(
     candidates: &[P],
     seed: u64,
@@ -67,8 +72,10 @@ mod tests {
         ValidationCandidateVerdict, ValidationHardGateConfig, ValidationPostCandidate,
     };
     use crate::validation_shared::WalkForwardStats;
+    use rand::Rng;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use ta_strategies::double_ma::Metrics;
 
@@ -379,5 +386,179 @@ mod tests {
         assert!(saw_validate, "missing validate phase progress");
         assert!(saw_cscv_prep, "missing cscv prep phase progress");
         assert!(saw_cscv_kernel, "missing cscv kernel phase progress");
+    }
+
+    #[test]
+    fn shared_validation_core_uses_max_candidate_start_for_cscv_alignment() {
+        let candidates = vec![1usize, 2, 3];
+        let cancel = AtomicBool::new(false);
+        let observed_starts = Mutex::new(Vec::new());
+
+        let (_out, cscv) = run_validation_candidates(
+            &candidates,
+            11,
+            &cancel,
+            None,
+            "unit_validate",
+            "unit_cscv",
+            &ValidationHardGateConfig::default(),
+            Some(&crate::cscv_pbo::CscvPboConfig {
+                slices: 4,
+                max_combinations: 16,
+                threshold: 0.0,
+            }),
+            256,
+            |_, p, _| {
+                let start_t = match *p {
+                    1 => 5,
+                    2 => 17,
+                    _ => 9,
+                };
+                Ok((
+                    DummyCandidate {
+                        id: *p,
+                        in_sample: Metrics {
+                            sharpe: *p as f64,
+                            max_dd: 0.1,
+                            ..Metrics::default()
+                        },
+                        psr: None,
+                        dsr: None,
+                        track_record_bars: 0,
+                        min_track_record_length_bars: None,
+                        robust_score: *p as f64,
+                        robust_pareto: false,
+                        cscv_pbo: None,
+                        validation_verdict: ValidationCandidateVerdict::default(),
+                    },
+                    start_t,
+                    64,
+                ))
+            },
+            |cand, cscv_start_t, _slice_bars, slices| {
+                observed_starts
+                    .lock()
+                    .expect("start observations lock")
+                    .push((cand.id, cscv_start_t));
+                Ok((0..slices)
+                    .map(|s| {
+                        let v = (cand.id as f64) * (s as f64 + 1.0) * 0.001;
+                        SliceReturnStats {
+                            sum: v,
+                            sumsq: v * v,
+                        }
+                    })
+                    .collect())
+            },
+        )
+        .expect("validation core run");
+
+        assert!(cscv.is_some(), "expected CSCV output");
+        let mut observed = observed_starts
+            .lock()
+            .expect("start observations lock")
+            .clone();
+        observed.sort_by_key(|(id, _)| *id);
+        assert_eq!(observed, vec![(1, 17), (2, 17), (3, 17)]);
+    }
+
+    #[test]
+    fn shared_validation_core_skips_slice_builder_when_cscv_is_disabled() {
+        let candidates = vec![1usize, 2, 3];
+        let cancel = AtomicBool::new(false);
+        let slice_builder_calls = AtomicUsize::new(0);
+
+        let (_out, cscv_pbo) = run_validation_candidates(
+            &candidates,
+            7,
+            &cancel,
+            None,
+            "unit_validate",
+            "unit_cscv",
+            &ValidationHardGateConfig::default(),
+            None,
+            128,
+            |_, p, _| {
+                Ok((
+                    DummyCandidate {
+                        id: *p,
+                        in_sample: Metrics {
+                            sharpe: *p as f64,
+                            max_dd: 0.1,
+                            ..Metrics::default()
+                        },
+                        psr: None,
+                        dsr: None,
+                        track_record_bars: 0,
+                        min_track_record_length_bars: None,
+                        robust_score: *p as f64,
+                        robust_pareto: false,
+                        cscv_pbo: None,
+                        validation_verdict: ValidationCandidateVerdict::default(),
+                    },
+                    0,
+                    64,
+                ))
+            },
+            |_cand, _cscv_start_t, _slice_bars, _slices| {
+                slice_builder_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(Vec::<SliceReturnStats>::new())
+            },
+        )
+        .expect("validation core run");
+
+        assert!(cscv_pbo.is_none());
+        assert_eq!(slice_builder_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn shared_validation_core_replays_deterministically_with_same_seed() {
+        fn run_once(seed: u64) -> Vec<(usize, u64)> {
+            let candidates = vec![1usize, 2, 3, 4];
+            let cancel = AtomicBool::new(false);
+            let (out, cscv_pbo) = run_validation_candidates(
+                &candidates,
+                seed,
+                &cancel,
+                None,
+                "unit_validate",
+                "unit_cscv",
+                &ValidationHardGateConfig::default(),
+                None,
+                128,
+                |_, p, rng| {
+                    let score = rng.gen_range(0.0..1.0);
+                    Ok((
+                        DummyCandidate {
+                            id: *p,
+                            in_sample: Metrics {
+                                sharpe: score,
+                                max_dd: 0.1,
+                                ..Metrics::default()
+                            },
+                            psr: None,
+                            dsr: None,
+                            track_record_bars: 0,
+                            min_track_record_length_bars: None,
+                            robust_score: score,
+                            robust_pareto: false,
+                            cscv_pbo: None,
+                            validation_verdict: ValidationCandidateVerdict::default(),
+                        },
+                        0,
+                        64,
+                    ))
+                },
+                |_cand, _cscv_start_t, _slice_bars, _slices| Ok(Vec::<SliceReturnStats>::new()),
+            )
+            .expect("validation core run");
+
+            assert!(cscv_pbo.is_none());
+            out.into_iter()
+                .map(|cand| (cand.id, cand.robust_score.to_bits()))
+                .collect()
+        }
+
+        assert_eq!(run_once(29), run_once(29));
     }
 }

@@ -3,6 +3,16 @@ use std::collections::HashMap;
 
 use vector_ta::utilities::data_loader::Candles;
 
+/// Row-major moving-average output matrix produced by the local CPU wrapper.
+///
+/// Contract:
+/// - `rows == periods.len()` for successful wrapper responses
+/// - `cols == candles.len()` for successful wrapper responses
+/// - values are laid out row-major, so row `i` spans `values[i * cols .. (i + 1) * cols]`
+/// - row `i` corresponds to the `i`th requested period
+///
+/// This type remains publicly constructible, so callers that bypass [`try_new`] must preserve the
+/// `rows * cols == values.len()` invariant themselves.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IndicatorMatrixF64 {
     pub rows: usize,
@@ -25,6 +35,10 @@ impl IndicatorMatrixF64 {
         Ok(Self { rows, cols, values })
     }
 
+    /// Returns the requested row slice from the row-major matrix.
+    ///
+    /// The current contract returns `None` for out-of-range rows and also for zero-width matrices,
+    /// even when `row < rows`.
     pub fn row(&self, row: usize) -> Option<&[f64]> {
         if row >= self.rows || self.cols == 0 {
             return None;
@@ -34,6 +48,13 @@ impl IndicatorMatrixF64 {
     }
 }
 
+/// CPU-only wrapper request for a moving-average batch over a uniform-step period grid.
+///
+/// The wrapper:
+/// - supports moving averages only
+/// - trims and lowercases `ma_type`
+/// - trims `ma_source` but does not lowercase it
+/// - requires `periods` to be strictly increasing with a uniform step
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MovingAverageBatchRequest {
     pub ma_type: String,
@@ -42,6 +63,12 @@ pub struct MovingAverageBatchRequest {
     pub ma_params: Option<HashMap<String, f64>>,
 }
 
+/// CPU-only moving-average batch response for [`compute_moving_average_batch_cpu`].
+///
+/// The echoed `ma_type` and `ma_source` reflect the wrapper's normalized request view:
+/// `ma_type` is trimmed and lowercased, while `ma_source` is trimmed only. The response does not
+/// echo raw or resolved `ma_params`; callers that need parameter provenance must retain the
+/// original request separately.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MovingAverageBatchResponse {
     pub ma_type: String,
@@ -76,8 +103,15 @@ fn validate_uniform_step(periods: &[u16]) -> Result<(), String> {
     Ok(())
 }
 
-/// Minimal “IndicatorFactory-like” entrypoint for VectorTA moving averages:
-/// compute an MA matrix for a (uniform-step) period grid.
+/// CPU-only moving-average batch facade over `crate::double_ma`.
+///
+/// Contract:
+/// - moving-average-only; this is not a general indicator factory
+/// - validates a strictly increasing, uniform-step period grid
+/// - delegates MA math and MA-parameter interpretation to `crate::double_ma`
+/// - returns a row-major matrix whose `row(i)` corresponds to `periods[i]`
+/// - normalizes `ma_type` to trimmed lowercase and trims `ma_source`
+/// - does not echo raw or resolved `ma_params` in the response DTO
 pub fn compute_moving_average_batch_cpu(
     candles: &Candles,
     req: MovingAverageBatchRequest,
@@ -133,15 +167,19 @@ mod tests {
         Candles::new(ts, open, high, low, close, vol)
     }
 
-    #[test]
-    fn compute_moving_average_batch_cpu_smoke() {
-        let candles = make_trending_candles(16);
-        let req = MovingAverageBatchRequest {
+    fn base_request() -> MovingAverageBatchRequest {
+        MovingAverageBatchRequest {
             ma_type: "sma".to_string(),
             ma_source: "close".to_string(),
             periods: vec![2, 3, 4],
             ma_params: None,
-        };
+        }
+    }
+
+    #[test]
+    fn compute_moving_average_batch_cpu_smoke() {
+        let candles = make_trending_candles(16);
+        let req = base_request();
         let out = compute_moving_average_batch_cpu(&candles, req).unwrap();
         assert_eq!(out.matrix.rows, 3);
         assert_eq!(out.matrix.cols, 16);
@@ -154,12 +192,101 @@ mod tests {
     fn moving_average_batch_rejects_non_uniform_periods() {
         let candles = make_trending_candles(16);
         let req = MovingAverageBatchRequest {
-            ma_type: "sma".to_string(),
-            ma_source: "close".to_string(),
             periods: vec![2, 4, 5],
-            ma_params: None,
+            ..base_request()
         };
         let err = compute_moving_average_batch_cpu(&candles, req).unwrap_err();
         assert!(err.contains("uniform"));
+    }
+
+    #[test]
+    fn moving_average_batch_rejects_empty_ma_type() {
+        let candles = make_trending_candles(16);
+        let req = MovingAverageBatchRequest {
+            ma_type: "   ".to_string(),
+            ..base_request()
+        };
+        let err = compute_moving_average_batch_cpu(&candles, req).unwrap_err();
+        assert!(err.contains("ma_type"));
+    }
+
+    #[test]
+    fn moving_average_batch_rejects_empty_ma_source() {
+        let candles = make_trending_candles(16);
+        let req = MovingAverageBatchRequest {
+            ma_source: "   ".to_string(),
+            ..base_request()
+        };
+        let err = compute_moving_average_batch_cpu(&candles, req).unwrap_err();
+        assert!(err.contains("ma_source"));
+    }
+
+    #[test]
+    fn moving_average_batch_rejects_empty_periods() {
+        let candles = make_trending_candles(16);
+        let req = MovingAverageBatchRequest {
+            periods: Vec::new(),
+            ..base_request()
+        };
+        let err = compute_moving_average_batch_cpu(&candles, req).unwrap_err();
+        assert!(err.contains("periods cannot be empty"));
+    }
+
+    #[test]
+    fn moving_average_batch_rejects_duplicate_periods() {
+        let candles = make_trending_candles(16);
+        let req = MovingAverageBatchRequest {
+            periods: vec![2, 2, 3],
+            ..base_request()
+        };
+        let err = compute_moving_average_batch_cpu(&candles, req).unwrap_err();
+        assert!(err.contains("strictly increasing"));
+    }
+
+    #[test]
+    fn moving_average_batch_rejects_descending_periods() {
+        let candles = make_trending_candles(16);
+        let req = MovingAverageBatchRequest {
+            periods: vec![4, 3, 2],
+            ..base_request()
+        };
+        let err = compute_moving_average_batch_cpu(&candles, req).unwrap_err();
+        assert!(err.contains("strictly increasing"));
+    }
+
+    #[test]
+    fn moving_average_batch_accepts_single_period() {
+        let candles = make_trending_candles(16);
+        let req = MovingAverageBatchRequest {
+            periods: vec![3],
+            ..base_request()
+        };
+        let out = compute_moving_average_batch_cpu(&candles, req).unwrap();
+        assert_eq!(out.periods, vec![3]);
+        assert_eq!(out.matrix.rows, 1);
+        assert_eq!(out.matrix.cols, 16);
+        assert_eq!(out.matrix.row(0).unwrap().len(), 16);
+    }
+
+    #[test]
+    fn moving_average_batch_echoes_normalized_request_fields() {
+        let candles = make_trending_candles(16);
+        let req = MovingAverageBatchRequest {
+            ma_type: "  SMA  ".to_string(),
+            ma_source: "  Close  ".to_string(),
+            ..base_request()
+        };
+        let out = compute_moving_average_batch_cpu(&candles, req).unwrap();
+        assert_eq!(out.ma_type, "sma");
+        assert_eq!(out.ma_source, "Close");
+        assert_eq!(out.periods, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn indicator_matrix_zero_width_row_returns_none() {
+        let matrix = IndicatorMatrixF64::try_new(2, 0, Vec::new()).unwrap();
+        assert_eq!(matrix.row(0), None);
+        assert_eq!(matrix.row(1), None);
+        assert_eq!(matrix.row(2), None);
     }
 }

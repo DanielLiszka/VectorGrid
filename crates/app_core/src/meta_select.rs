@@ -1,6 +1,7 @@
 use crate::progress::ProgressSink;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
 
 fn is_run_artifact_kind(kind: &str) -> bool {
     matches!(
@@ -188,6 +189,12 @@ impl Default for MetaClusterConfig {
     }
 }
 
+/// Train-stage request for grouping and ranking meta-selection artifacts.
+///
+/// `meta_select_from_artifacts` owns only the train-stage shortlist, grouping,
+/// and `meta_score` ranking pass. Holdout augmentation is a later stage in the
+/// broader workflow: direct callers of `meta_select_from_artifacts` should not
+/// expect populated `holdout` rows or `final_score` values in its result.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MetaSelectionRequest {
     pub strategy_kind: String,
@@ -238,9 +245,15 @@ pub struct MetaSelectionRequest {
     pub cluster_representatives: usize,
 }
 
+/// Aggregate holdout metrics for a group after the optional holdout stage runs.
+///
+/// Train-stage aggregation in this file owns `meta_score` and the `train_rows` payload.
+/// A later holdout stage, when enabled, owns this struct and the compatible
+/// `final_score` rewrite on [`MetaCandidateAggregate`].
 #[derive(Clone, Debug, Serialize)]
 pub struct HoldoutAggregate {
     pub datasets: usize,
+    /// Fraction of holdout datasets that passed the holdout gate for this group.
     pub pass_rate: f64,
     pub score_median: f64,
     pub score_p10: f64,
@@ -249,15 +262,24 @@ pub struct HoldoutAggregate {
     pub pnl_median: f64,
 }
 
+/// Summary of the optional holdout stage across all selected groups.
 #[derive(Clone, Debug, Serialize)]
 pub struct HoldoutSummary {
+    /// Number of groups/datasets that received holdout evaluation rows.
     pub datasets: usize,
+    /// Number of groups/datasets that remained train-only because holdout was skipped.
     pub skipped: usize,
 }
 
+/// Train-stage aggregate for one canonical meta group.
+///
+/// This file always computes the train-stage statistics and `meta_score`. The optional
+/// holdout stage may later attach [`HoldoutAggregate`] and overwrite `final_score` with the
+/// train-plus-holdout ranking score that downstream consumers should use when present.
 #[derive(Clone, Debug, Serialize)]
 pub struct MetaCandidateAggregate {
     pub params: Value,
+    /// Canonical grouping key used as the stable group identity and deterministic tie-breaker.
     pub key: String,
     pub ma_source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -270,8 +292,14 @@ pub struct MetaCandidateAggregate {
     pub slow_ma_params: Option<HashMap<String, f64>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub representatives: Vec<Value>,
+    /// Number of train-stage candidate rows absorbed into this group.
     pub samples: usize,
+    /// Number of distinct train-stage datasets represented by `train_rows`.
     pub datasets_covered: usize,
+    /// Train-stage dataset coverage ratio for this group.
+    ///
+    /// The denominator is the train-stage dataset universe considered by this request, not the
+    /// holdout dataset count.
     pub pass_rate: f64,
     pub robust_score_median: f64,
     pub robust_score_p10: f64,
@@ -280,19 +308,29 @@ pub struct MetaCandidateAggregate {
     pub cross_score_median: f64,
     pub psr_median: f64,
     pub dsr_median: f64,
+    /// Train-stage ranking score before any optional holdout adjustment.
     pub meta_score: f64,
+    /// Final ranking score after optional holdout enrichment.
+    ///
+    /// `None` means this group is still train-only and should be interpreted by `meta_score`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_score: Option<f64>,
+    /// Optional holdout-stage aggregate attached after holdout evaluation.
+    ///
+    /// `None` means no holdout stage owned this group yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutAggregate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_flags: Vec<String>,
+    /// Per-dataset train-stage evidence rows that feed the train aggregate and `meta_score`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub train_rows: Vec<TrainDatasetRow>,
+    /// Optional per-dataset holdout rows populated only by a later holdout stage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holdout_rows: Vec<HoldoutDatasetRow>,
 }
 
+/// Per-dataset row emitted by the optional holdout stage.
 #[derive(Clone, Debug, Serialize)]
 pub struct HoldoutDatasetRow {
     pub dataset: String,
@@ -304,6 +342,7 @@ pub struct HoldoutDatasetRow {
     pub pass: bool,
 }
 
+/// Per-dataset row emitted by the train-stage aggregation pass in this file.
 #[derive(Clone, Debug, Serialize)]
 pub struct TrainDatasetRow {
     pub dataset: String,
@@ -323,13 +362,19 @@ pub struct TrainDatasetRow {
     pub ts: Option<String>,
 }
 
+/// Result payload for one train-stage meta-selection run.
 #[derive(Clone, Debug, Serialize)]
 pub struct MetaSelectionResult {
     pub runtime_ms: u64,
     pub strategy_kind: String,
     pub timeframe: Option<String>,
+    /// Total input artifacts scanned for this request before any filtering.
     pub artifacts_considered: usize,
+    /// Artifacts that matched the request and produced a candidate set eligible for train-stage
+    /// aggregation before shortlist/gate reduction.
     pub artifacts_used: usize,
+    /// Candidate rows admitted into train-stage grouping after shortlist filtering and per-artifact
+    /// duplicate-key suppression.
     pub candidates_considered: usize,
     pub groups: Vec<MetaCandidateAggregate>,
     pub warnings: Vec<String>,
@@ -414,6 +459,15 @@ pub fn refresh_meta_group_evidence_flags(group: &mut MetaCandidateAggregate) {
     group.evidence_flags = compute_meta_group_evidence_flags(group);
 }
 
+fn compare_meta_candidate_aggregate_rank(
+    a: &MetaCandidateAggregate,
+    b: &MetaCandidateAggregate,
+) -> Ordering {
+    b.meta_score
+        .total_cmp(&a.meta_score)
+        .then_with(|| a.key.cmp(&b.key))
+}
+
 const GROUP_GATE_MIN_ROBUST_P10: f64 = 0.0;
 const GROUP_GATE_MIN_PASS_RATE: f64 = 0.15;
 const GROUP_GATE_MAX_DD_P90: f64 = 0.80;
@@ -423,6 +477,18 @@ const GROUP_EVIDENCE_MIN_HOLDOUT_DATASETS_WARN: usize = 3;
 const GROUP_EVIDENCE_MIN_HOLDOUT_PASS_RATE_WARN: f64 = 0.50;
 const GROUP_EVIDENCE_MAX_HOLDOUT_DD_P90_WARN: f64 = 0.50;
 
+/// Builds train-stage meta-selection aggregates from compatible artifacts.
+///
+/// This function does not execute the later holdout augmentation stage. The
+/// returned [`MetaCandidateAggregate`] values therefore always own train-stage
+/// `meta_score` and `train_rows`, while `holdout` and `final_score` remain
+/// stage-two outputs for a later workflow step.
+///
+/// Counter semantics:
+/// - `artifacts_used` counts artifacts that matched the request and contributed
+///   an eligible candidate set before final group truncation.
+/// - `candidates_considered` counts post-shortlist, post-within-artifact-dedupe
+///   candidate rows admitted into group aggregation.
 pub fn meta_select_from_artifacts(
     req: &MetaSelectionRequest,
     artifacts: &[Value],
@@ -722,7 +788,7 @@ pub fn meta_select_from_artifacts(
         refresh_meta_group_evidence_flags(group);
     }
 
-    aggregates.sort_by(|a, b| b.meta_score.total_cmp(&a.meta_score));
+    aggregates.sort_by(compare_meta_candidate_aggregate_rank);
     if aggregates.len() > req.top_k {
         aggregates.truncate(req.top_k);
     }
@@ -1589,6 +1655,132 @@ mod tests {
             .train_rows
             .iter()
             .any(|r| r.dataset.eq_ignore_ascii_case("MSFT")));
+    }
+
+    #[test]
+    fn meta_select_uses_stable_tie_break_at_top_k_boundary() {
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: Some("u1".to_string()),
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 2,
+            min_samples: 1,
+            strict_shortlist: false,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let mk_art = |label: &str, fast_len: i64, slow_len: i64| {
+            json!({
+                "kind": "vectorgrid_run_artifact",
+                "ts": "2026-01-26T00:00:00Z",
+                "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+                "dataset_meta": { "label": label, "timeframe": "1m", "csv_path": format!("{label}.csv") },
+                "tags": ["u1"],
+                "validation": { "res": { "candidates": [
+                    {
+                        "params": {
+                            "fast_ma_type": "sma",
+                            "slow_ma_type": "sma",
+                            "fast_len": fast_len,
+                            "slow_len": slow_len,
+                            "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+                            "macz": {},
+                            "ott": {},
+                            "strategy": {}
+                        },
+                        "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                        "robust_score": 1.0,
+                        "robust_pareto": true,
+                        "cross_ticker": { "score": 0.0, "pnl_positive_frac": 1.0 },
+                        "psr": 0.0,
+                        "dsr": 0.0
+                    }
+                ]}}
+            })
+        };
+
+        let art_a = mk_art("AAPL", 5, 20);
+        let art_b = mk_art("MSFT", 6, 21);
+        let art_c = mk_art("NVDA", 7, 22);
+
+        let forward =
+            meta_select_from_artifacts(&req, &[art_a.clone(), art_b.clone(), art_c.clone()], None);
+        let reverse = meta_select_from_artifacts(&req, &[art_c, art_b, art_a], None);
+
+        assert_eq!(forward.groups.len(), 2);
+        assert_eq!(reverse.groups.len(), 2);
+
+        let forward_keys: Vec<&str> = forward.groups.iter().map(|g| g.key.as_str()).collect();
+        let reverse_keys: Vec<&str> = reverse.groups.iter().map(|g| g.key.as_str()).collect();
+
+        assert_eq!(forward_keys, reverse_keys);
+
+        let mut expected = vec![
+            meta_group_key_for_request(
+                &req,
+                &json!({
+                    "fast_ma_type": "sma",
+                    "slow_ma_type": "sma",
+                    "fast_len": 5,
+                    "slow_len": 20,
+                    "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+                    "macz": {},
+                    "ott": {},
+                    "strategy": {}
+                }),
+                "close",
+                &None,
+                &None,
+            ),
+            meta_group_key_for_request(
+                &req,
+                &json!({
+                    "fast_ma_type": "sma",
+                    "slow_ma_type": "sma",
+                    "fast_len": 6,
+                    "slow_len": 21,
+                    "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+                    "macz": {},
+                    "ott": {},
+                    "strategy": {}
+                }),
+                "close",
+                &None,
+                &None,
+            ),
+            meta_group_key_for_request(
+                &req,
+                &json!({
+                    "fast_ma_type": "sma",
+                    "slow_ma_type": "sma",
+                    "fast_len": 7,
+                    "slow_len": 22,
+                    "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+                    "macz": {},
+                    "ott": {},
+                    "strategy": {}
+                }),
+                "close",
+                &None,
+                &None,
+            ),
+        ];
+        expected.sort();
+        expected.truncate(2);
+
+        assert_eq!(forward_keys, expected);
     }
 
     #[test]

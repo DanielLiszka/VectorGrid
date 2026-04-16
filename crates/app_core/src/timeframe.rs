@@ -85,9 +85,29 @@ pub fn parse_timeframe_label(raw: &str) -> Result<TimeframeSpec, String> {
     })
 }
 
+/// Resamples intraday candles into larger UTC-day-bounded buckets.
+///
+/// Contract:
+/// - `interval_ms` must be greater than `0` and less than or equal to one UTC day.
+/// - Buckets never span UTC-day boundaries; the accumulator resets whenever the
+///   timestamp's `ts.div_euclid(DAY_MS)` day changes.
+/// - Within each UTC day, bucket alignment is anchored to the first observed bar
+///   of that day, so truncated sessions keep their own left edge instead of
+///   snapping to midnight or fixed clock boundaries.
+/// - Output timestamps are the left-edge timestamp of each emitted bucket.
+/// - Optional fields (`open`, `high`, `low`, `volume`) aggregate only over
+///   finite source values. If no finite value for an optional field is observed
+///   across the whole resampled output, that field's output flag is downgraded
+///   to `false` and its output column is filled with `NaN`.
 pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, String> {
     if interval_ms <= 0 {
         return Err("interval_ms must be > 0".to_string());
+    }
+    if interval_ms > DAY_MS {
+        return Err(
+            "interval_ms must be <= one UTC day because resampling resets at UTC-day boundaries"
+                .to_string(),
+        );
     }
     if candles.timestamp.is_empty() {
         return Err("candles is empty".to_string());
@@ -352,6 +372,22 @@ mod tests {
     }
 
     #[test]
+    fn resample_rejects_interval_greater_than_one_day() {
+        let candles = Candles::new(
+            vec![60_000, 120_000],
+            vec![10.0, 11.0],
+            vec![11.0, 12.0],
+            vec![9.0, 10.0],
+            vec![10.5, 11.5],
+            vec![1.0, 2.0],
+        );
+
+        let error = resample_candles(&candles, DAY_MS + 1)
+            .expect_err("intervals larger than one UTC day should fail");
+        assert!(error.contains("<= one UTC day"));
+    }
+
+    #[test]
     fn resample_anchors_to_first_bar_of_day() {
         // Two "days" of minute bars. Day 0 starts at 09:30 (in ms from epoch day 0).
         let day0_start = 9 * 3_600_000 + 30 * 60_000; // 09:30
@@ -395,6 +431,24 @@ mod tests {
         assert!(out.volume[0].is_finite());
         assert_eq!(out.volume[0], 5.0 * 10.0);
         assert_eq!(out.volume[1], 3.0 * 20.0);
+    }
+
+    #[test]
+    fn resample_anchors_truncated_day_to_first_observed_bar() {
+        let start = 9 * 3_600_000 + 33 * 60_000; // 09:33, intentionally off a common boundary.
+        let candles = Candles::new(
+            vec![start, start + 60_000, start + 120_000],
+            vec![10.0, 11.0, 12.0],
+            vec![11.0, 12.0, 13.0],
+            vec![9.0, 10.0, 11.0],
+            vec![10.5, 11.5, 12.5],
+            vec![1.0, 2.0, 3.0],
+        );
+
+        let out = resample_candles(&candles, 120_000).expect("resample should succeed");
+        assert_eq!(out.timestamp, vec![start, start + 120_000]);
+        assert_eq!(out.open, vec![10.0, 12.0]);
+        assert_eq!(out.close, vec![11.5, 12.5]);
     }
 
     #[test]
@@ -454,6 +508,38 @@ mod tests {
 
         let out = resample_candles(&candles, 120_000).expect("resample should succeed");
         assert_eq!(out.timestamp.len(), 2);
+        assert!(!out.fields.open);
+        assert!(!out.fields.high);
+        assert!(!out.fields.low);
+        assert!(out.fields.close);
+        assert!(!out.fields.volume);
+        assert!(out.open.iter().all(|value| value.is_nan()));
+        assert!(out.high.iter().all(|value| value.is_nan()));
+        assert!(out.low.iter().all(|value| value.is_nan()));
+        assert!(out.volume.iter().all(|value| value.is_nan()));
+        assert_eq!(out.close, vec![11.0, 12.0]);
+    }
+
+    #[test]
+    fn resample_downgrades_optional_field_flags_without_any_finite_values() {
+        let day0_start = 9 * 3_600_000 + 30 * 60_000;
+        let candles = Candles::new_with_fields(
+            vec![day0_start, day0_start + 60_000, day0_start + 120_000],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            vec![10.0, 11.0, 12.0],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            CandleFieldFlags {
+                open: true,
+                high: true,
+                low: true,
+                close: true,
+                volume: true,
+            },
+        );
+
+        let out = resample_candles(&candles, 120_000).expect("resample should succeed");
         assert!(!out.fields.open);
         assert!(!out.fields.high);
         assert!(!out.fields.low);

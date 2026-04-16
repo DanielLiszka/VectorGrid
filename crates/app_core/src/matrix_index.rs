@@ -16,6 +16,15 @@ pub enum MatrixOrder {
 ///
 /// Column ordering is **FastMajor**:
 /// `for fast in fast_periods { for slow in slow_periods { if fast < slow { emit }}}`
+///
+/// Rows are still represented even when a given `fast_len` produces zero valid columns.
+/// In that case:
+/// - `slow_start_idx[i]` points at `slow_periods.len()`
+/// - `fast_offsets[i]` repeats the previous row's trailing offset
+/// - `col_id(fast_len, ..)` returns `None`
+///
+/// This keeps the constructor's layout stable for serialization and for consumers that
+/// need to reason about later rows with no valid `fast < slow` pairs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DoubleMaFastLtSlowIndex {
     pub order: MatrixOrder,
@@ -30,6 +39,11 @@ pub struct DoubleMaFastLtSlowIndex {
 }
 
 impl DoubleMaFastLtSlowIndex {
+    /// Builds the stable FastMajor index for strictly increasing fast/slow axes.
+    ///
+    /// The constructor preserves every fast row in input order, even when the row has
+    /// zero valid `fast < slow` pairs. A fully valid construction can therefore have
+    /// `cols == 0` when every slow period is `<=` every fast period.
     pub fn new(fast_periods: Vec<u16>, slow_periods: Vec<u16>) -> Result<Self, String> {
         validate_strictly_increasing_u16("fast_periods", &fast_periods)?;
         validate_strictly_increasing_u16("slow_periods", &slow_periods)?;
@@ -67,6 +81,10 @@ impl DoubleMaFastLtSlowIndex {
         })
     }
 
+    /// Returns the FastMajor column id for an exact `(fast_len, slow_len)` pair.
+    ///
+    /// Pairs outside the configured axes, pairs with `fast_len >= slow_len`, and pairs
+    /// that land in a zero-column row all return `None`.
     pub fn col_id(&self, fast_len: u16, slow_len: u16) -> Option<u32> {
         if fast_len >= slow_len {
             return None;
@@ -87,6 +105,11 @@ impl DoubleMaFastLtSlowIndex {
         }
     }
 
+    /// Resolves a FastMajor column id back to its exact `(fast_len, slow_len)` pair.
+    ///
+    /// When trailing rows have zero valid columns, their duplicate `fast_offsets`
+    /// remain valid because only `col < cols` is accepted and all real columns still
+    /// map back to the last row that contributed at least one column.
     pub fn params_for_col(&self, col: u32) -> Option<(u16, u16)> {
         if col >= self.cols {
             return None;
@@ -155,5 +178,34 @@ mod tests {
         assert_eq!(idx.col_id(10, 5), None);
         assert_eq!(idx.col_id(7, 20), None);
         assert_eq!(idx.params_for_col(idx.cols), None);
+    }
+
+    #[test]
+    fn double_ma_index_supports_zero_column_matrices() {
+        let idx = DoubleMaFastLtSlowIndex::new(vec![5, 10], vec![1, 2, 3]).unwrap();
+
+        assert_eq!(idx.order, MatrixOrder::FastMajor);
+        assert_eq!(idx.slow_start_idx, vec![3, 3]);
+        assert_eq!(idx.fast_offsets, vec![0, 0]);
+        assert_eq!(idx.cols, 0);
+
+        assert_eq!(idx.col_id(5, 1), None);
+        assert_eq!(idx.col_id(10, 3), None);
+        assert_eq!(idx.params_for_col(0), None);
+    }
+
+    #[test]
+    fn double_ma_index_allows_duplicate_trailing_offsets_for_zero_count_rows() {
+        let idx = DoubleMaFastLtSlowIndex::new(vec![1, 5, 6], vec![2]).unwrap();
+
+        assert_eq!(idx.slow_start_idx, vec![0, 1, 1]);
+        assert_eq!(idx.fast_offsets, vec![0, 1, 1]);
+        assert_eq!(idx.cols, 1);
+
+        assert_eq!(idx.col_id(1, 2), Some(0));
+        assert_eq!(idx.col_id(5, 2), None);
+        assert_eq!(idx.col_id(6, 2), None);
+        assert_eq!(idx.params_for_col(0), Some((1, 2)));
+        assert_eq!(idx.params_for_col(1), None);
     }
 }

@@ -30,8 +30,26 @@ const MKCS_FLAG_DISABLE_FLIP: u32 = 1u32 << 1;
 const MKCS_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
 const MKCS_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
+/// Device-resident MKCS signal transport consumed by
+/// [`eval_mkcs_metrics_gpu_kernel_device_rows`].
+///
+/// Caller invariants:
+///
+/// - `close_f32.len()` must equal `cols` even when `close_device_ptr` is non-zero. The host slice
+///   remains part of the resident close/log-return cache identity, and `close_device_ptr == 0`
+///   triggers a host upload fallback from this slice.
+/// - Every non-zero raw pointer field must reference memory on the CUDA device/context selected by
+///   the `device_id` passed to the evaluator.
+/// - Each row-major matrix pointer must address at least `rows * stride` contiguous `f32` values
+///   with `stride >= cols`.
+/// - Externally owned device allocations must remain alive and semantically stable for the full
+///   call and for any later cache hit that reuses the same `close_f32` and `close_device_ptr`
+///   identity on the same thread.
 pub struct MkcsGpuDeviceSignalMatrices<'a> {
+    /// Host close series used for validation, host-upload fallback, and resident cache identity.
     pub close_f32: &'a [f32],
+    /// Raw device pointer for the close series. When zero, the evaluator uploads `close_f32` to
+    /// device memory before computing resident log returns.
     pub close_device_ptr: u64,
     pub cols: usize,
     pub stddev_row_major_ptr: u64,
@@ -43,6 +61,11 @@ pub struct MkcsGpuDeviceSignalMatrices<'a> {
     pub breakout_stride: usize,
 }
 
+/// Elementwise MKCS combo metadata for
+/// [`eval_mkcs_metrics_gpu_kernel_device_rows`].
+///
+/// All slices must have identical length. Each element selects one stddev row, one breakout row,
+/// and a `[start_t, end_t)` window for the corresponding output metrics row.
 pub struct MkcsGpuComboBatch<'a> {
     pub stddev_row_index: &'a [i32],
     pub breakout_row_index: &'a [i32],
@@ -344,6 +367,25 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
+/// Evaluates MKCS GPU-kernel metrics for precomputed device-row-major signal matrices.
+///
+/// This is a safe wrapper over unsafe CUDA launches. Callers must ensure that all non-zero raw
+/// device pointers in `signals` belong to the CUDA device/context identified by `device_id`, use
+/// the advertised row-major layout, and remain valid for the launch plus any later thread-local
+/// cache reuse keyed by the same `close_f32` and `close_device_ptr`.
+///
+/// Runtime behavior:
+///
+/// - When `signals.close_device_ptr == 0`, the evaluator uploads `signals.close_f32` and computes
+///   resident log returns from that uploaded close series.
+/// - When `signals.close_device_ptr != 0`, the evaluator uses that caller-owned close allocation
+///   directly, but `signals.close_f32` still participates in the resident cache identity.
+/// - CUDA runtime state, scratch buffers, and resident close/log-return reuse are thread-local and
+///   per-device; equivalent calls on another thread build an independent cache.
+/// - Overlays, stop-loss, and take-profit are intentionally unsupported on this route and return
+///   `Err` for non-empty combo batches before any CUDA runtime work begins.
+/// - Empty combo batches intentionally short-circuit to `Ok(Vec::new())` before unsupported
+///   execution features are checked.
 pub fn eval_mkcs_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &MkcsGpuDeviceSignalMatrices<'_>,
@@ -552,10 +594,13 @@ pub fn eval_mkcs_metrics_gpu_kernel_device_rows(
 mod tests {
     use super::*;
 
-    fn sample_signals(close_f32: &[f32]) -> MkcsGpuDeviceSignalMatrices<'_> {
+    fn sample_signals_with_close_ptr(
+        close_f32: &[f32],
+        close_device_ptr: u64,
+    ) -> MkcsGpuDeviceSignalMatrices<'_> {
         MkcsGpuDeviceSignalMatrices {
             close_f32,
-            close_device_ptr: 1,
+            close_device_ptr,
             cols: close_f32.len(),
             stddev_row_major_ptr: 11,
             stddev_rows: 2,
@@ -564,6 +609,19 @@ mod tests {
             lower_row_major_ptr: 13,
             breakout_rows: 2,
             breakout_stride: close_f32.len(),
+        }
+    }
+
+    fn sample_signals(close_f32: &[f32]) -> MkcsGpuDeviceSignalMatrices<'_> {
+        sample_signals_with_close_ptr(close_f32, 1)
+    }
+
+    fn sample_combo_batch() -> MkcsGpuComboBatch<'static> {
+        MkcsGpuComboBatch {
+            stddev_row_index: &[0],
+            breakout_row_index: &[0],
+            start_t: &[1],
+            end_t: &[4],
         }
     }
 
@@ -620,6 +678,74 @@ mod tests {
         };
         let err = validate_inputs(&signals, &empty).expect_err("empty window");
         assert!(err.contains("requires start_t < end_t"));
+    }
+
+    #[test]
+    fn validate_inputs_allows_close_device_ptr_zero_host_upload_fallback() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = sample_combo_batch();
+
+        validate_inputs(&signals, &combos).expect("host-upload fallback should validate");
+    }
+
+    #[test]
+    fn eval_entry_rejects_overlay_stop_loss_and_take_profit_before_cuda_runtime_work() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = sample_combo_batch();
+        let strategy_cases = [
+            StrategyConfig {
+                cooldown_bars: 1,
+                ..StrategyConfig::default()
+            },
+            StrategyConfig {
+                stop_loss_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+            StrategyConfig {
+                take_profit_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+        ];
+
+        for strategy in strategy_cases {
+            let err = eval_mkcs_metrics_gpu_kernel_device_rows(
+                0,
+                &signals,
+                &combos,
+                &strategy,
+                &MkcsStrategyParams::default(),
+            )
+            .expect_err("unsupported features should be rejected before CUDA runtime work");
+            assert!(err.contains("without overlays/stop-loss/take-profit"));
+        }
+    }
+
+    #[test]
+    fn eval_entry_returns_empty_for_empty_combo_batch_before_feature_rejection() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let signals = sample_signals_with_close_ptr(&close, 0);
+        let combos = MkcsGpuComboBatch {
+            stddev_row_index: &[],
+            breakout_row_index: &[],
+            start_t: &[],
+            end_t: &[],
+        };
+        let strategy = StrategyConfig {
+            stop_loss_pct: Some(0.02),
+            ..StrategyConfig::default()
+        };
+
+        let metrics = eval_mkcs_metrics_gpu_kernel_device_rows(
+            0,
+            &signals,
+            &combos,
+            &strategy,
+            &MkcsStrategyParams::default(),
+        )
+        .expect("empty combo batches intentionally short-circuit");
+        assert!(metrics.is_empty());
     }
 
     #[test]

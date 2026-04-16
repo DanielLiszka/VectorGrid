@@ -7,8 +7,10 @@ use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_direct_with_inputs, compute_dynamic_indicator_cuda_with_inputs,
     DynamicIndicatorCudaComputeOutput, DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
+#[cfg(feature = "cuda")]
+use crate::indicator_catalog::IndicatorInputKind;
 use crate::indicator_catalog::{
-    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
+    find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -18,6 +20,10 @@ use vector_ta::indicators::dispatch::DeviceMatrixF32;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
+/// Serialized MKCS strategy parameters.
+///
+/// The serde defaults below are part of the persisted-config compatibility
+/// contract for saved presets and artifact replays.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MkcsStrategyParams {
     #[serde(default = "default_true")]
@@ -67,18 +73,28 @@ impl Default for MkcsStrategyParams {
     }
 }
 
+/// Concrete stddev / breakout periods after fast/slow mapping is resolved.
 #[derive(Clone, Copy, Debug)]
 pub struct MkcsResolvedPeriods {
     pub stddev: u16,
     pub breakout: u16,
 }
 
+/// Compression-side MKCS series.
+///
+/// `stddev` is expected to stay aligned with `candles.close`; callers may rely
+/// on `first_valid` only after the returned length contract is satisfied.
 #[derive(Clone, Debug)]
 pub struct MkcsCompressionSignals {
     pub stddev: Vec<f64>,
     pub first_valid: usize,
 }
 
+/// Breakout-side MKCS series.
+///
+/// `upper` and `lower` are expected to stay aligned with each other and with
+/// `candles.close`; callers may rely on `first_valid` only after the returned
+/// length contract is satisfied.
 #[derive(Clone, Debug)]
 pub struct MkcsBreakoutSignals {
     pub upper: Vec<f64>,
@@ -87,6 +103,7 @@ pub struct MkcsBreakoutSignals {
 }
 
 #[cfg(feature = "cuda")]
+/// Device-resident Donchian sweeps kept on-device for downstream consumers.
 pub struct MkcsDonchianSweepsDevice {
     pub upper: MkcsPeriodSweepDevice,
     pub lower: MkcsPeriodSweepDevice,
@@ -110,6 +127,7 @@ enum MkcsDeviceMatrixOwner {
 }
 
 #[cfg(feature = "cuda")]
+/// Keepalive wrapper around a dispatch-owned device matrix.
 pub struct MkcsDeviceMatrix {
     pub device_ptr: u64,
     pub rows: usize,
@@ -141,6 +159,11 @@ impl MkcsDeviceMatrix {
 }
 
 #[cfg(feature = "cuda")]
+/// Row-major device matrix for a normalized inclusive period sweep.
+///
+/// Rows map to periods from `period_start..=period_end` using `period_step`.
+/// Construction validates the returned row count against that normalized
+/// cardinality before this carrier is exposed to callers.
 pub struct MkcsPeriodSweepDevice {
     pub matrix: MkcsDeviceMatrix,
     pub period_start: u16,
@@ -217,6 +240,58 @@ pub fn resolve_mkcs_periods(
 
 fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
     values.iter().position(|v| v.is_finite())
+}
+
+fn validate_indicator_series_len(
+    indicator_id: &str,
+    output_id: &str,
+    values: &[f64],
+    expected_len: usize,
+) -> Result<(), String> {
+    if values.len() == expected_len {
+        return Ok(());
+    }
+    Err(format!(
+        "MKCS indicator '{indicator_id}' output '{output_id}' length mismatch: expected {expected_len}, got {}",
+        values.len()
+    ))
+}
+
+fn validate_breakout_signal_lengths(
+    upper_output_id: &str,
+    upper: &[f64],
+    lower_output_id: &str,
+    lower: &[f64],
+    expected_len: usize,
+) -> Result<(), String> {
+    if upper.len() != lower.len() {
+        return Err(format!(
+            "MKCS donchian output length mismatch: upper '{}' has {}, lower '{}' has {}",
+            upper_output_id,
+            upper.len(),
+            lower_output_id,
+            lower.len()
+        ));
+    }
+    validate_indicator_series_len("donchian", upper_output_id, upper, expected_len)?;
+    validate_indicator_series_len("donchian", lower_output_id, lower, expected_len)?;
+    Ok(())
+}
+
+fn validate_distinct_output_ids(
+    indicator_id: &str,
+    upper_output_id: &str,
+    lower_output_id: &str,
+    available_outputs: &[String],
+) -> Result<(), String> {
+    if !upper_output_id.eq_ignore_ascii_case(lower_output_id) {
+        return Ok(());
+    }
+    Err(format!(
+        "MKCS indicator '{indicator_id}' resolved duplicate output ids for upper/lower binding: '{}' (available outputs: {})",
+        upper_output_id,
+        available_outputs.join(", ")
+    ))
 }
 
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
@@ -342,7 +417,10 @@ fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
 fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
     static IDS: OnceLock<Result<MkcsIndicatorIds, String>> = OnceLock::new();
 
+    // The first descriptor-resolution outcome is intentionally sticky for the
+    // process lifetime so registry drift cannot change MKCS bindings mid-run.
     IDS.get_or_init(|| {
+        #[cfg(feature = "cuda")]
         let stddev_descriptor = find_dynamic_indicator_descriptor("stddev").ok_or_else(|| {
             "MKCS indicator 'stddev' is not registered for dynamic dispatch".to_string()
         })?;
@@ -350,6 +428,22 @@ fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
             find_dynamic_indicator_descriptor("donchian").ok_or_else(|| {
                 "MKCS indicator 'donchian' is not registered for dynamic dispatch".to_string()
             })?;
+        let donchian_upper_output = resolve_output_id(
+            "donchian",
+            &["upper_band", "upperband", "upper", "up", "value"],
+        )?;
+        let donchian_lower_output =
+            resolve_output_id("donchian", &["lower_band", "lowerband", "lower", "down"])?;
+        validate_distinct_output_ids(
+            "donchian",
+            donchian_upper_output.as_str(),
+            donchian_lower_output.as_str(),
+            &donchian_descriptor
+                .outputs
+                .iter()
+                .map(|output| output.id.clone())
+                .collect::<Vec<_>>(),
+        )?;
         Ok(MkcsIndicatorIds {
             stddev_period_key: resolve_param_key("stddev", &["period", "length", "timeperiod"])?,
             stddev_output: resolve_output_id("stddev", &["value", "stddev", "stdev"])?,
@@ -359,14 +453,8 @@ fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
                 "donchian",
                 &["period", "length", "timeperiod"],
             )?,
-            donchian_upper_output: resolve_output_id(
-                "donchian",
-                &["upper_band", "upperband", "upper", "up", "value"],
-            )?,
-            donchian_lower_output: resolve_output_id(
-                "donchian",
-                &["lower_band", "lowerband", "lower", "down"],
-            )?,
+            donchian_upper_output,
+            donchian_lower_output,
             #[cfg(feature = "cuda")]
             donchian_input_kind: donchian_descriptor.input_kind,
         })
@@ -376,8 +464,37 @@ fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
 }
 
 #[cfg(feature = "cuda")]
+fn normalized_period_sweep_cardinality(
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+) -> usize {
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    usize::from((end - start) / step) + 1
+}
+
+#[cfg(feature = "cuda")]
 fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
+}
+
+#[cfg(feature = "cuda")]
+fn select_donchian_output_id<'a>(
+    ids: &'a MkcsIndicatorIds,
+    output_preferred_ids: &[&str],
+) -> &'a str {
+    if output_preferred_ids.iter().any(|id| {
+        matches!(
+            id.to_ascii_lowercase().as_str(),
+            "lower_band" | "lowerband" | "lower" | "down"
+        )
+    }) {
+        ids.donchian_lower_output.as_str()
+    } else {
+        ids.donchian_upper_output.as_str()
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -421,6 +538,13 @@ fn compute_indicator_period_sweep_cuda_device(
     )
     .map_err(|e| e.to_string())?;
     let matrix = cuda_series_to_device_f32(out)?;
+    let expected_rows = normalized_period_sweep_cardinality(start, end, step);
+    if matrix.rows != expected_rows {
+        return Err(format!(
+            "MKCS indicator '{indicator_id}' period sweep row count mismatch: expected {expected_rows}, got {} for normalized range [{start}..={end}] step {step}",
+            matrix.rows
+        ));
+    }
 
     Ok(MkcsPeriodSweepDevice {
         matrix,
@@ -494,16 +618,7 @@ pub fn compute_mkcs_donchian_output_sweep_cuda_device(
     period_step: u16,
 ) -> Result<MkcsPeriodSweepDevice, String> {
     let ids = mkcs_indicator_ids()?;
-    let output_id = if output_preferred_ids.iter().any(|id| {
-        matches!(
-            id.to_ascii_lowercase().as_str(),
-            "lower_band" | "lowerband" | "lower" | "down"
-        )
-    }) {
-        ids.donchian_lower_output.as_str()
-    } else {
-        ids.donchian_upper_output.as_str()
-    };
+    let output_id = select_donchian_output_id(ids, output_preferred_ids);
     compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "donchian",
@@ -590,6 +705,12 @@ pub fn compute_mkcs_compression_signals(
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
     )?;
+    validate_indicator_series_len(
+        "stddev",
+        ids.stddev_output.as_str(),
+        &stddev,
+        candles.close.len(),
+    )?;
     let first_valid = first_finite_idx_local(&stddev)
         .ok_or_else(|| "MKCS stddev output is all non-finite".to_string())?;
     Ok(MkcsCompressionSignals {
@@ -630,10 +751,13 @@ pub fn compute_mkcs_breakout_signals(
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
     )?;
-
-    if upper.len() != lower.len() {
-        return Err("MKCS donchian output length mismatch".to_string());
-    }
+    validate_breakout_signal_lengths(
+        ids.donchian_upper_output.as_str(),
+        &upper,
+        ids.donchian_lower_output.as_str(),
+        &lower,
+        candles.close.len(),
+    )?;
 
     let first_valid = first_finite_idx_local(&upper)
         .zip(first_finite_idx_local(&lower))
@@ -816,6 +940,79 @@ mod tests {
         cfg.reexpansion_threshold = 0.005;
         cfg.compression_threshold = 0.01;
         assert!(validate_mkcs_params(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_indicator_series_len_rejects_mismatch() {
+        let err = validate_indicator_series_len("stddev", "value", &[1.0, 2.0], 3)
+            .expect_err("mismatched series length should fail");
+        assert!(err.contains("expected 3, got 2"));
+        assert!(err.contains("stddev"));
+        assert!(err.contains("value"));
+    }
+
+    #[test]
+    fn validate_breakout_signal_lengths_rejects_close_length_mismatch() {
+        let err = validate_breakout_signal_lengths("upper", &[1.0, 2.0], "lower", &[0.0, 1.0], 3)
+            .expect_err("close length mismatch should fail");
+        assert!(err.contains("expected 3, got 2"));
+    }
+
+    #[test]
+    fn validate_breakout_signal_lengths_rejects_upper_lower_mismatch() {
+        let err =
+            validate_breakout_signal_lengths("upper", &[1.0, 2.0, 3.0], "lower", &[0.0, 1.0], 3)
+                .expect_err("upper/lower mismatch should fail");
+        assert!(err.contains("upper 'upper' has 3"));
+        assert!(err.contains("lower 'lower' has 2"));
+    }
+
+    #[test]
+    fn validate_distinct_output_ids_rejects_duplicate_binding() {
+        let err = validate_distinct_output_ids(
+            "donchian",
+            "value",
+            "value",
+            &[
+                "value".to_string(),
+                "upper".to_string(),
+                "lower".to_string(),
+            ],
+        )
+        .expect_err("duplicate upper/lower binding should fail");
+        assert!(err.contains("duplicate output ids"));
+        assert!(err.contains("value"));
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn normalized_period_sweep_cardinality_normalizes_inputs() {
+        assert_eq!(normalized_period_sweep_cardinality(0, 0, 0), 1);
+        assert_eq!(normalized_period_sweep_cardinality(5, 2, 0), 1);
+        assert_eq!(normalized_period_sweep_cardinality(5, 11, 3), 3);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn select_donchian_output_id_defaults_to_upper_for_unknown_preferences() {
+        let ids = mkcs_indicator_ids().expect("mkcs indicator ids");
+        assert_eq!(
+            select_donchian_output_id(ids, &["unexpected_output_name"]),
+            ids.donchian_upper_output.as_str()
+        );
+        assert_eq!(
+            select_donchian_output_id(ids, &["lower"]),
+            ids.donchian_lower_output.as_str()
+        );
+    }
+
+    #[test]
+    fn mkcs_indicator_ids_bind_distinct_donchian_outputs() {
+        let ids = mkcs_indicator_ids().expect("mkcs indicator ids");
+        assert_ne!(
+            ids.donchian_upper_output.to_ascii_lowercase(),
+            ids.donchian_lower_output.to_ascii_lowercase()
+        );
     }
 
     #[test]

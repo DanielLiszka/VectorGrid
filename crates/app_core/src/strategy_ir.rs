@@ -9,7 +9,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
 use ta_strategies::double_ma::StrategyConfig;
 
+/// Current `schema_version` emitted by this build for serialized [`StrategyIr`] payloads.
 pub const STRATEGY_IR_SCHEMA_VERSION: u16 = 2;
+/// Oldest `schema_version` still accepted by [`validate_strategy_ir`] and planner entry points.
 pub const STRATEGY_IR_MIN_SUPPORTED_SCHEMA_VERSION: u16 = 1;
 
 pub const IR_MAX_INDICATORS: usize = 64;
@@ -111,6 +113,11 @@ pub enum ValueRef {
     },
     MaSource,
     Close,
+    /// Lossless `f64` transport encoded as raw IEEE-754 bits.
+    ///
+    /// Rust producers may send either a JSON number or a decimal string for `bits`, but string
+    /// transport is the safest choice for JavaScript-facing payloads because integers above
+    /// `2^53 - 1` are not exactly representable by JS numbers.
     ConstantBits {
         #[serde(deserialize_with = "deserialize_constant_bits_u64")]
         bits: u64,
@@ -457,6 +464,17 @@ fn validate_program(program: &SignalProgramGraph) -> Result<(), String> {
     Ok(())
 }
 
+/// Validates wire-level well-formedness for a deserialized [`StrategyIr`].
+///
+/// This function deliberately stays narrower than full runnable-profile validation:
+///
+/// - serde remains lenient, so omitted fields still receive defaults and unknown JSON fields are
+///   ignored during deserialization;
+/// - casing and surrounding whitespace are only checked for emptiness here, not canonicalized;
+/// - profile-specific program and execution invariants are left to narrower builders/callers.
+///
+/// Callers that require canonical static-builder shapes or tighter runtime invariants should layer
+/// those checks separately instead of broadening this validator in place.
 pub fn validate_strategy_ir(ir: &StrategyIr) -> Result<(), String> {
     ensure_schema_supported(ir.schema_version)?;
     validate_ma_spec(&ir.fast_ma, "fast_ma")?;
@@ -916,6 +934,59 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_constant_bits_accepts_large_u64_number_for_non_js_sources() {
+        let bits = 9_007_199_254_740_993u64;
+        let from_number: ValueRef = serde_json::from_value(json!({
+            "kind": "constant_bits",
+            "bits": bits
+        }))
+        .expect("u64 number bits should deserialize");
+        let from_string: ValueRef = serde_json::from_value(json!({
+            "kind": "constant_bits",
+            "bits": bits.to_string()
+        }))
+        .expect("decimal string bits should deserialize");
+        assert_eq!(from_number, ValueRef::ConstantBits { bits });
+        assert_eq!(from_string, ValueRef::ConstantBits { bits });
+    }
+
+    #[test]
+    fn deserialize_strategy_ir_ignores_unknown_json_fields() {
+        let payload = json!({
+            "schema_version": STRATEGY_IR_SCHEMA_VERSION,
+            "profile": "double_ma",
+            "ma_source": "close",
+            "extra_root_field": { "debug_only": true },
+            "fast_ma": { "ma_type": "alma", "params": {}, "preview_label": "ignored" },
+            "slow_ma": { "ma_type": "sma", "params": {}, "preview_label": "ignored" },
+            "program": {
+                "indicators": [
+                    { "id": "fast_ma", "kind": "fast_ma", "unused": 1 },
+                    { "id": "slow_ma", "kind": "slow_ma", "unused": 2 }
+                ],
+                "conditions": [{
+                    "id": "x",
+                    "op": "cross_up",
+                    "lhs": { "kind": "indicator", "id": "fast_ma", "ignored": true },
+                    "rhs": { "kind": "indicator", "id": "slow_ma" }
+                }],
+                "groups": [{ "id": "g", "mode": "all", "condition_ids": ["x"], "unused": null }],
+                "signals": {
+                    "long_entry_group": "g",
+                    "long_exit_group": null,
+                    "short_entry_group": null,
+                    "short_exit_group": null,
+                    "unused": "ignored"
+                }
+            },
+            "execution": { "strategy": StrategyConfig::default(), "preview_only": true }
+        });
+        let ir: StrategyIr =
+            serde_json::from_value(payload).expect("unknown fields should be ignored");
+        validate_strategy_ir(&ir).expect("ignored fields must not break validation");
+    }
+
+    #[test]
     fn static_builders_generate_valid_ir_for_all_profiles() {
         let base = StaticStrategyIrInput {
             ma_source: "close".to_string(),
@@ -974,6 +1045,53 @@ mod tests {
         ir.program.signals.long_entry_group = Some("missing_group".to_string());
         let err = validate_strategy_ir(&ir).unwrap_err();
         assert!(err.contains("unknown group"));
+    }
+
+    #[test]
+    fn validate_strategy_ir_accepts_noncanonical_ma_fields() {
+        let mut ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "alma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("builder should produce valid IR");
+        ir.ma_source = " Close ".to_string();
+        ir.fast_ma.ma_type = " ALMA ".to_string();
+        ir.slow_ma.ma_type = " Sma ".to_string();
+        validate_strategy_ir(&ir).expect("validator only checks non-empty MA fields");
+    }
+
+    #[test]
+    fn validate_strategy_ir_does_not_enforce_profile_specific_program_or_execution_shape() {
+        let mut ir = build_static_strategy_ir(
+            StrategyProfileKind::CompositeCpu,
+            StaticStrategyIrInput {
+                ma_source: "close".to_string(),
+                fast_ma_type: "alma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+                halftrend: None,
+                macz: None,
+                ott: None,
+                signal_mode: None,
+            },
+        )
+        .expect("builder should produce valid IR");
+        ir.profile = StrategyProfileKind::DoubleMa;
+        assert!(ir.execution.macz.is_some());
+        assert!(ir.execution.ott.is_some());
+        assert!(ir.execution.signal_mode.is_some());
+        validate_strategy_ir(&ir).expect("validator should stay profile-agnostic here");
     }
 
     #[test]

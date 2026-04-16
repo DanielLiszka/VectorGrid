@@ -67,12 +67,14 @@ impl Default for RocbStrategyParams {
     }
 }
 
+/// Resolved ROCB periods after applying the fast/slow mapping policy.
 #[derive(Clone, Copy, Debug)]
 pub struct RocbResolvedPeriods {
     pub channel: u16,
     pub atr: u16,
 }
 
+/// Host breakout bands used by the ROCB entry and channel-exit rules.
 #[derive(Clone, Debug)]
 pub struct RocbBreakoutSignals {
     pub upper: Vec<f64>,
@@ -80,6 +82,7 @@ pub struct RocbBreakoutSignals {
     pub first_valid: usize,
 }
 
+/// Host ATR series used by the ROCB stop-distance rules.
 #[derive(Clone, Debug)]
 pub struct RocbRiskSignals {
     pub atr: Vec<f64>,
@@ -149,6 +152,7 @@ impl RocbPeriodSweepDevice {
     }
 }
 
+/// Validates ROCB parameter ranges before signal computation or backtest execution.
 pub fn validate_rocb_params(cfg: &RocbStrategyParams) -> Result<(), String> {
     if cfg.channel_period == 0 {
         return Err("ROCB channel_period must be > 0".to_string());
@@ -165,6 +169,7 @@ pub fn validate_rocb_params(cfg: &RocbStrategyParams) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolves the effective ROCB channel and ATR periods from the strategy mapping flags.
 pub fn resolve_rocb_periods(
     cfg: &RocbStrategyParams,
     fast_len: u16,
@@ -212,9 +217,9 @@ fn first_joint_finite_idx_expected_or_scan(
     {
         Some(expected)
     } else {
-        first_finite_idx_local(lhs)
-            .zip(first_finite_idx_local(rhs))
-            .map(|(a, b)| a.max(b))
+        lhs.iter()
+            .zip(rhs.iter())
+            .position(|(left, right)| left.is_finite() && right.is_finite())
     }
 }
 
@@ -290,6 +295,43 @@ fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
     Ok(descriptor.outputs[0].id.clone())
 }
 
+fn resolve_distinct_output_ids(
+    indicator_id: &str,
+    upper_preferred_ids: &[&str],
+    lower_preferred_ids: &[&str],
+) -> Result<(String, String), String> {
+    let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
+        format!("ROCB indicator '{indicator_id}' is not registered for dynamic dispatch")
+    })?;
+    if descriptor.outputs.len() < 2 {
+        return Err(format!(
+            "ROCB indicator '{indicator_id}' must expose at least two distinct outputs; available outputs: {}",
+            descriptor
+                .outputs
+                .iter()
+                .map(|output| output.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let upper = resolve_output_id(indicator_id, upper_preferred_ids)?;
+    let lower = resolve_output_id(indicator_id, lower_preferred_ids)?;
+    if upper.eq_ignore_ascii_case(lower.as_str()) {
+        return Err(format!(
+            "ROCB indicator '{indicator_id}' upper/lower outputs resolved to the same binding '{upper}'; available outputs: {}",
+            descriptor
+                .outputs
+                .iter()
+                .map(|output| output.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    Ok((upper, lower))
+}
+
 fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<String, String> {
     let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
         format!("ROCB indicator '{indicator_id}' is not registered for dynamic dispatch")
@@ -344,19 +386,18 @@ fn rocb_indicator_ids() -> Result<&'static RocbIndicatorIds, String> {
     static IDS: OnceLock<Result<RocbIndicatorIds, String>> = OnceLock::new();
 
     IDS.get_or_init(|| {
+        let (donchian_upper_output, donchian_lower_output) = resolve_distinct_output_ids(
+            "donchian",
+            &["upper_band", "upperband", "upper", "up", "value"],
+            &["lower_band", "lowerband", "lower", "down"],
+        )?;
         Ok(RocbIndicatorIds {
             donchian_period_key: resolve_param_key(
                 "donchian",
                 &["period", "length", "timeperiod"],
             )?,
-            donchian_upper_output: resolve_output_id(
-                "donchian",
-                &["upper_band", "upperband", "upper", "up", "value"],
-            )?,
-            donchian_lower_output: resolve_output_id(
-                "donchian",
-                &["lower_band", "lowerband", "lower", "down"],
-            )?,
+            donchian_upper_output,
+            donchian_lower_output,
             atr_period_key: resolve_param_key("atr", &["period", "length", "timeperiod"])?,
             atr_output: resolve_output_id("atr", &["value", "atr"])?,
         })
@@ -498,6 +539,8 @@ fn compute_indicator_f64(
 
     #[cfg(feature = "cuda")]
     {
+        // ROCB prefers the CUDA adapter when the descriptor advertises the route and prepared
+        // device inputs are available, but it intentionally keeps a best-effort CPU fallback.
         let prefer_gpu = backend_prefers_gpu(backend)
             && descriptor.prefers_gpu_by_speedup
             && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
@@ -530,6 +573,7 @@ fn compute_indicator_f64(
     Ok(series_to_f64(out))
 }
 
+/// Computes ROCB Donchian breakout bands on the requested backend, with best-effort CPU fallback.
 pub fn compute_rocb_breakout_signals(
     candles: &Candles,
     ma_source: &str,
@@ -582,6 +626,7 @@ pub fn compute_rocb_breakout_signals(
     })
 }
 
+/// Computes ROCB ATR-based risk signals on the requested backend, with best-effort CPU fallback.
 pub fn compute_rocb_risk_signals(
     candles: &Candles,
     ma_source: &str,
@@ -609,6 +654,7 @@ pub fn compute_rocb_risk_signals(
     Ok(RocbRiskSignals { atr, first_valid })
 }
 
+/// Computes the first bar where ROCB can safely emit a desired-position value.
 pub fn compute_rocb_start_t(
     first_valid_close: usize,
     first_valid_high: usize,
@@ -630,6 +676,11 @@ pub fn compute_rocb_start_t(
     }
 }
 
+/// Writes a full-length desired-position series into a caller-owned buffer.
+///
+/// The output length always matches `close.len()`. Prefix rows before `start_t` stay flat at `0`,
+/// and malformed indicator-shape input degrades to a flat full-length vector instead of leaving a
+/// truncated buffer behind.
 pub fn build_rocb_desired_positions_into(
     desired: &mut Vec<i32>,
     close: &[f64],
@@ -642,9 +693,9 @@ pub fn build_rocb_desired_positions_into(
     let n = close.len();
     desired.clear();
     if desired.capacity() < n {
-        desired.reserve(n - desired.capacity());
+        desired.reserve(n);
     }
-    desired.resize(start_t.min(n), 0);
+    desired.resize(n, 0);
     if start_t >= n {
         return;
     }
@@ -706,7 +757,7 @@ pub fn build_rocb_desired_positions_into(
                     pos = -1;
                     bars_in_trade = 1;
                     entry_price = close_now;
-                    desired.push(pos);
+                    desired[t] = pos;
                     continue;
                 }
                 exit_now = true;
@@ -738,7 +789,7 @@ pub fn build_rocb_desired_positions_into(
                     pos = 1;
                     bars_in_trade = 1;
                     entry_price = close_now;
-                    desired.push(pos);
+                    desired[t] = pos;
                     continue;
                 }
                 exit_now = true;
@@ -752,8 +803,7 @@ pub fn build_rocb_desired_positions_into(
                 bars_in_trade = bars_in_trade.saturating_add(1);
             }
         }
-
-        desired.push(pos);
+        desired[t] = pos;
     }
 }
 
@@ -842,6 +892,44 @@ mod tests {
     }
 
     #[test]
+    fn rocb_desired_positions_into_keeps_full_length_on_shape_mismatch() {
+        let close = vec![100.0, 101.0, 103.0, 104.0, 101.0, 99.0];
+        let breakout = RocbBreakoutSignals {
+            upper: vec![f64::NAN, 100.5, 102.0],
+            lower: vec![f64::NAN, 99.5, 99.0],
+            first_valid: 1,
+        };
+        let risk = RocbRiskSignals {
+            atr: vec![f64::NAN, 1.0, 1.0],
+            first_valid: 1,
+        };
+        let mut desired = vec![7, 7, 7];
+
+        build_rocb_desired_positions_into(
+            &mut desired,
+            close.as_slice(),
+            &breakout,
+            &risk,
+            2,
+            &StrategyConfig::default(),
+            &RocbStrategyParams::default(),
+        );
+
+        assert_eq!(desired, vec![0; close.len()]);
+    }
+
+    #[test]
+    fn rocb_joint_first_valid_scans_for_real_overlap() {
+        let lhs = vec![f64::NAN, 10.0, 11.0, 12.0];
+        let rhs = vec![f64::NAN, f64::NAN, f64::NAN, 20.0];
+
+        assert_eq!(
+            first_joint_finite_idx_expected_or_scan(&lhs, &rhs, 1),
+            Some(3)
+        );
+    }
+
+    #[test]
     fn rocb_first_valid_fast_path_preserves_short_series_none() {
         let values = vec![f64::NAN; 3];
         assert_eq!(first_finite_idx_expected_or_scan(&values, 5), None);
@@ -849,5 +937,17 @@ mod tests {
             first_joint_finite_idx_expected_or_scan(&values, &values, 5),
             None
         );
+    }
+
+    #[test]
+    fn rocb_indicator_ids_resolve_distinct_donchian_outputs() {
+        let ids = rocb_indicator_ids().expect("ROCB indicator ids resolve");
+
+        assert!(!ids.donchian_period_key.is_empty());
+        assert_ne!(
+            ids.donchian_upper_output.to_ascii_lowercase(),
+            ids.donchian_lower_output.to_ascii_lowercase()
+        );
+        assert!(!ids.atr_output.is_empty());
     }
 }

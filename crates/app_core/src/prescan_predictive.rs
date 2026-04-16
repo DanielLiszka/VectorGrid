@@ -8,22 +8,25 @@ const MIN_OBS: usize = 32;
 const EPS: f64 = 1e-12;
 
 fn sample_periods_by_stride(periods: &[u16], stride: u16) -> Vec<u16> {
-    if periods.is_empty() {
+    let mut normalized = periods.to_vec();
+    normalized.sort_unstable();
+    normalized.dedup();
+    if normalized.is_empty() {
         return Vec::new();
     }
     if stride <= 1 {
-        return periods.to_vec();
+        return normalized;
     }
     let mut out: Vec<u16> = Vec::new();
-    let mut next_keep = periods[0];
-    for &p in periods {
+    let mut next_keep = normalized[0];
+    for &p in &normalized {
         if p >= next_keep {
             out.push(p);
             next_keep = p.saturating_add(stride);
         }
     }
-    if out.last().copied() != periods.last().copied() {
-        out.push(*periods.last().unwrap_or(&periods[0]));
+    if out.last().copied() != normalized.last().copied() {
+        out.push(*normalized.last().unwrap_or(&normalized[0]));
     }
     out.sort_unstable();
     out.dedup();
@@ -55,6 +58,13 @@ fn cap_periods_even(mut periods: Vec<u16>, cap: usize) -> Vec<u16> {
     out
 }
 
+/// Inputs for the crate-private predictive prescan rescue heuristic.
+///
+/// The heuristic computes MA series from `ma_source`, scores each `(fast, slow)` pair
+/// against the next-close log return, and returns up to `top_k` strictly ordered
+/// `fast < slow` seeds. When `long_only` is enabled, bearish bars are skipped from the
+/// score denominator instead of being averaged as zero. Time sampling is approximate:
+/// `period_stride` and `MAX_TIME_STEPS` cap work without guaranteeing an exact ceiling.
 pub(crate) struct PredictivePrescanParams<'a> {
     pub candles: &'a vector_ta::utilities::data_loader::Candles,
     pub ma_source: &'a str,
@@ -73,6 +83,11 @@ pub(crate) struct PredictivePrescanParams<'a> {
     pub period_stride: u16,
 }
 
+/// Scores sampled `(fast, slow)` MA pairs and returns the highest-ranked seeds.
+///
+/// The scoring target is the next-close log return. Duplicate or unsorted period domains
+/// are normalized before scoring so the output remains unique on the common
+/// `period_stride <= 1` path.
 pub(crate) fn predictive_prescan_seed_pairs(
     params: PredictivePrescanParams<'_>,
 ) -> Result<Vec<(u16, u16)>, String> {
@@ -201,6 +216,7 @@ mod tests {
         cap_periods_even, predictive_prescan_seed_pairs, sample_periods_by_stride,
         PredictivePrescanParams,
     };
+    use std::collections::HashSet;
     use vector_ta::utilities::data_loader::Candles;
 
     fn make_trending_candles(len: usize) -> Candles {
@@ -234,13 +250,19 @@ mod tests {
     }
 
     #[test]
+    fn sample_periods_by_stride_normalizes_unsorted_duplicate_domains() {
+        let periods = vec![13, 5, 8, 5, 21, 13];
+        assert_eq!(sample_periods_by_stride(&periods, 1), vec![5, 8, 13, 21]);
+    }
+
+    #[test]
     fn cap_periods_even_preserves_extremes_and_evenly_spaced_samples() {
         let capped = cap_periods_even(vec![5, 7, 9, 11, 13, 15, 17], 4);
         assert_eq!(capped, vec![5, 9, 13, 17]);
     }
 
     #[test]
-    fn predictive_prescan_seed_pairs_returns_sorted_long_only_pairs() {
+    fn predictive_prescan_seed_pairs_returns_ranked_long_only_pairs() {
         let candles = make_trending_candles(512);
         let pairs = predictive_prescan_seed_pairs(PredictivePrescanParams {
             candles: &candles,
@@ -260,11 +282,74 @@ mod tests {
             period_stride: 2,
         })
         .expect("predictive prescan");
+        let top_one = predictive_prescan_seed_pairs(PredictivePrescanParams {
+            candles: &candles,
+            ma_source: "close",
+            fast_periods: &[5, 8, 13, 21],
+            slow_periods: &[34, 55, 89],
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_alma_offset: 0.85,
+            fast_alma_sigma: 6.0,
+            slow_alma_offset: 0.85,
+            slow_alma_sigma: 6.0,
+            long_only: true,
+            top_k: 1,
+            period_stride: 2,
+        })
+        .expect("predictive prescan top one");
 
         assert!(!pairs.is_empty());
         assert!(pairs.len() <= 3);
-        assert!(pairs.windows(2).all(|row| row[0] <= row[1]));
         assert!(pairs.iter().all(|(fast, slow)| fast < slow));
+        assert_eq!(top_one, pairs.iter().copied().take(1).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn predictive_prescan_seed_pairs_normalizes_duplicate_unsorted_domains() {
+        let candles = make_trending_candles(512);
+        let baseline = predictive_prescan_seed_pairs(PredictivePrescanParams {
+            candles: &candles,
+            ma_source: "close",
+            fast_periods: &[5, 8, 13, 21],
+            slow_periods: &[34, 55, 89],
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_alma_offset: 0.85,
+            fast_alma_sigma: 6.0,
+            slow_alma_offset: 0.85,
+            slow_alma_sigma: 6.0,
+            long_only: true,
+            top_k: 5,
+            period_stride: 1,
+        })
+        .expect("baseline predictive prescan");
+        let normalized = predictive_prescan_seed_pairs(PredictivePrescanParams {
+            candles: &candles,
+            ma_source: "close",
+            fast_periods: &[13, 5, 8, 5, 21, 13],
+            slow_periods: &[89, 34, 55, 34],
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_alma_offset: 0.85,
+            fast_alma_sigma: 6.0,
+            slow_alma_offset: 0.85,
+            slow_alma_sigma: 6.0,
+            long_only: true,
+            top_k: 5,
+            period_stride: 1,
+        })
+        .expect("duplicate-domain predictive prescan");
+
+        let unique_count = normalized.iter().copied().collect::<HashSet<_>>().len();
+        assert_eq!(normalized, baseline);
+        assert_eq!(unique_count, normalized.len());
     }
 
     #[test]

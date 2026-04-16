@@ -4,8 +4,12 @@ use super::{
 };
 use crate::state::AppState;
 use crate::state::BackgroundTaskState;
+use crate::state::RunGuard;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use ta_optimizer::OptimizationMode;
 use tauri::Emitter;
+use vector_ta::utilities::data_loader::Candles;
 
 #[tauri::command]
 pub fn cancel_background_task(bg: tauri::State<'_, BackgroundTaskState>) -> Result<(), String> {
@@ -39,6 +43,8 @@ pub(crate) struct OffsetProgressSink {
     pub(crate) app: tauri::AppHandle,
     pub(crate) base_offset: usize,
     pub(crate) total: usize,
+    // This sink intentionally rewrites both the count offset and the visible phase so staged
+    // optimize flows can project one continuous progress stream at the command boundary.
     pub(crate) phase: &'static str,
 }
 
@@ -79,6 +85,16 @@ pub(crate) fn normalize_product_composite_cpu_optimization_mode(
     OptimizationMode::Grid
 }
 
+fn begin_optimization_run(
+    state: &AppState,
+    data_id: &str,
+) -> Result<(RunGuard, Arc<AtomicBool>, Arc<Candles>), String> {
+    let run_guard = state.try_begin_run()?;
+    let cancel = state.cancel_token();
+    let candles = state.get_candles(data_id)?;
+    Ok((run_guard, cancel, candles))
+}
+
 #[tauri::command]
 pub async fn run_double_ma_optimization(
     mut req: DoubleMaRequest,
@@ -86,9 +102,7 @@ pub async fn run_double_ma_optimization(
     app: tauri::AppHandle,
 ) -> Result<BackendOptimizationResult, String> {
     req.mode = normalize_product_double_ma_optimization_mode(&req);
-    let _run_guard = state.try_begin_run()?;
-    let cancel = state.cancel_token();
-    let candles = state.get_candles(&req.data_id)?;
+    let (_run_guard, cancel, candles) = begin_optimization_run(&state, &req.data_id)?;
 
     let cancel2 = cancel.clone();
     let app2 = app.clone();
@@ -113,9 +127,7 @@ pub async fn run_composite_cpu_optimization(
     app: tauri::AppHandle,
 ) -> Result<BackendOptimizationResult, String> {
     req.mode = normalize_product_composite_cpu_optimization_mode(req.mode);
-    let _run_guard = state.try_begin_run()?;
-    let cancel = state.cancel_token();
-    let candles = state.get_candles(&req.data_id)?;
+    let (_run_guard, cancel, candles) = begin_optimization_run(&state, &req.data_id)?;
 
     let cancel2 = cancel.clone();
     let app2 = app.clone();
@@ -136,9 +148,11 @@ pub async fn run_composite_cpu_optimization(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_product_composite_cpu_optimization_mode,
+        begin_optimization_run, normalize_product_composite_cpu_optimization_mode,
         normalize_product_double_ma_optimization_mode,
     };
+    use crate::state::AppState;
+    use std::sync::atomic::Ordering;
     use ta_app_core::{Backend, DoubleMaRequest};
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
     use ta_strategies::double_ma::StrategyConfig;
@@ -232,6 +246,42 @@ mod tests {
     }
 
     #[test]
+    fn double_ma_product_mode_normalization_preserves_explicit_grid_mode() {
+        let mut req = base_double_ma_req();
+        req.mode = OptimizationMode::Grid;
+        assert_eq!(
+            normalize_product_double_ma_optimization_mode(&req),
+            OptimizationMode::Grid
+        );
+
+        req.include_all = Some(true);
+        req.heatmap_bins = Some(64);
+        req.export_all_csv_path = Some("out.csv".to_string());
+        assert_eq!(
+            normalize_product_double_ma_optimization_mode(&req),
+            OptimizationMode::Grid
+        );
+    }
+
+    #[test]
+    fn double_ma_product_mode_normalization_pins_auto_to_grid_when_outputs_are_requested() {
+        let mut req = base_double_ma_req();
+        req.mode = OptimizationMode::Auto;
+        req.include_all = Some(true);
+        assert_eq!(
+            normalize_product_double_ma_optimization_mode(&req),
+            OptimizationMode::Grid
+        );
+
+        req.include_all = Some(false);
+        req.heatmap_bins = Some(32);
+        assert_eq!(
+            normalize_product_double_ma_optimization_mode(&req),
+            OptimizationMode::Grid
+        );
+    }
+
+    #[test]
     fn double_ma_product_mode_normalization_ignores_whitespace_export_path() {
         let mut req = base_double_ma_req();
         req.mode = OptimizationMode::GpuVdps;
@@ -261,6 +311,26 @@ mod tests {
             OptimizationMode::Grid
         );
     }
+
+    #[test]
+    fn begin_optimization_run_releases_run_guard_when_data_lookup_fails() {
+        let state = AppState::default();
+        state.request_cancel();
+
+        let err = match begin_optimization_run(&state, "missing-data-id") {
+            Ok(_) => panic!("missing dataset should fail before the blocking optimizer starts"),
+            Err(err) => err,
+        };
+        assert!(err.contains("unknown data id"));
+        assert!(
+            !state.cancel_token().load(Ordering::SeqCst),
+            "acquiring the run guard should still clear any prior cancel intent"
+        );
+
+        let _guard = state
+            .try_begin_run()
+            .expect("run guard must be released when setup fails early");
+    }
 }
 
 #[tauri::command]
@@ -269,9 +339,7 @@ pub async fn run_composite_mo_optimization(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<CompositeMoResult, String> {
-    let _run_guard = state.try_begin_run()?;
-    let cancel = state.cancel_token();
-    let candles = state.get_candles(&req.data_id)?;
+    let (_run_guard, cancel, candles) = begin_optimization_run(&state, &req.data_id)?;
 
     let cancel2 = cancel.clone();
     let app2 = app.clone();

@@ -31,11 +31,17 @@ const CARM_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
 const CARM_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
 pub struct CarmGpuDeviceSignalMatrices<'a> {
+    /// Host close prices remain the validation length anchor and part of the resident-cache key
+    /// even when `close_device_ptr` already points at device-resident closes.
     pub close_f32: &'a [f32],
+    /// Raw CUDA device pointer for the close series. When non-zero it must reference at least
+    /// `cols` contiguous `f32` values on the active device.
     pub close_device_ptr: u64,
     pub cols: usize,
     pub mixed_rows: usize,
     pub mixed_stride: usize,
+    /// Raw CUDA device pointers for row-major signal matrices. Each pointer must stay valid for
+    /// the launch and reference at least `rows * stride` `f32` values on the active device.
     pub coppock_row_major_ptr: u64,
     pub ao_row_major_ptr: u64,
     pub rocr_row_major_ptr: u64,
@@ -213,6 +219,12 @@ fn validate_inputs(
         || combos.end_t.len() != combos_len
     {
         return Err("CARM GPU combo vector length mismatch".to_string());
+    }
+    if combos_len > signals.mixed_rows {
+        return Err(format!(
+            "CARM GPU combo count {combos_len} exceeds mixed_rows {}",
+            signals.mixed_rows
+        ));
     }
     for (idx, ((&fast_row, &otto_row), (&start_t, &end_t))) in combos
         .fast_row_index
@@ -614,6 +626,22 @@ mod tests {
 
         let err = validate_inputs(&signals, &combos).expect_err("fast row bounds");
         assert!(err.contains("fast_row_index[0]"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_combo_count_larger_than_mixed_rows() {
+        let close = [100.0f32, 101.0, 102.0, 103.0];
+        let mut signals = sample_signals(&close);
+        signals.mixed_rows = 1;
+        let combos = CarmGpuComboBatch {
+            fast_row_index: &[0, 1],
+            otto_row_index: &[0, 1],
+            start_t: &[1, 1],
+            end_t: &[4, 4],
+        };
+
+        let err = validate_inputs(&signals, &combos).expect_err("combo count vs mixed rows");
+        assert!(err.contains("combo count 2 exceeds mixed_rows 1"));
     }
 
     #[test]

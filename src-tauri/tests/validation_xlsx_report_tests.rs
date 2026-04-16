@@ -439,6 +439,35 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
 }
 
 #[test]
+fn workbook_dashboard_links_quote_internal_sheet_targets_with_spaces() {
+    let bytes = build_report_xlsx_bytes_headless(&baseline_report(), Some(3)).expect("xlsx");
+    let dashboard_sheet = read_entry(&bytes, "xl/worksheets/sheet5.xml");
+
+    assert!(
+        dashboard_sheet.contains("location=\"'Approved Candidates'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Approved Candidates&apos;!A1\"")
+    );
+    assert!(
+        dashboard_sheet.contains("location=\"'Audit Data'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Audit Data&apos;!A1\"")
+    );
+    assert!(dashboard_sheet.contains("location=\"Shortlist!A1\""));
+    assert!(dashboard_sheet.contains("location=\"Distributions!A1\""));
+}
+
+#[test]
+fn workbook_dashboard_keeps_slice_audit_and_bootstrap_compare_on_distinct_rows() {
+    let bytes = build_report_xlsx_bytes_headless(&baseline_report(), Some(3)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    let dashboard_sheet = read_entry(&bytes, "xl/worksheets/sheet5.xml");
+
+    assert!(xml.contains("Slice Audit"));
+    assert!(xml.contains("Bootstrap Compare"));
+    assert!(dashboard_sheet.contains("r=\"74\""));
+    assert!(dashboard_sheet.contains("r=\"75\""));
+}
+
+#[test]
 fn workbook_respects_run_level_rejection_and_zero_approved_rows() {
     let mut report = baseline_report();
     let res = report
@@ -474,10 +503,16 @@ fn workbook_respects_run_level_rejection_and_zero_approved_rows() {
 
     let bytes = build_report_xlsx_bytes_headless(&report, Some(25)).expect("xlsx");
     let approved_sheet = read_entry(&bytes, "xl/worksheets/sheet1.xml");
+    let shortlist_sheet = read_entry(&bytes, "xl/worksheets/sheet2.xml");
     assert_eq!(
         row_count(&approved_sheet),
         1,
         "approved sheet should only have header"
+    );
+    assert_eq!(
+        row_count(&shortlist_sheet),
+        5,
+        "shortlist should retain the visible shortlist context even when final approval is rejected"
     );
 
     let xml = all_xml(&bytes);
