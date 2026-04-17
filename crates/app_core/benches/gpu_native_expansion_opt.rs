@@ -52,6 +52,8 @@ fn base_req(backend: Backend) -> CompositeCpuRequest {
         top_k: Some(20),
         include_all: Some(false),
         heatmap_bins: Some(64),
+        include_trade_metrics: false,
+        metric_contract: None,
     }
 }
 

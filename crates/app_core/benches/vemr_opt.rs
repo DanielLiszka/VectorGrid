@@ -84,6 +84,8 @@ fn make_vemr_req(
         top_k: Some(top_k),
         include_all: Some(false),
         heatmap_bins: Some(heatmap_bins),
+        include_trade_metrics: false,
+        metric_contract: None,
     }
 }
 

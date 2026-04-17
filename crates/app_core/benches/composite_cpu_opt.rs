@@ -105,6 +105,8 @@ fn make_plain_req() -> CompositeCpuRequest {
         top_k: Some(50),
         include_all: Some(false),
         heatmap_bins: Some(0),
+        include_trade_metrics: false,
+        metric_contract: None,
     }
 }
 

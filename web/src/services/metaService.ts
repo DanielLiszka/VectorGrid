@@ -24,7 +24,7 @@ import { formatUiCount, formatUtcDateFromUnixMs } from "../utils/uiFormat";
 import { buildMetaBatchRequest } from "./metaBatchRequestBuilder";
 import { buildMetaMlScope } from "./metaMlScopeBuilder";
 import { buildMetaSelectionRequest } from "./metaRequestBuilder";
-import { buildMetaStage4Request } from "./metaStage4RequestBuilder";
+import { buildMetaStage5Request } from "./metaStage4RequestBuilder";
 
 export interface MetaRunOptions {
   request?: unknown;
@@ -269,9 +269,34 @@ function pretty(value: unknown): string {
   }
 }
 
+const META_ARTIFACT_KINDS = Object.freeze({
+  selection: "vectorgrid_meta_selection",
+  stage5: "vectorgrid_meta_stage5_ml_confidence",
+  mlPolicyEvaluation: "vectorgrid_ml_confidence_policy_evaluation",
+});
+
+const BATCH_SUMMARY_ARTIFACT_KINDS = new Set([
+  "vectorbt_batch",
+  "vectorgrid_batch",
+  "vectorbt_batch_summary",
+  "vectorgrid_batch_summary",
+  "vectorbt_campaign_summary",
+  "vectorgrid_campaign_summary",
+]);
+
 function responseStage5Path(value: unknown): string {
   const record = asRecord(value);
   return normalizePath(record?.stage5_json_path ?? record?.stage4_json_path);
+}
+
+function responseStage5Bytes(value: unknown): number {
+  const record = asRecord(value);
+  return Math.max(
+    0,
+    Math.floor(
+      Number(record?.stage5_json_bytes ?? record?.stage4_json_bytes ?? 0),
+    ),
+  );
 }
 
 function parseTagsInput(value: string): string[] {
@@ -548,7 +573,7 @@ function tryBuildAutoMetaBatchRequest(): Record<string, unknown> | null {
 
 function tryBuildAutoMetaStage4Request(): Record<string, unknown> | null {
   const scope = currentMetaScope();
-  return buildMetaStage4Request({
+  return buildMetaStage5Request({
     strategyKind: scope.strategy_kind,
     timeframe: scope.timeframe,
     sourceMetaPath: currentMetaSourcePath(),
@@ -1677,7 +1702,7 @@ function buildMetaSavedEntryFromResponse(
     ts: normalizeText(response.ts) || new Date().toISOString(),
     path: normalizePath(response.meta_json_path),
     bytes: Math.max(0, Math.floor(Number(response.meta_json_bytes || 0))),
-    kind: "vectorgrid_meta_selection",
+    kind: META_ARTIFACT_KINDS.selection,
     strategy_kind: normalizeText(result.strategy_kind),
     timeframe: normalizeText(result.timeframe),
     groups: asRecordArray(result.groups).length,
@@ -1694,13 +1719,8 @@ function buildStage5SavedEntryFromResponse(
   return {
     ts: normalizeText(response.ts) || new Date().toISOString(),
     path: responseStage5Path(response),
-    bytes: Math.max(
-      0,
-      Math.floor(
-        Number(response.stage5_json_bytes || response.stage4_json_bytes || 0),
-      ),
-    ),
-    kind: "vectorgrid_meta_stage5_ml_confidence",
+    bytes: responseStage5Bytes(response),
+    kind: META_ARTIFACT_KINDS.stage5,
     strategy_kind: normalizeText(result.strategy_kind),
     timeframe: normalizeText(result.timeframe),
     groups_selected: Math.max(
@@ -1729,7 +1749,7 @@ function buildPolicyEvalSavedEntryFromResponse(
     ts: normalizeText(response.ts) || new Date().toISOString(),
     path: normalizePath(response.eval_json_path),
     bytes: Math.max(0, Math.floor(Number(response.eval_json_bytes || 0))),
-    kind: "vectorgrid_ml_confidence_policy_evaluation",
+    kind: META_ARTIFACT_KINDS.mlPolicyEvaluation,
     strategy_kind: normalizeText(result.strategy_kind),
     timeframe: normalizeText(result.timeframe),
     artifacts_evaluated: Math.max(
@@ -2309,16 +2329,7 @@ async function loadLastBatchSummaryFromDisk(): Promise<void> {
       path,
     })) as unknown;
     const row = asRecord(artifact);
-    if (
-      !row ||
-      ![
-        "vectorbt_batch",
-        "vectorgrid_batch",
-        "vectorbt_batch_summary",
-        "vectorgrid_batch_summary",
-        "vectorgrid_campaign_summary",
-      ].includes(normalizeText(row.kind))
-    )
+    if (!row || !BATCH_SUMMARY_ARTIFACT_KINDS.has(normalizeText(row.kind)))
       return;
     setBatchSummaryState(row, path);
   } catch {

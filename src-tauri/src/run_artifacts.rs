@@ -20,44 +20,235 @@ const RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP: &str = "day_first_timestamp";
 const ARTIFACT_PATH_SUFFIX_LIMIT: u32 = 999;
 const LIVE_SESSION_EVENT_LIMIT: usize = 64;
 const LIVE_SESSION_SNAPSHOT_LIMIT: usize = 16;
+const DEFAULT_RUN_ARTIFACT_KEEP_NEWEST: usize = 200;
+const DEFAULT_META_ARTIFACT_KEEP_NEWEST: usize = 100;
+const DEFAULT_STAGE5_ARTIFACT_KEEP_NEWEST: usize = 100;
+const DEFAULT_ML_POLICY_EVAL_ARTIFACT_KEEP_NEWEST: usize = 100;
+const DEFAULT_BATCH_SUMMARY_ARTIFACT_KEEP_NEWEST: usize = 100;
+const DEFAULT_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST: usize = 100;
+const DEFAULT_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST: usize = 100;
 
-fn is_run_artifact_kind(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "vectorbt_run_artifact" | "vectorgrid_run_artifact"
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactFamily {
+    Run,
+    MetaSelection,
+    MetaStageResult,
+    MlPolicyEval,
+    LiveSession,
+    OptionsExpression,
+    BatchSummary,
+    CampaignSummary,
+}
+
+impl ArtifactFamily {
+    const ALL: [Self; 8] = [
+        Self::Run,
+        Self::MetaSelection,
+        Self::MetaStageResult,
+        Self::MlPolicyEval,
+        Self::LiveSession,
+        Self::OptionsExpression,
+        Self::BatchSummary,
+        Self::CampaignSummary,
+    ];
+
+    fn canonical_write_prefix(self) -> &'static str {
+        match self {
+            Self::Run => "vectorgrid_run",
+            Self::MetaSelection => "vectorgrid_meta",
+            Self::MetaStageResult => "vectorgrid_stage5",
+            Self::MlPolicyEval => "vectorgrid_ml_confidence_eval",
+            Self::LiveSession => "vectorgrid_live_session",
+            Self::OptionsExpression => "vectorgrid_options_expression",
+            Self::BatchSummary => "vectorgrid_batch_summary",
+            Self::CampaignSummary => "vectorgrid_campaign_summary",
+        }
+    }
+
+    fn kind_aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::Run => &["vectorgrid_run_artifact", "vectorbt_run_artifact"],
+            Self::MetaSelection => &["vectorgrid_meta_selection", "vectorbt_meta_selection"],
+            Self::MetaStageResult => &[
+                "vectorgrid_meta_stage5_ml_confidence",
+                "vectorbt_meta_stage5_ml_confidence",
+                "vectorgrid_meta_stage4_experimental",
+                "vectorbt_meta_stage4_experimental",
+            ],
+            Self::MlPolicyEval => &[
+                "vectorgrid_ml_confidence_policy_evaluation",
+                "vectorbt_ml_confidence_policy_evaluation",
+            ],
+            Self::LiveSession => &["vectorgrid_live_session_v1"],
+            Self::OptionsExpression => &["vectorgrid_options_expression_v1"],
+            Self::BatchSummary => &[
+                "vectorgrid_batch_summary",
+                "vectorgrid_batch",
+                "vectorbt_batch_summary",
+                "vectorbt_batch",
+            ],
+            Self::CampaignSummary => &["vectorgrid_campaign_summary", "vectorbt_campaign_summary"],
+        }
+    }
+
+    fn file_prefixes(self) -> &'static [&'static str] {
+        match self {
+            Self::Run => &["vectorgrid_run_", "vectorbt_run_"],
+            Self::MetaSelection => &["vectorgrid_meta_", "vectorbt_meta_"],
+            Self::MetaStageResult => &[
+                "vectorgrid_meta_stage5_",
+                "vectorbt_meta_stage5_",
+                "vectorgrid_meta_stage4_",
+                "vectorbt_meta_stage4_",
+                "vectorgrid_stage5_",
+                "vectorbt_stage5_",
+                "vectorgrid_stage4_",
+                "vectorbt_stage4_",
+            ],
+            Self::MlPolicyEval => &[
+                "vectorgrid_ml_confidence_policy_evaluation_",
+                "vectorgrid_ml_confidence_eval_",
+                "vectorbt_ml_confidence_policy_evaluation_",
+                "vectorbt_ml_confidence_eval_",
+            ],
+            Self::LiveSession => &["vectorgrid_live_session_"],
+            Self::OptionsExpression => &["vectorgrid_options_expression_"],
+            Self::BatchSummary => &[
+                "vectorgrid_batch_summary_",
+                "vectorgrid_batch_",
+                "vectorbt_batch_summary_",
+                "vectorbt_batch_",
+            ],
+            Self::CampaignSummary => {
+                &["vectorgrid_campaign_summary_", "vectorbt_campaign_summary_"]
+            }
+        }
+    }
+
+    fn matches_kind(self, kind: &str) -> bool {
+        self.kind_aliases()
+            .iter()
+            .any(|candidate| kind.trim() == *candidate)
+    }
+
+    fn from_kind(kind: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|family| family.matches_kind(kind))
+    }
+
+    fn from_file_name(name: &str) -> Option<Self> {
+        let trimmed = name.trim();
+        Self::ALL
+            .into_iter()
+            .filter_map(|family| {
+                family
+                    .file_prefixes()
+                    .iter()
+                    .filter(|prefix| trimmed.starts_with(**prefix))
+                    .map(|prefix| (prefix.len(), family))
+                    .max_by_key(|(len, _)| *len)
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, family)| family)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ArtifactRetentionPolicy {
+    pub run_keep_newest: usize,
+    pub meta_keep_newest: usize,
+    pub stage5_keep_newest: usize,
+    pub ml_policy_eval_keep_newest: usize,
+    pub batch_summary_keep_newest: usize,
+    pub campaign_summary_keep_newest: usize,
+    pub options_expression_keep_newest: usize,
+}
+
+impl Default for ArtifactRetentionPolicy {
+    fn default() -> Self {
+        Self {
+            run_keep_newest: DEFAULT_RUN_ARTIFACT_KEEP_NEWEST,
+            meta_keep_newest: DEFAULT_META_ARTIFACT_KEEP_NEWEST,
+            stage5_keep_newest: DEFAULT_STAGE5_ARTIFACT_KEEP_NEWEST,
+            ml_policy_eval_keep_newest: DEFAULT_ML_POLICY_EVAL_ARTIFACT_KEEP_NEWEST,
+            batch_summary_keep_newest: DEFAULT_BATCH_SUMMARY_ARTIFACT_KEEP_NEWEST,
+            campaign_summary_keep_newest: DEFAULT_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST,
+            options_expression_keep_newest: DEFAULT_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST,
+        }
+    }
+}
+
+impl ArtifactRetentionPolicy {
+    fn from_env() -> Self {
+        let defaults = Self::default();
+        Self {
+            run_keep_newest: read_retention_override(
+                "VECTORGRID_RUN_ARTIFACT_KEEP_NEWEST",
+                defaults.run_keep_newest,
+            ),
+            meta_keep_newest: read_retention_override(
+                "VECTORGRID_META_ARTIFACT_KEEP_NEWEST",
+                defaults.meta_keep_newest,
+            ),
+            stage5_keep_newest: read_retention_override(
+                "VECTORGRID_STAGE5_ARTIFACT_KEEP_NEWEST",
+                defaults.stage5_keep_newest,
+            ),
+            ml_policy_eval_keep_newest: read_retention_override(
+                "VECTORGRID_ML_POLICY_EVAL_ARTIFACT_KEEP_NEWEST",
+                defaults.ml_policy_eval_keep_newest,
+            ),
+            batch_summary_keep_newest: read_retention_override(
+                "VECTORGRID_BATCH_SUMMARY_ARTIFACT_KEEP_NEWEST",
+                defaults.batch_summary_keep_newest,
+            ),
+            campaign_summary_keep_newest: read_retention_override(
+                "VECTORGRID_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST",
+                defaults.campaign_summary_keep_newest,
+            ),
+            options_expression_keep_newest: read_retention_override(
+                "VECTORGRID_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST",
+                defaults.options_expression_keep_newest,
+            ),
+        }
+    }
+}
+
+fn read_retention_override(var_name: &str, default: usize) -> usize {
+    std::env::var(var_name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+pub(super) fn artifact_retention_policy() -> ArtifactRetentionPolicy {
+    ArtifactRetentionPolicy::from_env()
+}
+
+pub(super) fn is_run_artifact_kind(kind: &str) -> bool {
+    ArtifactFamily::from_kind(kind) == Some(ArtifactFamily::Run)
 }
 
 fn is_options_expression_artifact_kind(kind: &str) -> bool {
-    matches!(kind.trim(), "vectorgrid_options_expression_v1")
+    ArtifactFamily::from_kind(kind) == Some(ArtifactFamily::OptionsExpression)
 }
 
 fn is_live_session_artifact_kind(kind: &str) -> bool {
-    matches!(kind.trim(), "vectorgrid_live_session_v1")
+    ArtifactFamily::from_kind(kind) == Some(ArtifactFamily::LiveSession)
 }
 
-fn is_meta_selection_kind(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "vectorbt_meta_selection" | "vectorgrid_meta_selection"
-    )
+pub(super) fn is_meta_selection_kind(kind: &str) -> bool {
+    ArtifactFamily::from_kind(kind) == Some(ArtifactFamily::MetaSelection)
 }
 
 fn is_meta_stage_result_kind(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "vectorbt_meta_stage4_experimental"
-            | "vectorgrid_meta_stage4_experimental"
-            | "vectorbt_meta_stage5_ml_confidence"
-            | "vectorgrid_meta_stage5_ml_confidence"
-    )
+    ArtifactFamily::from_kind(kind) == Some(ArtifactFamily::MetaStageResult)
 }
 
 fn is_ml_confidence_policy_eval_kind(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "vectorbt_ml_confidence_policy_evaluation" | "vectorgrid_ml_confidence_policy_evaluation"
-    )
+    ArtifactFamily::from_kind(kind) == Some(ArtifactFamily::MlPolicyEval)
 }
 
 fn is_mutable_library_artifact_kind(kind: &str) -> bool {
@@ -123,30 +314,33 @@ fn prune_old_artifacts_by_prefixes_in_dir(dir: &Path, keep_newest: usize, prefix
 }
 
 fn is_meta_artifact_file_name(name: &str) -> bool {
-    let trimmed = name.trim();
-    trimmed.starts_with("vectorbt_meta_") || trimmed.starts_with("vectorgrid_meta_")
+    ArtifactFamily::from_file_name(name) == Some(ArtifactFamily::MetaSelection)
 }
 
 fn is_run_artifact_file_name(name: &str) -> bool {
-    let trimmed = name.trim();
-    trimmed.starts_with("vectorbt_run_") || trimmed.starts_with("vectorgrid_run_")
+    ArtifactFamily::from_file_name(name) == Some(ArtifactFamily::Run)
 }
 
 fn is_live_session_artifact_file_name(name: &str) -> bool {
-    name.trim().starts_with("vectorgrid_live_session_")
+    ArtifactFamily::from_file_name(name) == Some(ArtifactFamily::LiveSession)
 }
 
 #[cfg(test)]
 fn is_meta_stage_artifact_file_name(name: &str) -> bool {
-    let trimmed = name.trim();
-    trimmed.starts_with("vectorbt_stage4_")
-        || trimmed.starts_with("vectorbt_meta_stage4_")
-        || trimmed.starts_with("vectorbt_stage5_")
-        || trimmed.starts_with("vectorbt_meta_stage5_")
-        || trimmed.starts_with("vectorgrid_stage4_")
-        || trimmed.starts_with("vectorgrid_meta_stage4_")
-        || trimmed.starts_with("vectorgrid_stage5_")
-        || trimmed.starts_with("vectorgrid_meta_stage5_")
+    ArtifactFamily::from_file_name(name) == Some(ArtifactFamily::MetaStageResult)
+}
+
+pub(super) fn is_known_non_run_artifact_file_name(name: &str) -> bool {
+    matches!(
+        ArtifactFamily::from_file_name(name),
+        Some(
+            ArtifactFamily::MetaSelection
+                | ArtifactFamily::MetaStageResult
+                | ArtifactFamily::MlPolicyEval
+                | ArtifactFamily::BatchSummary
+                | ArtifactFamily::CampaignSummary
+        )
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -365,7 +559,7 @@ pub struct MetaArtifactSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Stage4ArtifactSummary {
+pub struct Stage5ArtifactSummary {
     pub ts: String,
     pub path: String,
     pub bytes: u64,
@@ -382,7 +576,7 @@ pub struct Stage4ArtifactSummary {
     pub tags: Vec<String>,
 }
 
-pub type Stage5ArtifactSummary = Stage4ArtifactSummary;
+pub type Stage4ArtifactSummary = Stage5ArtifactSummary;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MlPolicyEvalArtifactSummary {
@@ -599,35 +793,60 @@ pub(super) fn suggest_meta_artifact_path(
     ts: &str,
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_meta", ts, "json")
+    suggest_ts_file_path(
+        runs_dir(app)?,
+        ArtifactFamily::MetaSelection.canonical_write_prefix(),
+        ts,
+        "json",
+    )
 }
 
 pub(super) fn suggest_stage5_artifact_path(
     ts: &str,
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_stage5", ts, "json")
+    suggest_ts_file_path(
+        runs_dir(app)?,
+        ArtifactFamily::MetaStageResult.canonical_write_prefix(),
+        ts,
+        "json",
+    )
 }
 
 pub(super) fn suggest_ml_policy_eval_artifact_path(
     ts: &str,
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_ml_confidence_eval", ts, "json")
+    suggest_ts_file_path(
+        runs_dir(app)?,
+        ArtifactFamily::MlPolicyEval.canonical_write_prefix(),
+        ts,
+        "json",
+    )
 }
 
 pub(super) fn suggest_batch_summary_path(
     ts: &str,
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_batch_summary", ts, "json")
+    suggest_ts_file_path(
+        runs_dir(app)?,
+        ArtifactFamily::BatchSummary.canonical_write_prefix(),
+        ts,
+        "json",
+    )
 }
 
 pub(super) fn suggest_campaign_summary_path(
     ts: &str,
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_campaign_summary", ts, "json")
+    suggest_ts_file_path(
+        runs_dir(app)?,
+        ArtifactFamily::CampaignSummary.canonical_write_prefix(),
+        ts,
+        "json",
+    )
 }
 
 fn suggest_ts_file_path(
@@ -1361,7 +1580,7 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
 
     // Retention policy: keep newest N untagged runs, but never delete tagged runs.
-    prune_old_run_artifacts_blocking(&app, 200);
+    prune_old_run_artifacts_blocking(&app, artifact_retention_policy().run_keep_newest);
     Ok(SaveRunArtifactResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
@@ -1379,39 +1598,25 @@ pub(super) fn save_batch_summary_blocking(
     let path = suggest_batch_summary_path(ts, &app)?;
     let bytes = serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    prune_old_batch_summary_artifacts_blocking(&app, 100);
+    prune_old_batch_summary_artifacts_blocking(
+        &app,
+        artifact_retention_policy().batch_summary_keep_newest,
+    );
     Ok(SaveBatchSummaryResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
     })
 }
 
-fn prune_old_artifacts_by_prefix<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    keep_newest: usize,
-    prefix: &str,
-) {
-    let Ok(dir) = runs_dir(app) else { return };
-    prune_old_artifacts_by_prefixes_in_dir(&dir, keep_newest, &[prefix]);
-}
-
 fn prune_old_run_artifacts_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     keep_newest: usize,
 ) {
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_run_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_run_");
+    let Ok(dir) = runs_dir(app) else { return };
+    prune_old_artifacts_by_prefixes_in_dir(&dir, keep_newest, ArtifactFamily::Run.file_prefixes());
 }
 
 pub(super) fn prune_old_meta_artifacts_blocking<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    keep_newest: usize,
-) {
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_");
-}
-
-pub(super) fn prune_old_stage4_artifacts_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     keep_newest: usize,
 ) {
@@ -1419,34 +1624,39 @@ pub(super) fn prune_old_stage4_artifacts_blocking<R: tauri::Runtime>(
     prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
-        &[
-            "vectorgrid_stage4_",
-            "vectorgrid_meta_stage4_",
-            "vectorgrid_stage5_",
-            "vectorgrid_meta_stage5_",
-            "vectorbt_stage4_",
-            "vectorbt_meta_stage4_",
-            "vectorbt_stage5_",
-            "vectorbt_meta_stage5_",
-        ],
+        ArtifactFamily::MetaSelection.file_prefixes(),
     );
+}
+
+pub(super) fn prune_old_stage5_artifacts_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+) {
+    let Ok(dir) = runs_dir(app) else { return };
+    prune_old_artifacts_by_prefixes_in_dir(
+        &dir,
+        keep_newest,
+        ArtifactFamily::MetaStageResult.file_prefixes(),
+    );
+}
+
+#[allow(dead_code)]
+pub(super) fn prune_old_stage4_artifacts_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+) {
+    prune_old_stage5_artifacts_blocking(app, keep_newest);
 }
 
 pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
     app: &tauri::AppHandle<impl tauri::Runtime>,
     keep_newest: usize,
 ) {
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_ml_confidence_eval_");
-    prune_old_artifacts_by_prefix(
-        app,
+    let Ok(dir) = runs_dir(app) else { return };
+    prune_old_artifacts_by_prefixes_in_dir(
+        &dir,
         keep_newest,
-        "vectorgrid_ml_confidence_policy_evaluation_",
-    );
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_ml_confidence_eval_");
-    prune_old_artifacts_by_prefix(
-        app,
-        keep_newest,
-        "vectorbt_ml_confidence_policy_evaluation_",
+        ArtifactFamily::MlPolicyEval.file_prefixes(),
     );
 }
 
@@ -1458,12 +1668,7 @@ pub(super) fn prune_old_batch_summary_artifacts_blocking(
     prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
-        &[
-            "vectorgrid_batch_",
-            "vectorgrid_batch_summary_",
-            "vectorbt_batch_",
-            "vectorbt_batch_summary_",
-        ],
+        ArtifactFamily::BatchSummary.file_prefixes(),
     );
 }
 
@@ -1475,12 +1680,16 @@ pub(super) fn prune_old_campaign_summary_artifacts_blocking(
     prune_old_artifacts_by_prefixes_in_dir(
         &dir,
         keep_newest,
-        &["vectorgrid_campaign_summary_", "vectorbt_campaign_summary_"],
+        ArtifactFamily::CampaignSummary.file_prefixes(),
     );
 }
 
 pub(super) fn prune_old_options_expression_artifacts_in_dir(dir: &Path, keep_newest: usize) {
-    prune_old_artifacts_by_prefixes_in_dir(dir, keep_newest, &["vectorgrid_options_expression_"]);
+    prune_old_artifacts_by_prefixes_in_dir(
+        dir,
+        keep_newest,
+        ArtifactFamily::OptionsExpression.file_prefixes(),
+    );
 }
 
 fn read_json_value(path: &Path) -> Option<Value> {
@@ -2638,7 +2847,7 @@ fn build_stage5_artifact_summary(
         return None;
     }
 
-    Some(Stage4ArtifactSummary {
+    Some(Stage5ArtifactSummary {
         ts: v
             .get("ts")
             .and_then(|x| x.as_str())

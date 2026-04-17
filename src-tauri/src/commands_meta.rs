@@ -18,20 +18,6 @@ use ta_app_core::{
 };
 use tauri::Manager;
 
-fn is_run_artifact_kind(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "vectorbt_run_artifact" | "vectorgrid_run_artifact"
-    )
-}
-
-fn is_meta_selection_kind(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "vectorbt_meta_selection" | "vectorgrid_meta_selection"
-    )
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MlConfidenceModelState {
@@ -386,28 +372,6 @@ fn read_json_value(path: &Path) -> Option<Value> {
     serde_json::from_reader(reader).ok()
 }
 
-fn is_known_non_run_artifact_filename(name: &str) -> bool {
-    let trimmed = name.trim();
-    trimmed.starts_with("vectorbt_meta_")
-        || trimmed.starts_with("vectorgrid_meta_")
-        || trimmed.starts_with("vectorbt_stage4_")
-        || trimmed.starts_with("vectorgrid_stage4_")
-        || trimmed.starts_with("vectorbt_stage5_")
-        || trimmed.starts_with("vectorgrid_stage5_")
-        || trimmed.starts_with("vectorbt_meta_stage4_")
-        || trimmed.starts_with("vectorgrid_meta_stage4_")
-        || trimmed.starts_with("vectorbt_meta_stage5_")
-        || trimmed.starts_with("vectorgrid_meta_stage5_")
-        || trimmed.starts_with("vectorbt_ml_confidence_eval_")
-        || trimmed.starts_with("vectorgrid_ml_confidence_eval_")
-        || trimmed.starts_with("vectorbt_batch_")
-        || trimmed.starts_with("vectorgrid_batch_")
-        || trimmed.starts_with("vectorbt_batch_summary_")
-        || trimmed.starts_with("vectorgrid_batch_summary_")
-        || trimmed.starts_with("vectorbt_campaign_summary_")
-        || trimmed.starts_with("vectorgrid_campaign_summary_")
-}
-
 fn load_meta_artifacts_with_paths_blocking(
     app: &tauri::AppHandle,
 ) -> Result<Vec<(PathBuf, Value)>, String> {
@@ -645,8 +609,13 @@ fn ensure_path_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn suggest_stage4_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn suggest_stage5_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
     run_artifacts::suggest_stage5_artifact_path(ts, app)
+}
+
+#[cfg(test)]
+fn is_known_non_run_artifact_filename(name: &str) -> bool {
+    run_artifacts::is_known_non_run_artifact_file_name(name)
 }
 
 fn suggest_ml_policy_eval_artifact_path(
@@ -659,7 +628,7 @@ fn suggest_ml_policy_eval_artifact_path(
 fn is_meta_selection_artifact(v: &Value) -> bool {
     v.get("kind")
         .and_then(|x| x.as_str())
-        .map(is_meta_selection_kind)
+        .map(run_artifacts::is_meta_selection_kind)
         .unwrap_or(false)
 }
 
@@ -785,6 +754,27 @@ fn decision_bucket_label(
     }
 }
 
+fn annotate_stage5_group_aliases(
+    obj: &mut serde_json::Map<String, Value>,
+    rank: Option<usize>,
+    fallback: bool,
+    final_rank_score: Option<f64>,
+) {
+    obj.insert("stage4_fallback".to_string(), Value::Bool(fallback));
+    obj.insert("stage5_fallback".to_string(), Value::Bool(fallback));
+    if let Some(rank) = rank {
+        let rank = serde_json::Number::from(rank as u64);
+        obj.insert("stage4_rank".to_string(), Value::Number(rank.clone()));
+        obj.insert("stage5_rank".to_string(), Value::Number(rank));
+    }
+    if let Some(final_rank_score) = final_rank_score {
+        obj.insert(
+            "final_rank_score".to_string(),
+            serde_json::json!(final_rank_score),
+        );
+    }
+}
+
 fn extract_meta_scope(meta: &Value) -> Option<(String, String)> {
     let strat = meta
         .pointer("/req/strategy_kind")
@@ -877,7 +867,7 @@ fn summarize_meta_artifacts_for_scope(
 
     for meta in metas {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if !is_meta_selection_kind(kind) {
+        if !run_artifacts::is_meta_selection_kind(kind) {
             continue;
         }
         let Some((sk, tf)) = extract_meta_scope(meta) else {
@@ -1168,7 +1158,7 @@ fn resolve_meta_stage4_source(
         let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let v: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if !is_meta_selection_kind(kind) {
+        if !run_artifacts::is_meta_selection_kind(kind) {
             return Err(format!(
                 "source_meta_path must point to a meta-selection artifact kind ('vectorgrid_meta_selection' or legacy 'vectorbt_meta_selection') (got '{kind}')."
             ));
@@ -1195,7 +1185,7 @@ fn resolve_meta_stage4_source(
     let mut chosen: Option<(String, PathBuf, Value, String)> = None;
     for (path, v) in metas {
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if !is_meta_selection_kind(kind) {
+        if !run_artifacts::is_meta_selection_kind(kind) {
             continue;
         }
         let Some((sk, tf)) = extract_meta_scope(&v) else {
@@ -1582,7 +1572,10 @@ fn run_ml_confidence_policy_evaluation_blocking(
     });
     let out_bytes = serde_json::to_vec_pretty(&payload).map_err(|e| e.to_string())?;
     std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
-    run_artifacts::prune_old_ml_policy_eval_artifacts_blocking(&app, 100);
+    run_artifacts::prune_old_ml_policy_eval_artifacts_blocking(
+        &app,
+        run_artifacts::artifact_retention_policy().ml_policy_eval_keep_newest,
+    );
 
     Ok(RunMlConfidencePolicyEvaluationResponse {
         ts,
@@ -1592,10 +1585,10 @@ fn run_ml_confidence_policy_evaluation_blocking(
     })
 }
 
-pub(super) fn run_meta_stage4_experimental_blocking(
-    req: MetaStage4Request,
+fn run_meta_stage5_ml_confidence_blocking(
+    req: MetaStage5Request,
     app: tauri::AppHandle,
-) -> Result<RunMetaStage4Response, String> {
+) -> Result<RunMetaStage5Response, String> {
     let req = normalize_meta_stage4_request(req)?;
     let (source_meta_path, source_meta, meta_tf) = resolve_meta_stage4_source(&req, &app)?;
     let timeframe = req.timeframe.clone().unwrap_or(meta_tf);
@@ -1801,8 +1794,7 @@ pub(super) fn run_meta_stage4_experimental_blocking(
                     "final_rank_score".to_string(),
                     serde_json::json!(final_rank),
                 );
-                obj.insert("stage4_fallback".to_string(), Value::Bool(false));
-                obj.insert("stage5_fallback".to_string(), Value::Bool(false));
+                annotate_stage5_group_aliases(obj, None, false, None);
             }
         }
     }
@@ -1834,18 +1826,12 @@ pub(super) fn run_meta_stage4_experimental_blocking(
             .map(|i| {
                 let mut g = entries[i].group.clone();
                 if let Some(obj) = g.as_object_mut() {
-                    obj.insert("stage4_fallback".to_string(), Value::Bool(true));
-                    obj.insert("stage5_fallback".to_string(), Value::Bool(true));
-                    if !obj
+                    let final_rank_score = (!obj
                         .get("final_rank_score")
                         .map(|v| v.is_number())
-                        .unwrap_or(false)
-                    {
-                        obj.insert(
-                            "final_rank_score".to_string(),
-                            serde_json::json!(entries[i].meta_score),
-                        );
-                    }
+                        .unwrap_or(false))
+                    .then_some(entries[i].meta_score);
+                    annotate_stage5_group_aliases(obj, None, true, final_rank_score);
                 }
                 g
             })
@@ -1865,29 +1851,17 @@ pub(super) fn run_meta_stage4_experimental_blocking(
     };
     for (i, g) in selected_groups.iter_mut().enumerate() {
         if let Some(obj) = g.as_object_mut() {
-            obj.insert(
-                "stage4_rank".to_string(),
-                Value::Number(serde_json::Number::from((i + 1) as u64)),
-            );
-            obj.insert(
-                "stage5_rank".to_string(),
-                Value::Number(serde_json::Number::from((i + 1) as u64)),
-            );
-            if !obj
+            let final_rank_score = (!obj
                 .get("final_rank_score")
                 .map(|v| v.is_number())
-                .unwrap_or(false)
-            {
-                let fallback_rank = obj
-                    .get("final_score")
+                .unwrap_or(false))
+            .then(|| {
+                obj.get("final_score")
                     .and_then(|v| v.as_f64())
                     .or_else(|| obj.get("meta_score").and_then(|v| v.as_f64()))
-                    .unwrap_or(0.0);
-                obj.insert(
-                    "final_rank_score".to_string(),
-                    serde_json::json!(fallback_rank),
-                );
-            }
+                    .unwrap_or(0.0)
+            });
+            annotate_stage5_group_aliases(obj, Some(i + 1), false, final_rank_score);
             let ml = obj.get("ml_confidence").and_then(|v| v.as_f64());
             let unc = obj.get("ml_uncertainty").and_then(|v| v.as_f64());
             let bucket = decision_bucket_label(&req, ml, unc);
@@ -1943,9 +1917,12 @@ pub(super) fn run_meta_stage4_experimental_blocking(
         "res": &result,
     });
     let out_bytes = serde_json::to_vec_pretty(&out_obj).map_err(|e| e.to_string())?;
-    let out_path = suggest_stage4_artifact_path(&ts, &app)?;
+    let out_path = suggest_stage5_artifact_path(&ts, &app)?;
     std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
-    run_artifacts::prune_old_stage4_artifacts_blocking(&app, 100);
+    run_artifacts::prune_old_stage5_artifacts_blocking(
+        &app,
+        run_artifacts::artifact_retention_policy().stage5_keep_newest,
+    );
 
     Ok(RunMetaStage4Response {
         ts,
@@ -1955,6 +1932,13 @@ pub(super) fn run_meta_stage4_experimental_blocking(
         stage5_json_bytes: out_bytes.len(),
         result,
     })
+}
+
+pub(super) fn run_meta_stage4_experimental_blocking(
+    req: MetaStage4Request,
+    app: tauri::AppHandle,
+) -> Result<RunMetaStage4Response, String> {
+    run_meta_stage5_ml_confidence_blocking(req, app)
 }
 
 #[tauri::command]
@@ -1976,7 +1960,7 @@ pub async fn run_meta_stage5_ml_confidence(
     app: tauri::AppHandle,
 ) -> Result<RunMetaStage5Response, String> {
     let _run_guard = state.try_begin_run()?;
-    tauri::async_runtime::spawn_blocking(move || run_meta_stage4_experimental_blocking(req, app))
+    tauri::async_runtime::spawn_blocking(move || run_meta_stage5_ml_confidence_blocking(req, app))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2094,7 +2078,7 @@ pub(super) fn run_meta_selection_blocking(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if is_known_non_run_artifact_filename(name) {
+        if run_artifacts::is_known_non_run_artifact_file_name(name) {
             continue;
         }
         paths.push(path);
@@ -2402,7 +2386,10 @@ pub(super) fn run_meta_selection_blocking(
     let meta_path = run_artifacts::suggest_meta_artifact_path(&ts, &app)?;
     std::fs::write(&meta_path, &meta_bytes).map_err(|e| e.to_string())?;
     // Retention policy: keep newest N untagged meta runs; tags preserve older runs.
-    run_artifacts::prune_old_meta_artifacts_blocking(&app, 100);
+    run_artifacts::prune_old_meta_artifacts_blocking(
+        &app,
+        run_artifacts::artifact_retention_policy().meta_keep_newest,
+    );
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_save");
 
     Ok(RunMetaSelectionResponse {
@@ -2528,7 +2515,7 @@ fn normalize_timeframe_label(raw: &str) -> String {
 
 fn artifact_matches_meta_req(artifact: &Value, req: &MetaSelectionRequest) -> bool {
     let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    if !is_run_artifact_kind(kind) {
+    if !run_artifacts::is_run_artifact_kind(kind) {
         return false;
     }
 
@@ -2576,7 +2563,7 @@ fn artifact_matches_meta_req(artifact: &Value, req: &MetaSelectionRequest) -> bo
 
 fn artifact_matches_meta_req_relaxed(artifact: &Value, req: &MetaSelectionRequest) -> bool {
     let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    if !is_run_artifact_kind(kind) {
+    if !run_artifacts::is_run_artifact_kind(kind) {
         return false;
     }
 

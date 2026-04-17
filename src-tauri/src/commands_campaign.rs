@@ -1990,7 +1990,10 @@ fn save_campaign_summary_blocking<R: tauri::Runtime>(
         let _ = fs::remove_file(&tmp);
     }
     result?;
-    run_artifacts::prune_old_campaign_summary_artifacts_blocking(app, 100);
+    run_artifacts::prune_old_campaign_summary_artifacts_blocking(
+        app,
+        run_artifacts::artifact_retention_policy().campaign_summary_keep_newest,
+    );
     Ok((path.to_string_lossy().to_string(), bytes.len()))
 }
 

@@ -371,6 +371,8 @@ fn run_full_workflow_once(
             top_k: Some(64),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let optimize_started = Instant::now();

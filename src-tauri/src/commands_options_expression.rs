@@ -568,13 +568,6 @@ fn load_options_dataset_cache_entry(
     Some(result)
 }
 
-fn is_run_artifact_kind(kind: &str) -> bool {
-    matches!(
-        kind.trim(),
-        "vectorbt_run_artifact" | "vectorgrid_run_artifact"
-    )
-}
-
 fn resolve_run_artifact_kind(value: &Value) -> String {
     non_empty_string(value.get("kind")).unwrap_or_default()
 }
@@ -1669,7 +1662,7 @@ fn build_options_expression_replay_inputs_with_timing(
     let artifact = read_artifact_value(parent_artifact_path)?;
     let parent_artifact_hash = json_value_digest(&artifact)?;
     let kind = resolve_run_artifact_kind(&artifact);
-    if !is_run_artifact_kind(&kind) {
+    if !crate::commands::run_artifacts::is_run_artifact_kind(&kind) {
         return Err(format!(
             "options expression parent must be a saved run artifact, found kind '{}'",
             kind
@@ -1974,7 +1967,11 @@ fn run_options_expression_blocking_impl(
         )
     })?;
     let runs_dir = app_local_data_dir.join("runs");
-    crate::commands::run_artifacts::prune_old_options_expression_artifacts_in_dir(&runs_dir, 100);
+    let retention = crate::commands::run_artifacts::artifact_retention_policy();
+    crate::commands::run_artifacts::prune_old_options_expression_artifacts_in_dir(
+        &runs_dir,
+        retention.options_expression_keep_newest,
+    );
 
     Ok(RunOptionsExpressionResponse {
         artifact_path: artifact_path.to_string_lossy().to_string(),
