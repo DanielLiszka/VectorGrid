@@ -845,28 +845,21 @@ fn summarize_walk_forward_metric_samples_full(
     mut martins: Vec<f64>,
     trades: Vec<u32>,
 ) -> WalkForwardStats {
-    sharpes.sort_by(|a, b| a.total_cmp(b));
-    dds.sort_by(|a, b| a.total_cmp(b));
-    pnls.sort_by(|a, b| a.total_cmp(b));
-    downside_ratios.sort_by(|a, b| a.total_cmp(b));
-    ulcers.sort_by(|a, b| a.total_cmp(b));
-    martins.sort_by(|a, b| a.total_cmp(b));
-
     WalkForwardStats {
         windows: sharpes.len(),
-        sharpe_median: crate::stats_common::median(&sharpes),
+        sharpe_median: crate::stats_common::median_in_place(&mut sharpes),
         sharpe_worst: crate::stats_common::worst_min(&sharpes),
-        max_dd_median: crate::stats_common::median(&dds),
+        max_dd_median: crate::stats_common::median_in_place(&mut dds),
         max_dd_worst: crate::stats_common::worst_max(&dds),
-        pnl_median: crate::stats_common::median(&pnls),
+        pnl_median: crate::stats_common::median_in_place(&mut pnls),
         pnl_worst: crate::stats_common::worst_min(&pnls),
-        downside_vol_ratio_median: crate::stats_common::median(&downside_ratios),
+        downside_vol_ratio_median: crate::stats_common::median_in_place(&mut downside_ratios),
         downside_vol_ratio_worst: crate::stats_common::worst_max(&downside_ratios),
-        ulcer_index_median: crate::stats_common::median(&ulcers),
+        ulcer_index_median: crate::stats_common::median_in_place(&mut ulcers),
         ulcer_index_worst: crate::stats_common::worst_max(&ulcers),
-        martin_ratio_median: crate::stats_common::median(&martins),
+        martin_ratio_median: crate::stats_common::median_in_place(&mut martins),
         martin_ratio_worst: crate::stats_common::worst_min(&martins),
-        trades_median: crate::stats_common::median_u32(&trades),
+        trades_median: crate::stats_common::median_u32_in_place(&mut trades),
         trades_worst: crate::stats_common::worst_min_u32(&trades),
     }
 }
@@ -12969,9 +12962,8 @@ fn rolling_volatility_tertiles_generic(lr: &[f64], start_t: usize, window: usize
     if vols.is_empty() {
         return states;
     }
-    vols.sort_by(|a, b| a.total_cmp(b));
-    let low_thr = crate::stats_common::quantile(&vols, 1.0 / 3.0);
-    let high_thr = crate::stats_common::quantile(&vols, 2.0 / 3.0);
+    let low_thr = crate::stats_common::quantile_in_place(&mut vols, 1.0 / 3.0);
+    let high_thr = crate::stats_common::quantile_in_place(&mut vols, 2.0 / 3.0);
     for t in start_t..n {
         let vol = raw[t];
         if !vol.is_finite() {
@@ -13153,8 +13145,7 @@ fn compute_composite_regime_slice_robustness_stats(
     if eff_values.is_empty() {
         return None;
     }
-    eff_values.sort_by(|a, b| a.total_cmp(b));
-    let trend_threshold = crate::stats_common::median(&eff_values);
+    let trend_threshold = crate::stats_common::median_in_place(&mut eff_values);
 
     let mut low_mask = vec![false; n];
     let mut mid_mask = vec![false; n];

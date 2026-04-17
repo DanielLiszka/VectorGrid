@@ -148,6 +148,19 @@ describe('history store actions', () => {
     expect(openRunsDirMock).toHaveBeenCalled()
   })
 
+  it('surfaces runs-directory failures in the Vue status line', async () => {
+    const store = useHistoryStore()
+    openRunsDirMock.mockRejectedValueOnce(new Error('runs unavailable'))
+
+    store.openRunsDir()
+    await flushServiceImports()
+    await flushServiceImports()
+
+    expect(openRunsDirMock).toHaveBeenCalledTimes(1)
+    expect(store.statusLine).toBe('Error: runs unavailable')
+    expect(store.source).toBe('vue')
+  })
+
   it('dispatches saved-run actions through history service', async () => {
     const store = useHistoryStore()
     store.savedRunsRaw = [
@@ -183,6 +196,55 @@ describe('history store actions', () => {
     expect(revealSavedRunMock).toHaveBeenCalledWith('C:/runs/run1.json')
     expect(deleteSavedRunMock).toHaveBeenCalledWith('C:/runs/run1.json')
     expect(refreshSavedRunsMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('surfaces saved-run action failures in the Vue status line', async () => {
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/run1.json',
+        bytes: 1024,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/run1.xlsx',
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['holdout'],
+      },
+    ]
+    store.syncSavedRunsView('C:/runs/run1.json')
+    await flushServiceImports()
+
+    loadSavedRunMock.mockRejectedValueOnce(new Error('load failed'))
+    store.loadSavedRun(' C:/runs/run1.json ')
+    await flushServiceImports()
+    await flushServiceImports()
+    expect(store.statusLine).toBe('Error: load failed')
+
+    applySavedRunMock.mockRejectedValueOnce(new Error('apply failed'))
+    store.applySavedRun(' C:/runs/run1.json ')
+    await flushServiceImports()
+    await flushServiceImports()
+    expect(store.statusLine).toBe('Error: apply failed')
+
+    rerunSavedRunMock.mockRejectedValueOnce(new Error('rerun failed'))
+    store.rerunSavedRun(' C:/runs/run1.json ')
+    await flushServiceImports()
+    await flushServiceImports()
+    expect(store.statusLine).toBe('Error: rerun failed')
+
+    openSavedRunReportMock.mockRejectedValueOnce(new Error('report failed'))
+    store.openSavedRunReport(' C:/runs/run1.json ')
+    await flushServiceImports()
+    await flushServiceImports()
+    expect(store.statusLine).toBe('Error: report failed')
+
+    revealSavedRunMock.mockRejectedValueOnce(new Error('reveal failed'))
+    store.revealSavedRun(' C:/runs/run1.json ')
+    await flushServiceImports()
+    await flushServiceImports()
+    expect(store.statusLine).toBe('Error: reveal failed')
+    expect(store.source).toBe('vue')
   })
 
   it('hydrates and filters saved runs via Vue-owned refresh/search flow', async () => {

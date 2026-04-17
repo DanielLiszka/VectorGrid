@@ -4,7 +4,9 @@ param(
   [switch]$SkipClippy,
   [switch]$StrictClippy,
   [switch]$IncludeDesktopTypecheck,
-  [switch]$IncludeWorkspaceTests
+  [switch]$IncludeWorkspaceTests,
+  [switch]$IncludeA11ySmoke,
+  [switch]$IncludeBaselineUi
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,11 +74,19 @@ try {
     if ($IncludeDesktopTypecheck) {
       Invoke-Step "Web desktop typecheck" { & npm.cmd --prefix web run typecheck:desktop }
     }
+
+    if ($IncludeA11ySmoke) {
+      Invoke-Step "Web accessibility smoke" { & npm.cmd --prefix web run a11y:smoke:managed }
+    }
+
+    if ($IncludeBaselineUi) {
+      Invoke-Step "Web baseline UI capture" { & npm.cmd --prefix web run baseline:ui:managed }
+    }
   }
 
   Write-Host "Repo quality gate completed successfully."
   Write-Host "Default scope: rust fmt/check/clippy + web lint/typecheck."
-  Write-Host "Optional scope: -IncludeDesktopTypecheck and -IncludeWorkspaceTests."
+  Write-Host "Optional scope: -IncludeDesktopTypecheck, -IncludeWorkspaceTests, -IncludeA11ySmoke, and -IncludeBaselineUi."
 } finally {
   if ($null -ne $previousRustcWrapper) {
     $env:RUSTC_WRAPPER = $previousRustcWrapper

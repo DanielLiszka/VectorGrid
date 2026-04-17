@@ -2092,6 +2092,124 @@ describe("optimizeRequestBuilder", () => {
     ).toThrow("includeAll=true would return");
   });
 
+  it("rejects heatmap bins above the exact-grid cap", () => {
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-heatmap-cap",
+          current_data_meta: { has_close: true },
+        },
+        backend: "GpuKernel",
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        mode: "Grid",
+        topK: "20",
+        includeAll: "false",
+        heatmapBins: "513",
+        exportAllCsvPath: "",
+      }),
+    ).toThrow("heatmapBins must be <= 512.");
+  });
+
+  it("rejects kernel top-k above 256 when includeAll=false on DoubleMa requests", () => {
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-kernel-topk-cap",
+          current_data_meta: { has_close: true },
+        },
+        backend: "GpuKernel",
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        mode: "Grid",
+        topK: "257",
+        includeAll: "false",
+        heatmapBins: "0",
+        exportAllCsvPath: "",
+        exitMode: "cross",
+        cooldownBars: "0",
+        signalPersistenceBars: "1",
+      }),
+    ).toThrow(/topK <= 256 when includeAll=false/i);
+  });
+
+  it("rejects export-all CSV when includeAll=true on the DoubleMa path", () => {
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-export-all-include-all",
+          current_data_meta: { has_close: true },
+        },
+        backend: "GpuKernel",
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        mode: "Grid",
+        topK: "20",
+        includeAll: "true",
+        heatmapBins: "0",
+        exportAllCsvPath: "all-rows.csv",
+      }),
+    ).toThrow(/exportAllCsvPath requires includeAll=false/i);
+  });
+
+  it("enforces the standalone CompositeCpu includeAll range guardrail", () => {
+    expect(() =>
+      buildCompositeCpuOptimizationRequest({
+        context: {
+          strategy_kind: "CompositeCpu",
+          data_id: "data-composite-include-all-cap",
+          current_data_meta: {
+            has_open: true,
+            has_high: true,
+            has_low: true,
+            has_close: true,
+            has_volume: true,
+          },
+        },
+        fastStart: "1",
+        fastEnd: "2000",
+        fastStep: "1",
+        slowStart: "2",
+        slowEnd: "4000",
+        slowStep: "1",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        topK: "20",
+        includeAll: "true",
+        compositeSignalMode: "hard_gate",
+      }),
+    ).toThrow("includeAll=true would return");
+  });
+
   it("builds a CompositeCpu optimization request from typed inputs", () => {
     const req = buildCompositeCpuOptimizationRequest({
       context: {

@@ -32,6 +32,41 @@ pub fn median(sorted: &[f64]) -> f64 {
     quantile(sorted, 0.5)
 }
 
+fn quantile_index(len: usize, q: f64) -> usize {
+    let qq = q.clamp(0.0, 1.0);
+    (qq * (len.saturating_sub(1) as f64)).round() as usize
+}
+
+/// Returns the rounded-index quantile from an unsorted slice in place.
+///
+/// This mutates the input slice but preserves the same selection rule as
+/// [`quantile`], which means callers can avoid a full sort when they only need
+/// one quantile.
+pub fn quantile_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    if values.len() == 1 {
+        return if values[0].is_finite() {
+            values[0]
+        } else {
+            0.0
+        };
+    }
+    let idx = quantile_index(values.len(), q).min(values.len() - 1);
+    let (_, nth, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    if nth.is_finite() {
+        *nth
+    } else {
+        0.0
+    }
+}
+
+/// Returns the median from an unsorted slice in place.
+pub fn median_in_place(values: &mut [f64]) -> f64 {
+    quantile_in_place(values, 0.5)
+}
+
 /// Returns the minimum finite value, or `0.0` when the selected extreme is not finite.
 pub fn worst_min(xs: &[f64]) -> f64 {
     let v = xs
@@ -71,6 +106,16 @@ pub fn median_u32(xs: &[u32]) -> u32 {
     ys[ys.len() / 2]
 }
 
+/// Returns the median from an unsorted `u32` slice in place.
+pub fn median_u32_in_place(values: &mut [u32]) -> u32 {
+    if values.is_empty() {
+        return 0;
+    }
+    let idx = values.len() / 2;
+    let (_, nth, _) = values.select_nth_unstable(idx);
+    *nth
+}
+
 /// Returns the minimum value from a `u32` slice, or `0` for empty input.
 pub fn worst_min_u32(xs: &[u32]) -> u32 {
     xs.iter().copied().min().unwrap_or(0)
@@ -106,8 +151,34 @@ mod tests {
     }
 
     #[test]
+    fn quantile_in_place_matches_sorted_quantile() {
+        let values: [f64; 5] = [4.0, 1.0, 3.0, 2.0, 5.0];
+        for q in [0.0, 0.1, 0.5, 0.9, 1.0, f64::NAN] {
+            let mut unsorted = values;
+            let mut sorted = values;
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            assert_eq!(quantile_in_place(&mut unsorted, q), quantile(&sorted, q));
+        }
+    }
+
+    #[test]
+    fn median_in_place_matches_sorted_median() {
+        let values: [f64; 4] = [8.0, 2.0, 6.0, 4.0];
+        let mut unsorted = values;
+        let mut sorted = values;
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        assert_eq!(median_in_place(&mut unsorted), median(&sorted));
+    }
+
+    #[test]
     fn median_u32_even_length_uses_upper_middle_policy() {
         assert_eq!(median_u32(&[8, 2, 6, 4]), 6);
+    }
+
+    #[test]
+    fn median_u32_in_place_matches_sorted_policy() {
+        let mut values = [8, 2, 6, 4];
+        assert_eq!(median_u32_in_place(&mut values), median_u32(&[8, 2, 6, 4]));
     }
 
     #[test]

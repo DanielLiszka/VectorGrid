@@ -1,3 +1,4 @@
+use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -446,24 +447,47 @@ impl ValidationAuxWorkMask {
     }
 }
 
-pub(crate) fn canonicalize_json_value(value: &JsonValue) -> JsonValue {
-    match value {
-        JsonValue::Array(items) => {
-            JsonValue::Array(items.iter().map(canonicalize_json_value).collect())
-        }
-        JsonValue::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort_unstable();
-            let mut out = serde_json::Map::with_capacity(map.len());
-            for key in keys {
-                if let Some(next) = map.get(key) {
-                    out.insert(key.clone(), canonicalize_json_value(next));
+struct CanonicalJsonValue<'a>(&'a JsonValue);
+
+impl Serialize for CanonicalJsonValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.0 {
+            JsonValue::Null => serializer.serialize_unit(),
+            JsonValue::Bool(value) => serializer.serialize_bool(*value),
+            JsonValue::Number(value) => value.serialize(serializer),
+            JsonValue::String(value) => serializer.serialize_str(value),
+            JsonValue::Array(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    seq.serialize_element(&CanonicalJsonValue(item))?;
                 }
+                seq.end()
             }
-            JsonValue::Object(out)
+            JsonValue::Object(map) => {
+                let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+
+                let mut out = serializer.serialize_map(Some(map.len()))?;
+                for key in keys {
+                    if let Some(value) = map.get(key) {
+                        out.serialize_entry(key, &CanonicalJsonValue(value))?;
+                    }
+                }
+                out.end()
+            }
         }
-        _ => value.clone(),
     }
+}
+
+pub(crate) fn canonical_json_value_key(value: &JsonValue) -> Result<String, String> {
+    serde_json::to_string(&CanonicalJsonValue(value)).map_err(|e| e.to_string())
+}
+
+pub(crate) fn canonical_json_value_key_bytes(value: &JsonValue) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&CanonicalJsonValue(value)).map_err(|e| e.to_string())
 }
 
 /// Canonicalize JSON object-key ordering for deterministic internal key generation.
@@ -471,12 +495,12 @@ pub(crate) fn canonicalize_json_value(value: &JsonValue) -> JsonValue {
 /// Arrays intentionally preserve their existing order.
 pub(crate) fn canonical_json_key<T: Serialize>(value: &T) -> Result<String, String> {
     let json = serde_json::to_value(value).map_err(|e| e.to_string())?;
-    serde_json::to_string(&canonicalize_json_value(&json)).map_err(|e| e.to_string())
+    canonical_json_value_key(&json)
 }
 
 pub(crate) fn canonical_json_key_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     let json = serde_json::to_value(value).map_err(|e| e.to_string())?;
-    serde_json::to_vec(&canonicalize_json_value(&json)).map_err(|e| e.to_string())
+    canonical_json_value_key_bytes(&json)
 }
 
 #[cfg(any(test, all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -490,6 +514,26 @@ mod tests {
     use serde::Serialize;
     use serde_json::json;
     use std::collections::HashMap;
+
+    fn canonicalize_json_value_legacy(value: &JsonValue) -> JsonValue {
+        match value {
+            JsonValue::Array(items) => {
+                JsonValue::Array(items.iter().map(canonicalize_json_value_legacy).collect())
+            }
+            JsonValue::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort_unstable();
+                let mut out = serde_json::Map::with_capacity(map.len());
+                for key in keys {
+                    if let Some(next) = map.get(key) {
+                        out.insert(key.clone(), canonicalize_json_value_legacy(next));
+                    }
+                }
+                JsonValue::Object(out)
+            }
+            _ => value.clone(),
+        }
+    }
 
     #[derive(Serialize)]
     struct WrappedMap {
@@ -601,5 +645,30 @@ mod tests {
 
         assert_eq!(left_key.as_bytes(), left_bytes.as_slice());
         assert_ne!(left_key, right_key, "array order should remain significant");
+    }
+
+    #[test]
+    fn direct_canonical_json_value_serializer_matches_legacy_output() {
+        let value = json!({
+            "z": [
+                {"b": 2, "a": 1},
+                true,
+                null,
+                "line\nbreak",
+                1.25
+            ],
+            "a": {
+                "nested": {"d": 4, "c": 3},
+                "items": [3, 1, 2]
+            }
+        });
+
+        let legacy = serde_json::to_string(&canonicalize_json_value_legacy(&value))
+            .expect("legacy canonical string");
+        let direct = canonical_json_value_key(&value).expect("direct canonical string");
+        let direct_bytes = canonical_json_value_key_bytes(&value).expect("direct canonical bytes");
+
+        assert_eq!(direct, legacy);
+        assert_eq!(direct.as_bytes(), direct_bytes.as_slice());
     }
 }

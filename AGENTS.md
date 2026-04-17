@@ -23,7 +23,8 @@ Instructions for AI coding agents working in this repository.
 - Repo quality gate (recommended before handoff for broad non-options changes): `powershell -File scripts/run_repo_quality_gate.ps1`
 - Repo quality gate with desktop harness typing: `powershell -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck`
 - Repo quality gate with workspace tests: `powershell -File scripts/run_repo_quality_gate.ps1 -IncludeWorkspaceTests`
-- Unit tests (recommended): `cargo test --workspace`
+- Stable workspace tests (recommended direct workspace-wide Rust test lane, especially on Windows / nightly-heavy surfaces): `powershell -File scripts/run_workspace_tests_stable.ps1`
+- Raw workspace tests (use only when you intentionally want Cargo's default parallelism): `cargo test --workspace`
 - Single crate: `cargo test -p ta_app_core`
 - Run app (release): `cargo run -p ta_desktop_demo_app --release`
 - Run with CUDA features:

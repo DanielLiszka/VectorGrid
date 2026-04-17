@@ -646,11 +646,19 @@ fn select_quantile_in_place(values: &mut [f64], q: f64) -> f64 {
         return 0.0;
     }
     if values.len() == 1 {
-        return values[0];
+        return if values[0].is_finite() {
+            values[0]
+        } else {
+            0.0
+        };
     }
     let idx = quantile_index(values.len(), q).min(values.len() - 1);
     let (_, nth, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
-    *nth
+    if nth.is_finite() {
+        *nth
+    } else {
+        0.0
+    }
 }
 
 fn select_median_in_place(values: &mut [f64]) -> f64 {
@@ -1525,6 +1533,13 @@ pub fn compute_spa_validation_stats(
     seed: u64,
     cancel: &AtomicBool,
 ) -> Option<SpaValidationStats> {
+    struct SpaCandidateBootstrapStats {
+        diff: Vec<f64>,
+        mean: f64,
+        std: f64,
+        t_stat: f64,
+    }
+
     let candidate_count = candidate_slice_returns.len();
     if candidate_count == 0 || candidate_keys.len() != candidate_count {
         return None;
@@ -1555,10 +1570,9 @@ pub fn compute_spa_validation_stats(
     }
 
     let benchmark = &benchmark_slice_returns[..slice_count];
-    let mut diffs: Vec<Vec<f64>> = Vec::with_capacity(candidate_count);
+    let mut diffs: Vec<SpaCandidateBootstrapStats> = Vec::with_capacity(candidate_count);
     let mut best_idx = 0usize;
     let mut best_mean = f64::NEG_INFINITY;
-    let mut t_stats: Vec<f64> = Vec::with_capacity(candidate_count);
     let sqrt_n = (slice_count as f64).sqrt();
 
     for (idx, candidate) in candidate_slice_returns.iter().enumerate() {
@@ -1570,16 +1584,23 @@ pub fn compute_spa_validation_stats(
             .collect();
         let mean = sample_mean(&diff);
         let std = sample_std(&diff, mean).max(1e-12);
-        let t = (sqrt_n * mean / std).max(0.0);
+        let t_stat = (sqrt_n * mean / std).max(0.0);
         if mean > best_mean {
             best_mean = mean;
             best_idx = idx;
         }
-        diffs.push(diff);
-        t_stats.push(t);
+        diffs.push(SpaCandidateBootstrapStats {
+            diff,
+            mean,
+            std,
+            t_stat,
+        });
     }
 
-    let observed_stat = t_stats.iter().copied().fold(0.0_f64, f64::max);
+    let observed_stat = diffs
+        .iter()
+        .map(|stats| stats.t_stat)
+        .fold(0.0_f64, f64::max);
     let bootstrap_samples = cfg.bootstrap_samples.max(100);
     let block_length = cfg.block_length.max(1);
     let mut exceed = 0usize;
@@ -1593,14 +1614,12 @@ pub fn compute_spa_validation_stats(
         let indices = stationary_scratch.indices(slice_count, block_length, &mut rng);
         let mut boot_stat = 0.0_f64;
         for diff in &diffs {
-            let mean = sample_mean(diff);
-            let std = sample_std(diff, mean).max(1e-12);
             let mut centered_sum = 0.0_f64;
             for &sample_idx in indices {
-                centered_sum += diff[sample_idx] - mean;
+                centered_sum += diff.diff[sample_idx] - diff.mean;
             }
             let centered_mean = centered_sum / slice_count as f64;
-            let t_star = (sqrt_n * centered_mean / std).max(0.0);
+            let t_star = (sqrt_n * centered_mean / diff.std).max(0.0);
             if t_star > boot_stat {
                 boot_stat = t_star;
             }
@@ -1620,7 +1639,7 @@ pub fn compute_spa_validation_stats(
         benchmark: cfg.benchmark.clone(),
         best_candidate_key: candidate_keys.get(best_idx).cloned().unwrap_or_default(),
         best_candidate_mean_diff: best_mean,
-        best_candidate_t_stat: t_stats.get(best_idx).copied().unwrap_or(0.0),
+        best_candidate_t_stat: diffs.get(best_idx).map(|stats| stats.t_stat).unwrap_or(0.0),
         p_value,
         passed: p_value <= 0.05 && observed_stat.is_finite() && observed_stat > 0.0,
         skipped_reason: None,
@@ -2284,6 +2303,158 @@ mod tests {
         let stats_a = serde_json::to_value(&stats_a).expect("serialize SPA stats");
         let stats_b = serde_json::to_value(&stats_b).expect("serialize SPA stats");
         assert_eq!(stats_a, stats_b);
+    }
+
+    #[test]
+    fn spa_validation_matches_legacy_bootstrap_statistics() {
+        fn compute_spa_validation_stats_legacy(
+            candidate_keys: &[String],
+            candidate_slice_returns: &[Vec<f64>],
+            benchmark_slice_returns: &[f64],
+            cfg: &SpaConfigOptional,
+            seed: u64,
+        ) -> Option<SpaValidationStats> {
+            let candidate_count = candidate_slice_returns.len();
+            if candidate_count == 0 || candidate_keys.len() != candidate_count {
+                return None;
+            }
+
+            let slice_count = candidate_slice_returns
+                .iter()
+                .map(Vec::len)
+                .min()
+                .unwrap_or(0)
+                .min(benchmark_slice_returns.len())
+                .min(cfg.slices.max(4));
+            if slice_count < 4 {
+                return Some(SpaValidationStats {
+                    scope: "validation_candidates".to_string(),
+                    candidate_count,
+                    slice_count,
+                    bootstrap_samples: cfg.bootstrap_samples.max(1),
+                    block_length: cfg.block_length.max(1),
+                    benchmark: cfg.benchmark.clone(),
+                    best_candidate_key: String::new(),
+                    best_candidate_mean_diff: 0.0,
+                    best_candidate_t_stat: 0.0,
+                    p_value: 1.0,
+                    passed: false,
+                    skipped_reason: Some("spa_skipped_not_enough_slices".to_string()),
+                });
+            }
+
+            let benchmark = &benchmark_slice_returns[..slice_count];
+            let mut diffs: Vec<Vec<f64>> = Vec::with_capacity(candidate_count);
+            let mut best_idx = 0usize;
+            let mut best_mean = f64::NEG_INFINITY;
+            let mut t_stats: Vec<f64> = Vec::with_capacity(candidate_count);
+            let sqrt_n = (slice_count as f64).sqrt();
+
+            for (idx, candidate) in candidate_slice_returns.iter().enumerate() {
+                let candidate = &candidate[..slice_count];
+                let diff: Vec<f64> = candidate
+                    .iter()
+                    .zip(benchmark.iter())
+                    .map(|(cand, bench)| *cand - *bench)
+                    .collect();
+                let mean = sample_mean(&diff);
+                let std = sample_std(&diff, mean).max(1e-12);
+                let t_stat = (sqrt_n * mean / std).max(0.0);
+                if mean > best_mean {
+                    best_mean = mean;
+                    best_idx = idx;
+                }
+                diffs.push(diff);
+                t_stats.push(t_stat);
+            }
+
+            let observed_stat = t_stats.iter().copied().fold(0.0_f64, f64::max);
+            let bootstrap_samples = cfg.bootstrap_samples.max(100);
+            let block_length = cfg.block_length.max(1);
+            let mut exceed = 0usize;
+            let mut rng = StdRng::seed_from_u64(seed ^ 0x5eed_5aa5_u64);
+            let mut stationary_scratch = StationaryBootstrapScratch::default();
+
+            for _ in 0..bootstrap_samples {
+                let indices = stationary_scratch.indices(slice_count, block_length, &mut rng);
+                let mut boot_stat = 0.0_f64;
+                for diff in &diffs {
+                    let mean = sample_mean(diff);
+                    let std = sample_std(diff, mean).max(1e-12);
+                    let mut centered_sum = 0.0_f64;
+                    for &sample_idx in indices {
+                        centered_sum += diff[sample_idx] - mean;
+                    }
+                    let centered_mean = centered_sum / slice_count as f64;
+                    let t_star = (sqrt_n * centered_mean / std).max(0.0);
+                    if t_star > boot_stat {
+                        boot_stat = t_star;
+                    }
+                }
+                if boot_stat >= observed_stat {
+                    exceed = exceed.saturating_add(1);
+                }
+            }
+
+            let p_value = exceed as f64 / bootstrap_samples as f64;
+            Some(SpaValidationStats {
+                scope: "validation_candidates".to_string(),
+                candidate_count,
+                slice_count,
+                bootstrap_samples,
+                block_length,
+                benchmark: cfg.benchmark.clone(),
+                best_candidate_key: candidate_keys.get(best_idx).cloned().unwrap_or_default(),
+                best_candidate_mean_diff: best_mean,
+                best_candidate_t_stat: t_stats.get(best_idx).copied().unwrap_or(0.0),
+                p_value,
+                passed: p_value <= 0.05 && observed_stat.is_finite() && observed_stat > 0.0,
+                skipped_reason: None,
+            })
+        }
+
+        let candidate_keys = vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+            "delta".to_string(),
+        ];
+        let candidate_slice_returns = vec![
+            vec![0.05, 0.01, 0.03, 0.04, -0.01, 0.02, 0.01, 0.00],
+            vec![0.02, 0.02, 0.01, 0.01, 0.00, 0.02, 0.03, 0.01],
+            vec![-0.01, 0.01, 0.00, 0.02, -0.02, 0.01, 0.00, 0.01],
+            vec![0.03, 0.00, 0.04, 0.01, 0.02, -0.01, 0.02, 0.03],
+        ];
+        let benchmark_slice_returns = vec![0.0, 0.01, 0.0, 0.01, 0.0, 0.0, 0.01, 0.0];
+        let cfg = SpaConfigOptional {
+            slices: 8,
+            bootstrap_samples: 192,
+            block_length: 3,
+            benchmark: crate::validation_shared::SpaBenchmarkKind::BuyAndHold,
+        };
+        let cancel = AtomicBool::new(false);
+
+        let actual = compute_spa_validation_stats(
+            &candidate_keys,
+            &candidate_slice_returns,
+            &benchmark_slice_returns,
+            &cfg,
+            777,
+            &cancel,
+        )
+        .expect("spa stats");
+        let expected = compute_spa_validation_stats_legacy(
+            &candidate_keys,
+            &candidate_slice_returns,
+            &benchmark_slice_returns,
+            &cfg,
+            777,
+        )
+        .expect("legacy spa stats");
+
+        let actual = serde_json::to_value(actual).expect("serialize SPA stats");
+        let expected = serde_json::to_value(expected).expect("serialize legacy SPA stats");
+        assert_eq!(actual, expected);
     }
 
     #[test]

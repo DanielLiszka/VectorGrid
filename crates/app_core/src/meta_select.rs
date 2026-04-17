@@ -14,7 +14,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::iterative_sim::{IterativeSimConfig, ValidationEngine};
-use crate::validation_shared::{PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional};
+use crate::validation_shared::{
+    canonical_json_value_key, PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MetaScoreWeights {
@@ -713,18 +715,12 @@ pub fn meta_select_from_artifacts(
                 .then_with(|| a.ts.cmp(&b.ts))
         });
 
-        acc.robust_scores.sort_by(|a, b| a.total_cmp(b));
-        acc.max_dds.sort_by(|a, b| a.total_cmp(b));
-        acc.cross_scores.sort_by(|a, b| a.total_cmp(b));
-        acc.psrs.sort_by(|a, b| a.total_cmp(b));
-        acc.dsrs.sort_by(|a, b| a.total_cmp(b));
-
-        let robust_score_median = median(&acc.robust_scores);
-        let robust_score_p10 = quantile(&acc.robust_scores, 0.10);
-        let max_dd_p90 = quantile(&acc.max_dds, 0.90);
-        let cross_score_median = median(&acc.cross_scores);
-        let psr_median = median(&acc.psrs);
-        let dsr_median = median(&acc.dsrs);
+        let robust_score_median = quantile_in_place(&mut acc.robust_scores, 0.50);
+        let robust_score_p10 = quantile_in_place(&mut acc.robust_scores, 0.10);
+        let max_dd_p90 = quantile_in_place(&mut acc.max_dds, 0.90);
+        let cross_score_median = quantile_in_place(&mut acc.cross_scores, 0.50);
+        let psr_median = quantile_in_place(&mut acc.psrs, 0.50);
+        let dsr_median = quantile_in_place(&mut acc.dsrs, 0.50);
         let datasets_covered = acc.dataset_keys.len();
 
         let pass_rate = if dataset_universe > 0 {
@@ -1425,6 +1421,7 @@ fn artifact_backend_validation_approved(art: &Value) -> Option<bool> {
         .map(|count| count > 0)
 }
 
+#[cfg(test)]
 fn quantile(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -1437,8 +1434,22 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
+#[cfg(test)]
 fn median(sorted: &[f64]) -> f64 {
     quantile(sorted, 0.5)
+}
+
+fn quantile_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    if values.len() == 1 {
+        return values[0];
+    }
+
+    let idx = quantile_index(values.len(), q.clamp(0.0, 1.0)).min(values.len() - 1);
+    let (_, nth, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    *nth
 }
 
 fn quantile_index(len: usize, q: f64) -> usize {
@@ -1499,46 +1510,7 @@ fn pick_representatives(sorted: &[RepresentativeParam], max: usize) -> Vec<Value
 }
 
 fn canonical_json(v: &Value) -> String {
-    match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => {
-            if *b {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
-        }
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()),
-        Value::Array(xs) => {
-            let mut out = String::from("[");
-            for (i, x) in xs.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&canonical_json(x));
-            }
-            out.push(']');
-            out
-        }
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-
-            let mut out = String::from("{");
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
-                out.push(':');
-                let v = map.get(*k).unwrap_or(&Value::Null);
-                out.push_str(&canonical_json(v));
-            }
-            out.push('}');
-            out
-        }
-    }
+    canonical_json_value_key(v).unwrap_or_else(|_| "null".to_string())
 }
 
 #[cfg(test)]
@@ -1551,6 +1523,34 @@ mod tests {
         let a = json!({"b": 1, "a": 2, "c": {"y": 1, "x": 2}});
         let b = json!({"c": {"x": 2, "y": 1}, "a": 2, "b": 1});
         assert_eq!(canonical_json(&a), canonical_json(&b));
+    }
+
+    #[test]
+    fn quantile_in_place_matches_sorted_quantiles() {
+        let values = vec![3.5, -2.0, 7.25, 7.25, 0.0, f64::NAN, 1.0];
+        let expected_p10 = {
+            let mut sorted = values.clone();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            quantile(&sorted, 0.10)
+        };
+        let expected_median = {
+            let mut sorted = values.clone();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            median(&sorted)
+        };
+        let expected_p90 = {
+            let mut sorted = values.clone();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            quantile(&sorted, 0.90)
+        };
+
+        let mut p10_values = values.clone();
+        let mut median_values = values.clone();
+        let mut p90_values = values.clone();
+
+        assert_eq!(quantile_in_place(&mut p10_values, 0.10), expected_p10);
+        assert_eq!(quantile_in_place(&mut median_values, 0.50), expected_median);
+        assert_eq!(quantile_in_place(&mut p90_values, 0.90), expected_p90);
     }
 
     #[test]

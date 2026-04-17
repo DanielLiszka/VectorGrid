@@ -148,6 +148,14 @@ Add workspace tests for higher-risk backend or cross-layer changes:
 powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeWorkspaceTests
 ```
 
+For a direct workspace-wide Rust test run, prefer the stable wrapper instead of raw `cargo test --workspace` on the large Windows desktop surface:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_workspace_tests_stable.ps1
+```
+
+The wrapper forces serialized Cargo jobs (`-j 1`) and clears Rust compiler wrappers for the run, which matches the existing repo hardening posture for Windows linker/pagefile-sensitive workspace test passes.
+
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 
 For contributor-facing routing, verification ownership, and the broader workflow map, use `REPO_MAP.md` rather than expanding this README into a routing document.

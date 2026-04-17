@@ -241,6 +241,7 @@ pub fn push_metrics(acc: &mut CrossTickerAcc, m: &Metrics) {
     }
 }
 
+#[cfg(test)]
 fn quantile(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -262,6 +263,7 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     }
 }
 
+#[cfg(test)]
 fn median(sorted: &[f64]) -> f64 {
     quantile(sorted, 0.5)
 }
@@ -290,11 +292,41 @@ fn worst_max(xs: &[f64]) -> f64 {
     }
 }
 
+fn select_median_in_place(values: &mut [f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    if values.len() == 1 {
+        return if values[0].is_finite() {
+            values[0]
+        } else {
+            0.0
+        };
+    }
+    let idx = values.len() / 2;
+    let (_, nth, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    if nth.is_finite() {
+        *nth
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
 fn median_u32_sorted(xs: &[u32]) -> u32 {
     if xs.is_empty() {
         return 0;
     }
     xs[xs.len() / 2]
+}
+
+fn select_median_u32_in_place(values: &mut [u32]) -> u32 {
+    if values.is_empty() {
+        return 0;
+    }
+    let idx = values.len() / 2;
+    let (_, nth, _) = values.select_nth_unstable(idx);
+    *nth
 }
 
 fn worst_min_u32(xs: &[u32]) -> u32 {
@@ -335,24 +367,25 @@ pub fn finalize_cross_ticker_candidates<C: CrossTickerCandidate>(
             "cross-ticker trades accumulator length must match sharpe length"
         );
 
-        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
-        acc.dds.sort_by(|a, b| a.total_cmp(b));
-        acc.pnls.sort_by(|a, b| a.total_cmp(b));
-        acc.trades.sort_unstable();
-
-        let sharpe_median = median(&acc.sharpes);
+        let sharpe_worst = worst_min(&acc.sharpes);
         let max_dd_worst = worst_max(&acc.dds);
+        let pnl_worst = worst_min(&acc.pnls);
+        let trades_worst = worst_min_u32(&acc.trades);
+        let sharpe_median = select_median_in_place(&mut acc.sharpes);
+        let max_dd_median = select_median_in_place(&mut acc.dds);
+        let pnl_median = select_median_in_place(&mut acc.pnls);
+        let trades_median = select_median_u32_in_place(&mut acc.trades);
         let score = sharpe_median - 2.0 * max_dd_worst;
         cand.set_cross_ticker(CrossTickerStats {
             datasets: ds_n,
             sharpe_median,
-            sharpe_worst: worst_min(&acc.sharpes),
-            max_dd_median: median(&acc.dds),
+            sharpe_worst,
+            max_dd_median,
             max_dd_worst,
-            pnl_median: median(&acc.pnls),
-            pnl_worst: worst_min(&acc.pnls),
-            trades_median: median_u32_sorted(&acc.trades),
-            trades_worst: worst_min_u32(&acc.trades),
+            pnl_median,
+            pnl_worst,
+            trades_median,
+            trades_worst,
             pnl_positive_frac: acc.pnl_pos as f64 / ds_n as f64,
             score,
         });
@@ -706,6 +739,169 @@ mod tests {
 
         assert_eq!(candidates[0].params.id, 1);
         assert_eq!(candidates[1].params.id, 2);
+    }
+
+    #[test]
+    fn finalize_cross_ticker_candidates_matches_legacy_summary_path() {
+        fn finalize_cross_ticker_candidates_legacy(
+            candidates: &mut [TestCandidate],
+            mut accs: Vec<CrossTickerAcc>,
+        ) {
+            #[derive(Clone, Copy)]
+            struct CrossTickerParetoPoint {
+                sharpe_median: f64,
+                max_dd_worst: f64,
+            }
+
+            for (i, cand) in candidates.iter_mut().enumerate() {
+                let Some(acc) = accs.get_mut(i) else {
+                    continue;
+                };
+                let ds_n = acc.sharpes.len();
+                if ds_n == 0 {
+                    continue;
+                }
+
+                acc.sharpes.sort_by(|a, b| a.total_cmp(b));
+                acc.dds.sort_by(|a, b| a.total_cmp(b));
+                acc.pnls.sort_by(|a, b| a.total_cmp(b));
+                acc.trades.sort_unstable();
+
+                let sharpe_median = median(&acc.sharpes);
+                let max_dd_worst = worst_max(&acc.dds);
+                let score = sharpe_median - 2.0 * max_dd_worst;
+                cand.set_cross_ticker(CrossTickerStats {
+                    datasets: ds_n,
+                    sharpe_median,
+                    sharpe_worst: worst_min(&acc.sharpes),
+                    max_dd_median: median(&acc.dds),
+                    max_dd_worst,
+                    pnl_median: median(&acc.pnls),
+                    pnl_worst: worst_min(&acc.pnls),
+                    trades_median: median_u32_sorted(&acc.trades),
+                    trades_worst: worst_min_u32(&acc.trades),
+                    pnl_positive_frac: acc.pnl_pos as f64 / ds_n as f64,
+                    score,
+                });
+                if score.is_finite() {
+                    let next = if cand.robust_score().is_finite() {
+                        cand.robust_score().min(score)
+                    } else {
+                        score
+                    };
+                    cand.set_robust_score(next);
+                }
+            }
+
+            let pareto_points: Vec<Option<CrossTickerParetoPoint>> = candidates
+                .iter()
+                .map(|cand| {
+                    cand.cross_ticker().map(|stats| CrossTickerParetoPoint {
+                        sharpe_median: stats.sharpe_median,
+                        max_dd_worst: stats.max_dd_worst,
+                    })
+                })
+                .collect();
+
+            for i in 0..candidates.len() {
+                let Some(point_i) = pareto_points[i] else {
+                    continue;
+                };
+                let mut dominated = false;
+                for j in 0..candidates.len() {
+                    if i == j {
+                        continue;
+                    }
+                    let Some(point_j) = pareto_points[j] else {
+                        continue;
+                    };
+                    if point_j.sharpe_median >= point_i.sharpe_median
+                        && point_j.max_dd_worst <= point_i.max_dd_worst
+                        && (point_j.sharpe_median > point_i.sharpe_median
+                            || point_j.max_dd_worst < point_i.max_dd_worst)
+                    {
+                        dominated = true;
+                        break;
+                    }
+                }
+                candidates[i].set_cross_ticker_pareto(!dominated);
+            }
+
+            candidates.sort_by(|a, b| b.robust_score().total_cmp(&a.robust_score()));
+        }
+
+        let base_candidates = vec![
+            TestCandidate {
+                params: TestParams { id: 1 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: 0.95,
+            },
+            TestCandidate {
+                params: TestParams { id: 2 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: 0.40,
+            },
+            TestCandidate {
+                params: TestParams { id: 3 },
+                in_sample: Metrics::default(),
+                cross_ticker: None,
+                cross_ticker_pareto: None,
+                robust_score: f64::NAN,
+            },
+        ];
+        let accs = vec![
+            CrossTickerAcc {
+                sharpes: vec![0.8, -0.2, 1.1, 0.4],
+                dds: vec![0.2, 0.3, 0.15, 0.25],
+                pnls: vec![0.06, -0.03, 0.09, 0.01],
+                trades: vec![12, 8, 14, 10],
+                pnl_pos: 3,
+            },
+            CrossTickerAcc {
+                sharpes: vec![0.5, 0.5, 0.5, 0.5],
+                dds: vec![0.1, 0.2, 0.2, 0.2],
+                pnls: vec![0.02, 0.00, -0.01, 0.04],
+                trades: vec![5, 7, 6, 9],
+                pnl_pos: 2,
+            },
+            CrossTickerAcc {
+                sharpes: vec![f64::NAN, 0.3, 0.7, 1.0],
+                dds: vec![0.4, 0.15, 0.25, 0.35],
+                pnls: vec![-0.02, 0.01, 0.05, -0.01],
+                trades: vec![3, 4, 2, 8],
+                pnl_pos: 2,
+            },
+        ];
+
+        let mut actual = base_candidates.clone();
+        let mut expected = base_candidates;
+        finalize_cross_ticker_candidates(&mut actual, accs.clone());
+        finalize_cross_ticker_candidates_legacy(&mut expected, accs);
+
+        assert_eq!(
+            actual.iter().map(|cand| cand.params.id).collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|cand| cand.params.id)
+                .collect::<Vec<_>>()
+        );
+
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert_eq!(actual.cross_ticker_pareto, expected.cross_ticker_pareto);
+            assert_eq!(
+                actual.robust_score.to_bits(),
+                expected.robust_score.to_bits()
+            );
+            let actual_stats =
+                serde_json::to_value(&actual.cross_ticker).expect("serialize actual");
+            let expected_stats =
+                serde_json::to_value(&expected.cross_ticker).expect("serialize expected");
+            assert_eq!(actual_stats, expected_stats);
+        }
     }
 
     #[test]

@@ -1514,47 +1514,77 @@ export const useHistoryStore = defineStore("history", {
       if (!this.canOpenRunsDir) return;
       void loadHistoryService()
         .then((service) => service.openRunsDir())
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          this.statusLine =
+            String(error || "").trim() || "Failed to open runs directory.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     loadSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) =>
-        service.loadSavedRun(nextPath),
-      );
+      void loadHistoryService()
+        .then((service) => service.loadSavedRun(nextPath))
+        .catch((error: unknown) => {
+          this.statusLine =
+            String(error || "").trim() || "Failed to load saved run.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     applySavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) =>
-        service.applySavedRun(nextPath),
-      );
+      void loadHistoryService()
+        .then((service) => service.applySavedRun(nextPath))
+        .catch((error: unknown) => {
+          this.statusLine =
+            String(error || "").trim() || "Failed to apply saved run.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     rerunSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) =>
-        service.rerunSavedRun(nextPath),
-      );
+      void loadHistoryService()
+        .then((service) => service.rerunSavedRun(nextPath))
+        .catch((error: unknown) => {
+          this.statusLine =
+            String(error || "").trim() || "Failed to rerun saved run.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     openSavedRunReport(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) =>
-        service.openSavedRunReport(nextPath),
-      );
+      void loadHistoryService()
+        .then((service) => service.openSavedRunReport(nextPath))
+        .catch((error: unknown) => {
+          this.statusLine =
+            String(error || "").trim() || "Failed to open saved run report.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     revealSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadHistoryService().then((service) =>
-        service.revealSavedRun(nextPath),
-      );
+      void loadHistoryService()
+        .then((service) => service.revealSavedRun(nextPath))
+        .catch((error: unknown) => {
+          this.statusLine =
+            String(error || "").trim() || "Failed to reveal saved run.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     deleteSavedRun(path: string): void {

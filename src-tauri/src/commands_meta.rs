@@ -1,7 +1,7 @@
 use super::{
     build_meta_report_xlsx_bytes,
     metric_surface::{summarize_artifact_metric_surfaces, ArtifactMetricSurfaceSummary},
-    quantile, run_artifacts, sanitize_filename_component, TauriProgressSink,
+    run_artifacts, sanitize_filename_component, TauriProgressSink,
 };
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -2636,11 +2636,437 @@ struct HoldoutAcc {
     passes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RepresentativeParamKey(Arc<str>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct HoldoutConfigKey(Arc<str>);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HoldoutDatasetStats {
+    score_median: f64,
+    score_p10: f64,
+    sharpe_median: f64,
+    max_dd_worst: f64,
+    pnl_median: f64,
+    pass: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HoldoutMetricSample {
+    score: f64,
+    sharpe: f64,
+    max_dd: f64,
+    pnl: f64,
+}
+
+#[derive(Default)]
+struct HoldoutSummaryScratch {
+    scores: Vec<f64>,
+    sharpes: Vec<f64>,
+    max_dds: Vec<f64>,
+    pnls: Vec<f64>,
+}
+
+impl HoldoutSummaryScratch {
+    fn summarize_rows(&mut self, rows: &[HoldoutMetricSample]) -> Option<HoldoutDatasetStats> {
+        if rows.is_empty() {
+            return None;
+        }
+
+        self.scores.clear();
+        self.sharpes.clear();
+        self.max_dds.clear();
+        self.pnls.clear();
+        self.scores.reserve(rows.len());
+        self.sharpes.reserve(rows.len());
+        self.max_dds.reserve(rows.len());
+        self.pnls.reserve(rows.len());
+
+        for row in rows {
+            self.scores.push(row.score);
+            self.sharpes.push(row.sharpe);
+            self.max_dds.push(row.max_dd);
+            self.pnls.push(row.pnl);
+        }
+
+        summarize_holdout_metric_columns(
+            self.scores.as_mut_slice(),
+            self.sharpes.as_mut_slice(),
+            self.max_dds.as_slice(),
+            self.pnls.as_mut_slice(),
+        )
+    }
+}
+
+#[derive(Clone)]
+struct PreparedDoubleMaHoldoutBatch {
+    request: ta_app_core::DoubleMaValidationRequest,
+    candidate_targets: Vec<Vec<usize>>,
+}
+
+#[derive(Clone)]
+struct PreparedCompositeHoldoutBatch {
+    request: ta_app_core::CompositeValidationRequest,
+    candidate_targets: Vec<Vec<usize>>,
+}
+
+#[derive(Clone)]
+enum PreparedHoldoutBatch {
+    DoubleMa(PreparedDoubleMaHoldoutBatch),
+    Composite(PreparedCompositeHoldoutBatch),
+}
+
+fn quantile_index(len: usize, q: f64) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    let qq = q.clamp(0.0, 1.0);
+    (qq * (len.saturating_sub(1) as f64)).round() as usize
+}
+
+fn quantile_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    if values.len() == 1 {
+        return values[0];
+    }
+    let idx = quantile_index(values.len(), q).min(values.len() - 1);
+    let (_, nth, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    *nth
+}
+
+fn max_total_cmp(values: &[f64]) -> f64 {
+    values
+        .iter()
+        .copied()
+        .max_by(|a, b| a.total_cmp(b))
+        .unwrap_or(0.0)
+}
+
+fn summarize_holdout_metric_columns(
+    scores: &mut [f64],
+    sharpes: &mut [f64],
+    max_dds: &[f64],
+    pnls: &mut [f64],
+) -> Option<HoldoutDatasetStats> {
+    if scores.is_empty() || sharpes.is_empty() || max_dds.is_empty() || pnls.is_empty() {
+        return None;
+    }
+
+    let score_median = quantile_in_place(scores, 0.50);
+    let score_p10 = quantile_in_place(scores, 0.10);
+    let sharpe_median = quantile_in_place(sharpes, 0.50);
+    let max_dd_worst = max_total_cmp(max_dds);
+    let pnl_median = quantile_in_place(pnls, 0.50);
+    let pass = score_p10 > 0.0 && sharpe_median > 0.0;
+
+    Some(HoldoutDatasetStats {
+        score_median,
+        score_p10,
+        sharpe_median,
+        max_dd_worst,
+        pnl_median,
+        pass,
+    })
+}
+
+fn append_canonical_json_key(buf: &mut String, value: &Value) -> Result<(), String> {
+    match value {
+        Value::Null => buf.push_str("null"),
+        Value::Bool(v) => {
+            if *v {
+                buf.push_str("true");
+            } else {
+                buf.push_str("false");
+            }
+        }
+        Value::Number(v) => buf.push_str(&v.to_string()),
+        Value::String(v) => buf.push_str(&serde_json::to_string(v).map_err(|e| e.to_string())?),
+        Value::Array(values) => {
+            buf.push('[');
+            for (idx, item) in values.iter().enumerate() {
+                if idx > 0 {
+                    buf.push(',');
+                }
+                append_canonical_json_key(buf, item)?;
+            }
+            buf.push(']');
+        }
+        Value::Object(map) => {
+            buf.push('{');
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_unstable_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+            for (idx, (key, item)) in entries.into_iter().enumerate() {
+                if idx > 0 {
+                    buf.push(',');
+                }
+                buf.push_str(&serde_json::to_string(key).map_err(|e| e.to_string())?);
+                buf.push(':');
+                append_canonical_json_key(buf, item)?;
+            }
+            buf.push('}');
+        }
+    }
+    Ok(())
+}
+
+fn canonical_json_key(value: &Value) -> Result<String, String> {
+    let mut out = String::new();
+    append_canonical_json_key(&mut out, value)?;
+    Ok(out)
+}
+
+fn canonical_typed_param_key<T: Serialize>(params: &T) -> Result<RepresentativeParamKey, String> {
+    Ok(RepresentativeParamKey(Arc::from(canonical_json_key(
+        &serde_json::to_value(params).map_err(|e| e.to_string())?,
+    )?)))
+}
+
+fn holdout_cfg_key(
+    ma_source: &str,
+    fast_ma_params: &Option<HashMap<String, f64>>,
+    slow_ma_params: &Option<HashMap<String, f64>>,
+) -> Result<HoldoutConfigKey, String> {
+    Ok(HoldoutConfigKey(Arc::from(canonical_json_key(
+        &serde_json::json!({
+            "ma_source": ma_source,
+            "fast_ma_params": fast_ma_params,
+            "slow_ma_params": slow_ma_params,
+        }),
+    )?)))
+}
+
+fn decode_double_ma_validation_params(
+    value: &Value,
+) -> Result<ta_app_core::DoubleMaValidationParams, String> {
+    match serde_json::from_value::<ta_app_core::DoubleMaValidationParams>(value.clone()) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            let object = value
+                .as_object()
+                .ok_or_else(|| "double-ma representative is not an object".to_string())?;
+            let as_u16 = |key: &str, default: u16| -> u16 {
+                object
+                    .get(key)
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(u16::MAX as u64) as u16)
+                    .unwrap_or(default)
+            };
+            Ok(ta_app_core::DoubleMaValidationParams {
+                fast_ma_type: object
+                    .get("fast_ma_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("sma")
+                    .to_string(),
+                slow_ma_type: object
+                    .get("slow_ma_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("sma")
+                    .to_string(),
+                fast_len: as_u16("fast_len", 10),
+                slow_len: as_u16("slow_len", 30),
+                fast_ma_params: object
+                    .get("fast_ma_params")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                slow_ma_params: object
+                    .get("slow_ma_params")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                strategy: object
+                    .get("strategy")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
+                halftrend_filter: object
+                    .get("halftrend_filter")
+                    .or_else(|| object.get("halftrend"))
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
+            })
+        }
+    }
+}
+
+fn build_prepared_holdout_batches(
+    result: &MetaSelectionResult,
+    req: &MetaSelectionRequest,
+    active_indices: &[usize],
+    dense_index_by_global: &HashMap<usize, usize>,
+    hv_seed: u64,
+    hv_wf: Option<ta_app_core::WalkForwardConfigOptional>,
+    hv_perturb: Option<ta_app_core::PerturbConfig>,
+    hv_mc: Option<ta_app_core::TradeBootstrapConfig>,
+    hv_engine: ta_app_core::ValidationEngine,
+    hv_iterative: ta_app_core::IterativeSimConfig,
+) -> Result<Vec<PreparedHoldoutBatch>, String> {
+    let mut groups_by_cfg: HashMap<HoldoutConfigKey, Vec<usize>> =
+        HashMap::with_capacity(active_indices.len());
+    for global_idx in active_indices.iter().copied() {
+        let group = &result.groups[global_idx];
+        let cfg_key = holdout_cfg_key(
+            &group.ma_source,
+            &group.fast_ma_params,
+            &group.slow_ma_params,
+        )?;
+        groups_by_cfg.entry(cfg_key).or_default().push(global_idx);
+    }
+    if groups_by_cfg.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut batches = Vec::with_capacity(groups_by_cfg.len());
+    let uses_double_ma = strategy_uses_double_ma_validation(req.strategy_kind.as_str());
+    for idxs in groups_by_cfg.into_values() {
+        let Some(first) = idxs.first() else {
+            continue;
+        };
+        let g0 = &result.groups[*first];
+        let expected_candidates = idxs
+            .iter()
+            .map(|&global_idx| result.groups[global_idx].representatives.len().max(1))
+            .sum();
+
+        if uses_double_ma {
+            let mut candidates: Vec<ta_app_core::DoubleMaValidationParams> =
+                Vec::with_capacity(expected_candidates);
+            let mut candidate_targets: Vec<Vec<usize>> = Vec::with_capacity(expected_candidates);
+            let mut candidate_idx_by_key: HashMap<RepresentativeParamKey, usize> =
+                HashMap::with_capacity(expected_candidates);
+            for &global_idx in &idxs {
+                let group = &result.groups[global_idx];
+                let dense_idx = dense_index_by_global
+                    .get(&global_idx)
+                    .copied()
+                    .ok_or_else(|| "missing dense holdout index for group".to_string())?;
+                let reps = if !group.representatives.is_empty() {
+                    group.representatives.as_slice()
+                } else {
+                    std::slice::from_ref(&group.params)
+                };
+                for rep in reps {
+                    let params = decode_double_ma_validation_params(rep)?;
+                    let key = canonical_typed_param_key(&params)?;
+                    if let Some(&candidate_idx) = candidate_idx_by_key.get(&key) {
+                        candidate_targets[candidate_idx].push(dense_idx);
+                    } else {
+                        let candidate_idx = candidates.len();
+                        candidate_idx_by_key.insert(key, candidate_idx);
+                        candidates.push(params);
+                        candidate_targets.push(vec![dense_idx]);
+                    }
+                }
+            }
+
+            if candidates.is_empty() {
+                continue;
+            }
+            let max_candidates = candidates.len();
+            batches.push(PreparedHoldoutBatch::DoubleMa(
+                PreparedDoubleMaHoldoutBatch {
+                    request: ta_app_core::DoubleMaValidationRequest {
+                        data_id: String::new(),
+                        backend: ta_app_core::Backend::CpuOnly,
+                        ma_source: g0.ma_source.clone(),
+                        fast_ma_params: g0.fast_ma_params.clone(),
+                        slow_ma_params: g0.slow_ma_params.clone(),
+                        candidates,
+                        walk_forward: hv_wf.clone(),
+                        reopt_walk_forward: None,
+                        spa: None,
+                        perturb: hv_perturb.clone(),
+                        trade_bootstrap: hv_mc.clone(),
+                        cross_ticker: None,
+                        cscv_pbo: None,
+                        seed: hv_seed,
+                        max_candidates,
+                        validation_engine: hv_engine,
+                        iterative: hv_iterative.clone(),
+                        min_psr: None,
+                        min_dsr: None,
+                        min_cscv_oos_rank_frac: None,
+                        min_cscv_oos_metric: None,
+                        max_pbo: None,
+                        validation_context: None,
+                    },
+                    candidate_targets,
+                },
+            ));
+        } else {
+            let mut candidates: Vec<ta_app_core::CompositeParams> =
+                Vec::with_capacity(expected_candidates);
+            let mut candidate_targets: Vec<Vec<usize>> = Vec::with_capacity(expected_candidates);
+            let mut candidate_idx_by_key: HashMap<RepresentativeParamKey, usize> =
+                HashMap::with_capacity(expected_candidates);
+            for &global_idx in &idxs {
+                let group = &result.groups[global_idx];
+                let dense_idx = dense_index_by_global
+                    .get(&global_idx)
+                    .copied()
+                    .ok_or_else(|| "missing dense holdout index for group".to_string())?;
+                let reps = if !group.representatives.is_empty() {
+                    group.representatives.as_slice()
+                } else {
+                    std::slice::from_ref(&group.params)
+                };
+                for rep in reps {
+                    let params: ta_app_core::CompositeParams =
+                        serde_json::from_value(rep.clone()).map_err(|e| e.to_string())?;
+                    let key = canonical_typed_param_key(&params)?;
+                    if let Some(&candidate_idx) = candidate_idx_by_key.get(&key) {
+                        candidate_targets[candidate_idx].push(dense_idx);
+                    } else {
+                        let candidate_idx = candidates.len();
+                        candidate_idx_by_key.insert(key, candidate_idx);
+                        candidates.push(params);
+                        candidate_targets.push(vec![dense_idx]);
+                    }
+                }
+            }
+
+            if candidates.is_empty() {
+                continue;
+            }
+            let max_candidates = candidates.len();
+            batches.push(PreparedHoldoutBatch::Composite(
+                PreparedCompositeHoldoutBatch {
+                    request: ta_app_core::CompositeValidationRequest {
+                        data_id: String::new(),
+                        backend: ta_app_core::Backend::CpuOnly,
+                        ma_source: g0.ma_source.clone(),
+                        fast_ma_params: g0.fast_ma_params.clone(),
+                        slow_ma_params: g0.slow_ma_params.clone(),
+                        candidates,
+                        walk_forward: hv_wf.clone(),
+                        reopt_walk_forward: None,
+                        spa: None,
+                        perturb: hv_perturb.clone(),
+                        trade_bootstrap: hv_mc.clone(),
+                        cross_ticker: None,
+                        cscv_pbo: None,
+                        seed: hv_seed,
+                        max_candidates,
+                        validation_engine: hv_engine,
+                        iterative: hv_iterative.clone(),
+                        min_psr: None,
+                        min_dsr: None,
+                        min_cscv_oos_rank_frac: None,
+                        min_cscv_oos_metric: None,
+                        max_pbo: None,
+                        validation_context: None,
+                    },
+                    candidate_targets,
+                },
+            ));
+        }
+    }
+
+    Ok(batches)
+}
+
 fn apply_holdout_accumulators_to_result(
     result: &mut MetaSelectionResult,
     req: &MetaSelectionRequest,
     active_indices: &[usize],
-    accs: &[HoldoutAcc],
+    accs: &mut [HoldoutAcc],
     holdout_rows: &mut Vec<Vec<ta_app_core::HoldoutDatasetRow>>,
     datasets: usize,
     skipped: usize,
@@ -2650,21 +3076,17 @@ fn apply_holdout_accumulators_to_result(
 
     for (dense_idx, global_idx) in active_indices.iter().copied().enumerate() {
         let g = &mut result.groups[global_idx];
-        let mut acc = accs[dense_idx].clone();
+        let acc = &mut accs[dense_idx];
         if acc.scores.is_empty() {
             continue;
         }
-        acc.scores.sort_by(|a, b| a.total_cmp(b));
-        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
-        acc.max_dds.sort_by(|a, b| a.total_cmp(b));
-        acc.pnls.sort_by(|a, b| a.total_cmp(b));
 
         let pass_rate = (acc.passes as f64) / (datasets as f64);
-        let score_median = quantile(&acc.scores, 0.5);
-        let score_p10 = quantile(&acc.scores, 0.10);
-        let sharpe_median = quantile(&acc.sharpes, 0.5);
-        let max_dd_p90 = quantile(&acc.max_dds, 0.90);
-        let pnl_median = quantile(&acc.pnls, 0.5);
+        let score_median = quantile_in_place(&mut acc.scores, 0.50);
+        let score_p10 = quantile_in_place(&mut acc.scores, 0.10);
+        let sharpe_median = quantile_in_place(&mut acc.sharpes, 0.50);
+        let max_dd_p90 = quantile_in_place(&mut acc.max_dds, 0.90);
+        let pnl_median = quantile_in_place(&mut acc.pnls, 0.50);
 
         g.holdout = Some(ta_app_core::HoldoutAggregate {
             datasets,
@@ -2818,36 +3240,44 @@ fn apply_holdout_evaluation(
         return Ok(());
     }
 
-    let mut idx_by_key: HashMap<String, usize> = HashMap::with_capacity(result.groups.len());
-    for (i, g) in result.groups.iter().enumerate() {
-        idx_by_key.insert(g.key.clone(), i);
-    }
-
-    // Group the shortlist by MA config so we can evaluate a batch at once.
-    let mut groups_by_cfg: HashMap<String, Vec<usize>> = HashMap::new();
-    for global_idx in active_indices.iter().copied() {
-        let g = &result.groups[global_idx];
-        let cfg_key = serde_json::to_string(&serde_json::json!({
-            "ma_source": &g.ma_source,
-            "fast_ma_params": &g.fast_ma_params,
-            "slow_ma_params": &g.slow_ma_params,
-        }))
-        .unwrap_or_else(|_| "cfg".to_string());
-        groups_by_cfg.entry(cfg_key).or_default().push(global_idx);
-    }
-    if groups_by_cfg.is_empty() {
+    let prepared_batches = build_prepared_holdout_batches(
+        result,
+        req,
+        &active_indices,
+        &dense_index_by_global,
+        hv_seed,
+        hv_wf.clone(),
+        hv_perturb.clone(),
+        hv_mc.clone(),
+        hv_engine,
+        hv_iterative.clone(),
+    )?;
+    if prepared_batches.is_empty() {
         return Ok(());
     }
 
+    let total = uniq_paths.len();
     let mut accs: Vec<HoldoutAcc> = vec![HoldoutAcc::default(); active_indices.len()];
+    for acc in &mut accs {
+        acc.scores.reserve(total);
+        acc.sharpes.reserve(total);
+        acc.max_dds.reserve(total);
+        acc.pnls.reserve(total);
+    }
     let mut holdout_rows: Vec<Vec<ta_app_core::HoldoutDatasetRow>> = if req.save_holdout_rows {
         vec![Vec::new(); active_indices.len()]
     } else {
         Vec::new()
     };
+    if req.save_holdout_rows {
+        for rows in &mut holdout_rows {
+            rows.reserve(total);
+        }
+    }
+    let mut local: Vec<Vec<HoldoutMetricSample>> = vec![Vec::new(); active_indices.len()];
+    let mut summary_scratch = HoldoutSummaryScratch::default();
     let mut skipped = 0usize;
 
-    let total = uniq_paths.len();
     for (i, (csv_path, label)) in uniq_paths.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
@@ -2861,252 +3291,158 @@ fn apply_holdout_evaluation(
             }
         };
 
-        let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); active_indices.len()]; // (score, sharpe, max_dd, pnl)
+        for rows in &mut local {
+            rows.clear();
+        }
         let mut ok = true;
 
-        for idxs in groups_by_cfg.values() {
-            let Some(first) = idxs.first() else { continue };
-            let g0 = &result.groups[*first];
-
-            if strategy_uses_double_ma_validation(req.strategy_kind.as_str()) {
-                let mut candidates: Vec<ta_app_core::DoubleMaValidationParams> = Vec::new();
-                candidates.reserve(idxs.len().saturating_mul(3));
-                for &gi in idxs {
-                    let g = &result.groups[gi];
-                    let reps = if !g.representatives.is_empty() {
-                        g.representatives.as_slice()
-                    } else {
-                        std::slice::from_ref(&g.params)
+        for batch in &prepared_batches {
+            match batch {
+                PreparedHoldoutBatch::DoubleMa(prepared) => {
+                    let mut val_req = prepared.request.clone();
+                    val_req.data_id = label.clone();
+                    let val_res = match ta_app_core::run_double_ma_validation_blocking_with_candles(
+                        val_req, &candles, cancel, None,
+                    ) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
                     };
-                    for rv in reps {
-                        let p = match serde_json::from_value::<ta_app_core::DoubleMaValidationParams>(
-                            rv.clone(),
-                        ) {
-                            Ok(v) => v,
-                            Err(_) => {
-                                let o = rv.as_object().ok_or_else(|| {
-                                    "double-ma representative is not an object".to_string()
-                                })?;
-                                let as_u16 = |k: &str, d: u16| -> u16 {
-                                    o.get(k)
-                                        .and_then(|v| v.as_u64())
-                                        .map(|v| v.min(u16::MAX as u64) as u16)
-                                        .unwrap_or(d)
-                                };
-                                ta_app_core::DoubleMaValidationParams {
-                                    fast_ma_type: o
-                                        .get("fast_ma_type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("sma")
-                                        .to_string(),
-                                    slow_ma_type: o
-                                        .get("slow_ma_type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("sma")
-                                        .to_string(),
-                                    fast_len: as_u16("fast_len", 10),
-                                    slow_len: as_u16("slow_len", 30),
-                                    fast_ma_params: o
-                                        .get("fast_ma_params")
-                                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
-                                    slow_ma_params: o
-                                        .get("slow_ma_params")
-                                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
-                                    strategy: o
-                                        .get("strategy")
-                                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                                        .unwrap_or_default(),
-                                    halftrend_filter: o
-                                        .get("halftrend_filter")
-                                        .or_else(|| o.get("halftrend"))
-                                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+
+                    if val_res.candidates.len() != prepared.candidate_targets.len() {
+                        return Err(format!(
+                            "double-ma holdout batch result length drifted (expected {}, got {})",
+                            prepared.candidate_targets.len(),
+                            val_res.candidates.len()
+                        ));
+                    }
+                    for (cand, targets) in val_res
+                        .candidates
+                        .into_iter()
+                        .zip(prepared.candidate_targets.iter())
+                    {
+                        let base_metrics =
+                            cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
+                        let sample = if heavy {
+                            if hv_engine == ta_app_core::ValidationEngine::Iterative {
+                                let sharpe = base_metrics.sharpe;
+                                let max_dd = base_metrics.max_dd;
+                                let pnl = base_metrics.pnl;
+                                HoldoutMetricSample {
+                                    score: sharpe - 2.0 * max_dd,
+                                    sharpe,
+                                    max_dd,
+                                    pnl,
+                                }
+                            } else {
+                                let score = cand.robust_score;
+                                if let Some(w) = cand.walk_forward.as_ref() {
+                                    HoldoutMetricSample {
+                                        score,
+                                        sharpe: w.sharpe_median,
+                                        max_dd: w.max_dd_worst,
+                                        pnl: w.pnl_median,
+                                    }
+                                } else {
+                                    HoldoutMetricSample {
+                                        score,
+                                        sharpe: base_metrics.sharpe,
+                                        max_dd: base_metrics.max_dd,
+                                        pnl: base_metrics.pnl,
+                                    }
                                 }
                             }
+                        } else {
+                            let sharpe = base_metrics.sharpe;
+                            let max_dd = base_metrics.max_dd;
+                            let pnl = base_metrics.pnl;
+                            HoldoutMetricSample {
+                                score: sharpe - 2.0 * max_dd,
+                                sharpe,
+                                max_dd,
+                                pnl,
+                            }
                         };
-                        candidates.push(p);
+
+                        for &dense_idx in targets {
+                            local[dense_idx].push(sample);
+                        }
                     }
                 }
+                PreparedHoldoutBatch::Composite(prepared) => {
+                    let mut val_req = prepared.request.clone();
+                    val_req.data_id = label.clone();
+                    let val_res = match ta_app_core::run_composite_validation_blocking_with_candles(
+                        val_req, &candles, cancel, None,
+                    ) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    };
 
-                let max_candidates = candidates.len();
-                let val_req = ta_app_core::DoubleMaValidationRequest {
-                    data_id: label.clone(),
-                    backend: ta_app_core::Backend::CpuOnly,
-                    ma_source: g0.ma_source.clone(),
-                    fast_ma_params: g0.fast_ma_params.clone(),
-                    slow_ma_params: g0.slow_ma_params.clone(),
-                    candidates,
-                    walk_forward: hv_wf.clone(),
-                    reopt_walk_forward: None,
-                    spa: None,
-                    perturb: hv_perturb.clone(),
-                    trade_bootstrap: hv_mc.clone(),
-                    cross_ticker: None,
-                    cscv_pbo: None,
-                    seed: hv_seed,
-                    max_candidates,
-                    validation_engine: hv_engine,
-                    iterative: hv_iterative.clone(),
-                    min_psr: None,
-                    min_dsr: None,
-                    min_cscv_oos_rank_frac: None,
-                    min_cscv_oos_metric: None,
-                    max_pbo: None,
-                    validation_context: None,
-                };
-
-                let val_res = match ta_app_core::run_double_ma_validation_blocking_with_candles(
-                    val_req, &candles, cancel, None,
-                ) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        ok = false;
-                        break;
+                    if val_res.candidates.len() != prepared.candidate_targets.len() {
+                        return Err(format!(
+                            "composite holdout batch result length drifted (expected {}, got {})",
+                            prepared.candidate_targets.len(),
+                            val_res.candidates.len()
+                        ));
                     }
-                };
-
-                for cand in val_res.candidates {
-                    let params_v = serde_json::to_value(&cand.params).map_err(|e| e.to_string())?;
-                    let key = ta_app_core::meta_group_key_for_request(
-                        req,
-                        &params_v,
-                        &g0.ma_source,
-                        &g0.fast_ma_params,
-                        &g0.slow_ma_params,
-                    );
-                    let Some(&global_idx) = idx_by_key.get(&key) else {
-                        continue;
-                    };
-                    let Some(&dense_idx) = dense_index_by_global.get(&global_idx) else {
-                        continue;
-                    };
-
-                    let base_metrics = cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
-                    let (score, sharpe, max_dd, pnl) = if heavy {
-                        if hv_engine == ta_app_core::ValidationEngine::Iterative {
+                    for (cand, targets) in val_res
+                        .candidates
+                        .into_iter()
+                        .zip(prepared.candidate_targets.iter())
+                    {
+                        let base_metrics =
+                            cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
+                        let sample = if heavy {
+                            if hv_engine == ta_app_core::ValidationEngine::Iterative {
+                                let sharpe = base_metrics.sharpe;
+                                let max_dd = base_metrics.max_dd;
+                                let pnl = base_metrics.pnl;
+                                HoldoutMetricSample {
+                                    score: sharpe - 2.0 * max_dd,
+                                    sharpe,
+                                    max_dd,
+                                    pnl,
+                                }
+                            } else {
+                                let score = cand.robust_score;
+                                if let Some(w) = cand.walk_forward.as_ref() {
+                                    HoldoutMetricSample {
+                                        score,
+                                        sharpe: w.sharpe_median,
+                                        max_dd: w.max_dd_worst,
+                                        pnl: w.pnl_median,
+                                    }
+                                } else {
+                                    HoldoutMetricSample {
+                                        score,
+                                        sharpe: base_metrics.sharpe,
+                                        max_dd: base_metrics.max_dd,
+                                        pnl: base_metrics.pnl,
+                                    }
+                                }
+                            }
+                        } else {
                             let sharpe = base_metrics.sharpe;
                             let max_dd = base_metrics.max_dd;
                             let pnl = base_metrics.pnl;
-                            (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
-                        } else {
-                            let score = cand.robust_score;
-                            if let Some(w) = cand.walk_forward.as_ref() {
-                                (score, w.sharpe_median, w.max_dd_worst, w.pnl_median)
-                            } else {
-                                (
-                                    score,
-                                    base_metrics.sharpe,
-                                    base_metrics.max_dd,
-                                    base_metrics.pnl,
-                                )
+                            HoldoutMetricSample {
+                                score: sharpe - 2.0 * max_dd,
+                                sharpe,
+                                max_dd,
+                                pnl,
                             }
+                        };
+
+                        for &dense_idx in targets {
+                            local[dense_idx].push(sample);
                         }
-                    } else {
-                        let sharpe = base_metrics.sharpe;
-                        let max_dd = base_metrics.max_dd;
-                        let pnl = base_metrics.pnl;
-                        (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
-                    };
-
-                    local[dense_idx].push((score, sharpe, max_dd, pnl));
-                }
-            } else {
-                let mut candidates: Vec<ta_app_core::CompositeParams> = Vec::new();
-                candidates.reserve(idxs.len().saturating_mul(3));
-                for &gi in idxs {
-                    let g = &result.groups[gi];
-                    let reps = if !g.representatives.is_empty() {
-                        g.representatives.as_slice()
-                    } else {
-                        std::slice::from_ref(&g.params)
-                    };
-                    for rv in reps {
-                        let p: ta_app_core::CompositeParams =
-                            serde_json::from_value(rv.clone()).map_err(|e| e.to_string())?;
-                        candidates.push(p);
                     }
-                }
-
-                let max_candidates = candidates.len();
-                let val_req = ta_app_core::CompositeValidationRequest {
-                    data_id: label.clone(),
-                    backend: ta_app_core::Backend::CpuOnly,
-                    ma_source: g0.ma_source.clone(),
-                    fast_ma_params: g0.fast_ma_params.clone(),
-                    slow_ma_params: g0.slow_ma_params.clone(),
-                    candidates,
-                    walk_forward: hv_wf.clone(),
-                    reopt_walk_forward: None,
-                    spa: None,
-                    perturb: hv_perturb.clone(),
-                    trade_bootstrap: hv_mc.clone(),
-                    cross_ticker: None,
-                    cscv_pbo: None,
-                    seed: hv_seed,
-                    max_candidates,
-                    validation_engine: hv_engine,
-                    iterative: hv_iterative.clone(),
-                    min_psr: None,
-                    min_dsr: None,
-                    min_cscv_oos_rank_frac: None,
-                    min_cscv_oos_metric: None,
-                    max_pbo: None,
-                    validation_context: None,
-                };
-
-                let val_res = match ta_app_core::run_composite_validation_blocking_with_candles(
-                    val_req, &candles, cancel, None,
-                ) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        ok = false;
-                        break;
-                    }
-                };
-
-                for cand in val_res.candidates {
-                    let params_v = serde_json::to_value(&cand.params).map_err(|e| e.to_string())?;
-                    let key = ta_app_core::meta_group_key_for_request(
-                        req,
-                        &params_v,
-                        &g0.ma_source,
-                        &g0.fast_ma_params,
-                        &g0.slow_ma_params,
-                    );
-                    let Some(&global_idx) = idx_by_key.get(&key) else {
-                        continue;
-                    };
-                    let Some(&dense_idx) = dense_index_by_global.get(&global_idx) else {
-                        continue;
-                    };
-
-                    let base_metrics = cand.iterative_in_sample.as_ref().unwrap_or(&cand.in_sample);
-                    let (score, sharpe, max_dd, pnl) = if heavy {
-                        if hv_engine == ta_app_core::ValidationEngine::Iterative {
-                            let sharpe = base_metrics.sharpe;
-                            let max_dd = base_metrics.max_dd;
-                            let pnl = base_metrics.pnl;
-                            (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
-                        } else {
-                            let score = cand.robust_score;
-                            if let Some(w) = cand.walk_forward.as_ref() {
-                                (score, w.sharpe_median, w.max_dd_worst, w.pnl_median)
-                            } else {
-                                (
-                                    score,
-                                    base_metrics.sharpe,
-                                    base_metrics.max_dd,
-                                    base_metrics.pnl,
-                                )
-                            }
-                        }
-                    } else {
-                        let sharpe = base_metrics.sharpe;
-                        let max_dd = base_metrics.max_dd;
-                        let pnl = base_metrics.pnl;
-                        (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
-                    };
-
-                    local[dense_idx].push((score, sharpe, max_dd, pnl));
                 }
             }
         }
@@ -3116,51 +3452,32 @@ fn apply_holdout_evaluation(
             continue;
         }
 
-        for (dense_idx, rows) in local.into_iter().enumerate() {
+        for (dense_idx, rows) in local.iter().enumerate() {
             if rows.is_empty() {
                 continue;
             }
 
-            let mut scores: Vec<f64> = Vec::with_capacity(rows.len());
-            let mut sharpes: Vec<f64> = Vec::with_capacity(rows.len());
-            let mut max_dds: Vec<f64> = Vec::with_capacity(rows.len());
-            let mut pnls: Vec<f64> = Vec::with_capacity(rows.len());
-            for (score, sharpe, max_dd, pnl) in rows {
-                scores.push(score);
-                sharpes.push(sharpe);
-                max_dds.push(max_dd);
-                pnls.push(pnl);
-            }
-            scores.sort_by(|a, b| a.total_cmp(b));
-            sharpes.sort_by(|a, b| a.total_cmp(b));
-            max_dds.sort_by(|a, b| a.total_cmp(b));
-            pnls.sort_by(|a, b| a.total_cmp(b));
+            let Some(stats) = summary_scratch.summarize_rows(rows) else {
+                continue;
+            };
 
-            let score = quantile(&scores, 0.5);
-            let score_p10 = quantile(&scores, 0.10);
-            let sharpe = quantile(&sharpes, 0.5);
-            // Conservative: for risk, take worst-of reps.
-            let max_dd = max_dds.last().copied().unwrap_or(0.0);
-            let pnl = quantile(&pnls, 0.5);
-            let pass = score_p10 > 0.0 && sharpe > 0.0;
-
-            accs[dense_idx].scores.push(score);
-            accs[dense_idx].sharpes.push(sharpe);
-            accs[dense_idx].max_dds.push(max_dd);
-            accs[dense_idx].pnls.push(pnl);
-            if pass {
+            accs[dense_idx].scores.push(stats.score_median);
+            accs[dense_idx].sharpes.push(stats.sharpe_median);
+            accs[dense_idx].max_dds.push(stats.max_dd_worst);
+            accs[dense_idx].pnls.push(stats.pnl_median);
+            if stats.pass {
                 accs[dense_idx].passes = accs[dense_idx].passes.saturating_add(1);
             }
 
             if req.save_holdout_rows && !holdout_rows.is_empty() {
                 holdout_rows[dense_idx].push(ta_app_core::HoldoutDatasetRow {
                     dataset: label.clone(),
-                    score_median: score,
-                    score_p10,
-                    sharpe_median: sharpe,
-                    max_dd_worst: max_dd,
-                    pnl_median: pnl,
-                    pass,
+                    score_median: stats.score_median,
+                    score_p10: stats.score_p10,
+                    sharpe_median: stats.sharpe_median,
+                    max_dd_worst: stats.max_dd_worst,
+                    pnl_median: stats.pnl_median,
+                    pass: stats.pass,
                 });
             }
         }
@@ -3186,7 +3503,7 @@ fn apply_holdout_evaluation(
         result,
         req,
         &active_indices,
-        &accs,
+        &mut accs,
         &mut holdout_rows,
         datasets,
         skipped,
@@ -3202,19 +3519,22 @@ mod tests {
         apply_holdout_accumulators_to_result, artifact_matches_meta_req,
         artifact_matches_meta_req_relaxed, build_metric_surface_meta_summary,
         build_metric_surface_meta_warnings, build_ml_confidence_status,
-        evaluate_ml_confidence_policy_from_scoped_metas, evaluate_policy_candidates,
-        group_holdout_label, group_policy_eval_meta_score, group_rank_score,
-        is_known_non_run_artifact_filename, ml_confidence_model_path_read_only,
+        build_prepared_holdout_batches, canonical_typed_param_key,
+        decode_double_ma_validation_params, evaluate_ml_confidence_policy_from_scoped_metas,
+        evaluate_policy_candidates, group_holdout_label, group_policy_eval_meta_score,
+        group_rank_score, is_known_non_run_artifact_filename, ml_confidence_model_path_read_only,
         ml_uncertainty_from_prob, normalize_ml_policy_evaluation_request, normalize_ml_scope,
         should_block_stage4_for_unhealthy_model, stable_logit, stage4_autotrain_failure_fallback,
         stage4_training_metas_excluding_source, strategy_supports_holdout,
-        strategy_uses_double_ma_validation, suggest_meta_report_path, update_policy_arm_metrics,
-        write_bytes_atomically, HoldoutAcc, MlConfidenceModelState, MlConfidencePolicyArmMetrics,
-        MlConfidencePolicyEvaluationRequest, MlConfidencePolicyEvaluationResult,
-        MlMetaScopeSummary,
+        strategy_uses_double_ma_validation, suggest_meta_report_path,
+        summarize_holdout_metric_columns, update_policy_arm_metrics, write_bytes_atomically,
+        HoldoutAcc, HoldoutMetricSample, HoldoutSummaryScratch, MlConfidenceModelState,
+        MlConfidencePolicyArmMetrics, MlConfidencePolicyEvaluationRequest,
+        MlConfidencePolicyEvaluationResult, MlMetaScopeSummary, PreparedHoldoutBatch,
     };
     use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
     use serde_json::{json, Value};
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
     use ta_app_core::ml_confidence::MlConfidenceModelMeta;
@@ -4007,7 +4327,7 @@ mod tests {
             groups: base_groups,
             ..full_result.clone()
         };
-        let full_accs = vec![
+        let mut full_accs = vec![
             HoldoutAcc {
                 scores: vec![1.10, 1.20],
                 sharpes: vec![1.00, 1.10],
@@ -4030,6 +4350,7 @@ mod tests {
                 passes: 2,
             },
         ];
+        let mut subset_accs = vec![full_accs[0].clone(), full_accs[2].clone()];
         let mut full_rows = vec![
             vec![ta_app_core::HoldoutDatasetRow {
                 dataset: "A".to_string(),
@@ -4065,7 +4386,7 @@ mod tests {
             &mut full_result,
             &req,
             &[0, 1, 2],
-            &full_accs,
+            &mut full_accs,
             &mut full_rows,
             2,
             0,
@@ -4075,7 +4396,7 @@ mod tests {
             &mut subset_result,
             &req,
             &[0, 2],
-            &[full_accs[0].clone(), full_accs[2].clone()],
+            &mut subset_accs,
             &mut subset_rows,
             2,
             0,
@@ -4109,6 +4430,172 @@ mod tests {
             .expect("unselected group");
         assert!(unselected.holdout.is_none());
         assert!(unselected.holdout_rows.is_empty());
+    }
+
+    #[test]
+    fn legacy_double_ma_representative_decode_preserves_fallback_fields() {
+        let decoded = decode_double_ma_validation_params(&json!({
+            "fast_ma_type": "ema",
+            "slow_ma_type": "hma",
+            "fast_len": 7,
+            "slow_len": 29,
+            "fast_ma_params": { "alpha": 0.5 },
+            "slow_ma_params": { "phase": 0.25 },
+            "strategy": "legacy_shape_that_forces_fallback",
+            "halftrend": {
+                "amplitude": 3,
+                "channel_deviation": 2.0,
+                "atr_period": 55
+            }
+        }))
+        .expect("legacy decode");
+
+        assert_eq!(decoded.fast_ma_type, "ema");
+        assert_eq!(decoded.slow_ma_type, "hma");
+        assert_eq!(decoded.fast_len, 7);
+        assert_eq!(decoded.slow_len, 29);
+        assert_eq!(
+            decoded
+                .fast_ma_params
+                .as_ref()
+                .and_then(|map| map.get("alpha"))
+                .copied(),
+            Some(0.5)
+        );
+        assert_eq!(
+            decoded
+                .slow_ma_params
+                .as_ref()
+                .and_then(|map| map.get("phase"))
+                .copied(),
+            Some(0.25)
+        );
+        assert!(decoded.halftrend_filter.is_some());
+    }
+
+    #[test]
+    fn prepared_holdout_batches_dedupe_duplicate_representatives_across_groups() {
+        let req = MetaSelectionRequest {
+            strategy_kind: "DoubleMa".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: Some("holdout".to_string()),
+            holdout_tag: Some("holdout".to_string()),
+            eval_holdout: true,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 25,
+            min_samples: 1,
+            strict_shortlist: false,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+        let shared_rep = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 5,
+            "slow_len": 20,
+        });
+        let mut group_a = make_meta_candidate(&req, 5, 20, 0.20);
+        group_a.representatives = vec![shared_rep.clone()];
+        let mut group_b = make_meta_candidate(&req, 8, 32, 0.18);
+        let own_rep = group_b.params.clone();
+        group_b.representatives = vec![shared_rep.clone(), group_b.params.clone()];
+        let result = MetaSelectionResult {
+            runtime_ms: 0,
+            strategy_kind: "DoubleMa".to_string(),
+            timeframe: Some("1m".to_string()),
+            artifacts_considered: 1,
+            artifacts_used: 1,
+            candidates_considered: 2,
+            groups: vec![group_a, group_b],
+            warnings: Vec::new(),
+            holdout: None,
+        };
+        let active = vec![0usize, 1usize];
+        let dense = HashMap::from([(0usize, 0usize), (1usize, 1usize)]);
+
+        let batches = build_prepared_holdout_batches(
+            &result,
+            &req,
+            &active,
+            &dense,
+            1,
+            None,
+            None,
+            None,
+            ta_app_core::ValidationEngine::Vectorized,
+            ta_app_core::IterativeSimConfig::default(),
+        )
+        .expect("prepared batches");
+
+        assert_eq!(batches.len(), 1);
+        let PreparedHoldoutBatch::DoubleMa(batch) = &batches[0] else {
+            panic!("expected double-ma holdout batch");
+        };
+        assert_eq!(batch.request.candidates.len(), 2);
+
+        let shared_key =
+            canonical_typed_param_key(&batch.request.candidates[0]).expect("shared key");
+        let own_key = canonical_typed_param_key(&batch.request.candidates[1]).expect("own key");
+
+        let decoded_shared = decode_double_ma_validation_params(&shared_rep).expect("decoded rep");
+        assert_eq!(
+            shared_key,
+            canonical_typed_param_key(&decoded_shared).unwrap()
+        );
+        let decoded_own = decode_double_ma_validation_params(&own_rep).expect("decoded own rep");
+        assert_eq!(own_key, canonical_typed_param_key(&decoded_own).unwrap());
+        assert_eq!(batch.candidate_targets, vec![vec![0, 1], vec![1]]);
+    }
+
+    #[test]
+    fn holdout_summary_scratch_reuses_buffers_without_row_leakage() {
+        let mut scratch = HoldoutSummaryScratch::default();
+        let first = vec![
+            HoldoutMetricSample {
+                score: 1.0,
+                sharpe: 0.8,
+                max_dd: 0.20,
+                pnl: 2.0,
+            },
+            HoldoutMetricSample {
+                score: 1.5,
+                sharpe: 1.1,
+                max_dd: 0.10,
+                pnl: 2.4,
+            },
+        ];
+        let second = vec![HoldoutMetricSample {
+            score: 0.4,
+            sharpe: 0.2,
+            max_dd: 0.35,
+            pnl: 0.7,
+        }];
+
+        let first_stats = scratch.summarize_rows(&first).expect("first stats");
+        let second_stats = scratch.summarize_rows(&second).expect("second stats");
+
+        let mut second_scores = vec![0.4];
+        let mut second_sharpes = vec![0.2];
+        let second_max_dds = vec![0.35];
+        let mut second_pnls = vec![0.7];
+        let reference = summarize_holdout_metric_columns(
+            second_scores.as_mut_slice(),
+            second_sharpes.as_mut_slice(),
+            second_max_dds.as_slice(),
+            second_pnls.as_mut_slice(),
+        )
+        .expect("reference stats");
+
+        assert!(first_stats.score_median > second_stats.score_median);
+        assert_eq!(second_stats, reference);
     }
 
     #[test]

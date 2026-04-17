@@ -140,7 +140,7 @@ pub use commands_options_expression::{
 };
 pub use commands_reports::build_report_xlsx_bytes_headless;
 pub(crate) use commands_reports::{
-    build_meta_report_xlsx_bytes, quantile, reveal_path_blocking, sanitize_filename_component,
+    build_meta_report_xlsx_bytes, reveal_path_blocking, sanitize_filename_component,
 };
 pub use commands_reports_api::{
     build_report_xlsx, build_validation_shortlist_csv, open_path, open_reports_dir, reveal_path,

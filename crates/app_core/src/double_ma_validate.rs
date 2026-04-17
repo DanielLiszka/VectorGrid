@@ -511,27 +511,21 @@ fn compute_gpu_walk_forward_stats_for_candidates(
             martins.push(metric.martin_ratio);
             trades.push(metric.trades);
         }
-        sharpes.sort_by(|a, b| a.total_cmp(b));
-        dds.sort_by(|a, b| a.total_cmp(b));
-        pnls.sort_by(|a, b| a.total_cmp(b));
-        downside_ratios.sort_by(|a, b| a.total_cmp(b));
-        ulcers.sort_by(|a, b| a.total_cmp(b));
-        martins.sort_by(|a, b| a.total_cmp(b));
         out.push(WalkForwardStats {
             windows: sharpes.len(),
-            sharpe_median: crate::stats_common::median(&sharpes),
+            sharpe_median: crate::stats_common::median_in_place(&mut sharpes),
             sharpe_worst: crate::stats_common::worst_min(&sharpes),
-            max_dd_median: crate::stats_common::median(&dds),
+            max_dd_median: crate::stats_common::median_in_place(&mut dds),
             max_dd_worst: crate::stats_common::worst_max(&dds),
-            pnl_median: crate::stats_common::median(&pnls),
+            pnl_median: crate::stats_common::median_in_place(&mut pnls),
             pnl_worst: crate::stats_common::worst_min(&pnls),
-            downside_vol_ratio_median: crate::stats_common::median(&downside_ratios),
+            downside_vol_ratio_median: crate::stats_common::median_in_place(&mut downside_ratios),
             downside_vol_ratio_worst: crate::stats_common::worst_max(&downside_ratios),
-            ulcer_index_median: crate::stats_common::median(&ulcers),
+            ulcer_index_median: crate::stats_common::median_in_place(&mut ulcers),
             ulcer_index_worst: crate::stats_common::worst_max(&ulcers),
-            martin_ratio_median: crate::stats_common::median(&martins),
+            martin_ratio_median: crate::stats_common::median_in_place(&mut martins),
             martin_ratio_worst: crate::stats_common::worst_min(&martins),
-            trades_median: crate::stats_common::median_u32(&trades),
+            trades_median: crate::stats_common::median_u32_in_place(&mut trades),
             trades_worst: crate::stats_common::worst_min_u32(&trades),
         });
     }
@@ -2150,74 +2144,100 @@ const DEFAULT_BENCHMARK_SLICE_FINALISTS: usize = 5;
 const DEFAULT_FRICTION_SPREAD_FLOOR_BPS: f64 = 4.0;
 const DEFAULT_FRICTION_SLIPPAGE_FLOOR_BPS: f64 = 2.0;
 
+#[derive(Clone)]
+struct CandidateStepReturnBundle {
+    step_returns: Vec<f64>,
+    active_flags: Vec<bool>,
+    trade_entries: Vec<bool>,
+    spread_ratio: Vec<f64>,
+}
+
+impl CandidateStepReturnBundle {
+    fn for_series(series: &CandidateSeries<'_>) -> Self {
+        let mut step_returns = vec![0.0; series.n];
+        let mut active_flags = vec![false; series.n];
+        let mut trade_entries = vec![false; series.n];
+        let mut spread_ratio = vec![f64::NAN; series.n];
+        let trade_offset = if series.cfg.trade_on_next_bar {
+            1usize
+        } else {
+            0usize
+        };
+        let mut pos: i32 = 0;
+
+        for t in series.start_t..series.n {
+            let slice_idx = t.saturating_sub(trade_offset);
+            let f = series.fast[slice_idx];
+            let s = series.slow[slice_idx];
+            let close = series.close[slice_idx].abs().max(1.0e-9);
+            if f.is_finite() && s.is_finite() {
+                spread_ratio[t] = (f - s).abs() / close;
+            }
+
+            let mut sign: i32 = 0;
+            if f.is_finite() && s.is_finite() {
+                let eps = if series.cfg.eps_rel > 0.0 {
+                    series.cfg.eps_rel * 1.0_f64.max(s.abs())
+                } else {
+                    0.0
+                };
+                sign = (f > s + eps) as i32 - (f < s - eps) as i32;
+                if series.cfg.long_only && sign < 0 {
+                    sign = 0;
+                }
+            }
+
+            if let Some(ht) = series.halftrend_trend.as_ref() {
+                let v = ht[slice_idx];
+                if !v.is_finite() {
+                    sign = 0;
+                } else if v < 0.5 {
+                    sign = sign.max(0);
+                } else {
+                    sign = sign.min(0);
+                }
+            }
+
+            let prev_pos = pos;
+            if sign != pos {
+                if pos == 0 || sign == 0 {
+                    pos = if sign == 0 { 0 } else { sign };
+                } else if !series.cfg.allow_flip {
+                    pos = 0;
+                } else {
+                    pos = sign;
+                }
+            }
+            if pos != 0 && pos != prev_pos {
+                trade_entries[t] = true;
+            }
+
+            if pos != 0 {
+                active_flags[t] = true;
+                step_returns[t] = (pos as f64) * series.lr[t].exp_m1();
+            }
+        }
+
+        Self {
+            step_returns,
+            active_flags,
+            trade_entries,
+            spread_ratio,
+        }
+    }
+}
+
+#[cfg(test)]
 fn compute_step_returns_for_series(
     series: &CandidateSeries<'_>,
 ) -> (Vec<f64>, Vec<bool>, Vec<bool>, Vec<f64>) {
-    let mut step_returns = vec![0.0; series.n];
-    let mut active_flags = vec![false; series.n];
-    let mut trade_entries = vec![false; series.n];
-    let mut spread_ratio = vec![f64::NAN; series.n];
-    let trade_offset = if series.cfg.trade_on_next_bar {
-        1usize
-    } else {
-        0usize
-    };
-    let mut pos: i32 = 0;
-
-    for t in series.start_t..series.n {
-        let slice_idx = t.saturating_sub(trade_offset);
-        let f = series.fast[slice_idx];
-        let s = series.slow[slice_idx];
-        let close = series.close[slice_idx].abs().max(1.0e-9);
-        if f.is_finite() && s.is_finite() {
-            spread_ratio[t] = (f - s).abs() / close;
-        }
-
-        let mut sign: i32 = 0;
-        if f.is_finite() && s.is_finite() {
-            let eps = if series.cfg.eps_rel > 0.0 {
-                series.cfg.eps_rel * 1.0_f64.max(s.abs())
-            } else {
-                0.0
-            };
-            sign = (f > s + eps) as i32 - (f < s - eps) as i32;
-            if series.cfg.long_only && sign < 0 {
-                sign = 0;
-            }
-        }
-
-        if let Some(ht) = series.halftrend_trend.as_ref() {
-            let v = ht[slice_idx];
-            if !v.is_finite() {
-                sign = 0;
-            } else if v < 0.5 {
-                sign = sign.max(0);
-            } else {
-                sign = sign.min(0);
-            }
-        }
-
-        let prev_pos = pos;
-        if sign != pos {
-            if pos == 0 || sign == 0 {
-                pos = if sign == 0 { 0 } else { sign };
-            } else if !series.cfg.allow_flip {
-                pos = 0;
-            } else {
-                pos = sign;
-            }
-        }
-        if pos != 0 && pos != prev_pos {
-            trade_entries[t] = true;
-        }
-
-        if pos != 0 {
-            active_flags[t] = true;
-            step_returns[t] = (pos as f64) * series.lr[t].exp_m1();
-        }
-    }
-
-    (step_returns, active_flags, trade_entries, spread_ratio)
+    let bundle = CandidateStepReturnBundle::for_series(series);
+    (
+        bundle.step_returns,
+        bundle.active_flags,
+        bundle.trade_entries,
+        bundle.spread_ratio,
+    )
 }
 
 fn compute_entry_margin_fragility_from_arrays(
@@ -2315,23 +2335,39 @@ fn compute_underwater_duration_from_step_returns(
     })
 }
 
+#[cfg(test)]
 fn compute_entry_margin_fragility_stats(
     series: &CandidateSeries<'_>,
 ) -> Option<EntryMarginFragilityStats> {
-    let (_, active_flags, trade_entries, spread_ratio) = compute_step_returns_for_series(series);
+    let bundle = CandidateStepReturnBundle::for_series(series);
+    compute_entry_margin_fragility_stats_with_bundle(series, &bundle)
+}
+
+fn compute_entry_margin_fragility_stats_with_bundle(
+    series: &CandidateSeries<'_>,
+    bundle: &CandidateStepReturnBundle,
+) -> Option<EntryMarginFragilityStats> {
     compute_entry_margin_fragility_from_arrays(
-        &active_flags,
-        &trade_entries,
-        &spread_ratio,
+        &bundle.active_flags,
+        &bundle.trade_entries,
+        &bundle.spread_ratio,
         series.start_t,
     )
 }
 
+#[cfg(test)]
 fn compute_underwater_duration_stats(
     series: &CandidateSeries<'_>,
 ) -> Option<UnderwaterDurationStats> {
-    let (step_returns, _, _, _) = compute_step_returns_for_series(series);
-    compute_underwater_duration_from_step_returns(&step_returns, series.start_t)
+    let bundle = CandidateStepReturnBundle::for_series(series);
+    compute_underwater_duration_stats_with_bundle(series, &bundle)
+}
+
+fn compute_underwater_duration_stats_with_bundle(
+    series: &CandidateSeries<'_>,
+    bundle: &CandidateStepReturnBundle,
+) -> Option<UnderwaterDurationStats> {
+    compute_underwater_duration_from_step_returns(&bundle.step_returns, series.start_t)
 }
 
 fn checkpoint_ranges(
@@ -2495,14 +2531,22 @@ fn compute_checkpoint_robustness_from_arrays(
     })
 }
 
+#[cfg(test)]
 fn compute_checkpoint_robustness_stats(
     series: &CandidateSeries<'_>,
 ) -> Option<CheckpointRobustnessStats> {
-    let (step_returns, active_flags, trade_entries, _) = compute_step_returns_for_series(series);
+    let bundle = CandidateStepReturnBundle::for_series(series);
+    compute_checkpoint_robustness_stats_with_bundle(series, &bundle)
+}
+
+fn compute_checkpoint_robustness_stats_with_bundle(
+    series: &CandidateSeries<'_>,
+    bundle: &CandidateStepReturnBundle,
+) -> Option<CheckpointRobustnessStats> {
     compute_checkpoint_robustness_from_arrays(
-        &step_returns,
-        &active_flags,
-        &trade_entries,
+        &bundle.step_returns,
+        &bundle.active_flags,
+        &bundle.trade_entries,
         series.start_t,
     )
 }
@@ -2593,15 +2637,24 @@ fn compute_benchmark_slice_mode_summary(
     })
 }
 
+#[cfg(test)]
 fn compute_benchmark_slice_summary_stats(
     series: &CandidateSeries<'_>,
     benchmark: &SpaBenchmarkKind,
 ) -> Option<BenchmarkSliceSummaryStats> {
-    let (step_returns, _, _, _) = compute_step_returns_for_series(series);
+    let bundle = CandidateStepReturnBundle::for_series(series);
+    compute_benchmark_slice_summary_stats_with_bundle(series, benchmark, &bundle)
+}
+
+fn compute_benchmark_slice_summary_stats_with_bundle(
+    series: &CandidateSeries<'_>,
+    benchmark: &SpaBenchmarkKind,
+    bundle: &CandidateStepReturnBundle,
+) -> Option<BenchmarkSliceSummaryStats> {
     Some(BenchmarkSliceSummaryStats {
         benchmark: benchmark.clone(),
         halves: compute_benchmark_slice_mode_summary(
-            &step_returns,
+            &bundle.step_returns,
             series.lr,
             series.start_t,
             benchmark,
@@ -2609,7 +2662,7 @@ fn compute_benchmark_slice_summary_stats(
             "half_",
         )?,
         quartiles: compute_benchmark_slice_mode_summary(
-            &step_returns,
+            &bundle.step_returns,
             series.lr,
             series.start_t,
             benchmark,
@@ -2652,9 +2705,8 @@ fn rolling_volatility_tertiles(lr: &[f64], start_t: usize, window: usize) -> Vec
     if vols.is_empty() {
         return states;
     }
-    vols.sort_by(|a, b| a.total_cmp(b));
-    let low_thr = crate::stats_common::quantile(&vols, 1.0 / 3.0);
-    let high_thr = crate::stats_common::quantile(&vols, 2.0 / 3.0);
+    let low_thr = crate::stats_common::quantile_in_place(&mut vols, 1.0 / 3.0);
+    let high_thr = crate::stats_common::quantile_in_place(&mut vols, 2.0 / 3.0);
     for t in start_t..n {
         let vol = raw[t];
         if !vol.is_finite() {
@@ -2785,9 +2837,19 @@ fn derive_regime_support_label(
     }
 }
 
+#[cfg(test)]
 fn compute_regime_slice_robustness_stats_with_vol_states(
     series: &CandidateSeries<'_>,
     vol_states: &[u8],
+) -> Option<RegimeSliceRobustnessStats> {
+    let bundle = CandidateStepReturnBundle::for_series(series);
+    compute_regime_slice_robustness_stats_with_vol_states_and_bundle(series, vol_states, &bundle)
+}
+
+fn compute_regime_slice_robustness_stats_with_vol_states_and_bundle(
+    series: &CandidateSeries<'_>,
+    vol_states: &[u8],
+    bundle: &CandidateStepReturnBundle,
 ) -> Option<RegimeSliceRobustnessStats> {
     if series.n.saturating_sub(series.start_t) < DEFAULT_REGIME_SLICE_VOL_WINDOW.max(24) {
         return None;
@@ -2796,10 +2858,7 @@ fn compute_regime_slice_robustness_stats_with_vol_states(
         return None;
     }
 
-    let (step_returns, active_flags, trade_entries, spread_ratio) =
-        compute_step_returns_for_series(series);
-
-    let mut spreads: Vec<f64> = spread_ratio[series.start_t..]
+    let mut spreads: Vec<f64> = bundle.spread_ratio[series.start_t..]
         .iter()
         .copied()
         .filter(|value| value.is_finite())
@@ -2807,8 +2866,7 @@ fn compute_regime_slice_robustness_stats_with_vol_states(
     if spreads.is_empty() {
         return None;
     }
-    spreads.sort_by(|a, b| a.total_cmp(b));
-    let spread_threshold = crate::stats_common::median(&spreads);
+    let spread_threshold = crate::stats_common::median_in_place(&mut spreads);
 
     let mut low_mask = vec![false; series.n];
     let mut mid_mask = vec![false; series.n];
@@ -2822,7 +2880,7 @@ fn compute_regime_slice_robustness_stats_with_vol_states(
             2 => high_mask[t] = true,
             _ => {}
         }
-        let spread = spread_ratio[t];
+        let spread = bundle.spread_ratio[t];
         if spread.is_finite() {
             if spread >= spread_threshold {
                 trend_mask[t] = true;
@@ -2832,12 +2890,36 @@ fn compute_regime_slice_robustness_stats_with_vol_states(
         }
     }
 
-    let low_vol = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &low_mask);
-    let mid_vol = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &mid_mask);
-    let high_vol =
-        summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &high_mask);
-    let trend = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &trend_mask);
-    let range = summarize_regime_bucket(&step_returns, &active_flags, &trade_entries, &range_mask);
+    let low_vol = summarize_regime_bucket(
+        &bundle.step_returns,
+        &bundle.active_flags,
+        &bundle.trade_entries,
+        &low_mask,
+    );
+    let mid_vol = summarize_regime_bucket(
+        &bundle.step_returns,
+        &bundle.active_flags,
+        &bundle.trade_entries,
+        &mid_mask,
+    );
+    let high_vol = summarize_regime_bucket(
+        &bundle.step_returns,
+        &bundle.active_flags,
+        &bundle.trade_entries,
+        &high_mask,
+    );
+    let trend = summarize_regime_bucket(
+        &bundle.step_returns,
+        &bundle.active_flags,
+        &bundle.trade_entries,
+        &trend_mask,
+    );
+    let range = summarize_regime_bucket(
+        &bundle.step_returns,
+        &bundle.active_flags,
+        &bundle.trade_entries,
+        &range_mask,
+    );
     let trend_pass = trend.sharpe >= 0.0 && trend.pnl >= 0.0;
     let range_pass = range.sharpe >= 0.0 && range.pnl >= 0.0;
 
@@ -3796,6 +3878,11 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     } else {
         0
     };
+    let step_return_bundle_cache_count = regime_eval_count
+        .max(entry_margin_eval_count)
+        .max(underwater_eval_count)
+        .max(checkpoint_eval_count)
+        .max(benchmark_slice_eval_count);
     let finalist_cache_count = regime_eval_count
         .max(friction_eval_count)
         .max(entry_margin_eval_count)
@@ -3824,12 +3911,28 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     };
 
     if let Some(cache) = finalist_series_cache.as_ref() {
+        let finalist_step_return_bundle_cache = if step_return_bundle_cache_count > 0 {
+            Some(
+                cache
+                    .iter()
+                    .take(step_return_bundle_cache_count)
+                    .map(CandidateStepReturnBundle::for_series)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        let finalist_step_return_bundles = finalist_step_return_bundle_cache.as_deref();
         let mut regime_vol_states_by_start_t: HashMap<usize, Vec<u8>> = HashMap::new();
-        for (cand, series) in out
+        for (idx, (cand, series)) in out
             .iter_mut()
             .take(regime_eval_count)
             .zip(cache.iter().take(regime_eval_count))
+            .enumerate()
         {
+            let bundle = finalist_step_return_bundles
+                .and_then(|bundles| bundles.get(idx))
+                .expect("regime robustness finalist step-return bundle");
             let vol_states = regime_vol_states_by_start_t
                 .entry(series.start_t)
                 .or_insert_with(|| {
@@ -3840,41 +3943,65 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
                     )
                 });
             cand.regime_slice_robustness =
-                compute_regime_slice_robustness_stats_with_vol_states(series, vol_states);
+                compute_regime_slice_robustness_stats_with_vol_states_and_bundle(
+                    series, vol_states, bundle,
+                );
         }
 
-        for (cand, series) in out
+        for (idx, (cand, series)) in out
             .iter_mut()
             .take(entry_margin_eval_count)
             .zip(cache.iter().take(entry_margin_eval_count))
+            .enumerate()
         {
-            cand.entry_margin_fragility = compute_entry_margin_fragility_stats(series);
+            let bundle = finalist_step_return_bundles
+                .and_then(|bundles| bundles.get(idx))
+                .expect("entry fragility finalist step-return bundle");
+            cand.entry_margin_fragility =
+                compute_entry_margin_fragility_stats_with_bundle(series, bundle);
         }
 
-        for (cand, series) in out
+        for (idx, (cand, series)) in out
             .iter_mut()
             .take(underwater_eval_count)
             .zip(cache.iter().take(underwater_eval_count))
+            .enumerate()
         {
-            cand.underwater_duration = compute_underwater_duration_stats(series);
+            let bundle = finalist_step_return_bundles
+                .and_then(|bundles| bundles.get(idx))
+                .expect("underwater finalist step-return bundle");
+            cand.underwater_duration =
+                compute_underwater_duration_stats_with_bundle(series, bundle);
         }
 
-        for (cand, series) in out
+        for (idx, (cand, series)) in out
             .iter_mut()
             .take(checkpoint_eval_count)
             .zip(cache.iter().take(checkpoint_eval_count))
+            .enumerate()
         {
-            cand.checkpoint_robustness = compute_checkpoint_robustness_stats(series);
+            let bundle = finalist_step_return_bundles
+                .and_then(|bundles| bundles.get(idx))
+                .expect("checkpoint finalist step-return bundle");
+            cand.checkpoint_robustness =
+                compute_checkpoint_robustness_stats_with_bundle(series, bundle);
         }
 
         if let Some(spa_cfg) = req.spa.as_ref() {
-            for (cand, series) in out
+            for (idx, (cand, series)) in out
                 .iter_mut()
                 .take(benchmark_slice_eval_count)
                 .zip(cache.iter().take(benchmark_slice_eval_count))
+                .enumerate()
             {
-                cand.benchmark_slice_summary =
-                    compute_benchmark_slice_summary_stats(series, &spa_cfg.benchmark);
+                let bundle = finalist_step_return_bundles
+                    .and_then(|bundles| bundles.get(idx))
+                    .expect("benchmark finalist step-return bundle");
+                cand.benchmark_slice_summary = compute_benchmark_slice_summary_stats_with_bundle(
+                    series,
+                    &spa_cfg.benchmark,
+                    bundle,
+                );
             }
         }
     }
@@ -4546,6 +4673,99 @@ mod tests {
         assert_eq!(reused.low_vol.trades, direct.low_vol.trades);
         assert_eq!(reused.mid_vol.bars, direct.mid_vol.bars);
         assert_eq!(reused.high_vol.bars, direct.high_vol.bars);
+    }
+
+    #[test]
+    fn cached_step_return_bundle_matches_direct_aux_stats() {
+        let candles = make_choppy_candles(4096);
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let lr = compute_log_returns_f64(close);
+        let base_first_valid =
+            first_finite_idx(close).expect("close should contain a finite starting point");
+        let params = DoubleMaValidationParams {
+            fast_ma_type: "alma".to_string(),
+            slow_ma_type: "alma".to_string(),
+            fast_len: 9,
+            slow_len: 30,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+        };
+        let series = build_candidate_series(
+            &candles,
+            &lr,
+            base_first_valid,
+            "close",
+            None,
+            None,
+            &params,
+        )
+        .expect("candidate series");
+        let bundle = CandidateStepReturnBundle::for_series(&series);
+
+        let (step_returns, active_flags, trade_entries, spread_ratio) =
+            compute_step_returns_for_series(&series);
+        assert_eq!(step_returns.len(), bundle.step_returns.len());
+        for (direct, cached) in step_returns.iter().zip(bundle.step_returns.iter()) {
+            assert!(
+                (direct.is_nan() && cached.is_nan()) || (*direct == *cached),
+                "step return mismatch: direct={direct:?} cached={cached:?}"
+            );
+        }
+        assert_eq!(active_flags, bundle.active_flags);
+        assert_eq!(trade_entries, bundle.trade_entries);
+        assert_eq!(spread_ratio.len(), bundle.spread_ratio.len());
+        for (direct, cached) in spread_ratio.iter().zip(bundle.spread_ratio.iter()) {
+            assert!(
+                (direct.is_nan() && cached.is_nan()) || (*direct == *cached),
+                "spread ratio mismatch: direct={direct:?} cached={cached:?}"
+            );
+        }
+
+        let direct_entry = compute_entry_margin_fragility_stats(&series);
+        let cached_entry = compute_entry_margin_fragility_stats_with_bundle(&series, &bundle);
+        assert_eq!(
+            serde_json::to_string(&direct_entry).expect("direct entry stats"),
+            serde_json::to_string(&cached_entry).expect("cached entry stats")
+        );
+
+        let direct_underwater = compute_underwater_duration_stats(&series);
+        let cached_underwater = compute_underwater_duration_stats_with_bundle(&series, &bundle);
+        assert_eq!(
+            serde_json::to_string(&direct_underwater).expect("direct underwater stats"),
+            serde_json::to_string(&cached_underwater).expect("cached underwater stats")
+        );
+
+        let direct_checkpoint = compute_checkpoint_robustness_stats(&series);
+        let cached_checkpoint = compute_checkpoint_robustness_stats_with_bundle(&series, &bundle);
+        assert_eq!(
+            serde_json::to_string(&direct_checkpoint).expect("direct checkpoint stats"),
+            serde_json::to_string(&cached_checkpoint).expect("cached checkpoint stats")
+        );
+
+        let benchmark = SpaBenchmarkKind::BuyAndHold;
+        let direct_benchmark = compute_benchmark_slice_summary_stats(&series, &benchmark);
+        let cached_benchmark =
+            compute_benchmark_slice_summary_stats_with_bundle(&series, &benchmark, &bundle);
+        assert_eq!(
+            serde_json::to_string(&direct_benchmark).expect("direct benchmark stats"),
+            serde_json::to_string(&cached_benchmark).expect("cached benchmark stats")
+        );
+
+        let vol_states =
+            rolling_volatility_tertiles(series.lr, series.start_t, DEFAULT_REGIME_SLICE_VOL_WINDOW);
+        let direct_regime =
+            compute_regime_slice_robustness_stats_with_vol_states(&series, &vol_states);
+        let cached_regime = compute_regime_slice_robustness_stats_with_vol_states_and_bundle(
+            &series,
+            &vol_states,
+            &bundle,
+        );
+        assert_eq!(
+            serde_json::to_string(&direct_regime).expect("direct regime stats"),
+            serde_json::to_string(&cached_regime).expect("cached regime stats")
+        );
     }
 
     #[test]

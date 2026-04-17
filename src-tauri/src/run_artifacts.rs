@@ -1062,10 +1062,12 @@ fn normalized_config_fingerprint_fields(artifact: &Value) -> (String, Option<u32
         .and_then(Value::as_u64)
         .map(|value| value as u32)
         .or_else(|| {
-            if config_fingerprint.starts_with("cfg1-") {
+            if config_fingerprint.is_empty() {
+                None
+            } else if config_fingerprint.starts_with("cfg1-") {
                 Some(1)
             } else {
-                None
+                Some(CONFIG_FINGERPRINT_SCHEMA_VERSION as u32)
             }
         });
     (config_fingerprint, config_fingerprint_version)
@@ -1434,7 +1436,10 @@ fn normalize_run_artifact_dataset_meta(
     normalize_dataset_meta_aliases(ds, changes)?;
     normalize_dataset_meta(ds, csv_path);
     if canonical_json(dataset_meta) != before {
-        push_unique_change(changes, "normalized dataset_meta schema and timeframe fields");
+        push_unique_change(
+            changes,
+            "normalized dataset_meta schema and timeframe fields",
+        );
     }
     Ok(())
 }
@@ -1444,7 +1449,10 @@ fn normalize_run_artifact_dataset_identity(value: &mut Value, changes: &mut Vec<
     if csv_path.trim().is_empty() {
         return;
     }
-    let Some(ds) = value.pointer_mut("/dataset_meta").and_then(Value::as_object_mut) else {
+    let Some(ds) = value
+        .pointer_mut("/dataset_meta")
+        .and_then(Value::as_object_mut)
+    else {
         return;
     };
 
@@ -1542,12 +1550,7 @@ fn normalize_run_artifact_value_pure(
         )?;
         promote_alias_key(root, "csv_path", &["csvPath"], &mut changes)?;
         promote_alias_key(root, "dataset_meta", &["datasetMeta"], &mut changes)?;
-        promote_alias_key(
-            root,
-            "route_provenance",
-            &["routeProvenance"],
-            &mut changes,
-        )?;
+        promote_alias_key(root, "route_provenance", &["routeProvenance"], &mut changes)?;
         promote_alias_key(
             root,
             "optimization_metric_surface",
@@ -1709,6 +1712,15 @@ fn normalize_run_artifact_value_pure(
         value: normalized,
         changes,
     })
+}
+
+fn normalize_run_artifact_value_canonical(
+    artifact_path: &Path,
+    artifact: &Value,
+) -> Result<RunArtifactNormalizationResult, String> {
+    let mut normalized = normalize_run_artifact_value_pure(artifact_path, artifact)?;
+    normalize_run_artifact_dataset_identity(&mut normalized.value, &mut normalized.changes);
+    Ok(normalized)
 }
 
 fn repair_run_artifact_target_path<R: tauri::Runtime>(
@@ -2019,9 +2031,8 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
         None => run_artifact_path(&artifact, &app)?,
     };
 
-    // Best-effort enrichment for reproducibility and batch "skip completed" correctness.
+    // Save-only env metadata stays here; canonical artifact normalization runs afterward.
     if let Value::Object(root) = &mut artifact {
-        // Inject minimal environment metadata if missing.
         {
             let env_v = root
                 .entry("env".to_string())
@@ -2041,109 +2052,9 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
                     .or_insert_with(|| Value::String(std::env::consts::ARCH.to_string()));
             }
         }
-
-        if root
-            .get("config_fingerprint_version")
-            .and_then(|v| v.as_u64())
-            .is_none()
-        {
-            let cfg = root
-                .get("config_fingerprint")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let cfg_ver = if cfg.starts_with("cfg1-") {
-                1u64
-            } else {
-                CONFIG_FINGERPRINT_SCHEMA_VERSION
-            };
-            root.insert(
-                "config_fingerprint_version".to_string(),
-                Value::Number(cfg_ver.into()),
-            );
-        }
-
-        // Ensure dataset identity is present (size + mtime) so artifacts can be matched even if files change.
-        let csv_path = root
-            .get("data")
-            .and_then(|v| v.get("csv_path"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-        if !csv_path.is_empty() {
-            let ds_v = root
-                .entry("dataset_meta".to_string())
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if !ds_v.is_object() {
-                *ds_v = Value::Object(serde_json::Map::new());
-            }
-            if let Some(ds) = ds_v.as_object_mut() {
-                normalize_dataset_meta(ds, &csv_path);
-
-                let has_size = ds
-                    .get("source_size_bytes")
-                    .and_then(|v| v.as_u64())
-                    .is_some();
-                let has_mtime = ds
-                    .get("source_mtime_utc_ms")
-                    .and_then(|v| v.as_i64())
-                    .is_some();
-                let has_fp = ds
-                    .get("source_content_fingerprint")
-                    .and_then(|v| v.as_str())
-                    .map(|s| !s.trim().is_empty())
-                    .unwrap_or(false);
-                if !has_size || !has_mtime {
-                    if let Ok(id) = crate::data_cache::identity_for_source(Path::new(&csv_path)) {
-                        if !has_size {
-                            ds.insert(
-                                "source_size_bytes".to_string(),
-                                Value::Number(serde_json::Number::from(id.size)),
-                            );
-                        }
-                        if !has_mtime {
-                            ds.insert(
-                                "source_mtime_utc_ms".to_string(),
-                                Value::Number(serde_json::Number::from(id.mtime_utc_ms)),
-                            );
-                        }
-                    }
-                }
-                if !has_fp {
-                    if let Ok(fp) =
-                        crate::data_cache::content_fingerprint_for_source(Path::new(&csv_path))
-                    {
-                        ds.insert("source_content_fingerprint".to_string(), Value::String(fp));
-                    }
-                }
-            }
-        }
-
-        if !root.contains_key("route_provenance") {
-            if let Some(route_provenance) =
-                extract_route_provenance_from_artifact(&Value::Object(root.clone()))
-            {
-                if let Ok(value) = serde_json::to_value(route_provenance) {
-                    root.insert("route_provenance".to_string(), value);
-                }
-            }
-        }
-        if !root.contains_key("lineage") {
-            if let Some(lineage) =
-                extract_artifact_lineage_from_artifact(&Value::Object(root.clone()))
-            {
-                if let Ok(value) = serde_json::to_value(lineage) {
-                    root.insert("lineage".to_string(), value);
-                }
-            }
-        }
     }
 
-    if let Some(metric_surface) = build_optimization_metric_surface_artifact_value(&artifact) {
-        if let Value::Object(root) = &mut artifact {
-            root.insert("optimization_metric_surface".to_string(), metric_surface);
-        }
-    }
+    artifact = normalize_run_artifact_value_canonical(&path, &artifact)?.value;
 
     let bytes = serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
@@ -3785,7 +3696,13 @@ pub(super) fn repair_run_artifact_blocking<R: tauri::Runtime>(
     write_target: Option<String>,
     app: tauri::AppHandle<R>,
 ) -> Result<RunArtifactRepairResponse, String> {
-    if !dry_run && write_target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if !dry_run
+        && write_target
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
         return Err("write_target is required when dry_run is false".to_string());
     }
 
@@ -3804,8 +3721,7 @@ pub(super) fn repair_run_artifact_blocking<R: tauri::Runtime>(
         None => entry.path.clone(),
     };
 
-    let mut normalized = normalize_run_artifact_value_pure(&entry.path, &entry.value)?;
-    normalize_run_artifact_dataset_identity(&mut normalized.value, &mut normalized.changes);
+    let mut normalized = normalize_run_artifact_value_canonical(&entry.path, &entry.value)?;
 
     let changed = canonical_json(&entry.value) != canonical_json(&normalized.value);
     if !changed {
@@ -3815,7 +3731,8 @@ pub(super) fn repair_run_artifact_blocking<R: tauri::Runtime>(
         );
     }
 
-    let normalized_bytes = serde_json::to_vec_pretty(&normalized.value).map_err(|e| e.to_string())?;
+    let normalized_bytes =
+        serde_json::to_vec_pretty(&normalized.value).map_err(|e| e.to_string())?;
     let mut wrote = false;
     if !dry_run && changed {
         std::fs::write(&result_path, &normalized_bytes).map_err(|e| e.to_string())?;
@@ -4196,11 +4113,10 @@ mod tests {
         load_latest_run_artifact_hydration_blocking, load_latest_run_artifact_summary_blocking,
         load_live_session_artifact_detail_blocking, load_run_artifact_detail_blocking,
         normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
-        prune_old_meta_artifacts_blocking, resolve_run_artifact_csv_path,
-        repair_run_artifact_blocking, resolve_run_artifact_strategy_kind,
-        resolve_run_artifact_timeframe, runs_dir,
-        save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
-        update_artifact_tags_blocking,
+        prune_old_meta_artifacts_blocking, repair_run_artifact_blocking,
+        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
+        resolve_run_artifact_timeframe, runs_dir, save_run_artifact_blocking,
+        suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
     };
     use crate::settings;
     use crate::state::{AppState, BackgroundTaskState};
@@ -5940,7 +5856,10 @@ mod tests {
         assert_eq!(summary.csv_path, csv_path_text);
         assert_eq!(summary.timeframe, "15m");
         assert_eq!(summary.config_fingerprint_version, Some(1));
-        assert_eq!(summary.tags, vec!["legacy".to_string(), "alpha".to_string()]);
+        assert_eq!(
+            summary.tags,
+            vec!["legacy".to_string(), "alpha".to_string()]
+        );
         assert_eq!(summary.source_size_bytes, Some(csv_len));
         assert!(summary.route_provenance.is_some());
         assert!(summary.lineage.is_some());
@@ -5990,9 +5909,7 @@ mod tests {
             load_artifact_value_checked_blocking(target_path.to_string_lossy().to_string(), handle)
                 .expect("load repaired artifact");
         assert_eq!(
-            repaired
-                .get("report_xlsx_path")
-                .and_then(Value::as_str),
+            repaired.get("report_xlsx_path").and_then(Value::as_str),
             Some("C:/runs/legacy-report.xlsx")
         );
         assert!(repaired.get("reportPath").is_none());
@@ -6012,6 +5929,80 @@ mod tests {
         );
         assert!(repaired.pointer("/lineage").is_some());
         assert!(repaired.get("parentArtifactPath").is_none());
+    }
+
+    #[test]
+    fn save_and_repair_run_artifact_blocking_canonicalize_legacy_artifacts_identically() {
+        let app = build_mock_app();
+        let pkg = app.package_info();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let dataset_dir = make_temp_dir("save_repair_run_artifact_match_dataset");
+        let csv_path = dataset_dir.join("IWM.csv");
+        std::fs::write(&csv_path, b"timestamp,close\n1,300\n2,301\n").expect("write csv");
+        let csv_path_text = csv_path.to_string_lossy().to_string();
+        let ts = unique_token("save_repair_match");
+
+        let mut legacy = legacy_run_artifact_with_aliases(&csv_path_text);
+        let root = legacy.as_object_mut().expect("legacy root");
+        root.insert("ts".to_string(), Value::String(ts.clone()));
+        root.insert(
+            "configFingerprint".to_string(),
+            Value::String("legacy-fingerprint-v0".to_string()),
+        );
+        root.insert(
+            "env".to_string(),
+            json!({
+                "app_name": pkg.name.clone(),
+                "app_version": pkg.version.to_string(),
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH
+            }),
+        );
+
+        let saved = save_run_artifact_blocking(legacy.clone(), handle.clone(), None)
+            .expect("save canonical artifact");
+        let source_path = dir.join(format!("vectorbt_run_{ts}.json"));
+        let target_path = dir.join(format!("vectorgrid_run_{ts}_repaired.json"));
+        std::fs::write(
+            &source_path,
+            serde_json::to_vec_pretty(&legacy).expect("legacy artifact json"),
+        )
+        .expect("write legacy source artifact");
+
+        let response = repair_run_artifact_blocking(
+            source_path.to_string_lossy().to_string(),
+            false,
+            Some(target_path.to_string_lossy().to_string()),
+            handle.clone(),
+        )
+        .expect("repair canonical artifact");
+
+        assert!(response.changed);
+        assert!(response.wrote);
+
+        let saved_value = load_artifact_value_checked_blocking(saved.path, handle.clone())
+            .expect("load saved canonical artifact");
+        let repaired_value =
+            load_artifact_value_checked_blocking(target_path.to_string_lossy().to_string(), handle)
+                .expect("load repaired canonical artifact");
+
+        assert_eq!(
+            canonical_json(&saved_value),
+            canonical_json(&repaired_value)
+        );
+        assert_eq!(
+            saved_value
+                .get("config_fingerprint_version")
+                .and_then(Value::as_u64),
+            Some(super::CONFIG_FINGERPRINT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            repaired_value
+                .get("config_fingerprint_version")
+                .and_then(Value::as_u64),
+            Some(super::CONFIG_FINGERPRINT_SCHEMA_VERSION)
+        );
     }
 
     #[test]
@@ -6056,12 +6047,13 @@ mod tests {
     fn repair_run_artifact_blocking_reports_noop_for_canonical_artifacts() {
         let app = build_mock_app();
         let handle = app.handle().clone();
-        let saved = save_run_artifact_blocking(
-            minimal_run_artifact("2026-04-10T13:30:00Z"),
-            handle.clone(),
-            None,
-        )
-        .expect("save source artifact");
+        let mut canonical = minimal_run_artifact("2026-04-10T13:30:00Z");
+        canonical
+            .as_object_mut()
+            .expect("run artifact root")
+            .insert("tags".to_string(), Value::Array(Vec::new()));
+        let saved = save_run_artifact_blocking(canonical, handle.clone(), None)
+            .expect("save source artifact");
 
         let response = repair_run_artifact_blocking(saved.path.clone(), true, None, handle)
             .expect("repair canonical dry run");

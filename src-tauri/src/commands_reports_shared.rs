@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 const REPORT_FILENAME_COLLISION_LIMIT: u32 = 999;
 
+#[cfg(test)]
 pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;

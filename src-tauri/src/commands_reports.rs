@@ -15,10 +15,6 @@ mod commands_reports_validation_common;
 #[path = "commands_reports_validation_xlsx.rs"]
 mod commands_reports_validation_xlsx;
 
-pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
-    commands_reports_shared::quantile(sorted, q)
-}
-
 pub(crate) fn reveal_path_blocking(path: String) -> Result<(), String> {
     commands_reports_shared::reveal_path_blocking(path)
 }
