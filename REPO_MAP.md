@@ -21,6 +21,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `ARCHITECTURE_NOTES.md` for backend/runtime notes
 - `RELEASE.md` for build/release/PTX packaging notes
 - `web/README.md` for frontend runtime notes
+- `REPO_WIDE_MAINTENANCE_HARDENING_MASTER_TRACKER_2026-04-16.md` for the current repo-wide maintenance / canonicalization / migration execution tracker
 - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md` for the current shipped-slice options-expression tracker, current checklist, and repo-fit implementation status
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md` for the refocused future roadmap that is now limited to improving the existing options optimization + embedded validation workflow
 

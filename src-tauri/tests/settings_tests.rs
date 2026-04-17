@@ -37,6 +37,18 @@ fn unique_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ta_desktop_demo_{name}_{ts}"))
 }
 
+fn sample_artifact_retention_settings() -> settings::ArtifactRetentionSettings {
+    settings::ArtifactRetentionSettings {
+        run_keep_newest: Some(25),
+        meta_keep_newest: Some(15),
+        stage5_keep_newest: Some(12),
+        ml_policy_eval_keep_newest: Some(9),
+        batch_summary_keep_newest: Some(18),
+        campaign_summary_keep_newest: Some(11),
+        options_expression_keep_newest: Some(7),
+    }
+}
+
 #[test]
 fn resolve_defaults_to_app_local_dir_when_unset() {
     let base = unique_temp_dir("resolve_default");
@@ -101,6 +113,71 @@ fn set_market_data_dir_rejects_relative_path() {
             .unwrap_err();
     assert!(err.contains("must be an absolute path"));
     assert!(!settings::settings_path(base.path()).exists());
+}
+
+#[test]
+fn artifact_retention_defaults_are_unset_when_not_configured() {
+    let base = unique_temp_dir("artifact_retention_defaults");
+    let configured = settings::configured_artifact_retention_settings(&base).unwrap();
+    assert!(configured.is_empty());
+}
+
+#[test]
+fn set_persists_and_resolves_artifact_retention_settings() {
+    let base = unique_temp_dir("artifact_retention_set_persists");
+    let retention = sample_artifact_retention_settings();
+
+    settings::set_artifact_retention_settings(&base, &retention).unwrap();
+
+    let configured = settings::configured_artifact_retention_settings(&base).unwrap();
+    assert_eq!(configured, retention);
+}
+
+#[test]
+fn clearing_artifact_retention_settings_restores_default_resolution() {
+    let base = unique_temp_dir("artifact_retention_clear");
+    let retention = sample_artifact_retention_settings();
+
+    settings::set_artifact_retention_settings(&base, &retention).unwrap();
+    settings::set_artifact_retention_settings(
+        &base,
+        &settings::ArtifactRetentionSettings::default(),
+    )
+    .unwrap();
+
+    let configured = settings::configured_artifact_retention_settings(&base).unwrap();
+    assert!(configured.is_empty());
+}
+
+#[test]
+fn set_artifact_retention_settings_rejects_zero_values() {
+    let base = TempPath::new("artifact_retention_rejects_zero");
+    let mut retention = sample_artifact_retention_settings();
+    retention.stage5_keep_newest = Some(0);
+
+    let err = settings::set_artifact_retention_settings(base.path(), &retention).unwrap_err();
+    assert!(err.contains("artifact_retention.stage5_keep_newest"));
+    assert!(!settings::settings_path(base.path()).exists());
+}
+
+#[test]
+fn configured_artifact_retention_settings_reject_invalid_persisted_values() {
+    let base = TempPath::new("artifact_retention_invalid_persisted");
+
+    std::fs::create_dir_all(base.path()).unwrap();
+    std::fs::write(
+        settings::settings_path(base.path()),
+        r#"{
+  "artifact_retention": {
+    "run_keep_newest": 0
+  }
+}"#,
+    )
+    .unwrap();
+
+    let err = settings::configured_artifact_retention_settings(base.path()).unwrap_err();
+    assert!(err.contains("artifact_retention.run_keep_newest"));
+    assert!(err.contains("positive integer"));
 }
 
 #[test]

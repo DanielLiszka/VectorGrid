@@ -1967,7 +1967,8 @@ fn run_options_expression_blocking_impl(
         )
     })?;
     let runs_dir = app_local_data_dir.join("runs");
-    let retention = crate::commands::run_artifacts::artifact_retention_policy();
+    let retention =
+        crate::commands::run_artifacts::artifact_retention_policy_for_base(app_local_data_dir);
     crate::commands::run_artifacts::prune_old_options_expression_artifacts_in_dir(
         &runs_dir,
         retention.options_expression_keep_newest,

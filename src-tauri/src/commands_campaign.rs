@@ -1992,7 +1992,7 @@ fn save_campaign_summary_blocking<R: tauri::Runtime>(
     result?;
     run_artifacts::prune_old_campaign_summary_artifacts_blocking(
         app,
-        run_artifacts::artifact_retention_policy().campaign_summary_keep_newest,
+        run_artifacts::artifact_retention_policy_for_app(app).campaign_summary_keep_newest,
     );
     Ok((path.to_string_lossy().to_string(), bytes.len()))
 }

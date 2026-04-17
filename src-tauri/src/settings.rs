@@ -4,6 +4,36 @@ use std::path::{Path, PathBuf};
 
 const SETTINGS_FILE: &str = "app_settings.json";
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ArtifactRetentionSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage5_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_policy_eval_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_summary_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_summary_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_expression_keep_newest: Option<usize>,
+}
+
+impl ArtifactRetentionSettings {
+    pub fn is_empty(&self) -> bool {
+        self.run_keep_newest.is_none()
+            && self.meta_keep_newest.is_none()
+            && self.stage5_keep_newest.is_none()
+            && self.ml_policy_eval_keep_newest.is_none()
+            && self.batch_summary_keep_newest.is_none()
+            && self.campaign_summary_keep_newest.is_none()
+            && self.options_expression_keep_newest.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     /// Optional override for where large market data files live (e.g. Polygon CSV datasets).
@@ -11,6 +41,8 @@ pub struct AppSettings {
     /// If unset, the app uses `app_local_data_dir()` (platform default) for market data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market_data_root_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "ArtifactRetentionSettings::is_empty")]
+    pub artifact_retention: ArtifactRetentionSettings,
 }
 
 pub fn settings_path(app_local_data_dir: &Path) -> PathBuf {
@@ -33,6 +65,62 @@ fn validate_market_data_root_dir_path(
             market_data_root_dir.display()
         ));
     }
+    Ok(())
+}
+
+fn validate_positive_retention_value(
+    settings_file_path: &Path,
+    field_name: &str,
+    value: Option<usize>,
+) -> Result<(), String> {
+    if matches!(value, Some(0)) {
+        return Err(format!(
+            "invalid artifact_retention.{field_name} in {} (must be a positive integer)",
+            settings_file_path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_artifact_retention_settings(
+    settings_file_path: &Path,
+    retention: &ArtifactRetentionSettings,
+) -> Result<(), String> {
+    validate_positive_retention_value(
+        settings_file_path,
+        "run_keep_newest",
+        retention.run_keep_newest,
+    )?;
+    validate_positive_retention_value(
+        settings_file_path,
+        "meta_keep_newest",
+        retention.meta_keep_newest,
+    )?;
+    validate_positive_retention_value(
+        settings_file_path,
+        "stage5_keep_newest",
+        retention.stage5_keep_newest,
+    )?;
+    validate_positive_retention_value(
+        settings_file_path,
+        "ml_policy_eval_keep_newest",
+        retention.ml_policy_eval_keep_newest,
+    )?;
+    validate_positive_retention_value(
+        settings_file_path,
+        "batch_summary_keep_newest",
+        retention.batch_summary_keep_newest,
+    )?;
+    validate_positive_retention_value(
+        settings_file_path,
+        "campaign_summary_keep_newest",
+        retention.campaign_summary_keep_newest,
+    )?;
+    validate_positive_retention_value(
+        settings_file_path,
+        "options_expression_keep_newest",
+        retention.options_expression_keep_newest,
+    )?;
     Ok(())
 }
 
@@ -89,6 +177,17 @@ pub fn resolve_market_data_root_dir(app_local_data_dir: &Path) -> Result<PathBuf
     Ok(app_local_data_dir.to_path_buf())
 }
 
+pub fn configured_artifact_retention_settings(
+    app_local_data_dir: &Path,
+) -> Result<ArtifactRetentionSettings, String> {
+    let st = load_settings(app_local_data_dir)?;
+    validate_artifact_retention_settings(
+        &settings_path(app_local_data_dir),
+        &st.artifact_retention,
+    )?;
+    Ok(st.artifact_retention)
+}
+
 pub fn set_market_data_root_dir(
     app_local_data_dir: &Path,
     dir: Option<&Path>,
@@ -98,6 +197,17 @@ pub fn set_market_data_root_dir(
         validate_market_data_root_dir_path(&settings_path(app_local_data_dir), dir)?;
     }
     st.market_data_root_dir = dir.map(|p| p.to_string_lossy().to_string());
+    save_settings(app_local_data_dir, &st)?;
+    Ok(st)
+}
+
+pub fn set_artifact_retention_settings(
+    app_local_data_dir: &Path,
+    retention: &ArtifactRetentionSettings,
+) -> Result<AppSettings, String> {
+    validate_artifact_retention_settings(&settings_path(app_local_data_dir), retention)?;
+    let mut st = load_settings(app_local_data_dir)?;
+    st.artifact_retention = retention.clone();
     save_settings(app_local_data_dir, &st)?;
     Ok(st)
 }

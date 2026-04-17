@@ -450,6 +450,85 @@ pub struct MarketDataDirInfo {
     pub polygon_cache_dir: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactRetentionSettingsDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage5_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_policy_eval_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_summary_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_summary_keep_newest: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_expression_keep_newest: Option<usize>,
+}
+
+impl From<settings::ArtifactRetentionSettings> for ArtifactRetentionSettingsDto {
+    fn from(value: settings::ArtifactRetentionSettings) -> Self {
+        Self {
+            run_keep_newest: value.run_keep_newest,
+            meta_keep_newest: value.meta_keep_newest,
+            stage5_keep_newest: value.stage5_keep_newest,
+            ml_policy_eval_keep_newest: value.ml_policy_eval_keep_newest,
+            batch_summary_keep_newest: value.batch_summary_keep_newest,
+            campaign_summary_keep_newest: value.campaign_summary_keep_newest,
+            options_expression_keep_newest: value.options_expression_keep_newest,
+        }
+    }
+}
+
+impl From<ArtifactRetentionSettingsDto> for settings::ArtifactRetentionSettings {
+    fn from(value: ArtifactRetentionSettingsDto) -> Self {
+        Self {
+            run_keep_newest: value.run_keep_newest,
+            meta_keep_newest: value.meta_keep_newest,
+            stage5_keep_newest: value.stage5_keep_newest,
+            ml_policy_eval_keep_newest: value.ml_policy_eval_keep_newest,
+            batch_summary_keep_newest: value.batch_summary_keep_newest,
+            campaign_summary_keep_newest: value.campaign_summary_keep_newest,
+            options_expression_keep_newest: value.options_expression_keep_newest,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ArtifactRetentionValueSet {
+    pub run_keep_newest: usize,
+    pub meta_keep_newest: usize,
+    pub stage5_keep_newest: usize,
+    pub ml_policy_eval_keep_newest: usize,
+    pub batch_summary_keep_newest: usize,
+    pub campaign_summary_keep_newest: usize,
+    pub options_expression_keep_newest: usize,
+}
+
+impl From<crate::commands::run_artifacts::ArtifactRetentionPolicy> for ArtifactRetentionValueSet {
+    fn from(value: crate::commands::run_artifacts::ArtifactRetentionPolicy) -> Self {
+        Self {
+            run_keep_newest: value.run_keep_newest,
+            meta_keep_newest: value.meta_keep_newest,
+            stage5_keep_newest: value.stage5_keep_newest,
+            ml_policy_eval_keep_newest: value.ml_policy_eval_keep_newest,
+            batch_summary_keep_newest: value.batch_summary_keep_newest,
+            campaign_summary_keep_newest: value.campaign_summary_keep_newest,
+            options_expression_keep_newest: value.options_expression_keep_newest,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ArtifactRetentionInfo {
+    pub defaults: ArtifactRetentionValueSet,
+    pub configured: ArtifactRetentionSettingsDto,
+    pub env_overrides: ArtifactRetentionSettingsDto,
+    pub effective: ArtifactRetentionValueSet,
+}
+
 fn market_data_dir_info(app: &tauri::AppHandle) -> Result<MarketDataDirInfo, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     market_data_dir_info_for_base(&base)
@@ -468,9 +547,43 @@ fn market_data_dir_info_for_base(base: &Path) -> Result<MarketDataDirInfo, Strin
     })
 }
 
+fn artifact_retention_info(app: &tauri::AppHandle) -> Result<ArtifactRetentionInfo, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    artifact_retention_info_for_base(&base)
+}
+
+fn artifact_retention_info_for_base_with_env_overrides(
+    base: &Path,
+    env_overrides: settings::ArtifactRetentionSettings,
+) -> Result<ArtifactRetentionInfo, String> {
+    let configured = settings::configured_artifact_retention_settings(base)?;
+    let defaults = crate::commands::run_artifacts::artifact_retention_defaults();
+    let effective =
+        crate::commands::run_artifacts::artifact_retention_policy_for_base_with_env_overrides(
+            base,
+            &env_overrides,
+        );
+    Ok(ArtifactRetentionInfo {
+        defaults: defaults.into(),
+        configured: configured.into(),
+        env_overrides: env_overrides.into(),
+        effective: effective.into(),
+    })
+}
+
+fn artifact_retention_info_for_base(base: &Path) -> Result<ArtifactRetentionInfo, String> {
+    let env_overrides = crate::commands::run_artifacts::artifact_retention_env_overrides();
+    artifact_retention_info_for_base_with_env_overrides(base, env_overrides)
+}
+
 #[tauri::command]
 pub fn get_market_data_dir_info(app: tauri::AppHandle) -> Result<MarketDataDirInfo, String> {
     market_data_dir_info(&app)
+}
+
+#[tauri::command]
+pub fn get_artifact_retention_info(app: tauri::AppHandle) -> Result<ArtifactRetentionInfo, String> {
+    artifact_retention_info(&app)
 }
 
 #[tauri::command]
@@ -482,6 +595,24 @@ pub fn clear_market_data_dir(app: tauri::AppHandle) -> Result<MarketDataDirInfo,
 fn clear_market_data_dir_for_base(base: &Path) -> Result<MarketDataDirInfo, String> {
     settings::set_market_data_root_dir(base, None)?;
     market_data_dir_info_for_base(base)
+}
+
+fn clear_artifact_retention_settings_for_base(
+    base: &Path,
+) -> Result<ArtifactRetentionInfo, String> {
+    settings::set_artifact_retention_settings(
+        base,
+        &settings::ArtifactRetentionSettings::default(),
+    )?;
+    artifact_retention_info_for_base(base)
+}
+
+#[tauri::command]
+pub fn clear_artifact_retention_settings(
+    app: tauri::AppHandle,
+) -> Result<ArtifactRetentionInfo, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    clear_artifact_retention_settings_for_base(&base)
 }
 
 fn probe_directory_writable(dir: &Path) -> Result<(), String> {
@@ -565,6 +696,15 @@ fn set_market_data_dir_for_base(
     market_data_dir_info_for_base(base)
 }
 
+fn set_artifact_retention_settings_for_base(
+    base: &Path,
+    settings_dto: ArtifactRetentionSettingsDto,
+) -> Result<ArtifactRetentionInfo, String> {
+    let settings = settings::ArtifactRetentionSettings::from(settings_dto);
+    settings::set_artifact_retention_settings(base, &settings)?;
+    artifact_retention_info_for_base(base)
+}
+
 #[tauri::command]
 pub fn set_market_data_dir(
     dir: String,
@@ -573,6 +713,15 @@ pub fn set_market_data_dir(
 ) -> Result<MarketDataDirInfo, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     set_market_data_dir_for_base(&base, &dir, move_existing.unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn set_artifact_retention_settings(
+    settings: ArtifactRetentionSettingsDto,
+    app: tauri::AppHandle,
+) -> Result<ArtifactRetentionInfo, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    set_artifact_retention_settings_for_base(&base, settings)
 }
 
 #[tauri::command]
@@ -1492,8 +1641,11 @@ pub fn pick_folder() -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::artifact_retention_info_for_base;
+    use super::artifact_retention_info_for_base_with_env_overrides;
     use super::begin_background_download;
     use super::build_repo_data_csv_list;
+    use super::clear_artifact_retention_settings_for_base;
     use super::clear_loaded_data_impl;
     use super::clear_market_data_dir_for_base;
     use super::find_repo_data_dir_from;
@@ -1503,6 +1655,7 @@ mod tests {
     use super::normalize_polygon_live_bar;
     use super::parse_csv_fields;
     use super::sample_csvs_from_root;
+    use super::set_artifact_retention_settings_for_base;
     use super::set_market_data_dir_for_base;
     use super::should_force_runner_review_posture;
     use crate::state::AppState;
@@ -1520,6 +1673,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("create temp dir");
         p
+    }
+
+    fn sample_retention_settings_dto() -> super::ArtifactRetentionSettingsDto {
+        super::ArtifactRetentionSettingsDto {
+            run_keep_newest: Some(21),
+            meta_keep_newest: Some(17),
+            stage5_keep_newest: Some(13),
+            ml_policy_eval_keep_newest: Some(11),
+            batch_summary_keep_newest: Some(19),
+            campaign_summary_keep_newest: Some(9),
+            options_expression_keep_newest: Some(7),
+        }
     }
 
     #[test]
@@ -1683,6 +1848,78 @@ mod tests {
         let relative_err = set_market_data_dir_for_base(&base, "relative\\path", false)
             .expect_err("relative market data dir should fail");
         assert!(relative_err.contains("must be an absolute path"));
+    }
+
+    #[test]
+    fn artifact_retention_helpers_report_default_set_and_clear_state() {
+        let base = make_temp_dir("commands_data_artifact_retention_info");
+
+        let defaults =
+            artifact_retention_info_for_base(&base).expect("default artifact retention info");
+        assert_eq!(
+            defaults.defaults,
+            super::ArtifactRetentionValueSet::from(
+                crate::commands::run_artifacts::artifact_retention_defaults()
+            )
+        );
+        assert_eq!(
+            defaults.configured,
+            super::ArtifactRetentionSettingsDto::from(
+                crate::settings::ArtifactRetentionSettings::default()
+            )
+        );
+        assert_eq!(
+            defaults.effective,
+            super::ArtifactRetentionValueSet::from(
+                crate::commands::run_artifacts::artifact_retention_defaults()
+            )
+        );
+
+        let configured =
+            set_artifact_retention_settings_for_base(&base, sample_retention_settings_dto())
+                .expect("set artifact retention settings");
+        assert_eq!(configured.configured.run_keep_newest, Some(21));
+        assert_eq!(configured.effective.run_keep_newest, 21);
+        assert_eq!(configured.effective.campaign_summary_keep_newest, 9);
+
+        let env_info = artifact_retention_info_for_base_with_env_overrides(
+            &base,
+            crate::settings::ArtifactRetentionSettings {
+                run_keep_newest: Some(5),
+                options_expression_keep_newest: Some(3),
+                ..crate::settings::ArtifactRetentionSettings::default()
+            },
+        )
+        .expect("artifact retention info with env overrides");
+        assert_eq!(env_info.configured.run_keep_newest, Some(21));
+        assert_eq!(env_info.env_overrides.run_keep_newest, Some(5));
+        assert_eq!(
+            env_info.env_overrides.options_expression_keep_newest,
+            Some(3)
+        );
+        assert_eq!(env_info.effective.run_keep_newest, 5);
+        assert_eq!(env_info.effective.options_expression_keep_newest, 3);
+
+        let cleared = clear_artifact_retention_settings_for_base(&base)
+            .expect("clear artifact retention settings");
+        assert!(cleared.configured.run_keep_newest.is_none());
+        assert_eq!(
+            cleared.effective,
+            super::ArtifactRetentionValueSet::from(
+                crate::commands::run_artifacts::artifact_retention_defaults()
+            )
+        );
+    }
+
+    #[test]
+    fn set_artifact_retention_settings_for_base_rejects_zero_values() {
+        let base = make_temp_dir("commands_data_artifact_retention_invalid");
+        let mut settings = sample_retention_settings_dto();
+        settings.batch_summary_keep_newest = Some(0);
+
+        let err = set_artifact_retention_settings_for_base(&base, settings)
+            .expect_err("zero retention setting should fail");
+        assert!(err.contains("artifact_retention.batch_summary_keep_newest"));
     }
 
     #[test]

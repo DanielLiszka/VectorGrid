@@ -1,16 +1,36 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
-import { useShellMount } from '../composables/useShellMount'
-import { openTaskCenter as requestTaskCenterOpen, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
-import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
-import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
-import { requestDesktopNotificationPermission } from '../services/desktopProductization'
-import { useDataStore } from '../stores/dataStore'
-import { useRuntimeStore } from '../stores/runtimeStore'
-import { useSettingsStore } from '../stores/settingsStore'
-import { dismissToast, taskPostureSnapshot, useTaskStore } from '../stores/taskStore'
-import { useWorkflowStore } from '../stores/workflowStore'
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
+import { storeToRefs } from "pinia";
+import { useShellMount } from "../composables/useShellMount";
+import {
+  openTaskCenter as requestTaskCenterOpen,
+  useTaskCenterVisibility,
+} from "../composables/useTaskCenterVisibility";
+import { useTaskLifecycleSummary } from "../composables/useTaskLifecycleSummary";
+import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
+import { requestDesktopNotificationPermission } from "../services/desktopProductization";
+import {
+  ARTIFACT_RETENTION_FAMILY_META,
+  ARTIFACT_RETENTION_FAMILY_ORDER,
+  type ArtifactRetentionConfiguredSettingsSummary,
+  type ArtifactRetentionFamilyKey,
+} from "../services/settingsService";
+import { useDataStore } from "../stores/dataStore";
+import { useRuntimeStore } from "../stores/runtimeStore";
+import { useSettingsStore } from "../stores/settingsStore";
+import {
+  dismissToast,
+  taskPostureSnapshot,
+  useTaskStore,
+} from "../stores/taskStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 import {
   describeLatestTaskOutcome,
   describeTaskToast,
@@ -24,22 +44,27 @@ import {
   taskLevelTone,
   taskLifecycleLabel,
   taskLifecycleTone,
-} from '../utils/statusPresentation'
-import { taskLevelIcon, taskStatusIcon } from '../utils/iconography'
-import { searchPerspectives } from '../utils/perspectiveSearch'
-import { SETTINGS_SHORTCUT_SUMMARY_ROWS } from '../utils/shellShortcutRegistry'
-import { formatUiTimeFromUnixMs } from '../utils/uiTime'
-import { listSupportedWindowEffects, windowEffectLabel } from '../utils/windowEffects'
-import AppVisualIcon from './AppVisualIcon.vue'
-import VectorAlphaLogo from './VectorAlphaLogo.vue'
+} from "../utils/statusPresentation";
+import { taskLevelIcon, taskStatusIcon } from "../utils/iconography";
+import { searchPerspectives } from "../utils/perspectiveSearch";
+import { SETTINGS_SHORTCUT_SUMMARY_ROWS } from "../utils/shellShortcutRegistry";
+import { formatUiTimeFromUnixMs } from "../utils/uiTime";
+import {
+  listSupportedWindowEffects,
+  windowEffectLabel,
+} from "../utils/windowEffects";
+import AppVisualIcon from "./AppVisualIcon.vue";
+import VectorAlphaLogo from "./VectorAlphaLogo.vue";
 
-type DesktopLogFilter = 'all' | 'attention' | 'errors'
+type DesktopLogFilter = "all" | "attention" | "errors";
 
-const settingsStore = useSettingsStore()
-const dataStore = useDataStore()
-const runtimeStore = useRuntimeStore()
-const taskStore = useTaskStore()
-const workflowStore = useWorkflowStore()
+type ArtifactRetentionDraftState = Record<ArtifactRetentionFamilyKey, string>;
+
+const settingsStore = useSettingsStore();
+const dataStore = useDataStore();
+const runtimeStore = useRuntimeStore();
+const taskStore = useTaskStore();
+const workflowStore = useWorkflowStore();
 const {
   densityMode,
   theme,
@@ -53,6 +78,12 @@ const {
   marketDataDir,
   moveExisting,
   marketDataDirHint,
+  artifactRetentionInfo,
+  artifactRetentionLoaded,
+  artifactRetentionLoading,
+  artifactRetentionSaving,
+  artifactRetentionStatusLine,
+  canManageArtifactRetention,
   canBrowseMarketDataDir,
   canSetMarketDataDir,
   canResetMarketDataDir,
@@ -65,8 +96,8 @@ const {
   canGotoAggregate,
   statusLine,
   updatedAtUnixMs,
-} = storeToRefs(settingsStore)
-const { updatedAtUnixMs: dataUpdatedAtUnixMs } = storeToRefs(dataStore)
+} = storeToRefs(settingsStore);
+const { updatedAtUnixMs: dataUpdatedAtUnixMs } = storeToRefs(dataStore);
 const {
   bootElapsedMs,
   bootError,
@@ -78,485 +109,724 @@ const {
   desktopNotificationPermission,
   desktopWindowStateFile,
   desktopWindowStateReady,
-} = storeToRefs(runtimeStore)
-const { timeline, toasts } = storeToRefs(taskStore)
-const { workspace } = storeToRefs(workflowStore)
-const taskCenterOpen = useTaskCenterVisibility()
+} = storeToRefs(runtimeStore);
+const { timeline, toasts } = storeToRefs(taskStore);
+const { workspace } = storeToRefs(workflowStore);
+const taskCenterOpen = useTaskCenterVisibility();
 const {
   activeTaskCount,
   centerStatusLabel,
   taskHeadline,
   latestTask,
   overallProgressLabel: progressLabel,
-} = useTaskLifecycleSummary()
+} = useTaskLifecycleSummary();
 
-const { mountReady } = useShellMount('#settingsVueShellMount', {
-  paneSelector: '#settingsShellGrid',
-  paneDatasetKey: 'vueSettings',
-})
-let runtimeObserver: MutationObserver | null = null
+const { mountReady } = useShellMount("#settingsVueShellMount", {
+  paneSelector: "#settingsShellGrid",
+  paneDatasetKey: "vueSettings",
+});
+let runtimeObserver: MutationObserver | null = null;
 
-const themeDraft = ref('system')
-const effectDraft = ref('none')
-const helpModeDraft = ref('full')
-const densityModeDraft = ref('standard')
-const desktopNotificationModeDraft = ref('off')
-const marketDataDirDraft = ref('')
-const perspectiveNameDraft = ref('')
-const perspectiveSearchDraft = ref('')
-const desktopLogFilterDraft = ref<DesktopLogFilter>('all')
-const diagnosticsCopied = ref(false)
-let diagnosticsCopiedTimer: ReturnType<typeof setTimeout> | null = null
+const themeDraft = ref("system");
+const effectDraft = ref("none");
+const helpModeDraft = ref("full");
+const densityModeDraft = ref("standard");
+const desktopNotificationModeDraft = ref("off");
+const marketDataDirDraft = ref("");
+const artifactRetentionDrafts = reactive<ArtifactRetentionDraftState>({
+  run: "",
+  meta: "",
+  stage5: "",
+  mlPolicyEval: "",
+  batchSummary: "",
+  campaignSummary: "",
+  optionsExpression: "",
+});
+const perspectiveNameDraft = ref("");
+const perspectiveSearchDraft = ref("");
+const desktopLogFilterDraft = ref<DesktopLogFilter>("all");
+const diagnosticsCopied = ref(false);
+let diagnosticsCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 
-const visible = computed(() => String(workspace.value || '').trim() === 'settings')
+function normalizeArtifactRetentionDraftValue(value: string): {
+  normalized: number | null;
+  error: string;
+} {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return { normalized: null, error: "" };
+  if (!/^\d+$/.test(trimmed)) {
+    return {
+      normalized: null,
+      error: "Use a positive whole number or leave blank to use the default.",
+    };
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return {
+      normalized: null,
+      error: "Use a positive whole number or leave blank to use the default.",
+    };
+  }
+  return { normalized: parsed, error: "" };
+}
+
+const artifactRetentionFields: Array<{
+  key: ArtifactRetentionFamilyKey;
+  label: string;
+  description: string;
+}> = ARTIFACT_RETENTION_FAMILY_ORDER.map((key) => ({
+  key,
+  label: ARTIFACT_RETENTION_FAMILY_META[key].label,
+  description: ARTIFACT_RETENTION_FAMILY_META[key].description,
+}));
+
+const visible = computed(
+  () => String(workspace.value || "").trim() === "settings",
+);
 const settingsSummaryChips = computed(() => [
-  `Theme ${String(themeDraft.value || 'system').trim() || 'system'}`,
-  `Effect ${String(effectDraft.value || 'none').trim() || 'none'}`,
-  `Help ${String(helpModeDraft.value || 'full').trim() || 'full'}`,
-  `Density ${String(densityModeDraft.value || 'standard').trim() || 'standard'}`,
-  `Desktop alerts ${String(desktopNotificationModeDraft.value || 'off').trim() || 'off'}`,
-  workflowAdvanced.value ? 'Advanced controls on' : 'Advanced controls off',
-  controlsCollapsed.value ? 'Controls collapsed first' : 'Controls expanded first',
-  marketDataDirDraft.value.trim().length > 0 ? 'Custom data folder' : 'Default data folder',
-])
-const keyboardShortcutSummaryRows = SETTINGS_SHORTCUT_SUMMARY_ROWS
+  `Theme ${String(themeDraft.value || "system").trim() || "system"}`,
+  `Effect ${String(effectDraft.value || "none").trim() || "none"}`,
+  `Help ${String(helpModeDraft.value || "full").trim() || "full"}`,
+  `Density ${String(densityModeDraft.value || "standard").trim() || "standard"}`,
+  `Desktop alerts ${String(desktopNotificationModeDraft.value || "off").trim() || "off"}`,
+  workflowAdvanced.value ? "Advanced controls on" : "Advanced controls off",
+  controlsCollapsed.value
+    ? "Controls collapsed first"
+    : "Controls expanded first",
+  marketDataDirDraft.value.trim().length > 0
+    ? "Custom data folder"
+    : "Default data folder",
+]);
+const artifactRetentionSummaryChips = computed(() => {
+  const configuredCount = artifactRetentionFields.filter(
+    ({ key }) => artifactRetentionInfo.value.configured[key] != null,
+  ).length;
+  const envCount = artifactRetentionFields.filter(
+    ({ key }) => artifactRetentionInfo.value.envOverrides[key] != null,
+  ).length;
+  return [
+    configuredCount > 0
+      ? `${configuredCount} persisted override${configuredCount === 1 ? "" : "s"}`
+      : "Saved defaults only",
+    envCount > 0
+      ? `${envCount} env override${envCount === 1 ? "" : "s"} active`
+      : "No env overrides",
+    artifactRetentionSaving.value
+      ? "Saving…"
+      : artifactRetentionLoaded.value
+        ? "Settings loaded"
+        : "Retention settings not loaded",
+  ];
+});
+const artifactRetentionValidation = computed(() => {
+  const payload: ArtifactRetentionConfiguredSettingsSummary = {
+    run: null,
+    meta: null,
+    stage5: null,
+    mlPolicyEval: null,
+    batchSummary: null,
+    campaignSummary: null,
+    optionsExpression: null,
+  };
+  const errors: Partial<Record<ArtifactRetentionFamilyKey, string>> = {};
+  let dirty = false;
+
+  for (const { key } of artifactRetentionFields) {
+    const parsed = normalizeArtifactRetentionDraftValue(
+      artifactRetentionDrafts[key],
+    );
+    payload[key] = parsed.normalized;
+    if (parsed.error) {
+      errors[key] = parsed.error;
+      continue;
+    }
+    if (
+      artifactRetentionLoaded.value &&
+      artifactRetentionInfo.value.configured[key] !== parsed.normalized
+    )
+      dirty = true;
+  }
+
+  return {
+    payload,
+    errors,
+    dirty,
+    hasErrors: Object.keys(errors).length > 0,
+  };
+});
+const keyboardShortcutSummaryRows = SETTINGS_SHORTCUT_SUMMARY_ROWS;
 const windowEffectOptions = computed(() =>
   listSupportedWindowEffects().map((value) => ({
     value,
     label: windowEffectLabel(value),
   })),
-)
-const selectedPerspective = computed(() =>
-  perspectives.value.find((entry) => entry.id === selectedPerspectiveId.value) ?? perspectives.value[0] ?? null,
-)
-const selectedPerspectiveLabel = computed(() => selectedPerspective.value?.name || 'No perspective selected')
-const canDeletePerspective = computed(() => !!selectedPerspective.value && !selectedPerspective.value.builtIn)
-const canRenamePerspective = computed(() => !!selectedPerspective.value && !selectedPerspective.value.builtIn)
+);
+const selectedPerspective = computed(
+  () =>
+    perspectives.value.find(
+      (entry) => entry.id === selectedPerspectiveId.value,
+    ) ??
+    perspectives.value[0] ??
+    null,
+);
+const selectedPerspectiveLabel = computed(
+  () => selectedPerspective.value?.name || "No perspective selected",
+);
+const canDeletePerspective = computed(
+  () => !!selectedPerspective.value && !selectedPerspective.value.builtIn,
+);
+const canRenamePerspective = computed(
+  () => !!selectedPerspective.value && !selectedPerspective.value.builtIn,
+);
 const perspectiveSummaryChips = computed(() => {
-  const current = selectedPerspective.value
-  if (!current) return ['No saved perspective']
+  const current = selectedPerspective.value;
+  if (!current) return ["No saved perspective"];
   return [
-    current.builtIn ? 'Built-in' : 'Custom',
+    current.builtIn ? "Built-in" : "Custom",
     `Split ${Math.round(Number(current.snapshot.splitFraction || 0.34) * 100)}%`,
-    `Density ${String(current.snapshot.densityMode || 'standard').trim() || 'standard'}`,
-  ]
-})
-const filteredPerspectives = computed(() => searchPerspectives(perspectives.value, perspectiveSearchDraft.value))
+    `Density ${String(current.snapshot.densityMode || "standard").trim() || "standard"}`,
+  ];
+});
+const filteredPerspectives = computed(() =>
+  searchPerspectives(perspectives.value, perspectiveSearchDraft.value),
+);
 const visiblePerspectiveOptions = computed(() => {
-  const selected = selectedPerspective.value
-  const filtered = filteredPerspectives.value
-  if (!selected) return filtered
-  if (filtered.some((entry) => entry.id === selected.id)) return filtered
-  return [selected, ...filtered]
-})
+  const selected = selectedPerspective.value;
+  const filtered = filteredPerspectives.value;
+  if (!selected) return filtered;
+  if (filtered.some((entry) => entry.id === selected.id)) return filtered;
+  return [selected, ...filtered];
+});
 const perspectiveSearchSummary = computed(() => {
-  const query = String(perspectiveSearchDraft.value || '').trim()
-  const matchCount = filteredPerspectives.value.length
-  const total = perspectives.value.length
-  const localHelp = 'Search stays local to saved perspectives; use Ctrl+K for global actions.'
-  if (!query) return `${total} saved perspectives. ${localHelp}`
-  const label = matchCount === 1 ? 'match' : 'matches'
+  const query = String(perspectiveSearchDraft.value || "").trim();
+  const matchCount = filteredPerspectives.value.length;
+  const total = perspectives.value.length;
+  const localHelp =
+    "Search stays local to saved perspectives; use Ctrl+K for global actions.";
+  if (!query) return `${total} saved perspectives. ${localHelp}`;
+  const label = matchCount === 1 ? "match" : "matches";
   const selectedHidden =
-    !!selectedPerspective.value && !filteredPerspectives.value.some((entry) => entry.id === selectedPerspective.value?.id)
+    !!selectedPerspective.value &&
+    !filteredPerspectives.value.some(
+      (entry) => entry.id === selectedPerspective.value?.id,
+    );
   if (selectedHidden) {
-    return `${matchCount} ${label} for “${query}”. Current selection stays visible while filtered. ${localHelp}`
+    return `${matchCount} ${label} for “${query}”. Current selection stays visible while filtered. ${localHelp}`;
   }
-  return `${matchCount} ${label} for “${query}”. ${localHelp}`
-})
+  return `${matchCount} ${label} for “${query}”. ${localHelp}`;
+});
 const diagnosticsSummaryChips = computed(() => [
   `Runtime ${runtimePhaseLabel.value}`,
   `Task center ${centerStatusLabel.value}`,
   `${activeTaskCount.value} active`,
   progressLabel.value,
-  desktopLogs.value.length ? `${desktopLogs.value.length} desktop logs` : 'No desktop logs',
-])
+  desktopLogs.value.length
+    ? `${desktopLogs.value.length} desktop logs`
+    : "No desktop logs",
+]);
 
-const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
 const runtimeStamp = computed(() => {
-  return formatRuntimePhaseLabel(bootPhase.value)
-})
+  return formatRuntimePhaseLabel(bootPhase.value);
+});
 const runtimePhaseLabel = computed(() => {
-  return formatRuntimePhaseLabel(bootPhase.value)
-})
+  return formatRuntimePhaseLabel(bootPhase.value);
+});
 const runtimeDetail = computed(() => {
   return describeRuntimePhase({
     phase: bootPhase.value,
     stage: bootStage.value,
     elapsedMs: bootElapsedMs.value,
     error: bootError.value,
-  })
-})
-const runtimeErrorBody = computed(() => String(bootErrorDetail.value || '').trim())
-const recentTimeline = computed(() => timeline.value.slice(0, 6))
-const recentAlerts = computed(() => toasts.value.slice(0, 4))
+  });
+});
+const runtimeErrorBody = computed(() =>
+  String(bootErrorDetail.value || "").trim(),
+);
+const recentTimeline = computed(() => timeline.value.slice(0, 6));
+const recentAlerts = computed(() => toasts.value.slice(0, 4));
 const filteredDesktopLogs = computed(() => {
-  if (desktopLogFilterDraft.value === 'errors') {
-    return desktopLogs.value.filter((entry) => entry.level === 'error')
+  if (desktopLogFilterDraft.value === "errors") {
+    return desktopLogs.value.filter((entry) => entry.level === "error");
   }
-  if (desktopLogFilterDraft.value === 'attention') {
-    return desktopLogs.value.filter((entry) => entry.level === 'warn' || entry.level === 'error')
+  if (desktopLogFilterDraft.value === "attention") {
+    return desktopLogs.value.filter(
+      (entry) => entry.level === "warn" || entry.level === "error",
+    );
   }
-  return desktopLogs.value
-})
-const recentDesktopLogs = computed(() => filteredDesktopLogs.value.slice(0, 6))
+  return desktopLogs.value;
+});
+const recentDesktopLogs = computed(() => filteredDesktopLogs.value.slice(0, 6));
 const latestTaskLabel = computed(() => {
-  return describeLatestTaskOutcome(latestTask.value)
-})
+  return describeLatestTaskOutcome(latestTask.value);
+});
 const latestTaskDetail = computed(() => {
-  return latestTask.value ? describeTrackedTask(latestTask.value) : 'No completed or cancelled tasks yet.'
-})
+  return latestTask.value
+    ? describeTrackedTask(latestTask.value)
+    : "No completed or cancelled tasks yet.";
+});
 const latestTaskTone = computed(() => {
-  return latestTask.value ? taskLifecycleTone(latestTask.value.status) : 'idle'
-})
+  return latestTask.value ? taskLifecycleTone(latestTask.value.status) : "idle";
+});
 const latestTaskStatusLabel = computed(() => {
-  return latestTask.value ? taskLifecycleLabel(latestTask.value.status) : 'Idle'
-})
-const taskPosture = computed(() => taskPostureSnapshot(taskStore.$state, 8))
+  return latestTask.value
+    ? taskLifecycleLabel(latestTask.value.status)
+    : "Idle";
+});
+const taskPosture = computed(() => taskPostureSnapshot(taskStore.$state, 8));
 const diagnosticsTaskChips = computed(() => {
-  const counts = taskPosture.value.counts
+  const counts = taskPosture.value.counts;
   return [
-    counts.running ? `${counts.running} running` : '',
-    counts.queued ? `${counts.queued} queued` : '',
-    counts.cancelling ? `${counts.cancelling} cancelling` : '',
-    counts.failed ? `${counts.failed} failed` : '',
-    counts.cancelled ? `${counts.cancelled} cancelled` : '',
-    counts.completed ? `${counts.completed} completed` : '',
-  ].filter((chip) => chip.length > 0)
-})
+    counts.running ? `${counts.running} running` : "",
+    counts.queued ? `${counts.queued} queued` : "",
+    counts.cancelling ? `${counts.cancelling} cancelling` : "",
+    counts.failed ? `${counts.failed} failed` : "",
+    counts.cancelled ? `${counts.cancelled} cancelled` : "",
+    counts.completed ? `${counts.completed} completed` : "",
+  ].filter((chip) => chip.length > 0);
+});
 const taskAttentionLine = computed(() => {
-  const failed = taskPosture.value.failed[0] ?? null
-  if (failed) return `${failed.label} failed${String(failed.error || '').trim() ? `: ${String(failed.error || '').trim()}` : '.'}`
-  const cancelled = taskPosture.value.cancelled[0] ?? null
-  if (cancelled) return `${cancelled.label} was cancelled.`
-  return 'No recent failed or cancelled tasks.'
-})
+  const failed = taskPosture.value.failed[0] ?? null;
+  if (failed)
+    return `${failed.label} failed${String(failed.error || "").trim() ? `: ${String(failed.error || "").trim()}` : "."}`;
+  const cancelled = taskPosture.value.cancelled[0] ?? null;
+  if (cancelled) return `${cancelled.label} was cancelled.`;
+  return "No recent failed or cancelled tasks.";
+});
 const taskCompletedLine = computed(() => {
-  const completed = taskPosture.value.completed[0] ?? null
-  if (!completed) return 'No recently completed tasks.'
-  return `${completed.label} completed.`
-})
+  const completed = taskPosture.value.completed[0] ?? null;
+  if (!completed) return "No recently completed tasks.";
+  return `${completed.label} completed.`;
+});
 const desktopNotificationPermissionLabel = computed(() => {
-  if (desktopNotificationPermission.value === 'granted') return 'Granted'
-  if (desktopNotificationPermission.value === 'denied') return 'Denied'
-  if (desktopNotificationPermission.value === 'unsupported') return 'Unavailable'
-  if (desktopNotificationPermission.value === 'default') return 'Not granted'
-  return 'Unknown'
-})
+  if (desktopNotificationPermission.value === "granted") return "Granted";
+  if (desktopNotificationPermission.value === "denied") return "Denied";
+  if (desktopNotificationPermission.value === "unsupported")
+    return "Unavailable";
+  if (desktopNotificationPermission.value === "default") return "Not granted";
+  return "Unknown";
+});
 const canRequestDesktopNotifications = computed(() => {
-  return desktopNotificationPermission.value !== 'granted' && desktopNotificationPermission.value !== 'unsupported'
-})
+  return (
+    desktopNotificationPermission.value !== "granted" &&
+    desktopNotificationPermission.value !== "unsupported"
+  );
+});
 const desktopWindowStateStamp = computed(() => {
-  return desktopWindowStateReady.value ? 'State ready' : 'State unavailable'
-})
+  return desktopWindowStateReady.value ? "State ready" : "State unavailable";
+});
 const desktopWindowStateDetail = computed(() => {
   if (!desktopWindowStateReady.value) {
-    return 'Window state persistence is not available in the current desktop runtime.'
+    return "Window state persistence is not available in the current desktop runtime.";
   }
-  const file = String(desktopWindowStateFile.value || '').trim()
-  return file ? `Window geometry persists to ${file}.` : 'Window geometry persists between launches.'
-})
-const desktopPresenceTitle = 'Foreground-first workstation'
-const desktopPresenceMinimizeDetail = 'Minimize keeps the app alive in the standard desktop way.'
-const desktopPresenceCloseDetail = 'Close exits the app by default. If meaningful active work is still running, VectorGrid asks before closing.'
-const desktopPresenceTaskCenterDetail = 'Task Center remains the source of truth, and OS notifications stay supplemental when the window is not visible.'
+  const file = String(desktopWindowStateFile.value || "").trim();
+  return file
+    ? `Window geometry persists to ${file}.`
+    : "Window geometry persists between launches.";
+});
+const desktopPresenceTitle = "Foreground-first workstation";
+const desktopPresenceMinimizeDetail =
+  "Minimize keeps the app alive in the standard desktop way.";
+const desktopPresenceCloseDetail =
+  "Close exits the app by default. If meaningful active work is still running, VectorGrid asks before closing.";
+const desktopPresenceTaskCenterDetail =
+  "Task Center remains the source of truth, and OS notifications stay supplemental when the window is not visible.";
 const desktopLogFilterLabel = computed(() => {
-  if (desktopLogFilterDraft.value === 'errors') return 'Errors only'
-  if (desktopLogFilterDraft.value === 'attention') return 'Warnings and errors'
-  return 'All levels'
-})
+  if (desktopLogFilterDraft.value === "errors") return "Errors only";
+  if (desktopLogFilterDraft.value === "attention") return "Warnings and errors";
+  return "All levels";
+});
 const desktopLogStamp = computed(() => {
-  const total = desktopLogs.value.length
-  const visibleCount = recentDesktopLogs.value.length
-  if (desktopLogFilterDraft.value === 'all') {
-    return `${visibleCount} items`
+  const total = desktopLogs.value.length;
+  const visibleCount = recentDesktopLogs.value.length;
+  if (desktopLogFilterDraft.value === "all") {
+    return `${visibleCount} items`;
   }
-  return `${visibleCount} shown of ${total}`
-})
+  return `${visibleCount} shown of ${total}`;
+});
 const desktopLogEmptyLabel = computed(() => {
-  if (desktopLogs.value.length === 0) return 'No desktop log entries yet.'
-  return 'No desktop log entries match the current filter.'
-})
+  if (desktopLogs.value.length === 0) return "No desktop log entries yet.";
+  return "No desktop log entries match the current filter.";
+});
 const desktopDiagnosticsSnapshot = computed(() => {
   const lines = [
-    'VectorAlpha desktop diagnostics snapshot',
+    "VectorAlpha desktop diagnostics snapshot",
     `Captured: ${formatUiTimeFromUnixMs(Date.now())}`,
-    '',
-    'Runtime',
+    "",
+    "Runtime",
     `- phase: ${runtimePhaseLabel.value}`,
     `- detail: ${runtimeDetail.value}`,
-    runtimeErrorBody.value ? `- error: ${runtimeErrorBody.value}` : '',
-    '',
-    'Desktop',
+    runtimeErrorBody.value ? `- error: ${runtimeErrorBody.value}` : "",
+    "",
+    "Desktop",
     `- notifications: ${desktopNotificationPermissionLabel.value}`,
     `- window state: ${desktopWindowStateDetail.value}`,
-    `- console mirroring: ${desktopLogConsoleAttached.value ? 'attached in dev' : 'buffered in-app only'}`,
-    '',
-    'Desktop presence',
+    `- console mirroring: ${desktopLogConsoleAttached.value ? "attached in dev" : "buffered in-app only"}`,
+    "",
+    "Desktop presence",
     `- posture: ${desktopPresenceTitle}`,
     `- minimize: ${desktopPresenceMinimizeDetail}`,
     `- close: ${desktopPresenceCloseDetail}`,
     `- task center: ${desktopPresenceTaskCenterDetail}`,
-    '',
-    'Task posture',
+    "",
+    "Task posture",
     `- center: ${centerStatusLabel.value}`,
     `- summary: ${taskHeadline.value}`,
     `- progress: ${progressLabel.value}`,
-    diagnosticsTaskChips.value.length ? `- counts: ${diagnosticsTaskChips.value.join(', ')}` : '',
+    diagnosticsTaskChips.value.length
+      ? `- counts: ${diagnosticsTaskChips.value.join(", ")}`
+      : "",
     `- latest: ${latestTaskLabel.value}`,
     `- latest detail: ${latestTaskDetail.value}`,
     `- attention: ${taskAttentionLine.value}`,
     `- completed: ${taskCompletedLine.value}`,
-    '',
-    'Recent desktop logs',
+    "",
+    "Recent desktop logs",
     `- filter: ${desktopLogFilterLabel.value}`,
     ...(recentDesktopLogs.value.length
       ? recentDesktopLogs.value.map(
           (entry) =>
-            `- ${formatUiTimeFromUnixMs(entry.atUnixMs)} [${String(entry.level || 'info').toUpperCase()}] ${entry.message}`,
+            `- ${formatUiTimeFromUnixMs(entry.atUnixMs)} [${String(entry.level || "info").toUpperCase()}] ${entry.message}`,
         )
-      : ['- none']),
-    '',
-    'Recent timeline',
+      : ["- none"]),
+    "",
+    "Recent timeline",
     ...(recentTimeline.value.length
       ? recentTimeline.value.map(
           (entry) =>
             `- ${formatUiTimeFromUnixMs(entry.atUnixMs)} [${diagnosticsLevelLabel(entry.level)} / ${diagnosticsPhaseLabel(entry.phase)}] ${diagnosticsSourceLabel(entry.source)}: ${entry.message}`,
         )
-      : ['- none']),
-    '',
-    'Recent alerts',
+      : ["- none"]),
+    "",
+    "Recent alerts",
     ...(recentAlerts.value.length
       ? recentAlerts.value.map(
           (toast) =>
             `- ${formatUiTimeFromUnixMs(toast.atUnixMs)} [${diagnosticsLevelLabel(toast.level)}] ${diagnosticsSourceLabel(toast.source)}: ${toast.message}`,
         )
-      : ['- none']),
-  ]
-  return lines.filter((line) => String(line || '').trim().length > 0).join('\n')
-})
+      : ["- none"]),
+  ];
+  return lines
+    .filter((line) => String(line || "").trim().length > 0)
+    .join("\n");
+});
 
 function diagnosticsLevelTone(level: string | null | undefined): string {
-  return taskLevelTone(level)
+  return taskLevelTone(level);
 }
 
 function diagnosticsLevelLabel(level: string | null | undefined): string {
-  return taskLevelLabel(level)
+  return taskLevelLabel(level);
 }
 
 function diagnosticsLevelIcon(level: string | null | undefined) {
-  return taskLevelIcon(level)
+  return taskLevelIcon(level);
 }
 
 function diagnosticsPhaseLabel(phase: string | null | undefined): string {
-  return formatTaskPhaseLabel(phase)
+  return formatTaskPhaseLabel(phase);
 }
 
 function diagnosticsStatusIcon(status: string | null | undefined) {
-  return taskStatusIcon(status)
+  return taskStatusIcon(status);
 }
 
 function diagnosticsSourceLabel(source: string | null | undefined): string {
-  return formatTaskSourceLabel(source)
+  return formatTaskSourceLabel(source);
 }
 
 function diagnosticsTimelineSummary(index: number): string {
-  return describeTimelineEntry(recentTimeline.value[index] ?? null)
+  return describeTimelineEntry(recentTimeline.value[index] ?? null);
 }
 
 function diagnosticsAlertSummary(index: number): string {
-  return describeTaskToast(recentAlerts.value[index] ?? null)
+  return describeTaskToast(recentAlerts.value[index] ?? null);
 }
 
 function diagnosticsDesktopLogSummary(index: number): string {
-  const entry = recentDesktopLogs.value[index]
-  if (!entry) return 'No desktop log entry.'
-  return `${String(entry.level || 'info').toUpperCase()} · ${String(entry.message || '').trim()}`
+  const entry = recentDesktopLogs.value[index];
+  if (!entry) return "No desktop log entry.";
+  return `${String(entry.level || "info").toUpperCase()} · ${String(entry.message || "").trim()}`;
 }
 
 watch(
-  () => [
-    String(theme.value || 'system').trim() || 'system',
-    String(effect.value || 'none').trim() || 'none',
-    String(helpMode.value || 'full').trim() || 'full',
-    String(densityMode.value || 'standard').trim() || 'standard',
-    String(desktopNotificationMode.value || 'off').trim() || 'off',
-    String(marketDataDir.value || ''),
-    String(selectedPerspectiveId.value || ''),
-  ] as const,
-  ([nextTheme, nextEffect, nextHelpMode, nextDensityMode, nextDesktopNotificationMode, nextMarketDataDir, nextPerspectiveId]) => {
-    if (themeDraft.value !== nextTheme) themeDraft.value = nextTheme
-    if (effectDraft.value !== nextEffect) effectDraft.value = nextEffect
-    if (helpModeDraft.value !== nextHelpMode) helpModeDraft.value = nextHelpMode
-    if (densityModeDraft.value !== nextDensityMode) densityModeDraft.value = nextDensityMode
+  () =>
+    [
+      String(theme.value || "system").trim() || "system",
+      String(effect.value || "none").trim() || "none",
+      String(helpMode.value || "full").trim() || "full",
+      String(densityMode.value || "standard").trim() || "standard",
+      String(desktopNotificationMode.value || "off").trim() || "off",
+      String(marketDataDir.value || ""),
+      String(selectedPerspectiveId.value || ""),
+    ] as const,
+  ([
+    nextTheme,
+    nextEffect,
+    nextHelpMode,
+    nextDensityMode,
+    nextDesktopNotificationMode,
+    nextMarketDataDir,
+    nextPerspectiveId,
+  ]) => {
+    if (themeDraft.value !== nextTheme) themeDraft.value = nextTheme;
+    if (effectDraft.value !== nextEffect) effectDraft.value = nextEffect;
+    if (helpModeDraft.value !== nextHelpMode)
+      helpModeDraft.value = nextHelpMode;
+    if (densityModeDraft.value !== nextDensityMode)
+      densityModeDraft.value = nextDensityMode;
     if (desktopNotificationModeDraft.value !== nextDesktopNotificationMode) {
-      desktopNotificationModeDraft.value = nextDesktopNotificationMode
+      desktopNotificationModeDraft.value = nextDesktopNotificationMode;
     }
-    if (marketDataDirDraft.value !== nextMarketDataDir) marketDataDirDraft.value = nextMarketDataDir
-    if (perspectiveNameDraft.value !== (selectedPerspective.value?.name || '') && nextPerspectiveId) {
-      perspectiveNameDraft.value = selectedPerspective.value?.name || ''
+    if (marketDataDirDraft.value !== nextMarketDataDir)
+      marketDataDirDraft.value = nextMarketDataDir;
+    if (
+      perspectiveNameDraft.value !== (selectedPerspective.value?.name || "") &&
+      nextPerspectiveId
+    ) {
+      perspectiveNameDraft.value = selectedPerspective.value?.name || "";
     }
   },
   { immediate: true },
-)
+);
 
 watch(
   selectedPerspective,
   (next) => {
-    const nextName = next?.name || ''
-    if (perspectiveNameDraft.value !== nextName) perspectiveNameDraft.value = nextName
+    const nextName = next?.name || "";
+    if (perspectiveNameDraft.value !== nextName)
+      perspectiveNameDraft.value = nextName;
   },
   { immediate: true },
-)
+);
+
+watch(
+  artifactRetentionInfo,
+  (next) => {
+    if (!artifactRetentionLoaded.value) return;
+    for (const { key } of artifactRetentionFields) {
+      const configured = next.configured[key];
+      artifactRetentionDrafts[key] =
+        configured == null ? "" : String(configured);
+    }
+  },
+  { immediate: true, deep: true },
+);
 
 watch(
   dataUpdatedAtUnixMs,
   () => {
-    settingsStore.syncFromDataStore()
+    settingsStore.syncFromDataStore();
   },
   { immediate: true },
-)
+);
 
 function setMarketDataDirFromDraft(): void {
-  settingsStore.setMarketDataDir(String(marketDataDirDraft.value || '').trim(), !!moveExisting.value)
+  settingsStore.setMarketDataDir(
+    String(marketDataDirDraft.value || "").trim(),
+    !!moveExisting.value,
+  );
+}
+
+function refreshArtifactRetentionInfo(): void {
+  void settingsStore.loadArtifactRetentionInfo(true);
+}
+
+function applyArtifactRetentionDrafts(): void {
+  if (
+    artifactRetentionValidation.value.hasErrors ||
+    !artifactRetentionValidation.value.dirty
+  )
+    return;
+  void settingsStore.saveArtifactRetentionSettings(
+    artifactRetentionValidation.value.payload,
+  );
+}
+
+function resetArtifactRetentionDrafts(): void {
+  void settingsStore.clearArtifactRetentionSettings();
 }
 
 function setCheckboxValue(id: string, checked: boolean): void {
-  settingsStore.setCheckboxField(id, checked)
+  settingsStore.setCheckboxField(id, checked);
 }
 
 function setSelectValue(id: string, nextValue: string): void {
-  settingsStore.setSelectField(id, nextValue)
+  settingsStore.setSelectField(id, nextValue);
 }
 
 function setInputValue(id: string, nextValue: string): void {
-  settingsStore.setInputField(id, nextValue)
+  settingsStore.setInputField(id, nextValue);
 }
 
 function clearRecentAlerts(): void {
-  for (const toast of recentAlerts.value) dismissToast(toast.id)
+  for (const toast of recentAlerts.value) dismissToast(toast.id);
 }
 
 function clearDesktopLogs(): void {
-  runtimeStore.clearDesktopLogs()
+  runtimeStore.clearDesktopLogs();
 }
 
 function openTaskCenter(): void {
-  requestTaskCenterOpen(taskCenterOpen)
+  requestTaskCenterOpen(taskCenterOpen);
 }
 
 async function copyDesktopDiagnostics(): Promise<void> {
-  const copied = await writeClipboardText(desktopDiagnosticsSnapshot.value)
-  markDiagnosticsCopied(copied)
+  const copied = await writeClipboardText(desktopDiagnosticsSnapshot.value);
+  markDiagnosticsCopied(copied);
 }
 
 function createPerspectiveFromDraft(): void {
-  settingsStore.createPerspective(String(perspectiveNameDraft.value || '').trim())
-  perspectiveNameDraft.value = selectedPerspective.value?.name || ''
+  settingsStore.createPerspective(
+    String(perspectiveNameDraft.value || "").trim(),
+  );
+  perspectiveNameDraft.value = selectedPerspective.value?.name || "";
 }
 
 function applySelectedPerspective(): void {
-  settingsStore.applyPerspective(String(selectedPerspectiveId.value || '').trim())
+  settingsStore.applyPerspective(
+    String(selectedPerspectiveId.value || "").trim(),
+  );
 }
 
 function overwriteSelectedPerspective(): void {
-  settingsStore.overwritePerspective(String(selectedPerspectiveId.value || '').trim())
+  settingsStore.overwritePerspective(
+    String(selectedPerspectiveId.value || "").trim(),
+  );
 }
 
 function renameSelectedPerspective(): void {
-  settingsStore.renamePerspective(String(selectedPerspectiveId.value || '').trim(), String(perspectiveNameDraft.value || '').trim())
+  settingsStore.renamePerspective(
+    String(selectedPerspectiveId.value || "").trim(),
+    String(perspectiveNameDraft.value || "").trim(),
+  );
 }
 
 function duplicateSelectedPerspective(): void {
-  settingsStore.duplicatePerspective(String(selectedPerspectiveId.value || '').trim())
-  perspectiveNameDraft.value = selectedPerspective.value?.name || ''
+  settingsStore.duplicatePerspective(
+    String(selectedPerspectiveId.value || "").trim(),
+  );
+  perspectiveNameDraft.value = selectedPerspective.value?.name || "";
 }
 
 function deleteSelectedPerspective(): void {
-  settingsStore.deletePerspective(String(selectedPerspectiveId.value || '').trim())
-  perspectiveNameDraft.value = selectedPerspective.value?.name || ''
+  settingsStore.deletePerspective(
+    String(selectedPerspectiveId.value || "").trim(),
+  );
+  perspectiveNameDraft.value = selectedPerspective.value?.name || "";
 }
 
 async function requestDesktopNotifications(): Promise<void> {
-  await requestDesktopNotificationPermission()
+  await requestDesktopNotificationPermission();
 }
 
 async function writeClipboardText(value: string): Promise<boolean> {
-  const text = String(value || '')
-  const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard
+  const text = String(value || "");
+  const clipboard =
+    typeof navigator === "undefined" ? null : navigator.clipboard;
   if (clipboard?.writeText) {
-    await clipboard.writeText(text)
-    return true
+    await clipboard.writeText(text);
+    return true;
   }
-  if (typeof document !== 'undefined' && typeof document.execCommand === 'function') {
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.setAttribute('readonly', 'true')
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
-    const copied = document.execCommand('copy')
-    document.body.removeChild(textarea)
-    return copied
+  if (
+    typeof document !== "undefined" &&
+    typeof document.execCommand === "function"
+  ) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copied;
   }
-  return false
+  return false;
 }
 
 function markDiagnosticsCopied(active: boolean): void {
-  diagnosticsCopied.value = active
+  diagnosticsCopied.value = active;
   if (diagnosticsCopiedTimer) {
-    clearTimeout(diagnosticsCopiedTimer)
-    diagnosticsCopiedTimer = null
+    clearTimeout(diagnosticsCopiedTimer);
+    diagnosticsCopiedTimer = null;
   }
   if (active) {
     diagnosticsCopiedTimer = setTimeout(() => {
-      diagnosticsCopied.value = false
-      diagnosticsCopiedTimer = null
-    }, 1800)
+      diagnosticsCopied.value = false;
+      diagnosticsCopiedTimer = null;
+    }, 1800);
   }
 }
 
-const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } =
+  useQueuedInputWriter(setInputValue);
 
 onMounted(async () => {
-  settingsStore.syncFromDataStore()
-  if (typeof document !== 'undefined') {
-    runtimeObserver = new MutationObserver(() => settingsStore.syncFromDataStore())
+  settingsStore.syncFromDataStore();
+  if (typeof document !== "undefined") {
+    runtimeObserver = new MutationObserver(() =>
+      settingsStore.syncFromDataStore(),
+    );
     runtimeObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-running'],
-    })
+      attributeFilter: ["data-running"],
+    });
   }
-})
+});
+
+watch(
+  visible,
+  (next) => {
+    if (
+      !next ||
+      artifactRetentionLoaded.value ||
+      artifactRetentionLoading.value
+    )
+      return;
+    void settingsStore.loadArtifactRetentionInfo();
+  },
+  { immediate: true },
+);
 
 onBeforeUnmount(() => {
   if (diagnosticsCopiedTimer) {
-    clearTimeout(diagnosticsCopiedTimer)
-    diagnosticsCopiedTimer = null
+    clearTimeout(diagnosticsCopiedTimer);
+    diagnosticsCopiedTimer = null;
   }
-  flushQueuedInputValuesNow()
+  flushQueuedInputValuesNow();
   if (runtimeObserver) {
-    runtimeObserver.disconnect()
-    runtimeObserver = null
+    runtimeObserver.disconnect();
+    runtimeObserver = null;
   }
-})
+});
 </script>
 
 <template>
   <Teleport v-if="mountReady" to="#settingsVueShellMount">
-    <section class="settingsPanelVueRoot settingsVueShellMountHost" v-show="visible">
+    <section
+      class="settingsPanelVueRoot settingsVueShellMountHost"
+      v-show="visible"
+    >
       <header class="head">
         <div class="panelHeadCopy">
           <div class="panelEyebrow">Workspace</div>
           <h2 class="panelTitle">Settings</h2>
           <div class="panelSubtitle">
-            Review appearance, storage paths, and local utility shortcuts without leaving the desktop workflow.
+            Review appearance, storage paths, and local utility shortcuts
+            without leaving the desktop workflow.
           </div>
         </div>
         <div class="settingsHeaderMeta">
           <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
           <div class="settingsBrandCard" aria-label="VectorAlpha brand mark">
-            <VectorAlphaLogo class="settingsBrandLogo" decorative hover-animate :size="30" />
+            <VectorAlphaLogo
+              class="settingsBrandLogo"
+              decorative
+              hover-animate
+              :size="30"
+            />
             <div class="settingsBrandCopy">
               <div class="settingsBrandLabel">VectorAlpha</div>
               <div class="settingsBrandDetail">Desktop runtime</div>
@@ -565,7 +835,11 @@ onBeforeUnmount(() => {
         </div>
       </header>
       <div class="panelSummaryChips" aria-label="Settings summary">
-        <span v-for="chip in settingsSummaryChips" :key="`settings_summary_${chip}`" class="panelSummaryChip mono">
+        <span
+          v-for="chip in settingsSummaryChips"
+          :key="`settings_summary_${chip}`"
+          class="panelSummaryChip mono"
+        >
           {{ chip }}
         </span>
       </div>
@@ -577,7 +851,8 @@ onBeforeUnmount(() => {
               <div class="panelEyebrow">Appearance</div>
               <h3 class="panelPaneTitle">Appearance</h3>
               <div class="panelSectionLead">
-                Keep the shell readable first. Theme and window effects should support dense workflows rather than compete with them.
+                Keep the shell readable first. Theme and window effects should
+                support dense workflows rather than compete with them.
               </div>
             </div>
           </div>
@@ -587,7 +862,12 @@ onBeforeUnmount(() => {
               <select
                 id="vueSettingsTheme"
                 :value="themeDraft"
-                @change="themeDraft = String(($event.target as HTMLSelectElement).value || 'system'); setSelectValue('settingsThemeSelect', themeDraft)"
+                @change="
+                  themeDraft = String(
+                    ($event.target as HTMLSelectElement).value || 'system',
+                  );
+                  setSelectValue('settingsThemeSelect', themeDraft);
+                "
               >
                 <option value="light">Light</option>
                 <option value="dark">Dark</option>
@@ -599,9 +879,18 @@ onBeforeUnmount(() => {
               <select
                 id="vueSettingsEffect"
                 :value="effectDraft"
-                @change="effectDraft = String(($event.target as HTMLSelectElement).value || 'none'); setSelectValue('settingsEffectSelect', effectDraft)"
+                @change="
+                  effectDraft = String(
+                    ($event.target as HTMLSelectElement).value || 'none',
+                  );
+                  setSelectValue('settingsEffectSelect', effectDraft);
+                "
               >
-                <option v-for="option in windowEffectOptions" :key="`window_effect_${option.value}`" :value="option.value">
+                <option
+                  v-for="option in windowEffectOptions"
+                  :key="`window_effect_${option.value}`"
+                  :value="option.value"
+                >
                   {{ option.label }}
                 </option>
               </select>
@@ -612,14 +901,24 @@ onBeforeUnmount(() => {
             <select
               id="vueSettingsHelpMode"
               :value="helpModeDraft"
-              @change="helpModeDraft = String(($event.target as HTMLSelectElement).value || 'full'); setSelectValue('settingsHelpMode', helpModeDraft)"
+              @change="
+                helpModeDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'full',
+                );
+                setSelectValue('settingsHelpMode', helpModeDraft);
+              "
             >
-              <option value="full">Full help (tooltips + long-hover callouts)</option>
+              <option value="full">
+                Full help (tooltips + long-hover callouts)
+              </option>
               <option value="concise">Concise help (tooltips only)</option>
-              <option value="off">Off (hide non-essential help overlays)</option>
+              <option value="off">
+                Off (hide non-essential help overlays)
+              </option>
             </select>
             <div class="panelMuted">
-              Use this as the global policy for optional in-app help. Safety notices, errors, and runtime status still stay visible.
+              Use this as the global policy for optional in-app help. Safety
+              notices, errors, and runtime status still stay visible.
             </div>
           </div>
           <div class="rowSingle">
@@ -627,49 +926,80 @@ onBeforeUnmount(() => {
             <select
               id="vueSettingsDensityMode"
               :value="densityModeDraft"
-              @change="densityModeDraft = String(($event.target as HTMLSelectElement).value || 'standard'); setSelectValue('settingsDensityMode', densityModeDraft)"
+              @change="
+                densityModeDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'standard',
+                );
+                setSelectValue('settingsDensityMode', densityModeDraft);
+              "
             >
               <option value="comfortable">Comfortable</option>
               <option value="standard">Standard</option>
               <option value="dense">Dense</option>
             </select>
             <div class="panelMuted">
-              Apply a consistent row, chip, and spacing density across the shell instead of relying on per-panel compaction.
+              Apply a consistent row, chip, and spacing density across the shell
+              instead of relying on per-panel compaction.
             </div>
           </div>
           <div class="rowSingle">
-            <label for="vueSettingsDesktopNotifications">Desktop notifications</label>
+            <label for="vueSettingsDesktopNotifications"
+              >Desktop notifications</label
+            >
             <select
               id="vueSettingsDesktopNotifications"
               :value="desktopNotificationModeDraft"
               @change="
-                desktopNotificationModeDraft = String(($event.target as HTMLSelectElement).value || 'off');
-                setSelectValue('settingsDesktopNotifications', desktopNotificationModeDraft)
+                desktopNotificationModeDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'off',
+                );
+                setSelectValue(
+                  'settingsDesktopNotifications',
+                  desktopNotificationModeDraft,
+                );
               "
             >
               <option value="off">Off</option>
               <option value="failures">Failures and cancellations</option>
-              <option value="important">Important completions and failures</option>
+              <option value="important">
+                Important completions and failures
+              </option>
             </select>
             <div class="panelMuted">
-              OS notifications complement the in-app task center. They stay focused on high-signal outcomes and only route when the desktop window is not visible, so background work stays visible without routine spam.
+              OS notifications complement the in-app task center. They stay
+              focused on high-signal outcomes and only route when the desktop
+              window is not visible, so background work stays visible without
+              routine spam.
             </div>
             <div class="panelMuted">
-              VectorGrid stays foreground-first: minimize behaves like a normal window, close exits by default, and meaningful active work asks before closing instead of hiding the app to the tray.
+              VectorGrid stays foreground-first: minimize behaves like a normal
+              window, close exits by default, and meaningful active work asks
+              before closing instead of hiding the app to the tray.
             </div>
             <div class="actions">
-              <button type="button" :disabled="!canRequestDesktopNotifications" @click="requestDesktopNotifications">
+              <button
+                type="button"
+                :disabled="!canRequestDesktopNotifications"
+                @click="requestDesktopNotifications"
+              >
                 Request OS notification permission
               </button>
             </div>
-            <div class="panelMuted">Permission: {{ desktopNotificationPermissionLabel }}</div>
+            <div class="panelMuted">
+              Permission: {{ desktopNotificationPermissionLabel }}
+            </div>
           </div>
           <div class="checks">
             <label>
               <input
                 type="checkbox"
                 :checked="workflowAdvanced"
-                @change="setCheckboxValue('settingsWorkflowAdvanced', ($event.target as HTMLInputElement).checked)"
+                @change="
+                  setCheckboxValue(
+                    'settingsWorkflowAdvanced',
+                    ($event.target as HTMLInputElement).checked,
+                  )
+                "
               />
               Show advanced controls by default
             </label>
@@ -677,7 +1007,12 @@ onBeforeUnmount(() => {
               <input
                 type="checkbox"
                 :checked="controlsCollapsed"
-                @change="setCheckboxValue('settingsControlsCollapsed', ($event.target as HTMLInputElement).checked)"
+                @change="
+                  setCheckboxValue(
+                    'settingsControlsCollapsed',
+                    ($event.target as HTMLInputElement).checked,
+                  )
+                "
               />
               Start with controls panel collapsed
             </label>
@@ -690,7 +1025,8 @@ onBeforeUnmount(() => {
               <div class="panelEyebrow">Storage</div>
               <h3 class="panelPaneTitle">Data and storage</h3>
               <div class="panelSectionLead">
-                Point the app at the right market-data cache and decide whether existing local data should move with it.
+                Point the app at the right market-data cache and decide whether
+                existing local data should move with it.
               </div>
             </div>
           </div>
@@ -701,28 +1037,231 @@ onBeforeUnmount(() => {
               type="text"
               :value="marketDataDirDraft"
               placeholder="Default (AppData)"
-              @input="marketDataDirDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('settingsMarketDataDir', marketDataDirDraft)"
-              @change="commitInputValue('settingsMarketDataDir', marketDataDirDraft)"
+              @input="
+                marketDataDirDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('settingsMarketDataDir', marketDataDirDraft);
+              "
+              @change="
+                commitInputValue('settingsMarketDataDir', marketDataDirDraft)
+              "
             />
             <div class="actions">
-              <button type="button" :disabled="!canBrowseMarketDataDir" @click="settingsStore.browseMarketDataDir()">Browse</button>
-              <button type="button" :disabled="!canSetMarketDataDir" @click="setMarketDataDirFromDraft">Set</button>
+              <button
+                type="button"
+                :disabled="!canBrowseMarketDataDir"
+                @click="settingsStore.browseMarketDataDir()"
+              >
+                Browse
+              </button>
+              <button
+                type="button"
+                :disabled="!canSetMarketDataDir"
+                @click="setMarketDataDirFromDraft"
+              >
+                Set
+              </button>
             </div>
           </div>
           <label class="inlineCheck">
             <input
               type="checkbox"
               :checked="moveExisting"
-              @change="setCheckboxValue('settingsMoveExisting', ($event.target as HTMLInputElement).checked)"
+              @change="
+                setCheckboxValue(
+                  'settingsMoveExisting',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
             />
             Move existing Polygon cache
           </label>
           <div class="actions">
-            <button type="button" :disabled="!canResetMarketDataDir" @click="settingsStore.resetMarketDataDir()">Reset to default</button>
-            <button type="button" :disabled="!canOpenMarketDataDir" @click="settingsStore.openMarketDataDir()">Open folder</button>
-            <button type="button" :disabled="!canOpenWorkflowData" @click="settingsStore.openWorkflowData()">Open workflow data panel</button>
+            <button
+              type="button"
+              :disabled="!canResetMarketDataDir"
+              @click="settingsStore.resetMarketDataDir()"
+            >
+              Reset to default
+            </button>
+            <button
+              type="button"
+              :disabled="!canOpenMarketDataDir"
+              @click="settingsStore.openMarketDataDir()"
+            >
+              Open folder
+            </button>
+            <button
+              type="button"
+              :disabled="!canOpenWorkflowData"
+              @click="settingsStore.openWorkflowData()"
+            >
+              Open workflow data panel
+            </button>
           </div>
-          <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ marketDataDirHint }}</div>
+          <div
+            class="panelStatus mono panelNumeric"
+            role="status"
+            aria-live="polite"
+          >
+            {{ marketDataDirHint }}
+          </div>
+        </section>
+
+        <section class="pane" aria-label="Artifact retention settings">
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Retention</div>
+              <h3 class="panelPaneTitle">Artifact retention</h3>
+              <div class="panelSectionLead">
+                Persist per-artifact-family retention counts for future saves
+                and pruning without changing tagged-artifact protection.
+              </div>
+            </div>
+          </div>
+          <div
+            class="panelSummaryChips"
+            aria-label="Artifact retention summary"
+          >
+            <span
+              v-for="chip in artifactRetentionSummaryChips"
+              :key="`settings_retention_${chip}`"
+              class="panelSummaryChip mono"
+            >
+              {{ chip }}
+            </span>
+          </div>
+          <div class="panelMuted">
+            Leave a field blank to use the built-in default. Tagged artifacts
+            still stay protected, and retention changes apply to future saves
+            rather than triggering an immediate prune.
+          </div>
+          <div class="panelMuted">
+            Environment overrides remain highest precedence. Effective values
+            below reflect the counts the backend will actually use.
+          </div>
+          <div class="actions">
+            <button
+              type="button"
+              :disabled="artifactRetentionLoading || artifactRetentionSaving"
+              @click="refreshArtifactRetentionInfo"
+            >
+              {{
+                artifactRetentionLoading
+                  ? "Refreshing…"
+                  : "Refresh retention info"
+              }}
+            </button>
+          </div>
+          <div
+            v-for="field in artifactRetentionFields"
+            :key="`artifact_retention_${field.key}`"
+            class="retentionRow"
+          >
+            <div>
+              <label :for="`artifactRetention_${field.key}`">{{
+                field.label
+              }}</label>
+              <input
+                :id="`artifactRetention_${field.key}`"
+                type="text"
+                inputmode="numeric"
+                :value="artifactRetentionDrafts[field.key]"
+                :placeholder="
+                  String(artifactRetentionInfo.effective[field.key])
+                "
+                @input="
+                  artifactRetentionDrafts[field.key] = String(
+                    ($event.target as HTMLInputElement).value || '',
+                  )
+                "
+              />
+              <div class="panelMuted">{{ field.description }}</div>
+              <div
+                v-if="artifactRetentionValidation.errors[field.key]"
+                class="panelMuted mono retentionError"
+              >
+                {{ artifactRetentionValidation.errors[field.key] }}
+              </div>
+            </div>
+            <div class="panelMuted retentionFacts">
+              <div>
+                Default:
+                <span class="mono">{{
+                  artifactRetentionInfo.defaults[field.key]
+                }}</span>
+              </div>
+              <div>
+                Saved:
+                <span class="mono">
+                  {{
+                    artifactRetentionInfo.configured[field.key] == null
+                      ? "default"
+                      : artifactRetentionInfo.configured[field.key]
+                  }}
+                </span>
+              </div>
+              <div>
+                Env override:
+                <span class="mono">
+                  {{
+                    artifactRetentionInfo.envOverrides[field.key] == null
+                      ? "none"
+                      : artifactRetentionInfo.envOverrides[field.key]
+                  }}
+                </span>
+              </div>
+              <div>
+                Effective:
+                <span class="mono">{{
+                  artifactRetentionInfo.effective[field.key]
+                }}</span>
+              </div>
+              <div>
+                Env var:
+                <span class="mono">{{
+                  ARTIFACT_RETENTION_FAMILY_META[field.key].envVar
+                }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button
+              type="button"
+              :disabled="
+                !canManageArtifactRetention ||
+                artifactRetentionLoading ||
+                artifactRetentionSaving ||
+                artifactRetentionValidation.hasErrors ||
+                !artifactRetentionValidation.dirty
+              "
+              @click="applyArtifactRetentionDrafts"
+            >
+              {{
+                artifactRetentionSaving ? "Saving…" : "Apply retention settings"
+              }}
+            </button>
+            <button
+              type="button"
+              :disabled="
+                !canManageArtifactRetention ||
+                artifactRetentionLoading ||
+                artifactRetentionSaving ||
+                !artifactRetentionLoaded
+              "
+              @click="resetArtifactRetentionDrafts"
+            >
+              Reset to defaults
+            </button>
+          </div>
+          <div
+            class="panelStatus mono panelNumeric"
+            role="status"
+            aria-live="polite"
+          >
+            {{ artifactRetentionStatusLine }}
+          </div>
         </section>
 
         <section class="pane">
@@ -731,23 +1270,37 @@ onBeforeUnmount(() => {
               <div class="panelEyebrow">Workstation</div>
               <h3 class="panelPaneTitle">Saved perspectives</h3>
               <div class="panelSectionLead">
-                Save named shell layouts so the app restores a working posture instead of one generic remembered state.
+                Save named shell layouts so the app restores a working posture
+                instead of one generic remembered state.
               </div>
             </div>
           </div>
-          <div class="panelSummaryChips" aria-label="Selected perspective summary">
-            <span v-for="chip in perspectiveSummaryChips" :key="`settings_perspective_${chip}`" class="panelSummaryChip mono">
+          <div
+            class="panelSummaryChips"
+            aria-label="Selected perspective summary"
+          >
+            <span
+              v-for="chip in perspectiveSummaryChips"
+              :key="`settings_perspective_${chip}`"
+              class="panelSummaryChip mono"
+            >
               {{ chip }}
             </span>
           </div>
           <div class="rowSingle">
-            <label for="vueSettingsPerspectiveSearch">Search saved perspectives</label>
+            <label for="vueSettingsPerspectiveSearch"
+              >Search saved perspectives</label
+            >
             <input
               id="vueSettingsPerspectiveSearch"
               type="text"
               :value="perspectiveSearchDraft"
               placeholder="name, workflow, density…"
-              @input="perspectiveSearchDraft = String(($event.target as HTMLInputElement).value || '')"
+              @input="
+                perspectiveSearchDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                )
+              "
             />
             <div class="panelMuted">
               {{ perspectiveSearchSummary }}
@@ -759,10 +1312,18 @@ onBeforeUnmount(() => {
               <select
                 id="vueSettingsPerspectiveSelect"
                 :value="selectedPerspectiveId"
-                @change="settingsStore.selectPerspective(String(($event.target as HTMLSelectElement).value || ''))"
+                @change="
+                  settingsStore.selectPerspective(
+                    String(($event.target as HTMLSelectElement).value || ''),
+                  )
+                "
               >
-                <option v-for="entry in visiblePerspectiveOptions" :key="entry.id" :value="entry.id">
-                  {{ entry.name }}{{ entry.builtIn ? ' (built-in)' : '' }}
+                <option
+                  v-for="entry in visiblePerspectiveOptions"
+                  :key="entry.id"
+                  :value="entry.id"
+                >
+                  {{ entry.name }}{{ entry.builtIn ? " (built-in)" : "" }}
                 </option>
               </select>
             </div>
@@ -773,19 +1334,44 @@ onBeforeUnmount(() => {
                 type="text"
                 :value="perspectiveNameDraft"
                 placeholder="Perspective name"
-                @input="perspectiveNameDraft = String(($event.target as HTMLInputElement).value || '')"
+                @input="
+                  perspectiveNameDraft = String(
+                    ($event.target as HTMLInputElement).value || '',
+                  )
+                "
               />
             </div>
           </div>
           <div class="actions">
-            <button type="button" @click="applySelectedPerspective">Apply</button>
-            <button type="button" @click="overwriteSelectedPerspective">Save current to selected</button>
-            <button type="button" @click="createPerspectiveFromDraft">Save as new</button>
+            <button type="button" @click="applySelectedPerspective">
+              Apply
+            </button>
+            <button type="button" @click="overwriteSelectedPerspective">
+              Save current to selected
+            </button>
+            <button type="button" @click="createPerspectiveFromDraft">
+              Save as new
+            </button>
           </div>
           <div class="actions">
-            <button type="button" :disabled="!canRenamePerspective" @click="renameSelectedPerspective">Rename</button>
-            <button type="button" @click="duplicateSelectedPerspective">Duplicate</button>
-            <button type="button" class="danger-btn" :disabled="!canDeletePerspective" @click="deleteSelectedPerspective">Delete</button>
+            <button
+              type="button"
+              :disabled="!canRenamePerspective"
+              @click="renameSelectedPerspective"
+            >
+              Rename
+            </button>
+            <button type="button" @click="duplicateSelectedPerspective">
+              Duplicate
+            </button>
+            <button
+              type="button"
+              class="danger-btn"
+              :disabled="!canDeletePerspective"
+              @click="deleteSelectedPerspective"
+            >
+              Delete
+            </button>
           </div>
           <div class="panelMuted">
             {{ selectedPerspectiveLabel }}
@@ -798,18 +1384,49 @@ onBeforeUnmount(() => {
               <div class="panelEyebrow">Utilities</div>
               <h3 class="panelPaneTitle">Utilities</h3>
               <div class="panelSectionLead">
-                Jump to folders and adjacent workspaces when you need to inspect artifacts outside the main workflow view.
+                Jump to folders and adjacent workspaces when you need to inspect
+                artifacts outside the main workflow view.
               </div>
             </div>
           </div>
           <div class="actions">
-            <button type="button" :disabled="!canOpenRunsDir" @click="settingsStore.openRunsDir()">Open runs folder</button>
-            <button type="button" :disabled="!canOpenReportsDir" @click="settingsStore.openReportsDir()">Open reports folder</button>
-            <button type="button" :disabled="!canOpenPolygonModal" @click="settingsStore.openPolygonModal()">Open Polygon downloader</button>
+            <button
+              type="button"
+              :disabled="!canOpenRunsDir"
+              @click="settingsStore.openRunsDir()"
+            >
+              Open runs folder
+            </button>
+            <button
+              type="button"
+              :disabled="!canOpenReportsDir"
+              @click="settingsStore.openReportsDir()"
+            >
+              Open reports folder
+            </button>
+            <button
+              type="button"
+              :disabled="!canOpenPolygonModal"
+              @click="settingsStore.openPolygonModal()"
+            >
+              Open Polygon downloader
+            </button>
           </div>
           <div class="actions">
-            <button type="button" :disabled="!canGotoLibrary" @click="settingsStore.gotoLibrary()">Go to Run Library</button>
-            <button type="button" :disabled="!canGotoAggregate" @click="settingsStore.gotoAggregate()">Go to Aggregate Analysis</button>
+            <button
+              type="button"
+              :disabled="!canGotoLibrary"
+              @click="settingsStore.gotoLibrary()"
+            >
+              Go to Run Library
+            </button>
+            <button
+              type="button"
+              :disabled="!canGotoAggregate"
+              @click="settingsStore.gotoAggregate()"
+            >
+              Go to Aggregate Analysis
+            </button>
           </div>
         </section>
 
@@ -819,42 +1436,78 @@ onBeforeUnmount(() => {
               <div class="panelEyebrow">Navigation</div>
               <h3 class="panelPaneTitle">Keyboard shortcuts</h3>
               <div class="panelSectionLead">
-                These shortcuts cover the highest-frequency commands so the main authoring flow stays keyboard-friendly.
+                These shortcuts cover the highest-frequency commands so the main
+                authoring flow stays keyboard-friendly.
               </div>
             </div>
           </div>
           <div class="shortcutGrid">
-            <template v-for="row in keyboardShortcutSummaryRows" :key="`settings_shortcut_${row.keysLabel}_${row.label}`">
+            <template
+              v-for="row in keyboardShortcutSummaryRows"
+              :key="`settings_shortcut_${row.keysLabel}_${row.label}`"
+            >
               <div class="mono">{{ row.keysLabel }}</div>
               <div>{{ row.label }}</div>
             </template>
           </div>
         </section>
 
-        <section class="pane diagnosticsPane" aria-label="Desktop settings diagnostics">
+        <section
+          class="pane diagnosticsPane"
+          aria-label="Desktop settings diagnostics"
+        >
           <div class="panelSectionHeader">
             <div>
               <div class="panelEyebrow">Diagnostics</div>
               <h3 class="panelPaneTitle">Runtime and task center</h3>
               <div class="panelSectionLead">
-                Review startup state, current task posture, and recent operator-facing alerts from one place before you need external logs.
+                Review startup state, current task posture, and recent
+                operator-facing alerts from one place before you need external
+                logs.
               </div>
             </div>
           </div>
           <div class="panelSummaryChips" aria-label="Diagnostics summary">
-            <span v-for="chip in diagnosticsSummaryChips" :key="`settings_diagnostics_${chip}`" class="panelSummaryChip mono">
+            <span
+              v-for="chip in diagnosticsSummaryChips"
+              :key="`settings_diagnostics_${chip}`"
+              class="panelSummaryChip mono"
+            >
               {{ chip }}
             </span>
           </div>
           <div class="actions">
-            <button type="button" aria-label="Open task center" @click="openTaskCenter">Open task center</button>
-            <button type="button" aria-label="Copy diagnostics snapshot" @click="copyDesktopDiagnostics">
-              {{ diagnosticsCopied ? 'Copied diagnostics snapshot' : 'Copy diagnostics snapshot' }}
+            <button
+              type="button"
+              aria-label="Open task center"
+              @click="openTaskCenter"
+            >
+              Open task center
             </button>
-            <button type="button" :disabled="recentAlerts.length === 0" @click="clearRecentAlerts">Clear recent alerts</button>
+            <button
+              type="button"
+              aria-label="Copy diagnostics snapshot"
+              @click="copyDesktopDiagnostics"
+            >
+              {{
+                diagnosticsCopied
+                  ? "Copied diagnostics snapshot"
+                  : "Copy diagnostics snapshot"
+              }}
+            </button>
+            <button
+              type="button"
+              :disabled="recentAlerts.length === 0"
+              @click="clearRecentAlerts"
+            >
+              Clear recent alerts
+            </button>
           </div>
           <div class="diagnosticsGrid" aria-label="Desktop diagnostics grid">
-            <section class="diagnosticsCard" aria-label="Runtime diagnostics card">
+            <section
+              class="diagnosticsCard"
+              aria-label="Runtime diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Runtime</div>
                 <div class="mono diagnosticsStamp">{{ runtimeStamp }}</div>
@@ -868,35 +1521,70 @@ onBeforeUnmount(() => {
               </details>
             </section>
 
-            <section class="diagnosticsCard" aria-label="Native desktop diagnostics card">
+            <section
+              class="diagnosticsCard"
+              aria-label="Native desktop diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Native desktop</div>
-                <div class="mono diagnosticsStamp">{{ desktopWindowStateStamp }}</div>
+                <div class="mono diagnosticsStamp">
+                  {{ desktopWindowStateStamp }}
+                </div>
               </header>
-              <div class="diagnosticsPrimary" aria-label="Desktop window state summary">{{ desktopWindowStateDetail }}</div>
-              <div class="panelMuted" aria-label="Desktop notification permission">Notifications: {{ desktopNotificationPermissionLabel }}</div>
+              <div
+                class="diagnosticsPrimary"
+                aria-label="Desktop window state summary"
+              >
+                {{ desktopWindowStateDetail }}
+              </div>
+              <div
+                class="panelMuted"
+                aria-label="Desktop notification permission"
+              >
+                Notifications: {{ desktopNotificationPermissionLabel }}
+              </div>
               <div class="panelMuted">
-                {{ desktopLogConsoleAttached ? 'Desktop log mirror is attached to the browser console in dev.' : 'Desktop log output stays buffered in-app outside dev console mirroring.' }}
+                {{
+                  desktopLogConsoleAttached
+                    ? "Desktop log mirror is attached to the browser console in dev."
+                    : "Desktop log output stays buffered in-app outside dev console mirroring."
+                }}
               </div>
             </section>
 
-            <section class="diagnosticsCard" aria-label="Desktop presence diagnostics card">
+            <section
+              class="diagnosticsCard"
+              aria-label="Desktop presence diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Desktop presence</div>
                 <div class="mono diagnosticsStamp">Foreground-first</div>
               </header>
-              <div class="diagnosticsPrimary" aria-label="Desktop presence summary">{{ desktopPresenceTitle }}</div>
+              <div
+                class="diagnosticsPrimary"
+                aria-label="Desktop presence summary"
+              >
+                {{ desktopPresenceTitle }}
+              </div>
               <div class="panelMuted">{{ desktopPresenceMinimizeDetail }}</div>
               <div class="panelMuted">{{ desktopPresenceCloseDetail }}</div>
-              <div class="panelMuted">{{ desktopPresenceTaskCenterDetail }}</div>
+              <div class="panelMuted">
+                {{ desktopPresenceTaskCenterDetail }}
+              </div>
             </section>
 
-            <section class="diagnosticsCard" aria-label="Task posture diagnostics card">
+            <section
+              class="diagnosticsCard"
+              aria-label="Task posture diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Task posture</div>
                 <div class="mono diagnosticsStamp">{{ centerStatusLabel }}</div>
               </header>
-              <div v-if="diagnosticsTaskChips.length > 0" class="diagnosticsEntryMeta">
+              <div
+                v-if="diagnosticsTaskChips.length > 0"
+                class="diagnosticsEntryMeta"
+              >
                 <span
                   v-for="chip in diagnosticsTaskChips"
                   :key="`diagnostics_task_${chip}`"
@@ -910,7 +1598,10 @@ onBeforeUnmount(() => {
               </div>
               <div v-if="latestTask" class="diagnosticsEntryMeta">
                 <span class="mono diagnosticsBadge" :class="latestTaskTone">
-                  <AppVisualIcon :icon="diagnosticsStatusIcon(latestTask?.status)" class="diagnosticsBadgeIcon" />
+                  <AppVisualIcon
+                    :icon="diagnosticsStatusIcon(latestTask?.status)"
+                    class="diagnosticsBadgeIcon"
+                  />
                   <span>{{ latestTaskStatusLabel }}</span>
                 </span>
               </div>
@@ -931,43 +1622,79 @@ onBeforeUnmount(() => {
               </div>
             </section>
 
-            <section class="diagnosticsCard" aria-label="Desktop log bridge diagnostics card">
+            <section
+              class="diagnosticsCard"
+              aria-label="Desktop log bridge diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Desktop log bridge</div>
-                <div class="mono diagnosticsStamp">{{ desktopLogConsoleAttached ? 'Console attached' : 'Buffered only' }}</div>
+                <div class="mono diagnosticsStamp">
+                  {{
+                    desktopLogConsoleAttached
+                      ? "Console attached"
+                      : "Buffered only"
+                  }}
+                </div>
               </header>
               <div class="diagnosticsPrimary">
-                {{ recentDesktopLogs.length > 0 ? recentDesktopLogs[0]?.message : 'No desktop log entries yet.' }}
+                {{
+                  recentDesktopLogs.length > 0
+                    ? recentDesktopLogs[0]?.message
+                    : "No desktop log entries yet."
+                }}
               </div>
               <div class="panelMuted">
-                Runtime log targets stream into the app diagnostics surface, and the browser console mirrors them only in dev.
+                Runtime log targets stream into the app diagnostics surface, and
+                the browser console mirrors them only in dev.
               </div>
             </section>
 
-            <section class="diagnosticsCard diagnosticsCardWide" aria-label="Desktop logs diagnostics card">
+            <section
+              class="diagnosticsCard diagnosticsCardWide"
+              aria-label="Desktop logs diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Desktop logs</div>
                 <div class="mono diagnosticsStamp">{{ desktopLogStamp }}</div>
               </header>
               <div class="diagnosticsControls">
-                <label class="diagnosticsControl" for="settingsDesktopLogFilter">
+                <label
+                  class="diagnosticsControl"
+                  for="settingsDesktopLogFilter"
+                >
                   <span class="panelMuted">Filter</span>
                   <select
                     id="settingsDesktopLogFilter"
                     :value="desktopLogFilterDraft"
-                    @change="desktopLogFilterDraft = String(($event.target as HTMLSelectElement).value || 'all') as DesktopLogFilter"
+                    @change="
+                      desktopLogFilterDraft = String(
+                        ($event.target as HTMLSelectElement).value || 'all',
+                      ) as DesktopLogFilter
+                    "
                   >
                     <option value="all">All levels</option>
                     <option value="attention">Warnings and errors</option>
                     <option value="errors">Errors only</option>
                   </select>
                 </label>
-                <button type="button" :disabled="desktopLogs.length === 0" @click="clearDesktopLogs">Clear desktop logs</button>
+                <button
+                  type="button"
+                  :disabled="desktopLogs.length === 0"
+                  @click="clearDesktopLogs"
+                >
+                  Clear desktop logs
+                </button>
               </div>
               <div class="panelMuted">
-                {{ desktopLogFilterDraft === 'all' ? 'Use the filter to isolate warnings or errors before copying a diagnostics snapshot.' : `Showing ${desktopLogFilterLabel.toLowerCase()}.` }}
+                {{
+                  desktopLogFilterDraft === "all"
+                    ? "Use the filter to isolate warnings or errors before copying a diagnostics snapshot."
+                    : `Showing ${desktopLogFilterLabel.toLowerCase()}.`
+                }}
               </div>
-              <div v-if="recentDesktopLogs.length === 0" class="panelMuted">{{ desktopLogEmptyLabel }}</div>
+              <div v-if="recentDesktopLogs.length === 0" class="panelMuted">
+                {{ desktopLogEmptyLabel }}
+              </div>
               <ul v-else class="diagnosticsList">
                 <li
                   v-for="(entry, index) in recentDesktopLogs"
@@ -976,9 +1703,17 @@ onBeforeUnmount(() => {
                   :aria-label="diagnosticsDesktopLogSummary(index)"
                 >
                   <div class="diagnosticsEntryMeta">
-                    <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">
-                      <AppVisualIcon :icon="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" />
+                    <span class="mono diagnosticsTime">{{
+                      formatUiTimeFromUnixMs(entry.atUnixMs)
+                    }}</span>
+                    <span
+                      class="mono diagnosticsBadge"
+                      :class="diagnosticsLevelTone(entry.level)"
+                    >
+                      <AppVisualIcon
+                        :icon="diagnosticsLevelIcon(entry.level)"
+                        class="diagnosticsBadgeIcon"
+                      />
                       <span>{{ diagnosticsLevelLabel(entry.level) }}</span>
                     </span>
                   </div>
@@ -990,12 +1725,19 @@ onBeforeUnmount(() => {
               </ul>
             </section>
 
-            <section class="diagnosticsCard diagnosticsCardWide" aria-label="Recent timeline diagnostics card">
+            <section
+              class="diagnosticsCard diagnosticsCardWide"
+              aria-label="Recent timeline diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Recent timeline</div>
-                <div class="mono diagnosticsStamp">{{ recentTimeline.length }} items</div>
+                <div class="mono diagnosticsStamp">
+                  {{ recentTimeline.length }} items
+                </div>
               </header>
-              <div v-if="recentTimeline.length === 0" class="panelMuted">No timeline entries yet.</div>
+              <div v-if="recentTimeline.length === 0" class="panelMuted">
+                No timeline entries yet.
+              </div>
               <ul v-else class="diagnosticsList">
                 <li
                   v-for="(entry, index) in recentTimeline"
@@ -1004,12 +1746,22 @@ onBeforeUnmount(() => {
                   :aria-label="diagnosticsTimelineSummary(index)"
                 >
                   <div class="diagnosticsEntryMeta">
-                    <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">
-                      <AppVisualIcon :icon="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" />
+                    <span class="mono diagnosticsTime">{{
+                      formatUiTimeFromUnixMs(entry.atUnixMs)
+                    }}</span>
+                    <span
+                      class="mono diagnosticsBadge"
+                      :class="diagnosticsLevelTone(entry.level)"
+                    >
+                      <AppVisualIcon
+                        :icon="diagnosticsLevelIcon(entry.level)"
+                        class="diagnosticsBadgeIcon"
+                      />
                       <span>{{ diagnosticsLevelLabel(entry.level) }}</span>
                     </span>
-                    <span class="mono diagnosticsBadge">{{ diagnosticsPhaseLabel(entry.phase) }}</span>
+                    <span class="mono diagnosticsBadge">{{
+                      diagnosticsPhaseLabel(entry.phase)
+                    }}</span>
                   </div>
                   <div class="diagnosticsEntryBody">
                     <strong>{{ diagnosticsSourceLabel(entry.source) }}</strong>
@@ -1019,12 +1771,19 @@ onBeforeUnmount(() => {
               </ul>
             </section>
 
-            <section class="diagnosticsCard diagnosticsCardWide" aria-label="Recent alerts diagnostics card">
+            <section
+              class="diagnosticsCard diagnosticsCardWide"
+              aria-label="Recent alerts diagnostics card"
+            >
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Recent alerts</div>
-                <div class="mono diagnosticsStamp">{{ recentAlerts.length }} items</div>
+                <div class="mono diagnosticsStamp">
+                  {{ recentAlerts.length }} items
+                </div>
               </header>
-              <div v-if="recentAlerts.length === 0" class="panelMuted">No recent alerts.</div>
+              <div v-if="recentAlerts.length === 0" class="panelMuted">
+                No recent alerts.
+              </div>
               <ul v-else class="diagnosticsList">
                 <li
                   v-for="(toast, index) in recentAlerts"
@@ -1033,9 +1792,17 @@ onBeforeUnmount(() => {
                   :aria-label="diagnosticsAlertSummary(index)"
                 >
                   <div class="diagnosticsEntryMeta">
-                    <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(toast.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(toast.level)">
-                      <AppVisualIcon :icon="diagnosticsLevelIcon(toast.level)" class="diagnosticsBadgeIcon" />
+                    <span class="mono diagnosticsTime">{{
+                      formatUiTimeFromUnixMs(toast.atUnixMs)
+                    }}</span>
+                    <span
+                      class="mono diagnosticsBadge"
+                      :class="diagnosticsLevelTone(toast.level)"
+                    >
+                      <AppVisualIcon
+                        :icon="diagnosticsLevelIcon(toast.level)"
+                        class="diagnosticsBadgeIcon"
+                      />
                       <span>{{ diagnosticsLevelLabel(toast.level) }}</span>
                     </span>
                   </div>
@@ -1050,7 +1817,13 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+      <div
+        class="panelStatus mono panelNumeric"
+        role="status"
+        aria-live="polite"
+      >
+        {{ statusLine }}
+      </div>
     </section>
   </Teleport>
 </template>
@@ -1082,17 +1855,27 @@ onBeforeUnmount(() => {
   padding: 0.34rem 0.56rem;
   border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--surface-sunken) 92%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-sunken) 92%,
+    var(--panel-footer)
+  );
   color: var(--muted-strong);
 }
 
 .settingsBrandCard:hover {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 48%, var(--border));
-  background: color-mix(in oklab, var(--surface-focus) 88%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-focus) 88%,
+    var(--panel-footer)
+  );
 }
 
 .settingsBrandLogo {
-  filter: drop-shadow(0 3px 10px color-mix(in srgb, var(--accent-soft) 30%, transparent));
+  filter: drop-shadow(
+    0 3px 10px color-mix(in srgb, var(--accent-soft) 30%, transparent)
+  );
 }
 
 .settingsBrandCopy {
@@ -1121,7 +1904,11 @@ onBeforeUnmount(() => {
 .pane {
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-working) 95%,
+    var(--panel-footer)
+  );
   padding: 0.75rem 0.8rem;
 }
 
@@ -1135,6 +1922,23 @@ onBeforeUnmount(() => {
   margin-top: 0.7rem;
   display: grid;
   gap: 0.35rem;
+}
+
+.retentionRow {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 0.7rem;
+}
+
+.retentionFacts {
+  display: grid;
+  gap: 0.2rem;
+  align-content: start;
+}
+
+.retentionError {
+  color: var(--danger-ink, var(--danger));
 }
 
 .checks {
@@ -1201,7 +2005,11 @@ onBeforeUnmount(() => {
 .diagnosticsCard {
   border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-sunken) 94%,
+    var(--panel-footer)
+  );
   padding: 0.7rem;
   display: grid;
   gap: 0.45rem;
@@ -1283,7 +2091,11 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
   border-radius: 8px;
   padding: 0.08rem 0.38rem;
-  background: color-mix(in oklab, var(--surface-sunken) 76%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-sunken) 76%,
+    var(--panel-footer)
+  );
 }
 
 .diagnosticsBadgeIcon {
@@ -1295,7 +2107,11 @@ onBeforeUnmount(() => {
 .diagnosticsBadge.info,
 .diagnosticsBadge.running {
   border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
-  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-inline));
+  background: color-mix(
+    in oklab,
+    var(--selection-fill) 84%,
+    var(--surface-inline)
+  );
   color: var(--selection-text);
 }
 
@@ -1303,20 +2119,32 @@ onBeforeUnmount(() => {
 .diagnosticsBadge.cancelling,
 .diagnosticsBadge.cancelled {
   border-color: color-mix(in oklab, var(--warning) 38%, var(--border));
-  background: color-mix(in oklab, var(--surface-warning) 90%, var(--surface-inline));
+  background: color-mix(
+    in oklab,
+    var(--surface-warning) 90%,
+    var(--surface-inline)
+  );
   color: var(--warning-ink);
 }
 
 .diagnosticsBadge.error,
 .diagnosticsBadge.failed {
   border-color: color-mix(in oklab, var(--danger) 38%, var(--border));
-  background: color-mix(in oklab, var(--surface-danger) 90%, var(--surface-inline));
+  background: color-mix(
+    in oklab,
+    var(--surface-danger) 90%,
+    var(--surface-inline)
+  );
   color: var(--danger-ink);
 }
 
 .diagnosticsBadge.success {
   border-color: color-mix(in oklab, var(--ok) 38%, var(--border));
-  background: color-mix(in oklab, var(--surface-success) 90%, var(--surface-inline));
+  background: color-mix(
+    in oklab,
+    var(--surface-success) 90%,
+    var(--surface-inline)
+  );
   color: var(--ok-ink);
 }
 
@@ -1354,6 +2182,10 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
+  .retentionRow {
+    grid-template-columns: 1fr;
+  }
+
   .diagnosticsGrid {
     grid-template-columns: 1fr;
   }
@@ -1369,10 +2201,8 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-#settingsShellGrid[data-vue-settings='1'] > :not(#settingsVueShellMount):not(#executionShellPane) {
+#settingsShellGrid[data-vue-settings="1"]
+  > :not(#settingsVueShellMount):not(#executionShellPane) {
   display: none !important;
 }
 </style>
-
-
-

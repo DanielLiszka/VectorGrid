@@ -2,7 +2,7 @@ use super::run_artifacts::{
     self, ArtifactLibrarySnapshot, LatestRunArtifactHydrationResponse,
     LiveSessionArtifactDetailResponse, LiveSessionArtifactSummary, MetaArtifactReplayResponse,
     MetaArtifactSummary, MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary,
-    RunArtifactDetailResponse, RunArtifactSummary, SaveBatchSummaryResponse,
+    RunArtifactDetailResponse, RunArtifactRepairResponse, RunArtifactSummary, SaveBatchSummaryResponse,
     SaveRunArtifactResponse, Stage4ArtifactSummary, Stage5ArtifactReplayResponse,
     Stage5ArtifactSummary, WorkflowArtifactsHydrationPayload,
 };
@@ -170,6 +170,20 @@ pub async fn load_run_artifact_detail(
 ) -> Result<RunArtifactDetailResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
         run_artifacts::load_run_artifact_detail_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn repair_run_artifact(
+    path: String,
+    dry_run: bool,
+    write_target: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<RunArtifactRepairResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::repair_run_artifact_blocking(path, dry_run, write_target, app)
     })
     .await
     .map_err(|e| e.to_string())?

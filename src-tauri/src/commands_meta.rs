@@ -1574,7 +1574,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
     std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
     run_artifacts::prune_old_ml_policy_eval_artifacts_blocking(
         &app,
-        run_artifacts::artifact_retention_policy().ml_policy_eval_keep_newest,
+        run_artifacts::artifact_retention_policy_for_app(&app).ml_policy_eval_keep_newest,
     );
 
     Ok(RunMlConfidencePolicyEvaluationResponse {
@@ -1921,7 +1921,7 @@ fn run_meta_stage5_ml_confidence_blocking(
     std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
     run_artifacts::prune_old_stage5_artifacts_blocking(
         &app,
-        run_artifacts::artifact_retention_policy().stage5_keep_newest,
+        run_artifacts::artifact_retention_policy_for_app(&app).stage5_keep_newest,
     );
 
     Ok(RunMetaStage4Response {
@@ -2388,7 +2388,7 @@ pub(super) fn run_meta_selection_blocking(
     // Retention policy: keep newest N untagged meta runs; tags preserve older runs.
     run_artifacts::prune_old_meta_artifacts_blocking(
         &app,
-        run_artifacts::artifact_retention_policy().meta_keep_newest,
+        run_artifacts::artifact_retention_policy_for_app(&app).meta_keep_newest,
     );
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 1, 1, "meta_save");
 

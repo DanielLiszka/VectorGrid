@@ -154,8 +154,8 @@ impl ArtifactFamily {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ArtifactRetentionPolicy {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ArtifactRetentionPolicy {
     pub run_keep_newest: usize,
     pub meta_keep_newest: usize,
     pub stage5_keep_newest: usize,
@@ -180,51 +180,144 @@ impl Default for ArtifactRetentionPolicy {
 }
 
 impl ArtifactRetentionPolicy {
-    fn from_env() -> Self {
-        let defaults = Self::default();
-        Self {
-            run_keep_newest: read_retention_override(
-                "VECTORGRID_RUN_ARTIFACT_KEEP_NEWEST",
-                defaults.run_keep_newest,
-            ),
-            meta_keep_newest: read_retention_override(
-                "VECTORGRID_META_ARTIFACT_KEEP_NEWEST",
-                defaults.meta_keep_newest,
-            ),
-            stage5_keep_newest: read_retention_override(
-                "VECTORGRID_STAGE5_ARTIFACT_KEEP_NEWEST",
-                defaults.stage5_keep_newest,
-            ),
-            ml_policy_eval_keep_newest: read_retention_override(
-                "VECTORGRID_ML_POLICY_EVAL_ARTIFACT_KEEP_NEWEST",
-                defaults.ml_policy_eval_keep_newest,
-            ),
-            batch_summary_keep_newest: read_retention_override(
-                "VECTORGRID_BATCH_SUMMARY_ARTIFACT_KEEP_NEWEST",
-                defaults.batch_summary_keep_newest,
-            ),
-            campaign_summary_keep_newest: read_retention_override(
-                "VECTORGRID_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST",
-                defaults.campaign_summary_keep_newest,
-            ),
-            options_expression_keep_newest: read_retention_override(
-                "VECTORGRID_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST",
-                defaults.options_expression_keep_newest,
-            ),
+    fn apply_persisted_settings(
+        mut self,
+        persisted: &crate::settings::ArtifactRetentionSettings,
+    ) -> Self {
+        if let Some(value) = persisted.run_keep_newest {
+            self.run_keep_newest = value;
         }
+        if let Some(value) = persisted.meta_keep_newest {
+            self.meta_keep_newest = value;
+        }
+        if let Some(value) = persisted.stage5_keep_newest {
+            self.stage5_keep_newest = value;
+        }
+        if let Some(value) = persisted.ml_policy_eval_keep_newest {
+            self.ml_policy_eval_keep_newest = value;
+        }
+        if let Some(value) = persisted.batch_summary_keep_newest {
+            self.batch_summary_keep_newest = value;
+        }
+        if let Some(value) = persisted.campaign_summary_keep_newest {
+            self.campaign_summary_keep_newest = value;
+        }
+        if let Some(value) = persisted.options_expression_keep_newest {
+            self.options_expression_keep_newest = value;
+        }
+        self
+    }
+
+    fn apply_optional_overrides(
+        mut self,
+        overrides: &crate::settings::ArtifactRetentionSettings,
+    ) -> Self {
+        if let Some(value) = overrides.run_keep_newest {
+            self.run_keep_newest = value;
+        }
+        if let Some(value) = overrides.meta_keep_newest {
+            self.meta_keep_newest = value;
+        }
+        if let Some(value) = overrides.stage5_keep_newest {
+            self.stage5_keep_newest = value;
+        }
+        if let Some(value) = overrides.ml_policy_eval_keep_newest {
+            self.ml_policy_eval_keep_newest = value;
+        }
+        if let Some(value) = overrides.batch_summary_keep_newest {
+            self.batch_summary_keep_newest = value;
+        }
+        if let Some(value) = overrides.campaign_summary_keep_newest {
+            self.campaign_summary_keep_newest = value;
+        }
+        if let Some(value) = overrides.options_expression_keep_newest {
+            self.options_expression_keep_newest = value;
+        }
+        self
     }
 }
 
-fn read_retention_override(var_name: &str, default: usize) -> usize {
-    std::env::var(var_name)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
+pub(crate) fn artifact_retention_defaults() -> ArtifactRetentionPolicy {
+    ArtifactRetentionPolicy::default()
 }
 
-pub(super) fn artifact_retention_policy() -> ArtifactRetentionPolicy {
-    ArtifactRetentionPolicy::from_env()
+fn parse_retention_override(raw: Option<String>) -> Option<usize> {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn artifact_retention_env_overrides_from_reader<F>(
+    mut read_env: F,
+) -> crate::settings::ArtifactRetentionSettings
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    crate::settings::ArtifactRetentionSettings {
+        run_keep_newest: parse_retention_override(read_env("VECTORGRID_RUN_ARTIFACT_KEEP_NEWEST")),
+        meta_keep_newest: parse_retention_override(read_env(
+            "VECTORGRID_META_ARTIFACT_KEEP_NEWEST",
+        )),
+        stage5_keep_newest: parse_retention_override(read_env(
+            "VECTORGRID_STAGE5_ARTIFACT_KEEP_NEWEST",
+        )),
+        ml_policy_eval_keep_newest: parse_retention_override(read_env(
+            "VECTORGRID_ML_POLICY_EVAL_ARTIFACT_KEEP_NEWEST",
+        )),
+        batch_summary_keep_newest: parse_retention_override(read_env(
+            "VECTORGRID_BATCH_SUMMARY_ARTIFACT_KEEP_NEWEST",
+        )),
+        campaign_summary_keep_newest: parse_retention_override(read_env(
+            "VECTORGRID_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST",
+        )),
+        options_expression_keep_newest: parse_retention_override(read_env(
+            "VECTORGRID_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST",
+        )),
+    }
+}
+
+pub(crate) fn artifact_retention_env_overrides() -> crate::settings::ArtifactRetentionSettings {
+    artifact_retention_env_overrides_from_reader(|var_name| std::env::var(var_name).ok())
+}
+
+pub(crate) fn artifact_retention_policy_for_base_with_env_overrides(
+    app_local_data_dir: &Path,
+    env_overrides: &crate::settings::ArtifactRetentionSettings,
+) -> ArtifactRetentionPolicy {
+    let defaults = artifact_retention_defaults();
+    let persisted =
+        match crate::settings::configured_artifact_retention_settings(app_local_data_dir) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                "artifact retention settings invalid in {}: {error}; falling back to defaults/env",
+                crate::settings::settings_path(app_local_data_dir).display()
+            );
+                crate::settings::ArtifactRetentionSettings::default()
+            }
+        };
+    defaults
+        .apply_persisted_settings(&persisted)
+        .apply_optional_overrides(env_overrides)
+}
+
+pub(crate) fn artifact_retention_policy_for_base(
+    app_local_data_dir: &Path,
+) -> ArtifactRetentionPolicy {
+    let env_overrides = artifact_retention_env_overrides();
+    artifact_retention_policy_for_base_with_env_overrides(app_local_data_dir, &env_overrides)
+}
+
+pub(crate) fn artifact_retention_policy_for_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> ArtifactRetentionPolicy {
+    match app.path().app_local_data_dir() {
+        Ok(base) => artifact_retention_policy_for_base(&base),
+        Err(error) => {
+            log::warn!("failed to resolve app data dir for artifact retention policy: {error}");
+            artifact_retention_defaults()
+                .apply_optional_overrides(&artifact_retention_env_overrides())
+        }
+    }
 }
 
 pub(super) fn is_run_artifact_kind(kind: &str) -> bool {
@@ -750,6 +843,25 @@ pub struct RunArtifactDetailResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunArtifactRepairResponse {
+    pub source_path: String,
+    pub result_path: String,
+    pub dry_run: bool,
+    pub changed: bool,
+    pub wrote: bool,
+    pub changes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<RunArtifactSummary>,
+}
+
+#[derive(Debug, Clone)]
+struct RunArtifactNormalizationResult {
+    value: Value,
+    changes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MetaArtifactReplayResponse {
     pub ts: String,
     pub kind: String,
@@ -1188,6 +1300,463 @@ fn write_json_pretty(path: &Path, value: &Value) -> Result<(), String> {
     std::fs::write(path, raw).map_err(|e| e.to_string())
 }
 
+fn push_unique_change(changes: &mut Vec<String>, change: impl Into<String>) {
+    let change = change.into();
+    if !changes.iter().any(|existing| existing == &change) {
+        changes.push(change);
+    }
+}
+
+fn promote_alias_key(
+    row: &mut serde_json::Map<String, Value>,
+    canonical: &str,
+    aliases: &[&str],
+    changes: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut alias_entries = Vec::new();
+    for alias in aliases {
+        if let Some(value) = row.remove(*alias) {
+            alias_entries.push(((*alias).to_string(), value));
+        }
+    }
+    if alias_entries.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(canonical_value) = row.get(canonical) {
+        let canonical_json_text = canonical_json(canonical_value);
+        for (alias, value) in &alias_entries {
+            if canonical_json(value) != canonical_json_text {
+                return Err(format!(
+                    "conflicting values for '{canonical}' and legacy alias '{alias}'"
+                ));
+            }
+        }
+        for (alias, _) in alias_entries {
+            push_unique_change(
+                changes,
+                format!("removed redundant legacy alias {alias} in favor of {canonical}"),
+            );
+        }
+        return Ok(());
+    }
+
+    let (promoted_alias, promoted_value) = alias_entries.remove(0);
+    let promoted_json_text = canonical_json(&promoted_value);
+    for (alias, value) in &alias_entries {
+        if canonical_json(value) != promoted_json_text {
+            return Err(format!(
+                "conflicting values for legacy aliases '{promoted_alias}' and '{alias}'"
+            ));
+        }
+    }
+    row.insert(canonical.to_string(), promoted_value);
+    push_unique_change(
+        changes,
+        format!("promoted legacy field {promoted_alias} -> {canonical}"),
+    );
+    for (alias, _) in alias_entries {
+        push_unique_change(
+            changes,
+            format!("removed redundant legacy alias {alias} in favor of {canonical}"),
+        );
+    }
+    Ok(())
+}
+
+fn normalize_dataset_meta_aliases(
+    ds: &mut serde_json::Map<String, Value>,
+    changes: &mut Vec<String>,
+) -> Result<(), String> {
+    promote_alias_key(ds, "schema_version", &["schemaVersion"], changes)?;
+    promote_alias_key(ds, "csv_path", &["csvPath"], changes)?;
+    promote_alias_key(ds, "base_timeframe", &["baseTimeframe"], changes)?;
+    promote_alias_key(ds, "derived_timeframe", &["derivedTimeframe"], changes)?;
+    promote_alias_key(ds, "resample_applied", &["resampleApplied"], changes)?;
+    promote_alias_key(ds, "resample_rule", &["resampleRule"], changes)?;
+    promote_alias_key(ds, "resample_anchor", &["resampleAnchor"], changes)?;
+    promote_alias_key(ds, "source_size_bytes", &["sourceSizeBytes"], changes)?;
+    promote_alias_key(ds, "source_mtime_utc_ms", &["sourceMtimeUtcMs"], changes)?;
+    promote_alias_key(
+        ds,
+        "source_content_fingerprint",
+        &["sourceContentFingerprint"],
+        changes,
+    )?;
+    Ok(())
+}
+
+fn with_object_at_pointer_mut(
+    value: &mut Value,
+    pointer: &str,
+    label: &str,
+    mutate: impl FnOnce(&mut serde_json::Map<String, Value>) -> Result<(), String>,
+) -> Result<(), String> {
+    let Some(slot) = value.pointer_mut(pointer) else {
+        return Ok(());
+    };
+    let row = slot
+        .as_object_mut()
+        .ok_or_else(|| format!("{label} must be an object"))?;
+    mutate(row)
+}
+
+fn normalize_run_artifact_dataset_meta(
+    root: &mut serde_json::Map<String, Value>,
+    csv_path: &str,
+    changes: &mut Vec<String>,
+) -> Result<(), String> {
+    if !root.contains_key("dataset_meta") {
+        if csv_path.trim().is_empty() {
+            return Ok(());
+        }
+        root.insert(
+            "dataset_meta".to_string(),
+            Value::Object(serde_json::Map::new()),
+        );
+        push_unique_change(
+            changes,
+            "backfilled dataset_meta container from run-level csv path",
+        );
+    }
+
+    let dataset_meta = root
+        .get_mut("dataset_meta")
+        .ok_or_else(|| "dataset_meta is missing".to_string())?;
+    if dataset_meta.is_null() {
+        *dataset_meta = Value::Object(serde_json::Map::new());
+        push_unique_change(changes, "replaced null dataset_meta with an object");
+    }
+    let before = canonical_json(dataset_meta);
+    let ds = dataset_meta
+        .as_object_mut()
+        .ok_or_else(|| "dataset_meta must be an object when present".to_string())?;
+    normalize_dataset_meta_aliases(ds, changes)?;
+    normalize_dataset_meta(ds, csv_path);
+    if canonical_json(dataset_meta) != before {
+        push_unique_change(changes, "normalized dataset_meta schema and timeframe fields");
+    }
+    Ok(())
+}
+
+fn normalize_run_artifact_dataset_identity(value: &mut Value, changes: &mut Vec<String>) {
+    let csv_path = resolve_run_artifact_csv_path(value);
+    if csv_path.trim().is_empty() {
+        return;
+    }
+    let Some(ds) = value.pointer_mut("/dataset_meta").and_then(Value::as_object_mut) else {
+        return;
+    };
+
+    let source_path = Path::new(csv_path.trim());
+    if ds
+        .get("source_size_bytes")
+        .and_then(Value::as_u64)
+        .is_none()
+        || ds
+            .get("source_mtime_utc_ms")
+            .and_then(Value::as_i64)
+            .is_none()
+    {
+        if let Ok(identity) = crate::data_cache::identity_for_source(source_path) {
+            if ds
+                .get("source_size_bytes")
+                .and_then(Value::as_u64)
+                .is_none()
+            {
+                ds.insert(
+                    "source_size_bytes".to_string(),
+                    Value::Number(serde_json::Number::from(identity.size)),
+                );
+                push_unique_change(changes, "backfilled dataset_meta.source_size_bytes");
+            }
+            if ds
+                .get("source_mtime_utc_ms")
+                .and_then(Value::as_i64)
+                .is_none()
+            {
+                ds.insert(
+                    "source_mtime_utc_ms".to_string(),
+                    Value::Number(serde_json::Number::from(identity.mtime_utc_ms)),
+                );
+                push_unique_change(changes, "backfilled dataset_meta.source_mtime_utc_ms");
+            }
+        }
+    }
+    if ds
+        .get("source_content_fingerprint")
+        .and_then(Value::as_str)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if let Ok(fingerprint) = crate::data_cache::content_fingerprint_for_source(source_path) {
+        ds.insert(
+            "source_content_fingerprint".to_string(),
+            Value::String(fingerprint),
+        );
+        push_unique_change(
+            changes,
+            "backfilled dataset_meta.source_content_fingerprint",
+        );
+    }
+}
+
+fn normalize_run_artifact_value_pure(
+    artifact_path: &Path,
+    artifact: &Value,
+) -> Result<RunArtifactNormalizationResult, String> {
+    let kind = artifact.get("kind").and_then(Value::as_str).unwrap_or("");
+    if !is_run_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+
+    let mut normalized = artifact.clone();
+    normalized
+        .as_object()
+        .ok_or_else(|| "run artifact root must be an object".to_string())?;
+    let mut changes = Vec::new();
+
+    {
+        let root = normalized
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        promote_alias_key(
+            root,
+            "config_fingerprint",
+            &["configFingerprint"],
+            &mut changes,
+        )?;
+        promote_alias_key(
+            root,
+            "config_fingerprint_version",
+            &["configFingerprintVersion"],
+            &mut changes,
+        )?;
+        promote_alias_key(
+            root,
+            "report_xlsx_path",
+            &["reportXlsxPath", "reportPath"],
+            &mut changes,
+        )?;
+        promote_alias_key(root, "csv_path", &["csvPath"], &mut changes)?;
+        promote_alias_key(root, "dataset_meta", &["datasetMeta"], &mut changes)?;
+        promote_alias_key(
+            root,
+            "route_provenance",
+            &["routeProvenance"],
+            &mut changes,
+        )?;
+        promote_alias_key(
+            root,
+            "optimization_metric_surface",
+            &["optimizationMetricSurface"],
+            &mut changes,
+        )?;
+    }
+
+    with_object_at_pointer_mut(&mut normalized, "/data", "artifact.data", |row| {
+        promote_alias_key(row, "csv_path", &["csvPath"], &mut changes)
+    })?;
+    with_object_at_pointer_mut(&mut normalized, "/run/req", "artifact.run.req", |row| {
+        promote_alias_key(row, "strategy_kind", &["strategyKind"], &mut changes)?;
+        promote_alias_key(row, "data_id", &["dataId"], &mut changes)
+    })?;
+    with_object_at_pointer_mut(
+        &mut normalized,
+        "/validation/req",
+        "artifact.validation.req",
+        |row| {
+            promote_alias_key(row, "strategy_kind", &["strategyKind"], &mut changes)?;
+            promote_alias_key(row, "data_id", &["dataId"], &mut changes)
+        },
+    )?;
+    with_object_at_pointer_mut(
+        &mut normalized,
+        "/validation/req/validation_context",
+        "artifact.validation.req.validation_context",
+        |row| {
+            promote_alias_key(row, "strategy_kind", &["strategyKind"], &mut changes)?;
+            promote_alias_key(row, "csv_path", &["csvPath"], &mut changes)?;
+            promote_alias_key(row, "data_id", &["dataId"], &mut changes)
+        },
+    )?;
+
+    let resolved_ts = resolved_run_artifact_ts(artifact_path, &normalized);
+    if !resolved_ts.is_empty()
+        && normalized
+            .get("ts")
+            .and_then(Value::as_str)
+            .map(|value| value.trim())
+            != Some(resolved_ts.as_str())
+    {
+        let root = normalized
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        root.insert("ts".to_string(), Value::String(resolved_ts));
+        push_unique_change(
+            &mut changes,
+            "backfilled or normalized ts from artifact contents / filename",
+        );
+    }
+
+    let normalized_tags_value = Value::Array(
+        normalized_tags(&normalized)
+            .into_iter()
+            .map(Value::String)
+            .collect(),
+    );
+    if normalized.get("tags") != Some(&normalized_tags_value) {
+        let root = normalized
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        root.insert("tags".to_string(), normalized_tags_value);
+        push_unique_change(&mut changes, "trimmed artifact tags");
+    }
+
+    let csv_path = resolve_run_artifact_csv_path(&normalized);
+    {
+        let root = normalized
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        normalize_run_artifact_dataset_meta(root, &csv_path, &mut changes)?;
+    }
+
+    let (config_fingerprint, config_fingerprint_version) =
+        normalized_config_fingerprint_fields(&normalized);
+    if !config_fingerprint.is_empty()
+        && normalized
+            .get("config_fingerprint")
+            .and_then(Value::as_str)
+            .map(|value| value.trim())
+            != Some(config_fingerprint.as_str())
+    {
+        let root = normalized
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        root.insert(
+            "config_fingerprint".to_string(),
+            Value::String(config_fingerprint),
+        );
+        push_unique_change(
+            &mut changes,
+            "backfilled config_fingerprint from run / validation request payloads",
+        );
+    }
+    if let Some(version) = config_fingerprint_version {
+        let version_number = Value::Number(serde_json::Number::from(version));
+        if normalized.get("config_fingerprint_version") != Some(&version_number) {
+            let root = normalized
+                .as_object_mut()
+                .ok_or_else(|| "run artifact root must be an object".to_string())?;
+            root.insert("config_fingerprint_version".to_string(), version_number);
+            push_unique_change(&mut changes, "backfilled config_fingerprint_version");
+        }
+    }
+
+    if let Some(route_provenance) = extract_route_provenance_from_artifact(&normalized) {
+        let route_value = serde_json::to_value(route_provenance).map_err(|e| e.to_string())?;
+        if normalized.pointer("/route_provenance") != Some(&route_value) {
+            let root = normalized
+                .as_object_mut()
+                .ok_or_else(|| "run artifact root must be an object".to_string())?;
+            root.insert("route_provenance".to_string(), route_value);
+            push_unique_change(&mut changes, "backfilled route_provenance");
+        }
+    }
+
+    if let Some(lineage) = extract_artifact_lineage_from_artifact(&normalized) {
+        let lineage_value = serde_json::to_value(lineage).map_err(|e| e.to_string())?;
+        if normalized.pointer("/lineage") != Some(&lineage_value) {
+            let root = normalized
+                .as_object_mut()
+                .ok_or_else(|| "run artifact root must be an object".to_string())?;
+            root.insert("lineage".to_string(), lineage_value);
+            push_unique_change(&mut changes, "backfilled lineage");
+        }
+        let root = normalized
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        for key in [
+            "parent_artifact_path",
+            "parentArtifactPath",
+            "parent_artifact_kind",
+            "parentArtifactKind",
+            "lineage_relation",
+            "lineageRelation",
+        ] {
+            if root.remove(key).is_some() {
+                push_unique_change(
+                    &mut changes,
+                    format!("removed legacy top-level lineage field {key}"),
+                );
+            }
+        }
+    }
+
+    if let Some(metric_surface) = build_optimization_metric_surface_artifact_value(&normalized) {
+        if normalized.pointer("/optimization_metric_surface") != Some(&metric_surface) {
+            let root = normalized
+                .as_object_mut()
+                .ok_or_else(|| "run artifact root must be an object".to_string())?;
+            root.insert("optimization_metric_surface".to_string(), metric_surface);
+            push_unique_change(&mut changes, "backfilled optimization_metric_surface");
+        }
+    }
+
+    Ok(RunArtifactNormalizationResult {
+        value: normalized,
+        changes,
+    })
+}
+
+fn repair_run_artifact_target_path<R: tauri::Runtime>(
+    source_path: &Path,
+    write_target: &str,
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
+    let trimmed = write_target.trim();
+    if trimmed.is_empty() {
+        return Err("write_target is empty".to_string());
+    }
+
+    let target_path = PathBuf::from(trimmed);
+    let file_name = target_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "write_target is missing a filename".to_string())?;
+    if !file_name.ends_with(".json") {
+        return Err("write_target must be a .json file inside the app runs dir".to_string());
+    }
+
+    let runs = runs_dir(app)?;
+    let runs = std::fs::canonicalize(runs).map_err(|e| e.to_string())?;
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "write_target is missing a parent directory".to_string())?;
+    let parent = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
+    if !parent.starts_with(&runs) {
+        return Err("write_target is outside app runs dir".to_string());
+    }
+
+    if target_path.exists() {
+        ensure_path_is_within_dir(&target_path, &runs)?;
+        let raw = std::fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
+        let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+        if !is_run_artifact_kind(kind) {
+            return Err(format!("unsupported write_target artifact kind: {kind}"));
+        }
+    }
+
+    if source_path == target_path {
+        return Ok(source_path.to_path_buf());
+    }
+
+    Ok(target_path)
+}
+
 fn sanitize_live_session_route_provenance(value: Option<&Value>) -> Option<Value> {
     extract_route_provenance_from_value(value)
         .and_then(|summary| serde_json::to_value(summary).ok())
@@ -1580,7 +2149,10 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
 
     // Retention policy: keep newest N untagged runs, but never delete tagged runs.
-    prune_old_run_artifacts_blocking(&app, artifact_retention_policy().run_keep_newest);
+    prune_old_run_artifacts_blocking(
+        &app,
+        artifact_retention_policy_for_app(&app).run_keep_newest,
+    );
     Ok(SaveRunArtifactResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
@@ -1600,7 +2172,7 @@ pub(super) fn save_batch_summary_blocking(
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     prune_old_batch_summary_artifacts_blocking(
         &app,
-        artifact_retention_policy().batch_summary_keep_newest,
+        artifact_retention_policy_for_app(&app).batch_summary_keep_newest,
     );
     Ok(SaveBatchSummaryResponse {
         path: path.to_string_lossy().to_string(),
@@ -3207,6 +3779,64 @@ pub(super) fn load_run_artifact_detail_blocking<R: tauri::Runtime>(
     build_run_artifact_detail_response(entry.path.to_string_lossy().as_ref(), &entry.value)
 }
 
+pub(super) fn repair_run_artifact_blocking<R: tauri::Runtime>(
+    path: String,
+    dry_run: bool,
+    write_target: Option<String>,
+    app: tauri::AppHandle<R>,
+) -> Result<RunArtifactRepairResponse, String> {
+    if !dry_run && write_target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err("write_target is required when dry_run is false".to_string());
+    }
+
+    let entry = load_artifact_entry_checked(path, app.clone())?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_run_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+
+    let result_path = match write_target.as_deref() {
+        Some(target) => repair_run_artifact_target_path(&entry.path, target, &app)?,
+        None => entry.path.clone(),
+    };
+
+    let mut normalized = normalize_run_artifact_value_pure(&entry.path, &entry.value)?;
+    normalize_run_artifact_dataset_identity(&mut normalized.value, &mut normalized.changes);
+
+    let changed = canonical_json(&entry.value) != canonical_json(&normalized.value);
+    if !changed {
+        push_unique_change(
+            &mut normalized.changes,
+            "artifact is already canonical for the supported repair scope",
+        );
+    }
+
+    let normalized_bytes = serde_json::to_vec_pretty(&normalized.value).map_err(|e| e.to_string())?;
+    let mut wrote = false;
+    if !dry_run && changed {
+        std::fs::write(&result_path, &normalized_bytes).map_err(|e| e.to_string())?;
+        wrote = true;
+    }
+
+    Ok(RunArtifactRepairResponse {
+        source_path: entry.path.to_string_lossy().to_string(),
+        result_path: result_path.to_string_lossy().to_string(),
+        dry_run,
+        changed,
+        wrote,
+        changes: normalized.changes,
+        summary: build_run_artifact_summary(
+            &result_path,
+            normalized_bytes.len() as u64,
+            &normalized.value,
+        ),
+    })
+}
+
 pub(super) fn load_live_session_artifact_detail_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
@@ -3551,9 +4181,11 @@ mod tests {
     use super::super::metric_surface::build_optimization_metric_surface_artifact_value;
     use super::{
         append_live_session_broker_snapshot_blocking, append_live_session_event_blocking,
-        build_meta_artifact_summary, build_ml_policy_eval_summary,
-        build_run_artifact_detail_response, build_run_artifact_summary,
-        build_stage5_artifact_summary, build_workflow_artifacts_hydration_payload, canonical_json,
+        artifact_retention_env_overrides_from_reader, artifact_retention_policy_for_base,
+        artifact_retention_policy_for_base_with_env_overrides, build_meta_artifact_summary,
+        build_ml_policy_eval_summary, build_run_artifact_detail_response,
+        build_run_artifact_summary, build_stage5_artifact_summary,
+        build_workflow_artifacts_hydration_payload, canonical_json,
         compute_config_fingerprint_from_artifact, create_live_session_artifact_blocking,
         delete_artifact_blocking, delete_run_artifact_blocking, ensure_path_is_within_dir,
         extract_artifact_lineage_from_artifact, extract_route_provenance_from_artifact,
@@ -3565,10 +4197,12 @@ mod tests {
         load_live_session_artifact_detail_blocking, load_run_artifact_detail_blocking,
         normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
         prune_old_meta_artifacts_blocking, resolve_run_artifact_csv_path,
-        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
+        repair_run_artifact_blocking, resolve_run_artifact_strategy_kind,
+        resolve_run_artifact_timeframe, runs_dir,
         save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
         update_artifact_tags_blocking,
     };
+    use crate::settings;
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
@@ -3617,12 +4251,70 @@ mod tests {
         })
     }
 
+    fn legacy_run_artifact_with_aliases(csv_path: &str) -> Value {
+        json!({
+            "kind": "vectorbt_run_artifact",
+            "reportPath": "C:/runs/legacy-report.xlsx",
+            "configFingerprint": "cfg1-fnv1a64-0011223344556677",
+            "datasetMeta": {
+                "csvPath": csv_path,
+                "baseTimeframe": "1m",
+                "derivedTimeframe": "15m"
+            },
+            "routeProvenance": {
+                "requested_route": "GpuOnly",
+                "resolved_route": "GpuKernel",
+                "realized_route": "CpuOnly",
+                "route_changed": true,
+                "fallback_reason": "cuda unavailable"
+            },
+            "parentArtifactPath": "C:/runs/parent_run.json",
+            "parentArtifactKind": "vectorgrid_run_artifact",
+            "lineageRelation": "compare_baseline",
+            "tags": [" legacy ", "", "alpha"],
+            "run": {
+                "req": {
+                    "strategyKind": "DoubleMa",
+                    "dataId": "spy-15m"
+                },
+                "res": {
+                    "backend_route": "GpuKernel -> CpuOnly",
+                    "backend_used": "Cpu",
+                    "backend_fallback_reason": "cuda unavailable",
+                    "top": []
+                }
+            },
+            "validation": {
+                "req": {
+                    "strategyKind": "DoubleMa",
+                    "validation_context": {
+                        "csvPath": csv_path,
+                        "timeframe": "15m"
+                    }
+                },
+                "res": { "candidates": [] }
+            }
+        })
+    }
+
     fn unique_token(prefix: &str) -> String {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
         format!("{prefix}_{unique}")
+    }
+
+    fn sample_retention_settings() -> settings::ArtifactRetentionSettings {
+        settings::ArtifactRetentionSettings {
+            run_keep_newest: Some(31),
+            meta_keep_newest: Some(17),
+            stage5_keep_newest: Some(13),
+            ml_policy_eval_keep_newest: Some(11),
+            batch_summary_keep_newest: Some(19),
+            campaign_summary_keep_newest: Some(7),
+            options_expression_keep_newest: Some(5),
+        }
     }
 
     #[test]
@@ -3638,6 +4330,66 @@ mod tests {
             "b": 2
         });
         assert_eq!(canonical_json(&a), canonical_json(&b));
+    }
+
+    #[test]
+    fn artifact_retention_env_reader_parses_positive_overrides_only() {
+        let overrides = artifact_retention_env_overrides_from_reader(|name| match name {
+            "VECTORGRID_RUN_ARTIFACT_KEEP_NEWEST" => Some("41".to_string()),
+            "VECTORGRID_META_ARTIFACT_KEEP_NEWEST" => Some("0".to_string()),
+            "VECTORGRID_STAGE5_ARTIFACT_KEEP_NEWEST" => Some("abc".to_string()),
+            "VECTORGRID_ML_POLICY_EVAL_ARTIFACT_KEEP_NEWEST" => Some("27".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(overrides.run_keep_newest, Some(41));
+        assert_eq!(overrides.meta_keep_newest, None);
+        assert_eq!(overrides.stage5_keep_newest, None);
+        assert_eq!(overrides.ml_policy_eval_keep_newest, Some(27));
+    }
+
+    #[test]
+    fn artifact_retention_policy_uses_persisted_values_and_tolerates_invalid_settings() {
+        let base = make_temp_dir("artifact_retention_policy_persisted");
+        settings::set_artifact_retention_settings(&base, &sample_retention_settings())
+            .expect("persist artifact retention settings");
+
+        let policy = artifact_retention_policy_for_base(&base);
+        assert_eq!(policy.run_keep_newest, 31);
+        assert_eq!(policy.options_expression_keep_newest, 5);
+
+        std::fs::write(
+            settings::settings_path(&base),
+            r#"{
+  "artifact_retention": {
+    "run_keep_newest": 0
+  }
+}"#,
+        )
+        .expect("write invalid settings");
+
+        let fallback_policy = artifact_retention_policy_for_base(&base);
+        assert_eq!(fallback_policy, super::artifact_retention_defaults());
+    }
+
+    #[test]
+    fn artifact_retention_policy_prefers_env_overrides_over_persisted_values() {
+        let base = make_temp_dir("artifact_retention_policy_env_precedence");
+        settings::set_artifact_retention_settings(&base, &sample_retention_settings())
+            .expect("persist artifact retention settings");
+
+        let policy = artifact_retention_policy_for_base_with_env_overrides(
+            &base,
+            &settings::ArtifactRetentionSettings {
+                run_keep_newest: Some(4),
+                batch_summary_keep_newest: Some(8),
+                ..settings::ArtifactRetentionSettings::default()
+            },
+        );
+
+        assert_eq!(policy.run_keep_newest, 4);
+        assert_eq!(policy.batch_summary_keep_newest, 8);
+        assert_eq!(policy.meta_keep_newest, 17);
     }
 
     #[test]
@@ -5138,6 +5890,189 @@ mod tests {
             !target.exists(),
             "failed overwrite should not create a file"
         );
+    }
+
+    #[test]
+    fn repair_run_artifact_blocking_dry_run_reports_changes_without_mutating_source() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let dataset_dir = make_temp_dir("repair_run_artifact_dataset");
+        let csv_path = dataset_dir.join("SPY.csv");
+        std::fs::write(&csv_path, b"timestamp,close\n1,100\n2,101\n").expect("write csv");
+        let csv_path_text = csv_path.to_string_lossy().to_string();
+        let source_path = dir.join("vectorbt_run_2026-04-10T12-00-00Z.json");
+        std::fs::write(
+            &source_path,
+            serde_json::to_vec_pretty(&legacy_run_artifact_with_aliases(&csv_path_text))
+                .expect("legacy artifact json"),
+        )
+        .expect("write source artifact");
+        let original_raw = std::fs::read_to_string(&source_path).expect("read original source");
+        let csv_len = std::fs::metadata(&csv_path).expect("csv metadata").len();
+
+        let response = repair_run_artifact_blocking(
+            source_path.to_string_lossy().to_string(),
+            true,
+            None,
+            handle,
+        )
+        .expect("repair dry run");
+
+        assert!(response.dry_run);
+        assert!(response.changed);
+        assert!(!response.wrote);
+        assert_eq!(
+            response.result_path,
+            source_path.to_string_lossy().to_string()
+        );
+        assert!(response
+            .changes
+            .iter()
+            .any(|change| change.contains("reportPath")));
+        assert_eq!(
+            std::fs::read_to_string(&source_path).expect("read source after dry run"),
+            original_raw
+        );
+
+        let summary = response.summary.expect("summary after dry run");
+        assert_eq!(summary.kind, "vectorbt_run_artifact");
+        assert_eq!(summary.csv_path, csv_path_text);
+        assert_eq!(summary.timeframe, "15m");
+        assert_eq!(summary.config_fingerprint_version, Some(1));
+        assert_eq!(summary.tags, vec!["legacy".to_string(), "alpha".to_string()]);
+        assert_eq!(summary.source_size_bytes, Some(csv_len));
+        assert!(summary.route_provenance.is_some());
+        assert!(summary.lineage.is_some());
+    }
+
+    #[test]
+    fn repair_run_artifact_blocking_writes_canonical_copy_to_explicit_target() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let dataset_dir = make_temp_dir("repair_run_artifact_write_dataset");
+        let csv_path = dataset_dir.join("QQQ.csv");
+        std::fs::write(&csv_path, b"timestamp,close\n1,200\n2,201\n").expect("write csv");
+        let csv_path_text = csv_path.to_string_lossy().to_string();
+        let source_path = dir.join("vectorbt_run_2026-04-10T13-00-00Z.json");
+        let target_path = dir.join("vectorgrid_run_2026-04-10T13-00-00Z_repaired.json");
+        std::fs::write(
+            &source_path,
+            serde_json::to_vec_pretty(&legacy_run_artifact_with_aliases(&csv_path_text))
+                .expect("legacy artifact json"),
+        )
+        .expect("write source artifact");
+        let source_before = std::fs::read_to_string(&source_path).expect("read source before");
+
+        let response = repair_run_artifact_blocking(
+            source_path.to_string_lossy().to_string(),
+            false,
+            Some(target_path.to_string_lossy().to_string()),
+            handle.clone(),
+        )
+        .expect("repair write");
+
+        assert!(!response.dry_run);
+        assert!(response.changed);
+        assert!(response.wrote);
+        assert_eq!(
+            response.result_path,
+            target_path.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&source_path).expect("read source after repair"),
+            source_before
+        );
+        assert!(target_path.exists(), "repaired target should exist");
+
+        let repaired =
+            load_artifact_value_checked_blocking(target_path.to_string_lossy().to_string(), handle)
+                .expect("load repaired artifact");
+        assert_eq!(
+            repaired
+                .get("report_xlsx_path")
+                .and_then(Value::as_str),
+            Some("C:/runs/legacy-report.xlsx")
+        );
+        assert!(repaired.get("reportPath").is_none());
+        assert!(repaired.get("dataset_meta").is_some());
+        assert!(repaired.get("datasetMeta").is_none());
+        assert_eq!(
+            repaired
+                .pointer("/run/req/strategy_kind")
+                .and_then(Value::as_str),
+            Some("DoubleMa")
+        );
+        assert_eq!(
+            repaired
+                .pointer("/dataset_meta/csv_path")
+                .and_then(Value::as_str),
+            Some(csv_path_text.as_str())
+        );
+        assert!(repaired.pointer("/lineage").is_some());
+        assert!(repaired.get("parentArtifactPath").is_none());
+    }
+
+    #[test]
+    fn repair_run_artifact_blocking_requires_write_target_for_non_dry_runs() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save source artifact");
+
+        let err = repair_run_artifact_blocking(saved.path, false, None, handle)
+            .expect_err("missing write target should fail");
+
+        assert_eq!(err, "write_target is required when dry_run is false");
+    }
+
+    #[test]
+    fn repair_run_artifact_blocking_rejects_write_target_outside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:30:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save source artifact");
+        let outside_path = make_temp_dir("repair_run_artifact_outside")
+            .join("repaired_outside.json")
+            .to_string_lossy()
+            .to_string();
+
+        let err = repair_run_artifact_blocking(saved.path, false, Some(outside_path), handle)
+            .expect_err("outside target should fail");
+
+        assert_eq!(err, "write_target is outside app runs dir");
+    }
+
+    #[test]
+    fn repair_run_artifact_blocking_reports_noop_for_canonical_artifacts() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T13:30:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save source artifact");
+
+        let response = repair_run_artifact_blocking(saved.path.clone(), true, None, handle)
+            .expect("repair canonical dry run");
+
+        assert!(!response.changed);
+        assert!(!response.wrote);
+        assert_eq!(response.result_path, saved.path);
+        assert!(response
+            .changes
+            .iter()
+            .any(|change| change.contains("already canonical")));
     }
 
     #[test]
