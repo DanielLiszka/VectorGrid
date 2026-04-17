@@ -57,26 +57,26 @@ const OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE: f64 = 0.50;
 const OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE: f64 = 0.50;
 const OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD: f64 = 0.40;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn forced_options_expression_cuda_device_id() -> &'static Mutex<Option<Option<u32>>> {
     static FORCED: OnceLock<Mutex<Option<Option<u32>>>> = OnceLock::new();
     FORCED.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn forced_options_expression_gpu_plan_error() -> &'static Mutex<Option<String>> {
     static FORCED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     FORCED.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn set_forced_options_expression_cuda_device_id_for_test(value: Option<Option<u32>>) {
     *forced_options_expression_cuda_device_id()
         .lock()
         .expect("forced cuda device override poisoned") = value;
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn set_forced_options_expression_gpu_plan_error_for_test(value: Option<String>) {
     *forced_options_expression_gpu_plan_error()
         .lock()
@@ -481,6 +481,41 @@ fn validate_fill_model(
             price_semantics.allowed_fill_models_label()
         ))
     }
+}
+
+fn validate_static_filters(
+    filters: &crate::options_types::OptionsStaticFilterBundle,
+) -> Result<(), String> {
+    if filters
+        .min_premium
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err("min_premium must be a finite non-negative number".to_string());
+    }
+    if filters
+        .max_premium
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err("max_premium must be a finite non-negative number".to_string());
+    }
+    if filters
+        .min_volume
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err("min_volume must be a finite non-negative number".to_string());
+    }
+    if filters
+        .min_open_interest
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err("min_open_interest must be a finite non-negative number".to_string());
+    }
+    if let (Some(min_premium), Some(max_premium)) = (filters.min_premium, filters.max_premium) {
+        if min_premium > max_premium {
+            return Err("min_premium must be <= max_premium".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn assign_splits(
@@ -2533,6 +2568,7 @@ fn prepare_options_expression_run(
 ) -> Result<PreparedOptionsExpressionRun, String> {
     let _nvtx_scope = crate::nvtx::scope("engine", "options_prepare");
     validate_fill_model(dataset.manifest.price_semantics, req.fill_model)?;
+    validate_static_filters(&req.filters)?;
     if !dataset
         .manifest
         .root_symbol
@@ -5824,10 +5860,11 @@ mod tests {
     use super::*;
     use crate::options_types::{
         ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
+        OptionsExitTemplateFamily, OptionsExpressionBackendPreference,
         OptionsExpressionEventStatus, OptionsExpressionExitReason,
         OptionsExpressionValidationVerdict, OptionsFillModelFamily, OptionsMoneynessBucket,
         OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1,
-        OptionsStaticFilterBundle, OptionsStructureFamily,
+        OptionsSplitAssignmentMode, OptionsStaticFilterBundle, OptionsStructureFamily,
     };
     use crate::test_support::lock_test_env;
     use std::sync::atomic::AtomicUsize;
@@ -6601,6 +6638,57 @@ mod tests {
             quote_age_ms: Some(750),
             session_id: Some("2026-04-01".to_string()),
         }
+    }
+
+    fn test_request() -> OptionsExpressionRunRequest {
+        OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy_options".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![15],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.2,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        }
+    }
+
+    #[test]
+    fn run_options_expression_rejects_negative_filter_values() {
+        let _guard = lock_test_env();
+        let mut req = test_request();
+        req.filters.max_premium = Some(-1.0);
+
+        let err =
+            run_options_expression_blocking(req, &test_manifest(), &test_dataset()).unwrap_err();
+
+        assert!(err.contains("max_premium must be a finite non-negative number"));
+    }
+
+    #[test]
+    fn feasibility_preview_rejects_inverted_premium_ranges() {
+        let _guard = lock_test_env();
+        let mut req = test_request();
+        req.filters.min_premium = Some(2.0);
+        req.filters.max_premium = Some(1.0);
+
+        let err =
+            analyze_options_expression_feasibility_blocking(req, &test_manifest(), &test_dataset())
+                .unwrap_err();
+
+        assert!(err.contains("min_premium must be <= max_premium"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

@@ -60,6 +60,68 @@ fn is_ml_confidence_policy_eval_kind(kind: &str) -> bool {
     )
 }
 
+fn is_mutable_library_artifact_kind(kind: &str) -> bool {
+    is_run_artifact_kind(kind)
+        || is_meta_selection_kind(kind)
+        || is_meta_stage_result_kind(kind)
+        || is_ml_confidence_policy_eval_kind(kind)
+        || is_options_expression_artifact_kind(kind)
+}
+
+fn prune_old_artifacts_by_prefixes_in_dir(dir: &Path, keep_newest: usize, prefixes: &[&str]) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+            continue;
+        }
+        paths.push(path);
+    }
+
+    paths.sort_by(|a, b| {
+        let aa = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let bb = b.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        bb.cmp(aa)
+    });
+
+    if paths.len() <= keep_newest {
+        return;
+    }
+
+    for path in paths.into_iter().skip(keep_newest) {
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let tags = v
+            .get("tags")
+            .and_then(|x| x.as_array())
+            .map_or(&[][..], |xs| xs.as_slice());
+        let tagged = tags
+            .iter()
+            .any(|t| t.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false));
+        if tagged {
+            continue;
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
 fn is_meta_artifact_file_name(name: &str) -> bool {
     let trimmed = name.trim();
     trimmed.starts_with("vectorbt_meta_") || trimmed.starts_with("vectorgrid_meta_")
@@ -135,6 +197,8 @@ pub struct RunArtifactSummary {
     pub config_fingerprint_version: Option<u32>,
     pub has_validation: bool,
     pub report_xlsx_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_xlsx_exists: Option<bool>,
     pub csv_path: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub timeframe: String,
@@ -287,6 +351,7 @@ pub struct MetaArtifactSummary {
     pub ts: String,
     pub path: String,
     pub bytes: u64,
+    pub kind: String,
     pub strategy_kind: String,
     pub timeframe: String,
     pub required_tag: String,
@@ -294,6 +359,8 @@ pub struct MetaArtifactSummary {
     pub artifacts_used: usize,
     pub holdout_datasets: usize,
     pub report_xlsx_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_xlsx_exists: Option<bool>,
     pub tags: Vec<String>,
 }
 
@@ -302,6 +369,7 @@ pub struct Stage4ArtifactSummary {
     pub ts: String,
     pub path: String,
     pub bytes: u64,
+    pub kind: String,
     pub strategy_kind: String,
     pub timeframe: String,
     pub source_meta_json_path: String,
@@ -321,6 +389,7 @@ pub struct MlPolicyEvalArtifactSummary {
     pub ts: String,
     pub path: String,
     pub bytes: u64,
+    pub kind: String,
     pub strategy_kind: String,
     pub timeframe: String,
     pub artifacts_evaluated: usize,
@@ -355,6 +424,8 @@ pub struct WorkflowArtifactRunPayload {
     pub ts: String,
     pub artifact_path: String,
     pub report_xlsx_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_xlsx_exists: Option<bool>,
     pub csv_path: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config_fingerprint: String,
@@ -402,10 +473,17 @@ pub struct LatestRunArtifactHydrationResponse {
 pub struct RunArtifactDetailResponse {
     pub ts: String,
     pub artifact_path: String,
+    pub kind: String,
     pub strategy_kind: String,
     pub timeframe: String,
     pub csv_path: String,
+    pub report_xlsx_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_xlsx_exists: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub report_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_path_exists: Option<bool>,
     pub has_validation: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config_fingerprint: String,
@@ -480,7 +558,10 @@ pub struct RunArtifactDetailResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct MetaArtifactReplayResponse {
     pub ts: String,
+    pub kind: String,
     pub report_xlsx_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_xlsx_exists: Option<bool>,
     pub report_xlsx_bytes: usize,
     pub meta_json_path: String,
     pub meta_json_bytes: usize,
@@ -490,6 +571,7 @@ pub struct MetaArtifactReplayResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct Stage5ArtifactReplayResponse {
     pub ts: String,
+    pub kind: String,
     pub stage4_json_path: String,
     pub stage4_json_bytes: usize,
     pub stage5_json_path: String,
@@ -500,6 +582,7 @@ pub struct Stage5ArtifactReplayResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct MlPolicyEvalArtifactReplayResponse {
     pub ts: String,
+    pub kind: String,
     pub eval_json_path: String,
     pub eval_json_bytes: usize,
     pub result: Value,
@@ -537,7 +620,7 @@ pub(super) fn suggest_batch_summary_path(
     ts: &str,
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_batch", ts, "json")
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_batch_summary", ts, "json")
 }
 
 pub(super) fn suggest_campaign_summary_path(
@@ -613,6 +696,26 @@ fn existing_run_artifact_target_path<R: tauri::Runtime>(
     if !parent.starts_with(&dir) {
         return Err("path is outside app runs dir".to_string());
     }
+
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "artifact path is missing a filename".to_string())?;
+
+    if path.exists() {
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+        if !is_run_artifact_kind(kind) {
+            return Err(format!("unsupported artifact kind: {kind}"));
+        }
+    } else if !is_run_artifact_file_name(file_name) {
+        return Err(format!(
+            "existing artifact path must target a saved run filename: {}",
+            path.to_string_lossy()
+        ));
+    }
+
     Ok(path)
 }
 
@@ -657,6 +760,26 @@ fn run_artifact_file_recency_key(file_name: &str) -> Option<(String, u32)> {
     Some((ts_and_suffix.to_string(), 1))
 }
 
+fn normalized_run_artifact_ts_from_value(artifact: &Value) -> String {
+    normalize_text_value(artifact.get("ts"))
+}
+
+fn fallback_run_artifact_ts_from_path(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .and_then(run_artifact_file_recency_key)
+        .map(|(base_ts, _)| base_ts)
+        .unwrap_or_default()
+}
+
+fn resolved_run_artifact_ts(path: &Path, artifact: &Value) -> String {
+    let ts = normalized_run_artifact_ts_from_value(artifact);
+    if !ts.is_empty() {
+        return ts;
+    }
+    fallback_run_artifact_ts_from_path(path)
+}
+
 fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!(
@@ -683,6 +806,7 @@ fn resolve_run_artifact_strategy_kind(v: &Value) -> String {
     non_empty_string(v.pointer("/run/req/strategy_kind"))
         .or_else(|| non_empty_string(v.pointer("/validation/req/validation_context/strategy_kind")))
         .or_else(|| non_empty_string(v.pointer("/validation/req/strategy_kind")))
+        .or_else(|| non_empty_string(v.pointer("/ml_signal/stage")).map(|_| "MlSignal".to_string()))
         .unwrap_or_default()
 }
 
@@ -1255,6 +1379,7 @@ pub(super) fn save_batch_summary_blocking(
     let path = suggest_batch_summary_path(ts, &app)?;
     let bytes = serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    prune_old_batch_summary_artifacts_blocking(&app, 100);
     Ok(SaveBatchSummaryResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
@@ -1267,58 +1392,7 @@ fn prune_old_artifacts_by_prefix<R: tauri::Runtime>(
     prefix: &str,
 ) {
     let Ok(dir) = runs_dir(app) else { return };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !name.starts_with(prefix) {
-            continue;
-        }
-        paths.push(path);
-    }
-
-    // Newest first (ISO timestamps sort lexicographically).
-    paths.sort_by(|a, b| {
-        let aa = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let bb = b.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        bb.cmp(aa)
-    });
-
-    if paths.len() <= keep_newest {
-        return;
-    }
-
-    for path in paths.into_iter().skip(keep_newest) {
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let tags = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map_or(&[][..], |xs| xs.as_slice());
-        let tagged = tags
-            .iter()
-            .any(|t| t.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false));
-        if tagged {
-            continue;
-        }
-        let _ = std::fs::remove_file(&path);
-    }
+    prune_old_artifacts_by_prefixes_in_dir(&dir, keep_newest, &[prefix]);
 }
 
 fn prune_old_run_artifacts_blocking<R: tauri::Runtime>(
@@ -1341,14 +1415,21 @@ pub(super) fn prune_old_stage4_artifacts_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     keep_newest: usize,
 ) {
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_stage4_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_stage4_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_stage5_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_stage5_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_stage4_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_stage4_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_stage5_");
-    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_stage5_");
+    let Ok(dir) = runs_dir(app) else { return };
+    prune_old_artifacts_by_prefixes_in_dir(
+        &dir,
+        keep_newest,
+        &[
+            "vectorgrid_stage4_",
+            "vectorgrid_meta_stage4_",
+            "vectorgrid_stage5_",
+            "vectorgrid_meta_stage5_",
+            "vectorbt_stage4_",
+            "vectorbt_meta_stage4_",
+            "vectorbt_stage5_",
+            "vectorbt_meta_stage5_",
+        ],
+    );
 }
 
 pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
@@ -1367,6 +1448,39 @@ pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
         keep_newest,
         "vectorbt_ml_confidence_policy_evaluation_",
     );
+}
+
+pub(super) fn prune_old_batch_summary_artifacts_blocking(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+    keep_newest: usize,
+) {
+    let Ok(dir) = runs_dir(app) else { return };
+    prune_old_artifacts_by_prefixes_in_dir(
+        &dir,
+        keep_newest,
+        &[
+            "vectorgrid_batch_",
+            "vectorgrid_batch_summary_",
+            "vectorbt_batch_",
+            "vectorbt_batch_summary_",
+        ],
+    );
+}
+
+pub(super) fn prune_old_campaign_summary_artifacts_blocking(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+    keep_newest: usize,
+) {
+    let Ok(dir) = runs_dir(app) else { return };
+    prune_old_artifacts_by_prefixes_in_dir(
+        &dir,
+        keep_newest,
+        &["vectorgrid_campaign_summary_", "vectorbt_campaign_summary_"],
+    );
+}
+
+pub(super) fn prune_old_options_expression_artifacts_in_dir(dir: &Path, keep_newest: usize) {
+    prune_old_artifacts_by_prefixes_in_dir(dir, keep_newest, &["vectorgrid_options_expression_"]);
 }
 
 fn read_json_value(path: &Path) -> Option<Value> {
@@ -1420,6 +1534,14 @@ fn read_artifact_scan_entry(path: PathBuf, file_name: String) -> Option<Artifact
     })
 }
 
+fn run_artifact_selection_key(entry: &ArtifactScanEntry) -> (String, String, String) {
+    (
+        resolved_run_artifact_ts(&entry.path, &entry.value),
+        entry.file_name.clone(),
+        entry.path.to_string_lossy().to_string(),
+    )
+}
+
 fn load_latest_run_artifact_entry_blocking(
     app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<Option<ArtifactScanEntry>, String> {
@@ -1467,18 +1589,17 @@ fn load_latest_run_artifact_entry_blocking(
         }
     }
 
-    for entry in scan_artifact_library(app)?.into_iter().rev() {
-        let kind = entry
-            .value
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if is_run_artifact_kind(kind) {
-            return Ok(Some(entry));
-        }
-    }
-
-    Ok(None)
+    Ok(scan_artifact_library(app)?
+        .into_iter()
+        .filter(|entry| {
+            let kind = entry
+                .value
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            is_run_artifact_kind(kind)
+        })
+        .max_by(|lhs, rhs| run_artifact_selection_key(lhs).cmp(&run_artifact_selection_key(rhs))))
 }
 
 fn load_artifact_entry_checked(
@@ -1544,6 +1665,16 @@ fn normalize_text_value(value: Option<&Value>) -> String {
         Some(Value::Null) | None => String::new(),
         Some(other) => other.to_string().trim_matches('"').trim().to_string(),
     }
+}
+
+fn normalize_report_xlsx_fields(value: Option<&Value>) -> (String, Option<bool>) {
+    let path = normalize_text_value(value);
+    let exists = if path.is_empty() {
+        None
+    } else {
+        Some(Path::new(&path).exists())
+    };
+    (path, exists)
 }
 
 fn normalize_optional_text_value(value: Option<&Value>) -> Option<String> {
@@ -2012,17 +2143,16 @@ fn build_workflow_artifacts_hydration_payload(
         .pointer("/run/res")
         .cloned()
         .ok_or_else(|| "Saved run artifact is missing run.res.".to_string())?;
-    let ts = normalize_text_value(artifact.get("ts"));
+    let resolved_ts = resolved_run_artifact_ts(Path::new(artifact_path), artifact);
     let (config_fingerprint, config_fingerprint_version) =
         normalized_config_fingerprint_fields(artifact);
+    let (report_xlsx_path, report_xlsx_exists) =
+        normalize_report_xlsx_fields(artifact.get("report_xlsx_path"));
     let current_run = WorkflowArtifactRunPayload {
-        ts: if ts.is_empty() {
-            chrono::Utc::now().to_rfc3339()
-        } else {
-            ts.clone()
-        },
+        ts: resolved_ts.clone(),
         artifact_path: artifact_path.to_string(),
-        report_xlsx_path: normalize_text_value(artifact.get("report_xlsx_path")),
+        report_xlsx_path,
+        report_xlsx_exists,
         csv_path: resolve_run_artifact_csv_path(artifact),
         config_fingerprint,
         config_fingerprint_version,
@@ -2040,7 +2170,7 @@ fn build_workflow_artifacts_hydration_payload(
             .pointer("/validation/res")
             .cloned()
             .map(|res| WorkflowArtifactValidationPayload {
-                ts: current_run.ts.clone(),
+                ts: resolved_ts,
                 req: clone_value_or_null(artifact.pointer("/validation/req")),
                 res,
             });
@@ -2055,7 +2185,7 @@ fn build_run_artifact_detail_response(
     artifact_path: &str,
     artifact: &Value,
 ) -> Result<RunArtifactDetailResponse, String> {
-    let ts = normalize_text_value(artifact.get("ts"));
+    let resolved_ts = resolved_run_artifact_ts(Path::new(artifact_path), artifact);
     let dataset_meta = artifact.pointer("/dataset_meta").cloned();
     let ml_signal = artifact.pointer("/ml_signal").cloned();
     let optimization_metric_surface = artifact.pointer("/optimization_metric_surface").cloned();
@@ -2077,18 +2207,20 @@ fn build_run_artifact_detail_response(
         (!ml_score_scope.is_empty()).then_some(ml_score_scope.as_str()),
     )
     .unwrap_or_default();
+    let (report_xlsx_path, report_xlsx_exists) =
+        normalize_report_xlsx_fields(artifact.get("report_xlsx_path"));
 
     Ok(RunArtifactDetailResponse {
-        ts: if ts.is_empty() {
-            chrono::Utc::now().to_rfc3339()
-        } else {
-            ts
-        },
+        ts: resolved_ts,
         artifact_path: artifact_path.to_string(),
+        kind: normalize_text_value(artifact.get("kind")),
         strategy_kind: resolve_run_artifact_strategy_kind(artifact),
         timeframe: resolve_run_artifact_timeframe(artifact),
         csv_path: resolve_run_artifact_csv_path(artifact),
-        report_path: normalize_text_value(artifact.get("report_xlsx_path")),
+        report_xlsx_path: report_xlsx_path.clone(),
+        report_xlsx_exists,
+        report_path: report_xlsx_path,
+        report_path_exists: report_xlsx_exists,
         has_validation: validation_res.is_some(),
         config_fingerprint,
         config_fingerprint_version,
@@ -2323,19 +2455,12 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         return None;
     }
 
-    let ts = v
-        .get("ts")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
+    let ts = resolved_run_artifact_ts(path, v);
     let strategy_kind = resolve_run_artifact_strategy_kind(v);
     let (config_fingerprint, config_fingerprint_version) = normalized_config_fingerprint_fields(v);
     let has_validation = v.pointer("/validation/res").is_some();
-    let report_xlsx_path = v
-        .get("report_xlsx_path")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
+    let (report_xlsx_path, report_xlsx_exists) =
+        normalize_report_xlsx_fields(v.get("report_xlsx_path"));
     let csv_path = resolve_run_artifact_csv_path(v);
     let timeframe = resolve_run_artifact_timeframe(v);
     let base_timeframe = v
@@ -2394,6 +2519,7 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         config_fingerprint_version,
         has_validation,
         report_xlsx_path,
+        report_xlsx_exists,
         csv_path,
         timeframe,
         base_timeframe,
@@ -2456,6 +2582,8 @@ fn build_meta_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<Met
     if !is_meta_selection_kind(&kind) {
         return None;
     }
+    let (report_xlsx_path, report_xlsx_exists) =
+        normalize_report_xlsx_fields(v.get("report_xlsx_path"));
 
     Some(MetaArtifactSummary {
         ts: v
@@ -2465,6 +2593,7 @@ fn build_meta_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<Met
             .to_string(),
         path: path.to_string_lossy().to_string(),
         bytes,
+        kind,
         strategy_kind: v
             .pointer("/req/strategy_kind")
             .and_then(|x| x.as_str())
@@ -2493,11 +2622,8 @@ fn build_meta_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<Met
             .pointer("/res/holdout/datasets")
             .and_then(|x| x.as_u64())
             .unwrap_or(0) as usize,
-        report_xlsx_path: v
-            .get("report_xlsx_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string(),
+        report_xlsx_path,
+        report_xlsx_exists,
         tags: normalized_tags(v),
     })
 }
@@ -2520,6 +2646,7 @@ fn build_stage5_artifact_summary(
             .to_string(),
         path: path.to_string_lossy().to_string(),
         bytes,
+        kind: kind.to_string(),
         strategy_kind: v
             .pointer("/res/strategy_kind")
             .and_then(|x| x.as_str())
@@ -2592,6 +2719,7 @@ fn build_ml_policy_eval_summary(
             .to_string(),
         path: path.to_string_lossy().to_string(),
         bytes,
+        kind: kind.to_string(),
         strategy_kind: v
             .pointer("/res/strategy_kind")
             .and_then(|x| x.as_str())
@@ -2891,9 +3019,13 @@ pub(super) fn load_meta_artifact_replay_blocking(
     if !is_meta_selection_kind(kind) {
         return Err(format!("unsupported artifact kind: {kind}"));
     }
+    let (report_xlsx_path, report_xlsx_exists) =
+        normalize_report_xlsx_fields(entry.value.get("report_xlsx_path"));
     Ok(MetaArtifactReplayResponse {
         ts: normalize_text_value(entry.value.get("ts")),
-        report_xlsx_path: normalize_text_value(entry.value.get("report_xlsx_path")),
+        kind: normalize_text_value(entry.value.get("kind")),
+        report_xlsx_path,
+        report_xlsx_exists,
         report_xlsx_bytes: 0,
         meta_json_path: entry.path.to_string_lossy().to_string(),
         meta_json_bytes: entry.bytes as usize,
@@ -2917,6 +3049,7 @@ pub(super) fn load_stage5_artifact_replay_blocking(
     let path = entry.path.to_string_lossy().to_string();
     Ok(Stage5ArtifactReplayResponse {
         ts: normalize_text_value(entry.value.get("ts")),
+        kind: kind.to_string(),
         stage4_json_path: path.clone(),
         stage4_json_bytes: entry.bytes as usize,
         stage5_json_path: path,
@@ -2940,6 +3073,7 @@ pub(super) fn load_ml_policy_eval_artifact_replay_blocking(
     }
     Ok(MlPolicyEvalArtifactReplayResponse {
         ts: normalize_text_value(entry.value.get("ts")),
+        kind: kind.to_string(),
         eval_json_path: entry.path.to_string_lossy().to_string(),
         eval_json_bytes: entry.bytes as usize,
         result: clone_value_or_null(entry.value.pointer("/res")),
@@ -3135,10 +3269,32 @@ pub(super) fn delete_run_artifact_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let dir = runs_dir(&app)?;
-    let path = PathBuf::from(path);
-    ensure_path_is_within_dir(&path, &dir)?;
-    std::fs::remove_file(&path).map_err(|e| e.to_string())
+    let entry = load_artifact_entry_checked(path, app)?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_run_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    std::fs::remove_file(&entry.path).map_err(|e| e.to_string())
+}
+
+pub(super) fn delete_artifact_blocking<R: tauri::Runtime>(
+    path: String,
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let entry = load_artifact_entry_checked(path, app)?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_mutable_library_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    std::fs::remove_file(&entry.path).map_err(|e| e.to_string())
 }
 
 pub(super) fn update_artifact_tags_blocking(
@@ -3154,12 +3310,7 @@ pub(super) fn update_artifact_tags_blocking(
     let mut v: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
     let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-    if !is_run_artifact_kind(kind)
-        && !is_meta_selection_kind(kind)
-        && !is_meta_stage_result_kind(kind)
-        && !is_ml_confidence_policy_eval_kind(kind)
-        && !is_options_expression_artifact_kind(kind)
-    {
+    if !is_mutable_library_artifact_kind(kind) {
         return Err(format!("unsupported artifact kind: {kind}"));
     }
 
@@ -3191,11 +3342,11 @@ mod tests {
     use super::super::metric_surface::build_optimization_metric_surface_artifact_value;
     use super::{
         append_live_session_broker_snapshot_blocking, append_live_session_event_blocking,
-        build_ml_policy_eval_summary, build_run_artifact_detail_response,
-        build_run_artifact_summary, build_stage5_artifact_summary,
-        build_workflow_artifacts_hydration_payload, canonical_json,
+        build_meta_artifact_summary, build_ml_policy_eval_summary,
+        build_run_artifact_detail_response, build_run_artifact_summary,
+        build_stage5_artifact_summary, build_workflow_artifacts_hydration_payload, canonical_json,
         compute_config_fingerprint_from_artifact, create_live_session_artifact_blocking,
-        delete_run_artifact_blocking, ensure_path_is_within_dir,
+        delete_artifact_blocking, delete_run_artifact_blocking, ensure_path_is_within_dir,
         extract_artifact_lineage_from_artifact, extract_route_provenance_from_artifact,
         finalize_live_session_artifact_blocking, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
@@ -3815,6 +3966,54 @@ mod tests {
     }
 
     #[test]
+    fn run_artifact_surfaces_report_existence_for_summary_detail_and_hydration() {
+        let dir = make_temp_dir("run_artifact_report_exists");
+        let report_path = dir.join("report.xlsx");
+        std::fs::write(&report_path, b"report").expect("write report");
+        let report_path_text = report_path.to_string_lossy().to_string();
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": report_path_text,
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d",
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_test.json"),
+            256,
+            &artifact,
+        )
+        .expect("summary");
+        let detail =
+            build_run_artifact_detail_response("C:/runs/vectorgrid_run_test.json", &artifact)
+                .expect("detail");
+        let hydration = build_workflow_artifacts_hydration_payload(
+            "C:/runs/vectorgrid_run_test.json",
+            &artifact,
+        )
+        .expect("hydration");
+        let encoded = serde_json::to_value(hydration).expect("serialize");
+
+        assert_eq!(summary.report_xlsx_exists, Some(true));
+        assert_eq!(detail.report_xlsx_exists, Some(true));
+        assert_eq!(detail.report_xlsx_path, report_path_text);
+        assert_eq!(detail.report_path_exists, Some(true));
+        assert_eq!(
+            encoded
+                .pointer("/currentRun/report_xlsx_exists")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn run_artifact_summary_backfills_fingerprint_version_and_dataset_identity_for_legacy_kind() {
         let artifact = json!({
             "kind": "vectorbt_run_artifact",
@@ -4034,6 +4233,8 @@ mod tests {
         assert_eq!(detail.strategy_kind, "MlSignal");
         assert_eq!(detail.timeframe, "1d");
         assert_eq!(detail.csv_path, "C:/data/SPY.csv");
+        assert_eq!(detail.report_xlsx_path, "C:/runs/report.xlsx");
+        assert_eq!(detail.report_xlsx_exists, Some(false));
         assert_eq!(detail.report_path, "C:/runs/report.xlsx");
         assert_eq!(detail.ml_signal_stage, "validation");
         assert_eq!(detail.ml_bundle_id, "bundle-a");
@@ -4202,6 +4403,45 @@ mod tests {
     }
 
     #[test]
+    fn run_artifact_missing_ts_uses_consistent_filename_fallback_across_summary_detail_and_hydration(
+    ) {
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m"
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            },
+            "validation": {
+                "req": { "max_candidates": 16 },
+                "res": { "rows": [] }
+            }
+        });
+        let path = Path::new("C:/runs/vectorgrid_run_2026-04-09T12-30-00Z_2.json");
+
+        let summary = build_run_artifact_summary(path, 512, &artifact).expect("summary");
+        let detail = build_run_artifact_detail_response(path.to_string_lossy().as_ref(), &artifact)
+            .expect("detail");
+        let hydration =
+            build_workflow_artifacts_hydration_payload(path.to_string_lossy().as_ref(), &artifact)
+                .expect("hydration");
+
+        assert_eq!(summary.ts, "2026-04-09T12-30-00Z");
+        assert_eq!(detail.ts, "2026-04-09T12-30-00Z");
+        assert_eq!(hydration.current_run.ts, "2026-04-09T12-30-00Z");
+        assert_eq!(
+            hydration
+                .current_validation
+                .as_ref()
+                .map(|value| value.ts.as_str()),
+            Some("2026-04-09T12-30-00Z")
+        );
+    }
+
+    #[test]
     fn run_artifact_summary_backfills_cfg1_fingerprint_version_when_field_is_absent() {
         let artifact = json!({
             "ts": "2026-04-02T12:00:00Z",
@@ -4237,6 +4477,36 @@ mod tests {
         assert_eq!(summary.derived_timeframe, "15m");
         assert_eq!(summary.resample_applied, Some(true));
         assert_eq!(summary.report_xlsx_path, "C:/runs/report.xlsx");
+    }
+
+    #[test]
+    fn meta_artifact_summary_marks_missing_report_paths_as_unopenable() {
+        let dir = make_temp_dir("meta_artifact_missing_report");
+        let report_path = dir.join("missing_report.xlsx");
+        let artifact = json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": report_path.to_string_lossy().to_string(),
+            "req": {
+                "strategy_kind": "CompositeMo",
+                "timeframe": "1m",
+                "required_tag": "baseline",
+            },
+            "res": {
+                "groups": [],
+                "artifacts_used": 0,
+                "holdout": { "datasets": 0 }
+            }
+        });
+
+        let summary = build_meta_artifact_summary(
+            Path::new("C:/runs/vectorgrid_meta_test.json"),
+            128,
+            &artifact,
+        )
+        .expect("summary");
+
+        assert_eq!(summary.report_xlsx_exists, Some(false));
     }
 
     #[test]
@@ -4570,6 +4840,98 @@ mod tests {
     }
 
     #[test]
+    fn save_run_artifact_blocking_overwrites_existing_legacy_run_file_when_kind_is_valid() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let legacy_path = dir.join("legacy_saved_run.json");
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec_pretty(&minimal_run_artifact("2026-04-10T12:00:00Z"))
+                .expect("artifact json"),
+        )
+        .expect("write legacy run artifact");
+
+        let mut updated = minimal_run_artifact("2026-04-10T12:00:00Z");
+        if let Some(root) = updated.as_object_mut() {
+            root.insert(
+                "report_xlsx_path".to_string(),
+                Value::String("C:/reports/legacy-updated.xlsx".to_string()),
+            );
+        }
+
+        let overwritten = save_run_artifact_blocking(
+            updated,
+            handle.clone(),
+            Some(legacy_path.to_string_lossy().to_string()),
+        )
+        .expect("overwrite legacy run artifact");
+
+        assert_eq!(PathBuf::from(&overwritten.path), legacy_path);
+        let persisted = load_artifact_value_checked_blocking(overwritten.path, handle)
+            .expect("load overwritten legacy artifact");
+        assert_eq!(
+            persisted.get("report_xlsx_path").and_then(Value::as_str),
+            Some("C:/reports/legacy-updated.xlsx")
+        );
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_rejects_non_run_existing_path_inside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let target = dir.join("vectorgrid_meta_existing.json");
+        std::fs::write(
+            &target,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_meta_selection",
+                "ts": "2026-04-10T12:00:00Z"
+            }))
+            .expect("meta json"),
+        )
+        .expect("write meta artifact");
+
+        let err = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            Some(target.to_string_lossy().to_string()),
+        )
+        .expect_err("non-run overwrite target should fail");
+
+        assert!(err.contains("unsupported artifact kind"));
+        let persisted =
+            load_artifact_value_checked_blocking(target.to_string_lossy().to_string(), handle)
+                .expect("load persisted meta artifact");
+        assert_eq!(
+            persisted.get("kind").and_then(Value::as_str),
+            Some("vectorgrid_meta_selection")
+        );
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_rejects_missing_non_run_filename_when_existing_path_is_provided()
+    {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let target = dir.join("vectorgrid_meta_missing.json");
+
+        let err = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle,
+            Some(target.to_string_lossy().to_string()),
+        )
+        .expect_err("non-run filename should fail");
+
+        assert!(err.contains("must target a saved run filename"));
+        assert!(
+            !target.exists(),
+            "failed overwrite should not create a file"
+        );
+    }
+
+    #[test]
     fn load_latest_run_artifact_summary_prefers_latest_run_file_without_scanning_meta_history() {
         let app = build_mock_app();
         let handle = app.handle().clone();
@@ -4664,6 +5026,41 @@ mod tests {
 
         assert_eq!(summary.ts, "2026-04-10T14:00:00Z");
         assert_eq!(summary.path, legacy_path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn load_latest_run_artifact_summary_prefers_resolved_ts_over_path_order_for_nonstandard_runs() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let missing_ts_path = dir.join("zzz_legacy_missing_ts.json");
+        let explicit_ts_path = dir.join("aaa_legacy_explicit_ts.json");
+        std::fs::write(
+            &missing_ts_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
+            }))
+            .expect("missing-ts json"),
+        )
+        .expect("write missing-ts run artifact");
+        std::fs::write(
+            &explicit_ts_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "ts": "2026-04-10T14:00:00Z",
+                "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
+            }))
+            .expect("explicit-ts json"),
+        )
+        .expect("write explicit-ts run artifact");
+
+        let summary = load_latest_run_artifact_summary_blocking(handle)
+            .expect("latest run summary")
+            .expect("summary should exist");
+
+        assert_eq!(summary.ts, "2026-04-10T14:00:00Z");
+        assert_eq!(summary.path, explicit_ts_path.to_string_lossy().to_string());
     }
 
     #[test]
@@ -4776,6 +5173,49 @@ mod tests {
     }
 
     #[test]
+    fn load_latest_run_artifact_hydration_prefers_resolved_ts_over_path_order_for_nonstandard_runs()
+    {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let missing_ts_path = dir.join("zzz_legacy_missing_ts.json");
+        let explicit_ts_path = dir.join("aaa_legacy_explicit_ts.json");
+        std::fs::write(
+            &missing_ts_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
+            }))
+            .expect("missing-ts json"),
+        )
+        .expect("write missing-ts run artifact");
+        std::fs::write(
+            &explicit_ts_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "ts": "2026-04-10T14:00:00Z",
+                "run": { "req": { "strategy_kind": "DoubleMa" }, "res": { "top": [] } },
+            }))
+            .expect("explicit-ts json"),
+        )
+        .expect("write explicit-ts run artifact");
+
+        let response = load_latest_run_artifact_hydration_blocking(handle)
+            .expect("latest hydration")
+            .expect("response should exist");
+
+        assert_eq!(response.summary.ts, "2026-04-10T14:00:00Z");
+        assert_eq!(
+            response.summary.path,
+            explicit_ts_path.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            response.hydration.current_run.artifact_path,
+            explicit_ts_path.to_string_lossy().to_string()
+        );
+    }
+
+    #[test]
     fn load_latest_run_artifact_hydration_returns_none_when_no_run_artifacts_exist() {
         let app = build_mock_app();
         let handle = app.handle().clone();
@@ -4870,6 +5310,100 @@ mod tests {
             .expect_err("outside delete should fail");
 
         assert_eq!(err, "path is outside app runs dir");
+    }
+
+    #[test]
+    fn delete_run_artifact_blocking_rejects_non_run_artifacts_inside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let target = dir.join("vectorgrid_meta_delete.json");
+        std::fs::write(
+            &target,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_meta_selection",
+                "ts": "2026-04-10T12:00:00Z"
+            }))
+            .expect("meta json"),
+        )
+        .expect("write meta artifact");
+
+        let err = delete_run_artifact_blocking(target.to_string_lossy().to_string(), handle)
+            .expect_err("non-run delete should fail");
+
+        assert!(err.contains("unsupported artifact kind"));
+        assert!(target.exists(), "non-run artifact should remain in place");
+    }
+
+    #[test]
+    fn delete_artifact_blocking_accepts_meta_stage5_and_policy_eval_artifacts_inside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+
+        for (file_name, artifact) in [
+            (
+                "vectorgrid_meta_delete.json",
+                json!({
+                    "kind": "vectorgrid_meta_selection",
+                    "ts": "2026-04-10T12:00:00Z"
+                }),
+            ),
+            (
+                "vectorgrid_stage5_delete.json",
+                json!({
+                    "kind": "vectorgrid_meta_stage5_ml_confidence",
+                    "ts": "2026-04-10T12:05:00Z"
+                }),
+            ),
+            (
+                "vectorgrid_policy_eval_delete.json",
+                json!({
+                    "kind": "vectorgrid_ml_confidence_policy_evaluation",
+                    "ts": "2026-04-10T12:10:00Z"
+                }),
+            ),
+        ] {
+            let target = dir.join(file_name);
+            std::fs::write(
+                &target,
+                serde_json::to_vec_pretty(&artifact).expect("artifact json"),
+            )
+            .expect("write artifact");
+
+            delete_artifact_blocking(target.to_string_lossy().to_string(), handle.clone())
+                .expect("aggregate artifact delete should succeed");
+            assert!(
+                !target.exists(),
+                "artifact should be deleted: {}",
+                target.display()
+            );
+        }
+    }
+
+    #[test]
+    fn delete_artifact_blocking_rejects_live_session_artifacts_inside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let dir = runs_dir(&handle).expect("runs dir");
+        let target = dir.join("vectorgrid_live_session_delete.json");
+        std::fs::write(
+            &target,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_live_session_v1"
+            }))
+            .expect("session json"),
+        )
+        .expect("write live session artifact");
+
+        let err = delete_artifact_blocking(target.to_string_lossy().to_string(), handle)
+            .expect_err("live session delete should fail");
+
+        assert!(err.contains("unsupported artifact kind"));
+        assert!(
+            target.exists(),
+            "unsupported artifact should remain in place"
+        );
     }
 
     #[test]

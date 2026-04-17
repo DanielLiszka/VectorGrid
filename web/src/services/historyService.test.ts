@@ -504,6 +504,54 @@ describe("historyService", () => {
         min_psr: 0.55,
         min_dsr: 0.4,
         admission_policy: "scalar_union",
+        min_cscv_oos_rank_frac: 0.63,
+        min_cscv_oos_metric: 0.11,
+        max_pbo: 0.17,
+        walk_forward: {
+          window_bars: 30000,
+          step_bars: 6000,
+        },
+        reopt_walk_forward: {
+          window_bars: 40000,
+          step_bars: 8000,
+          top_n_candidates: 5,
+        },
+        spa: {
+          slices: 12,
+          bootstrap_samples: 900,
+          block_length: 7,
+        },
+        perturb: {
+          iterations: 11,
+          pct_min: 0.02,
+          pct_max: 0.08,
+        },
+        trade_bootstrap: {
+          simulations: 700,
+          stationary_mean_block_len: 0,
+        },
+        cscv_pbo: {
+          slices: 10,
+        },
+        cross_ticker: {
+          max_datasets: 4,
+          mode: "manual",
+          datasets: [
+            {
+              csv_path: "C:/data/qqq.csv",
+              label: "QQQ",
+              market: "stocks",
+              timeframe: "1d",
+              adjusted: true,
+            },
+            {
+              path: "C:/data/btc.csv",
+              label: "BTC",
+              market: "crypto",
+              timeframe: "4h",
+            },
+          ],
+        },
       },
     });
 
@@ -546,6 +594,58 @@ describe("historyService", () => {
     expect(validation.minPsr).toBe("0.55");
     expect(validation.minDsr).toBe("0.4");
     expect(validation.admissionPolicy).toBe("scalar_union");
+    expect(validation.minCscvRank).toBe("0.63");
+    expect(validation.minCscvMetric).toBe("0.11");
+    expect(validation.maxPbo).toBe("0.17");
+    expect(validation.wfEnable).toBe(true);
+    expect(validation.wfWindow).toBe("30000");
+    expect(validation.wfStep).toBe("6000");
+    expect(validation.reoptWfEnable).toBe(true);
+    expect(validation.reoptWfWindow).toBe("40000");
+    expect(validation.reoptWfStep).toBe("8000");
+    expect(validation.reoptWfTopN).toBe("5");
+    expect(validation.spaEnable).toBe(true);
+    expect(validation.spaSlices).toBe("12");
+    expect(validation.spaBootstrapSamples).toBe("900");
+    expect(validation.spaBlockLength).toBe("7");
+    expect(validation.perturbEnable).toBe(true);
+    expect(validation.perturbIters).toBe("11");
+    expect(validation.perturbMin).toBe("0.02");
+    expect(validation.perturbMax).toBe("0.08");
+    expect(validation.mcEnable).toBe(true);
+    expect(validation.mcSims).toBe("700");
+    expect(validation.mcBlockLen).toBe("0");
+    expect(validation.mcMode).toBe("iid_only");
+    expect(validation.cscvEnable).toBe(true);
+    expect(validation.cscvSlices).toBe("10");
+    expect(validation.crossEnable).toBe(true);
+    expect(validation.crossMax).toBe("4");
+    expect(validation.crossMode).toBe("manual");
+    expect(validation.crossSelectedCount).toBe(2);
+    expect(validation.crossTotalCount).toBe(2);
+    expect(validation.crossMeta).toBe("selected 2/2");
+    expect(validation.crossDatasets).toEqual([
+      {
+        path: "C:/data/qqq.csv",
+        label: "QQQ",
+        meta: "stocks • 1d",
+        checked: true,
+        disabled: false,
+        market: "stocks",
+        timeframe: "1d",
+        adjusted: true,
+      },
+      {
+        path: "C:/data/btc.csv",
+        label: "BTC",
+        meta: "crypto • 4h",
+        checked: true,
+        disabled: false,
+        market: "crypto",
+        timeframe: "4h",
+        adjusted: null,
+      },
+    ]);
   });
 
   it("clears stale advanced builder fields when the saved run omits them", async () => {
@@ -601,6 +701,181 @@ describe("historyService", () => {
     expect(advanced.includeAll).toBe("false");
     expect(advanced.heatmapBins).toBe("128");
     expect(advanced.exportAllCsvPath).toBe("");
+  });
+
+  it("replays conventional composite config, MA params, and CompositeMo advanced settings", async () => {
+    useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      strategyKind: "CompositeMo",
+      timeframe: "4h",
+      csvPath: "C:/data/eth.csv",
+      runReq: {
+        strategy_kind: "CompositeMo",
+        objective: "Sharpe",
+        mode: "Grid",
+        backend: { backend: "GpuHybridKernel", device_id: 0 },
+        ma_source: "hlc3",
+        fast_range: { start: 8, end: 24, step: 2 },
+        slow_range: { start: 34, end: 120, step: 4 },
+        fast_ma_type: "alma",
+        slow_ma_type: "ema",
+        fast_ma_params: { offset: 0.85, sigma: 6 },
+        slow_ma_params: { length: 55 },
+        fast_ma_param_sweeps: { sigma: { start: 4, end: 8, step: 1 } },
+        slow_ma_param_sweeps: { length: [40, 80, 5] },
+        signal_mode: "weighted",
+        halftrend: {
+          amplitude: 3,
+          atr_period: 14,
+          channel_deviation: 1.5,
+        },
+        macz: {
+          fast_length: 12,
+          slow_length: 26,
+          signal_length: 9,
+          lengthz: 20,
+          length_stdev: 21,
+          gamma: 0.3,
+          a: 1.1,
+          b: 0.8,
+          use_lag: true,
+          use_volume: false,
+        },
+        ott: {
+          period: 10,
+          percent: 1.4,
+          ma_type: "ema",
+        },
+        strategy: {
+          long_only: true,
+          allow_flip: false,
+          trade_on_next_bar: true,
+          fee_bps: 0.4,
+          spread_bps: 0.6,
+          slippage_bps: 0.2,
+          cooldown_bars: 3,
+          signal_persistence_bars: 4,
+          trend_quality_linearreg_period: 150,
+          trend_quality_angle_min_deg: 12,
+          trend_quality_bbw_period: 20,
+          trend_quality_bbw_mult: 2.2,
+          trend_quality_bbw_min: 0.04,
+          trend_quality_roc_period: 8,
+          trend_quality_adx_period: 14,
+          trend_quality_adx_min: 18,
+          trend_quality_use_roc: true,
+          trend_quality_use_adx: true,
+          regime_hybrid_adx_period: 16,
+          regime_hybrid_adx_enter: 25,
+          regime_hybrid_adx_exit: 18,
+          regime_hybrid_reversion_entry_rel: 0.9,
+          regime_hybrid_reversion_exit_rel: 0.35,
+          breakout_bbands_period: 20,
+          breakout_bbands_mult: 2.5,
+          breakout_confirm_bars: 3,
+          breakout_macd_fast_period: 12,
+          breakout_macd_slow_period: 26,
+          breakout_macd_signal_period: 9,
+          breakout_cmo_period: 14,
+          breakout_cmo_min_abs: 35,
+          breakout_adosc_short_period: 3,
+          breakout_adosc_long_period: 10,
+          breakout_adx_period: 14,
+          breakout_adx_min: 22,
+          breakout_use_adx: true,
+        },
+        search_space: {
+          fast_len: { kind: "int", low: 4, high: 48 },
+          slow_len: { kind: "int", low: 32, high: 160 },
+        },
+        sampler: {
+          sampler: "Tpe",
+          config: {
+            seed: 17,
+            trials: 120,
+            startup_trials: 20,
+            candidates: 32,
+            gamma: 0.15,
+            batch_size: 8,
+            max_model_points: 256,
+          },
+        },
+        constraints: {
+          min_trades: 40,
+          max_drawdown: 0.18,
+          max_abs_exposure: 1.4,
+        },
+        objectives: {
+          minimize: ["MaxDrawdown", "Exposure"],
+        },
+        gpu_prescan: {
+          require_gpu: true,
+          top_k: 128,
+          window: 512,
+          predictive_top_k: 16,
+          predictive_stride: 4,
+          objectives: "Sharpe,Pnl",
+          mode: "predictive",
+          ma_pairs: [{ fast: "ema", slow: "alma" }],
+        },
+      },
+    });
+
+    await applySavedRun(" C:/runs/composite_mo.json ");
+
+    const optimize = useOptimizeStore(pinia);
+    const advanced = useAdvancedStore(pinia);
+    const strategy = useStrategyStore(pinia);
+    const data = useDataStore(pinia);
+    expect(useWorkflowStore(pinia).mode).toBe("conventional");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("optimize");
+    expect(optimize.strategyKind).toBe("CompositeMo");
+    expect(optimize.backend).toBe("GpuKernel");
+    expect(optimize.fastMaType).toBe("alma");
+    expect(optimize.slowMaType).toBe("ema");
+    expect(optimize.fastMaParams).toEqual({ offset: 0.85, sigma: 6 });
+    expect(optimize.slowMaParams).toEqual({ length: 55 });
+    expect(optimize.fastMaParamSweeps).toEqual({ sigma: [4, 8, 1] });
+    expect(optimize.slowMaParamSweeps).toEqual({ length: [40, 80, 5] });
+    expect(strategy.compositeSignalMode).toBe("weighted");
+    expect(strategy.halfTrendAmplitude).toBe("3");
+    expect(strategy.halfTrendAtrPeriod).toBe("14");
+    expect(strategy.halfTrendChannelDev).toBe("1.5");
+    expect(strategy.maczFastLength).toBe("12");
+    expect(strategy.maczUseLag).toBe(true);
+    expect(strategy.maczUseVolume).toBe(false);
+    expect(strategy.ottPeriod).toBe("10");
+    expect(strategy.ottMaType).toBe("ema");
+    expect(strategy.trendLrPeriod).toBe("150");
+    expect(strategy.trendUseRoc).toBe(true);
+    expect(strategy.trendUseAdx).toBe(true);
+    expect(strategy.regimeAdxPeriod).toBe("16");
+    expect(strategy.breakoutBbPeriod).toBe("20");
+    expect(strategy.breakoutUseAdx).toBe(true);
+    expect(strategy.longOnly).toBe(true);
+    expect(strategy.allowFlip).toBe(false);
+    expect(advanced.maSource).toBe("hlc3");
+    expect(advanced.moUseRangeBuilder).toBe(false);
+    expect(advanced.moSearchSpace).toContain('"fast_len"');
+    expect(advanced.moSampler).toBe("Tpe");
+    expect(advanced.moConstraintMinTrades).toBe("40");
+    expect(advanced.moConstraintMaxDd).toBe("0.18");
+    expect(advanced.moConstraintMaxAbsExposure).toBe("1.4");
+    expect(advanced.moPrescanEnable).toBe(true);
+    expect(advanced.moPrescanRequireGpu).toBe(true);
+    expect(advanced.moPrescanTopK).toBe("128");
+    expect(advanced.moPrescanObjectives).toBe("Sharpe,Pnl");
+    expect(advanced.moPrescanMode).toBe("predictive");
+    expect(advanced.moPrescanMaPairs).toContain('"ema"');
+    expect(advanced.moTpeSeed).toBe("17");
+    expect(advanced.moTpeTrials).toBe("120");
+    expect(advanced.moTpeStartupTrials).toBe("20");
+    expect(advanced.moTpeCandidates).toBe("32");
+    expect(advanced.moTpeGamma).toBe("0.15");
+    expect(advanced.moTpeBatchSize).toBe("8");
+    expect(advanced.moTpeMaxModelPoints).toBe("256");
+    expect(data.csvPath).toBe("C:/data/eth.csv");
+    expect(data.dataTimeframe).toBe("4h");
   });
 
   it("applies MlSignal saved run request into Vue optimize/data stores", async () => {
@@ -793,6 +1068,30 @@ describe("historyService", () => {
     expect(optimize.mlSignalNativeGpuDeviceId).toBe("");
   });
 
+  it("treats saved dataset-export artifacts as MlSignal even when strategy_kind is omitted", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      mlSignalStage: "dataset_export",
+      runReq: {
+        data_id: "data-ml",
+        output_path: "C:/runs/ml_dataset.csv",
+        ma_source: "hlc3",
+        horizon_bars: 12,
+      },
+    });
+
+    await applySavedRun(" C:/runs/ml_export.json ");
+
+    const optimize = useOptimizeStore(pinia);
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("data");
+    expect(optimize.mlSignalDatasetExportPath).toBe("C:/runs/ml_dataset.csv");
+    expect(optimize.mlSignalMaSource).toBe("hlc3");
+    expect(optimize.mlSignalHorizonBars).toBe("12");
+  });
+
   it("reruns saved run by loading data, optional resample, then executing optimization", async () => {
     useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
@@ -819,7 +1118,6 @@ describe("historyService", () => {
       request: expect.objectContaining({
         strategy_kind: "DoubleMa",
         data_id: "data-1@5m",
-        dataId: "data-1@5m",
       }),
       switchTab: true,
     });
@@ -912,6 +1210,80 @@ describe("historyService", () => {
     expect(optimize.mlSignalNativeGpuDeviceId).toBe("2");
   });
 
+  it("reseeds MlSignal artifact provenance before rerunning score-cache generation", async () => {
+    const artifacts = useWorkflowArtifactsStore(pinia);
+    artifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-02-24T00:00:00Z",
+        artifact_path: "C:/runs/old_ml_signal.json",
+        req: { strategy_kind: "MlSignal" },
+        res: {},
+        ml_signal: {
+          stage: "validation",
+          bundle_id: "bundle-old",
+          score_cache_path: "C:/runs/old_score_cache.json",
+          export_manifest_path: "C:/runs/old_export_manifest.json",
+          source_bundle_manifest_path: "C:/models/old_bundle/manifest.json",
+          feature_schema_hash: "old-schema-hash",
+        },
+      },
+      currentValidation: null,
+    });
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
+    invokeCommandMock.mockResolvedValueOnce({
+      ts: "2026-02-25T00:00:00Z",
+      artifactPath: "C:/runs/ml_signal.json",
+      strategyKind: "MlSignal",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "stale-id",
+        input_path: "",
+        output_path: "C:/runs/new_score_cache.json",
+        model_bundle_id: "bundle-new",
+      },
+      mlSignalStage: "validation",
+      mlExportManifestPath: "C:/runs/new_export_manifest.json",
+      mlFeatureSchemaHash: "new-schema-hash",
+      mlSourceBundleManifestPath: "C:/models/new_bundle/manifest.json",
+      mlSourceBundleManifestHash: "bundle-hash-new",
+      mlCalibrationState: "calibrated",
+      mlThresholdPolicy: "long_short_v2",
+      mlProducerKind: "native_catboost",
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.62,
+            t_short: 0.56,
+            delta: 0.08,
+            max_hold_bars: 10,
+          },
+        ],
+      },
+      runRes: {},
+    });
+
+    await rerunSavedRun(" C:/runs/ml_signal.json ");
+
+    expect(generateMlSignalScoreCacheMock).toHaveBeenCalledTimes(1);
+    expect(artifacts.currentRun?.mlSignal).toMatchObject({
+      bundleId: "bundle-new",
+      scoreCachePath: "C:/runs/new_score_cache.json",
+      exportManifestPath: "C:/runs/new_export_manifest.json",
+      sourceBundleManifestPath: "C:/models/new_bundle/manifest.json",
+      featureSchemaHash: "new-schema-hash",
+      scoreCacheProvenance: expect.objectContaining({
+        source_bundle_manifest_hash: "bundle-hash-new",
+        threshold_policy: "long_short_v2",
+        producer_kind: "native_catboost",
+      }),
+      calibration: expect.objectContaining({
+        calibration_state: "calibrated",
+      }),
+    });
+  });
+
   it("reruns MlSignal dataset-export artifact through dataset export only", async () => {
     useWorkflowStore(pinia).selectMode("conventional", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
@@ -919,7 +1291,6 @@ describe("historyService", () => {
       csvPath: "C:/data/spy.csv",
       mlSignalStage: "dataset_export",
       runReq: {
-        strategy_kind: "MlSignal",
         data_id: "stale-id",
         output_path: "C:/runs/ml_dataset.csv",
         ma_source: "close",
@@ -965,6 +1336,7 @@ describe("historyService", () => {
         strategy_kind: "MlSignal",
         has_validation: true,
         report_xlsx_path: "C:/runs/run1.xlsx",
+        report_xlsx_exists: false,
         csv_path: "C:/data/aapl.csv",
         ml_score_space: "Probability",
         ml_score_scope: "CalibrationSlice",
@@ -984,6 +1356,7 @@ describe("historyService", () => {
       strategyKind: "MlSignal",
       hasValidation: true,
       reportXlsxPath: "C:/runs/run1.xlsx",
+      reportXlsxExists: false,
       csvPath: "C:/data/aapl.csv",
       mlScoreSpace: "Probability",
       mlScoreScope: "CalibrationSlice",
@@ -1112,6 +1485,8 @@ describe("historyService", () => {
 
   it("loads MlSignal saved-run detail with policy summary", async () => {
     invokeCommandMock.mockResolvedValueOnce({
+      ts: "2026-02-25T12:00:00Z",
+      artifactPath: "C:/runs/ml_signal.json",
       strategyKind: "MlSignal",
       timeframe: "1d",
       csvPath: "C:/data/spy.csv",
@@ -1122,7 +1497,15 @@ describe("historyService", () => {
       mlScoreCachePath: "C:/runs/ml_score_cache.json",
       mlScoreManifestPath: "C:/runs/ml_score_cache.manifest.json",
       mlFeatureSchemaPath: "C:/runs/ml_dataset.feature_schema.json",
+      mlFeatureSchemaHash: "schemahash0123456789abcdef",
       mlFeatureSchemaVersion: "1",
+      mlExportManifestPath: "C:/runs/ml_export.manifest.json",
+      mlSourceBundleManifestPath: "C:/models/bundle-a/manifest.json",
+      mlSourceBundleManifestHash: "bundlehash0123456789abcdef",
+      mlCalibrationState: "calibrated",
+      mlThresholdPolicy: "long_short_v2",
+      mlProducerKind: "xgboost",
+      mlScoreContractVersion: 3,
       mlScoreSpace: "Probability",
       mlScoreScope: "CalibrationSlice",
       mlScoreContractSummary: "Probability • CalibrationSlice",
@@ -1148,6 +1531,8 @@ describe("historyService", () => {
     const detail = await loadSavedRunDetail(" C:/runs/ml_signal.json ");
 
     expect(detail).toMatchObject({
+      ts: "2026-02-25T12:00:00Z",
+      artifactPath: "C:/runs/ml_signal.json",
       strategyKind: "MlSignal",
       timeframe: "1d",
       csvPath: "C:/data/spy.csv",
@@ -1158,7 +1543,15 @@ describe("historyService", () => {
       mlScoreCachePath: "C:/runs/ml_score_cache.json",
       mlScoreManifestPath: "C:/runs/ml_score_cache.manifest.json",
       mlFeatureSchemaPath: "C:/runs/ml_dataset.feature_schema.json",
+      mlFeatureSchemaHash: "schemahash0123456789abcdef",
       mlFeatureSchemaVersion: "1",
+      mlExportManifestPath: "C:/runs/ml_export.manifest.json",
+      mlSourceBundleManifestPath: "C:/models/bundle-a/manifest.json",
+      mlSourceBundleManifestHash: "bundlehash0123456789abcdef",
+      mlCalibrationState: "calibrated",
+      mlThresholdPolicy: "long_short_v2",
+      mlProducerKind: "xgboost",
+      mlScoreContractVersion: 3,
       mlScoreSpace: "Probability",
       mlScoreScope: "CalibrationSlice",
       mlScoreContractSummary: "Probability • CalibrationSlice",
@@ -1303,6 +1696,30 @@ describe("historyService", () => {
     );
     expect(invokeCommandMock).not.toHaveBeenCalledWith(
       "reveal_path",
+      expect.anything(),
+    );
+  });
+
+  it("rejects opening a saved report when the file no longer exists", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      reportPath: "C:/runs/report.xlsx",
+      reportPathExists: false,
+      paramsText: "",
+    });
+
+    await expect(openSavedRunReport("C:/runs/run1.json")).rejects.toThrow(
+      "Saved run report file no longer exists on disk.",
+    );
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_run_artifact_detail",
+      {
+        path: "C:/runs/run1.json",
+      },
+    );
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "open_path",
       expect.anything(),
     );
   });

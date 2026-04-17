@@ -14,6 +14,7 @@ export interface WorkflowRunArtifact {
   ts: string;
   artifactPath: string;
   reportXlsxPath: string;
+  reportXlsxExists?: boolean | null;
   csvPath: string;
   configFingerprint?: string;
   configFingerprintVersion?: number | null;
@@ -133,6 +134,7 @@ function workflowRunSignature(run: WorkflowRunArtifact | null): string {
     ts: run.ts,
     artifactPath: run.artifactPath,
     reportXlsxPath: run.reportXlsxPath,
+    reportXlsxExists: run.reportXlsxExists ?? null,
     csvPath: run.csvPath,
     configFingerprint: run.configFingerprint,
     datasetMeta: run.datasetMeta,
@@ -164,6 +166,17 @@ function normalizeText(value: unknown): string {
 function normalizeOptionalNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  const text = normalizeText(value).toLowerCase();
+  if (!text) return null;
+  if (text === "1" || text === "true" || text === "yes" || text === "on")
+    return true;
+  if (text === "0" || text === "false" || text === "no" || text === "off")
+    return false;
+  return null;
 }
 
 function normalizeTags(value: unknown): string[] {
@@ -612,7 +625,9 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     artifact_path?: unknown;
     artifactPath?: unknown;
     report_xlsx_path?: unknown;
+    report_xlsx_exists?: unknown;
     reportXlsxPath?: unknown;
+    reportXlsxExists?: unknown;
     csv_path?: unknown;
     csvPath?: unknown;
     config_fingerprint?: unknown;
@@ -650,6 +665,9 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     ts: normalizeText(row.ts),
     artifactPath: normalizeText(row.artifact_path ?? row.artifactPath),
     reportXlsxPath: normalizeText(row.report_xlsx_path ?? row.reportXlsxPath),
+    reportXlsxExists: normalizeOptionalBoolean(
+      row.report_xlsx_exists ?? row.reportXlsxExists,
+    ),
     csvPath: normalizeText(row.csv_path ?? row.csvPath),
     configFingerprint: normalizeText(
       row.config_fingerprint ?? row.configFingerprint,

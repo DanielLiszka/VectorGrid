@@ -139,6 +139,7 @@ describe("workflowArtifactsStore", () => {
           ts: "2026-04-01T12:00:00Z",
           artifact_path: "C:/runs/run.json",
           report_xlsx_path: "C:/runs/report.xlsx",
+          report_xlsx_exists: false,
           csv_path: "C:/data/spy.csv",
           dataset_meta: {
             csv_path: "C:/data/spy.csv",
@@ -162,6 +163,7 @@ describe("workflowArtifactsStore", () => {
     expect(store.currentRun).toMatchObject({
       artifactPath: "C:/runs/run.json",
       reportXlsxPath: "C:/runs/report.xlsx",
+      reportXlsxExists: false,
       csvPath: "C:/data/spy.csv",
       datasetMeta: {
         csv_path: "C:/data/spy.csv",
@@ -341,6 +343,41 @@ describe("workflowArtifactsStore", () => {
     });
     expect(store.currentRun?.reportXlsxPath).toBe("C:/runs/report_b.xlsx");
     expect(store.currentRun?.tags).toEqual(["alpha", "beta"]);
+  });
+
+  it("treats report existence changes as meaningful run updates for the same artifact identity", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+    const basePayload = {
+      currentRun: {
+        ts: "2026-04-01T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        report_xlsx_path: "C:/runs/report.xlsx",
+        report_xlsx_exists: true,
+        req: { strategy_kind: "DoubleMa" },
+        res: { top: [] },
+      },
+      currentValidation: null,
+    };
+
+    applyWorkflowArtifactsPayload(basePayload, "vue");
+    const next = applyWorkflowArtifactsPayload(
+      {
+        currentRun: {
+          ...basePayload.currentRun,
+          report_xlsx_exists: false,
+        },
+        currentValidation: null,
+      },
+      "vue",
+    );
+
+    expect(next).toMatchObject({
+      applied: true,
+      runChanged: true,
+      validationChanged: false,
+      sourceChanged: false,
+    });
+    expect(store.currentRun?.reportXlsxExists).toBe(false);
   });
 
   it("clears stale store state even when the latest global signatures are already null", () => {

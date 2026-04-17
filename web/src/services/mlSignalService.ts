@@ -1586,6 +1586,7 @@ export async function exportMlSignalDataset(): Promise<unknown> {
       : null;
 
   const req = {
+    strategy_kind: "MlSignal",
     data_id: data.dataId,
     output_path: outputPath,
     ma_source: normalizeText(optimize.mlSignalMaSource) || "close",
@@ -2018,7 +2019,11 @@ export async function listMlSignalModelBundles(): Promise<
       const family = normalizeText(row.model_family);
       const issues = readStringList(row.issues);
       const issueSummary =
-        issues.length === 1 ? "1 issue" : issues.length > 1 ? `${issues.length} issues` : "";
+        issues.length === 1
+          ? "1 issue"
+          : issues.length > 1
+            ? `${issues.length} issues`
+            : "";
       return {
         bundleId,
         manifestPath: normalizeText(row.manifest_path),

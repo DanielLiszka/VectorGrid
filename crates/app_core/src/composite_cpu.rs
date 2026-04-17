@@ -13119,6 +13119,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn assert_include_all_scores_match_rows(
         res: &BackendOptimizationResult,
         objective: ObjectiveKind,

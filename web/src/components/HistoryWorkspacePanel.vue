@@ -96,6 +96,7 @@ interface SavedRunListEntry {
   strategyKind: string;
   hasValidation: boolean;
   reportXlsxPath: string;
+  reportXlsxExists?: boolean | null;
   csvPath: string;
   mlScoreContractSummary?: string;
   mlScoreNote?: string;
@@ -211,6 +212,12 @@ function savedRunMlScoreContract(entry: SavedRunListEntry): string {
 
 function savedRunMlScoreNote(entry: SavedRunListEntry): string {
   return String(entry.mlScoreNote || "").trim();
+}
+
+function hasSavedRunReport(entry: SavedRunListEntry): boolean {
+  const reportPath = String(entry.reportXlsxPath || "").trim();
+  if (!reportPath) return false;
+  return entry.reportXlsxExists == null ? true : !!entry.reportXlsxExists;
 }
 
 watch(
@@ -693,10 +700,10 @@ onBeforeUnmount(() => {
                   </span>
                   <span
                     class="pill"
-                    :class="{ good: !!virtualRow.row.reportXlsxPath }"
+                    :class="{ good: hasSavedRunReport(virtualRow.row) }"
                   >
                     {{
-                      virtualRow.row.reportXlsxPath ? "xlsx" : "artifact only"
+                      hasSavedRunReport(virtualRow.row) ? "xlsx" : "artifact only"
                     }}
                   </span>
                   <span

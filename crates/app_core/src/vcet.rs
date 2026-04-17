@@ -7,8 +7,10 @@ use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_direct_with_inputs, DynamicIndicatorCudaSeries,
     PreparedCudaIndicatorInputs,
 };
+#[cfg(feature = "cuda")]
+use crate::indicator_catalog::IndicatorInputKind;
 use crate::indicator_catalog::{
-    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
+    find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 #[cfg(feature = "cuda")]
 use cust::memory::DeviceBuffer;
@@ -202,6 +204,7 @@ struct VcetIndicatorIds {
     vidya_long_key: String,
     vidya_alpha_key: String,
     vidya_output: String,
+    #[cfg(feature = "cuda")]
     vidya_input_kind: IndicatorInputKind,
     chandelier_period_key: String,
     chandelier_mult_key: String,
@@ -461,7 +464,12 @@ fn vcet_indicator_ids() -> Result<&'static VcetIndicatorIds, String> {
     static IDS: OnceLock<Result<VcetIndicatorIds, String>> = OnceLock::new();
 
     IDS.get_or_init(|| {
+        #[cfg(feature = "cuda")]
         let vidya_descriptor = find_dynamic_indicator_descriptor("vidya").ok_or_else(|| {
+            "VCET indicator 'vidya' is not registered for dynamic dispatch".to_string()
+        })?;
+        #[cfg(not(feature = "cuda"))]
+        find_dynamic_indicator_descriptor("vidya").ok_or_else(|| {
             "VCET indicator 'vidya' is not registered for dynamic dispatch".to_string()
         })?;
         Ok(VcetIndicatorIds {
@@ -469,6 +477,7 @@ fn vcet_indicator_ids() -> Result<&'static VcetIndicatorIds, String> {
             vidya_long_key: resolve_param_key("vidya", &["long_period", "long", "slow"])?,
             vidya_alpha_key: resolve_param_key("vidya", &["alpha"])?,
             vidya_output: resolve_output_id("vidya", &["values", "value", "vidya"])?,
+            #[cfg(feature = "cuda")]
             vidya_input_kind: vidya_descriptor.input_kind,
             chandelier_period_key: resolve_param_key(
                 "chandelier_exit",

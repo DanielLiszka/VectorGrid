@@ -16,11 +16,12 @@ pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
 }
 
 fn existing_path(path: String) -> Result<PathBuf, String> {
-    if path.trim().is_empty() {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
         return Err("path must not be empty".to_string());
     }
 
-    let path = PathBuf::from(path);
+    let path = PathBuf::from(trimmed);
     if !path.exists() {
         return Err(format!("path does not exist: {}", path.to_string_lossy()));
     }
@@ -242,17 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn existing_path_preserves_exact_input_bytes_instead_of_trimming() {
+    fn existing_path_trims_outer_whitespace_before_resolution() {
         let dir = make_temp_dir("existing_path_preserve_bytes");
         let file = dir.join("report.xlsx");
         std::fs::write(&file, b"report").expect("seed report");
 
         let padded = format!(" {} ", file.to_string_lossy());
-        let err = existing_path(padded.clone()).expect_err("padded path should not be trimmed");
-        assert!(err.contains("path does not exist"));
-        assert!(err.contains(&padded));
-
-        let resolved = existing_path(file.to_string_lossy().to_string()).expect("exact path");
+        let resolved = existing_path(padded).expect("padded path should resolve after trimming");
         assert_eq!(resolved, file);
     }
 

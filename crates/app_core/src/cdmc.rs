@@ -1024,8 +1024,10 @@ mod tests {
     use crate::dynamic_indicator_adapter::PreparedCudaIndicatorInputs;
     #[cfg(feature = "cuda")]
     use vector_ta::cuda::cuda_available;
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     use vector_ta::utilities::data_loader::Candles;
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn make_trending_candles(len: usize) -> Candles {
         let mut ts = Vec::with_capacity(len);
         let mut open = Vec::with_capacity(len);

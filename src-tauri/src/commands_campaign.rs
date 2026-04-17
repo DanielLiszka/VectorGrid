@@ -1990,6 +1990,7 @@ fn save_campaign_summary_blocking<R: tauri::Runtime>(
         let _ = fs::remove_file(&tmp);
     }
     result?;
+    run_artifacts::prune_old_campaign_summary_artifacts_blocking(app, 100);
     Ok((path.to_string_lossy().to_string(), bytes.len()))
 }
 
@@ -4102,6 +4103,7 @@ mod tests {
             config_fingerprint_version: Some(1),
             has_validation,
             report_xlsx_path: String::new(),
+            report_xlsx_exists: None,
             csv_path: "C:/data/AAPL.csv".to_string(),
             timeframe: "15m".to_string(),
             base_timeframe: "15m".to_string(),

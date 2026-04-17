@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
-import AppVisualIcon from './AppVisualIcon.vue'
+import { computed, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
+import AppVisualIcon from "./AppVisualIcon.vue";
 import type {
   OptionsExpressionCoverageAdequacyVerdict,
   OptionsExpressionArtifactSummary,
   OptionsExpressionMetricsSummary,
   OptionsExpressionTupleSummary,
   OptionsExpressionValidationVerdict,
-} from '../services/optionsExpressionService'
+} from "../services/optionsExpressionService";
 import {
   fillModelGuidanceForPriceSemantics,
   isFillModelCompatibleWithPriceSemantics,
@@ -24,7 +24,7 @@ import {
   OPTIONS_SUPPORTED_PARENT_STRATEGIES,
   OPTIONS_REALISM_LANE_OPTIONS,
   priceSemanticsForRealismLane,
-} from '../stores/optionsExpressionStore'
+} from "../stores/optionsExpressionStore";
 import {
   emptyOptionsWorkspaceIllustration,
   optionsCurrentResultIcon,
@@ -34,15 +34,15 @@ import {
   optionsFollowupWorkflowIcon,
   optionsProviderDownloadIcon,
   optionsTupleDrilldownIcon,
-} from '../utils/appSvgAssets'
+} from "../utils/appSvgAssets";
 
 const props = defineProps<{
-  parentArtifactPath: string
-  parentStrategyKind: string
-  parentDatasetLabel: string
-}>()
+  parentArtifactPath: string;
+  parentStrategyKind: string;
+  parentDatasetLabel: string;
+}>();
 
-const store = useOptionsExpressionStore()
+const store = useOptionsExpressionStore();
 const {
   activeArtifactPath,
   activeArtifactTimestamp,
@@ -112,230 +112,244 @@ const {
   minPremiumInput,
   minVolumeInput,
   minOpenInterestInput,
-} = storeToRefs(store)
+} = storeToRefs(store);
 
 function normalizeText(value: unknown): string {
-  return String(value ?? '').trim()
+  return String(value ?? "").trim();
 }
 
 function isSupportedParentStrategyKind(value: unknown): boolean {
-  return (OPTIONS_SUPPORTED_PARENT_STRATEGIES as readonly string[]).includes(normalizeText(value))
+  return (OPTIONS_SUPPORTED_PARENT_STRATEGIES as readonly string[]).includes(
+    normalizeText(value),
+  );
 }
 
 function formatList(value: Array<number | string> | null | undefined): string {
-  return Array.isArray(value) && value.length > 0 ? value.join(', ') : '—'
+  return Array.isArray(value) && value.length > 0 ? value.join(", ") : "—";
 }
 
 function formatTimestamp(value: number | null | undefined): string {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed <= 0) return '—'
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return "—";
   try {
-    return new Date(parsed).toISOString()
+    return new Date(parsed).toISOString();
   } catch {
-    return '—'
+    return "—";
   }
 }
 
-function formatOptionalDecimal(value: number | null | undefined, digits = 4): string {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed.toFixed(digits) : '—'
+function formatOptionalDecimal(
+  value: number | null | undefined,
+  digits = 4,
+): string {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed.toFixed(digits) : "—";
 }
 
 function formatPercent(value: number | null | undefined, digits = 1): string {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? `${(parsed * 100).toFixed(digits)}%` : '—'
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? `${(parsed * 100).toFixed(digits)}%` : "—";
 }
 
 function formatOptionalMinutes(value: number | null | undefined): string {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? `${parsed.toFixed(0)}m` : '—'
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? `${parsed.toFixed(0)}m` : "—";
 }
 
-function formatLatency(ms: number | null | undefined, us: number | null | undefined): string {
-  const micros = Number(us)
+function formatLatency(
+  ms: number | null | undefined,
+  us: number | null | undefined,
+): string {
+  const micros = Number(us);
   if (Number.isFinite(micros) && micros > 0 && micros < 10_000) {
-    return `${(micros / 1_000).toFixed(3)} ms`
+    return `${(micros / 1_000).toFixed(3)} ms`;
   }
-  const millis = Number(ms)
-  return Number.isFinite(millis) ? `${millis.toFixed(0)} ms` : '—'
+  const millis = Number(ms);
+  return Number.isFinite(millis) ? `${millis.toFixed(0)} ms` : "—";
 }
 
 function formatSplitAssignmentMode(value: string | null | undefined): string {
   switch (normalizeText(value)) {
-    case 'session_chronological':
-      return 'session_chronological'
-    case 'event_chronological':
+    case "session_chronological":
+      return "session_chronological";
+    case "event_chronological":
     default:
-      return 'event_chronological'
+      return "event_chronological";
   }
 }
 
 function formatRealismLaneLabel(value: string | null | undefined): string {
   switch (normalizeText(value)) {
-    case 'derived_mid':
-      return 'Derived-mid'
-    case 'quote_aware':
-      return 'Quote-aware'
-    case 'aggregate':
+    case "derived_mid":
+      return "Derived-mid";
+    case "quote_aware":
+      return "Quote-aware";
+    case "aggregate":
     default:
-      return 'Aggregate'
+      return "Aggregate";
   }
 }
 
 function formatBytes(value: number | null | undefined): string {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed < 0) return '—'
-  if (parsed >= 1024 * 1024) return `${(parsed / (1024 * 1024)).toFixed(2)} MiB`
-  if (parsed >= 1024) return `${(parsed / 1024).toFixed(1)} KiB`
-  return `${parsed.toFixed(0)} B`
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return "—";
+  if (parsed >= 1024 * 1024)
+    return `${(parsed / (1024 * 1024)).toFixed(2)} MiB`;
+  if (parsed >= 1024) return `${(parsed / 1024).toFixed(1)} KiB`;
+  return `${parsed.toFixed(0)} B`;
 }
 
-const VALIDATION_STRESS_DROP_THRESHOLD = 0.03
-const VALIDATION_MONOTONICITY_EPSILON = 1e-9
-const SELECTED_TUPLE_SCOPE_LABEL = 'Selected tuple only'
-const RETAINED_SCOPE_LABEL = 'Within retained top_k only'
-const SEALED_SCOPE_LABEL = 'Within sealed finalists only'
+const VALIDATION_STRESS_DROP_THRESHOLD = 0.03;
+const VALIDATION_MONOTONICITY_EPSILON = 1e-9;
+const SELECTED_TUPLE_SCOPE_LABEL = "Selected tuple only";
+const RETAINED_SCOPE_LABEL = "Within retained top_k only";
+const SEALED_SCOPE_LABEL = "Within sealed finalists only";
 
-type ValidationTone = 'pass' | 'pending' | 'mixed'
-type ValidationMonotonicityState = 'monotone' | 'non_monotone' | 'insufficient_lanes'
+type ValidationTone = "pass" | "pending" | "mixed";
+type ValidationMonotonicityState =
+  | "monotone"
+  | "non_monotone"
+  | "insufficient_lanes";
 
 interface ValidationPresentationSummary {
-  verdict: OptionsExpressionValidationVerdict
-  label: string
-  tone: ValidationTone
-  detail: string
+  verdict: OptionsExpressionValidationVerdict;
+  label: string;
+  tone: ValidationTone;
+  detail: string;
 }
 
 interface ValidationInterpretationValueRow {
-  key: string
-  label: string
-  value: string
-  detail: string
-  scopeLabel: string
+  key: string;
+  label: string;
+  value: string;
+  detail: string;
+  scopeLabel: string;
 }
 
 interface ValidationInterpretationStateRow {
-  key: string
-  label: string
-  statusLabel: string
-  detail: string
-  scopeLabel: string
+  key: string;
+  label: string;
+  statusLabel: string;
+  detail: string;
+  scopeLabel: string;
 }
 
 interface RealismLanePresentationSummary {
-  label: string
-  shortLabel: string
-  detail: string
+  label: string;
+  shortLabel: string;
+  detail: string;
 }
 
 interface WinnerDisagreementPresentationSummary {
-  label: string
-  tone: ValidationTone
-  detail: string
+  label: string;
+  tone: ValidationTone;
+  detail: string;
 }
 
 interface BackendRoutePresentationSummary {
-  label: string
-  detail: string
+  label: string;
+  detail: string;
 }
 
 interface CoverageAdequacyPresentationSummary {
-  verdict: OptionsExpressionCoverageAdequacyVerdict
-  label: string
-  tone: ValidationTone
-  detail: string
+  verdict: OptionsExpressionCoverageAdequacyVerdict;
+  label: string;
+  tone: ValidationTone;
+  detail: string;
 }
 
 interface CoverageAdequacyPayload {
-  verdict: OptionsExpressionCoverageAdequacyVerdict
-  nonPromotable: boolean
-  reasons?: string[]
-  searchOverlapRate: number | null | undefined
-  holdoutOverlapRate: number | null | undefined
-  sealedTestOverlapRate: number | null | undefined
-  searchCandidateCoverageRate: number | null | undefined
-  holdoutCandidateCoverageRate: number | null | undefined
-  sealedTestCandidateCoverageRate: number | null | undefined
-  searchBaselineOutcomeCoverageRate: number | null | undefined
-  holdoutBaselineOutcomeCoverageRate: number | null | undefined
-  sealedTestBaselineOutcomeCoverageRate: number | null | undefined
+  verdict: OptionsExpressionCoverageAdequacyVerdict;
+  nonPromotable: boolean;
+  reasons?: string[];
+  searchOverlapRate: number | null | undefined;
+  holdoutOverlapRate: number | null | undefined;
+  sealedTestOverlapRate: number | null | undefined;
+  searchCandidateCoverageRate: number | null | undefined;
+  holdoutCandidateCoverageRate: number | null | undefined;
+  sealedTestCandidateCoverageRate: number | null | undefined;
+  searchBaselineOutcomeCoverageRate: number | null | undefined;
+  holdoutBaselineOutcomeCoverageRate: number | null | undefined;
+  sealedTestBaselineOutcomeCoverageRate: number | null | undefined;
 }
 
 interface ArtifactMetaOverviewRow {
-  key: string
-  label: string
-  value: string
+  key: string;
+  label: string;
+  value: string;
 }
 
 interface ArtifactMetaGroupRow {
-  key: string
-  label: string
-  artifactCount: number
-  validatedCount: number
-  fragileCount: number
-  avgRobust: number | null
-  avgSelectionEv: number | null
-  avgValidationEv: number | null
-  avgStressDrop: number | null
+  key: string;
+  label: string;
+  artifactCount: number;
+  validatedCount: number;
+  fragileCount: number;
+  avgRobust: number | null;
+  avgSelectionEv: number | null;
+  avgValidationEv: number | null;
+  avgStressDrop: number | null;
 }
 
 interface ArtifactLaneDisagreementRow {
-  key: string
-  label: string
-  laneCount: number
-  selectionWinnerLane: string
-  validationWinnerLane: string
-  driftLabel: string
-  validationSpread: number | null
-  laneSummary: string
+  key: string;
+  label: string;
+  laneCount: number;
+  selectionWinnerLane: string;
+  validationWinnerLane: string;
+  driftLabel: string;
+  validationSpread: number | null;
+  laneSummary: string;
 }
 
 function pushUniqueRecommendation(target: string[], message: string): void {
   if (!target.includes(message)) {
-    target.push(message)
+    target.push(message);
   }
 }
 
 function formatBucketInvalidReasons(
   reasons: Array<{ reason: string; count: number }> | null | undefined,
 ): string {
-  if (!Array.isArray(reasons) || reasons.length === 0) return '—'
+  if (!Array.isArray(reasons) || reasons.length === 0) return "—";
   return reasons
     .slice(0, 2)
     .map((entry) => `${normalizeText(entry.reason)} (${entry.count})`)
-    .join(' | ')
+    .join(" | ");
 }
 
 function formatMoneynessBucketLabel(value: string | null | undefined): string {
-  const normalized = normalizeText(value)
-  return normalized.length > 0 ? normalized.split('_').join(' ') : '—'
+  const normalized = normalizeText(value);
+  return normalized.length > 0 ? normalized.split("_").join(" ") : "—";
 }
 
-function formatCoverageAdequacyLabel(value: OptionsExpressionCoverageAdequacyVerdict): string {
+function formatCoverageAdequacyLabel(
+  value: OptionsExpressionCoverageAdequacyVerdict,
+): string {
   switch (value) {
-    case 'healthy':
-      return 'Healthy'
-    case 'weak_dataset_overlap':
-      return 'Weak dataset overlap'
-    case 'search_overlap_missing':
-      return 'Search overlap missing'
-    case 'search_coverage_weak':
-      return 'Search coverage weak'
-    case 'holdout_coverage_weak':
-      return 'Holdout coverage weak'
-    case 'sealed_coverage_weak':
-      return 'Sealed coverage weak'
-    case 'contract_eligibility_fragile':
-      return 'Contract-eligibility fragile'
-    case 'late_entry_fragile':
-      return 'Late-entry fragile'
-    case 'strike_window_fragile':
-      return 'Strike-window fragile'
-    case 'mixed_fragile':
-      return 'Mixed fragile'
-    case 'unknown':
+    case "healthy":
+      return "Healthy";
+    case "weak_dataset_overlap":
+      return "Weak dataset overlap";
+    case "search_overlap_missing":
+      return "Search overlap missing";
+    case "search_coverage_weak":
+      return "Search coverage weak";
+    case "holdout_coverage_weak":
+      return "Holdout coverage weak";
+    case "sealed_coverage_weak":
+      return "Sealed coverage weak";
+    case "contract_eligibility_fragile":
+      return "Contract-eligibility fragile";
+    case "late_entry_fragile":
+      return "Late-entry fragile";
+    case "strike_window_fragile":
+      return "Strike-window fragile";
+    case "mixed_fragile":
+      return "Mixed fragile";
+    case "unknown":
     default:
-      return 'Unknown'
+      return "Unknown";
   }
 }
 
@@ -343,171 +357,186 @@ function coverageAdequacyTone(
   verdict: OptionsExpressionCoverageAdequacyVerdict,
   nonPromotable: boolean,
 ): ValidationTone {
-  if (verdict === 'healthy') return 'pass'
-  if (verdict === 'unknown') return 'pending'
-  return nonPromotable ? 'mixed' : 'pending'
+  if (verdict === "healthy") return "pass";
+  if (verdict === "unknown") return "pending";
+  return nonPromotable ? "mixed" : "pending";
 }
 
 function describeCoverageAdequacy(
   payload: CoverageAdequacyPayload | null | undefined,
 ): CoverageAdequacyPresentationSummary | null {
-  if (!payload) return null
-  const verdict = payload.verdict || 'unknown'
+  if (!payload) return null;
+  const verdict = payload.verdict || "unknown";
   const overlapBits = [
     `search overlap ${formatPercent(payload.searchOverlapRate, 1)}`,
     `holdout ${formatPercent(payload.holdoutOverlapRate, 1)}`,
     `sealed ${formatPercent(payload.sealedTestOverlapRate, 1)}`,
-  ]
+  ];
   const coverageBits = [
     `search cand ${formatPercent(payload.searchCandidateCoverageRate, 1)}`,
     `search out ${formatPercent(payload.searchBaselineOutcomeCoverageRate, 1)}`,
-  ]
-  let detail = `${overlapBits.join(' · ')} | ${coverageBits.join(' · ')}`
+  ];
+  let detail = `${overlapBits.join(" · ")} | ${coverageBits.join(" · ")}`;
   if (payload.reasons?.length) {
-    detail = payload.reasons.slice(0, 2).join(' ')
+    detail = payload.reasons.slice(0, 2).join(" ");
   } else {
     switch (verdict) {
-      case 'healthy':
-        detail = `Overlap and search-stage coverage are currently adequate. ${detail}`
-        break
-      case 'search_overlap_missing':
-        detail = `The imported options dataset does not cover any search events. ${detail}`
-        break
-      case 'weak_dataset_overlap':
-        detail = `The parent artifact and current options dataset only overlap partially. ${detail}`
-        break
-      case 'search_coverage_weak':
-        detail = `Search events overlap the dataset, but too few become executable candidates or outcomes. ${detail}`
-        break
-      case 'holdout_coverage_weak':
-        detail = `Search looks usable, but holdout coverage is too thin to trust the current validation story. ${detail}`
-        break
-      case 'sealed_coverage_weak':
-        detail = `Sealed coverage is too thin to treat the current finalist stage as robust. ${detail}`
-        break
-      case 'contract_eligibility_fragile':
-        detail = `Contract-eligibility timing is dominating structural invalidity. ${detail}`
-        break
-      case 'late_entry_fragile':
-        detail = `Late-entry pressure is dominating structural invalidity. ${detail}`
-        break
-      case 'strike_window_fragile':
-        detail = `Strike-window misses are dominating structural invalidity. ${detail}`
-        break
-      case 'mixed_fragile':
-        detail = `This slice remains fragile for mixed overlap/coverage reasons. ${detail}`
-        break
-      case 'unknown':
+      case "healthy":
+        detail = `Overlap and search-stage coverage are currently adequate. ${detail}`;
+        break;
+      case "search_overlap_missing":
+        detail = `The imported options dataset does not cover any search events. ${detail}`;
+        break;
+      case "weak_dataset_overlap":
+        detail = `The parent artifact and current options dataset only overlap partially. ${detail}`;
+        break;
+      case "search_coverage_weak":
+        detail = `Search events overlap the dataset, but too few become executable candidates or outcomes. ${detail}`;
+        break;
+      case "holdout_coverage_weak":
+        detail = `Search looks usable, but holdout coverage is too thin to trust the current validation story. ${detail}`;
+        break;
+      case "sealed_coverage_weak":
+        detail = `Sealed coverage is too thin to treat the current finalist stage as robust. ${detail}`;
+        break;
+      case "contract_eligibility_fragile":
+        detail = `Contract-eligibility timing is dominating structural invalidity. ${detail}`;
+        break;
+      case "late_entry_fragile":
+        detail = `Late-entry pressure is dominating structural invalidity. ${detail}`;
+        break;
+      case "strike_window_fragile":
+        detail = `Strike-window misses are dominating structural invalidity. ${detail}`;
+        break;
+      case "mixed_fragile":
+        detail = `This slice remains fragile for mixed overlap/coverage reasons. ${detail}`;
+        break;
+      case "unknown":
       default:
-        detail = `Legacy or incomplete adequacy signal. ${detail}`
-        break
+        detail = `Legacy or incomplete adequacy signal. ${detail}`;
+        break;
     }
   }
   return {
     verdict,
-    label: `${formatCoverageAdequacyLabel(verdict)}${payload.nonPromotable ? ' · non-promotable' : ''}`,
+    label: `${formatCoverageAdequacyLabel(verdict)}${payload.nonPromotable ? " · non-promotable" : ""}`,
     tone: coverageAdequacyTone(verdict, payload.nonPromotable),
     detail,
-  }
+  };
 }
 
 function strongestTupleValidationBaseMetrics(
   tuple: OptionsExpressionTupleSummary | null | undefined,
 ): OptionsExpressionMetricsSummary | null {
-  return supportedMetrics(tuple?.sealedEvaluationMetrics) ?? supportedMetrics(tuple?.holdoutMetrics) ?? null
+  return (
+    supportedMetrics(tuple?.sealedEvaluationMetrics) ??
+    supportedMetrics(tuple?.holdoutMetrics) ??
+    null
+  );
 }
 
 function strongestTupleValidationStressMetrics(
   tuple: OptionsExpressionTupleSummary | null | undefined,
 ): OptionsExpressionMetricsSummary | null {
   return (
-    supportedMetrics(tuple?.sealedExtremeStressMetrics)
-    ?? supportedMetrics(tuple?.sealedHarsherStressMetrics)
-    ?? supportedMetrics(tuple?.sealedStressMetrics)
-    ?? supportedMetrics(tuple?.extremeStressMetrics)
-    ?? supportedMetrics(tuple?.harsherStressMetrics)
-    ?? supportedMetrics(tuple?.stressMetrics)
-    ?? null
-  )
+    supportedMetrics(tuple?.sealedExtremeStressMetrics) ??
+    supportedMetrics(tuple?.sealedHarsherStressMetrics) ??
+    supportedMetrics(tuple?.sealedStressMetrics) ??
+    supportedMetrics(tuple?.extremeStressMetrics) ??
+    supportedMetrics(tuple?.harsherStressMetrics) ??
+    supportedMetrics(tuple?.stressMetrics) ??
+    null
+  );
 }
 
 function strongestArtifactValidationBaseExpectancy(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): number | null {
-  return artifact?.bestSealedExpectancyPerPremium ?? artifact?.bestHoldoutExpectancyPerPremium ?? null
+  return (
+    artifact?.bestSealedExpectancyPerPremium ??
+    artifact?.bestHoldoutExpectancyPerPremium ??
+    null
+  );
 }
 
 function strongestArtifactValidationStressExpectancy(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): number | null {
   return (
-    artifact?.bestSealedExtremeStressExpectancyPerPremium
-    ?? artifact?.bestSealedHarsherStressExpectancyPerPremium
-    ?? artifact?.bestSealedStressExpectancyPerPremium
-    ?? artifact?.bestExtremeStressExpectancyPerPremium
-    ?? artifact?.bestHarsherStressExpectancyPerPremium
-    ?? artifact?.bestStressExpectancyPerPremium
-    ?? null
-  )
+    artifact?.bestSealedExtremeStressExpectancyPerPremium ??
+    artifact?.bestSealedHarsherStressExpectancyPerPremium ??
+    artifact?.bestSealedStressExpectancyPerPremium ??
+    artifact?.bestExtremeStressExpectancyPerPremium ??
+    artifact?.bestHarsherStressExpectancyPerPremium ??
+    artifact?.bestStressExpectancyPerPremium ??
+    null
+  );
 }
 
 function artifactValidationDelta(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): number | null {
-  if (!artifact) return null
+  if (!artifact) return null;
   return metricDeltaAgainstSelection(
     artifact.bestSelectionExpectancyPerPremium,
     strongestArtifactValidationBaseExpectancy(artifact),
-  )
+  );
 }
 
 function artifactValidationSupportRatio(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): number | null {
-  if (!artifact || !artifact.tupleCount) return null
-  return (artifact.validatedTupleCount ?? 0) / artifact.tupleCount
+  if (!artifact || !artifact.tupleCount) return null;
+  return (artifact.validatedTupleCount ?? 0) / artifact.tupleCount;
 }
 
 function supportedMetrics(
   metrics: OptionsExpressionMetricsSummary | null | undefined,
 ): OptionsExpressionMetricsSummary | null {
-  if (!metrics) return null
-  return metrics.validTrades > 0 ? metrics : null
+  if (!metrics) return null;
+  return metrics.validTrades > 0 ? metrics : null;
 }
 
-function metricsTotalEvents(metrics: OptionsExpressionMetricsSummary | null | undefined): number {
-  if (!metrics) return 0
-  return Math.max(0, metrics.validTrades + metrics.invalidEvents)
+function metricsTotalEvents(
+  metrics: OptionsExpressionMetricsSummary | null | undefined,
+): number {
+  if (!metrics) return 0;
+  return Math.max(0, metrics.validTrades + metrics.invalidEvents);
 }
 
 function metricsSupportRate(
   metrics: OptionsExpressionMetricsSummary | null | undefined,
 ): number | null {
-  const totalEvents = metricsTotalEvents(metrics)
-  if (!totalEvents) return null
-  return (metrics?.validTrades ?? 0) / totalEvents
+  const totalEvents = metricsTotalEvents(metrics);
+  if (!totalEvents) return null;
+  return (metrics?.validTrades ?? 0) / totalEvents;
 }
 
-function formatMetricsSupport(metrics: OptionsExpressionMetricsSummary | null | undefined): string {
-  if (!metrics) return '—'
-  const totalEvents = metricsTotalEvents(metrics)
-  if (!totalEvents) return `${metrics.validTrades} / 0`
-  return `${metrics.validTrades} / ${totalEvents} (${formatPercent(metricsSupportRate(metrics), 1)})`
+function formatMetricsSupport(
+  metrics: OptionsExpressionMetricsSummary | null | undefined,
+): string {
+  if (!metrics) return "—";
+  const totalEvents = metricsTotalEvents(metrics);
+  if (!totalEvents) return `${metrics.validTrades} / 0`;
+  return `${metrics.validTrades} / ${totalEvents} (${formatPercent(metricsSupportRate(metrics), 1)})`;
 }
 
-function formatSignedOptionalDecimal(value: number | null | undefined, digits = 4): string {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return '—'
-  return `${parsed >= 0 ? '+' : ''}${parsed.toFixed(digits)}`
+function formatSignedOptionalDecimal(
+  value: number | null | undefined,
+  digits = 4,
+): string {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return `${parsed >= 0 ? "+" : ""}${parsed.toFixed(digits)}`;
 }
 
 function metricsExpectancy(
   metrics: OptionsExpressionMetricsSummary | null | undefined,
   requireSupported = true,
 ): number | null {
-  const resolved = requireSupported ? supportedMetrics(metrics) : metrics
-  const parsed = Number(resolved?.expectancyPerPremium)
-  return Number.isFinite(parsed) ? parsed : null
+  const resolved = requireSupported ? supportedMetrics(metrics) : metrics;
+  const parsed = Number(resolved?.expectancyPerPremium);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function buildExpectancyTransitionDetail(
@@ -516,7 +545,7 @@ function buildExpectancyTransitionDetail(
   toLabel: string,
   toExpectancy: number,
 ): string {
-  return `${fromLabel} ${formatOptionalDecimal(fromExpectancy)} -> ${toLabel} ${formatOptionalDecimal(toExpectancy)}`
+  return `${fromLabel} ${formatOptionalDecimal(fromExpectancy)} -> ${toLabel} ${formatOptionalDecimal(toExpectancy)}`;
 }
 
 function buildValidationDriftRow(
@@ -528,28 +557,28 @@ function buildValidationDriftRow(
   toExpectancy: number | null,
   scopeLabel: string,
 ): ValidationInterpretationValueRow | null {
-  if (fromExpectancy == null || toExpectancy == null) return null
-  const from = Number(fromExpectancy)
-  const to = Number(toExpectancy)
-  if (!Number.isFinite(from) || !Number.isFinite(to)) return null
+  if (fromExpectancy == null || toExpectancy == null) return null;
+  const from = Number(fromExpectancy);
+  const to = Number(toExpectancy);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
   return {
     key,
     label,
     value: formatSignedOptionalDecimal(to - from),
     detail: buildExpectancyTransitionDetail(fromLabel, from, toLabel, to),
     scopeLabel,
-  }
+  };
 }
 
 function monotonicityStatusLabel(state: ValidationMonotonicityState): string {
   switch (state) {
-    case 'monotone':
-      return 'Monotone'
-    case 'non_monotone':
-      return 'Non-monotone'
-    case 'insufficient_lanes':
+    case "monotone":
+      return "Monotone";
+    case "non_monotone":
+      return "Non-monotone";
+    case "insufficient_lanes":
     default:
-      return 'Insufficient lanes'
+      return "Insufficient lanes";
   }
 }
 
@@ -557,33 +586,41 @@ function describeValidationMonotonicity(
   points: Array<{ label: string; expectancy: number }>,
 ): { state: ValidationMonotonicityState; detail: string } {
   if (points.length < 2) {
-    const onlyPoint = points[0]
+    const onlyPoint = points[0];
     return {
-      state: 'insufficient_lanes',
+      state: "insufficient_lanes",
       detail: onlyPoint
         ? `Observed lane: ${onlyPoint.label} ${formatOptionalDecimal(onlyPoint.expectancy)}`
-        : 'No supported validation lanes are present.',
-    }
+        : "No supported validation lanes are present.",
+    };
   }
   for (let index = 1; index < points.length; index += 1) {
-    const previous = points[index - 1]
-    const current = points[index]
-    if (!previous || !current) continue
-    if (current.expectancy > previous.expectancy + VALIDATION_MONOTONICITY_EPSILON) {
+    const previous = points[index - 1];
+    const current = points[index];
+    if (!previous || !current) continue;
+    if (
+      current.expectancy >
+      previous.expectancy + VALIDATION_MONOTONICITY_EPSILON
+    ) {
       return {
-        state: 'non_monotone',
+        state: "non_monotone",
         detail: points
-          .map((point) => `${point.label} ${formatOptionalDecimal(point.expectancy)}`)
-          .join(' -> '),
-      }
+          .map(
+            (point) =>
+              `${point.label} ${formatOptionalDecimal(point.expectancy)}`,
+          )
+          .join(" -> "),
+      };
     }
   }
   return {
-    state: 'monotone',
+    state: "monotone",
     detail: points
-      .map((point) => `${point.label} ${formatOptionalDecimal(point.expectancy)}`)
-      .join(' -> '),
-  }
+      .map(
+        (point) => `${point.label} ${formatOptionalDecimal(point.expectancy)}`,
+      )
+      .join(" -> "),
+  };
 }
 
 function buildValidationRegretRow(
@@ -593,227 +630,254 @@ function buildValidationRegretRow(
   selectedExpectancy: number | null,
   candidateExpectancies: Array<number | null>,
 ): ValidationInterpretationValueRow | null {
-  if (selectedExpectancy == null) return null
+  if (selectedExpectancy == null) return null;
   const comparators = candidateExpectancies
     .filter((value): value is number => value != null)
     .map((value) => Number(value))
-    .filter((value) => Number.isFinite(value))
-  if (comparators.length < 2) return null
-  const selected = Number(selectedExpectancy)
-  if (!Number.isFinite(selected)) return null
-  const best = Math.max(...comparators)
+    .filter((value) => Number.isFinite(value));
+  if (comparators.length < 2) return null;
+  const selected = Number(selectedExpectancy);
+  if (!Number.isFinite(selected)) return null;
+  const best = Math.max(...comparators);
   return {
     key,
     label,
     value: formatOptionalDecimal(best - selected),
-    detail: `Best scope EV ${formatOptionalDecimal(best)} across ${comparators.length} scope row${comparators.length === 1 ? '' : 's'}.`,
+    detail: `Best scope EV ${formatOptionalDecimal(best)} across ${comparators.length} scope row${comparators.length === 1 ? "" : "s"}.`,
     scopeLabel,
-  }
+  };
 }
 
 function supportedTupleMetricsByKey(
   tuple: OptionsExpressionTupleSummary | null | undefined,
   key: string,
 ): OptionsExpressionMetricsSummary | null {
-  if (!tuple) return null
+  if (!tuple) return null;
   switch (key) {
-    case 'holdout':
-      return supportedMetrics(tuple.holdoutMetrics)
-    case 'sealed':
-      return supportedMetrics(tuple.sealedEvaluationMetrics)
-    case 'stress':
-      return supportedMetrics(tuple.stressMetrics)
-    case 'sealed_stress':
-      return supportedMetrics(tuple.sealedStressMetrics)
-    case 'harsher':
-      return supportedMetrics(tuple.harsherStressMetrics)
-    case 'sealed_harsher':
-      return supportedMetrics(tuple.sealedHarsherStressMetrics)
-    case 'extreme':
-      return supportedMetrics(tuple.extremeStressMetrics)
-    case 'sealed_extreme':
-      return supportedMetrics(tuple.sealedExtremeStressMetrics)
+    case "holdout":
+      return supportedMetrics(tuple.holdoutMetrics);
+    case "sealed":
+      return supportedMetrics(tuple.sealedEvaluationMetrics);
+    case "stress":
+      return supportedMetrics(tuple.stressMetrics);
+    case "sealed_stress":
+      return supportedMetrics(tuple.sealedStressMetrics);
+    case "harsher":
+      return supportedMetrics(tuple.harsherStressMetrics);
+    case "sealed_harsher":
+      return supportedMetrics(tuple.sealedHarsherStressMetrics);
+    case "extreme":
+      return supportedMetrics(tuple.extremeStressMetrics);
+    case "sealed_extreme":
+      return supportedMetrics(tuple.sealedExtremeStressMetrics);
     default:
-      return null
+      return null;
   }
 }
 
 function buildValidationFamilyPoints(
   tuple: OptionsExpressionTupleSummary | null | undefined,
-  family: 'holdout' | 'sealed',
+  family: "holdout" | "sealed",
 ): Array<{ label: string; expectancy: number }> {
-  const descriptors = family === 'sealed'
-    ? [
-        { key: 'sealed', label: 'Sealed finalist' },
-        { key: 'sealed_stress', label: 'Sealed stress' },
-        { key: 'sealed_harsher', label: 'Sealed harsher' },
-        { key: 'sealed_extreme', label: 'Sealed extreme' },
-      ]
-    : [
-        { key: 'holdout', label: 'Holdout' },
-        { key: 'stress', label: 'Stress' },
-        { key: 'harsher', label: 'Harsher' },
-        { key: 'extreme', label: 'Extreme' },
-      ]
+  const descriptors =
+    family === "sealed"
+      ? [
+          { key: "sealed", label: "Sealed finalist" },
+          { key: "sealed_stress", label: "Sealed stress" },
+          { key: "sealed_harsher", label: "Sealed harsher" },
+          { key: "sealed_extreme", label: "Sealed extreme" },
+        ]
+      : [
+          { key: "holdout", label: "Holdout" },
+          { key: "stress", label: "Stress" },
+          { key: "harsher", label: "Harsher" },
+          { key: "extreme", label: "Extreme" },
+        ];
   return descriptors
     .map((descriptor) => {
-      const expectancy = metricsExpectancy(supportedTupleMetricsByKey(tuple, descriptor.key))
-      if (expectancy == null || !Number.isFinite(Number(expectancy))) return null
+      const expectancy = metricsExpectancy(
+        supportedTupleMetricsByKey(tuple, descriptor.key),
+      );
+      if (expectancy == null || !Number.isFinite(Number(expectancy)))
+        return null;
       return {
         label: descriptor.label,
         expectancy: Number(expectancy),
-      }
+      };
     })
-    .filter((entry): entry is { label: string; expectancy: number } => Boolean(entry))
+    .filter((entry): entry is { label: string; expectancy: number } =>
+      Boolean(entry),
+    );
 }
 
 function formatArtifactSupportCount(
   count: number | null | undefined,
   total: number | null | undefined,
 ): string {
-  const safeCount = Math.max(0, Number(count ?? 0))
-  const safeTotal = Math.max(0, Number(total ?? 0))
-  if (!safeTotal) return `${safeCount} / 0`
-  return `${safeCount} / ${safeTotal} (${formatPercent(safeCount / safeTotal, 1)})`
+  const safeCount = Math.max(0, Number(count ?? 0));
+  const safeTotal = Math.max(0, Number(total ?? 0));
+  if (!safeTotal) return `${safeCount} / 0`;
+  return `${safeCount} / ${safeTotal} (${formatPercent(safeCount / safeTotal, 1)})`;
 }
 
 function artifactStressFragilityRatio(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): number | null {
-  if (!artifact) return null
-  const denominator = artifact.validatedTupleCount ?? artifact.tupleCount ?? 0
-  if (!denominator) return null
-  return (artifact.stressFragileTupleCount ?? 0) / denominator
+  if (!artifact) return null;
+  const denominator = artifact.validatedTupleCount ?? artifact.tupleCount ?? 0;
+  if (!denominator) return null;
+  return (artifact.stressFragileTupleCount ?? 0) / denominator;
 }
 
-function formatMetaGroupKey(value: string | null | undefined, fallback: string): string {
-  const normalized = normalizeText(value)
-  return normalized || fallback
+function formatMetaGroupKey(
+  value: string | null | undefined,
+  fallback: string,
+): string {
+  const normalized = normalizeText(value);
+  return normalized || fallback;
 }
 
-function averageNumbers(values: Array<number | null | undefined>): number | null {
-  const filtered = values.filter((value): value is number => Number.isFinite(Number(value)))
-  if (filtered.length === 0) return null
-  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length
+function averageNumbers(
+  values: Array<number | null | undefined>,
+): number | null {
+  const filtered = values.filter((value): value is number =>
+    Number.isFinite(Number(value)),
+  );
+  if (filtered.length === 0) return null;
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
 }
 
 function buildArtifactLaneDisagreementRows(
   entries: OptionsExpressionArtifactSummary[],
 ): ArtifactLaneDisagreementRow[] {
-  const grouped = new Map<string, OptionsExpressionArtifactSummary[]>()
+  const grouped = new Map<string, OptionsExpressionArtifactSummary[]>();
   for (const entry of entries) {
     const key = [
-      formatMetaGroupKey(entry.rootSymbol, 'Unknown root'),
-      formatMetaGroupKey(entry.parentStrategyKind, 'Unknown parent family'),
-      formatMetaGroupKey(entry.requestStructureFamily, 'Unknown structure'),
-    ].join(' · ')
-    const bucket = grouped.get(key)
+      formatMetaGroupKey(entry.rootSymbol, "Unknown root"),
+      formatMetaGroupKey(entry.parentStrategyKind, "Unknown parent family"),
+      formatMetaGroupKey(entry.requestStructureFamily, "Unknown structure"),
+    ].join(" · ");
+    const bucket = grouped.get(key);
     if (bucket) {
-      bucket.push(entry)
+      bucket.push(entry);
     } else {
-      grouped.set(key, [entry])
+      grouped.set(key, [entry]);
     }
   }
 
   return [...grouped.entries()]
     .map(([label, rows]) => {
-      const bestByLane = new Map<string, OptionsExpressionArtifactSummary>()
+      const bestByLane = new Map<string, OptionsExpressionArtifactSummary>();
       for (const entry of rows) {
-        const lane = describeRealismLane(entry.priceSemantics, entry.requestFillModel).shortLabel
-        const existing = bestByLane.get(lane)
-        const candidateScore = strongestArtifactValidationBaseExpectancy(entry) ?? entry.bestSelectionExpectancyPerPremium
+        const lane = describeRealismLane(
+          entry.priceSemantics,
+          entry.requestFillModel,
+        ).shortLabel;
+        const existing = bestByLane.get(lane);
+        const candidateScore =
+          strongestArtifactValidationBaseExpectancy(entry) ??
+          entry.bestSelectionExpectancyPerPremium;
         const existingScore = existing
-          ? strongestArtifactValidationBaseExpectancy(existing) ?? existing.bestSelectionExpectancyPerPremium
-          : Number.NEGATIVE_INFINITY
+          ? (strongestArtifactValidationBaseExpectancy(existing) ??
+            existing.bestSelectionExpectancyPerPremium)
+          : Number.NEGATIVE_INFINITY;
         if (!existing || candidateScore > existingScore) {
-          bestByLane.set(lane, entry)
+          bestByLane.set(lane, entry);
         }
       }
 
-      if (bestByLane.size < 2) return null
+      if (bestByLane.size < 2) return null;
 
       const laneRows = [...bestByLane.entries()].map(([lane, artifact]) => ({
         lane,
         selection: artifact.bestSelectionExpectancyPerPremium,
         validation: strongestArtifactValidationBaseExpectancy(artifact),
         artifact,
-      }))
+      }));
       const selectionWinner = laneRows.reduce((best, entry) =>
         entry.selection > best.selection ? entry : best,
-      )
-      const validationRows = laneRows.filter((entry) => Number.isFinite(Number(entry.validation)))
-      const validationWinner = validationRows.length > 0
-        ? validationRows.reduce((best, entry) =>
-          Number(entry.validation) > Number(best.validation) ? entry : best,
-        )
-        : null
-      const validationValues = validationRows.map((entry) => Number(entry.validation))
-      const validationSpread = validationValues.length >= 2
-        ? Math.max(...validationValues) - Math.min(...validationValues)
-        : null
+      );
+      const validationRows = laneRows.filter((entry) =>
+        Number.isFinite(Number(entry.validation)),
+      );
+      const validationWinner =
+        validationRows.length > 0
+          ? validationRows.reduce((best, entry) =>
+              Number(entry.validation) > Number(best.validation) ? entry : best,
+            )
+          : null;
+      const validationValues = validationRows.map((entry) =>
+        Number(entry.validation),
+      );
+      const validationSpread =
+        validationValues.length >= 2
+          ? Math.max(...validationValues) - Math.min(...validationValues)
+          : null;
       const driftLabel = validationWinner
-        ? (validationWinner.lane === selectionWinner.lane
-          ? 'Aligned'
-          : `${selectionWinner.lane} -> ${validationWinner.lane}`)
-        : 'Search only'
+        ? validationWinner.lane === selectionWinner.lane
+          ? "Aligned"
+          : `${selectionWinner.lane} -> ${validationWinner.lane}`
+        : "Search only";
       const laneSummary = laneRows
-        .map((entry) =>
-          `${entry.lane} sel ${formatOptionalDecimal(entry.selection, 3)}${entry.validation != null ? ` / val ${formatOptionalDecimal(entry.validation, 3)}` : ''}`,
+        .map(
+          (entry) =>
+            `${entry.lane} sel ${formatOptionalDecimal(entry.selection, 3)}${entry.validation != null ? ` / val ${formatOptionalDecimal(entry.validation, 3)}` : ""}`,
         )
-        .join(' | ')
+        .join(" | ");
       return {
         key: label,
         label,
         laneCount: laneRows.length,
         selectionWinnerLane: selectionWinner.lane,
-        validationWinnerLane: validationWinner?.lane ?? '—',
+        validationWinnerLane: validationWinner?.lane ?? "—",
         driftLabel,
         validationSpread,
         laneSummary,
-      }
+      };
     })
     .filter((entry): entry is ArtifactLaneDisagreementRow => Boolean(entry))
     .sort((left, right) => {
-      const leftSpread = left.validationSpread ?? Number.NEGATIVE_INFINITY
-      const rightSpread = right.validationSpread ?? Number.NEGATIVE_INFINITY
-      if (rightSpread !== leftSpread) return rightSpread - leftSpread
-      return left.label.localeCompare(right.label)
-    })
+      const leftSpread = left.validationSpread ?? Number.NEGATIVE_INFINITY;
+      const rightSpread = right.validationSpread ?? Number.NEGATIVE_INFINITY;
+      if (rightSpread !== leftSpread) return rightSpread - leftSpread;
+      return left.label.localeCompare(right.label);
+    });
 }
 
 function artifactValidationLabel(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): string {
-  return describeArtifactValidation(artifact)?.label ?? 'Search only'
+  return describeArtifactValidation(artifact)?.label ?? "Search only";
 }
 
 function artifactValidationVerdict(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): string {
-  return resolveArtifactValidationVerdict(artifact)
+  return resolveArtifactValidationVerdict(artifact);
 }
 
 function artifactStressDrop(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): number | null {
-  const base = strongestArtifactValidationBaseExpectancy(artifact)
-  const stressed = strongestArtifactValidationStressExpectancy(artifact)
-  if (!Number.isFinite(Number(base)) || !Number.isFinite(Number(stressed))) return null
-  return Number(base) - Number(stressed)
+  const base = strongestArtifactValidationBaseExpectancy(artifact);
+  const stressed = strongestArtifactValidationStressExpectancy(artifact);
+  if (!Number.isFinite(Number(base)) || !Number.isFinite(Number(stressed)))
+    return null;
+  return Number(base) - Number(stressed);
 }
 
 function buildArtifactMetaGroupRows(
   entries: OptionsExpressionArtifactSummary[],
   groupKey: (entry: OptionsExpressionArtifactSummary) => string,
 ): ArtifactMetaGroupRow[] {
-  const grouped = new Map<string, OptionsExpressionArtifactSummary[]>()
+  const grouped = new Map<string, OptionsExpressionArtifactSummary[]>();
   for (const entry of entries) {
-    const key = groupKey(entry)
-    const bucket = grouped.get(key)
+    const key = groupKey(entry);
+    const bucket = grouped.get(key);
     if (bucket) {
-      bucket.push(entry)
+      bucket.push(entry);
     } else {
-      grouped.set(key, [entry])
+      grouped.set(key, [entry]);
     }
   }
   return [...grouped.entries()]
@@ -821,185 +885,209 @@ function buildArtifactMetaGroupRows(
       key: label,
       label,
       artifactCount: rows.length,
-      validatedCount: rows.filter((entry) => artifactValidationVerdict(entry) !== 'search_only').length,
-      fragileCount: rows.filter((entry) => artifactValidationVerdict(entry) === 'stress_fragile').length,
+      validatedCount: rows.filter(
+        (entry) => artifactValidationVerdict(entry) !== "search_only",
+      ).length,
+      fragileCount: rows.filter(
+        (entry) => artifactValidationVerdict(entry) === "stress_fragile",
+      ).length,
       avgRobust: averageNumbers(rows.map((entry) => entry.bestRobustScore)),
-      avgSelectionEv: averageNumbers(rows.map((entry) => entry.bestSelectionExpectancyPerPremium)),
-      avgValidationEv: averageNumbers(rows.map((entry) => strongestArtifactValidationBaseExpectancy(entry))),
-      avgStressDrop: averageNumbers(rows.map((entry) => artifactStressDrop(entry))),
+      avgSelectionEv: averageNumbers(
+        rows.map((entry) => entry.bestSelectionExpectancyPerPremium),
+      ),
+      avgValidationEv: averageNumbers(
+        rows.map((entry) => strongestArtifactValidationBaseExpectancy(entry)),
+      ),
+      avgStressDrop: averageNumbers(
+        rows.map((entry) => artifactStressDrop(entry)),
+      ),
     }))
     .sort((left, right) => {
-      if (right.artifactCount !== left.artifactCount) return right.artifactCount - left.artifactCount
-      const rightRobust = right.avgRobust ?? Number.NEGATIVE_INFINITY
-      const leftRobust = left.avgRobust ?? Number.NEGATIVE_INFINITY
-      if (rightRobust !== leftRobust) return rightRobust - leftRobust
-      return left.label.localeCompare(right.label)
-    })
+      if (right.artifactCount !== left.artifactCount)
+        return right.artifactCount - left.artifactCount;
+      const rightRobust = right.avgRobust ?? Number.NEGATIVE_INFINITY;
+      const leftRobust = left.avgRobust ?? Number.NEGATIVE_INFINITY;
+      if (rightRobust !== leftRobust) return rightRobust - leftRobust;
+      return left.label.localeCompare(right.label);
+    });
 }
 
-function isStressFragile(baseExpectancy: number | null | undefined, stressedExpectancy: number | null | undefined): boolean {
-  const base = Number(baseExpectancy)
-  const stressed = Number(stressedExpectancy)
-  if (!Number.isFinite(base) || !Number.isFinite(stressed)) return false
-  return stressed < 0 || base - stressed >= VALIDATION_STRESS_DROP_THRESHOLD
+function isStressFragile(
+  baseExpectancy: number | null | undefined,
+  stressedExpectancy: number | null | undefined,
+): boolean {
+  const base = Number(baseExpectancy);
+  const stressed = Number(stressedExpectancy);
+  if (!Number.isFinite(base) || !Number.isFinite(stressed)) return false;
+  return stressed < 0 || base - stressed >= VALIDATION_STRESS_DROP_THRESHOLD;
 }
 
 function resolveTupleValidationVerdict(
   tuple: OptionsExpressionTupleSummary | null | undefined,
 ): OptionsExpressionValidationVerdict {
-  if (!tuple) return 'search_only'
-  if (tuple.validationVerdict) return tuple.validationVerdict
-  const hasSealed = Boolean(supportedMetrics(tuple.sealedEvaluationMetrics))
-  const hasHoldout = Boolean(supportedMetrics(tuple.holdoutMetrics))
+  if (!tuple) return "search_only";
+  if (tuple.validationVerdict) return tuple.validationVerdict;
+  const hasSealed = Boolean(supportedMetrics(tuple.sealedEvaluationMetrics));
+  const hasHoldout = Boolean(supportedMetrics(tuple.holdoutMetrics));
   const fragile = isStressFragile(
     strongestTupleValidationBaseMetrics(tuple)?.expectancyPerPremium,
     strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium,
-  )
-  if (hasSealed) return fragile ? 'stress_fragile' : 'sealed_finalist'
-  if (hasHoldout) return fragile ? 'stress_fragile' : 'holdout_supported'
-  return 'search_only'
+  );
+  if (hasSealed) return fragile ? "stress_fragile" : "sealed_finalist";
+  if (hasHoldout) return fragile ? "stress_fragile" : "holdout_supported";
+  return "search_only";
 }
 
 function resolveArtifactValidationVerdict(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): OptionsExpressionValidationVerdict {
-  if (!artifact) return 'search_only'
-  if (artifact.topValidationVerdict) return artifact.topValidationVerdict
-  const hasSealed = (artifact.supportedSealedTupleCount ?? 0) > 0
-  const hasHoldout = (artifact.supportedHoldoutTupleCount ?? 0) > 0
+  if (!artifact) return "search_only";
+  if (artifact.topValidationVerdict) return artifact.topValidationVerdict;
+  const hasSealed = (artifact.supportedSealedTupleCount ?? 0) > 0;
+  const hasHoldout = (artifact.supportedHoldoutTupleCount ?? 0) > 0;
   const fragile = isStressFragile(
     strongestArtifactValidationBaseExpectancy(artifact),
     strongestArtifactValidationStressExpectancy(artifact),
-  )
-  if (hasSealed) return fragile ? 'stress_fragile' : 'sealed_finalist'
-  if (hasHoldout) return fragile ? 'stress_fragile' : 'holdout_supported'
-  return 'search_only'
+  );
+  if (hasSealed) return fragile ? "stress_fragile" : "sealed_finalist";
+  if (hasHoldout) return fragile ? "stress_fragile" : "holdout_supported";
+  return "search_only";
 }
 
-function formatValidationVerdictLabel(verdict: OptionsExpressionValidationVerdict): string {
+function formatValidationVerdictLabel(
+  verdict: OptionsExpressionValidationVerdict,
+): string {
   switch (verdict) {
-    case 'holdout_supported':
-      return 'Holdout-supported'
-    case 'sealed_finalist':
-      return 'Sealed finalist'
-    case 'stress_fragile':
-      return 'Stress-fragile'
-    case 'search_only':
+    case "holdout_supported":
+      return "Holdout-supported";
+    case "sealed_finalist":
+      return "Sealed finalist";
+    case "stress_fragile":
+      return "Stress-fragile";
+    case "search_only":
     default:
-      return 'Search only'
+      return "Search only";
   }
 }
 
-function validationToneForVerdict(verdict: OptionsExpressionValidationVerdict): ValidationTone {
+function validationToneForVerdict(
+  verdict: OptionsExpressionValidationVerdict,
+): ValidationTone {
   switch (verdict) {
-    case 'sealed_finalist':
-      return 'pass'
-    case 'stress_fragile':
-      return 'mixed'
-    case 'holdout_supported':
-    case 'search_only':
+    case "sealed_finalist":
+      return "pass";
+    case "stress_fragile":
+      return "mixed";
+    case "holdout_supported":
+    case "search_only":
     default:
-      return 'pending'
+      return "pending";
   }
 }
 
 function describeTupleValidation(
   tuple: OptionsExpressionTupleSummary | null | undefined,
 ): ValidationPresentationSummary | null {
-  if (!tuple) return null
-  const verdict = resolveTupleValidationVerdict(tuple)
-  const baseExpectancy = strongestTupleValidationBaseMetrics(tuple)?.expectancyPerPremium ?? null
-  const stressedExpectancy = strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium ?? null
-  let detail = 'No supported holdout or sealed trades are present yet; this tuple is still a search-stage candidate.'
+  if (!tuple) return null;
+  const verdict = resolveTupleValidationVerdict(tuple);
+  const baseExpectancy =
+    strongestTupleValidationBaseMetrics(tuple)?.expectancyPerPremium ?? null;
+  const stressedExpectancy =
+    strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium ?? null;
+  let detail =
+    "No supported holdout or sealed trades are present yet; this tuple is still a search-stage candidate.";
   switch (verdict) {
-    case 'holdout_supported':
+    case "holdout_supported":
       detail =
         tuple.sealedFinalist && !supportedMetrics(tuple.sealedEvaluationMetrics)
-          ? 'Supported holdout trades are present, but this sealed-budget tuple has not yet produced supported sealed validation.'
-          : 'Supported holdout trades are present, but this tuple has not yet been promoted into supported sealed validation.'
-      break
-    case 'sealed_finalist':
+          ? "Supported holdout trades are present, but this sealed-budget tuple has not yet produced supported sealed validation."
+          : "Supported holdout trades are present, but this tuple has not yet been promoted into supported sealed validation.";
+      break;
+    case "sealed_finalist":
       detail = tuple.sealedFinalRank
         ? `Promoted into the sealed finalist set (#${tuple.sealedFinalRank}) and still holding up under the current supported stress lanes.`
-        : 'Promoted into the sealed finalist set and still holding up under the current supported stress lanes.'
-      break
-    case 'stress_fragile':
-      detail = Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
-        ? `Supported validation exists, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under the current stress lanes.`
-        : 'Supported validation exists, but the tuple degrades materially under the current stress lanes.'
-      break
-    case 'search_only':
+        : "Promoted into the sealed finalist set and still holding up under the current supported stress lanes.";
+      break;
+    case "stress_fragile":
+      detail =
+        Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
+          ? `Supported validation exists, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under the current stress lanes.`
+          : "Supported validation exists, but the tuple degrades materially under the current stress lanes.";
+      break;
+    case "search_only":
     default:
-      break
+      break;
   }
   return {
     verdict,
     label: formatValidationVerdictLabel(verdict),
     tone: validationToneForVerdict(verdict),
     detail,
-  }
+  };
 }
 
 function describeArtifactValidation(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): ValidationPresentationSummary | null {
-  if (!artifact) return null
-  const verdict = resolveArtifactValidationVerdict(artifact)
-  const baseExpectancy = strongestArtifactValidationBaseExpectancy(artifact)
-  const stressedExpectancy = strongestArtifactValidationStressExpectancy(artifact)
-  let detail = 'This artifact currently reads as search-stage only.'
+  if (!artifact) return null;
+  const verdict = resolveArtifactValidationVerdict(artifact);
+  const baseExpectancy = strongestArtifactValidationBaseExpectancy(artifact);
+  const stressedExpectancy =
+    strongestArtifactValidationStressExpectancy(artifact);
+  let detail = "This artifact currently reads as search-stage only.";
   switch (verdict) {
-    case 'holdout_supported':
-      detail = `Top tuple has supported holdout validation across ${artifact.validatedTupleCount ?? 0} validated tuple${(artifact.validatedTupleCount ?? 0) === 1 ? '' : 's'}, but no supported sealed confirmation yet.`
-      break
-    case 'sealed_finalist':
-      detail = `Top tuple cleared supported sealed evaluation. ${artifact.sealedEvaluatedTupleCount ?? 0}/${artifact.sealedFinalistBudget ?? 0} tuple${(artifact.sealedEvaluatedTupleCount ?? 0) === 1 ? '' : 's'} were evaluated in the sealed stage.`
-      break
-    case 'stress_fragile':
-      detail = Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
-        ? `Top tuple has supported validation, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under stress.`
-        : `Top tuple has supported validation, but ${artifact.stressFragileTupleCount ?? 0} tuple${(artifact.stressFragileTupleCount ?? 0) === 1 ? '' : 's'} degrade materially under stress.`
-      break
-    case 'search_only':
+    case "holdout_supported":
+      detail = `Top tuple has supported holdout validation across ${artifact.validatedTupleCount ?? 0} validated tuple${(artifact.validatedTupleCount ?? 0) === 1 ? "" : "s"}, but no supported sealed confirmation yet.`;
+      break;
+    case "sealed_finalist":
+      detail = `Top tuple cleared supported sealed evaluation. ${artifact.sealedEvaluatedTupleCount ?? 0}/${artifact.sealedFinalistBudget ?? 0} tuple${(artifact.sealedEvaluatedTupleCount ?? 0) === 1 ? "" : "s"} were evaluated in the sealed stage.`;
+      break;
+    case "stress_fragile":
+      detail =
+        Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
+          ? `Top tuple has supported validation, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under stress.`
+          : `Top tuple has supported validation, but ${artifact.stressFragileTupleCount ?? 0} tuple${(artifact.stressFragileTupleCount ?? 0) === 1 ? "" : "s"} degrade materially under stress.`;
+      break;
+    case "search_only":
     default:
-      break
+      break;
   }
   return {
     verdict,
     label: formatValidationVerdictLabel(verdict),
     tone: validationToneForVerdict(verdict),
     detail,
-  }
+  };
 }
 
 function describeRealismLane(
   priceSemantics: string | null | undefined,
   fillModel: string | null | undefined,
 ): RealismLanePresentationSummary {
-  const semantics = normalizeText(priceSemantics) || 'minute_aggregate'
-  const activeFillModel = normalizeText(fillModel) || recommendedFillModelForPriceSemantics(semantics)
+  const semantics = normalizeText(priceSemantics) || "minute_aggregate";
+  const activeFillModel =
+    normalizeText(fillModel) ||
+    recommendedFillModelForPriceSemantics(semantics);
   switch (semantics) {
-    case 'top_of_book_quote':
+    case "top_of_book_quote":
       return {
-        label: 'Quote-aware lane',
-        shortLabel: 'Quote-aware',
-        detail:
-          `${activeFillModel} over top_of_book_quote rows. This is the only quote-side execution lane currently surfaced in the options workflow, and new dataset acquisition remains CSV import-first today.`,
-      }
-    case 'derived_mid_snapshot':
+        label: "Quote-aware lane",
+        shortLabel: "Quote-aware",
+        detail: `${activeFillModel} over top_of_book_quote rows. This is the only quote-side execution lane currently surfaced in the options workflow, and new dataset acquisition remains CSV import-first today.`,
+      };
+    case "derived_mid_snapshot":
       return {
-        label: 'Derived-mid lane',
-        shortLabel: 'Derived-mid',
-        detail:
-          `${activeFillModel} over derived_mid_snapshot rows. This is a first-class realism lane, but runtime execution remains aggregate-style and non-quote-side; new dataset acquisition remains CSV import-first today.`,
-      }
-    case 'minute_aggregate':
+        label: "Derived-mid lane",
+        shortLabel: "Derived-mid",
+        detail: `${activeFillModel} over derived_mid_snapshot rows. This is a first-class realism lane, but runtime execution remains aggregate-style and non-quote-side; new dataset acquisition remains CSV import-first today.`,
+      };
+    case "minute_aggregate":
     default:
       return {
-        label: 'Aggregate lane',
-        shortLabel: 'Aggregate',
+        label: "Aggregate lane",
+        shortLabel: "Aggregate",
         detail: `${activeFillModel} over minute_aggregate rows. This remains the canonical fast Polygon/Massive 1m optimization lane.`,
-      }
+      };
   }
 }
 
@@ -1008,194 +1096,237 @@ function describeBackendRoute(
   backendUsed: string | null | undefined,
   fallbackReason: string | null | undefined,
 ): BackendRoutePresentationSummary {
-  const requested = normalizeText(requestedBackend) || 'auto'
-  const used = normalizeText(backendUsed) || 'cpu_reference'
-  const fallback = normalizeText(fallbackReason)
-  const label = `${requested} -> ${used}`
+  const requested = normalizeText(requestedBackend) || "auto";
+  const used = normalizeText(backendUsed) || "cpu_reference";
+  const fallback = normalizeText(fallbackReason);
+  const label = `${requested} -> ${used}`;
   if (fallback) {
     return {
       label,
       detail: `Fallback or promotion override: ${fallback}`,
-    }
+    };
   }
-  if (requested === 'auto') {
+  if (requested === "auto") {
     return {
       label,
       detail: `Automatic backend policy selected ${used} for this workload.`,
-    }
+    };
   }
   return {
     label,
     detail: `Explicit backend preference ${requested} executed without fallback.`,
-  }
+  };
 }
 
-function formatTupleIdentity(tuple: OptionsExpressionTupleSummary | null | undefined): string {
-  if (!tuple) return '—'
-  return `${tuple.structureFamily || 'long_single'} · ${tuple.dteDays}D · ${tuple.moneynessBucket} · ${tuple.delayMinutes}m/${tuple.holdMinutes}m`
+function formatTupleIdentity(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+): string {
+  if (!tuple) return "—";
+  return `${tuple.structureFamily || "long_single"} · ${tuple.dteDays}D · ${tuple.moneynessBucket} · ${tuple.delayMinutes}m/${tuple.holdMinutes}m`;
 }
 
 function metricDeltaAgainstSelection(
   selectionExpectancy: number | null | undefined,
   candidateExpectancy: number | null | undefined,
 ): number | null {
-  const base = Number(selectionExpectancy)
-  const candidate = Number(candidateExpectancy)
-  if (!Number.isFinite(base) || !Number.isFinite(candidate)) return null
-  return candidate - base
+  const base = Number(selectionExpectancy);
+  const candidate = Number(candidateExpectancy);
+  if (!Number.isFinite(base) || !Number.isFinite(candidate)) return null;
+  return candidate - base;
 }
 
 function strongestTupleStressDrop(
   tuple: OptionsExpressionTupleSummary | null | undefined,
 ): number | null {
-  const base = tuple?.selectionMetrics.expectancyPerPremium
-  const stressed = strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium
-  const delta = metricDeltaAgainstSelection(base, stressed)
-  return delta == null ? null : -delta
+  const base = tuple?.selectionMetrics.expectancyPerPremium;
+  const stressed =
+    strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium;
+  const delta = metricDeltaAgainstSelection(base, stressed);
+  return delta == null ? null : -delta;
 }
 
 function bestTupleForMetric(
   rows: OptionsExpressionTupleSummary[],
   metric: (row: OptionsExpressionTupleSummary) => number | null | undefined,
 ): { row: OptionsExpressionTupleSummary; index: number; value: number } | null {
-  let best: { row: OptionsExpressionTupleSummary; index: number; value: number } | null = null
+  let best: {
+    row: OptionsExpressionTupleSummary;
+    index: number;
+    value: number;
+  } | null = null;
   rows.forEach((row, index) => {
-    const value = Number(metric(row))
-    if (!Number.isFinite(value)) return
+    const value = Number(metric(row));
+    if (!Number.isFinite(value)) return;
     if (!best || value > best.value) {
-      best = { row, index, value }
+      best = { row, index, value };
     }
-  })
-  return best
+  });
+  return best;
 }
 
 function describeArtifactProvenanceDiff(
   entry: OptionsExpressionArtifactSummary,
   baseline: OptionsExpressionArtifactSummary | null | undefined,
 ): string {
-  if (!baseline) return 'baseline'
-  if (normalizeText(entry.path) === normalizeText(baseline.path)) return 'selected baseline'
-  const diffs: string[] = []
-  if (normalizeText(entry.optionsDatasetId) !== normalizeText(baseline.optionsDatasetId)) {
-    diffs.push('dataset')
-  }
-  if (normalizeText(entry.priceSemantics) !== normalizeText(baseline.priceSemantics)) {
-    diffs.push('semantics')
-  }
-  if (normalizeText(entry.requestFillModel) !== normalizeText(baseline.requestFillModel)) {
-    diffs.push('fill')
+  if (!baseline) return "baseline";
+  if (normalizeText(entry.path) === normalizeText(baseline.path))
+    return "selected baseline";
+  const diffs: string[] = [];
+  if (
+    normalizeText(entry.optionsDatasetId) !==
+    normalizeText(baseline.optionsDatasetId)
+  ) {
+    diffs.push("dataset");
   }
   if (
-    normalizeText(entry.requestStructureFamily)
-      !== normalizeText(baseline.requestStructureFamily)
+    normalizeText(entry.priceSemantics) !==
+    normalizeText(baseline.priceSemantics)
   ) {
-    diffs.push('structure')
+    diffs.push("semantics");
   }
   if (
-    normalizeText(entry.requestSplitAssignmentMode)
-      !== normalizeText(baseline.requestSplitAssignmentMode)
+    normalizeText(entry.requestFillModel) !==
+    normalizeText(baseline.requestFillModel)
   ) {
-    diffs.push('split')
+    diffs.push("fill");
   }
   if (
-    normalizeText(entry.requestBackendPreference)
-      !== normalizeText(baseline.requestBackendPreference)
-    || normalizeText(entry.backendUsed) !== normalizeText(baseline.backendUsed)
+    normalizeText(entry.requestStructureFamily) !==
+    normalizeText(baseline.requestStructureFamily)
   ) {
-    diffs.push('backend')
+    diffs.push("structure");
   }
-  if (normalizeText(entry.topValidationVerdict) !== normalizeText(baseline.topValidationVerdict)) {
-    diffs.push('validation')
+  if (
+    normalizeText(entry.requestSplitAssignmentMode) !==
+    normalizeText(baseline.requestSplitAssignmentMode)
+  ) {
+    diffs.push("split");
   }
-  return diffs.length > 0 ? diffs.join(' · ') : 'same request lane'
+  if (
+    normalizeText(entry.requestBackendPreference) !==
+      normalizeText(baseline.requestBackendPreference) ||
+    normalizeText(entry.backendUsed) !== normalizeText(baseline.backendUsed)
+  ) {
+    diffs.push("backend");
+  }
+  if (
+    normalizeText(entry.topValidationVerdict) !==
+    normalizeText(baseline.topValidationVerdict)
+  ) {
+    diffs.push("validation");
+  }
+  return diffs.length > 0 ? diffs.join(" · ") : "same request lane";
 }
 
 watch(
-  () => [props.parentArtifactPath, props.parentStrategyKind, props.parentDatasetLabel] as const,
+  () =>
+    [
+      props.parentArtifactPath,
+      props.parentStrategyKind,
+      props.parentDatasetLabel,
+    ] as const,
   ([path, strategyKind, datasetLabel]) => {
-    store.attachParent(path, strategyKind, datasetLabel)
+    store.attachParent(path, strategyKind, datasetLabel);
     if (normalizeText(path) && isSupportedParentStrategyKind(strategyKind)) {
-      void store.bootstrap()
+      void store.bootstrap();
     }
   },
   { immediate: true },
-)
+);
 
-const hasParentSelection = computed(() => normalizeText(props.parentArtifactPath).length > 0)
+const hasParentSelection = computed(
+  () => normalizeText(props.parentArtifactPath).length > 0,
+);
 
-const selectedRealismLaneSemantics = computed(() => priceSemanticsForRealismLane(realismLane.value))
+const selectedRealismLaneSemantics = computed(() =>
+  priceSemanticsForRealismLane(realismLane.value),
+);
 const selectedRealismLaneArtifacts = computed(() =>
   filteredArtifacts.value
-    .filter((entry) => normalizeText(entry.priceSemantics) === normalizeText(selectedRealismLaneSemantics.value))
-    .sort((left, right) => normalizeText(right.ts).localeCompare(normalizeText(left.ts))),
-)
+    .filter(
+      (entry) =>
+        normalizeText(entry.priceSemantics) ===
+        normalizeText(selectedRealismLaneSemantics.value),
+    )
+    .sort((left, right) =>
+      normalizeText(right.ts).localeCompare(normalizeText(left.ts)),
+    ),
+);
 const selectedRealismLaneGuidance = computed(() =>
   fillModelGuidanceForPriceSemantics(selectedRealismLaneSemantics.value),
-)
+);
 const realismLaneSummary = computed(() => {
-  const matching = realismLaneDatasets.value.length
-  const total = datasets.value.length
-  return `${formatRealismLaneLabel(realismLane.value)} lane · ${matching}/${total} saved dataset${total === 1 ? '' : 's'} match`
-})
+  const matching = realismLaneDatasets.value.length;
+  const total = datasets.value.length;
+  return `${formatRealismLaneLabel(realismLane.value)} lane · ${matching}/${total} saved dataset${total === 1 ? "" : "s"} match`;
+});
 const realismLaneRouteNote = computed(() => {
   switch (normalizeText(realismLane.value)) {
-    case 'quote_aware':
-      return 'Quote-aware realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
-    case 'derived_mid':
-      return 'Derived-mid realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
-    case 'aggregate':
+    case "quote_aware":
+      return "Quote-aware realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.";
+    case "derived_mid":
+      return "Derived-mid realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.";
+    case "aggregate":
     default:
-      return 'Aggregate realism supports both normalized CSV import and direct bounded Polygon/Massive 1m provider download.'
+      return "Aggregate realism supports both normalized CSV import and direct bounded Polygon/Massive 1m provider download.";
   }
-})
+});
 const realismLaneProductRows = computed(() => {
-  const artifactsForLane = selectedRealismLaneArtifacts.value
-  const datasetsForLane = realismLaneDatasets.value
-  const validatedArtifacts = artifactsForLane.filter((entry) => artifactValidationVerdict(entry) !== 'search_only').length
-  const fragileArtifacts = artifactsForLane.filter((entry) => artifactValidationVerdict(entry) === 'stress_fragile').length
+  const artifactsForLane = selectedRealismLaneArtifacts.value;
+  const datasetsForLane = realismLaneDatasets.value;
+  const validatedArtifacts = artifactsForLane.filter(
+    (entry) => artifactValidationVerdict(entry) !== "search_only",
+  ).length;
+  const fragileArtifacts = artifactsForLane.filter(
+    (entry) => artifactValidationVerdict(entry) === "stress_fragile",
+  ).length;
   const avgValidation = averageNumbers(
-    artifactsForLane.map((entry) => strongestArtifactValidationBaseExpectancy(entry)),
-  )
+    artifactsForLane.map((entry) =>
+      strongestArtifactValidationBaseExpectancy(entry),
+    ),
+  );
   const avgStress = averageNumbers(
-    artifactsForLane.map((entry) => strongestArtifactValidationStressExpectancy(entry)),
-  )
+    artifactsForLane.map((entry) =>
+      strongestArtifactValidationStressExpectancy(entry),
+    ),
+  );
   return [
     {
-      key: 'lane-datasets',
-      label: 'Saved datasets',
+      key: "lane-datasets",
+      label: "Saved datasets",
       value: String(datasetsForLane.length),
     },
     {
-      key: 'lane-artifacts',
-      label: 'Saved artifacts',
+      key: "lane-artifacts",
+      label: "Saved artifacts",
       value: String(artifactsForLane.length),
     },
     {
-      key: 'lane-validated',
-      label: 'Validated artifacts',
+      key: "lane-validated",
+      label: "Validated artifacts",
       value: artifactsForLane.length
         ? `${validatedArtifacts}/${artifactsForLane.length} (${formatPercent(validatedArtifacts / artifactsForLane.length)})`
-        : '0',
+        : "0",
     },
     {
-      key: 'lane-fragile',
-      label: 'Stress-fragile artifacts',
+      key: "lane-fragile",
+      label: "Stress-fragile artifacts",
       value: artifactsForLane.length
         ? `${fragileArtifacts}/${artifactsForLane.length} (${formatPercent(fragileArtifacts / artifactsForLane.length)})`
-        : '0',
+        : "0",
     },
     {
-      key: 'lane-validation',
-      label: 'Avg validation EV',
+      key: "lane-validation",
+      label: "Avg validation EV",
       value: formatOptionalDecimal(avgValidation, 3),
     },
     {
-      key: 'lane-stress',
-      label: 'Avg stressed EV',
+      key: "lane-stress",
+      label: "Avg stressed EV",
       value: formatOptionalDecimal(avgStress, 3),
     },
-  ]
-})
+  ];
+});
 const realismLaneHistoryRows = computed(() =>
   selectedRealismLaneArtifacts.value.map((entry) => ({
     path: entry.path,
@@ -1206,85 +1337,141 @@ const realismLaneHistoryRows = computed(() =>
       entry.backendUsed,
       entry.backendFallbackReason,
     ).label,
-    validation: describeArtifactValidation(entry)?.label ?? 'Search only',
+    validation: describeArtifactValidation(entry)?.label ?? "Search only",
     selection: entry.bestSelectionExpectancyPerPremium,
     validated: strongestArtifactValidationBaseExpectancy(entry),
     stress: strongestArtifactValidationStressExpectancy(entry),
   })),
-)
+);
 
 const datasetSummary = computed(() => {
-  const selected = selectedDataset.value
-  if (!selected) return ''
+  const selected = selectedDataset.value;
+  if (!selected) return "";
   return [
-    selected.rootSymbol || 'unknown root',
+    selected.rootSymbol || "unknown root",
     `${selected.contractCount} contracts`,
     `${selected.rowCount} rows`,
-    selected.priceSemantics || 'unknown semantics',
-  ].join(' | ')
-})
+    selected.priceSemantics || "unknown semantics",
+  ].join(" | ");
+});
 
 const datasetProvenanceSummary = computed(() => {
-  const selected = selectedDataset.value
-  if (!selected) return ''
+  const selected = selectedDataset.value;
+  if (!selected) return "";
   const segments = [
     normalizeText(selected.providerName),
     normalizeText(selected.providerSourceSurface),
     normalizeText(selected.quoteResolution),
     normalizeText(selected.aggregatePriceField),
     normalizeText(selected.contractReferenceAsOfUtc),
-  ].filter((entry) => entry.length > 0)
-  return segments.join(' | ')
-})
+  ].filter((entry) => entry.length > 0);
+  return segments.join(" | ");
+});
 
 const selectedDatasetDetailRows = computed(() => {
-  const selected = selectedDataset.value
-  if (!selected) return []
+  const selected = selectedDataset.value;
+  if (!selected) return [];
   return [
-    { key: 'coverage', label: 'Coverage', value: `${formatTimestamp(selected.coverageStart)} → ${formatTimestamp(selected.coverageEnd)}` },
-    { key: 'provider', label: 'Provider', value: `${normalizeText(selected.providerName)} · ${normalizeText(selected.providerSourceSurface)}` },
-    { key: 'resolution', label: 'Resolution', value: `${normalizeText(selected.quoteResolution)} · ${normalizeText(selected.priceSemantics)} · ${normalizeText(selected.aggregatePriceField) || 'n/a'}` },
-    { key: 'contracts', label: 'Contracts / Rows', value: `${selected.contractCount} / ${selected.rowCount}` },
-    { key: 'calendar', label: 'Calendar / TZ', value: `${normalizeText(selected.calendarId)} · ${normalizeText(selected.timezone)}` },
-    { key: 'contract-ref', label: 'Contract ref', value: `${normalizeText(selected.contractReferenceSource)} · ${normalizeText(selected.contractReferenceAsOfUtc) || 'n/a'}` },
-    { key: 'underlier-ref', label: 'Underlier ref', value: normalizeText(selected.underlierReferenceSource) || '—' },
-    { key: 'entitlement', label: 'Entitlement', value: normalizeText(selected.providerEntitlementProfile) || '—' },
-    { key: 'dataset-path', label: 'Dataset path', value: normalizeText(selected.datasetPath) || '—' },
-  ]
-})
+    {
+      key: "coverage",
+      label: "Coverage",
+      value: `${formatTimestamp(selected.coverageStart)} → ${formatTimestamp(selected.coverageEnd)}`,
+    },
+    {
+      key: "provider",
+      label: "Provider",
+      value: `${normalizeText(selected.providerName)} · ${normalizeText(selected.providerSourceSurface)}`,
+    },
+    {
+      key: "resolution",
+      label: "Resolution",
+      value: `${normalizeText(selected.quoteResolution)} · ${normalizeText(selected.priceSemantics)} · ${normalizeText(selected.aggregatePriceField) || "n/a"}`,
+    },
+    {
+      key: "contracts",
+      label: "Contracts / Rows",
+      value: `${selected.contractCount} / ${selected.rowCount}`,
+    },
+    {
+      key: "calendar",
+      label: "Calendar / TZ",
+      value: `${normalizeText(selected.calendarId)} · ${normalizeText(selected.timezone)}`,
+    },
+    {
+      key: "contract-ref",
+      label: "Contract ref",
+      value: `${normalizeText(selected.contractReferenceSource)} · ${normalizeText(selected.contractReferenceAsOfUtc) || "n/a"}`,
+    },
+    {
+      key: "underlier-ref",
+      label: "Underlier ref",
+      value: normalizeText(selected.underlierReferenceSource) || "—",
+    },
+    {
+      key: "entitlement",
+      label: "Entitlement",
+      value: normalizeText(selected.providerEntitlementProfile) || "—",
+    },
+    {
+      key: "dataset-path",
+      label: "Dataset path",
+      value: normalizeText(selected.datasetPath) || "—",
+    },
+  ];
+});
 
 const latestDownloadAuditRows = computed(() => {
-  const latestDownload = latestDatasetDownload.value
-  if (!latestDownload) return []
+  const latestDownload = latestDatasetDownload.value;
+  if (!latestDownload) return [];
   return [
-    { key: 'download-contracts', label: 'Contracts discovered / selected / rows', value: `${latestDownload.contractsDiscovered} / ${latestDownload.contractsSelected} / ${latestDownload.contractsWithRows}` },
-    { key: 'download-rows', label: 'Rows / skipped', value: `${latestDownload.downloadedOptionRows} / ${latestDownload.skippedContracts}` },
-    { key: 'underlier-csv', label: 'Underlying CSV', value: normalizeText(latestDownload.underlyingCsvPath) || '—' },
-    { key: 'underlier-cache', label: 'Underlying source', value: latestDownload.usedUnderlyingCacheOnly ? 'cache-only reuse' : 'download + cache reuse' },
-  ]
-})
+    {
+      key: "download-contracts",
+      label: "Contracts discovered / selected / rows",
+      value: `${latestDownload.contractsDiscovered} / ${latestDownload.contractsSelected} / ${latestDownload.contractsWithRows}`,
+    },
+    {
+      key: "download-rows",
+      label: "Rows / skipped",
+      value: `${latestDownload.downloadedOptionRows} / ${latestDownload.skippedContracts}`,
+    },
+    {
+      key: "underlier-csv",
+      label: "Underlying CSV",
+      value: normalizeText(latestDownload.underlyingCsvPath) || "—",
+    },
+    {
+      key: "underlier-cache",
+      label: "Underlying source",
+      value: latestDownload.usedUnderlyingCacheOnly
+        ? "cache-only reuse"
+        : "download + cache reuse",
+    },
+  ];
+});
 
 const activeDatasetManifest = computed(() => {
-  const requestDatasetId = normalizeText(activeRequest.value?.optionsDatasetId)
+  const requestDatasetId = normalizeText(activeRequest.value?.optionsDatasetId);
   if (requestDatasetId) {
     return (
-      datasets.value.find((entry) => normalizeText(entry.optionsDatasetId) === requestDatasetId) ||
-      null
-    )
+      datasets.value.find(
+        (entry) => normalizeText(entry.optionsDatasetId) === requestDatasetId,
+      ) || null
+    );
   }
-  const selectedId = normalizeText(selectedDataset.value?.optionsDatasetId)
-  if (!selectedId) return selectedDataset.value
+  const selectedId = normalizeText(selectedDataset.value?.optionsDatasetId);
+  if (!selectedId) return selectedDataset.value;
   return (
-    datasets.value.find((entry) => normalizeText(entry.optionsDatasetId) === selectedId) ||
-    selectedDataset.value
-  )
-})
+    datasets.value.find(
+      (entry) => normalizeText(entry.optionsDatasetId) === selectedId,
+    ) || selectedDataset.value
+  );
+});
 
 const activeDatasetProvenanceSummary = computed(() => {
-  const activeDataset = activeDatasetManifest.value
-  const requestDatasetId = normalizeText(activeRequest.value?.optionsDatasetId)
+  const activeDataset = activeDatasetManifest.value;
+  const requestDatasetId = normalizeText(activeRequest.value?.optionsDatasetId);
   if (!activeDataset) {
-    return requestDatasetId ? 'manifest unavailable locally' : ''
+    return requestDatasetId ? "manifest unavailable locally" : "";
   }
   return [
     normalizeText(activeDataset.providerName),
@@ -1294,115 +1481,144 @@ const activeDatasetProvenanceSummary = computed(() => {
     normalizeText(activeDataset.contractReferenceAsOfUtc),
   ]
     .filter((entry) => entry.length > 0)
-    .join(' | ')
-})
+    .join(" | ");
+});
 const selectedDatasetPriceSemantics = computed(
-  () => normalizeText(selectedDataset.value?.priceSemantics) || normalizeText(realismLanePriceSemantics.value) || 'minute_aggregate',
-)
+  () =>
+    normalizeText(selectedDataset.value?.priceSemantics) ||
+    normalizeText(realismLanePriceSemantics.value) ||
+    "minute_aggregate",
+);
 const fillModelGuidance = computed(() =>
   fillModelGuidanceForPriceSemantics(selectedDatasetPriceSemantics.value),
-)
+);
 const fillModelOptionRows = computed(() =>
   OPTIONS_FILL_MODEL_OPTIONS.map((entry) => {
     const disabled = !isFillModelCompatibleWithPriceSemantics(
       entry,
       selectedDatasetPriceSemantics.value,
-    )
+    );
     return {
       value: entry,
       disabled,
       label:
-        entry === recommendedFillModelForPriceSemantics(selectedDatasetPriceSemantics.value)
+        entry ===
+        recommendedFillModelForPriceSemantics(
+          selectedDatasetPriceSemantics.value,
+        )
           ? `${entry} (recommended)`
           : entry,
-    }
+    };
   }),
-)
+);
 
 const rootMismatch = computed(() => {
-  const selected = selectedDataset.value
-  if (!selected) return false
-  const selectedRoot = normalizeText(selected.rootSymbol).toUpperCase()
-  const parentRoot = normalizeText(parentRootHint.value).toUpperCase()
-  return !!selectedRoot && !!parentRoot && selectedRoot !== parentRoot
-})
+  const selected = selectedDataset.value;
+  if (!selected) return false;
+  const selectedRoot = normalizeText(selected.rootSymbol).toUpperCase();
+  const parentRoot = normalizeText(parentRootHint.value).toUpperCase();
+  return !!selectedRoot && !!parentRoot && selectedRoot !== parentRoot;
+});
 
-const activeRows = computed(() => activeRankedResults.value)
-const hasHoldoutMetrics = computed(() => activeRows.value.some((row) => row.holdoutMetrics != null))
-const hasSealedMetrics = computed(() => activeRows.value.some((row) => row.sealedEvaluationMetrics != null))
-const hasStressMetrics = computed(() => activeRows.value.some((row) => row.stressMetrics != null))
-const hasSealedStressMetrics = computed(() => activeRows.value.some((row) => row.sealedStressMetrics != null))
-const hasHarsherStressMetrics = computed(() => activeRows.value.some((row) => row.harsherStressMetrics != null))
-const hasSealedHarsherStressMetrics = computed(() => activeRows.value.some((row) => row.sealedHarsherStressMetrics != null))
-const hasExtremeStressMetrics = computed(() => activeRows.value.some((row) => row.extremeStressMetrics != null))
+const activeRows = computed(() => activeRankedResults.value);
+const hasHoldoutMetrics = computed(() =>
+  activeRows.value.some((row) => row.holdoutMetrics != null),
+);
+const hasSealedMetrics = computed(() =>
+  activeRows.value.some((row) => row.sealedEvaluationMetrics != null),
+);
+const hasStressMetrics = computed(() =>
+  activeRows.value.some((row) => row.stressMetrics != null),
+);
+const hasSealedStressMetrics = computed(() =>
+  activeRows.value.some((row) => row.sealedStressMetrics != null),
+);
+const hasHarsherStressMetrics = computed(() =>
+  activeRows.value.some((row) => row.harsherStressMetrics != null),
+);
+const hasSealedHarsherStressMetrics = computed(() =>
+  activeRows.value.some((row) => row.sealedHarsherStressMetrics != null),
+);
+const hasExtremeStressMetrics = computed(() =>
+  activeRows.value.some((row) => row.extremeStressMetrics != null),
+);
 const hasSealedExtremeStressMetrics = computed(() =>
   activeRows.value.some((row) => row.sealedExtremeStressMetrics != null),
-)
-const selectedTupleIndex = ref(0)
-const inspectionSplitFilter = ref<'all' | 'search' | 'holdout' | 'sealed_test'>('all')
-const showAllInspectionRows = ref(false)
-const selectedInspectionEventId = ref('')
+);
+const selectedTupleIndex = ref(0);
+const inspectionSplitFilter = ref<"all" | "search" | "holdout" | "sealed_test">(
+  "all",
+);
+const showAllInspectionRows = ref(false);
+const selectedInspectionEventId = ref("");
 
 watch(
   () => selectedDataset.value?.priceSemantics,
   (priceSemantics, previous) => {
-    if (!normalizeText(priceSemantics)) return
+    if (!normalizeText(priceSemantics)) return;
     if (normalizeText(priceSemantics) !== normalizeText(previous)) {
-      store.ensureCompatibleFillModel(true)
+      store.ensureCompatibleFillModel(true);
     } else {
-      store.ensureCompatibleFillModel()
+      store.ensureCompatibleFillModel();
     }
   },
   { immediate: true },
-)
+);
 
 watch(
   activeRows,
   (rows) => {
     if (!rows.length) {
-      selectedTupleIndex.value = 0
-      store.clearTupleInspection()
-      return
+      selectedTupleIndex.value = 0;
+      store.clearTupleInspection();
+      return;
     }
     if (selectedTupleIndex.value >= rows.length) {
-      selectedTupleIndex.value = 0
+      selectedTupleIndex.value = 0;
     }
   },
   { immediate: true },
-)
+);
 
 watch(selectedTupleIndex, () => {
-  showAllInspectionRows.value = false
-  inspectionSplitFilter.value = 'all'
-  selectedInspectionEventId.value = ''
-  store.clearTupleInspection()
-})
+  showAllInspectionRows.value = false;
+  inspectionSplitFilter.value = "all";
+  selectedInspectionEventId.value = "";
+  store.clearTupleInspection();
+});
 
-const selectedTuple = computed(() => activeRows.value[selectedTupleIndex.value] || null)
+const selectedTuple = computed(
+  () => activeRows.value[selectedTupleIndex.value] || null,
+);
 const selectedInspection = computed(() => {
-  const inspection = activeTupleInspection.value
-  if (!inspection) return null
-  return inspection.tupleIndex === selectedTupleIndex.value ? inspection : null
-})
+  const inspection = activeTupleInspection.value;
+  if (!inspection) return null;
+  return inspection.tupleIndex === selectedTupleIndex.value ? inspection : null;
+});
 const inspectionRows = computed(() => {
-  const inspection = selectedInspection.value
-  if (!inspection) return []
-  const filter = inspectionSplitFilter.value
-  return inspection.rows.filter((row) => filter === 'all' || row.split === filter)
-})
+  const inspection = selectedInspection.value;
+  if (!inspection) return [];
+  const filter = inspectionSplitFilter.value;
+  return inspection.rows.filter(
+    (row) => filter === "all" || row.split === filter,
+  );
+});
 const inspectionSplitStatusRows = computed(() => {
-  const inspection = selectedInspection.value
-  if (!inspection) return []
-  const buckets = new Map<string, {
-    key: string
-    split: string
-    status: string
-    count: number
-    avgReturn: number | null
-    totalPnl: number | null
-  }>()
+  const inspection = selectedInspection.value;
+  if (!inspection) return [];
+  const buckets = new Map<
+    string,
+    {
+      key: string;
+      split: string;
+      status: string;
+      count: number;
+      avgReturn: number | null;
+      totalPnl: number | null;
+    }
+  >();
   for (const row of inspection.rows) {
-    const key = `${row.split}|${row.status}`
+    const key = `${row.split}|${row.status}`;
     const existing = buckets.get(key) || {
       key,
       split: row.split,
@@ -1410,235 +1626,300 @@ const inspectionSplitStatusRows = computed(() => {
       count: 0,
       avgReturn: null,
       totalPnl: null,
-    }
-    existing.count += 1
+    };
+    existing.count += 1;
     existing.avgReturn =
       row.returnOnPremium == null
         ? existing.avgReturn
-        : ((existing.avgReturn ?? 0) * (existing.count - 1) + row.returnOnPremium) / existing.count
-    existing.totalPnl = row.pnlPerContract == null ? existing.totalPnl : (existing.totalPnl ?? 0) + row.pnlPerContract
-    buckets.set(key, existing)
+        : ((existing.avgReturn ?? 0) * (existing.count - 1) +
+            row.returnOnPremium) /
+          existing.count;
+    existing.totalPnl =
+      row.pnlPerContract == null
+        ? existing.totalPnl
+        : (existing.totalPnl ?? 0) + row.pnlPerContract;
+    buckets.set(key, existing);
   }
   return [...buckets.values()].sort((left, right) => {
-    const splitSort = normalizeText(left.split).localeCompare(normalizeText(right.split))
-    if (splitSort !== 0) return splitSort
-    return normalizeText(left.status).localeCompare(normalizeText(right.status))
-  })
-})
+    const splitSort = normalizeText(left.split).localeCompare(
+      normalizeText(right.split),
+    );
+    if (splitSort !== 0) return splitSort;
+    return normalizeText(left.status).localeCompare(
+      normalizeText(right.status),
+    );
+  });
+});
 const inspectionInvalidReasonRows = computed(() => {
-  const inspection = selectedInspection.value
-  if (!inspection) return []
-  const buckets = new Map<string, { key: string; split: string; reason: string; count: number }>()
+  const inspection = selectedInspection.value;
+  if (!inspection) return [];
+  const buckets = new Map<
+    string,
+    { key: string; split: string; reason: string; count: number }
+  >();
   for (const row of inspection.rows) {
-    if (!row.candidateInvalidReason) continue
-    const key = `${row.split}|${row.candidateInvalidReason}`
+    if (!row.candidateInvalidReason) continue;
+    const key = `${row.split}|${row.candidateInvalidReason}`;
     const existing = buckets.get(key) || {
       key,
       split: row.split,
       reason: row.candidateInvalidReason,
       count: 0,
-    }
-    existing.count += 1
-    buckets.set(key, existing)
+    };
+    existing.count += 1;
+    buckets.set(key, existing);
   }
-  return [...buckets.values()].sort((left, right) => right.count - left.count)
-})
+  return [...buckets.values()].sort((left, right) => right.count - left.count);
+});
 const displayedInspectionRows = computed(() => {
-  if (showAllInspectionRows.value) return inspectionRows.value
-  return inspectionRows.value.slice(0, 50)
-})
+  if (showAllInspectionRows.value) return inspectionRows.value;
+  return inspectionRows.value.slice(0, 50);
+});
 const selectedInspectionRow = computed(() => {
-  const rows = inspectionRows.value
-  if (!rows.length) return null
-  const match = rows.find((row) => row.eventId === selectedInspectionEventId.value)
-  return match || rows[0] || null
-})
+  const rows = inspectionRows.value;
+  if (!rows.length) return null;
+  const match = rows.find(
+    (row) => row.eventId === selectedInspectionEventId.value,
+  );
+  return match || rows[0] || null;
+});
 const selectedArtifactSummary = computed(() => {
-  const nextPath = normalizeText(selectedArtifactPath.value)
-  return filteredArtifacts.value.find((entry) => normalizeText(entry.path) === nextPath) || null
-})
-const selectedArtifactValidation = computed(() => describeArtifactValidation(selectedArtifactSummary.value))
+  const nextPath = normalizeText(selectedArtifactPath.value);
+  return (
+    filteredArtifacts.value.find(
+      (entry) => normalizeText(entry.path) === nextPath,
+    ) || null
+  );
+});
+const selectedArtifactValidation = computed(() =>
+  describeArtifactValidation(selectedArtifactSummary.value),
+);
 const selectedArtifactRealismLane = computed(() =>
   describeRealismLane(
     selectedArtifactSummary.value?.priceSemantics,
     selectedArtifactSummary.value?.requestFillModel,
   ),
-)
+);
 const selectedArtifactBackendRoute = computed(() =>
   describeBackendRoute(
     selectedArtifactSummary.value?.requestBackendPreference,
     selectedArtifactSummary.value?.backendUsed,
     selectedArtifactSummary.value?.backendFallbackReason,
   ),
-)
+);
 const selectedArtifactValidationFrontierRows = computed(() => {
-  const artifact = selectedArtifactSummary.value
-  if (!artifact) return []
-  const selection = artifact.bestSelectionExpectancyPerPremium
+  const artifact = selectedArtifactSummary.value;
+  if (!artifact) return [];
+  const selection = artifact.bestSelectionExpectancyPerPremium;
   return [
     {
-      key: 'selection',
-      label: 'Selection',
+      key: "selection",
+      label: "Selection",
       expectancy: selection,
       delta: 0,
-      status: 'baseline',
+      status: "baseline",
     },
     artifact.bestHoldoutExpectancyPerPremium != null
       ? {
-          key: 'holdout',
-          label: 'Holdout',
+          key: "holdout",
+          label: "Holdout",
           expectancy: artifact.bestHoldoutExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestHoldoutExpectancyPerPremium) ?? 0,
-          status: 'validation',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestHoldoutExpectancyPerPremium,
+            ) ?? 0,
+          status: "validation",
         }
       : null,
     artifact.bestSealedExpectancyPerPremium != null
       ? {
-          key: 'sealed',
-          label: 'Sealed finalist',
+          key: "sealed",
+          label: "Sealed finalist",
           expectancy: artifact.bestSealedExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestSealedExpectancyPerPremium) ?? 0,
-          status: 'validation',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestSealedExpectancyPerPremium,
+            ) ?? 0,
+          status: "validation",
         }
       : null,
     artifact.bestStressExpectancyPerPremium != null
       ? {
-          key: 'stress',
-          label: 'Stress',
+          key: "stress",
+          label: "Stress",
           expectancy: artifact.bestStressExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestStressExpectancyPerPremium) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestStressExpectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
         }
       : null,
     artifact.bestSealedStressExpectancyPerPremium != null
       ? {
-          key: 'sealed-stress',
-          label: 'Sealed stress',
+          key: "sealed-stress",
+          label: "Sealed stress",
           expectancy: artifact.bestSealedStressExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestSealedStressExpectancyPerPremium) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestSealedStressExpectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
         }
       : null,
     artifact.bestHarsherStressExpectancyPerPremium != null
       ? {
-          key: 'harsher',
-          label: 'Harsher',
+          key: "harsher",
+          label: "Harsher",
           expectancy: artifact.bestHarsherStressExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestHarsherStressExpectancyPerPremium) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestHarsherStressExpectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
         }
       : null,
     artifact.bestSealedHarsherStressExpectancyPerPremium != null
       ? {
-          key: 'sealed-harsher',
-          label: 'Sealed harsher',
+          key: "sealed-harsher",
+          label: "Sealed harsher",
           expectancy: artifact.bestSealedHarsherStressExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestSealedHarsherStressExpectancyPerPremium) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestSealedHarsherStressExpectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
         }
       : null,
     artifact.bestExtremeStressExpectancyPerPremium != null
       ? {
-          key: 'extreme',
-          label: 'Extreme',
+          key: "extreme",
+          label: "Extreme",
           expectancy: artifact.bestExtremeStressExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestExtremeStressExpectancyPerPremium) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestExtremeStressExpectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
         }
       : null,
     artifact.bestSealedExtremeStressExpectancyPerPremium != null
       ? {
-          key: 'sealed-extreme',
-          label: 'Sealed extreme',
+          key: "sealed-extreme",
+          label: "Sealed extreme",
           expectancy: artifact.bestSealedExtremeStressExpectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selection, artifact.bestSealedExtremeStressExpectancyPerPremium) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selection,
+              artifact.bestSealedExtremeStressExpectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
         }
       : null,
-  ].filter((entry): entry is {
-    key: string
-    label: string
-    expectancy: number
-    delta: number
-    status: string
-  } => Boolean(entry))
-})
+  ].filter(
+    (
+      entry,
+    ): entry is {
+      key: string;
+      label: string;
+      expectancy: number;
+      delta: number;
+      status: string;
+    } => Boolean(entry),
+  );
+});
 const selectedArtifactDerivedMetrics = computed(() => {
-  const artifact = selectedArtifactSummary.value
-  if (!artifact) return []
+  const artifact = selectedArtifactSummary.value;
+  if (!artifact) return [];
   return [
     {
-      key: 'artifact-validation-delta',
-      label: 'Validation delta',
+      key: "artifact-validation-delta",
+      label: "Validation delta",
       value: formatOptionalDecimal(artifactValidationDelta(artifact), 3),
     },
     {
-      key: 'artifact-stress-drop',
-      label: 'Stress drop',
+      key: "artifact-stress-drop",
+      label: "Stress drop",
       value: formatOptionalDecimal(artifactStressDrop(artifact), 3),
     },
     {
-      key: 'artifact-support-ratio',
-      label: 'Validated ratio',
+      key: "artifact-support-ratio",
+      label: "Validated ratio",
       value: formatPercent(artifactValidationSupportRatio(artifact), 1),
     },
     {
-      key: 'artifact-fragility-ratio',
-      label: 'Fragility ratio',
+      key: "artifact-fragility-ratio",
+      label: "Fragility ratio",
       value: formatPercent(artifactStressFragilityRatio(artifact), 1),
     },
-  ]
-})
+  ];
+});
 const selectedArtifactSupportRows = computed(() => {
-  const artifact = selectedArtifactSummary.value
-  if (!artifact) return []
+  const artifact = selectedArtifactSummary.value;
+  if (!artifact) return [];
   return [
     {
-      key: 'artifact-holdout-support',
-      label: 'Holdout support',
-      value: formatArtifactSupportCount(artifact.supportedHoldoutTupleCount, artifact.tupleCount),
+      key: "artifact-holdout-support",
+      label: "Holdout support",
+      value: formatArtifactSupportCount(
+        artifact.supportedHoldoutTupleCount,
+        artifact.tupleCount,
+      ),
     },
     {
-      key: 'artifact-sealed-support',
-      label: 'Sealed support',
-      value: formatArtifactSupportCount(artifact.supportedSealedTupleCount, artifact.tupleCount),
+      key: "artifact-sealed-support",
+      label: "Sealed support",
+      value: formatArtifactSupportCount(
+        artifact.supportedSealedTupleCount,
+        artifact.tupleCount,
+      ),
     },
     {
-      key: 'artifact-stress-support',
-      label: 'Stress support',
-      value: formatArtifactSupportCount(artifact.supportedStressTupleCount, artifact.tupleCount),
+      key: "artifact-stress-support",
+      label: "Stress support",
+      value: formatArtifactSupportCount(
+        artifact.supportedStressTupleCount,
+        artifact.tupleCount,
+      ),
     },
-  ]
-})
+  ];
+});
 const selectedArtifactLeadershipRows = computed(() => {
-  const artifact = selectedArtifactSummary.value
-  if (!artifact || !hasArtifactLeaderSummaryData(artifact)) return []
+  const artifact = selectedArtifactSummary.value;
+  if (!artifact || !hasArtifactLeaderSummaryData(artifact)) return [];
   return [
     {
-      key: 'artifact-leadership-label',
-      label: 'Leadership',
+      key: "artifact-leadership-label",
+      label: "Leadership",
       value: artifactLeadershipLabel(artifact),
     },
     {
-      key: 'artifact-leadership-map',
-      label: 'Retained leaders',
+      key: "artifact-leadership-map",
+      label: "Retained leaders",
       value: artifactLeadershipMap(artifact),
     },
     {
-      key: 'artifact-leadership-disagreement',
-      label: 'Summary disagreement',
+      key: "artifact-leadership-disagreement",
+      label: "Summary disagreement",
       value: artifactLeadershipDisagreement(artifact),
     },
     {
-      key: 'artifact-robust-leader-finalist',
-      label: 'Robust leader',
+      key: "artifact-robust-leader-finalist",
+      label: "Robust leader",
       value: artifactRobustLeaderFinalistDetail(artifact),
     },
-  ]
-})
+  ];
+});
 const selectedArtifactCoverageAdequacy = computed(() => {
-  const artifact = selectedArtifactSummary.value
-  if (!artifact) return null
+  const artifact = selectedArtifactSummary.value;
+  if (!artifact) return null;
   return describeCoverageAdequacy({
     verdict: artifact.coverageAdequacyVerdict,
     nonPromotable: artifact.coverageNonPromotable,
@@ -1648,89 +1929,101 @@ const selectedArtifactCoverageAdequacy = computed(() => {
     searchCandidateCoverageRate: artifact.searchCandidateCoverageRate,
     holdoutCandidateCoverageRate: artifact.holdoutCandidateCoverageRate,
     sealedTestCandidateCoverageRate: artifact.sealedTestCandidateCoverageRate,
-    searchBaselineOutcomeCoverageRate: artifact.searchBaselineOutcomeCoverageRate,
-    holdoutBaselineOutcomeCoverageRate: artifact.holdoutBaselineOutcomeCoverageRate,
-    sealedTestBaselineOutcomeCoverageRate: artifact.sealedTestBaselineOutcomeCoverageRate,
-  })
-})
+    searchBaselineOutcomeCoverageRate:
+      artifact.searchBaselineOutcomeCoverageRate,
+    holdoutBaselineOutcomeCoverageRate:
+      artifact.holdoutBaselineOutcomeCoverageRate,
+    sealedTestBaselineOutcomeCoverageRate:
+      artifact.sealedTestBaselineOutcomeCoverageRate,
+  });
+});
 const selectedArtifactCoverageRows = computed(() => {
-  const artifact = selectedArtifactSummary.value
-  if (!artifact) return []
+  const artifact = selectedArtifactSummary.value;
+  if (!artifact) return [];
   return [
     {
-      key: 'artifact-adequacy',
-      label: 'Coverage adequacy',
+      key: "artifact-adequacy",
+      label: "Coverage adequacy",
       value: formatCoverageAdequacyLabel(artifact.coverageAdequacyVerdict),
     },
     {
-      key: 'artifact-non-promotable',
-      label: 'Non-promotable',
-      value: artifact.coverageNonPromotable ? 'yes' : 'no',
+      key: "artifact-non-promotable",
+      label: "Non-promotable",
+      value: artifact.coverageNonPromotable ? "yes" : "no",
     },
     {
-      key: 'artifact-overlap',
-      label: 'Search / Holdout / Sealed overlap',
+      key: "artifact-overlap",
+      label: "Search / Holdout / Sealed overlap",
       value: `${formatPercent(artifact.searchOverlapRate, 1)} / ${formatPercent(artifact.holdoutOverlapRate, 1)} / ${formatPercent(artifact.sealedTestOverlapRate, 1)}`,
     },
     {
-      key: 'artifact-candidate-coverage',
-      label: 'Search / Holdout / Sealed candidates',
+      key: "artifact-candidate-coverage",
+      label: "Search / Holdout / Sealed candidates",
       value: `${formatPercent(artifact.searchCandidateCoverageRate, 1)} / ${formatPercent(artifact.holdoutCandidateCoverageRate, 1)} / ${formatPercent(artifact.sealedTestCandidateCoverageRate, 1)}`,
     },
     {
-      key: 'artifact-outcome-coverage',
-      label: 'Search / Holdout / Sealed outcomes',
+      key: "artifact-outcome-coverage",
+      label: "Search / Holdout / Sealed outcomes",
       value: `${formatPercent(artifact.searchBaselineOutcomeCoverageRate, 1)} / ${formatPercent(artifact.holdoutBaselineOutcomeCoverageRate, 1)} / ${formatPercent(artifact.sealedTestBaselineOutcomeCoverageRate, 1)}`,
     },
-  ]
-})
+  ];
+});
 
 const artifactComparisonRows = computed(() =>
   [...filteredArtifacts.value].sort((left, right) => {
-    const byRobust = (right.bestRobustScore ?? 0) - (left.bestRobustScore ?? 0)
-    if (Math.abs(byRobust) > 1e-9) return byRobust
-    return normalizeText(right.ts).localeCompare(normalizeText(left.ts))
+    const byRobust = (right.bestRobustScore ?? 0) - (left.bestRobustScore ?? 0);
+    if (Math.abs(byRobust) > 1e-9) return byRobust;
+    return normalizeText(right.ts).localeCompare(normalizeText(left.ts));
   }),
-)
+);
 const artifactFrontierLeaderRows = computed(() => {
-  const rows = filteredArtifacts.value
+  const rows = filteredArtifacts.value;
   const bestEntryFor = (
-    metric: (entry: OptionsExpressionArtifactSummary) => number | null | undefined,
+    metric: (
+      entry: OptionsExpressionArtifactSummary,
+    ) => number | null | undefined,
   ): { entry: OptionsExpressionArtifactSummary; value: number } | null => {
-    let best: { entry: OptionsExpressionArtifactSummary; value: number } | null = null
+    let best: {
+      entry: OptionsExpressionArtifactSummary;
+      value: number;
+    } | null = null;
     for (const entry of rows) {
-      const raw = Number(metric(entry))
-      if (!Number.isFinite(raw)) continue
+      const raw = Number(metric(entry));
+      if (!Number.isFinite(raw)) continue;
       if (!best || raw > best.value) {
-        best = { entry, value: raw }
+        best = { entry, value: raw };
       }
     }
-    return best
-  }
+    return best;
+  };
   return [
     {
-      key: 'robust',
-      label: 'Best robust artifact',
-      metricLabel: 'Robust',
+      key: "robust",
+      label: "Best robust artifact",
+      metricLabel: "Robust",
       best: bestEntryFor((entry) => entry.bestRobustScore),
     },
     {
-      key: 'selection',
-      label: 'Best selection artifact',
-      metricLabel: 'Sel EV',
+      key: "selection",
+      label: "Best selection artifact",
+      metricLabel: "Sel EV",
       best: bestEntryFor((entry) => entry.bestSelectionExpectancyPerPremium),
     },
     {
-      key: 'validated',
-      label: 'Best validated artifact',
-      metricLabel: 'Val EV',
-      best: bestEntryFor((entry) => strongestArtifactValidationBaseExpectancy(entry)),
+      key: "validated",
+      label: "Best validated artifact",
+      metricLabel: "Val EV",
+      best: bestEntryFor((entry) =>
+        strongestArtifactValidationBaseExpectancy(entry),
+      ),
     },
     {
-      key: 'stress',
-      label: 'Best stressed artifact',
-      metricLabel: 'Stress EV',
-      best: bestEntryFor((entry) => strongestArtifactValidationStressExpectancy(entry)),
+      key: "stress",
+      label: "Best stressed artifact",
+      metricLabel: "Stress EV",
+      best: bestEntryFor((entry) =>
+        strongestArtifactValidationStressExpectancy(entry),
+      ),
     },
   ]
     .filter((row) => row.best != null)
@@ -1740,420 +2033,496 @@ const artifactFrontierLeaderRows = computed(() => {
       metricLabel: row.metricLabel,
       value: row.best!.value,
       entry: row.best!.entry,
-      validation: describeArtifactValidation(row.best!.entry)?.label ?? 'Search only',
+      validation:
+        describeArtifactValidation(row.best!.entry)?.label ?? "Search only",
       drift: artifactValidationDelta(row.best!.entry),
       stressDrop: artifactStressDrop(row.best!.entry),
       artifactLabel: formatArtifactOptionLabel(row.best!.entry),
-    }))
-})
+    }));
+});
 const artifactMetaEntries = computed(() =>
-  [...artifacts.value].sort((left, right) => normalizeText(right.ts).localeCompare(normalizeText(left.ts))),
-)
+  [...artifacts.value].sort((left, right) =>
+    normalizeText(right.ts).localeCompare(normalizeText(left.ts)),
+  ),
+);
 const artifactMetaOverviewRows = computed<ArtifactMetaOverviewRow[]>(() => {
-  const rows = artifactMetaEntries.value
-  const uniqueRoots = new Set(rows.map((entry) => formatMetaGroupKey(entry.rootSymbol, 'Unknown root')))
+  const rows = artifactMetaEntries.value;
+  const uniqueRoots = new Set(
+    rows.map((entry) => formatMetaGroupKey(entry.rootSymbol, "Unknown root")),
+  );
   const uniqueParents = new Set(
-    rows.map((entry) => formatMetaGroupKey(entry.parentStrategyKind, 'Unknown parent family')),
-  )
+    rows.map((entry) =>
+      formatMetaGroupKey(entry.parentStrategyKind, "Unknown parent family"),
+    ),
+  );
   const uniqueStructures = new Set(
-    rows.map((entry) => formatMetaGroupKey(entry.requestStructureFamily, 'Unknown structure')),
-  )
+    rows.map((entry) =>
+      formatMetaGroupKey(entry.requestStructureFamily, "Unknown structure"),
+    ),
+  );
   const uniqueDatasets = new Set(
-    rows.map((entry) => formatMetaGroupKey(entry.optionsDatasetId, 'Unknown dataset')),
-  )
-  const validatedCount = rows.filter((entry) => artifactValidationVerdict(entry) !== 'search_only').length
-  const fragileCount = rows.filter((entry) => artifactValidationVerdict(entry) === 'stress_fragile').length
+    rows.map((entry) =>
+      formatMetaGroupKey(entry.optionsDatasetId, "Unknown dataset"),
+    ),
+  );
+  const validatedCount = rows.filter(
+    (entry) => artifactValidationVerdict(entry) !== "search_only",
+  ).length;
+  const fragileCount = rows.filter(
+    (entry) => artifactValidationVerdict(entry) === "stress_fragile",
+  ).length;
   return [
-    { key: 'artifacts', label: 'Saved artifacts', value: String(rows.length) },
-    { key: 'roots', label: 'Roots', value: String(uniqueRoots.size) },
-    { key: 'parents', label: 'Parent families', value: String(uniqueParents.size) },
-    { key: 'structures', label: 'Structure families', value: String(uniqueStructures.size) },
-    { key: 'datasets', label: 'Datasets', value: String(uniqueDatasets.size) },
+    { key: "artifacts", label: "Saved artifacts", value: String(rows.length) },
+    { key: "roots", label: "Roots", value: String(uniqueRoots.size) },
     {
-      key: 'validated',
-      label: 'Validated artifacts',
-      value: rows.length > 0 ? `${validatedCount}/${rows.length} (${formatPercent(validatedCount / rows.length)})` : '0',
+      key: "parents",
+      label: "Parent families",
+      value: String(uniqueParents.size),
     },
     {
-      key: 'fragile',
-      label: 'Stress-fragile artifacts',
-      value: rows.length > 0 ? `${fragileCount}/${rows.length} (${formatPercent(fragileCount / rows.length)})` : '0',
+      key: "structures",
+      label: "Structure families",
+      value: String(uniqueStructures.size),
     },
-  ]
-})
+    { key: "datasets", label: "Datasets", value: String(uniqueDatasets.size) },
+    {
+      key: "validated",
+      label: "Validated artifacts",
+      value:
+        rows.length > 0
+          ? `${validatedCount}/${rows.length} (${formatPercent(validatedCount / rows.length)})`
+          : "0",
+    },
+    {
+      key: "fragile",
+      label: "Stress-fragile artifacts",
+      value:
+        rows.length > 0
+          ? `${fragileCount}/${rows.length} (${formatPercent(fragileCount / rows.length)})`
+          : "0",
+    },
+  ];
+});
 const artifactMetaByRootRows = computed(() =>
-  buildArtifactMetaGroupRows(
-    artifactMetaEntries.value,
-    (entry) => formatMetaGroupKey(entry.rootSymbol, 'Unknown root'),
+  buildArtifactMetaGroupRows(artifactMetaEntries.value, (entry) =>
+    formatMetaGroupKey(entry.rootSymbol, "Unknown root"),
   ),
-)
+);
 const artifactMetaByParentRows = computed(() =>
-  buildArtifactMetaGroupRows(
-    artifactMetaEntries.value,
-    (entry) => formatMetaGroupKey(entry.parentStrategyKind, 'Unknown parent family'),
+  buildArtifactMetaGroupRows(artifactMetaEntries.value, (entry) =>
+    formatMetaGroupKey(entry.parentStrategyKind, "Unknown parent family"),
   ),
-)
+);
 const artifactMetaByStructureRows = computed(() =>
-  buildArtifactMetaGroupRows(
-    artifactMetaEntries.value,
-    (entry) => formatMetaGroupKey(entry.requestStructureFamily, 'Unknown structure'),
+  buildArtifactMetaGroupRows(artifactMetaEntries.value, (entry) =>
+    formatMetaGroupKey(entry.requestStructureFamily, "Unknown structure"),
   ),
-)
+);
 const artifactMetaByLaneRows = computed(() =>
-  buildArtifactMetaGroupRows(
-    artifactMetaEntries.value,
-    (entry) => {
-      const lane = describeRealismLane(entry.priceSemantics, entry.requestFillModel)
-      return `${lane.shortLabel} · ${entry.requestFillModel || 'aggregate_research'}`
-    },
-  ),
-)
+  buildArtifactMetaGroupRows(artifactMetaEntries.value, (entry) => {
+    const lane = describeRealismLane(
+      entry.priceSemantics,
+      entry.requestFillModel,
+    );
+    return `${lane.shortLabel} · ${entry.requestFillModel || "aggregate_research"}`;
+  }),
+);
 const artifactMetaByVerdictRows = computed(() =>
-  buildArtifactMetaGroupRows(
-    artifactMetaEntries.value,
-    (entry) => artifactValidationLabel(entry),
+  buildArtifactMetaGroupRows(artifactMetaEntries.value, (entry) =>
+    artifactValidationLabel(entry),
   ),
-)
+);
 const artifactLaneDisagreementRows = computed(() =>
   buildArtifactLaneDisagreementRows(artifactMetaEntries.value),
-)
+);
 const artifactMetaSections = computed(() => [
-  { key: 'root', label: 'By root', rows: artifactMetaByRootRows.value },
-  { key: 'parent', label: 'By parent family', rows: artifactMetaByParentRows.value },
-  { key: 'structure', label: 'By structure family', rows: artifactMetaByStructureRows.value },
-  { key: 'lane', label: 'By realism lane', rows: artifactMetaByLaneRows.value },
-  { key: 'verdict', label: 'By top validation verdict', rows: artifactMetaByVerdictRows.value },
-])
-const resultSortKey = ref<'robust' | 'selection_ev' | 'holdout_ev' | 'stress_ev' | 'harsher_ev' | 'extreme_ev' | 'invalid_rate' | 'valid_trades' | 'sealed_rank'>('robust')
-const resultSortDirection = ref<'desc' | 'asc'>('desc')
-const finalistsOnly = ref(false)
-const maxInvalidRateFilterInput = ref('')
-const minRobustScoreFilterInput = ref('')
-const maxStressDropFilterInput = ref('')
+  { key: "root", label: "By root", rows: artifactMetaByRootRows.value },
+  {
+    key: "parent",
+    label: "By parent family",
+    rows: artifactMetaByParentRows.value,
+  },
+  {
+    key: "structure",
+    label: "By structure family",
+    rows: artifactMetaByStructureRows.value,
+  },
+  { key: "lane", label: "By realism lane", rows: artifactMetaByLaneRows.value },
+  {
+    key: "verdict",
+    label: "By top validation verdict",
+    rows: artifactMetaByVerdictRows.value,
+  },
+]);
+const resultSortKey = ref<
+  | "robust"
+  | "selection_ev"
+  | "holdout_ev"
+  | "stress_ev"
+  | "harsher_ev"
+  | "extreme_ev"
+  | "invalid_rate"
+  | "valid_trades"
+  | "sealed_rank"
+>("robust");
+const resultSortDirection = ref<"desc" | "asc">("desc");
+const finalistsOnly = ref(false);
+const maxInvalidRateFilterInput = ref("");
+const minRobustScoreFilterInput = ref("");
+const maxStressDropFilterInput = ref("");
 const selectedEventPathInspection = computed(() => {
-  const inspection = activeEventPathInspection.value
-  const selectedRow = selectedInspectionRow.value
-  if (!inspection || !selectedRow) return null
-  if (inspection.tupleIndex !== selectedTupleIndex.value) return null
-  return inspection.eventIndex === selectedRow.eventIndex ? inspection : null
-})
-const selectedTupleValidation = computed(() => describeTupleValidation(selectedTuple.value))
+  const inspection = activeEventPathInspection.value;
+  const selectedRow = selectedInspectionRow.value;
+  if (!inspection || !selectedRow) return null;
+  if (inspection.tupleIndex !== selectedTupleIndex.value) return null;
+  return inspection.eventIndex === selectedRow.eventIndex ? inspection : null;
+});
+const selectedTupleValidation = computed(() =>
+  describeTupleValidation(selectedTuple.value),
+);
 const selectedTupleSupportRows = computed(() => {
-  const tuple = selectedTuple.value
-  if (!tuple) return []
+  const tuple = selectedTuple.value;
+  if (!tuple) return [];
   return [
     {
-      key: 'tuple-holdout-support',
-      label: 'Holdout support',
+      key: "tuple-holdout-support",
+      label: "Holdout support",
       value: formatMetricsSupport(tuple.holdoutMetrics),
     },
     {
-      key: 'tuple-sealed-support',
-      label: 'Sealed support',
+      key: "tuple-sealed-support",
+      label: "Sealed support",
       value: formatMetricsSupport(tuple.sealedEvaluationMetrics),
     },
     {
-      key: 'tuple-stress-support',
-      label: 'Stress support',
+      key: "tuple-stress-support",
+      label: "Stress support",
       value: formatMetricsSupport(strongestTupleValidationStressMetrics(tuple)),
     },
-  ]
-})
+  ];
+});
 const selectedTupleValidationScopeRows = computed(() => {
-  const tuple = selectedTuple.value
-  if (!tuple) return []
+  const tuple = selectedTuple.value;
+  if (!tuple) return [];
   const hasRetainedScope = Boolean(
-    supportedMetrics(tuple.holdoutMetrics)
-    || supportedMetrics(tuple.stressMetrics)
-    || supportedMetrics(tuple.harsherStressMetrics)
-    || supportedMetrics(tuple.extremeStressMetrics),
-  )
+    supportedMetrics(tuple.holdoutMetrics) ||
+    supportedMetrics(tuple.stressMetrics) ||
+    supportedMetrics(tuple.harsherStressMetrics) ||
+    supportedMetrics(tuple.extremeStressMetrics),
+  );
   const hasSealedScope = Boolean(
-    supportedMetrics(tuple.sealedEvaluationMetrics)
-    || supportedMetrics(tuple.sealedStressMetrics)
-    || supportedMetrics(tuple.sealedHarsherStressMetrics)
-    || supportedMetrics(tuple.sealedExtremeStressMetrics),
-  )
+    supportedMetrics(tuple.sealedEvaluationMetrics) ||
+    supportedMetrics(tuple.sealedStressMetrics) ||
+    supportedMetrics(tuple.sealedHarsherStressMetrics) ||
+    supportedMetrics(tuple.sealedExtremeStressMetrics),
+  );
   return [
     hasRetainedScope
       ? {
-          key: 'retained-scope',
-          label: 'Retained frontier scope',
+          key: "retained-scope",
+          label: "Retained frontier scope",
           value: RETAINED_SCOPE_LABEL,
         }
       : null,
     hasSealedScope
       ? {
-          key: 'sealed-scope',
-          label: 'Sealed frontier scope',
+          key: "sealed-scope",
+          label: "Sealed frontier scope",
           value: SEALED_SCOPE_LABEL,
         }
       : null,
-  ].filter((entry): entry is { key: string; label: string; value: string } => Boolean(entry))
-})
+  ].filter((entry): entry is { key: string; label: string; value: string } =>
+    Boolean(entry),
+  );
+});
 const activeRealismLane = computed(() =>
-  describeRealismLane(activePriceSemantics.value, activeRequest.value?.fillModel),
-)
+  describeRealismLane(
+    activePriceSemantics.value,
+    activeRequest.value?.fillModel,
+  ),
+);
 const activeBackendRoute = computed(() =>
   describeBackendRoute(
     activeRequest.value?.backendPreference,
     activeBackendUsed.value,
     activeBackendFallbackReason.value,
   ),
-)
+);
 const selectedTupleValidationFrontierRows = computed(() => {
-  const tuple = selectedTuple.value
-  if (!tuple) return []
-  const selectionExpectancy = tuple.selectionMetrics.expectancyPerPremium
+  const tuple = selectedTuple.value;
+  if (!tuple) return [];
+  const selectionExpectancy = tuple.selectionMetrics.expectancyPerPremium;
   const rows = [
     {
-      key: 'selection',
-      label: 'Selection',
+      key: "selection",
+      label: "Selection",
       expectancy: tuple.selectionMetrics.expectancyPerPremium,
       delta: 0,
-      status: 'baseline',
+      status: "baseline",
       support: formatMetricsSupport(tuple.selectionMetrics),
     },
     tuple.holdoutMetrics
       ? {
-          key: 'holdout',
-          label: 'Holdout',
+          key: "holdout",
+          label: "Holdout",
           expectancy: tuple.holdoutMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selectionExpectancy, tuple.holdoutMetrics.expectancyPerPremium) ?? 0,
-          status: 'validation',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.holdoutMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "validation",
           support: formatMetricsSupport(tuple.holdoutMetrics),
         }
       : null,
     tuple.sealedEvaluationMetrics
       ? {
-          key: 'sealed',
-          label: 'Sealed finalist',
+          key: "sealed",
+          label: "Sealed finalist",
           expectancy: tuple.sealedEvaluationMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(
-            selectionExpectancy,
-            tuple.sealedEvaluationMetrics.expectancyPerPremium,
-          ) ?? 0,
-          status: 'validation',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.sealedEvaluationMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "validation",
           support: formatMetricsSupport(tuple.sealedEvaluationMetrics),
         }
       : null,
     tuple.stressMetrics
       ? {
-          key: 'stress',
-          label: 'Stress',
+          key: "stress",
+          label: "Stress",
           expectancy: tuple.stressMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(selectionExpectancy, tuple.stressMetrics.expectancyPerPremium) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.stressMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
           support: formatMetricsSupport(tuple.stressMetrics),
         }
       : null,
     tuple.sealedStressMetrics
       ? {
-          key: 'sealed-stress',
-          label: 'Sealed stress',
+          key: "sealed-stress",
+          label: "Sealed stress",
           expectancy: tuple.sealedStressMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(
-            selectionExpectancy,
-            tuple.sealedStressMetrics.expectancyPerPremium,
-          ) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.sealedStressMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
           support: formatMetricsSupport(tuple.sealedStressMetrics),
         }
       : null,
     tuple.harsherStressMetrics
       ? {
-          key: 'harsher',
-          label: 'Harsher',
+          key: "harsher",
+          label: "Harsher",
           expectancy: tuple.harsherStressMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(
-            selectionExpectancy,
-            tuple.harsherStressMetrics.expectancyPerPremium,
-          ) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.harsherStressMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
           support: formatMetricsSupport(tuple.harsherStressMetrics),
         }
       : null,
     tuple.sealedHarsherStressMetrics
       ? {
-          key: 'sealed-harsher',
-          label: 'Sealed harsher',
+          key: "sealed-harsher",
+          label: "Sealed harsher",
           expectancy: tuple.sealedHarsherStressMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(
-            selectionExpectancy,
-            tuple.sealedHarsherStressMetrics.expectancyPerPremium,
-          ) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.sealedHarsherStressMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
           support: formatMetricsSupport(tuple.sealedHarsherStressMetrics),
         }
       : null,
     tuple.extremeStressMetrics
       ? {
-          key: 'extreme',
-          label: 'Extreme',
+          key: "extreme",
+          label: "Extreme",
           expectancy: tuple.extremeStressMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(
-            selectionExpectancy,
-            tuple.extremeStressMetrics.expectancyPerPremium,
-          ) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.extremeStressMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
           support: formatMetricsSupport(tuple.extremeStressMetrics),
         }
       : null,
     tuple.sealedExtremeStressMetrics
       ? {
-          key: 'sealed-extreme',
-          label: 'Sealed extreme',
+          key: "sealed-extreme",
+          label: "Sealed extreme",
           expectancy: tuple.sealedExtremeStressMetrics.expectancyPerPremium,
-          delta: metricDeltaAgainstSelection(
-            selectionExpectancy,
-            tuple.sealedExtremeStressMetrics.expectancyPerPremium,
-          ) ?? 0,
-          status: 'stress',
+          delta:
+            metricDeltaAgainstSelection(
+              selectionExpectancy,
+              tuple.sealedExtremeStressMetrics.expectancyPerPremium,
+            ) ?? 0,
+          status: "stress",
           support: formatMetricsSupport(tuple.sealedExtremeStressMetrics),
         }
       : null,
-  ].filter((entry): entry is {
-    key: string
-    label: string
-    expectancy: number
-    delta: number
-    status: string
-    support: string
-  } => Boolean(entry))
-  return rows
-})
+  ].filter(
+    (
+      entry,
+    ): entry is {
+      key: string;
+      label: string;
+      expectancy: number;
+      delta: number;
+      status: string;
+      support: string;
+    } => Boolean(entry),
+  );
+  return rows;
+});
 const selectedTupleValidationDriftRows = computed(() => {
-  const tuple = selectedTuple.value
-  if (!tuple) return []
+  const tuple = selectedTuple.value;
+  if (!tuple) return [];
   return [
     buildValidationDriftRow(
-      'drift-sel-hold',
-      'Selection -> Holdout',
-      'Selection',
+      "drift-sel-hold",
+      "Selection -> Holdout",
+      "Selection",
       metricsExpectancy(tuple.selectionMetrics, false),
-      'Holdout',
+      "Holdout",
       metricsExpectancy(tuple.holdoutMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
     buildValidationDriftRow(
-      'drift-hold-sealed',
-      'Holdout -> Sealed',
-      'Holdout',
+      "drift-hold-sealed",
+      "Holdout -> Sealed",
+      "Holdout",
       metricsExpectancy(tuple.holdoutMetrics),
-      'Sealed finalist',
+      "Sealed finalist",
       metricsExpectancy(tuple.sealedEvaluationMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
     buildValidationDriftRow(
-      'drift-hold-stress',
-      'Holdout -> Stress',
-      'Holdout',
+      "drift-hold-stress",
+      "Holdout -> Stress",
+      "Holdout",
       metricsExpectancy(tuple.holdoutMetrics),
-      'Stress',
+      "Stress",
       metricsExpectancy(tuple.stressMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
     buildValidationDriftRow(
-      'drift-stress-harsher',
-      'Stress -> Harsher',
-      'Stress',
+      "drift-stress-harsher",
+      "Stress -> Harsher",
+      "Stress",
       metricsExpectancy(tuple.stressMetrics),
-      'Harsher',
+      "Harsher",
       metricsExpectancy(tuple.harsherStressMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
     buildValidationDriftRow(
-      'drift-harsher-extreme',
-      'Harsher -> Extreme',
-      'Harsher',
+      "drift-harsher-extreme",
+      "Harsher -> Extreme",
+      "Harsher",
       metricsExpectancy(tuple.harsherStressMetrics),
-      'Extreme',
+      "Extreme",
       metricsExpectancy(tuple.extremeStressMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
     buildValidationDriftRow(
-      'drift-sealed-stress',
-      'Sealed -> Sealed stress',
-      'Sealed finalist',
+      "drift-sealed-stress",
+      "Sealed -> Sealed stress",
+      "Sealed finalist",
       metricsExpectancy(tuple.sealedEvaluationMetrics),
-      'Sealed stress',
+      "Sealed stress",
       metricsExpectancy(tuple.sealedStressMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
     buildValidationDriftRow(
-      'drift-sealed-stress-harsher',
-      'Sealed stress -> Sealed harsher',
-      'Sealed stress',
+      "drift-sealed-stress-harsher",
+      "Sealed stress -> Sealed harsher",
+      "Sealed stress",
       metricsExpectancy(tuple.sealedStressMetrics),
-      'Sealed harsher',
+      "Sealed harsher",
       metricsExpectancy(tuple.sealedHarsherStressMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
     buildValidationDriftRow(
-      'drift-sealed-harsher-extreme',
-      'Sealed harsher -> Sealed extreme',
-      'Sealed harsher',
+      "drift-sealed-harsher-extreme",
+      "Sealed harsher -> Sealed extreme",
+      "Sealed harsher",
       metricsExpectancy(tuple.sealedHarsherStressMetrics),
-      'Sealed extreme',
+      "Sealed extreme",
       metricsExpectancy(tuple.sealedExtremeStressMetrics),
       SELECTED_TUPLE_SCOPE_LABEL,
     ),
-  ].filter((entry): entry is ValidationInterpretationValueRow => Boolean(entry))
-})
+  ].filter((entry): entry is ValidationInterpretationValueRow =>
+    Boolean(entry),
+  );
+});
 const selectedTupleValidationMonotonicityRows = computed(() => {
-  const tuple = selectedTuple.value
-  if (!tuple) return []
-  const holdoutPoints = buildValidationFamilyPoints(tuple, 'holdout')
-  const sealedPoints = buildValidationFamilyPoints(tuple, 'sealed')
+  const tuple = selectedTuple.value;
+  if (!tuple) return [];
+  const holdoutPoints = buildValidationFamilyPoints(tuple, "holdout");
+  const sealedPoints = buildValidationFamilyPoints(tuple, "sealed");
   return [
     holdoutPoints.length > 0
       ? (() => {
-          const verdict = describeValidationMonotonicity(holdoutPoints)
+          const verdict = describeValidationMonotonicity(holdoutPoints);
           return {
-            key: 'monotonicity-holdout-family',
-            label: 'Holdout family',
+            key: "monotonicity-holdout-family",
+            label: "Holdout family",
             statusLabel: monotonicityStatusLabel(verdict.state),
             detail: verdict.detail,
             scopeLabel: SELECTED_TUPLE_SCOPE_LABEL,
-          }
+          };
         })()
       : null,
     sealedPoints.length > 0
       ? (() => {
-          const verdict = describeValidationMonotonicity(sealedPoints)
+          const verdict = describeValidationMonotonicity(sealedPoints);
           return {
-            key: 'monotonicity-sealed-family',
-            label: 'Sealed family',
+            key: "monotonicity-sealed-family",
+            label: "Sealed family",
             statusLabel: monotonicityStatusLabel(verdict.state),
             detail: verdict.detail,
             scopeLabel: SELECTED_TUPLE_SCOPE_LABEL,
-          }
+          };
         })()
       : null,
-  ].filter((entry): entry is ValidationInterpretationStateRow => Boolean(entry))
-})
+  ].filter((entry): entry is ValidationInterpretationStateRow =>
+    Boolean(entry),
+  );
+});
 const selectedTupleValidationRegretRows = computed(() => {
-  const tuple = selectedTuple.value
-  const rows = activeRows.value
-  if (!tuple || rows.length === 0) return []
+  const tuple = selectedTuple.value;
+  const rows = activeRows.value;
+  if (!tuple || rows.length === 0) return [];
   return [
     buildValidationRegretRow(
-      'regret-holdout',
-      'Retained holdout regret',
+      "regret-holdout",
+      "Retained holdout regret",
       RETAINED_SCOPE_LABEL,
       metricsExpectancy(tuple.holdoutMetrics),
       rows.map((entry) => metricsExpectancy(entry.holdoutMetrics)),
     ),
     buildValidationRegretRow(
-      'regret-stress',
-      'Retained stress regret',
+      "regret-stress",
+      "Retained stress regret",
       RETAINED_SCOPE_LABEL,
       metricsExpectancy(tuple.stressMetrics),
       rows.map((entry) => metricsExpectancy(entry.stressMetrics)),
     ),
     buildValidationRegretRow(
-      'regret-sealed',
-      'Sealed regret',
+      "regret-sealed",
+      "Sealed regret",
       SEALED_SCOPE_LABEL,
       metricsExpectancy(tuple.sealedEvaluationMetrics),
       rows
@@ -2161,72 +2530,95 @@ const selectedTupleValidationRegretRows = computed(() => {
         .map((entry) => metricsExpectancy(entry.sealedEvaluationMetrics)),
     ),
     buildValidationRegretRow(
-      'regret-sealed-stress',
-      'Sealed stress regret',
+      "regret-sealed-stress",
+      "Sealed stress regret",
       SEALED_SCOPE_LABEL,
       metricsExpectancy(tuple.sealedStressMetrics),
       rows
         .filter((entry) => entry.sealedFinalist)
         .map((entry) => metricsExpectancy(entry.sealedStressMetrics)),
     ),
-  ].filter((entry): entry is ValidationInterpretationValueRow => Boolean(entry))
-})
+  ].filter((entry): entry is ValidationInterpretationValueRow =>
+    Boolean(entry),
+  );
+});
 const validationWinnersRows = computed(() => {
-  const rows = activeRows.value
-  if (!rows.length) return []
+  const rows = activeRows.value;
+  if (!rows.length) return [];
   return [
     {
-      key: 'robust',
-      label: 'Best robust score',
+      key: "robust",
+      label: "Best robust score",
       winner: bestTupleForMetric(rows, (row) => row.robustScore),
-      metricLabel: 'Robust',
+      metricLabel: "Robust",
     },
     {
-      key: 'selection',
-      label: 'Best selection EV',
-      winner: bestTupleForMetric(rows, (row) => row.selectionMetrics.expectancyPerPremium),
-      metricLabel: 'Sel EV',
+      key: "selection",
+      label: "Best selection EV",
+      winner: bestTupleForMetric(
+        rows,
+        (row) => row.selectionMetrics.expectancyPerPremium,
+      ),
+      metricLabel: "Sel EV",
     },
     {
-      key: 'holdout',
-      label: 'Best holdout EV',
-      winner: bestTupleForMetric(rows, (row) => row.holdoutMetrics?.expectancyPerPremium),
-      metricLabel: 'Hold EV',
+      key: "holdout",
+      label: "Best holdout EV",
+      winner: bestTupleForMetric(
+        rows,
+        (row) => row.holdoutMetrics?.expectancyPerPremium,
+      ),
+      metricLabel: "Hold EV",
     },
     {
-      key: 'sealed',
-      label: 'Best sealed EV',
-      winner: bestTupleForMetric(rows, (row) => row.sealedEvaluationMetrics?.expectancyPerPremium),
-      metricLabel: 'Sealed EV',
+      key: "sealed",
+      label: "Best sealed EV",
+      winner: bestTupleForMetric(
+        rows,
+        (row) => row.sealedEvaluationMetrics?.expectancyPerPremium,
+      ),
+      metricLabel: "Sealed EV",
     },
     {
-      key: 'stress',
-      label: 'Best stress EV',
-      winner: bestTupleForMetric(rows, (row) => row.stressMetrics?.expectancyPerPremium),
-      metricLabel: 'Stress EV',
+      key: "stress",
+      label: "Best stress EV",
+      winner: bestTupleForMetric(
+        rows,
+        (row) => row.stressMetrics?.expectancyPerPremium,
+      ),
+      metricLabel: "Stress EV",
     },
     {
-      key: 'harsher',
-      label: 'Best harsher EV',
-      winner: bestTupleForMetric(rows, (row) => row.harsherStressMetrics?.expectancyPerPremium),
-      metricLabel: 'Harsher EV',
+      key: "harsher",
+      label: "Best harsher EV",
+      winner: bestTupleForMetric(
+        rows,
+        (row) => row.harsherStressMetrics?.expectancyPerPremium,
+      ),
+      metricLabel: "Harsher EV",
     },
     {
-      key: 'extreme',
-      label: 'Best extreme EV',
-      winner: bestTupleForMetric(rows, (row) => row.extremeStressMetrics?.expectancyPerPremium),
-      metricLabel: 'Extreme EV',
+      key: "extreme",
+      label: "Best extreme EV",
+      winner: bestTupleForMetric(
+        rows,
+        (row) => row.extremeStressMetrics?.expectancyPerPremium,
+      ),
+      metricLabel: "Extreme EV",
     },
     {
-      key: 'sealed-extreme',
-      label: 'Best sealed extreme EV',
-      winner: bestTupleForMetric(rows, (row) => row.sealedExtremeStressMetrics?.expectancyPerPremium),
-      metricLabel: 'Sealed extreme EV',
+      key: "sealed-extreme",
+      label: "Best sealed extreme EV",
+      winner: bestTupleForMetric(
+        rows,
+        (row) => row.sealedExtremeStressMetrics?.expectancyPerPremium,
+      ),
+      metricLabel: "Sealed extreme EV",
     },
   ]
     .filter((entry) => entry.winner != null)
     .map((entry) => {
-      const winner = entry.winner!
+      const winner = entry.winner!;
       return {
         key: entry.key,
         label: entry.label,
@@ -2234,198 +2626,221 @@ const validationWinnersRows = computed(() => {
         tupleIndex: winner.index,
         tuple: winner.row,
         value: winner.value,
-        validation: describeTupleValidation(winner.row)?.label ?? 'Search only',
+        validation: describeTupleValidation(winner.row)?.label ?? "Search only",
         stressDrop: strongestTupleStressDrop(winner.row),
-      }
-    })
-})
+      };
+    });
+});
 const winnerDisagreementRows = computed(() => {
-  const byKey = new Map(validationWinnersRows.value.map((row) => [row.key, row]))
-  const rows = ['selection', 'holdout', 'sealed', 'robust']
+  const byKey = new Map(
+    validationWinnersRows.value.map((row) => [row.key, row]),
+  );
+  const rows = ["selection", "holdout", "sealed", "robust"]
     .map((key) => byKey.get(key))
-    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
-  if (!rows.length) return []
-  const searchWinner = rows.find((row) => row.key === 'selection') ?? null
-  const robustWinner = rows.find((row) => row.key === 'robust') ?? null
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+  if (!rows.length) return [];
+  const searchWinner = rows.find((row) => row.key === "selection") ?? null;
+  const robustWinner = rows.find((row) => row.key === "robust") ?? null;
   return rows.map((row) => {
-    let relation = 'Different tuple'
-    if (row.key === 'selection') {
-      relation = 'Search baseline'
+    let relation = "Different tuple";
+    if (row.key === "selection") {
+      relation = "Search baseline";
     } else if (
-      searchWinner
-      && robustWinner
-      && row.tupleIndex === searchWinner.tupleIndex
-      && row.tupleIndex === robustWinner.tupleIndex
+      searchWinner &&
+      robustWinner &&
+      row.tupleIndex === searchWinner.tupleIndex &&
+      row.tupleIndex === robustWinner.tupleIndex
     ) {
-      relation = 'Same as search & robust'
+      relation = "Same as search & robust";
     } else if (searchWinner && row.tupleIndex === searchWinner.tupleIndex) {
-      relation = 'Same as search'
+      relation = "Same as search";
     } else if (robustWinner && row.tupleIndex === robustWinner.tupleIndex) {
-      relation = 'Same as robust'
+      relation = "Same as robust";
     }
     return {
       ...row,
       tupleIdentity: formatTupleIdentity(row.tuple),
       relation,
+    };
+  });
+});
+const winnerDisagreementSummary =
+  computed<WinnerDisagreementPresentationSummary | null>(() => {
+    const rows = winnerDisagreementRows.value;
+    if (!rows.length) return null;
+    const searchWinner = rows.find((row) => row.key === "selection") ?? null;
+    const holdoutWinner = rows.find((row) => row.key === "holdout") ?? null;
+    const sealedWinner = rows.find((row) => row.key === "sealed") ?? null;
+    const robustWinner = rows.find((row) => row.key === "robust") ?? null;
+    if (!searchWinner) return null;
+    if (!holdoutWinner && !sealedWinner && !robustWinner) {
+      return {
+        label: "Search-stage only",
+        tone: "pending",
+        detail: `Tuple #${searchWinner.tupleIndex + 1} is only the search winner so far. Holdout, sealed, and robust confirmation have not diverged because they do not exist yet.`,
+      };
     }
-  })
-})
-const winnerDisagreementSummary = computed<WinnerDisagreementPresentationSummary | null>(() => {
-  const rows = winnerDisagreementRows.value
-  if (!rows.length) return null
-  const searchWinner = rows.find((row) => row.key === 'selection') ?? null
-  const holdoutWinner = rows.find((row) => row.key === 'holdout') ?? null
-  const sealedWinner = rows.find((row) => row.key === 'sealed') ?? null
-  const robustWinner = rows.find((row) => row.key === 'robust') ?? null
-  if (!searchWinner) return null
-  if (!holdoutWinner && !sealedWinner && !robustWinner) {
-    return {
-      label: 'Search-stage only',
-      tone: 'pending',
-      detail: `Tuple #${searchWinner.tupleIndex + 1} is only the search winner so far. Holdout, sealed, and robust confirmation have not diverged because they do not exist yet.`,
+    const distinctTupleCount = new Set(rows.map((row) => row.tupleIndex)).size;
+    if (distinctTupleCount <= 1) {
+      return {
+        label: "Aligned winner",
+        tone: "pass",
+        detail: `Tuple #${searchWinner.tupleIndex + 1} remains the search winner and still leads every currently available validation / robustness lane.`,
+      };
     }
-  }
-  const distinctTupleCount = new Set(rows.map((row) => row.tupleIndex)).size
-  if (distinctTupleCount <= 1) {
-    return {
-      label: 'Aligned winner',
-      tone: 'pass',
-      detail: `Tuple #${searchWinner.tupleIndex + 1} remains the search winner and still leads every currently available validation / robustness lane.`,
-    }
-  }
 
-  const driftParts: string[] = []
-  if (holdoutWinner && holdoutWinner.tupleIndex !== searchWinner.tupleIndex) {
-    driftParts.push(`holdout winner #${holdoutWinner.tupleIndex + 1}`)
-  }
-  if (
-    sealedWinner
-    && sealedWinner.tupleIndex !== searchWinner.tupleIndex
-    && (!holdoutWinner || sealedWinner.tupleIndex !== holdoutWinner.tupleIndex)
-  ) {
-    driftParts.push(`sealed winner #${sealedWinner.tupleIndex + 1}`)
-  }
-  if (
-    robustWinner
-    && robustWinner.tupleIndex !== searchWinner.tupleIndex
-    && (!sealedWinner || robustWinner.tupleIndex !== sealedWinner.tupleIndex)
-    && (!holdoutWinner || robustWinner.tupleIndex !== holdoutWinner.tupleIndex)
-  ) {
-    driftParts.push(`robust winner #${robustWinner.tupleIndex + 1}`)
-  }
-  const detailParts = driftParts.length > 0
-    ? driftParts.join(', ')
-    : `another validation lane favors tuple #${rows.find((row) => row.tupleIndex !== searchWinner.tupleIndex)?.tupleIndex! + 1}`
-  return {
-    label: 'Winner disagreement',
-    tone: 'mixed',
-    detail: `Selection winner #${searchWinner.tupleIndex + 1} does not fully survive validation. The current frontier shifts toward ${detailParts}.`,
-  }
-})
+    const driftParts: string[] = [];
+    if (holdoutWinner && holdoutWinner.tupleIndex !== searchWinner.tupleIndex) {
+      driftParts.push(`holdout winner #${holdoutWinner.tupleIndex + 1}`);
+    }
+    if (
+      sealedWinner &&
+      sealedWinner.tupleIndex !== searchWinner.tupleIndex &&
+      (!holdoutWinner || sealedWinner.tupleIndex !== holdoutWinner.tupleIndex)
+    ) {
+      driftParts.push(`sealed winner #${sealedWinner.tupleIndex + 1}`);
+    }
+    if (
+      robustWinner &&
+      robustWinner.tupleIndex !== searchWinner.tupleIndex &&
+      (!sealedWinner || robustWinner.tupleIndex !== sealedWinner.tupleIndex) &&
+      (!holdoutWinner || robustWinner.tupleIndex !== holdoutWinner.tupleIndex)
+    ) {
+      driftParts.push(`robust winner #${robustWinner.tupleIndex + 1}`);
+    }
+    const detailParts =
+      driftParts.length > 0
+        ? driftParts.join(", ")
+        : `another validation lane favors tuple #${rows.find((row) => row.tupleIndex !== searchWinner.tupleIndex)?.tupleIndex! + 1}`;
+    return {
+      label: "Winner disagreement",
+      tone: "mixed",
+      detail: `Selection winner #${searchWinner.tupleIndex + 1} does not fully survive validation. The current frontier shifts toward ${detailParts}.`,
+    };
+  });
 const eventPathSummaryRows = computed(() => {
-  const inspection = selectedEventPathInspection.value
-  if (!inspection || inspection.points.length === 0) return []
-  const first = inspection.points[0]
-  const last = inspection.points[inspection.points.length - 1]
-  const optionLow = inspection.points.reduce((acc, point) => Math.min(acc, point.optionLow), Number.POSITIVE_INFINITY)
-  const optionHigh = inspection.points.reduce((acc, point) => Math.max(acc, point.optionHigh), Number.NEGATIVE_INFINITY)
-  const underlierLow = inspection.points.reduce((acc, point) => Math.min(acc, point.underlyingPrice), Number.POSITIVE_INFINITY)
-  const underlierHigh = inspection.points.reduce((acc, point) => Math.max(acc, point.underlyingPrice), Number.NEGATIVE_INFINITY)
+  const inspection = selectedEventPathInspection.value;
+  if (!inspection || inspection.points.length === 0) return [];
+  const first = inspection.points[0];
+  const last = inspection.points[inspection.points.length - 1];
+  const optionLow = inspection.points.reduce(
+    (acc, point) => Math.min(acc, point.optionLow),
+    Number.POSITIVE_INFINITY,
+  );
+  const optionHigh = inspection.points.reduce(
+    (acc, point) => Math.max(acc, point.optionHigh),
+    Number.NEGATIVE_INFINITY,
+  );
+  const underlierLow = inspection.points.reduce(
+    (acc, point) => Math.min(acc, point.underlyingPrice),
+    Number.POSITIVE_INFINITY,
+  );
+  const underlierHigh = inspection.points.reduce(
+    (acc, point) => Math.max(acc, point.underlyingPrice),
+    Number.NEGATIVE_INFINITY,
+  );
   return [
     {
-      key: 'path-points',
-      label: 'Path points',
+      key: "path-points",
+      label: "Path points",
       value: `${inspection.pointCount}`,
     },
     {
-      key: 'path-window',
-      label: 'Window',
+      key: "path-window",
+      label: "Window",
       value: `${formatTimestamp(first?.timestampMs)} -> ${formatTimestamp(last?.timestampMs)}`,
     },
     {
-      key: 'option-range',
-      label: 'Option range',
+      key: "option-range",
+      label: "Option range",
       value: `${formatOptionalDecimal(optionLow)} -> ${formatOptionalDecimal(optionHigh)}`,
     },
     {
-      key: 'underlier-range',
-      label: 'Underlier range',
+      key: "underlier-range",
+      label: "Underlier range",
       value: `${formatOptionalDecimal(underlierLow, 2)} -> ${formatOptionalDecimal(underlierHigh, 2)}`,
     },
     {
-      key: 'option-close-delta',
-      label: 'Option open -> close',
+      key: "option-close-delta",
+      label: "Option open -> close",
       value: `${formatOptionalDecimal(first?.optionOpen)} -> ${formatOptionalDecimal(last?.optionClose)}`,
     },
     {
-      key: 'underlier-delta',
-      label: 'Underlier start -> end',
+      key: "underlier-delta",
+      label: "Underlier start -> end",
       value: `${formatOptionalDecimal(first?.underlyingPrice, 2)} -> ${formatOptionalDecimal(last?.underlyingPrice, 2)}`,
     },
-  ]
-})
+  ];
+});
 const eventPathAnalyticsRows = computed(() => {
-  const inspection = selectedEventPathInspection.value
-  const selectedRow = selectedInspectionRow.value
-  if (!inspection || !selectedRow || inspection.points.length === 0) return []
-  const entryOption = selectedRow.entryOptionPrice ?? inspection.points[0]?.optionClose
-  const entryUnderlier = selectedRow.entryUnderlierPrice ?? inspection.points[0]?.underlyingPrice
+  const inspection = selectedEventPathInspection.value;
+  const selectedRow = selectedInspectionRow.value;
+  if (!inspection || !selectedRow || inspection.points.length === 0) return [];
+  const entryOption =
+    selectedRow.entryOptionPrice ?? inspection.points[0]?.optionClose;
+  const entryUnderlier =
+    selectedRow.entryUnderlierPrice ?? inspection.points[0]?.underlyingPrice;
   const peakOptionPoint = inspection.points.reduce((best, point) =>
     point.optionHigh > best.optionHigh ? point : best,
-  )
+  );
   const troughOptionPoint = inspection.points.reduce((best, point) =>
     point.optionLow < best.optionLow ? point : best,
-  )
+  );
   const peakUnderlierPoint = inspection.points.reduce((best, point) =>
     point.underlyingPrice > best.underlyingPrice ? point : best,
-  )
+  );
   const troughUnderlierPoint = inspection.points.reduce((best, point) =>
     point.underlyingPrice < best.underlyingPrice ? point : best,
-  )
+  );
   return [
     {
-      key: 'entry-raw',
-      label: 'Signal underlier / requested entry',
+      key: "entry-raw",
+      label: "Signal underlier / requested entry",
       value: `${formatOptionalDecimal(selectedRow.rawUnderlierPrice, 2)} / ${formatTimestamp(selectedRow.requestedEntryTimestamp)}`,
     },
     {
-      key: 'option-peak',
-      label: 'Option peak / peak return',
-      value: `${formatOptionalDecimal(peakOptionPoint.optionHigh)} @ ${formatTimestamp(peakOptionPoint.timestampMs)}${entryOption && entryOption > 0 ? ` · ${formatPercent((peakOptionPoint.optionHigh - entryOption) / entryOption, 2)}` : ''}`,
+      key: "option-peak",
+      label: "Option peak / peak return",
+      value: `${formatOptionalDecimal(peakOptionPoint.optionHigh)} @ ${formatTimestamp(peakOptionPoint.timestampMs)}${entryOption && entryOption > 0 ? ` · ${formatPercent((peakOptionPoint.optionHigh - entryOption) / entryOption, 2)}` : ""}`,
     },
     {
-      key: 'option-trough',
-      label: 'Option trough / trough return',
-      value: `${formatOptionalDecimal(troughOptionPoint.optionLow)} @ ${formatTimestamp(troughOptionPoint.timestampMs)}${entryOption && entryOption > 0 ? ` · ${formatPercent((troughOptionPoint.optionLow - entryOption) / entryOption, 2)}` : ''}`,
+      key: "option-trough",
+      label: "Option trough / trough return",
+      value: `${formatOptionalDecimal(troughOptionPoint.optionLow)} @ ${formatTimestamp(troughOptionPoint.timestampMs)}${entryOption && entryOption > 0 ? ` · ${formatPercent((troughOptionPoint.optionLow - entryOption) / entryOption, 2)}` : ""}`,
     },
     {
-      key: 'underlier-peak',
-      label: 'Underlier peak / move',
-      value: `${formatOptionalDecimal(peakUnderlierPoint.underlyingPrice, 2)} @ ${formatTimestamp(peakUnderlierPoint.timestampMs)}${entryUnderlier && entryUnderlier > 0 ? ` · ${formatPercent((peakUnderlierPoint.underlyingPrice - entryUnderlier) / entryUnderlier, 2)}` : ''}`,
+      key: "underlier-peak",
+      label: "Underlier peak / move",
+      value: `${formatOptionalDecimal(peakUnderlierPoint.underlyingPrice, 2)} @ ${formatTimestamp(peakUnderlierPoint.timestampMs)}${entryUnderlier && entryUnderlier > 0 ? ` · ${formatPercent((peakUnderlierPoint.underlyingPrice - entryUnderlier) / entryUnderlier, 2)}` : ""}`,
     },
     {
-      key: 'underlier-trough',
-      label: 'Underlier trough / move',
-      value: `${formatOptionalDecimal(troughUnderlierPoint.underlyingPrice, 2)} @ ${formatTimestamp(troughUnderlierPoint.timestampMs)}${entryUnderlier && entryUnderlier > 0 ? ` · ${formatPercent((troughUnderlierPoint.underlyingPrice - entryUnderlier) / entryUnderlier, 2)}` : ''}`,
+      key: "underlier-trough",
+      label: "Underlier trough / move",
+      value: `${formatOptionalDecimal(troughUnderlierPoint.underlyingPrice, 2)} @ ${formatTimestamp(troughUnderlierPoint.timestampMs)}${entryUnderlier && entryUnderlier > 0 ? ` · ${formatPercent((troughUnderlierPoint.underlyingPrice - entryUnderlier) / entryUnderlier, 2)}` : ""}`,
     },
-  ]
-})
+  ];
+});
 
 const displayedRowsWithIndex = computed(() => {
   const rawInvalidRate = normalizeText(maxInvalidRateFilterInput.value).length
     ? Number(maxInvalidRateFilterInput.value)
-    : Number.POSITIVE_INFINITY
-  const rawMinRobustScore = normalizeText(minRobustScoreFilterInput.value).length
+    : Number.POSITIVE_INFINITY;
+  const rawMinRobustScore = normalizeText(minRobustScoreFilterInput.value)
+    .length
     ? Number(minRobustScoreFilterInput.value)
-    : Number.NEGATIVE_INFINITY
+    : Number.NEGATIVE_INFINITY;
   const rawMaxStressDrop = normalizeText(maxStressDropFilterInput.value).length
     ? Number(maxStressDropFilterInput.value)
-    : Number.POSITIVE_INFINITY
-  const maxInvalidRate = Number.isFinite(rawInvalidRate) ? rawInvalidRate : Number.POSITIVE_INFINITY
+    : Number.POSITIVE_INFINITY;
+  const maxInvalidRate = Number.isFinite(rawInvalidRate)
+    ? rawInvalidRate
+    : Number.POSITIVE_INFINITY;
   const minRobustScore = Number.isFinite(rawMinRobustScore)
     ? rawMinRobustScore
-    : Number.NEGATIVE_INFINITY
-  const maxStressDrop = Number.isFinite(rawMaxStressDrop) ? rawMaxStressDrop : Number.POSITIVE_INFINITY
+    : Number.NEGATIVE_INFINITY;
+  const maxStressDrop = Number.isFinite(rawMaxStressDrop)
+    ? rawMaxStressDrop
+    : Number.POSITIVE_INFINITY;
 
   const rows = activeRows.value
     .map((row, originalIndex) => ({ row, originalIndex }))
@@ -2434,142 +2849,176 @@ const displayedRowsWithIndex = computed(() => {
     .filter(({ row }) => row.robustScore >= minRobustScore)
     .filter(({ row }) => {
       const stressed =
-        row.extremeStressMetrics?.expectancyPerPremium
-        ?? row.harsherStressMetrics?.expectancyPerPremium
-        ?? row.stressMetrics?.expectancyPerPremium
-      if (!Number.isFinite(maxStressDrop) || stressed == null) return true
-      return row.selectionMetrics.expectancyPerPremium - stressed <= maxStressDrop
-    })
+        row.extremeStressMetrics?.expectancyPerPremium ??
+        row.harsherStressMetrics?.expectancyPerPremium ??
+        row.stressMetrics?.expectancyPerPremium;
+      if (!Number.isFinite(maxStressDrop) || stressed == null) return true;
+      return (
+        row.selectionMetrics.expectancyPerPremium - stressed <= maxStressDrop
+      );
+    });
 
   const metricFor = (entry: (typeof rows)[number]): number => {
     switch (resultSortKey.value) {
-      case 'selection_ev':
-        return entry.row.selectionMetrics.expectancyPerPremium
-      case 'holdout_ev':
-        return entry.row.holdoutMetrics?.expectancyPerPremium ?? Number.NEGATIVE_INFINITY
-      case 'stress_ev':
-        return entry.row.stressMetrics?.expectancyPerPremium ?? Number.NEGATIVE_INFINITY
-      case 'harsher_ev':
-        return entry.row.harsherStressMetrics?.expectancyPerPremium ?? Number.NEGATIVE_INFINITY
-      case 'extreme_ev':
-        return entry.row.extremeStressMetrics?.expectancyPerPremium ?? Number.NEGATIVE_INFINITY
-      case 'invalid_rate':
-        return entry.row.selectionMetrics.invalidRate
-      case 'valid_trades':
-        return entry.row.selectionMetrics.validTrades
-      case 'sealed_rank':
-        return entry.row.sealedFinalRank ?? Number.POSITIVE_INFINITY
-      case 'robust':
+      case "selection_ev":
+        return entry.row.selectionMetrics.expectancyPerPremium;
+      case "holdout_ev":
+        return (
+          entry.row.holdoutMetrics?.expectancyPerPremium ??
+          Number.NEGATIVE_INFINITY
+        );
+      case "stress_ev":
+        return (
+          entry.row.stressMetrics?.expectancyPerPremium ??
+          Number.NEGATIVE_INFINITY
+        );
+      case "harsher_ev":
+        return (
+          entry.row.harsherStressMetrics?.expectancyPerPremium ??
+          Number.NEGATIVE_INFINITY
+        );
+      case "extreme_ev":
+        return (
+          entry.row.extremeStressMetrics?.expectancyPerPremium ??
+          Number.NEGATIVE_INFINITY
+        );
+      case "invalid_rate":
+        return entry.row.selectionMetrics.invalidRate;
+      case "valid_trades":
+        return entry.row.selectionMetrics.validTrades;
+      case "sealed_rank":
+        return entry.row.sealedFinalRank ?? Number.POSITIVE_INFINITY;
+      case "robust":
       default:
-        return entry.row.robustScore
+        return entry.row.robustScore;
     }
-  }
+  };
 
   rows.sort((left, right) => {
-    const leftMetric = metricFor(left)
-    const rightMetric = metricFor(right)
-    if (leftMetric === rightMetric) return left.originalIndex - right.originalIndex
-    return resultSortDirection.value === 'asc' ? leftMetric - rightMetric : rightMetric - leftMetric
-  })
-  return rows
-})
+    const leftMetric = metricFor(left);
+    const rightMetric = metricFor(right);
+    if (leftMetric === rightMetric)
+      return left.originalIndex - right.originalIndex;
+    return resultSortDirection.value === "asc"
+      ? leftMetric - rightMetric
+      : rightMetric - leftMetric;
+  });
+  return rows;
+});
 
 watch(displayedRowsWithIndex, (rows) => {
-  if (!rows.length) return
+  if (!rows.length) return;
   if (!rows.some((entry) => entry.originalIndex === selectedTupleIndex.value)) {
-    selectedTupleIndex.value = rows[0]?.originalIndex ?? 0
+    selectedTupleIndex.value = rows[0]?.originalIndex ?? 0;
   }
-})
+});
 
 watch(
   inspectionRows,
   (rows) => {
     if (!rows.length) {
-      selectedInspectionEventId.value = ''
-      store.clearEventPathInspection()
-      return
+      selectedInspectionEventId.value = "";
+      store.clearEventPathInspection();
+      return;
     }
     if (!rows.some((row) => row.eventId === selectedInspectionEventId.value)) {
-      selectedInspectionEventId.value = rows[0]?.eventId || ''
+      selectedInspectionEventId.value = rows[0]?.eventId || "";
     }
   },
   { immediate: true },
-)
+);
 
 watch(
   selectedInspectionRow,
   (row) => {
     if (!row) {
-      store.clearEventPathInspection()
-      return
+      store.clearEventPathInspection();
+      return;
     }
-    if (row.status !== 'executed') {
-      store.clearEventPathInspection()
-      return
+    if (row.status !== "executed") {
+      store.clearEventPathInspection();
+      return;
     }
-    const existing = activeEventPathInspection.value
-    if (existing && existing.tupleIndex === selectedTupleIndex.value && existing.eventIndex === row.eventIndex) {
-      return
+    const existing = activeEventPathInspection.value;
+    if (
+      existing &&
+      existing.tupleIndex === selectedTupleIndex.value &&
+      existing.eventIndex === row.eventIndex
+    ) {
+      return;
     }
-    void store.loadEventPathInspection(selectedTupleIndex.value, row.eventIndex)
+    void store.loadEventPathInspection(
+      selectedTupleIndex.value,
+      row.eventIndex,
+    );
   },
   { immediate: true },
-)
+);
 
 const resultSummaryChips = computed(() => {
-  const diagnostics = activeDiagnostics.value
-  if (!diagnostics) return []
+  const diagnostics = activeDiagnostics.value;
+  if (!diagnostics) return [];
   const chips = [
     `${diagnostics.totalEvents} events`,
     `${activeRankedResults.value.length} tuples`,
-  ]
-  if (activeBackendUsed.value) chips.push(activeBackendUsed.value)
-  if (activePriceSemantics.value) chips.push(activePriceSemantics.value)
-  if (diagnostics.holdoutEvents > 0) chips.push(`${diagnostics.holdoutEvents} holdout`)
-  if (diagnostics.sealedTestEvents > 0) chips.push(`${diagnostics.sealedTestEvents} sealed`)
+  ];
+  if (activeBackendUsed.value) chips.push(activeBackendUsed.value);
+  if (activePriceSemantics.value) chips.push(activePriceSemantics.value);
+  if (diagnostics.holdoutEvents > 0)
+    chips.push(`${diagnostics.holdoutEvents} holdout`);
+  if (diagnostics.sealedTestEvents > 0)
+    chips.push(`${diagnostics.sealedTestEvents} sealed`);
   if (activeStaging.value) {
-    chips.push(`${activeStaging.value.compiledCandidateCount}/${activeStaging.value.candidateSlotCount} candidates`)
-    chips.push(`${activeStaging.value.baselineExitSummaryCount} baseline summaries`)
-    chips.push(`${activeStaging.value.conservativeExitSummaryCount} conservative summaries`)
-    chips.push(`${activeStaging.value.harsherExitSummaryCount} harsher summaries`)
+    chips.push(
+      `${activeStaging.value.compiledCandidateCount}/${activeStaging.value.candidateSlotCount} candidates`,
+    );
+    chips.push(
+      `${activeStaging.value.baselineExitSummaryCount} baseline summaries`,
+    );
+    chips.push(
+      `${activeStaging.value.conservativeExitSummaryCount} conservative summaries`,
+    );
+    chips.push(
+      `${activeStaging.value.harsherExitSummaryCount} harsher summaries`,
+    );
   }
-  return chips
-})
+  return chips;
+});
 
 const reportingMetricCards = computed(() => {
-  const diagnostics = activeDiagnostics.value
-  if (!diagnostics) return []
+  const diagnostics = activeDiagnostics.value;
+  if (!diagnostics) return [];
   const cards = [
     {
-      key: 'bull-bear',
-      label: 'Bull / Bear',
+      key: "bull-bear",
+      label: "Bull / Bear",
       value: `${diagnostics.bullishEvents} / ${diagnostics.bearishEvents}`,
     },
     {
-      key: 'search-holdout-sealed',
-      label: 'Search / Holdout / Sealed',
+      key: "search-holdout-sealed",
+      label: "Search / Holdout / Sealed",
       value: `${diagnostics.searchEvents} / ${diagnostics.holdoutEvents} / ${diagnostics.sealedTestEvents}`,
     },
-  ]
+  ];
   if (activeStaging.value && activeStaging.value.candidateSlotCount > 0) {
     cards.push({
-      key: 'candidate-coverage',
-      label: 'Candidates',
+      key: "candidate-coverage",
+      label: "Candidates",
       value: `${activeStaging.value.compiledCandidateCount} / ${activeStaging.value.candidateSlotCount}`,
-    })
+    });
   }
   if (activeStaging.value) {
     cards.push({
-      key: 'exit-summaries',
-      label: 'Exit summaries',
+      key: "exit-summaries",
+      label: "Exit summaries",
       value: `${activeStaging.value.baselineExitSummaryCount} / ${activeStaging.value.conservativeExitSummaryCount} / ${activeStaging.value.harsherExitSummaryCount}`,
-    })
+    });
   }
-  return cards
-})
+  return cards;
+});
 const feasibilityCoverageAdequacy = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return null
+  const preview = latestFeasibility.value;
+  if (!preview) return null;
   return describeCoverageAdequacy({
     verdict: preview.coverageAdequacy.verdict,
     nonPromotable: preview.coverageAdequacy.nonPromotable,
@@ -2577,407 +3026,440 @@ const feasibilityCoverageAdequacy = computed(() => {
     searchOverlapRate: preview.overlapWindow.searchOverlapRate,
     holdoutOverlapRate: preview.overlapWindow.holdoutOverlapRate,
     sealedTestOverlapRate: preview.overlapWindow.sealedTestOverlapRate,
-    searchCandidateCoverageRate: preview.coverageAdequacy.searchCandidateCoverageRate,
-    holdoutCandidateCoverageRate: preview.coverageAdequacy.holdoutCandidateCoverageRate,
-    sealedTestCandidateCoverageRate: preview.coverageAdequacy.sealedTestCandidateCoverageRate,
-    searchBaselineOutcomeCoverageRate: preview.coverageAdequacy.searchBaselineOutcomeCoverageRate,
-    holdoutBaselineOutcomeCoverageRate: preview.coverageAdequacy.holdoutBaselineOutcomeCoverageRate,
-    sealedTestBaselineOutcomeCoverageRate: preview.coverageAdequacy.sealedTestBaselineOutcomeCoverageRate,
-  })
-})
+    searchCandidateCoverageRate:
+      preview.coverageAdequacy.searchCandidateCoverageRate,
+    holdoutCandidateCoverageRate:
+      preview.coverageAdequacy.holdoutCandidateCoverageRate,
+    sealedTestCandidateCoverageRate:
+      preview.coverageAdequacy.sealedTestCandidateCoverageRate,
+    searchBaselineOutcomeCoverageRate:
+      preview.coverageAdequacy.searchBaselineOutcomeCoverageRate,
+    holdoutBaselineOutcomeCoverageRate:
+      preview.coverageAdequacy.holdoutBaselineOutcomeCoverageRate,
+    sealedTestBaselineOutcomeCoverageRate:
+      preview.coverageAdequacy.sealedTestBaselineOutcomeCoverageRate,
+  });
+});
 const feasibilityOverlapRows = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
   return [
     {
-      key: 'overlap-events',
-      label: 'Events in dataset window',
+      key: "overlap-events",
+      label: "Events in dataset window",
       value: `${preview.overlapWindow.totalEventsInDatasetWindow} / ${preview.diagnostics.totalEvents} (${formatPercent(preview.overlapWindow.totalOverlapRate, 1)})`,
     },
     {
-      key: 'overlap-search',
-      label: 'Search overlap',
+      key: "overlap-search",
+      label: "Search overlap",
       value: `${preview.overlapWindow.searchEventsInDatasetWindow} / ${preview.diagnostics.searchEvents} (${formatPercent(preview.overlapWindow.searchOverlapRate, 1)})`,
     },
     {
-      key: 'overlap-holdout',
-      label: 'Holdout overlap',
+      key: "overlap-holdout",
+      label: "Holdout overlap",
       value: `${preview.overlapWindow.holdoutEventsInDatasetWindow} / ${preview.diagnostics.holdoutEvents} (${formatPercent(preview.overlapWindow.holdoutOverlapRate, 1)})`,
     },
     {
-      key: 'overlap-sealed',
-      label: 'Sealed overlap',
+      key: "overlap-sealed",
+      label: "Sealed overlap",
       value: `${preview.overlapWindow.sealedTestEventsInDatasetWindow} / ${preview.diagnostics.sealedTestEvents} (${formatPercent(preview.overlapWindow.sealedTestOverlapRate, 1)})`,
     },
     {
-      key: 'contract-ref',
-      label: 'Contract reference as-of',
-      value: preview.overlapWindow.contractReferenceAsOfUtc || '—',
+      key: "contract-ref",
+      label: "Contract reference as-of",
+      value: preview.overlapWindow.contractReferenceAsOfUtc || "—",
     },
     {
-      key: 'contract-ref-search',
-      label: 'Search events before contract ref',
-      value: String(preview.overlapWindow.searchEventsBeforeContractReferenceAsOf),
+      key: "contract-ref-search",
+      label: "Search events before contract ref",
+      value: String(
+        preview.overlapWindow.searchEventsBeforeContractReferenceAsOf,
+      ),
     },
     {
-      key: 'candidate-coverage',
-      label: 'Search / Holdout / Sealed candidates',
+      key: "candidate-coverage",
+      label: "Search / Holdout / Sealed candidates",
       value: `${formatPercent(preview.coverageAdequacy.searchCandidateCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.holdoutCandidateCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.sealedTestCandidateCoverageRate, 1)}`,
     },
     {
-      key: 'outcome-coverage',
-      label: 'Search / Holdout / Sealed outcomes',
+      key: "outcome-coverage",
+      label: "Search / Holdout / Sealed outcomes",
       value: `${formatPercent(preview.coverageAdequacy.searchBaselineOutcomeCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.holdoutBaselineOutcomeCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.sealedTestBaselineOutcomeCoverageRate, 1)}`,
     },
-  ]
-})
+  ];
+});
 const feasibilitySplitInvalidSections = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
   return [
     {
-      key: 'search',
-      label: 'Search invalid reasons',
+      key: "search",
+      label: "Search invalid reasons",
       rows: preview.splitInvalidReasons.searchInvalidReasons,
     },
     {
-      key: 'holdout',
-      label: 'Holdout invalid reasons',
+      key: "holdout",
+      label: "Holdout invalid reasons",
       rows: preview.splitInvalidReasons.holdoutInvalidReasons,
     },
     {
-      key: 'sealed',
-      label: 'Sealed invalid reasons',
+      key: "sealed",
+      label: "Sealed invalid reasons",
       rows: preview.splitInvalidReasons.sealedTestInvalidReasons,
     },
-  ].filter((entry) => entry.rows.length > 0)
-})
+  ].filter((entry) => entry.rows.length > 0);
+});
 
 const feasibilitySummaryRows = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
-  const gpuRank = preview.timings.gpuRankingMs
-  const gpuRankUs = preview.timings.gpuRankingUs
-  const gpuTensor = preview.timings.gpuTensorScoreMs
-  const gpuTensorUs = preview.timings.gpuTensorScoreUs
-  const gpuExactify = preview.timings.gpuExactifyMs
-  const gpuExactifyUs = preview.timings.gpuExactifyUs
-  const gpuSealed = preview.timings.gpuSealedStageMs
-  const gpuSealedUs = preview.timings.gpuSealedStageUs
-  const gpuSpeedup = preview.timings.gpuSpeedupVsCpu
-  const backendLine = gpuRank == null
-    ? `${preview.bestAvailableBackend || 'cpu_reference'} · cpu ${formatLatency(preview.timings.cpuRankingMs, preview.timings.cpuRankingUs)}`
-    : `${preview.bestAvailableBackend || 'gpu_compiled_tensor_hybrid'} · cpu ${formatLatency(preview.timings.cpuRankingMs, preview.timings.cpuRankingUs)} / gpu hybrid ${formatLatency(gpuRank, gpuRankUs)}${gpuSpeedup == null ? '' : ` (${gpuSpeedup.toFixed(2)}x)`}`
-  const gpuBreakdownLine = gpuTensor == null
-    ? '—'
-    : `tensor ${formatLatency(gpuTensor, gpuTensorUs)} · exactify ${formatLatency(gpuExactify, gpuExactifyUs)} · sealed ${formatLatency(gpuSealed, gpuSealedUs)}`
-  const gpuUploadReuseLine = `shared ${preview.cacheStats.gpuSharedInputCacheHits}/${preview.cacheStats.gpuSharedInputCacheMisses} · outcome ${preview.cacheStats.gpuOutcomeInputCacheHits}/${preview.cacheStats.gpuOutcomeInputCacheMisses} · out ${preview.cacheStats.gpuOutputBufferReuses}/${preview.cacheStats.gpuOutputBufferAllocations}`
-  const gpuChunkingLine = preview.cacheStats.gpuTupleChunkCount > 0
-    ? `chunks ${preview.cacheStats.gpuTupleChunkCount}×${preview.cacheStats.gpuTupleChunkSize} · launches ${preview.cacheStats.gpuKernelLaunchCount} · chunk ${formatBytes(preview.cacheStats.gpuTotalDeviceBytesPerChunk)} · outcome ${formatBytes(preview.cacheStats.gpuOutcomeTensorBytes)}`
-    : '—'
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
+  const gpuRank = preview.timings.gpuRankingMs;
+  const gpuRankUs = preview.timings.gpuRankingUs;
+  const gpuTensor = preview.timings.gpuTensorScoreMs;
+  const gpuTensorUs = preview.timings.gpuTensorScoreUs;
+  const gpuExactify = preview.timings.gpuExactifyMs;
+  const gpuExactifyUs = preview.timings.gpuExactifyUs;
+  const gpuSealed = preview.timings.gpuSealedStageMs;
+  const gpuSealedUs = preview.timings.gpuSealedStageUs;
+  const gpuSpeedup = preview.timings.gpuSpeedupVsCpu;
+  const backendLine =
+    gpuRank == null
+      ? `${preview.bestAvailableBackend || "cpu_reference"} · cpu ${formatLatency(preview.timings.cpuRankingMs, preview.timings.cpuRankingUs)}`
+      : `${preview.bestAvailableBackend || "gpu_compiled_tensor_hybrid"} · cpu ${formatLatency(preview.timings.cpuRankingMs, preview.timings.cpuRankingUs)} / gpu hybrid ${formatLatency(gpuRank, gpuRankUs)}${gpuSpeedup == null ? "" : ` (${gpuSpeedup.toFixed(2)}x)`}`;
+  const gpuBreakdownLine =
+    gpuTensor == null
+      ? "—"
+      : `tensor ${formatLatency(gpuTensor, gpuTensorUs)} · exactify ${formatLatency(gpuExactify, gpuExactifyUs)} · sealed ${formatLatency(gpuSealed, gpuSealedUs)}`;
+  const gpuUploadReuseLine = `shared ${preview.cacheStats.gpuSharedInputCacheHits}/${preview.cacheStats.gpuSharedInputCacheMisses} · outcome ${preview.cacheStats.gpuOutcomeInputCacheHits}/${preview.cacheStats.gpuOutcomeInputCacheMisses} · out ${preview.cacheStats.gpuOutputBufferReuses}/${preview.cacheStats.gpuOutputBufferAllocations}`;
+  const gpuChunkingLine =
+    preview.cacheStats.gpuTupleChunkCount > 0
+      ? `chunks ${preview.cacheStats.gpuTupleChunkCount}×${preview.cacheStats.gpuTupleChunkSize} · launches ${preview.cacheStats.gpuKernelLaunchCount} · chunk ${formatBytes(preview.cacheStats.gpuTotalDeviceBytesPerChunk)} · outcome ${formatBytes(preview.cacheStats.gpuOutcomeTensorBytes)}`
+      : "—";
   const gpuMemoryPlanLine = preview.cacheStats.gpuMemoryBudgetSource
     ? `${preview.cacheStats.gpuMemoryBudgetSource} · free ${formatBytes(preview.cacheStats.gpuDeviceFreeMemoryBytes)} · usable ${formatBytes(preview.cacheStats.gpuDeviceUsableMemoryBytes)} · budget ${formatBytes(preview.cacheStats.gpuTupleBudgetBytes)}`
-    : '—'
+    : "—";
   const gpuFitLine = preview.cacheStats.gpuMemoryBudgetSource
-    ? `outcome ${preview.cacheStats.gpuOutcomeTensorFitsInMemory ? 'fits' : 'does not fit'} · chunk ${preview.cacheStats.gpuChunkPlanFitsInMemory ? 'fits' : 'does not fit'}`
-    : '—'
+    ? `outcome ${preview.cacheStats.gpuOutcomeTensorFitsInMemory ? "fits" : "does not fit"} · chunk ${preview.cacheStats.gpuChunkPlanFitsInMemory ? "fits" : "does not fit"}`
+    : "—";
+  const replayBuildTimingLine = preview.replayBuildTiming
+    ? `parent ${formatLatency(Math.floor(preview.replayBuildTiming.parentArtifactValidationUs / 1000), preview.replayBuildTiming.parentArtifactValidationUs)} · signal ${preview.replayBuildTiming.parentSignalProcessCacheHit ? "proc-hit" : preview.replayBuildTiming.persistedSignalManifestCacheHit ? "disk-hit" : "rebuilt"} · dataset ${preview.replayBuildTiming.optionsDatasetProcessCacheHit ? "proc-hit" : preview.replayBuildTiming.optionsDatasetPersistedCacheHit ? "disk-hit" : "csv-load"} · normalize ${formatLatency(Math.floor(preview.replayBuildTiming.requestNormalizationUs / 1000), preview.replayBuildTiming.requestNormalizationUs)}`
+    : "—";
   const autoBackendLine = preview.autoBackendDecision.recommendedBackend
-    ? `${preview.autoBackendDecision.recommendedBackend}${preview.autoBackendDecision.gpuEligible ? ' · GPU-eligible' : ' · CPU-favored'}`
-    : '—'
+    ? `${preview.autoBackendDecision.recommendedBackend}${preview.autoBackendDecision.gpuEligible ? " · GPU-eligible" : " · CPU-favored"}`
+    : "—";
   return [
     {
-      key: 'candidate-density',
-      label: 'Candidate density',
+      key: "candidate-density",
+      label: "Candidate density",
       value: `${preview.compiledCandidateCount} / ${preview.candidateSlotCount} (${formatPercent(preview.candidateDensity)})`,
     },
     {
-      key: 'invalid-slots',
-      label: 'Invalid slots',
+      key: "invalid-slots",
+      label: "Invalid slots",
       value: `${preview.invalidSlotCount} (${formatPercent(preview.invalidSlotRate)})`,
     },
     {
-      key: 'event-coverage',
-      label: 'Event coverage',
+      key: "event-coverage",
+      label: "Event coverage",
       value: `${preview.eventCoverage.totalEventsWithCandidates} candidate-ready / ${preview.eventCoverage.totalEventsWithBaselineOutcomes} baseline / ${preview.eventCoverage.totalEventsWithConservativeOutcomes} conservative / ${preview.eventCoverage.totalEventsWithHarsherOutcomes} harsher`,
     },
     {
-      key: 'tuple-grid',
-      label: 'Tuple grid',
+      key: "tuple-grid",
+      label: "Tuple grid",
       value: `${preview.compiledTupleCount} tuples · ${preview.projectedEventTupleEvaluations} event-tuples`,
     },
     {
-      key: 'preview-runtime',
-      label: 'Replay / Total preview',
+      key: "preview-runtime",
+      label: "Replay / Total preview",
       value: `${preview.replayBuildMs} ms / ${preview.totalPreviewMs} ms`,
     },
     {
-      key: 'compile-runtime',
-      label: 'Compile / CPU rank',
+      key: "replay-build-timing",
+      label: "Replay build timing",
+      value: replayBuildTimingLine,
+    },
+    {
+      key: "compile-runtime",
+      label: "Compile / CPU rank",
       value: `${preview.timings.baselineCandidateCompileMs + preview.timings.baselineExitSummaryCompileMs + preview.timings.conservativeCandidateCompileMs + preview.timings.conservativeExitSummaryCompileMs + preview.timings.harsherCandidateCompileMs + preview.timings.harsherExitSummaryCompileMs} ms compile · ${formatLatency(preview.timings.cpuRankingMs, preview.timings.cpuRankingUs)} rank`,
     },
     {
-      key: 'summary-density',
-      label: 'Summary density',
+      key: "summary-density",
+      label: "Summary density",
       value: `${formatPercent(preview.baselineExitSummaryDensity)} / ${formatPercent(preview.conservativeExitSummaryDensity)} / ${formatPercent(preview.harsherExitSummaryDensity)}`,
     },
     {
-      key: 'backend-preview',
-      label: 'Backend / Hybrid rank timing',
+      key: "backend-preview",
+      label: "Backend / Hybrid rank timing",
       value: backendLine,
     },
     {
-      key: 'auto-backend',
-      label: 'Auto backend',
+      key: "auto-backend",
+      label: "Auto backend",
       value: autoBackendLine,
     },
     {
-      key: 'gpu-breakdown',
-      label: 'GPU breakdown',
+      key: "gpu-breakdown",
+      label: "GPU breakdown",
       value: gpuBreakdownLine,
     },
     {
-      key: 'cache-reuse',
-      label: 'Cache reuse',
+      key: "cache-reuse",
+      label: "Cache reuse",
       value: `struct ${preview.cacheStats.structuralCacheHits}/${preview.cacheStats.structuralCacheMisses} · summary ${preview.cacheStats.summaryCacheHits}/${preview.cacheStats.summaryCacheMisses}`,
     },
     {
-      key: 'gpu-upload-reuse',
-      label: 'GPU upload reuse',
+      key: "gpu-upload-reuse",
+      label: "GPU upload reuse",
       value: gpuUploadReuseLine,
     },
     {
-      key: 'gpu-chunking',
-      label: 'GPU chunking',
+      key: "gpu-chunking",
+      label: "GPU chunking",
       value: gpuChunkingLine,
     },
     {
-      key: 'gpu-memory-plan',
-      label: 'GPU memory plan',
+      key: "gpu-memory-plan",
+      label: "GPU memory plan",
       value: gpuMemoryPlanLine,
     },
     {
-      key: 'gpu-fit',
-      label: 'GPU fit',
+      key: "gpu-fit",
+      label: "GPU fit",
       value: gpuFitLine,
     },
-  ]
-})
+  ];
+});
 
 const feasibilityInvalidReasons = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview || preview.invalidReasons.length === 0) return ''
+  const preview = latestFeasibility.value;
+  if (!preview || preview.invalidReasons.length === 0) return "";
   return preview.invalidReasons
     .slice(0, 3)
     .map((entry) => `${entry.reason} (${entry.count})`)
-    .join(' | ')
-})
+    .join(" | ");
+});
 
 const feasibilityRecommendations = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
-  const out: string[] = []
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
+  const out: string[] = [];
   const axisCoverage = preview.axisCoverage ?? {
     delayMinutes: [],
     dteDays: [],
     moneynessBuckets: [],
-  }
+  };
   if (preview.candidateDensity < 0.3 || preview.invalidSlotRate > 0.7) {
     pushUniqueRecommendation(
       out,
       `This grid is still quality-bound rather than scorer-bound: density is ${formatPercent(preview.candidateDensity)} and invalid slots are ${formatPercent(preview.invalidSlotRate)}. Narrow the representative search space before treating GPU as product-safe.`,
-    )
+    );
   }
-  const totalInvalid = Math.max(1, preview.invalidSlotCount)
+  const totalInvalid = Math.max(1, preview.invalidSlotCount);
   for (const entry of preview.invalidReasons) {
-    const share = entry.count / totalInvalid
-    if (share < 0.1) continue
+    const share = entry.count / totalInvalid;
+    if (share < 0.1) continue;
     switch (entry.reason) {
-      case 'no_expiration_in_bucket':
+      case "no_expiration_in_bucket":
         pushUniqueRecommendation(
           out,
           `${entry.reason} is ${formatPercent(share)} of invalid slots. Reduce the default DTE spread for this dataset or download a wider expiration window before widening the tuple grid.`,
-        )
-        break
-      case 'no_strike_in_tolerance':
+        );
+        break;
+      case "no_strike_in_tolerance":
         pushUniqueRecommendation(
           out,
           `${entry.reason} is ${formatPercent(share)} of invalid slots. Re-center the strike window closer to spot or relax the moneyness selector tolerance before widening the tuple grid.`,
-        )
-        break
-      case 'entry_past_cutoff':
+        );
+        break;
+      case "entry_past_cutoff":
         pushUniqueRecommendation(
           out,
           `${entry.reason} is ${formatPercent(share)} of invalid slots. Trim late delay buckets, lower max entry lag, or avoid late-session parent signals for this profile.`,
-        )
-        break
-      case 'no_quote_after_entry_time':
-      case 'missing_data':
+        );
+        break;
+      case "no_quote_after_entry_time":
+      case "missing_data":
         pushUniqueRecommendation(
           out,
           `${entry.reason} is ${formatPercent(share)} of invalid slots. Check dataset coverage continuity before widening the search grid.`,
-        )
-        break
+        );
+        break;
     }
   }
   const zeroCoverageDte = axisCoverage.dteDays
     .filter((entry) => entry.validSlotCount === 0)
-    .map((entry) => `${entry.dteDays}d`)
+    .map((entry) => `${entry.dteDays}d`);
   if (zeroCoverageDte.length > 0) {
     pushUniqueRecommendation(
       out,
-      `These DTE buckets are producing zero valid slots on the current dataset: ${zeroCoverageDte.join(', ')}. Drop them from the request or widen the downloaded expiration window before treating this as a representative grid.`,
-    )
+      `These DTE buckets are producing zero valid slots on the current dataset: ${zeroCoverageDte.join(", ")}. Drop them from the request or widen the downloaded expiration window before treating this as a representative grid.`,
+    );
   }
   const cutoffHeavyDelays = axisCoverage.delayMinutes
     .filter((entry) => {
-      const cutoffMisses = entry.invalidReasons.find((reason) => reason.reason === 'entry_past_cutoff')?.count ?? 0
-      return entry.invalidSlotCount > 0 && cutoffMisses / entry.invalidSlotCount >= 0.5
+      const cutoffMisses =
+        entry.invalidReasons.find(
+          (reason) => reason.reason === "entry_past_cutoff",
+        )?.count ?? 0;
+      return (
+        entry.invalidSlotCount > 0 &&
+        cutoffMisses / entry.invalidSlotCount >= 0.5
+      );
     })
-    .map((entry) => `${entry.delayMinutes}m`)
+    .map((entry) => `${entry.delayMinutes}m`);
   if (cutoffHeavyDelays.length > 0) {
     pushUniqueRecommendation(
       out,
-      `Late-entry pressure is concentrated in these delay buckets: ${cutoffHeavyDelays.join(', ')}. Trim them, lower max entry lag, or keep the parent signal earlier in the session for this profile.`,
-    )
+      `Late-entry pressure is concentrated in these delay buckets: ${cutoffHeavyDelays.join(", ")}. Trim them, lower max entry lag, or keep the parent signal earlier in the session for this profile.`,
+    );
   }
   const zeroCoverageMoneyness = axisCoverage.moneynessBuckets
     .filter((entry) => entry.validSlotCount === 0)
-    .map((entry) => formatMoneynessBucketLabel(entry.moneynessBucket))
+    .map((entry) => formatMoneynessBucketLabel(entry.moneynessBucket));
   if (zeroCoverageMoneyness.length > 0) {
     pushUniqueRecommendation(
       out,
-      `These moneyness buckets never found a valid contract in the imported strike window: ${zeroCoverageMoneyness.join(', ')}. Re-center the strike range or prune those selectors before widening the grid.`,
-    )
+      `These moneyness buckets never found a valid contract in the imported strike window: ${zeroCoverageMoneyness.join(", ")}. Re-center the strike range or prune those selectors before widening the grid.`,
+    );
   }
-  const gpuSpeedup = preview.timings.gpuSpeedupVsCpu
+  const gpuSpeedup = preview.timings.gpuSpeedupVsCpu;
   if (gpuSpeedup != null && gpuSpeedup >= 3.0) {
     pushUniqueRecommendation(
       out,
       `GPU hybrid ranking already clears the current speed gate at ${gpuSpeedup.toFixed(2)}x vs CPU. The remaining blocker is candidate quality, not scorer throughput.`,
-    )
+    );
   }
   if (preview.cacheStats.gpuPlanNotes.length > 0) {
     for (const note of preview.cacheStats.gpuPlanNotes) {
-      pushUniqueRecommendation(out, note)
+      pushUniqueRecommendation(out, note);
     }
   }
   for (const reason of preview.autoBackendDecision.reasons ?? []) {
-    pushUniqueRecommendation(out, reason)
+    pushUniqueRecommendation(out, reason);
   }
-  return out
-})
+  return out;
+});
 
 const feasibilityGateRows = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
-  const structuralAttempts = preview.cacheStats.structuralCacheHits + preview.cacheStats.structuralCacheMisses
-  const summaryAttempts = preview.cacheStats.summaryCacheHits + preview.cacheStats.summaryCacheMisses
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
+  const structuralAttempts =
+    preview.cacheStats.structuralCacheHits +
+    preview.cacheStats.structuralCacheMisses;
+  const summaryAttempts =
+    preview.cacheStats.summaryCacheHits + preview.cacheStats.summaryCacheMisses;
   const structuralReuse =
-    structuralAttempts > 0 ? preview.cacheStats.structuralCacheHits / structuralAttempts : null
-  const summaryReuse = summaryAttempts > 0 ? preview.cacheStats.summaryCacheHits / summaryAttempts : null
-  const gpuSpeedup = preview.timings.gpuSpeedupVsCpu
+    structuralAttempts > 0
+      ? preview.cacheStats.structuralCacheHits / structuralAttempts
+      : null;
+  const summaryReuse =
+    summaryAttempts > 0
+      ? preview.cacheStats.summaryCacheHits / summaryAttempts
+      : null;
+  const gpuSpeedup = preview.timings.gpuSpeedupVsCpu;
   return [
     {
-      key: 'density',
-      label: 'Candidate density >= 30%',
+      key: "density",
+      label: "Candidate density >= 30%",
       value: formatPercent(preview.candidateDensity),
-      passed: preview.candidateDensity >= 0.30,
+      passed: preview.candidateDensity >= 0.3,
       pending: false,
     },
     {
-      key: 'invalid-rate',
-      label: 'Invalid rate <= 70%',
+      key: "invalid-rate",
+      label: "Invalid rate <= 70%",
       value: formatPercent(preview.invalidSlotRate),
-      passed: preview.invalidSlotRate <= 0.70,
+      passed: preview.invalidSlotRate <= 0.7,
       pending: false,
     },
     {
-      key: 'struct-reuse',
-      label: 'Structural reuse >= 95%',
-      value: structuralReuse == null ? '—' : formatPercent(structuralReuse),
+      key: "struct-reuse",
+      label: "Structural reuse >= 95%",
+      value: structuralReuse == null ? "—" : formatPercent(structuralReuse),
       passed: structuralReuse != null && structuralReuse >= 0.95,
       pending: structuralReuse == null,
     },
     {
-      key: 'summary-reuse',
-      label: 'Summary reuse >= 95%',
-      value: summaryReuse == null ? '—' : formatPercent(summaryReuse),
+      key: "summary-reuse",
+      label: "Summary reuse >= 95%",
+      value: summaryReuse == null ? "—" : formatPercent(summaryReuse),
       passed: summaryReuse != null && summaryReuse >= 0.95,
       pending: summaryReuse == null,
     },
     {
-      key: 'gpu-speedup',
-      label: 'GPU hybrid speedup >= 3.0x',
-      value: gpuSpeedup == null ? 'pending' : `${gpuSpeedup.toFixed(2)}x`,
+      key: "gpu-speedup",
+      label: "GPU hybrid speedup >= 3.0x",
+      value: gpuSpeedup == null ? "pending" : `${gpuSpeedup.toFixed(2)}x`,
       passed: gpuSpeedup != null && gpuSpeedup >= 3.0,
       pending: gpuSpeedup == null,
     },
-  ]
-})
+  ];
+});
 
-const feasibilityOverallStatus = computed<'pass' | 'mixed' | 'pending'>(() => {
-  const rows = feasibilityGateRows.value
-  if (!rows.length) return 'pending'
+const feasibilityOverallStatus = computed<"pass" | "mixed" | "pending">(() => {
+  const rows = feasibilityGateRows.value;
+  if (!rows.length) return "pending";
   if (rows.every((row) => row.passed || row.pending)) {
-    return rows.every((row) => row.passed) ? 'pass' : 'pending'
+    return rows.every((row) => row.passed) ? "pass" : "pending";
   }
-  return 'mixed'
-})
+  return "mixed";
+});
 
 const feasibilityLaneRows = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
   return [
     {
-      key: 'baseline',
-      label: 'Baseline',
+      key: "baseline",
+      label: "Baseline",
       summaries: `${preview.baselineCompiledExitSummaryCount} / ${preview.baselineExitSummaryCount}`,
       density: formatPercent(preview.baselineExitSummaryDensity),
       compileMs: `${preview.timings.baselineCandidateCompileMs + preview.timings.baselineExitSummaryCompileMs} ms`,
       bytes: formatBytes(preview.baselineSummaryBytesEstimate),
     },
     {
-      key: 'conservative',
-      label: 'Conservative',
+      key: "conservative",
+      label: "Conservative",
       summaries: `${preview.conservativeCompiledExitSummaryCount} / ${preview.conservativeExitSummaryCount}`,
       density: formatPercent(preview.conservativeExitSummaryDensity),
       compileMs: `${preview.timings.conservativeCandidateCompileMs + preview.timings.conservativeExitSummaryCompileMs} ms`,
       bytes: formatBytes(preview.conservativeSummaryBytesEstimate),
     },
     {
-      key: 'harsher',
-      label: 'Harsher',
+      key: "harsher",
+      label: "Harsher",
       summaries: `${preview.harsherCompiledExitSummaryCount} / ${preview.harsherExitSummaryCount}`,
       density: formatPercent(preview.harsherExitSummaryDensity),
       compileMs: `${preview.timings.harsherCandidateCompileMs + preview.timings.harsherExitSummaryCompileMs} ms`,
       bytes: formatBytes(preview.harsherSummaryBytesEstimate),
     },
-  ]
-})
+  ];
+});
 
 const feasibilityInvalidReasonRows = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
-  const totalInvalid = preview.invalidSlotCount || 1
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
+  const totalInvalid = preview.invalidSlotCount || 1;
   return preview.invalidReasons.slice(0, 6).map((entry) => ({
     ...entry,
     share: entry.count / totalInvalid,
-  }))
-})
+  }));
+});
 
 const feasibilityAxisCoverageSections = computed(() => {
-  const preview = latestFeasibility.value
-  if (!preview) return []
+  const preview = latestFeasibility.value;
+  if (!preview) return [];
   const axisCoverage = preview.axisCoverage ?? {
     delayMinutes: [],
     dteDays: [],
     moneynessBuckets: [],
-  }
+  };
   return [
     {
-      key: 'delay',
-      label: 'Delay buckets',
-      bucketLabel: 'Delay',
+      key: "delay",
+      label: "Delay buckets",
+      bucketLabel: "Delay",
       rows: axisCoverage.delayMinutes.map((entry) => ({
         key: `delay-${entry.delayMinutes}`,
         bucket: `${entry.delayMinutes}m`,
@@ -2987,9 +3469,9 @@ const feasibilityAxisCoverageSections = computed(() => {
       })),
     },
     {
-      key: 'dte',
-      label: 'DTE buckets',
-      bucketLabel: 'DTE',
+      key: "dte",
+      label: "DTE buckets",
+      bucketLabel: "DTE",
       rows: axisCoverage.dteDays.map((entry) => ({
         key: `dte-${entry.dteDays}`,
         bucket: `${entry.dteDays}d`,
@@ -2999,9 +3481,9 @@ const feasibilityAxisCoverageSections = computed(() => {
       })),
     },
     {
-      key: 'moneyness',
-      label: 'Moneyness buckets',
-      bucketLabel: 'Bucket',
+      key: "moneyness",
+      label: "Moneyness buckets",
+      bucketLabel: "Bucket",
       rows: axisCoverage.moneynessBuckets.map((entry) => ({
         key: `moneyness-${entry.moneynessBucket}`,
         bucket: formatMoneynessBucketLabel(entry.moneynessBucket),
@@ -3010,303 +3492,382 @@ const feasibilityAxisCoverageSections = computed(() => {
         invalidReasons: formatBucketInvalidReasons(entry.invalidReasons),
       })),
     },
-  ].filter((section) => section.rows.length > 0)
-})
+  ].filter((section) => section.rows.length > 0);
+});
 
 const requestSummaryRows = computed(() => {
-  const request = activeRequest.value
-  if (!request) return []
-  const filters = request.filters
+  const request = activeRequest.value;
+  if (!request) return [];
+  const filters = request.filters;
   const filterSegments = [
-    `entry lag ${filters.maxEntryLagMinutes ?? '—'}`,
-    `max prem ${filters.maxPremium ?? '—'}`,
-    `min prem ${filters.minPremium ?? '—'}`,
-    `min vol ${filters.minVolume ?? '—'}`,
-    `min OI ${filters.minOpenInterest ?? '—'}`,
-  ]
+    `entry lag ${filters.maxEntryLagMinutes ?? "—"}`,
+    `max prem ${filters.maxPremium ?? "—"}`,
+    `min prem ${filters.minPremium ?? "—"}`,
+    `min vol ${filters.minVolume ?? "—"}`,
+    `min OI ${filters.minOpenInterest ?? "—"}`,
+  ];
   return [
     {
-      key: 'artifact-ts',
-      label: 'Artifact timestamp',
-      value: normalizeText(activeArtifactTimestamp.value) || '—',
+      key: "artifact-ts",
+      label: "Artifact timestamp",
+      value: normalizeText(activeArtifactTimestamp.value) || "—",
     },
     {
-      key: 'dataset-hash',
-      label: 'Dataset hash',
-      value: normalizeText(activeOptionsDatasetHash.value) || '—',
+      key: "dataset-hash",
+      label: "Dataset hash",
+      value: normalizeText(activeOptionsDatasetHash.value) || "—",
     },
     {
-      key: 'delays-dte-holds',
-      label: 'Delays / DTE / Holds',
+      key: "delays-dte-holds",
+      label: "Delays / DTE / Holds",
       value: `${formatList(request.delayMinutes)} | ${formatList(request.dteBuckets)} | ${formatList(request.holdMinutes)}`,
     },
     {
-      key: 'targets-stops',
-      label: 'Targets / Stops',
+      key: "targets-stops",
+      label: "Targets / Stops",
       value: `${formatList(request.targetReturnBuckets)} | ${formatList(request.stopReturnBuckets)}`,
     },
     {
-      key: 'exit-fill',
-      label: 'Exit / Fill',
-      value: `${normalizeText(request.exitTemplate) || '—'} | ${normalizeText(request.fillModel) || '—'}`,
+      key: "exit-fill",
+      label: "Exit / Fill",
+      value: `${normalizeText(request.exitTemplate) || "—"} | ${normalizeText(request.fillModel) || "—"}`,
     },
     {
-      key: 'realism-lane',
-      label: 'Realism lane',
-      value: `${activeRealismLane.value.label} | ${normalizeText(request.fillModel) || '—'} | ${normalizeText(activePriceSemantics.value) || '—'}`,
+      key: "realism-lane",
+      label: "Realism lane",
+      value: `${activeRealismLane.value.label} | ${normalizeText(request.fillModel) || "—"} | ${normalizeText(activePriceSemantics.value) || "—"}`,
     },
     {
-      key: 'structure-family',
-      label: 'Structure',
-      value: normalizeText(request.structureFamily) || 'long_single',
+      key: "structure-family",
+      label: "Structure",
+      value: normalizeText(request.structureFamily) || "long_single",
     },
     {
-      key: 'backend-route',
-      label: 'Backend route',
+      key: "backend-route",
+      label: "Backend route",
       value: activeBackendRoute.value.label,
     },
     {
-      key: 'backend-detail',
-      label: 'Backend detail',
+      key: "backend-detail",
+      label: "Backend detail",
       value: activeBackendRoute.value.detail,
     },
     {
-      key: 'dataset-provenance',
-      label: 'Dataset provenance',
-      value: activeDatasetProvenanceSummary.value || '—',
+      key: "dataset-provenance",
+      label: "Dataset provenance",
+      value: activeDatasetProvenanceSummary.value || "—",
     },
     {
-      key: 'splits',
-      label: 'Split assignment / ratios',
+      key: "splits",
+      label: "Split assignment / ratios",
       value:
         `${formatSplitAssignmentMode(request.splitAssignmentMode)} | ` +
         `${request.splitRatioSearch.toFixed(2)} / ${request.splitRatioHoldout.toFixed(2)}`,
     },
     {
-      key: 'sealed-finalists',
-      label: 'Sealed finalists',
+      key: "sealed-finalists",
+      label: "Sealed finalists",
       value: `${request.sealedFinalistCount ?? 0}`,
     },
     {
-      key: 'filters',
-      label: 'Filters',
-      value: filterSegments.join(' | '),
+      key: "filters",
+      label: "Filters",
+      value: filterSegments.join(" | "),
     },
-  ]
-})
+  ];
+});
 
 function toggleMoneyness(bucket: string, checked: boolean): void {
-  const next = new Set(selectedMoneynessBuckets.value)
-  if (checked) next.add(bucket)
-  else next.delete(bucket)
-  selectedMoneynessBuckets.value = Array.from(next)
+  const next = new Set(selectedMoneynessBuckets.value);
+  if (checked) next.add(bucket);
+  else next.delete(bucket);
+  selectedMoneynessBuckets.value = Array.from(next);
 }
 
 function onMoneynessToggle(bucket: string, event: Event): void {
-  const target = event.target
-  const checked = target instanceof HTMLInputElement ? target.checked : false
-  toggleMoneyness(bucket, checked)
+  const target = event.target;
+  const checked = target instanceof HTMLInputElement ? target.checked : false;
+  toggleMoneyness(bucket, checked);
 }
 
 function selectTuple(index: number): void {
-  selectedTupleIndex.value = index
+  selectedTupleIndex.value = index;
 }
 
 function loadSelectedTupleInspection(): void {
-  if (!selectedTuple.value) return
-  void store.loadTupleInspection(selectedTupleIndex.value)
+  if (!selectedTuple.value) return;
+  void store.loadTupleInspection(selectedTupleIndex.value);
 }
 
 function loadSelectedEventPath(): void {
-  const row = selectedInspectionRow.value
-  if (!row || row.status !== 'executed') return
-  void store.loadEventPathInspection(selectedTupleIndex.value, row.eventIndex)
+  const row = selectedInspectionRow.value;
+  if (!row || row.status !== "executed") return;
+  void store.loadEventPathInspection(selectedTupleIndex.value, row.eventIndex);
 }
 
 function selectInspectionRow(eventId: string): void {
-  selectedInspectionEventId.value = normalizeText(eventId)
-  store.clearEventPathInspection()
+  selectedInspectionEventId.value = normalizeText(eventId);
+  store.clearEventPathInspection();
 }
 
-function formatTupleIdentityShort(index: number | null | undefined): string | null {
-  if (index == null || index < 0 || !Number.isFinite(index)) return null
-  return `#${index + 1}`
+function formatTupleIdentityShort(
+  index: number | null | undefined,
+): string | null {
+  if (index == null || index < 0 || !Number.isFinite(index)) return null;
+  return `#${index + 1}`;
 }
 
-function hasArtifactLeaderSummaryData(entry: OptionsExpressionArtifactSummary): boolean {
-  const summary = entry.leaderSummary
-  if (!summary) return false
+function hasArtifactLeaderSummaryData(
+  entry: OptionsExpressionArtifactSummary,
+): boolean {
+  const summary = entry.leaderSummary;
+  if (!summary) return false;
   return (
-    summary.distinctLeaderCount > 0
-    || summary.searchLeaderTupleIndex != null
-    || summary.robustLeaderTupleIndex != null
-    || summary.holdoutLeaderTupleIndex != null
-    || summary.sealedLeaderTupleIndex != null
-    || summary.stressLeaderTupleIndex != null
-    || summary.robustLeaderReachedSealedFinalist != null
-  )
+    summary.distinctLeaderCount > 0 ||
+    summary.searchLeaderTupleIndex != null ||
+    summary.robustLeaderTupleIndex != null ||
+    summary.holdoutLeaderTupleIndex != null ||
+    summary.sealedLeaderTupleIndex != null ||
+    summary.stressLeaderTupleIndex != null ||
+    summary.robustLeaderReachedSealedFinalist != null
+  );
 }
 
-function artifactLeadershipLabel(entry: OptionsExpressionArtifactSummary): string {
-  if (!hasArtifactLeaderSummaryData(entry)) return '—'
-  const count = entry.leaderSummary?.distinctLeaderCount ?? 0
-  if (count <= 0) return '—'
-  if (count === 1) return 'same retained leader'
-  return `${count} retained leaders`
+function artifactLeadershipLabel(
+  entry: OptionsExpressionArtifactSummary,
+): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return "—";
+  const count = entry.leaderSummary?.distinctLeaderCount ?? 0;
+  if (count <= 0) return "—";
+  if (count === 1) return "same retained leader";
+  return `${count} retained leaders`;
 }
 
-function artifactLeadershipMap(entry: OptionsExpressionArtifactSummary): string {
-  if (!hasArtifactLeaderSummaryData(entry)) return '—'
+function artifactLeadershipMap(
+  entry: OptionsExpressionArtifactSummary,
+): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return "—";
   const parts = [
-    ['Sel', formatTupleIdentityShort(entry.leaderSummary?.searchLeaderTupleIndex)],
-    ['Robust', formatTupleIdentityShort(entry.leaderSummary?.robustLeaderTupleIndex)],
-    ['Hold', formatTupleIdentityShort(entry.leaderSummary?.holdoutLeaderTupleIndex)],
-    ['Sealed', formatTupleIdentityShort(entry.leaderSummary?.sealedLeaderTupleIndex)],
-    ['Stress', formatTupleIdentityShort(entry.leaderSummary?.stressLeaderTupleIndex)],
+    [
+      "Sel",
+      formatTupleIdentityShort(entry.leaderSummary?.searchLeaderTupleIndex),
+    ],
+    [
+      "Robust",
+      formatTupleIdentityShort(entry.leaderSummary?.robustLeaderTupleIndex),
+    ],
+    [
+      "Hold",
+      formatTupleIdentityShort(entry.leaderSummary?.holdoutLeaderTupleIndex),
+    ],
+    [
+      "Sealed",
+      formatTupleIdentityShort(entry.leaderSummary?.sealedLeaderTupleIndex),
+    ],
+    [
+      "Stress",
+      formatTupleIdentityShort(entry.leaderSummary?.stressLeaderTupleIndex),
+    ],
   ]
     .filter((entry): entry is [string, string] => Boolean(entry[1]))
-    .map(([label, value]) => `${label} ${value}`)
-  return parts.length > 0 ? parts.join(' · ') : '—'
+    .map(([label, value]) => `${label} ${value}`);
+  return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
-function artifactLeadershipDisagreement(entry: OptionsExpressionArtifactSummary): string {
-  if (!hasArtifactLeaderSummaryData(entry)) return '—'
-  const parts: string[] = []
-  if (entry.leaderSummary?.searchVsRobustDisagree) parts.push('Sel≠Robust')
-  if (entry.leaderSummary?.robustVsHoldoutDisagree === true) parts.push('Robust≠Hold')
-  if (entry.leaderSummary?.robustVsSealedDisagree === true) parts.push('Robust≠Sealed')
-  if (parts.length === 0) return 'Leadership aligned across present lanes'
-  return parts.join(' · ')
+function artifactLeadershipDisagreement(
+  entry: OptionsExpressionArtifactSummary,
+): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return "—";
+  const parts: string[] = [];
+  if (entry.leaderSummary?.searchVsRobustDisagree) parts.push("Sel≠Robust");
+  if (entry.leaderSummary?.robustVsHoldoutDisagree === true)
+    parts.push("Robust≠Hold");
+  if (entry.leaderSummary?.robustVsSealedDisagree === true)
+    parts.push("Robust≠Sealed");
+  if (parts.length === 0) return "Leadership aligned across present lanes";
+  return parts.join(" · ");
 }
 
-function artifactRobustLeaderFinalistDetail(entry: OptionsExpressionArtifactSummary): string {
-  if (!hasArtifactLeaderSummaryData(entry)) return '—'
-  const reached = entry.leaderSummary?.robustLeaderReachedSealedFinalist
-  const rank = entry.leaderSummary?.robustLeaderSealedFinalRank
-  if (reached == null) return '—'
-  if (!reached) return 'Robust leader did not reach the sealed finalist set'
-  if (rank != null) return `Robust leader reached sealed finalists (#${rank})`
-  return 'Robust leader reached the sealed finalist set'
+function artifactRobustLeaderFinalistDetail(
+  entry: OptionsExpressionArtifactSummary,
+): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return "—";
+  const reached = entry.leaderSummary?.robustLeaderReachedSealedFinalist;
+  const rank = entry.leaderSummary?.robustLeaderSealedFinalRank;
+  if (reached == null) return "—";
+  if (!reached) return "Robust leader did not reach the sealed finalist set";
+  if (rank != null) return `Robust leader reached sealed finalists (#${rank})`;
+  return "Robust leader reached the sealed finalist set";
 }
 
-function formatArtifactOptionLabel(entry: OptionsExpressionArtifactSummary): string {
-  const validation = describeArtifactValidation(entry)
-  const lane = describeRealismLane(entry.priceSemantics, entry.requestFillModel)
+function formatArtifactOptionLabel(
+  entry: OptionsExpressionArtifactSummary,
+): string {
+  const validation = describeArtifactValidation(entry);
+  const lane = describeRealismLane(
+    entry.priceSemantics,
+    entry.requestFillModel,
+  );
   const backendRoute = describeBackendRoute(
     entry.requestBackendPreference,
     entry.backendUsed,
     entry.backendFallbackReason,
-  )
+  );
   const parts = [
     normalizeText(entry.ts) || normalizeText(entry.path),
-    normalizeText(entry.optionsDatasetId) || 'unknown dataset',
-    `${lane.shortLabel} · ${normalizeText(entry.requestFillModel) || 'aggregate_research'}`,
+    normalizeText(entry.optionsDatasetId) || "unknown dataset",
+    `${lane.shortLabel} · ${normalizeText(entry.requestFillModel) || "aggregate_research"}`,
     backendRoute.label,
-    normalizeText(entry.requestStructureFamily) || 'long_single',
+    normalizeText(entry.requestStructureFamily) || "long_single",
     `${entry.tupleCount} tuples`,
-    `validation ${validation?.label ?? 'Search only'}`,
+    `validation ${validation?.label ?? "Search only"}`,
     `robust ${entry.bestRobustScore.toFixed(3)}`,
     `sel ${entry.bestSelectionExpectancyPerPremium.toFixed(3)}`,
-  ]
+  ];
   if (entry.bestHoldoutExpectancyPerPremium != null) {
-    parts.push(`hold ${entry.bestHoldoutExpectancyPerPremium.toFixed(3)}`)
+    parts.push(`hold ${entry.bestHoldoutExpectancyPerPremium.toFixed(3)}`);
   } else if (entry.hasHoldoutMetrics) {
-    parts.push('holdout')
+    parts.push("holdout");
   }
   if (entry.bestSealedExpectancyPerPremium != null) {
-    parts.push(`sealed ${entry.bestSealedExpectancyPerPremium.toFixed(3)}`)
+    parts.push(`sealed ${entry.bestSealedExpectancyPerPremium.toFixed(3)}`);
   } else if (entry.hasSealedEvaluationMetrics) {
-    parts.push('sealed')
+    parts.push("sealed");
   }
   if (entry.bestStressExpectancyPerPremium != null) {
-    parts.push(`stress ${entry.bestStressExpectancyPerPremium.toFixed(3)}`)
+    parts.push(`stress ${entry.bestStressExpectancyPerPremium.toFixed(3)}`);
   } else if (entry.hasStressMetrics) {
-    parts.push('stress')
+    parts.push("stress");
   }
   if (entry.bestSealedStressExpectancyPerPremium != null) {
-    parts.push(`sealed stress ${entry.bestSealedStressExpectancyPerPremium.toFixed(3)}`)
+    parts.push(
+      `sealed stress ${entry.bestSealedStressExpectancyPerPremium.toFixed(3)}`,
+    );
   }
   if (entry.bestHarsherStressExpectancyPerPremium != null) {
-    parts.push(`harsher ${entry.bestHarsherStressExpectancyPerPremium.toFixed(3)}`)
+    parts.push(
+      `harsher ${entry.bestHarsherStressExpectancyPerPremium.toFixed(3)}`,
+    );
   } else if (entry.hasHarsherStressMetrics) {
-    parts.push('harsher')
+    parts.push("harsher");
   }
   if (entry.bestSealedHarsherStressExpectancyPerPremium != null) {
-    parts.push(`sealed harsher ${entry.bestSealedHarsherStressExpectancyPerPremium.toFixed(3)}`)
+    parts.push(
+      `sealed harsher ${entry.bestSealedHarsherStressExpectancyPerPremium.toFixed(3)}`,
+    );
   }
   if (entry.bestExtremeStressExpectancyPerPremium != null) {
-    parts.push(`extreme ${entry.bestExtremeStressExpectancyPerPremium.toFixed(3)}`)
+    parts.push(
+      `extreme ${entry.bestExtremeStressExpectancyPerPremium.toFixed(3)}`,
+    );
   } else if (entry.hasExtremeStressMetrics) {
-    parts.push('extreme')
+    parts.push("extreme");
   }
   if (entry.bestSealedExtremeStressExpectancyPerPremium != null) {
-    parts.push(`sealed extreme ${entry.bestSealedExtremeStressExpectancyPerPremium.toFixed(3)}`)
+    parts.push(
+      `sealed extreme ${entry.bestSealedExtremeStressExpectancyPerPremium.toFixed(3)}`,
+    );
   }
   if ((entry.sealedFinalistBudget || 0) > 0) {
-    parts.push(`finalists ${entry.sealedEvaluatedTupleCount || 0}/${entry.sealedFinalistBudget || 0}`)
+    parts.push(
+      `finalists ${entry.sealedEvaluatedTupleCount || 0}/${entry.sealedFinalistBudget || 0}`,
+    );
   }
-  const leadership = artifactLeadershipLabel(entry)
-  if (leadership !== '—') {
-    parts.push(leadership)
+  const leadership = artifactLeadershipLabel(entry);
+  if (leadership !== "—") {
+    parts.push(leadership);
   }
   if (normalizeText(entry.backendFallbackReason)) {
-    parts.push('fallback')
+    parts.push("fallback");
   }
-  return parts.join(' · ')
+  return parts.join(" · ");
 }
 
 function loadArtifactFromComparison(path: string): void {
-  selectedArtifactPath.value = path
-  void store.loadArtifact()
+  selectedArtifactPath.value = path;
+  void store.loadArtifact();
 }
 
 function handleRealismLaneChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement | null)?.value || 'aggregate'
-  store.setRealismLane(value, true)
+  const value =
+    (event.target as HTMLSelectElement | null)?.value || "aggregate";
+  store.setRealismLane(value, true);
 }
 
 function focusTupleIndex(index: number): void {
-  selectedTupleIndex.value = index
+  selectedTupleIndex.value = index;
 }
 </script>
 
 <template>
-  <section class="optionsPanel surfaceFocus" aria-label="Options expression follow-up">
+  <section
+    class="optionsPanel surfaceFocus"
+    aria-label="Options expression follow-up"
+  >
     <div class="panelSectionHeader">
       <div class="panelHeaderVisual">
-        <AppVisualIcon :icon="optionsFollowupWorkflowIcon" class="optionsPaneGlyph" />
+        <AppVisualIcon
+          :icon="optionsFollowupWorkflowIcon"
+          class="optionsPaneGlyph"
+        />
         <div>
           <div class="panelEyebrow">Follow-up workflow</div>
-          <h3 class="panelPaneTitle" style="margin: 0;">Options Expression</h3>
+          <h3 class="panelPaneTitle" style="margin: 0">Options Expression</h3>
           <div class="panelSectionLead">
-            Express a saved validated directional artifact through a constrained Polygon/Massive options search without mutating the main workflow state.
+            Express a saved validated directional artifact through a constrained
+            Polygon/Massive options search without mutating the main workflow
+            state.
           </div>
-          <div class="panelMuted" style="margin-top: 6px;">
-            This is an options follow-up surface. Conventional stock optimization and validation remain in the main workflow.
+          <div class="panelMuted" style="margin-top: 6px">
+            This is an options follow-up surface. Conventional stock
+            optimization and validation remain in the main workflow.
           </div>
         </div>
       </div>
     </div>
 
     <section v-if="!hasParentSelection" class="emptyState">
-      <img class="emptyStateIllustration" :src="emptyOptionsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
+      <img
+        class="emptyStateIllustration"
+        :src="emptyOptionsWorkspaceIllustration"
+        alt=""
+        aria-hidden="true"
+        draggable="false"
+      />
       <div class="emptyTitle">Select a saved run first.</div>
       <div class="emptyBody">
-        Options expression optimization is launched from a saved artifact in the History workspace.
+        Options expression optimization is launched from a saved artifact in the
+        History workspace.
       </div>
     </section>
 
     <section v-else-if="!supportedParent" class="emptyState">
-      <img class="emptyStateIllustration" :src="emptyOptionsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
+      <img
+        class="emptyStateIllustration"
+        :src="emptyOptionsWorkspaceIllustration"
+        alt=""
+        aria-hidden="true"
+        draggable="false"
+      />
       <div class="emptyTitle">Saved run not supported yet.</div>
       <div class="emptyBody">
-        The current vertical slice supports saved <span class="mono">DoubleMa</span>, <span class="mono">CompositeTrend</span>, <span class="mono">RegimeHybrid</span>, and <span class="mono">BreakoutMomentum</span> artifacts. Other strategy families stay read-only until their manifest projector is implemented.
+        The current vertical slice supports saved
+        <span class="mono">DoubleMa</span>,
+        <span class="mono">CompositeTrend</span>,
+        <span class="mono">RegimeHybrid</span>, and
+        <span class="mono">BreakoutMomentum</span> artifacts. Other strategy
+        families stay read-only until their manifest projector is implemented.
       </div>
     </section>
 
     <template v-else>
       <div class="panelSummaryChips" aria-label="Options expression summary">
-        <span v-for="chip in resultSummaryChips" :key="chip" class="panelSummaryChip mono">{{ chip }}</span>
+        <span
+          v-for="chip in resultSummaryChips"
+          :key="chip"
+          class="panelSummaryChip mono"
+          >{{ chip }}</span
+        >
       </div>
 
       <div class="optionsGrid">
@@ -3329,85 +3890,118 @@ function focusTupleIndex(index: number): void {
           </div>
           <div class="panelMuted">{{ realismLaneSummary }}</div>
           <div class="panelMuted">
-            {{ selectedRealismLaneGuidance.laneLabel }} · {{ selectedRealismLaneGuidance.detail }}
-        </div>
-        <div class="panelMuted">
-          {{ realismLaneRouteNote }}
-        </div>
-        <details class="panelDetails">
-          <summary>Lane product status</summary>
-          <div class="panelDetailsBody">
-            <div class="detailGrid detailGridTight">
-              <div v-for="row in realismLaneProductRows" :key="row.key">
-                <span class="panelMetricKey">{{ row.label }}</span>
-                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+            {{ selectedRealismLaneGuidance.laneLabel }} ·
+            {{ selectedRealismLaneGuidance.detail }}
+          </div>
+          <div class="panelMuted">
+            {{ realismLaneRouteNote }}
+          </div>
+          <details class="panelDetails">
+            <summary>Lane product status</summary>
+            <div class="panelDetailsBody">
+              <div class="detailGrid detailGridTight">
+                <div v-for="row in realismLaneProductRows" :key="row.key">
+                  <span class="panelMetricKey">{{ row.label }}</span>
+                  <span class="panelMetricValue mono panelNumeric">{{
+                    row.value
+                  }}</span>
+                </div>
+              </div>
+              <div v-if="realismLaneHistoryRows.length > 0" class="tableWrap">
+                <table class="resultTable">
+                  <thead>
+                    <tr>
+                      <th>Artifact</th>
+                      <th>Dataset</th>
+                      <th>Backend</th>
+                      <th>Validation</th>
+                      <th>Sel EV</th>
+                      <th>Val EV</th>
+                      <th>Stress EV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in realismLaneHistoryRows" :key="row.path">
+                      <td class="mono">{{ normalizeText(row.ts) || "—" }}</td>
+                      <td class="mono">{{ row.datasetId }}</td>
+                      <td class="mono">{{ row.backend }}</td>
+                      <td class="mono">{{ row.validation }}</td>
+                      <td class="mono">
+                        {{ formatOptionalDecimal(row.selection, 3) }}
+                      </td>
+                      <td class="mono">
+                        {{ formatOptionalDecimal(row.validated, 3) }}
+                      </td>
+                      <td class="mono">
+                        {{ formatOptionalDecimal(row.stress, 3) }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else class="panelMuted">
+                No saved artifacts currently match the selected
+                {{ formatRealismLaneLabel(realismLane) }} lane for this parent
+                run.
               </div>
             </div>
-            <div v-if="realismLaneHistoryRows.length > 0" class="tableWrap">
-              <table class="resultTable">
-                <thead>
-                  <tr>
-                    <th>Artifact</th>
-                    <th>Dataset</th>
-                    <th>Backend</th>
-                    <th>Validation</th>
-                    <th>Sel EV</th>
-                    <th>Val EV</th>
-                    <th>Stress EV</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in realismLaneHistoryRows" :key="row.path">
-                    <td class="mono">{{ normalizeText(row.ts) || '—' }}</td>
-                    <td class="mono">{{ row.datasetId }}</td>
-                    <td class="mono">{{ row.backend }}</td>
-                    <td class="mono">{{ row.validation }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.selection, 3) }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.validated, 3) }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.stress, 3) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-else class="panelMuted">
-              No saved artifacts currently match the selected {{ formatRealismLaneLabel(realismLane) }} lane for this parent run.
-            </div>
-          </div>
-        </details>
-      </div>
+          </details>
+        </div>
 
         <div class="controlBlock">
           <label for="optionsDatasetSelect">Options dataset</label>
           <div class="row inlineControls">
             <select id="optionsDatasetSelect" v-model="selectedDatasetId">
-              <option value="">Select {{ formatRealismLaneLabel(realismLane) }} Polygon/Massive dataset…</option>
+              <option value="">
+                Select {{ formatRealismLaneLabel(realismLane) }} Polygon/Massive
+                dataset…
+              </option>
               <option
                 v-for="entry in realismLaneDatasets"
                 :key="entry.optionsDatasetId"
                 :value="entry.optionsDatasetId"
               >
-                {{ entry.optionsDatasetId }} · {{ entry.rootSymbol || 'unknown root' }} · {{ entry.priceSemantics }}
+                {{ entry.optionsDatasetId }} ·
+                {{ entry.rootSymbol || "unknown root" }} ·
+                {{ entry.priceSemantics }}
               </option>
             </select>
-            <button type="button" :disabled="datasetsBusy" @click="store.refreshDatasets()">
+            <button
+              type="button"
+              :disabled="datasetsBusy"
+              @click="store.refreshDatasets()"
+            >
               Refresh
             </button>
           </div>
-          <div class="panelMuted">{{ datasetSummary || `Import or select a ${formatRealismLaneLabel(realismLane)} Polygon/Massive options dataset.` }}</div>
-          <div v-if="datasetProvenanceSummary" class="panelMuted mono">{{ datasetProvenanceSummary }}</div>
+          <div class="panelMuted">
+            {{
+              datasetSummary ||
+              `Import or select a ${formatRealismLaneLabel(realismLane)} Polygon/Massive options dataset.`
+            }}
+          </div>
+          <div v-if="datasetProvenanceSummary" class="panelMuted mono">
+            {{ datasetProvenanceSummary }}
+          </div>
           <div v-if="selectedDataset" class="panelMuted">
             {{ fillModelGuidance.laneLabel }} · {{ fillModelGuidance.detail }}
           </div>
           <div v-else class="panelMuted">
-            No saved dataset currently matches the selected {{ formatRealismLaneLabel(realismLane) }} lane.
+            No saved dataset currently matches the selected
+            {{ formatRealismLaneLabel(realismLane) }} lane.
           </div>
           <div v-if="rootMismatch" class="warningText">
-            Selected dataset root does not match the current saved run root hint ({{ parentRootHint || 'unknown' }}). Continue only if that mismatch is intentional.
+            Selected dataset root does not match the current saved run root hint
+            ({{ parentRootHint || "unknown" }}). Continue only if that mismatch
+            is intentional.
           </div>
         </div>
 
         <div class="controlBlock">
-          <label for="optionsImportRoot">Polygon/Massive {{ formatRealismLaneLabel(realismLane) }} dataset import</label>
+          <label for="optionsImportRoot"
+            >Polygon/Massive {{ formatRealismLaneLabel(realismLane) }} dataset
+            import</label
+          >
           <div class="downloadFieldGrid">
             <label>
               Root
@@ -3421,7 +4015,11 @@ function focusTupleIndex(index: number): void {
             </label>
             <label>
               CSV semantics
-              <select id="optionsImportPriceSemantics" v-model="importPriceSemantics" disabled>
+              <select
+                id="optionsImportPriceSemantics"
+                v-model="importPriceSemantics"
+                disabled
+              >
                 <option
                   v-for="entry in OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS"
                   :key="entry"
@@ -3433,22 +4031,39 @@ function focusTupleIndex(index: number): void {
             </label>
           </div>
           <div class="row inlineControls">
-            <button type="button" :disabled="importBusy" @click="store.importDatasetFromPicker()" class="buttonWithIcon">
-              <AppVisualIcon :icon="optionsDatasetImportIcon" class="optionsActionIcon" />
+            <button
+              type="button"
+              :disabled="importBusy"
+              @click="store.importDatasetFromPicker()"
+              class="buttonWithIcon"
+            >
+              <AppVisualIcon
+                :icon="optionsDatasetImportIcon"
+                class="optionsActionIcon"
+              />
               <span>Import Polygon/Massive CSV</span>
             </button>
           </div>
           <div class="panelMuted">
-            Uses the existing native CSV picker and stores a normalized Polygon/Massive options dataset under the app market-data root. The selected realism lane controls the expected CSV semantics for this import.
+            Uses the existing native CSV picker and stores a normalized
+            Polygon/Massive options dataset under the app market-data root. The
+            selected realism lane controls the expected CSV semantics for this
+            import.
           </div>
         </div>
 
         <div class="controlBlock">
-          <label for="optionsDownloadFrom">Polygon/Massive 1m options download</label>
+          <label for="optionsDownloadFrom"
+            >Polygon/Massive 1m options download</label
+          >
           <div class="downloadFieldGrid">
             <label>
               From
-              <input id="optionsDownloadFrom" v-model="downloadFromDateInput" type="date" />
+              <input
+                id="optionsDownloadFrom"
+                v-model="downloadFromDateInput"
+                type="date"
+              />
             </label>
             <label>
               To
@@ -3456,7 +4071,10 @@ function focusTupleIndex(index: number): void {
             </label>
             <label>
               Contract type
-              <select id="optionsDownloadContractType" v-model="downloadContractType">
+              <select
+                id="optionsDownloadContractType"
+                v-model="downloadContractType"
+              >
                 <option value="call">Calls</option>
                 <option value="put">Puts</option>
                 <option value="both">Calls + puts</option>
@@ -3464,7 +4082,12 @@ function focusTupleIndex(index: number): void {
             </label>
             <label>
               Dataset id override
-              <input v-model="downloadDatasetIdInput" type="text" placeholder="optional_dataset_id" spellcheck="false" />
+              <input
+                v-model="downloadDatasetIdInput"
+                type="text"
+                placeholder="optional_dataset_id"
+                spellcheck="false"
+              />
             </label>
             <label>
               Expiration from
@@ -3476,19 +4099,43 @@ function focusTupleIndex(index: number): void {
             </label>
             <label>
               Max DTE days
-              <input v-model="downloadMaxDteDaysInput" type="text" inputmode="numeric" placeholder="3" spellcheck="false" />
+              <input
+                v-model="downloadMaxDteDaysInput"
+                type="text"
+                inputmode="numeric"
+                placeholder="3"
+                spellcheck="false"
+              />
             </label>
             <label>
               Strike min
-              <input v-model="downloadStrikeMinInput" type="text" inputmode="decimal" placeholder="645" spellcheck="false" />
+              <input
+                v-model="downloadStrikeMinInput"
+                type="text"
+                inputmode="decimal"
+                placeholder="645"
+                spellcheck="false"
+              />
             </label>
             <label>
               Strike max
-              <input v-model="downloadStrikeMaxInput" type="text" inputmode="decimal" placeholder="665" spellcheck="false" />
+              <input
+                v-model="downloadStrikeMaxInput"
+                type="text"
+                inputmode="decimal"
+                placeholder="665"
+                spellcheck="false"
+              />
             </label>
             <label>
               Max contracts
-              <input v-model="downloadMaxContractsInput" type="text" inputmode="numeric" placeholder="30" spellcheck="false" />
+              <input
+                v-model="downloadMaxContractsInput"
+                type="text"
+                inputmode="numeric"
+                placeholder="30"
+                spellcheck="false"
+              />
             </label>
           </div>
           <div class="row inlineControls">
@@ -3498,15 +4145,23 @@ function focusTupleIndex(index: number): void {
               @click="store.downloadDatasetFromPolygon()"
               class="buttonWithIcon"
             >
-              <AppVisualIcon :icon="optionsProviderDownloadIcon" class="optionsActionIcon" />
+              <AppVisualIcon
+                :icon="optionsProviderDownloadIcon"
+                class="optionsActionIcon"
+              />
               <span>Download Polygon/Massive 1m data</span>
             </button>
           </div>
           <div class="panelMuted">
-            This download is options-only and stays separate from the normal stock data workflow. Keep the date, expiry, strike, and contract windows bounded so the resulting 1m dataset remains usable for options-expression optimization.
+            This download is options-only and stays separate from the normal
+            stock data workflow. Keep the date, expiry, strike, and contract
+            windows bounded so the resulting 1m dataset remains usable for
+            options-expression optimization.
           </div>
           <div v-if="realismLane !== 'aggregate'" class="warningText">
-            Direct provider download in this panel is currently available only for the Aggregate lane. Use CSV import for {{ formatRealismLaneLabel(realismLane) }} datasets.
+            Direct provider download in this panel is currently available only
+            for the Aggregate lane. Use CSV import for
+            {{ formatRealismLaneLabel(realismLane) }} datasets.
           </div>
         </div>
       </div>
@@ -3515,7 +4170,11 @@ function focusTupleIndex(index: number): void {
         <summary>Dataset manifest</summary>
         <div class="panelDetailsBody">
           <div class="reportingGrid">
-            <div v-for="row in selectedDatasetDetailRows" :key="row.key" class="metricCard">
+            <div
+              v-for="row in selectedDatasetDetailRows"
+              :key="row.key"
+              class="metricCard"
+            >
               <div class="panelMetricKey">{{ row.label }}</div>
               <div class="metricValue mono">{{ row.value }}</div>
             </div>
@@ -3532,13 +4191,20 @@ function focusTupleIndex(index: number): void {
         <summary>Latest download audit</summary>
         <div class="panelDetailsBody">
           <div class="reportingGrid">
-            <div v-for="row in latestDownloadAuditRows" :key="row.key" class="metricCard">
+            <div
+              v-for="row in latestDownloadAuditRows"
+              :key="row.key"
+              class="metricCard"
+            >
               <div class="panelMetricKey">{{ row.label }}</div>
               <div class="metricValue mono">{{ row.value }}</div>
             </div>
           </div>
           <div class="actions">
-            <button type="button" @click="store.revealLatestDownloadUnderlyingPath()">
+            <button
+              type="button"
+              @click="store.revealLatestDownloadUnderlyingPath()"
+            >
               Reveal underlying CSV
             </button>
           </div>
@@ -3550,28 +4216,57 @@ function focusTupleIndex(index: number): void {
         <div class="panelDetailsBody optionsFields">
           <label>
             Delay minutes
-            <input v-model="delayMinutesInput" type="text" placeholder="0,1,5" spellcheck="false" />
+            <input
+              v-model="delayMinutesInput"
+              type="text"
+              placeholder="0,1,5"
+              spellcheck="false"
+            />
           </label>
           <label>
             DTE buckets
-            <input v-model="dteBucketsInput" type="text" placeholder="1,3,5" spellcheck="false" />
+            <input
+              v-model="dteBucketsInput"
+              type="text"
+              placeholder="1,3,5"
+              spellcheck="false"
+            />
           </label>
           <label>
             Hold minutes
-            <input v-model="holdMinutesInput" type="text" placeholder="5,15,30,60" spellcheck="false" />
+            <input
+              v-model="holdMinutesInput"
+              type="text"
+              placeholder="5,15,30,60"
+              spellcheck="false"
+            />
           </label>
           <label>
             Target buckets
-            <input v-model="targetReturnInput" type="text" placeholder="0.25,0.5,1" spellcheck="false" />
+            <input
+              v-model="targetReturnInput"
+              type="text"
+              placeholder="0.25,0.5,1"
+              spellcheck="false"
+            />
           </label>
           <label>
             Stop buckets
-            <input v-model="stopReturnInput" type="text" placeholder="0.25,0.5" spellcheck="false" />
+            <input
+              v-model="stopReturnInput"
+              type="text"
+              placeholder="0.25,0.5"
+              spellcheck="false"
+            />
           </label>
           <label>
             Exit template
             <select v-model="exitTemplate">
-              <option v-for="entry in OPTIONS_EXIT_TEMPLATE_OPTIONS" :key="entry" :value="entry">
+              <option
+                v-for="entry in OPTIONS_EXIT_TEMPLATE_OPTIONS"
+                :key="entry"
+                :value="entry"
+              >
                 {{ entry }}
               </option>
             </select>
@@ -3592,7 +4287,11 @@ function focusTupleIndex(index: number): void {
           <label>
             Structure family
             <select v-model="structureFamily">
-              <option v-for="entry in OPTIONS_STRUCTURE_FAMILY_OPTIONS" :key="entry" :value="entry">
+              <option
+                v-for="entry in OPTIONS_STRUCTURE_FAMILY_OPTIONS"
+                :key="entry"
+                :value="entry"
+              >
                 {{ entry }}
               </option>
             </select>
@@ -3600,64 +4299,124 @@ function focusTupleIndex(index: number): void {
           <label>
             Backend preference
             <select v-model="backendPreference">
-              <option v-for="entry in OPTIONS_BACKEND_PREFERENCE_OPTIONS" :key="entry" :value="entry">
+              <option
+                v-for="entry in OPTIONS_BACKEND_PREFERENCE_OPTIONS"
+                :key="entry"
+                :value="entry"
+              >
                 {{ entry }}
               </option>
             </select>
           </label>
           <label>
             Top K
-            <input v-model="topKInput" type="text" inputmode="numeric" spellcheck="false" />
+            <input
+              v-model="topKInput"
+              type="text"
+              inputmode="numeric"
+              spellcheck="false"
+            />
           </label>
           <label>
             Sealed finalists
-            <input v-model="sealedFinalistCountInput" type="text" inputmode="numeric" spellcheck="false" />
+            <input
+              v-model="sealedFinalistCountInput"
+              type="text"
+              inputmode="numeric"
+              spellcheck="false"
+            />
           </label>
           <label>
             Min valid trades
-            <input v-model="minValidTradesInput" type="text" inputmode="numeric" spellcheck="false" />
+            <input
+              v-model="minValidTradesInput"
+              type="text"
+              inputmode="numeric"
+              spellcheck="false"
+            />
           </label>
           <label>
             Search split
-            <input v-model="splitRatioSearchInput" type="text" inputmode="decimal" spellcheck="false" />
+            <input
+              v-model="splitRatioSearchInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+            />
           </label>
           <label>
             Holdout split
-            <input v-model="splitRatioHoldoutInput" type="text" inputmode="decimal" spellcheck="false" />
+            <input
+              v-model="splitRatioHoldoutInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+            />
           </label>
           <label>
             Split assignment
             <select v-model="splitAssignmentMode">
-              <option v-for="entry in OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS" :key="entry" :value="entry">
+              <option
+                v-for="entry in OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS"
+                :key="entry"
+                :value="entry"
+              >
                 {{ entry }}
               </option>
             </select>
           </label>
           <label>
             Max entry lag
-            <input v-model="maxEntryLagMinutesInput" type="text" inputmode="numeric" spellcheck="false" />
+            <input
+              v-model="maxEntryLagMinutesInput"
+              type="text"
+              inputmode="numeric"
+              spellcheck="false"
+            />
           </label>
           <label>
             Max premium
-            <input v-model="maxPremiumInput" type="text" inputmode="decimal" spellcheck="false" />
+            <input
+              v-model="maxPremiumInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+            />
           </label>
           <label>
             Min premium
-            <input v-model="minPremiumInput" type="text" inputmode="decimal" spellcheck="false" />
+            <input
+              v-model="minPremiumInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+            />
           </label>
           <label>
             Min volume
-            <input v-model="minVolumeInput" type="text" inputmode="decimal" spellcheck="false" />
+            <input
+              v-model="minVolumeInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+            />
           </label>
           <label>
             Min open interest
-            <input v-model="minOpenInterestInput" type="text" inputmode="decimal" spellcheck="false" />
+            <input
+              v-model="minOpenInterestInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+            />
           </label>
           <div class="full">
             <div class="panelMuted">
-              <span class="mono">event_chronological</span> preserves the current default. Use
-              <span class="mono">session_chronological</span> for multi-session feasibility work when
-              holdout events are clustering late in the day.
+              <span class="mono">event_chronological</span> preserves the
+              current default. Use
+              <span class="mono">session_chronological</span> for multi-session
+              feasibility work when holdout events are clustering late in the
+              day.
             </div>
           </div>
           <div class="full">
@@ -3668,7 +4427,11 @@ function focusTupleIndex(index: number): void {
           <div class="full">
             <div class="panelMetricKey">Moneyness buckets</div>
             <div class="moneynessList">
-              <label v-for="entry in OPTIONS_MONEYNESS_BUCKET_OPTIONS" :key="entry" class="bucketToggle">
+              <label
+                v-for="entry in OPTIONS_MONEYNESS_BUCKET_OPTIONS"
+                :key="entry"
+                class="bucketToggle"
+              >
                 <input
                   :checked="selectedMoneynessBuckets.includes(entry)"
                   type="checkbox"
@@ -3688,8 +4451,13 @@ function focusTupleIndex(index: number): void {
           @click="store.previewCurrentFeasibility()"
           class="buttonWithIcon"
         >
-          <AppVisualIcon :icon="optionsFeasibilityPreviewIcon" class="optionsActionIcon" />
-          <span>{{ feasibilityBusy ? 'Previewing…' : 'Preview feasibility' }}</span>
+          <AppVisualIcon
+            :icon="optionsFeasibilityPreviewIcon"
+            class="optionsActionIcon"
+          />
+          <span>{{
+            feasibilityBusy ? "Previewing…" : "Preview feasibility"
+          }}</span>
         </button>
         <button
           type="button"
@@ -3697,10 +4465,17 @@ function focusTupleIndex(index: number): void {
           @click="store.runCurrentExpression()"
           class="buttonWithIcon"
         >
-          <AppVisualIcon :icon="optionsFollowupWorkflowIcon" class="optionsActionIcon" />
-          <span>{{ runBusy ? 'Running…' : 'Optimize expression' }}</span>
+          <AppVisualIcon
+            :icon="optionsFollowupWorkflowIcon"
+            class="optionsActionIcon"
+          />
+          <span>{{ runBusy ? "Running…" : "Optimize expression" }}</span>
         </button>
-        <button type="button" :disabled="artifactsBusy" @click="store.refreshArtifacts()">
+        <button
+          type="button"
+          :disabled="artifactsBusy"
+          @click="store.refreshArtifacts()"
+        >
           Refresh artifacts
         </button>
         <button
@@ -3727,7 +4502,9 @@ function focusTupleIndex(index: number): void {
       </div>
 
       <div class="controlBlock">
-        <label for="optionsArtifactSelect">Saved options expression artifacts</label>
+        <label for="optionsArtifactSelect"
+          >Saved options expression artifacts</label
+        >
         <select id="optionsArtifactSelect" v-model="selectedArtifactPath">
           <option value="">Select saved options expression artifact…</option>
           <option
@@ -3742,16 +4519,127 @@ function focusTupleIndex(index: number): void {
           Filtered to the currently selected saved run.
         </div>
         <div v-if="selectedArtifactSummary" class="panelMuted mono">
-          {{ selectedArtifactBackendRoute.label }} · {{ selectedArtifactRealismLane.label }} · {{ selectedArtifactSummary.requestFillModel || 'aggregate_research' }} · validation {{ selectedArtifactValidation?.label ?? 'Search only' }} · sel {{ selectedArtifactSummary.bestSelectionExpectancyPerPremium.toFixed(3) }}<template v-if="selectedArtifactSummary.bestHoldoutExpectancyPerPremium != null"> · hold {{ selectedArtifactSummary.bestHoldoutExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExpectancyPerPremium != null"> · sealed {{ selectedArtifactSummary.bestSealedExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestStressExpectancyPerPremium != null"> · stress {{ selectedArtifactSummary.bestStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedStressExpectancyPerPremium != null"> · sealed stress {{ selectedArtifactSummary.bestSealedStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestHarsherStressExpectancyPerPremium != null"> · harsher {{ selectedArtifactSummary.bestHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium != null"> · sealed harsher {{ selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestExtremeStressExpectancyPerPremium != null"> · extreme {{ selectedArtifactSummary.bestExtremeStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium != null"> · sealed extreme {{ selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium.toFixed(3) }}</template>
+          {{ selectedArtifactBackendRoute.label }} ·
+          {{ selectedArtifactRealismLane.label }} ·
+          {{
+            selectedArtifactSummary.requestFillModel || "aggregate_research"
+          }}
+          · validation
+          {{ selectedArtifactValidation?.label ?? "Search only" }} · sel
+          {{
+            selectedArtifactSummary.bestSelectionExpectancyPerPremium.toFixed(
+              3,
+            )
+          }}<template
+            v-if="
+              selectedArtifactSummary.bestHoldoutExpectancyPerPremium != null
+            "
+          >
+            · hold
+            {{
+              selectedArtifactSummary.bestHoldoutExpectancyPerPremium.toFixed(3)
+            }}</template
+          ><template
+            v-if="
+              selectedArtifactSummary.bestSealedExpectancyPerPremium != null
+            "
+          >
+            · sealed
+            {{
+              selectedArtifactSummary.bestSealedExpectancyPerPremium.toFixed(3)
+            }}</template
+          ><template
+            v-if="
+              selectedArtifactSummary.bestStressExpectancyPerPremium != null
+            "
+          >
+            · stress
+            {{
+              selectedArtifactSummary.bestStressExpectancyPerPremium.toFixed(3)
+            }}</template
+          ><template
+            v-if="
+              selectedArtifactSummary.bestSealedStressExpectancyPerPremium !=
+              null
+            "
+          >
+            · sealed stress
+            {{
+              selectedArtifactSummary.bestSealedStressExpectancyPerPremium.toFixed(
+                3,
+              )
+            }}</template
+          ><template
+            v-if="
+              selectedArtifactSummary.bestHarsherStressExpectancyPerPremium !=
+              null
+            "
+          >
+            · harsher
+            {{
+              selectedArtifactSummary.bestHarsherStressExpectancyPerPremium.toFixed(
+                3,
+              )
+            }}</template
+          ><template
+            v-if="
+              selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium !=
+              null
+            "
+          >
+            · sealed harsher
+            {{
+              selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium.toFixed(
+                3,
+              )
+            }}</template
+          ><template
+            v-if="
+              selectedArtifactSummary.bestExtremeStressExpectancyPerPremium !=
+              null
+            "
+          >
+            · extreme
+            {{
+              selectedArtifactSummary.bestExtremeStressExpectancyPerPremium.toFixed(
+                3,
+              )
+            }}</template
+          ><template
+            v-if="
+              selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium !=
+              null
+            "
+          >
+            · sealed extreme
+            {{
+              selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium.toFixed(
+                3,
+              )
+            }}</template
+          >
         </div>
-        <div v-if="selectedArtifactLeadershipRows.length > 0" class="panelMuted mono">
-          {{ selectedArtifactLeadershipRows[0]?.value }} · {{ selectedArtifactLeadershipRows[1]?.value }}
+        <div
+          v-if="selectedArtifactLeadershipRows.length > 0"
+          class="panelMuted mono"
+        >
+          {{ selectedArtifactLeadershipRows[0]?.value }} ·
+          {{ selectedArtifactLeadershipRows[1]?.value }}
         </div>
-        <div v-if="selectedArtifactLeadershipRows.length > 0" class="panelMuted">
-          {{ selectedArtifactLeadershipRows[2]?.value }} · {{ selectedArtifactLeadershipRows[3]?.value }}
+        <div
+          v-if="selectedArtifactLeadershipRows.length > 0"
+          class="panelMuted"
+        >
+          {{ selectedArtifactLeadershipRows[2]?.value }} ·
+          {{ selectedArtifactLeadershipRows[3]?.value }}
         </div>
-        <div v-if="selectedArtifactSupportRows.length > 0" class="panelMuted mono">
-          Hold {{ selectedArtifactSupportRows[0]?.value }} · Sealed {{ selectedArtifactSupportRows[1]?.value }} · Stress {{ selectedArtifactSupportRows[2]?.value }}
+        <div
+          v-if="selectedArtifactSupportRows.length > 0"
+          class="panelMuted mono"
+        >
+          Hold {{ selectedArtifactSupportRows[0]?.value }} · Sealed
+          {{ selectedArtifactSupportRows[1]?.value }} · Stress
+          {{ selectedArtifactSupportRows[2]?.value }}
         </div>
         <div v-if="selectedArtifactValidation" class="panelMuted">
           {{ selectedArtifactValidation.detail }}
@@ -3774,7 +4662,10 @@ function focusTupleIndex(index: number): void {
             Coverage {{ selectedArtifactCoverageAdequacy.label }}
           </span>
         </div>
-        <details v-if="selectedArtifactDerivedMetrics.length > 0" class="panelDetails">
+        <details
+          v-if="selectedArtifactDerivedMetrics.length > 0"
+          class="panelDetails"
+        >
           <summary>Reopened artifact validation frontier</summary>
           <div class="panelDetailsBody">
             <div v-if="selectedArtifactCoverageAdequacy" class="panelMuted">
@@ -3783,22 +4674,37 @@ function focusTupleIndex(index: number): void {
             <div class="detailGrid detailGridTight">
               <div v-for="row in selectedArtifactDerivedMetrics" :key="row.key">
                 <span class="panelMetricKey">{{ row.label }}</span>
-                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{
+                  row.value
+                }}</span>
               </div>
             </div>
-            <div class="detailGrid detailGridTight" v-if="selectedArtifactSupportRows.length > 0">
+            <div
+              class="detailGrid detailGridTight"
+              v-if="selectedArtifactSupportRows.length > 0"
+            >
               <div v-for="row in selectedArtifactSupportRows" :key="row.key">
                 <span class="panelMetricKey">{{ row.label }}</span>
-                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{
+                  row.value
+                }}</span>
               </div>
             </div>
-            <div class="detailGrid detailGridTight" v-if="selectedArtifactCoverageRows.length > 0">
+            <div
+              class="detailGrid detailGridTight"
+              v-if="selectedArtifactCoverageRows.length > 0"
+            >
               <div v-for="row in selectedArtifactCoverageRows" :key="row.key">
                 <span class="panelMetricKey">{{ row.label }}</span>
-                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{
+                  row.value
+                }}</span>
               </div>
             </div>
-            <div class="tableWrap" v-if="selectedArtifactValidationFrontierRows.length > 0">
+            <div
+              class="tableWrap"
+              v-if="selectedArtifactValidationFrontierRows.length > 0"
+            >
               <table class="resultTable">
                 <thead>
                   <tr>
@@ -3809,10 +4715,21 @@ function focusTupleIndex(index: number): void {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in selectedArtifactValidationFrontierRows" :key="row.key">
+                  <tr
+                    v-for="row in selectedArtifactValidationFrontierRows"
+                    :key="row.key"
+                  >
                     <td class="mono">{{ row.label }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.expectancy, 4) }}</td>
-                    <td class="mono">{{ row.delta === 0 ? 'baseline' : formatOptionalDecimal(row.delta, 4) }}</td>
+                    <td class="mono">
+                      {{ formatOptionalDecimal(row.expectancy, 4) }}
+                    </td>
+                    <td class="mono">
+                      {{
+                        row.delta === 0
+                          ? "baseline"
+                          : formatOptionalDecimal(row.delta, 4)
+                      }}
+                    </td>
                     <td class="mono">{{ row.status }}</td>
                   </tr>
                 </tbody>
@@ -3822,7 +4739,11 @@ function focusTupleIndex(index: number): void {
         </details>
       </div>
 
-      <details v-if="artifactComparisonRows.length > 0" class="panelDetails" open>
+      <details
+        v-if="artifactComparisonRows.length > 0"
+        class="panelDetails"
+        open
+      >
         <summary>Saved artifact comparison</summary>
         <div class="panelDetailsBody">
           <div class="matrixTableWrap">
@@ -3859,55 +4780,148 @@ function focusTupleIndex(index: number): void {
                 <tr
                   v-for="entry in artifactComparisonRows"
                   :key="entry.path"
-                  :class="{ selectedTupleRow: normalizeText(entry.path) === normalizeText(selectedArtifactPath) }"
+                  :class="{
+                    selectedTupleRow:
+                      normalizeText(entry.path) ===
+                      normalizeText(selectedArtifactPath),
+                  }"
                 >
-                  <td class="mono">{{ normalizeText(entry.ts) || '—' }}</td>
+                  <td class="mono">{{ normalizeText(entry.ts) || "—" }}</td>
                   <td class="mono">{{ entry.optionsDatasetId }}</td>
                   <td class="mono">
-                    {{ describeRealismLane(entry.priceSemantics, entry.requestFillModel).shortLabel }} · {{ entry.requestFillModel || 'aggregate_research' }}
+                    {{
+                      describeRealismLane(
+                        entry.priceSemantics,
+                        entry.requestFillModel,
+                      ).shortLabel
+                    }}
+                    · {{ entry.requestFillModel || "aggregate_research" }}
                   </td>
                   <td class="mono">
-                    {{ describeBackendRoute(entry.requestBackendPreference, entry.backendUsed, entry.backendFallbackReason).label }}
+                    {{
+                      describeBackendRoute(
+                        entry.requestBackendPreference,
+                        entry.backendUsed,
+                        entry.backendFallbackReason,
+                      ).label
+                    }}
                   </td>
                   <td class="mono">
-                    {{ formatCoverageAdequacyLabel(entry.coverageAdequacyVerdict) }}<template v-if="entry.coverageNonPromotable"> · no-promote</template>
+                    {{
+                      formatCoverageAdequacyLabel(
+                        entry.coverageAdequacyVerdict,
+                      )
+                    }}<template v-if="entry.coverageNonPromotable">
+                      · no-promote</template
+                    >
                   </td>
                   <td class="mono">
-                    {{ formatPercent(entry.searchOverlapRate, 1) }} / {{ formatPercent(entry.holdoutOverlapRate, 1) }} / {{ formatPercent(entry.sealedTestOverlapRate, 1) }}
+                    {{ formatPercent(entry.searchOverlapRate, 1) }} /
+                    {{ formatPercent(entry.holdoutOverlapRate, 1) }} /
+                    {{ formatPercent(entry.sealedTestOverlapRate, 1) }}
                   </td>
                   <td class="mono">
-                    {{ describeArtifactValidation(entry)?.label ?? 'Search only' }}
+                    {{
+                      describeArtifactValidation(entry)?.label ?? "Search only"
+                    }}
                   </td>
                   <td class="mono">
-                    {{ artifactLeadershipLabel(entry) }}<template v-if="(entry.leaderSummary?.distinctLeaderCount ?? 0) > 0"> · {{ artifactLeadershipMap(entry) }}</template>
+                    {{ artifactLeadershipLabel(entry)
+                    }}<template
+                      v-if="(entry.leaderSummary?.distinctLeaderCount ?? 0) > 0"
+                    >
+                      · {{ artifactLeadershipMap(entry) }}</template
+                    >
                   </td>
                   <td class="mono">
-                    {{ artifactLeadershipDisagreement(entry) }}<template v-if="entry.leaderSummary?.robustLeaderReachedSealedFinalist != null"> · {{ artifactRobustLeaderFinalistDetail(entry) }}</template>
+                    {{ artifactLeadershipDisagreement(entry)
+                    }}<template
+                      v-if="
+                        entry.leaderSummary
+                          ?.robustLeaderReachedSealedFinalist != null
+                      "
+                    >
+                      ·
+                      {{ artifactRobustLeaderFinalistDetail(entry) }}</template
+                    >
                   </td>
                   <td class="mono">
-                    {{ entry.validatedTupleCount ?? 0 }} / {{ entry.stressFragileTupleCount ?? 0 }}
+                    {{ entry.validatedTupleCount ?? 0 }} /
+                    {{ entry.stressFragileTupleCount ?? 0 }}
                   </td>
                   <td class="mono">
-                    {{ formatPercent(artifactValidationSupportRatio(entry), 1) }}
+                    {{
+                      formatPercent(artifactValidationSupportRatio(entry), 1)
+                    }}
                   </td>
                   <td class="mono">
                     {{ formatPercent(artifactStressFragilityRatio(entry), 1) }}
                   </td>
                   <td class="mono">
-                    {{ describeArtifactProvenanceDiff(entry, selectedArtifactSummary) }}
+                    {{
+                      describeArtifactProvenanceDiff(
+                        entry,
+                        selectedArtifactSummary,
+                      )
+                    }}
                   </td>
-                  <td class="mono">{{ formatOptionalDecimal(artifactValidationDelta(entry), 3) }}</td>
-                  <td class="mono">{{ formatOptionalDecimal(artifactStressDrop(entry), 3) }}</td>
+                  <td class="mono">
+                    {{
+                      formatOptionalDecimal(artifactValidationDelta(entry), 3)
+                    }}
+                  </td>
+                  <td class="mono">
+                    {{ formatOptionalDecimal(artifactStressDrop(entry), 3) }}
+                  </td>
                   <td class="mono">{{ entry.bestRobustScore.toFixed(3) }}</td>
-                  <td class="mono">{{ entry.bestSelectionExpectancyPerPremium.toFixed(3) }}</td>
-                  <td class="mono">{{ entry.bestHoldoutExpectancyPerPremium != null ? entry.bestHoldoutExpectancyPerPremium.toFixed(3) : '—' }}</td>
-                  <td class="mono">{{ entry.bestSealedExpectancyPerPremium != null ? entry.bestSealedExpectancyPerPremium.toFixed(3) : '—' }}</td>
-                  <td class="mono">{{ entry.bestStressExpectancyPerPremium != null ? entry.bestStressExpectancyPerPremium.toFixed(3) : '—' }}</td>
-                  <td class="mono">{{ entry.bestHarsherStressExpectancyPerPremium != null ? entry.bestHarsherStressExpectancyPerPremium.toFixed(3) : '—' }}</td>
-                  <td class="mono">{{ entry.bestExtremeStressExpectancyPerPremium != null ? entry.bestExtremeStressExpectancyPerPremium.toFixed(3) : '—' }}</td>
-                  <td class="mono">{{ entry.sealedEvaluatedTupleCount ?? 0 }}/{{ entry.sealedFinalistBudget ?? 0 }}</td>
+                  <td class="mono">
+                    {{ entry.bestSelectionExpectancyPerPremium.toFixed(3) }}
+                  </td>
+                  <td class="mono">
+                    {{
+                      entry.bestHoldoutExpectancyPerPremium != null
+                        ? entry.bestHoldoutExpectancyPerPremium.toFixed(3)
+                        : "—"
+                    }}
+                  </td>
+                  <td class="mono">
+                    {{
+                      entry.bestSealedExpectancyPerPremium != null
+                        ? entry.bestSealedExpectancyPerPremium.toFixed(3)
+                        : "—"
+                    }}
+                  </td>
+                  <td class="mono">
+                    {{
+                      entry.bestStressExpectancyPerPremium != null
+                        ? entry.bestStressExpectancyPerPremium.toFixed(3)
+                        : "—"
+                    }}
+                  </td>
+                  <td class="mono">
+                    {{
+                      entry.bestHarsherStressExpectancyPerPremium != null
+                        ? entry.bestHarsherStressExpectancyPerPremium.toFixed(3)
+                        : "—"
+                    }}
+                  </td>
+                  <td class="mono">
+                    {{
+                      entry.bestExtremeStressExpectancyPerPremium != null
+                        ? entry.bestExtremeStressExpectancyPerPremium.toFixed(3)
+                        : "—"
+                    }}
+                  </td>
+                  <td class="mono">
+                    {{ entry.sealedEvaluatedTupleCount ?? 0 }}/{{
+                      entry.sealedFinalistBudget ?? 0
+                    }}
+                  </td>
                   <td>
-                    <button type="button" @click="loadArtifactFromComparison(entry.path)">
+                    <button
+                      type="button"
+                      @click="loadArtifactFromComparison(entry.path)"
+                    >
                       Load
                     </button>
                   </td>
@@ -3918,7 +4932,10 @@ function focusTupleIndex(index: number): void {
         </div>
       </details>
 
-      <details v-if="artifactFrontierLeaderRows.length > 0" class="panelDetails">
+      <details
+        v-if="artifactFrontierLeaderRows.length > 0"
+        class="panelDetails"
+      >
         <summary>Artifact frontier leaders</summary>
         <div class="panelDetailsBody tableWrap">
           <table class="resultTable">
@@ -3936,10 +4953,15 @@ function focusTupleIndex(index: number): void {
               <tr v-for="row in artifactFrontierLeaderRows" :key="row.key">
                 <td class="mono">{{ row.label }}</td>
                 <td class="mono">{{ row.artifactLabel }}</td>
-                <td class="mono">{{ row.metricLabel }} · {{ formatOptionalDecimal(row.value, 3) }}</td>
+                <td class="mono">
+                  {{ row.metricLabel }} ·
+                  {{ formatOptionalDecimal(row.value, 3) }}
+                </td>
                 <td class="mono">{{ row.validation }}</td>
                 <td class="mono">{{ formatOptionalDecimal(row.drift, 3) }}</td>
-                <td class="mono">{{ formatOptionalDecimal(row.stressDrop, 3) }}</td>
+                <td class="mono">
+                  {{ formatOptionalDecimal(row.stressDrop, 3) }}
+                </td>
               </tr>
             </tbody>
           </table>
@@ -3950,12 +4972,15 @@ function focusTupleIndex(index: number): void {
         <summary>Options artifact meta-analysis</summary>
         <div class="panelDetailsBody">
           <div class="panelMuted">
-            Cross-artifact summary across all saved options-expression artifacts currently indexed in the app data store.
+            Cross-artifact summary across all saved options-expression artifacts
+            currently indexed in the app data store.
           </div>
           <div class="detailGrid detailGridTight">
             <div v-for="row in artifactMetaOverviewRows" :key="row.key">
               <span class="panelMetricKey">{{ row.label }}</span>
-              <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                row.value
+              }}</span>
             </div>
           </div>
           <div
@@ -3984,16 +5009,27 @@ function focusTupleIndex(index: number): void {
                     <td class="mono">{{ row.artifactCount }}</td>
                     <td class="mono">{{ row.validatedCount }}</td>
                     <td class="mono">{{ row.fragileCount }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.avgRobust, 3) }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.avgSelectionEv, 3) }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.avgValidationEv, 3) }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.avgStressDrop, 3) }}</td>
+                    <td class="mono">
+                      {{ formatOptionalDecimal(row.avgRobust, 3) }}
+                    </td>
+                    <td class="mono">
+                      {{ formatOptionalDecimal(row.avgSelectionEv, 3) }}
+                    </td>
+                    <td class="mono">
+                      {{ formatOptionalDecimal(row.avgValidationEv, 3) }}
+                    </td>
+                    <td class="mono">
+                      {{ formatOptionalDecimal(row.avgStressDrop, 3) }}
+                    </td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
-          <div v-if="artifactLaneDisagreementRows.length > 0" class="coverageSection">
+          <div
+            v-if="artifactLaneDisagreementRows.length > 0"
+            class="coverageSection"
+          >
             <div class="panelMuted">Realism lane disagreement</div>
             <div class="tableWrap">
               <table class="resultTable">
@@ -4009,13 +5045,18 @@ function focusTupleIndex(index: number): void {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in artifactLaneDisagreementRows" :key="row.key">
+                  <tr
+                    v-for="row in artifactLaneDisagreementRows"
+                    :key="row.key"
+                  >
                     <td class="mono">{{ row.label }}</td>
                     <td class="mono">{{ row.laneCount }}</td>
                     <td class="mono">{{ row.selectionWinnerLane }}</td>
                     <td class="mono">{{ row.validationWinnerLane }}</td>
                     <td class="mono">{{ row.driftLabel }}</td>
-                    <td class="mono">{{ formatOptionalDecimal(row.validationSpread, 3) }}</td>
+                    <td class="mono">
+                      {{ formatOptionalDecimal(row.validationSpread, 3) }}
+                    </td>
                     <td class="mono">{{ row.laneSummary }}</td>
                   </tr>
                 </tbody>
@@ -4028,11 +5069,15 @@ function focusTupleIndex(index: number): void {
       <section v-if="latestFeasibility" class="resultCard">
         <div class="panelSectionHeader">
           <div class="panelHeaderVisual">
-            <AppVisualIcon :icon="optionsFeasibilityPreviewIcon" class="sectionGlyph" />
+            <AppVisualIcon
+              :icon="optionsFeasibilityPreviewIcon"
+              class="sectionGlyph"
+            />
             <div>
               <div class="panelEyebrow">Phase 0.5 preview</div>
               <div class="panelSectionLead">
-                Review candidate density, event coverage, and replay/compile timing before committing to a full optimization run or GPU work.
+                Review candidate density, event coverage, and replay/compile
+                timing before committing to a full optimization run or GPU work.
               </div>
             </div>
           </div>
@@ -4046,7 +5091,14 @@ function focusTupleIndex(index: number): void {
               isMixed: feasibilityOverallStatus === 'mixed',
             }"
           >
-            GPU viability {{ feasibilityOverallStatus === 'pass' ? 'pass' : feasibilityOverallStatus === 'pending' ? 'pending' : 'mixed' }}
+            GPU viability
+            {{
+              feasibilityOverallStatus === "pass"
+                ? "pass"
+                : feasibilityOverallStatus === "pending"
+                  ? "pending"
+                  : "mixed"
+            }}
           </span>
           <span
             v-for="row in feasibilityGateRows"
@@ -4079,7 +5131,9 @@ function focusTupleIndex(index: number): void {
         <div class="detailGrid detailGridTight">
           <div v-for="row in feasibilitySummaryRows" :key="row.key">
             <span class="panelMetricKey">{{ row.label }}</span>
-            <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              row.value
+            }}</span>
           </div>
         </div>
         <details v-if="feasibilityOverlapRows.length > 0" class="panelDetails">
@@ -4088,12 +5142,17 @@ function focusTupleIndex(index: number): void {
             <div class="detailGrid detailGridTight">
               <div v-for="row in feasibilityOverlapRows" :key="row.key">
                 <span class="panelMetricKey">{{ row.label }}</span>
-                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{
+                  row.value
+                }}</span>
               </div>
             </div>
           </div>
         </details>
-        <details v-if="feasibilitySplitInvalidSections.length > 0" class="panelDetails">
+        <details
+          v-if="feasibilitySplitInvalidSections.length > 0"
+          class="panelDetails"
+        >
           <summary>Split invalid reasons</summary>
           <div class="panelDetailsBody">
             <div
@@ -4111,7 +5170,10 @@ function focusTupleIndex(index: number): void {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in section.rows" :key="`${section.key}-${row.reason}`">
+                    <tr
+                      v-for="row in section.rows"
+                      :key="`${section.key}-${row.reason}`"
+                    >
                       <td class="mono">{{ row.reason }}</td>
                       <td class="mono">{{ row.count }}</td>
                     </tr>
@@ -4128,7 +5190,9 @@ function focusTupleIndex(index: number): void {
               <div>
                 <span class="panelMetricKey">Structural cache</span>
                 <span class="panelMetricValue mono panelNumeric">
-                  {{ formatBytes(latestFeasibility.structuralCacheBytesEstimate) }}
+                  {{
+                    formatBytes(latestFeasibility.structuralCacheBytesEstimate)
+                  }}
                 </span>
               </div>
             </div>
@@ -4156,7 +5220,10 @@ function focusTupleIndex(index: number): void {
             </div>
           </div>
         </details>
-        <details v-if="feasibilityInvalidReasonRows.length > 0" class="panelDetails">
+        <details
+          v-if="feasibilityInvalidReasonRows.length > 0"
+          class="panelDetails"
+        >
           <summary>Invalid reasons</summary>
           <div class="panelDetailsBody tableWrap">
             <table class="resultTable">
@@ -4168,7 +5235,10 @@ function focusTupleIndex(index: number): void {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in feasibilityInvalidReasonRows" :key="row.reason">
+                <tr
+                  v-for="row in feasibilityInvalidReasonRows"
+                  :key="row.reason"
+                >
                   <td class="mono">{{ row.reason }}</td>
                   <td class="mono">{{ row.count }}</td>
                   <td class="mono">{{ formatPercent(row.share) }}</td>
@@ -4177,7 +5247,10 @@ function focusTupleIndex(index: number): void {
             </table>
           </div>
         </details>
-        <details v-if="feasibilityAxisCoverageSections.length > 0" class="panelDetails">
+        <details
+          v-if="feasibilityAxisCoverageSections.length > 0"
+          class="panelDetails"
+        >
           <summary>Bucket coverage</summary>
           <div class="panelDetailsBody">
             <div
@@ -4212,11 +5285,17 @@ function focusTupleIndex(index: number): void {
         <div v-if="feasibilityInvalidReasons" class="panelMuted mono">
           Invalid reasons: {{ feasibilityInvalidReasons }}
         </div>
-        <details v-if="feasibilityRecommendations.length > 0" class="panelDetails">
+        <details
+          v-if="feasibilityRecommendations.length > 0"
+          class="panelDetails"
+        >
           <summary>Recommendations</summary>
           <div class="panelDetailsBody">
             <ul class="recommendationList">
-              <li v-for="recommendation in feasibilityRecommendations" :key="recommendation">
+              <li
+                v-for="recommendation in feasibilityRecommendations"
+                :key="recommendation"
+              >
                 {{ recommendation }}
               </li>
             </ul>
@@ -4227,11 +5306,16 @@ function focusTupleIndex(index: number): void {
       <section v-if="activeDiagnostics" class="resultCard">
         <div class="panelSectionHeader">
           <div class="panelHeaderVisual">
-            <AppVisualIcon :icon="optionsCurrentResultIcon" class="sectionGlyph" />
+            <AppVisualIcon
+              :icon="optionsCurrentResultIcon"
+              class="sectionGlyph"
+            />
             <div>
               <div class="panelEyebrow">Current result</div>
               <div class="panelSectionLead">
-                Review the current top tuples before deciding whether this expression family is worth promoting into a wider options workflow.
+                Review the current top tuples before deciding whether this
+                expression family is worth promoting into a wider options
+                workflow.
               </div>
             </div>
           </div>
@@ -4239,37 +5323,53 @@ function focusTupleIndex(index: number): void {
         <div class="detailGrid">
           <div>
             <span class="panelMetricKey">Root</span>
-            <span class="panelMetricValue mono panelNumeric">{{ activeDiagnostics.rootSymbol }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              activeDiagnostics.rootSymbol
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Dataset</span>
-            <span class="panelMetricValue mono panelNumeric">{{ activeDiagnostics.optionsDatasetId }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              activeDiagnostics.optionsDatasetId
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Events</span>
-            <span class="panelMetricValue mono panelNumeric">{{ activeDiagnostics.totalEvents }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              activeDiagnostics.totalEvents
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Search / Holdout / Sealed</span>
             <span class="panelMetricValue mono panelNumeric">
-              {{ activeDiagnostics.searchEvents }} / {{ activeDiagnostics.holdoutEvents }} / {{ activeDiagnostics.sealedTestEvents }}
+              {{ activeDiagnostics.searchEvents }} /
+              {{ activeDiagnostics.holdoutEvents }} /
+              {{ activeDiagnostics.sealedTestEvents }}
             </span>
           </div>
           <div>
             <span class="panelMetricKey">Contracts</span>
-            <span class="panelMetricValue mono panelNumeric">{{ activeDiagnostics.datasetContracts }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              activeDiagnostics.datasetContracts
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Rows</span>
-            <span class="panelMetricValue mono panelNumeric">{{ activeDiagnostics.datasetRows }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              activeDiagnostics.datasetRows
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Realism lane</span>
-            <span class="panelMetricValue mono panelNumeric">{{ activeRealismLane.label }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              activeRealismLane.label
+            }}</span>
           </div>
           <div>
             <span class="panelMetricKey">Backend route</span>
-            <span class="panelMetricValue mono panelNumeric">{{ activeBackendRoute.label }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              activeBackendRoute.label
+            }}</span>
           </div>
         </div>
         <div class="panelMuted">{{ activeRealismLane.detail }}</div>
@@ -4278,7 +5378,9 @@ function focusTupleIndex(index: number): void {
         <div class="detailGrid detailGridTight">
           <div v-for="card in reportingMetricCards" :key="card.key">
             <span class="panelMetricKey">{{ card.label }}</span>
-            <span class="panelMetricValue mono panelNumeric">{{ card.value }}</span>
+            <span class="panelMetricValue mono panelNumeric">{{
+              card.value
+            }}</span>
           </div>
         </div>
 
@@ -4298,7 +5400,9 @@ function focusTupleIndex(index: number): void {
           {{ selectedTupleValidation.detail }}
         </div>
         <div v-if="selectedTupleSupportRows.length > 0" class="panelMuted mono">
-          Holdout support {{ selectedTupleSupportRows[0]?.value }} · Sealed support {{ selectedTupleSupportRows[1]?.value }} · Strongest stress support {{ selectedTupleSupportRows[2]?.value }}
+          Holdout support {{ selectedTupleSupportRows[0]?.value }} · Sealed
+          support {{ selectedTupleSupportRows[1]?.value }} · Strongest stress
+          support {{ selectedTupleSupportRows[2]?.value }}
         </div>
         <div v-if="winnerDisagreementSummary" class="gateBadgeRow">
           <span
@@ -4316,7 +5420,11 @@ function focusTupleIndex(index: number): void {
           {{ winnerDisagreementSummary.detail }}
         </div>
 
-        <details v-if="winnerDisagreementRows.length > 0" class="panelDetails" open>
+        <details
+          v-if="winnerDisagreementRows.length > 0"
+          class="panelDetails"
+          open
+        >
           <summary>Winner disagreement</summary>
           <div class="panelDetailsBody tableWrap">
             <table class="resultTable">
@@ -4335,7 +5443,10 @@ function focusTupleIndex(index: number): void {
                   <td class="mono">{{ row.label }}</td>
                   <td class="mono">#{{ row.tupleIndex + 1 }}</td>
                   <td class="mono">{{ row.tupleIdentity }}</td>
-                  <td class="mono">{{ row.metricLabel }} · {{ formatOptionalDecimal(row.value, 4) }}</td>
+                  <td class="mono">
+                    {{ row.metricLabel }} ·
+                    {{ formatOptionalDecimal(row.value, 4) }}
+                  </td>
                   <td class="mono">{{ row.relation }}</td>
                   <td class="mono">{{ row.validation }}</td>
                 </tr>
@@ -4344,7 +5455,11 @@ function focusTupleIndex(index: number): void {
           </div>
         </details>
 
-        <details v-if="validationWinnersRows.length > 0" class="panelDetails" open>
+        <details
+          v-if="validationWinnersRows.length > 0"
+          class="panelDetails"
+          open
+        >
           <summary>Validation winners</summary>
           <div class="panelDetailsBody tableWrap">
             <table class="resultTable">
@@ -4363,12 +5478,28 @@ function focusTupleIndex(index: number): void {
                 <tr v-for="row in validationWinnersRows" :key="row.key">
                   <td class="mono">{{ row.label }}</td>
                   <td class="mono">#{{ row.tupleIndex + 1 }}</td>
-                  <td class="mono">{{ row.tuple.structureFamily || activeRequest?.structureFamily || 'long_single' }}</td>
-                  <td class="mono">{{ row.metricLabel }} · {{ formatOptionalDecimal(row.value, 4) }}</td>
+                  <td class="mono">
+                    {{
+                      row.tuple.structureFamily ||
+                      activeRequest?.structureFamily ||
+                      "long_single"
+                    }}
+                  </td>
+                  <td class="mono">
+                    {{ row.metricLabel }} ·
+                    {{ formatOptionalDecimal(row.value, 4) }}
+                  </td>
                   <td class="mono">{{ row.validation }}</td>
-                  <td class="mono">{{ row.stressDrop == null ? '—' : row.stressDrop.toFixed(4) }}</td>
+                  <td class="mono">
+                    {{
+                      row.stressDrop == null ? "—" : row.stressDrop.toFixed(4)
+                    }}
+                  </td>
                   <td>
-                    <button type="button" @click="focusTupleIndex(row.tupleIndex)">
+                    <button
+                      type="button"
+                      @click="focusTupleIndex(row.tupleIndex)"
+                    >
                       Focus
                     </button>
                   </td>
@@ -4383,7 +5514,9 @@ function focusTupleIndex(index: number): void {
           <div class="panelDetailsBody detailGrid detailGridTight">
             <div v-for="row in requestSummaryRows" :key="row.key">
               <span class="panelMetricKey">{{ row.label }}</span>
-              <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                row.value
+              }}</span>
             </div>
           </div>
         </details>
@@ -4416,22 +5549,44 @@ function focusTupleIndex(index: number): void {
           </label>
           <label>
             Max invalid rate
-            <input v-model="maxInvalidRateFilterInput" type="text" inputmode="decimal" spellcheck="false" placeholder="0.35" />
+            <input
+              v-model="maxInvalidRateFilterInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+              placeholder="0.35"
+            />
           </label>
           <label>
             Min robust
-            <input v-model="minRobustScoreFilterInput" type="text" inputmode="decimal" spellcheck="false" placeholder="0.20" />
+            <input
+              v-model="minRobustScoreFilterInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+              placeholder="0.20"
+            />
           </label>
           <label>
             Max stress drop
-            <input v-model="maxStressDropFilterInput" type="text" inputmode="decimal" spellcheck="false" placeholder="0.10" />
+            <input
+              v-model="maxStressDropFilterInput"
+              type="text"
+              inputmode="decimal"
+              spellcheck="false"
+              placeholder="0.10"
+            />
           </label>
         </div>
         <div v-if="activeRows.length > 0" class="warningText">
-          Ranked tuples remain search-stage candidates unless the validation verdict below shows supported holdout or sealed trades.
+          Ranked tuples remain search-stage candidates unless the validation
+          verdict below shows supported holdout or sealed trades.
         </div>
 
-        <div v-if="activeRows.length > 0 && displayedRowsWithIndex.length > 0" class="tableWrap">
+        <div
+          v-if="activeRows.length > 0 && displayedRowsWithIndex.length > 0"
+          class="tableWrap"
+        >
           <table class="resultTable">
             <thead>
               <tr>
@@ -4449,11 +5604,17 @@ function focusTupleIndex(index: number): void {
                 <th v-if="hasSealedMetrics">Finalist</th>
                 <th v-if="hasSealedMetrics">Sealed EV / Premium</th>
                 <th v-if="hasStressMetrics">Stress EV / Premium</th>
-                <th v-if="hasSealedStressMetrics">Sealed stress EV / Premium</th>
+                <th v-if="hasSealedStressMetrics">
+                  Sealed stress EV / Premium
+                </th>
                 <th v-if="hasHarsherStressMetrics">Harsher EV / Premium</th>
-                <th v-if="hasSealedHarsherStressMetrics">Sealed harsher EV / Premium</th>
+                <th v-if="hasSealedHarsherStressMetrics">
+                  Sealed harsher EV / Premium
+                </th>
                 <th v-if="hasExtremeStressMetrics">Extreme EV / Premium</th>
-                <th v-if="hasSealedExtremeStressMetrics">Sealed extreme EV / Premium</th>
+                <th v-if="hasSealedExtremeStressMetrics">
+                  Sealed extreme EV / Premium
+                </th>
                 <th>Win</th>
                 <th>Trades</th>
               </tr>
@@ -4470,42 +5631,98 @@ function focusTupleIndex(index: number): void {
                 <td class="mono">{{ row.delayMinutes }}</td>
                 <td class="mono">{{ row.holdMinutes }}</td>
                 <td class="mono">
-                  {{ row.targetReturn == null ? '—' : row.targetReturn }} /
-                  {{ row.stopReturn == null ? '—' : row.stopReturn }}
+                  {{ row.targetReturn == null ? "—" : row.targetReturn }} /
+                  {{ row.stopReturn == null ? "—" : row.stopReturn }}
                 </td>
                 <td class="mono">{{ row.robustScore.toFixed(3) }}</td>
-                <td class="mono">{{ describeTupleValidation(row)?.label ?? 'Search only' }}</td>
-                <td class="mono">{{ strongestTupleStressDrop(row) == null ? '—' : strongestTupleStressDrop(row)?.toFixed(4) }}</td>
-                <td class="mono">{{ row.selectionMetrics.expectancyPerPremium.toFixed(4) }}</td>
-                <td class="mono">{{ row.selectionMetrics.invalidRate.toFixed(3) }}</td>
+                <td class="mono">
+                  {{ describeTupleValidation(row)?.label ?? "Search only" }}
+                </td>
+                <td class="mono">
+                  {{
+                    strongestTupleStressDrop(row) == null
+                      ? "—"
+                      : strongestTupleStressDrop(row)?.toFixed(4)
+                  }}
+                </td>
+                <td class="mono">
+                  {{ row.selectionMetrics.expectancyPerPremium.toFixed(4) }}
+                </td>
+                <td class="mono">
+                  {{ row.selectionMetrics.invalidRate.toFixed(3) }}
+                </td>
                 <td v-if="hasHoldoutMetrics" class="mono">
-                  {{ row.holdoutMetrics ? row.holdoutMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.holdoutMetrics
+                      ? row.holdoutMetrics.expectancyPerPremium.toFixed(4)
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasSealedMetrics" class="mono">
-                  {{ row.sealedFinalist ? `#${row.sealedFinalRank ?? row.preSealedRank ?? 0}` : '—' }}
+                  {{
+                    row.sealedFinalist
+                      ? `#${row.sealedFinalRank ?? row.preSealedRank ?? 0}`
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasSealedMetrics" class="mono">
-                  {{ row.sealedEvaluationMetrics ? row.sealedEvaluationMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.sealedEvaluationMetrics
+                      ? row.sealedEvaluationMetrics.expectancyPerPremium.toFixed(
+                          4,
+                        )
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasStressMetrics" class="mono">
-                  {{ row.stressMetrics ? row.stressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.stressMetrics
+                      ? row.stressMetrics.expectancyPerPremium.toFixed(4)
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasSealedStressMetrics" class="mono">
-                  {{ row.sealedStressMetrics ? row.sealedStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.sealedStressMetrics
+                      ? row.sealedStressMetrics.expectancyPerPremium.toFixed(4)
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasHarsherStressMetrics" class="mono">
-                  {{ row.harsherStressMetrics ? row.harsherStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.harsherStressMetrics
+                      ? row.harsherStressMetrics.expectancyPerPremium.toFixed(4)
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasSealedHarsherStressMetrics" class="mono">
-                  {{ row.sealedHarsherStressMetrics ? row.sealedHarsherStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.sealedHarsherStressMetrics
+                      ? row.sealedHarsherStressMetrics.expectancyPerPremium.toFixed(
+                          4,
+                        )
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasExtremeStressMetrics" class="mono">
-                  {{ row.extremeStressMetrics ? row.extremeStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.extremeStressMetrics
+                      ? row.extremeStressMetrics.expectancyPerPremium.toFixed(4)
+                      : "—"
+                  }}
                 </td>
                 <td v-if="hasSealedExtremeStressMetrics" class="mono">
-                  {{ row.sealedExtremeStressMetrics ? row.sealedExtremeStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                  {{
+                    row.sealedExtremeStressMetrics
+                      ? row.sealedExtremeStressMetrics.expectancyPerPremium.toFixed(
+                          4,
+                        )
+                      : "—"
+                  }}
                 </td>
-                <td class="mono">{{ row.selectionMetrics.winRate.toFixed(3) }}</td>
+                <td class="mono">
+                  {{ row.selectionMetrics.winRate.toFixed(3) }}
+                </td>
                 <td class="mono">{{ row.selectionMetrics.validTrades }}</td>
               </tr>
             </tbody>
@@ -4517,11 +5734,15 @@ function focusTupleIndex(index: number): void {
         <div v-if="selectedTuple" class="detailInspector">
           <div class="panelSectionHeader">
             <div class="panelHeaderVisual">
-              <AppVisualIcon :icon="optionsTupleDrilldownIcon" class="sectionGlyph" />
+              <AppVisualIcon
+                :icon="optionsTupleDrilldownIcon"
+                class="sectionGlyph"
+              />
               <div>
                 <div class="panelEyebrow">Selected tuple</div>
                 <div class="panelSectionLead">
-                  Inspect the current top-row configuration and robustness metrics before promoting it into a wider options workflow.
+                  Inspect the current top-row configuration and robustness
+                  metrics before promoting it into a wider options workflow.
                 </div>
               </div>
             </div>
@@ -4533,84 +5754,130 @@ function focusTupleIndex(index: number): void {
               @click="loadSelectedTupleInspection()"
               class="buttonWithIcon"
             >
-              <AppVisualIcon :icon="optionsTupleDrilldownIcon" class="optionsActionIcon" />
-              <span>{{ inspectionBusy ? 'Loading events…' : 'Load event drilldown' }}</span>
+              <AppVisualIcon
+                :icon="optionsTupleDrilldownIcon"
+                class="optionsActionIcon"
+              />
+              <span>{{
+                inspectionBusy ? "Loading events…" : "Load event drilldown"
+              }}</span>
             </button>
           </div>
           <div class="detailGrid detailGridTight">
             <div>
               <span class="panelMetricKey">Validation</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTupleValidation?.label ?? 'Search only' }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTupleValidation?.label ?? "Search only"
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Delay / DTE / Hold</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.delayMinutes }} / {{ selectedTuple.dteDays }} / {{ selectedTuple.holdMinutes }}
+                {{ selectedTuple.delayMinutes }} / {{ selectedTuple.dteDays }} /
+                {{ selectedTuple.holdMinutes }}
               </span>
             </div>
             <div>
               <span class="panelMetricKey">Moneyness</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.moneynessBucket }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.moneynessBucket
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Structure</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.structureFamily || 'long_single' }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.structureFamily || "long_single"
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Target / Stop</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.targetReturn == null ? '—' : selectedTuple.targetReturn }} /
-                {{ selectedTuple.stopReturn == null ? '—' : selectedTuple.stopReturn }}
+                {{
+                  selectedTuple.targetReturn == null
+                    ? "—"
+                    : selectedTuple.targetReturn
+                }}
+                /
+                {{
+                  selectedTuple.stopReturn == null
+                    ? "—"
+                    : selectedTuple.stopReturn
+                }}
               </span>
             </div>
             <div>
               <span class="panelMetricKey">Exit template</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.exitTemplate }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.exitTemplate
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Fill model</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.fillModel }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.fillModel
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Robust score</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.robustScore.toFixed(3) }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.robustScore.toFixed(3)
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Pre-sealed rank</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.preSealedRank ?? '—' }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.preSealedRank ?? "—"
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Sealed final rank</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.sealedFinalRank ?? '—' }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.sealedFinalRank ?? "—"
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Sealed finalist</span>
-              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.sealedFinalist ? 'yes' : 'no' }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                selectedTuple.sealedFinalist ? "yes" : "no"
+              }}</span>
             </div>
             <div class="detailGridSpan2">
               <span class="panelMetricKey">Validation note</span>
-              <span class="panelMetricValue">{{ selectedTupleValidation?.detail ?? 'No supported holdout or sealed trades are present yet.' }}</span>
+              <span class="panelMetricValue">{{
+                selectedTupleValidation?.detail ??
+                "No supported holdout or sealed trades are present yet."
+              }}</span>
             </div>
             <div v-for="row in selectedTupleSupportRows" :key="row.key">
               <span class="panelMetricKey">{{ row.label }}</span>
-              <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{
+                row.value
+              }}</span>
             </div>
             <div>
               <span class="panelMetricKey">EV / Trade</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.selectionMetrics.expectancyPerTrade.toFixed(4) }}
+                {{
+                  selectedTuple.selectionMetrics.expectancyPerTrade.toFixed(4)
+                }}
               </span>
             </div>
             <div>
               <span class="panelMetricKey">EV / Premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.selectionMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.selectionMetrics.expectancyPerPremium.toFixed(4)
+                }}
               </span>
             </div>
             <div>
               <span class="panelMetricKey">Median return / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.selectionMetrics.medianReturnOnPremium.toFixed(4) }}
+                {{
+                  selectedTuple.selectionMetrics.medianReturnOnPremium.toFixed(
+                    4,
+                  )
+                }}
               </span>
             </div>
             <div>
@@ -4622,65 +5889,100 @@ function focusTupleIndex(index: number): void {
             <div>
               <span class="panelMetricKey">Valid / Invalid</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.selectionMetrics.validTrades }} / {{ selectedTuple.selectionMetrics.invalidEvents }}
+                {{ selectedTuple.selectionMetrics.validTrades }} /
+                {{ selectedTuple.selectionMetrics.invalidEvents }}
               </span>
             </div>
             <div>
               <span class="panelMetricKey">PnL / contract</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.selectionMetrics.totalPnlPerContract.toFixed(4) }}
+                {{
+                  selectedTuple.selectionMetrics.totalPnlPerContract.toFixed(4)
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.holdoutMetrics">
               <span class="panelMetricKey">Holdout EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.holdoutMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.holdoutMetrics.expectancyPerPremium.toFixed(4)
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.sealedEvaluationMetrics">
               <span class="panelMetricKey">Sealed EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.sealedEvaluationMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.sealedEvaluationMetrics.expectancyPerPremium.toFixed(
+                    4,
+                  )
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.stressMetrics">
               <span class="panelMetricKey">Stress EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.stressMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.stressMetrics.expectancyPerPremium.toFixed(4)
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.sealedStressMetrics">
               <span class="panelMetricKey">Sealed stress EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.sealedStressMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.sealedStressMetrics.expectancyPerPremium.toFixed(
+                    4,
+                  )
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.harsherStressMetrics">
               <span class="panelMetricKey">Harsher EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.harsherStressMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.harsherStressMetrics.expectancyPerPremium.toFixed(
+                    4,
+                  )
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.sealedHarsherStressMetrics">
               <span class="panelMetricKey">Sealed harsher EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.sealedHarsherStressMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.sealedHarsherStressMetrics.expectancyPerPremium.toFixed(
+                    4,
+                  )
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.extremeStressMetrics">
               <span class="panelMetricKey">Extreme EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.extremeStressMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.extremeStressMetrics.expectancyPerPremium.toFixed(
+                    4,
+                  )
+                }}
               </span>
             </div>
             <div v-if="selectedTuple.sealedExtremeStressMetrics">
               <span class="panelMetricKey">Sealed extreme EV / premium</span>
               <span class="panelMetricValue mono panelNumeric">
-                {{ selectedTuple.sealedExtremeStressMetrics.expectancyPerPremium.toFixed(4) }}
+                {{
+                  selectedTuple.sealedExtremeStressMetrics.expectancyPerPremium.toFixed(
+                    4,
+                  )
+                }}
               </span>
             </div>
           </div>
-          <details v-if="selectedTupleValidationFrontierRows.length > 0" class="panelDetails" open>
+          <details
+            v-if="selectedTupleValidationFrontierRows.length > 0"
+            class="panelDetails"
+            open
+          >
             <summary>Validation frontier</summary>
             <div class="panelDetailsBody tableWrap">
               <table class="resultTable">
@@ -4694,7 +5996,10 @@ function focusTupleIndex(index: number): void {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in selectedTupleValidationFrontierRows" :key="row.key">
+                  <tr
+                    v-for="row in selectedTupleValidationFrontierRows"
+                    :key="row.key"
+                  >
                     <td class="mono">{{ row.label }}</td>
                     <td class="mono">{{ row.status }}</td>
                     <td class="mono">{{ row.support }}</td>
@@ -4707,26 +6012,38 @@ function focusTupleIndex(index: number): void {
           </details>
           <details
             v-if="
-              selectedTupleValidationScopeRows.length > 0
-              || selectedTupleValidationDriftRows.length > 0
-              || selectedTupleValidationMonotonicityRows.length > 0
-              || selectedTupleValidationRegretRows.length > 0
+              selectedTupleValidationScopeRows.length > 0 ||
+              selectedTupleValidationDriftRows.length > 0 ||
+              selectedTupleValidationMonotonicityRows.length > 0 ||
+              selectedTupleValidationRegretRows.length > 0
             "
             class="panelDetails"
             open
           >
             <summary>Validation interpretation</summary>
             <div class="panelDetailsBody">
-              <div v-if="selectedTupleValidationScopeRows.length > 0" class="detailGrid detailGridTight">
-                <div v-for="row in selectedTupleValidationScopeRows" :key="row.key">
+              <div
+                v-if="selectedTupleValidationScopeRows.length > 0"
+                class="detailGrid detailGridTight"
+              >
+                <div
+                  v-for="row in selectedTupleValidationScopeRows"
+                  :key="row.key"
+                >
                   <span class="panelMetricKey">{{ row.label }}</span>
                   <span class="panelMetricValue mono">{{ row.value }}</span>
                 </div>
               </div>
               <div class="panelMuted">
-                Support rows above reflect valid trades over total events for this retained tuple. They describe retained evidence depth, not a confidence interval. Regret rows below compare only within the stated scope.
+                Support rows above reflect valid trades over total events for
+                this retained tuple. They describe retained evidence depth, not
+                a confidence interval. Regret rows below compare only within the
+                stated scope.
               </div>
-              <div v-if="selectedTupleValidationDriftRows.length > 0" class="tableWrap">
+              <div
+                v-if="selectedTupleValidationDriftRows.length > 0"
+                class="tableWrap"
+              >
                 <table class="resultTable">
                   <thead>
                     <tr>
@@ -4736,7 +6053,10 @@ function focusTupleIndex(index: number): void {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in selectedTupleValidationDriftRows" :key="row.key">
+                    <tr
+                      v-for="row in selectedTupleValidationDriftRows"
+                      :key="row.key"
+                    >
                       <td class="mono">{{ row.label }}</td>
                       <td class="mono">{{ row.value }}</td>
                       <td>{{ row.scopeLabel }}</td>
@@ -4744,7 +6064,10 @@ function focusTupleIndex(index: number): void {
                   </tbody>
                 </table>
               </div>
-              <div v-if="selectedTupleValidationMonotonicityRows.length > 0" class="tableWrap">
+              <div
+                v-if="selectedTupleValidationMonotonicityRows.length > 0"
+                class="tableWrap"
+              >
                 <table class="resultTable">
                   <thead>
                     <tr>
@@ -4755,7 +6078,10 @@ function focusTupleIndex(index: number): void {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in selectedTupleValidationMonotonicityRows" :key="row.key">
+                    <tr
+                      v-for="row in selectedTupleValidationMonotonicityRows"
+                      :key="row.key"
+                    >
                       <td class="mono">{{ row.label }}</td>
                       <td class="mono">{{ row.statusLabel }}</td>
                       <td>{{ row.scopeLabel }}</td>
@@ -4764,7 +6090,10 @@ function focusTupleIndex(index: number): void {
                   </tbody>
                 </table>
               </div>
-              <div v-if="selectedTupleValidationRegretRows.length > 0" class="tableWrap">
+              <div
+                v-if="selectedTupleValidationRegretRows.length > 0"
+                class="tableWrap"
+              >
                 <table class="resultTable">
                   <thead>
                     <tr>
@@ -4774,7 +6103,10 @@ function focusTupleIndex(index: number): void {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in selectedTupleValidationRegretRows" :key="row.key">
+                    <tr
+                      v-for="row in selectedTupleValidationRegretRows"
+                      :key="row.key"
+                    >
                       <td class="mono">{{ row.label }}</td>
                       <td class="mono">{{ row.value }}</td>
                       <td>{{ row.scopeLabel }}</td>
@@ -4790,28 +6122,40 @@ function focusTupleIndex(index: number): void {
               <div class="detailGrid detailGridTight">
                 <div>
                   <span class="panelMetricKey">Events</span>
-                  <span class="panelMetricValue mono panelNumeric">{{ selectedInspection.totalEvents }}</span>
+                  <span class="panelMetricValue mono panelNumeric">{{
+                    selectedInspection.totalEvents
+                  }}</span>
                 </div>
                 <div>
                   <span class="panelMetricKey">Executed</span>
-                  <span class="panelMetricValue mono panelNumeric">{{ selectedInspection.executedEvents }}</span>
+                  <span class="panelMetricValue mono panelNumeric">{{
+                    selectedInspection.executedEvents
+                  }}</span>
                 </div>
                 <div>
                   <span class="panelMetricKey">Candidate missing</span>
-                  <span class="panelMetricValue mono panelNumeric">{{ selectedInspection.candidateMissingEvents }}</span>
+                  <span class="panelMetricValue mono panelNumeric">{{
+                    selectedInspection.candidateMissingEvents
+                  }}</span>
                 </div>
                 <div>
                   <span class="panelMetricKey">Outcome missing</span>
-                  <span class="panelMetricValue mono panelNumeric">{{ selectedInspection.outcomeMissingEvents }}</span>
+                  <span class="panelMetricValue mono panelNumeric">{{
+                    selectedInspection.outcomeMissingEvents
+                  }}</span>
                 </div>
               </div>
 
-              <div v-if="inspectionSplitStatusRows.length" class="detailInspector">
+              <div
+                v-if="inspectionSplitStatusRows.length"
+                class="detailInspector"
+              >
                 <div class="panelSectionHeader">
                   <div>
                     <div class="panelEyebrow">Split / status rollup</div>
                     <div class="panelSectionLead">
-                      Quick inspection of where this tuple executed cleanly versus failed across search, holdout, and sealed slices.
+                      Quick inspection of where this tuple executed cleanly
+                      versus failed across search, holdout, and sealed slices.
                     </div>
                   </div>
                 </div>
@@ -4827,24 +6171,35 @@ function focusTupleIndex(index: number): void {
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="row in inspectionSplitStatusRows" :key="row.key">
+                      <tr
+                        v-for="row in inspectionSplitStatusRows"
+                        :key="row.key"
+                      >
                         <td class="mono">{{ row.split }}</td>
                         <td class="mono">{{ row.status }}</td>
                         <td class="mono">{{ row.count }}</td>
-                        <td class="mono">{{ formatOptionalDecimal(row.avgReturn) }}</td>
-                        <td class="mono">{{ formatOptionalDecimal(row.totalPnl) }}</td>
+                        <td class="mono">
+                          {{ formatOptionalDecimal(row.avgReturn) }}
+                        </td>
+                        <td class="mono">
+                          {{ formatOptionalDecimal(row.totalPnl) }}
+                        </td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
               </div>
 
-              <div v-if="inspectionInvalidReasonRows.length" class="detailInspector">
+              <div
+                v-if="inspectionInvalidReasonRows.length"
+                class="detailInspector"
+              >
                 <div class="panelSectionHeader">
                   <div>
                     <div class="panelEyebrow">Invalid reason rollup</div>
                     <div class="panelSectionLead">
-                      Candidate-missing causes grouped by split so data-quality and cutoff failures are visible before reading raw rows.
+                      Candidate-missing causes grouped by split so data-quality
+                      and cutoff failures are visible before reading raw rows.
                     </div>
                   </div>
                 </div>
@@ -4858,7 +6213,10 @@ function focusTupleIndex(index: number): void {
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="row in inspectionInvalidReasonRows" :key="row.key">
+                      <tr
+                        v-for="row in inspectionInvalidReasonRows"
+                        :key="row.key"
+                      >
                         <td class="mono">{{ row.split }}</td>
                         <td class="mono">{{ row.reason }}</td>
                         <td class="mono">{{ row.count }}</td>
@@ -4878,7 +6236,10 @@ function focusTupleIndex(index: number): void {
                     <option value="sealed_test">sealed_test</option>
                   </select>
                 </label>
-                <button type="button" @click="store.exportActiveInspectionCsv()">
+                <button
+                  type="button"
+                  @click="store.exportActiveInspectionCsv()"
+                >
                   Export inspection CSV
                 </button>
                 <button
@@ -4891,7 +6252,10 @@ function focusTupleIndex(index: number): void {
               </div>
 
               <div class="panelMuted">
-                Showing {{ displayedInspectionRows.length }} of {{ inspectionRows.length }} event rows for tuple #{{ selectedInspection.tupleIndex + 1 }}.
+                Showing {{ displayedInspectionRows.length }} of
+                {{ inspectionRows.length }} event rows for tuple #{{
+                  selectedInspection.tupleIndex + 1
+                }}.
               </div>
 
               <div class="tableWrap">
@@ -4917,7 +6281,10 @@ function focusTupleIndex(index: number): void {
                     <tr
                       v-for="row in displayedInspectionRows"
                       :key="row.eventId"
-                      :class="{ isSelected: selectedInspectionRow?.eventId === row.eventId }"
+                      :class="{
+                        isSelected:
+                          selectedInspectionRow?.eventId === row.eventId,
+                      }"
                       @click="selectInspectionRow(row.eventId)"
                     >
                       <td class="mono">{{ row.eventId }}</td>
@@ -4926,54 +6293,84 @@ function focusTupleIndex(index: number): void {
                       <td class="mono">
                         {{ row.status }}
                         <template v-if="row.candidateInvalidReason">
-                          <br>
-                          <span class="inspectionReason">{{ row.candidateInvalidReason }}</span>
+                          <br />
+                          <span class="inspectionReason">{{
+                            row.candidateInvalidReason
+                          }}</span>
                         </template>
                       </td>
                       <td class="mono">
                         <template v-if="row.contractId">
                           {{ row.contractId }}
-                          <span v-if="row.strike != null"> @ {{ formatOptionalDecimal(row.strike, 2) }}</span>
+                          <span v-if="row.strike != null">
+                            @ {{ formatOptionalDecimal(row.strike, 2) }}</span
+                          >
                         </template>
                         <template v-else>—</template>
                       </td>
-                      <td class="mono">{{ formatTimestamp(row.requestedEntryTimestamp) }}</td>
+                      <td class="mono">
+                        {{ formatTimestamp(row.requestedEntryTimestamp) }}
+                      </td>
                       <td class="mono">
                         <template v-if="row.entryTimestamp != null">
-                          {{ formatTimestamp(row.entryTimestamp) }} · {{ formatOptionalDecimal(row.entryOptionPrice) }}
-                          <br>
+                          {{ formatTimestamp(row.entryTimestamp) }} ·
+                          {{ formatOptionalDecimal(row.entryOptionPrice) }}
+                          <br />
                           <span class="inspectionReason">
-                            underlier {{ formatOptionalDecimal(row.entryUnderlierPrice, 2) }}
+                            underlier
+                            {{
+                              formatOptionalDecimal(row.entryUnderlierPrice, 2)
+                            }}
                           </span>
                         </template>
                         <template v-else>—</template>
                       </td>
                       <td class="mono">
-                        {{ formatOptionalMinutes(row.entryLagMinutes) }} / {{ formatOptionalMinutes(row.minutesToExpiryAtEntry) }}
+                        {{ formatOptionalMinutes(row.entryLagMinutes) }} /
+                        {{ formatOptionalMinutes(row.minutesToExpiryAtEntry) }}
                       </td>
                       <td class="mono">
                         <template v-if="row.exitTimestamp != null">
-                          {{ formatTimestamp(row.exitTimestamp) }} · {{ formatOptionalDecimal(row.exitOptionPrice) }}
-                          <br>
+                          {{ formatTimestamp(row.exitTimestamp) }} ·
+                          {{ formatOptionalDecimal(row.exitOptionPrice) }}
+                          <br />
                           <span class="inspectionReason">
-                            hold {{ formatOptionalMinutes(row.realizedHoldMinutes) }}
+                            hold
+                            {{ formatOptionalMinutes(row.realizedHoldMinutes) }}
                           </span>
                         </template>
                         <template v-else>—</template>
                       </td>
-                      <td class="mono">{{ row.exitReason || '—' }}</td>
+                      <td class="mono">{{ row.exitReason || "—" }}</td>
                       <td class="mono">
-                        <template v-if="row.pathOptionHigh != null || row.pathUnderlierHigh != null">
-                          opt {{ formatOptionalDecimal(row.pathOptionLow) }} -> {{ formatOptionalDecimal(row.pathOptionHigh) }}
-                          <br>
+                        <template
+                          v-if="
+                            row.pathOptionHigh != null ||
+                            row.pathUnderlierHigh != null
+                          "
+                        >
+                          opt {{ formatOptionalDecimal(row.pathOptionLow) }} ->
+                          {{ formatOptionalDecimal(row.pathOptionHigh) }}
+                          <br />
                           <span class="inspectionReason">
-                            und {{ formatOptionalDecimal(row.pathUnderlierLow, 2) }} -> {{ formatOptionalDecimal(row.pathUnderlierHigh, 2) }}
+                            und
+                            {{
+                              formatOptionalDecimal(row.pathUnderlierLow, 2)
+                            }}
+                            ->
+                            {{
+                              formatOptionalDecimal(row.pathUnderlierHigh, 2)
+                            }}
                           </span>
                         </template>
                         <template v-else>—</template>
                       </td>
-                      <td class="mono">{{ formatOptionalDecimal(row.returnOnPremium) }}</td>
-                      <td class="mono">{{ formatOptionalDecimal(row.pnlPerContract) }}</td>
+                      <td class="mono">
+                        {{ formatOptionalDecimal(row.returnOnPremium) }}
+                      </td>
+                      <td class="mono">
+                        {{ formatOptionalDecimal(row.pnlPerContract) }}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -4984,7 +6381,8 @@ function focusTupleIndex(index: number): void {
                   <div>
                     <div class="panelEyebrow">Selected event</div>
                     <div class="panelSectionLead">
-                      Inspect the chosen event row without leaving the current tuple drilldown.
+                      Inspect the chosen event row without leaving the current
+                      tuple drilldown.
                     </div>
                   </div>
                 </div>
@@ -4996,115 +6394,267 @@ function focusTupleIndex(index: number): void {
                     @click="loadSelectedEventPath()"
                     class="buttonWithIcon"
                   >
-                    <AppVisualIcon :icon="optionsEventPathReplayIcon" class="optionsActionIcon" />
-                    <span>{{ eventPathBusy ? 'Loading path…' : 'Reload path replay' }}</span>
+                    <AppVisualIcon
+                      :icon="optionsEventPathReplayIcon"
+                      class="optionsActionIcon"
+                    />
+                    <span>{{
+                      eventPathBusy ? "Loading path…" : "Reload path replay"
+                    }}</span>
                   </button>
                 </div>
                 <div class="detailGrid detailGridTight">
                   <div>
                     <span class="panelMetricKey">Event / split / side</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ selectedInspectionRow.eventId }} / {{ selectedInspectionRow.split }} / {{ selectedInspectionRow.side }}
+                      {{ selectedInspectionRow.eventId }} /
+                      {{ selectedInspectionRow.split }} /
+                      {{ selectedInspectionRow.side }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Status / reason</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ selectedInspectionRow.status }}{{ selectedInspectionRow.candidateInvalidReason ? ` / ${selectedInspectionRow.candidateInvalidReason}` : '' }}
+                      {{ selectedInspectionRow.status
+                      }}{{
+                        selectedInspectionRow.candidateInvalidReason
+                          ? ` / ${selectedInspectionRow.candidateInvalidReason}`
+                          : ""
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Contract</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ selectedInspectionRow.contractId || '—' }}{{ selectedInspectionRow.strike != null ? ` @ ${formatOptionalDecimal(selectedInspectionRow.strike, 2)}` : '' }}
+                      {{ selectedInspectionRow.contractId || "—"
+                      }}{{
+                        selectedInspectionRow.strike != null
+                          ? ` @ ${formatOptionalDecimal(selectedInspectionRow.strike, 2)}`
+                          : ""
+                      }}
                     </span>
                   </div>
                   <div v-if="selectedInspectionRow.companionContractId">
                     <span class="panelMetricKey">Companion contract</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ selectedInspectionRow.companionContractId }}{{ selectedInspectionRow.companionStrike != null ? ` @ ${formatOptionalDecimal(selectedInspectionRow.companionStrike, 2)}` : '' }}
+                      {{ selectedInspectionRow.companionContractId
+                      }}{{
+                        selectedInspectionRow.companionStrike != null
+                          ? ` @ ${formatOptionalDecimal(selectedInspectionRow.companionStrike, 2)}`
+                          : ""
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Expiry / multiplier</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ selectedInspectionRow.expirationDate || '—' }} / {{ selectedInspectionRow.multiplier == null ? '—' : selectedInspectionRow.multiplier }}
+                      {{ selectedInspectionRow.expirationDate || "—" }} /
+                      {{
+                        selectedInspectionRow.multiplier == null
+                          ? "—"
+                          : selectedInspectionRow.multiplier
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Decision / tradable</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatTimestamp(selectedInspectionRow.decisionTimestamp) }} / {{ formatTimestamp(selectedInspectionRow.earliestTradableTimestamp) }}
+                      {{
+                        formatTimestamp(selectedInspectionRow.decisionTimestamp)
+                      }}
+                      /
+                      {{
+                        formatTimestamp(
+                          selectedInspectionRow.earliestTradableTimestamp,
+                        )
+                      }}
                     </span>
                   </div>
                   <div>
-                    <span class="panelMetricKey">Signal underlier / requested entry</span>
+                    <span class="panelMetricKey"
+                      >Signal underlier / requested entry</span
+                    >
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatOptionalDecimal(selectedInspectionRow.rawUnderlierPrice, 2) }} / {{ formatTimestamp(selectedInspectionRow.requestedEntryTimestamp) }}
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.rawUnderlierPrice,
+                          2,
+                        )
+                      }}
+                      /
+                      {{
+                        formatTimestamp(
+                          selectedInspectionRow.requestedEntryTimestamp,
+                        )
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Requested / base exit</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatTimestamp(selectedInspectionRow.requestedEntryTimestamp) }} / {{ formatTimestamp(selectedInspectionRow.baseExitTimestamp) }}
+                      {{
+                        formatTimestamp(
+                          selectedInspectionRow.requestedEntryTimestamp,
+                        )
+                      }}
+                      /
+                      {{
+                        formatTimestamp(selectedInspectionRow.baseExitTimestamp)
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Entry / exit</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatTimestamp(selectedInspectionRow.entryTimestamp) }} / {{ formatTimestamp(selectedInspectionRow.exitTimestamp) }}
+                      {{
+                        formatTimestamp(selectedInspectionRow.entryTimestamp)
+                      }}
+                      /
+                      {{ formatTimestamp(selectedInspectionRow.exitTimestamp) }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Lag / expiry / hold</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatOptionalMinutes(selectedInspectionRow.entryLagMinutes) }} / {{ formatOptionalMinutes(selectedInspectionRow.minutesToExpiryAtEntry) }} / {{ formatOptionalMinutes(selectedInspectionRow.realizedHoldMinutes) }}
+                      {{
+                        formatOptionalMinutes(
+                          selectedInspectionRow.entryLagMinutes,
+                        )
+                      }}
+                      /
+                      {{
+                        formatOptionalMinutes(
+                          selectedInspectionRow.minutesToExpiryAtEntry,
+                        )
+                      }}
+                      /
+                      {{
+                        formatOptionalMinutes(
+                          selectedInspectionRow.realizedHoldMinutes,
+                        )
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Entry underlier / option</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatOptionalDecimal(selectedInspectionRow.entryUnderlierPrice, 2) }} / {{ formatOptionalDecimal(selectedInspectionRow.entryOptionPrice) }}
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.entryUnderlierPrice,
+                          2,
+                        )
+                      }}
+                      /
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.entryOptionPrice,
+                        )
+                      }}
                     </span>
                   </div>
-                  <div v-if="selectedInspectionRow.companionEntryOptionPrice != null">
+                  <div
+                    v-if="
+                      selectedInspectionRow.companionEntryOptionPrice != null
+                    "
+                  >
                     <span class="panelMetricKey">Companion entry / exit</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatOptionalDecimal(selectedInspectionRow.companionEntryOptionPrice) }} / {{ formatOptionalDecimal(selectedInspectionRow.companionExitOptionPrice) }}
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.companionEntryOptionPrice,
+                        )
+                      }}
+                      /
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.companionExitOptionPrice,
+                        )
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Exit option / reason</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatOptionalDecimal(selectedInspectionRow.exitOptionPrice) }} / {{ selectedInspectionRow.exitReason || '—' }}
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.exitOptionPrice,
+                        )
+                      }}
+                      / {{ selectedInspectionRow.exitReason || "—" }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Path range</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      opt {{ formatOptionalDecimal(selectedInspectionRow.pathOptionLow) }} -> {{ formatOptionalDecimal(selectedInspectionRow.pathOptionHigh) }} / und {{ formatOptionalDecimal(selectedInspectionRow.pathUnderlierLow, 2) }} -> {{ formatOptionalDecimal(selectedInspectionRow.pathUnderlierHigh, 2) }}
+                      opt
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.pathOptionLow,
+                        )
+                      }}
+                      ->
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.pathOptionHigh,
+                        )
+                      }}
+                      / und
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.pathUnderlierLow,
+                          2,
+                        )
+                      }}
+                      ->
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.pathUnderlierHigh,
+                          2,
+                        )
+                      }}
                     </span>
                   </div>
                   <div>
                     <span class="panelMetricKey">Premium / PnL / return</span>
                     <span class="panelMetricValue mono panelNumeric">
-                      {{ formatOptionalDecimal(selectedInspectionRow.premiumPaid) }} / {{ formatOptionalDecimal(selectedInspectionRow.pnlPerContract) }} / {{ formatOptionalDecimal(selectedInspectionRow.returnOnPremium) }}
+                      {{
+                        formatOptionalDecimal(selectedInspectionRow.premiumPaid)
+                      }}
+                      /
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.pnlPerContract,
+                        )
+                      }}
+                      /
+                      {{
+                        formatOptionalDecimal(
+                          selectedInspectionRow.returnOnPremium,
+                        )
+                      }}
                     </span>
                   </div>
                 </div>
                 <div v-if="selectedEventPathInspection" class="detailInspector">
                   <div class="panelSectionHeader">
                     <div class="panelHeaderVisual">
-                      <AppVisualIcon :icon="optionsEventPathReplayIcon" class="sectionGlyph" />
+                      <AppVisualIcon
+                        :icon="optionsEventPathReplayIcon"
+                        class="sectionGlyph"
+                      />
                       <div>
                         <div class="panelEyebrow">Event path replay</div>
                         <div class="panelSectionLead">
-                          Replayed option OHLC and underlier path for the selected executed event.
+                          Replayed option OHLC and underlier path for the
+                          selected executed event.
                         </div>
                       </div>
                     </div>
                     <div class="actions">
-                      <button type="button" @click="store.exportActiveEventPathCsv()">
+                      <button
+                        type="button"
+                        @click="store.exportActiveEventPathCsv()"
+                      >
                         Export path CSV
                       </button>
                     </div>
@@ -5112,13 +6662,20 @@ function focusTupleIndex(index: number): void {
                   <div class="detailGrid detailGridTight">
                     <div v-for="row in eventPathSummaryRows" :key="row.key">
                       <span class="panelMetricKey">{{ row.label }}</span>
-                      <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+                      <span class="panelMetricValue mono panelNumeric">{{
+                        row.value
+                      }}</span>
                     </div>
                   </div>
-                  <div v-if="eventPathAnalyticsRows.length" class="detailGrid detailGridTight">
+                  <div
+                    v-if="eventPathAnalyticsRows.length"
+                    class="detailGrid detailGridTight"
+                  >
                     <div v-for="row in eventPathAnalyticsRows" :key="row.key">
                       <span class="panelMetricKey">{{ row.label }}</span>
-                      <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+                      <span class="panelMetricValue mono panelNumeric">{{
+                        row.value
+                      }}</span>
                     </div>
                   </div>
                   <div class="tableWrap">
@@ -5135,14 +6692,20 @@ function focusTupleIndex(index: number): void {
                           v-for="point in selectedEventPathInspection.points"
                           :key="`${selectedEventPathInspection.eventId}-${point.timestampMs}`"
                         >
-                          <td class="mono">{{ formatTimestamp(point.timestampMs) }}</td>
+                          <td class="mono">
+                            {{ formatTimestamp(point.timestampMs) }}
+                          </td>
                           <td class="mono">
                             {{ formatOptionalDecimal(point.optionOpen) }} /
                             {{ formatOptionalDecimal(point.optionHigh) }} /
                             {{ formatOptionalDecimal(point.optionLow) }} /
                             {{ formatOptionalDecimal(point.optionClose) }}
                           </td>
-                          <td class="mono">{{ formatOptionalDecimal(point.underlyingPrice, 2) }}</td>
+                          <td class="mono">
+                            {{
+                              formatOptionalDecimal(point.underlyingPrice, 2)
+                            }}
+                          </td>
                         </tr>
                       </tbody>
                     </table>
@@ -5153,7 +6716,13 @@ function focusTupleIndex(index: number): void {
           </details>
         </div>
         <div v-else class="emptyState">
-          <img class="emptyStateIllustration" :src="emptyOptionsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
+          <img
+            class="emptyStateIllustration"
+            :src="emptyOptionsWorkspaceIllustration"
+            alt=""
+            aria-hidden="true"
+            draggable="false"
+          />
           <div class="emptyTitle">No ranked tuples available yet.</div>
           <div class="emptyBody">
             Run an options expression job or load a saved artifact.
@@ -5162,7 +6731,9 @@ function focusTupleIndex(index: number): void {
       </section>
     </template>
 
-    <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+    <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">
+      {{ statusLine }}
+    </div>
   </section>
 </template>
 

@@ -400,6 +400,8 @@ fn is_known_non_run_artifact_filename(name: &str) -> bool {
         || trimmed.starts_with("vectorgrid_meta_stage5_")
         || trimmed.starts_with("vectorbt_ml_confidence_eval_")
         || trimmed.starts_with("vectorgrid_ml_confidence_eval_")
+        || trimmed.starts_with("vectorbt_batch_")
+        || trimmed.starts_with("vectorgrid_batch_")
         || trimmed.starts_with("vectorbt_batch_summary_")
         || trimmed.starts_with("vectorgrid_batch_summary_")
         || trimmed.starts_with("vectorbt_campaign_summary_")

@@ -14,8 +14,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use ta_app_core::options_types::{
-    OptionsExpressionCoverageAdequacyVerdict, OptionsExpressionMetrics,
-    OptionsExpressionValidationVerdict,
+    OptionsExpressionCoverageAdequacyVerdict, OptionsExpressionDatasetProvenance,
+    OptionsExpressionMetrics, OptionsExpressionValidationVerdict,
 };
 use ta_app_core::{
     analyze_options_expression_feasibility_blocking,
@@ -106,6 +106,7 @@ pub struct OptionsExpressionArtifactSummary {
     pub ts: String,
     pub path: String,
     pub bytes: u64,
+    pub kind: String,
     pub parent_artifact_id: String,
     pub parent_strategy_kind: String,
     pub root_symbol: String,
@@ -746,6 +747,14 @@ fn cache_key_digest(cache_key: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+fn json_value_digest(value: &Value) -> Result<String, String> {
+    let mut hasher = DefaultHasher::new();
+    serde_json::to_vec(value)
+        .map_err(|e| format!("failed to serialize json value for hashing: {e}"))?
+        .hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
 fn signal_manifest_replay_cache_path(
     app_local_data_dir: &std::path::Path,
     parent_artifact_id: &str,
@@ -1083,7 +1092,10 @@ fn load_replayed_candles(
 fn build_options_expression_artifact(
     artifact_path: &std::path::Path,
     parent_artifact_id: String,
+    parent_artifact_hash: String,
     options_dataset_hash: String,
+    signal_manifest_id: String,
+    dataset_provenance: Option<OptionsExpressionDatasetProvenance>,
     request: OptionsExpressionRunRequest,
     result: &OptionsExpressionRunResult,
 ) -> OptionsExpressionArtifactV1 {
@@ -1093,9 +1105,12 @@ fn build_options_expression_artifact(
         ts: chrono::Utc::now().to_rfc3339(),
         artifact_path: artifact_path.to_string_lossy().to_string(),
         parent_artifact_id,
+        parent_artifact_hash,
         root_symbol: result.diagnostics.root_symbol.clone(),
         options_dataset_id: result.diagnostics.options_dataset_id.clone(),
         options_dataset_hash,
+        signal_manifest_id,
+        dataset_provenance,
         backend_used: result.backend_used.clone(),
         backend_fallback_reason: result.backend_fallback_reason.clone(),
         price_semantics: result.price_semantics,
@@ -1106,6 +1121,30 @@ fn build_options_expression_artifact(
         coverage_adequacy: result.coverage_adequacy.clone(),
         split_invalid_reasons: result.split_invalid_reasons.clone(),
         selection_metrics: result.ranked_results.clone(),
+    }
+}
+
+fn dataset_provenance_from_imported_dataset(
+    dataset: &ta_app_core::ImportedOptionsDataset,
+) -> OptionsExpressionDatasetProvenance {
+    OptionsExpressionDatasetProvenance {
+        provider_name: dataset.manifest.provider_name.trim().to_string(),
+        provider_source_surface: dataset.manifest.provider_source_surface.trim().to_string(),
+        quote_resolution: dataset.manifest.quote_resolution.trim().to_string(),
+        aggregate_price_field: dataset
+            .manifest
+            .aggregate_price_field
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        contract_reference_as_of_utc: dataset
+            .manifest
+            .contract_reference_as_of_utc
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -1346,6 +1385,7 @@ fn summarize_options_expression_artifact_with_runs_dir(
         ts: artifact.ts.clone(),
         path: path.to_string_lossy().to_string(),
         bytes,
+        kind: artifact.kind.clone(),
         parent_artifact_id: artifact.parent_artifact_id.clone(),
         parent_strategy_kind,
         root_symbol: artifact.root_symbol.clone(),
@@ -1411,6 +1451,7 @@ fn summarize_options_expression_artifact_with_runs_dir(
 #[derive(Clone)]
 struct OptionsExpressionReplayInputs {
     parent_artifact_id: String,
+    parent_artifact_hash: String,
     normalized_req: OptionsExpressionRunRequest,
     signal_manifest: Arc<ta_app_core::OptionsSignalEventManifestV1>,
     dataset: Arc<ta_app_core::ImportedOptionsDataset>,
@@ -1427,10 +1468,26 @@ fn validate_saved_artifact_replay_provenance(
             artifact.parent_artifact_id, replay.parent_artifact_id
         ));
     }
+    if !artifact.parent_artifact_hash.trim().is_empty()
+        && replay.parent_artifact_hash != artifact.parent_artifact_hash
+    {
+        return Err(format!(
+            "saved artifact parent hash '{}' no longer matches the replay parent hash '{}' for parent '{}'; reopen the original parent artifact or rerun the options expression optimization",
+            artifact.parent_artifact_hash, replay.parent_artifact_hash, artifact.parent_artifact_id
+        ));
+    }
     if replay.normalized_req.options_dataset_id != artifact.options_dataset_id {
         return Err(format!(
             "saved artifact dataset id '{}' no longer matches the replay dataset id '{}'",
             artifact.options_dataset_id, replay.normalized_req.options_dataset_id
+        ));
+    }
+    if !artifact.signal_manifest_id.trim().is_empty()
+        && replay.signal_manifest.manifest_id != artifact.signal_manifest_id
+    {
+        return Err(format!(
+            "saved artifact signal manifest id '{}' no longer matches the replay signal manifest id '{}' for parent '{}'; rerun the options expression optimization from the original parent artifact",
+            artifact.signal_manifest_id, replay.signal_manifest.manifest_id, artifact.parent_artifact_id
         ));
     }
     if replay.options_dataset_hash != artifact.options_dataset_hash {
@@ -1446,6 +1503,82 @@ fn validate_saved_artifact_replay_provenance(
             replay.dataset.manifest.price_semantics,
             artifact.options_dataset_id
         ));
+    }
+    if let Some(expected_provenance) = artifact.dataset_provenance.as_ref() {
+        let actual_provenance = dataset_provenance_from_imported_dataset(replay.dataset.as_ref());
+        let expected_provider_name = expected_provenance.provider_name.trim();
+        if !expected_provider_name.is_empty()
+            && actual_provenance.provider_name != expected_provider_name
+        {
+            return Err(format!(
+                "saved artifact provider_name '{}' no longer matches the currently imported dataset provider_name '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+                expected_provider_name, actual_provenance.provider_name, artifact.options_dataset_id
+            ));
+        }
+        let expected_provider_surface = expected_provenance.provider_source_surface.trim();
+        if !expected_provider_surface.is_empty()
+            && actual_provenance.provider_source_surface != expected_provider_surface
+        {
+            return Err(format!(
+                "saved artifact provider_source_surface '{}' no longer matches the currently imported dataset provider_source_surface '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+                expected_provider_surface,
+                actual_provenance.provider_source_surface,
+                artifact.options_dataset_id
+            ));
+        }
+        let expected_quote_resolution = expected_provenance.quote_resolution.trim();
+        if !expected_quote_resolution.is_empty()
+            && actual_provenance.quote_resolution != expected_quote_resolution
+        {
+            return Err(format!(
+                "saved artifact quote_resolution '{}' no longer matches the currently imported dataset quote_resolution '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+                expected_quote_resolution,
+                actual_provenance.quote_resolution,
+                artifact.options_dataset_id
+            ));
+        }
+        if let Some(expected_aggregate_price_field) = expected_provenance
+            .aggregate_price_field
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let actual_aggregate_price_field = actual_provenance
+                .aggregate_price_field
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("");
+            if actual_aggregate_price_field != expected_aggregate_price_field {
+                return Err(format!(
+                    "saved artifact aggregate_price_field '{}' no longer matches the currently imported dataset aggregate_price_field '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+                    expected_aggregate_price_field,
+                    actual_aggregate_price_field,
+                    artifact.options_dataset_id
+                ));
+            }
+        }
+        if let Some(expected_contract_reference_as_of_utc) = expected_provenance
+            .contract_reference_as_of_utc
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let actual_contract_reference_as_of_utc = actual_provenance
+                .contract_reference_as_of_utc
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("");
+            if actual_contract_reference_as_of_utc != expected_contract_reference_as_of_utc {
+                return Err(format!(
+                    "saved artifact contract_reference_as_of_utc '{}' no longer matches the currently imported dataset contract_reference_as_of_utc '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+                    expected_contract_reference_as_of_utc,
+                    actual_contract_reference_as_of_utc,
+                    artifact.options_dataset_id
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1534,6 +1667,7 @@ fn build_options_expression_replay_inputs_with_timing(
     }
     ensure_path_is_within_dir(parent_artifact_path, &runs_dir)?;
     let artifact = read_artifact_value(parent_artifact_path)?;
+    let parent_artifact_hash = json_value_digest(&artifact)?;
     let kind = resolve_run_artifact_kind(&artifact);
     if !is_run_artifact_kind(&kind) {
         return Err(format!(
@@ -1789,6 +1923,7 @@ fn build_options_expression_replay_inputs_with_timing(
     Ok(OptionsExpressionReplayInputsBuildResult {
         inputs: OptionsExpressionReplayInputs {
             parent_artifact_id,
+            parent_artifact_hash,
             normalized_req,
             signal_manifest,
             dataset,
@@ -1821,7 +1956,12 @@ fn run_options_expression_blocking_impl(
     let artifact = build_options_expression_artifact(
         &artifact_path,
         replay.parent_artifact_id,
+        replay.parent_artifact_hash,
         replay.options_dataset_hash,
+        replay.signal_manifest.manifest_id.clone(),
+        Some(dataset_provenance_from_imported_dataset(
+            replay.dataset.as_ref(),
+        )),
         replay.normalized_req,
         &result,
     );
@@ -1833,6 +1973,8 @@ fn run_options_expression_blocking_impl(
             artifact_path.display()
         )
     })?;
+    let runs_dir = app_local_data_dir.join("runs");
+    crate::commands::run_artifacts::prune_old_options_expression_artifacts_in_dir(&runs_dir, 100);
 
     Ok(RunOptionsExpressionResponse {
         artifact_path: artifact_path.to_string_lossy().to_string(),
@@ -2382,9 +2524,14 @@ mod tests {
             ts: "2026-04-07T00:00:00Z".to_string(),
             artifact_path: "C:/runs/vectorgrid_options_expression_1.json".to_string(),
             parent_artifact_id: "vectorgrid_run_1".to_string(),
+            parent_artifact_hash: "parent-hash-1".to_string(),
             root_symbol: "SPY".to_string(),
             options_dataset_id: options_dataset_id.to_string(),
             options_dataset_hash: "hash-1".to_string(),
+            signal_manifest_id: sample_signal_manifest().manifest_id,
+            dataset_provenance: Some(dataset_provenance_from_imported_dataset(
+                &sample_replay_dataset(options_dataset_id, price_semantics),
+            )),
             backend_used: "cpu_reference".to_string(),
             backend_fallback_reason: None,
             price_semantics,
@@ -2975,9 +3122,14 @@ mod tests {
             ts: "2026-04-07T00:00:00Z".to_string(),
             artifact_path: "C:/runs/vectorgrid_options_expression_1.json".to_string(),
             parent_artifact_id: "vectorgrid_run_1".to_string(),
+            parent_artifact_hash: "parent-hash-1".to_string(),
             root_symbol: "SPY".to_string(),
             options_dataset_id: "spy_options".to_string(),
             options_dataset_hash: "hash-1".to_string(),
+            signal_manifest_id: sample_signal_manifest().manifest_id,
+            dataset_provenance: Some(dataset_provenance_from_imported_dataset(
+                &sample_replay_dataset("spy_options", OptionsPriceSemantics::MinuteAggregate),
+            )),
             backend_used: "cpu_reference".to_string(),
             backend_fallback_reason: None,
             price_semantics: OptionsPriceSemantics::MinuteAggregate,
@@ -3524,6 +3676,7 @@ mod tests {
         normalized_req.options_dataset_id = artifact.options_dataset_id.clone();
         OptionsExpressionReplayInputs {
             parent_artifact_id: artifact.parent_artifact_id.clone(),
+            parent_artifact_hash: artifact.parent_artifact_hash.clone(),
             normalized_req,
             signal_manifest: Arc::new(sample_signal_manifest()),
             dataset: Arc::new(sample_replay_dataset(
@@ -3614,6 +3767,54 @@ mod tests {
         let parent_error = validate_saved_artifact_replay_provenance(&artifact, &parent_drift)
             .expect_err("parent drift should fail");
         assert!(parent_error.contains("parent id"));
+
+        let mut parent_hash_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        parent_hash_drift.parent_artifact_hash = "parent-hash-2".to_string();
+        let parent_hash_error =
+            validate_saved_artifact_replay_provenance(&artifact, &parent_hash_drift)
+                .expect_err("parent hash drift should fail");
+        assert!(parent_hash_error.contains("parent hash"));
+
+        let mut signal_manifest_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        Arc::make_mut(&mut signal_manifest_drift.signal_manifest).manifest_id =
+            "manifest-2".to_string();
+        let signal_manifest_error =
+            validate_saved_artifact_replay_provenance(&artifact, &signal_manifest_drift)
+                .expect_err("signal manifest drift should fail");
+        assert!(signal_manifest_error.contains("signal manifest id"));
+
+        let mut provider_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        Arc::make_mut(&mut provider_drift.dataset)
+            .manifest
+            .provider_name = "other_provider".to_string();
+        let provider_error = validate_saved_artifact_replay_provenance(&artifact, &provider_drift)
+            .expect_err("provider provenance drift should fail");
+        assert!(provider_error.contains("provider_name"));
+
+        let mut contract_reference_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        Arc::make_mut(&mut contract_reference_drift.dataset)
+            .manifest
+            .contract_reference_as_of_utc = Some("2026-04-07T00:00:00Z".to_string());
+        let contract_reference_error =
+            validate_saved_artifact_replay_provenance(&artifact, &contract_reference_drift)
+                .expect_err("contract reference provenance drift should fail");
+        assert!(contract_reference_error.contains("contract_reference_as_of_utc"));
 
         let _ = std::fs::remove_file(&parent_artifact_path);
         let _ = std::fs::remove_dir(&temp_root);

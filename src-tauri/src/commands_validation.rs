@@ -103,6 +103,9 @@ fn normalize_timeframe_label(raw: &str) -> String {
 
 fn normalize_strategy_kind(raw: &str) -> String {
     match raw.trim() {
+        "" => String::new(),
+        "DoubleMa" => "DoubleMa".to_string(),
+        "DynamicDoubleMa" => "DynamicDoubleMa".to_string(),
         "Pit" => "Pit".to_string(),
         "Set" => "Set".to_string(),
         "Mts" => "Mts".to_string(),
@@ -124,7 +127,7 @@ fn normalize_strategy_kind(raw: &str) -> String {
         "CompositeTrend" => "CompositeTrend".to_string(),
         "RegimeHybrid" => "RegimeHybrid".to_string(),
         "BreakoutMomentum" => "BreakoutMomentum".to_string(),
-        _ => "DoubleMa".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -1600,7 +1603,24 @@ mod tests {
     }
 
     #[test]
-    fn validation_context_currently_accepts_dynamic_double_ma_for_double_ma_validation() {
+    fn validation_context_rejects_unknown_strategy_kind_instead_of_falling_back_to_double_ma() {
+        let ctx = ta_app_core::ValidationArtifactContext {
+            strategy_kind: "DoubleMaTypo".to_string(),
+            csv_path: Some("C:\\data\\AAPL.csv".to_string()),
+            timeframe: Some("15m".to_string()),
+            label: Some("AAPL".to_string()),
+        };
+        let err = validate_validation_context(
+            Some(&ctx),
+            &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
+            &["DoubleMa"],
+        )
+        .expect_err("unknown strategy kind should fail");
+        assert!(err.contains("DoubleMaTypo"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validation_context_rejects_dynamic_double_ma_for_double_ma_validation() {
         let ctx = ta_app_core::ValidationArtifactContext {
             strategy_kind: "DynamicDoubleMa".to_string(),
             csv_path: Some("C:\\data\\AAPL.csv".to_string()),
@@ -1612,7 +1632,7 @@ mod tests {
             &loaded_ctx("C:\\data\\AAPL.csv", Some("15m")),
             &["DoubleMa"],
         )
-        .expect("current DynamicDoubleMa normalization should still map to DoubleMa");
+        .expect_err("dynamic validation context should not masquerade as DoubleMa");
     }
 
     #[test]

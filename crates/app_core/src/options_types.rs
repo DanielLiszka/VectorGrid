@@ -1125,6 +1125,20 @@ pub struct OptionsExpressionRunResult {
     pub ranked_results: Vec<OptionsExpressionTupleResult>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct OptionsExpressionDatasetProvenance {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider_source_surface: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub quote_resolution: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_price_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_reference_as_of_utc: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionArtifactV1 {
     pub version: u32,
@@ -1132,9 +1146,15 @@ pub struct OptionsExpressionArtifactV1 {
     pub ts: String,
     pub artifact_path: String,
     pub parent_artifact_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub parent_artifact_hash: String,
     pub root_symbol: String,
     pub options_dataset_id: String,
     pub options_dataset_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signal_manifest_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_provenance: Option<OptionsExpressionDatasetProvenance>,
     pub backend_used: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,

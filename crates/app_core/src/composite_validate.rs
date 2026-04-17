@@ -804,6 +804,7 @@ fn composite_candidate_index_map(
     Ok(out)
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn sanitize_gpu_cscv_slices(slices: usize) -> usize {
     let s = slices.clamp(4, 32);
     if (s & 1) == 0 {
@@ -11668,6 +11669,7 @@ fn slice_return_stats_for_series(
     }
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn exact_slice_stats_for_candidate_series(
     candidate_keys: &[Vec<u8>],
     series_list: &[CandidateSeries<'_>],
@@ -13468,6 +13470,7 @@ mod tests {
     use ta_optimizer::mo::{ParamDef, ParamDomain, RandomMoConfig, SearchSpace};
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     struct TestEnvGuard {
         _env: std::sync::MutexGuard<'static, ()>,
         #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -13484,12 +13487,6 @@ mod tests {
             _env: env,
             _gpu: gpu,
         }
-    }
-
-    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
-    fn lock_env() -> TestEnvGuard {
-        let env = crate::test_support::lock_test_env();
-        TestEnvGuard { _env: env }
     }
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
@@ -13513,6 +13510,7 @@ mod tests {
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn make_strong_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
         let mut open = Vec::with_capacity(len);
@@ -13701,6 +13699,7 @@ mod tests {
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn make_bench_synth_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
         let mut ts = Vec::with_capacity(len);
         let mut open = Vec::with_capacity(len);
@@ -20989,6 +20988,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn make_mkcs_bench_candidates(n: usize) -> Vec<CompositeParams> {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
@@ -21052,6 +21052,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn vcet_test_candidate(fast_len: u16, slow_len: u16) -> CompositeParams {
         CompositeParams {
             fast_ma_type: "sma".to_string(),

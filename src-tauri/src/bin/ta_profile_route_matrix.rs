@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ta_app_core::strategy_presets::{
@@ -163,7 +163,7 @@ fn median_u64_as_f64(values: &mut [u64]) -> f64 {
     }
     values.sort_unstable();
     let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         (values[mid - 1] as f64 + values[mid] as f64) * 0.5
     } else {
         values[mid] as f64
@@ -188,7 +188,7 @@ fn canonical_run_index_for_wall_ms(values: &[u64]) -> usize {
         .unwrap_or(0)
 }
 
-fn load_candles(csv_path: &PathBuf, timeframe: &str) -> Result<Candles, String> {
+fn load_candles(csv_path: &Path, timeframe: &str) -> Result<Candles, String> {
     let base = read_candles_from_csv_compat(csv_path.to_string_lossy().as_ref())?;
     let tf = parse_timeframe_label(timeframe)?;
     if tf.label.eq_ignore_ascii_case("1m") {

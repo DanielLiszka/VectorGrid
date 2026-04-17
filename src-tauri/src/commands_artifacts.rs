@@ -143,6 +143,15 @@ pub async fn load_run_artifact(path: String, app: tauri::AppHandle) -> Result<Va
 }
 
 #[tauri::command]
+pub async fn load_artifact(path: String, app: tauri::AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_run_artifact_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn load_run_artifact_hydration(
     path: String,
     app: tauri::AppHandle,
@@ -221,6 +230,13 @@ pub async fn delete_run_artifact(path: String, app: tauri::AppHandle) -> Result<
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn delete_artifact(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || run_artifacts::delete_artifact_blocking(path, app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

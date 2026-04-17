@@ -1,172 +1,178 @@
-import { describe, expect, it } from 'vitest'
-import { buildValidationCapabilitySummary, buildValidationRequest } from './validationRequestBuilder'
+import { describe, expect, it } from "vitest";
+import {
+  buildValidationCapabilitySummary,
+  buildValidationRequest,
+} from "./validationRequestBuilder";
 
-describe('validationRequestBuilder', () => {
-  it('builds double-like validation request from top rows with gates and aux configs', () => {
+describe("validationRequestBuilder", () => {
+  it("builds double-like validation request from top rows with gates and aux configs", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-123',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['alma'],
+        strategy_kind: "DoubleMa",
+        data_id: "data-123",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["alma"],
         strategy: { fee_bps: 1.5 },
-        halftrend_filter: { enabled: true }
+        halftrend_filter: { enabled: true },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'alma',
+            fast_ma_type: "sma",
+            slow_ma_type: "alma",
             fast_len: 10,
             slow_len: 40,
             fast_ma_params: { alpha: 2.0 },
-            slow_ma_params: { offset: 0.85 }
-          }
-        }
+            slow_ma_params: { offset: 0.85 },
+          },
+        },
       ],
       topRowsFiltered: [],
-      candidates: '32',
-      seed: '7',
-      minPsr: '0.6',
-      minDsr: '0.4',
+      candidates: "32",
+      seed: "7",
+      minPsr: "0.6",
+      minDsr: "0.4",
       spaEnable: true,
-      spaSlices: '12',
-      spaBootstrapSamples: '750',
-      spaBlockLength: '5',
+      spaSlices: "12",
+      spaBootstrapSamples: "750",
+      spaBlockLength: "5",
       reoptWfEnable: true,
-      reoptWfWindow: '12000',
-      reoptWfStep: '3000',
-      reoptWfTopN: '5',
+      reoptWfWindow: "12000",
+      reoptWfStep: "3000",
+      reoptWfTopN: "5",
       wfEnable: true,
-      wfWindow: '20000',
-      wfStep: '5000',
+      wfWindow: "20000",
+      wfStep: "5000",
       perturbEnable: true,
-      perturbIters: '8',
-      perturbMin: '0.01',
-      perturbMax: '0.05',
+      perturbIters: "8",
+      perturbMin: "0.01",
+      perturbMax: "0.05",
       mcEnable: true,
-      mcSims: '500',
-      mcBlockLen: '9',
+      mcSims: "500",
+      mcBlockLen: "9",
       cscvEnable: true,
-      cscvSlices: '17',
+      cscvSlices: "17",
       crossEnable: true,
-      crossMax: '2',
+      crossMax: "2",
       crossDatasets: [
-        { csv_path: 'C:/data/a.csv', label: 'A' },
-        { csv_path: 'C:/data/b.csv', label: 'B' },
-        { csv_path: 'C:/data/c.csv', label: 'C' }
-      ]
-    })
+        { csv_path: "C:/data/a.csv", label: "A" },
+        { csv_path: "C:/data/b.csv", label: "B" },
+        { csv_path: "C:/data/c.csv", label: "C" },
+      ],
+    });
 
-    expect(req.data_id).toBe('data-123')
-    expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
-    expect(req.seed).toBe(7)
-    expect(req.min_psr).toBe(0.6)
-    expect(req.min_dsr).toBe(0.4)
+    expect(req.data_id).toBe("data-123");
+    expect(req.backend).toEqual({ backend: "GpuKernel", device_id: 0 });
+    expect(req.seed).toBe(7);
+    expect(req.min_psr).toBe(0.6);
+    expect(req.min_dsr).toBe(0.4);
     expect(req.spa).toEqual({
       slices: 12,
       bootstrap_samples: 750,
       block_length: 5,
-      benchmark: 'buy_hold',
-    })
+      benchmark: "buy_hold",
+    });
     expect(req.reopt_walk_forward).toEqual({
       window_bars: 12000,
       step_bars: 3000,
       top_n_candidates: 5,
-    })
-    expect(req.candidates).toHaveLength(1)
+    });
+    expect(req.candidates).toHaveLength(1);
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'sma',
-      slow_ma_type: 'alma',
+      fast_ma_type: "sma",
+      slow_ma_type: "alma",
       fast_len: 10,
-      slow_len: 40
-    })
-    expect(req.walk_forward).toEqual({ window_bars: 20000, step_bars: 5000 })
+      slow_len: 40,
+    });
+    expect(req.walk_forward).toEqual({ window_bars: 20000, step_bars: 5000 });
     expect(req.perturb).toEqual({
       iterations: 8,
       pct_min: 0.01,
       pct_max: 0.05,
-      flip_bool_prob: 0.02
-    })
-    expect(req.trade_bootstrap).toEqual({ simulations: 500, stationary_mean_block_len: 9 })
+      flip_bool_prob: 0.02,
+    });
+    expect(req.trade_bootstrap).toEqual({
+      simulations: 500,
+      stationary_mean_block_len: 9,
+    });
     expect(req.cscv_pbo).toEqual({
       slices: 16,
       max_combinations: 50000,
-      threshold: 0
-    })
+      threshold: 0,
+    });
     expect(req.cross_ticker).toEqual({
       max_datasets: 2,
-      mode: 'preserved_finalists',
+      mode: "preserved_finalists",
       datasets: [
-        { csv_path: 'C:/data/a.csv', label: 'A' },
-        { csv_path: 'C:/data/b.csv', label: 'B' }
-      ]
-    })
-  })
+        { csv_path: "C:/data/a.csv", label: "A" },
+        { csv_path: "C:/data/b.csv", label: "B" },
+      ],
+    });
+  });
 
-  it('builds composite request and enforces halftrend presence', () => {
+  it("builds composite request and enforces halftrend presence", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeMo',
-        data_id: 'data-456',
-        ma_source: 'hlc3',
-        strategy: { eps_rel: 0.01 }
+        strategy_kind: "CompositeMo",
+        data_id: "data-456",
+        ma_source: "hlc3",
+        strategy: { eps_rel: 0.01 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'soft_vote',
-            strategy: { fee_bps: 2 }
-          }
+            signal_mode: "soft_vote",
+            strategy: { fee_bps: 2 },
+          },
         },
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 7,
-            slow_len: 25
-          }
-        }
+            slow_len: 25,
+          },
+        },
       ],
-      candidates: '10'
-    })
+      candidates: "10",
+    });
 
-    expect(req.candidates).toHaveLength(1)
+    expect(req.candidates).toHaveLength(1);
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'ema',
-      slow_ma_type: 'sma',
-      signal_mode: 'soft_vote'
-    })
-  })
+      fast_ma_type: "ema",
+      slow_ma_type: "sma",
+      signal_mode: "soft_vote",
+    });
+  });
 
-  it('defaults validation admission to legacy_topk and records provenance', () => {
+  it("defaults validation admission to legacy_topk and records provenance", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-admission-default',
-        objective: 'Sharpe',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "DoubleMa",
+        data_id: "data-admission-default",
+        objective: "Sharpe",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 1.5 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'ema',
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
             fast_len: 10,
             slow_len: 30,
           },
@@ -179,130 +185,171 @@ describe('validationRequestBuilder', () => {
           },
         },
       ],
-      candidates: '8',
-    })
+      candidates: "8",
+    });
 
-    expect(req.admission_policy).toBe('legacy_topk')
+    expect(req.admission_policy).toBe("legacy_topk");
     expect(req.admission_provenance).toMatchObject({
-      requested_policy: 'legacy_topk',
-      applied_policy: 'legacy_topk',
-      source_kind: 'top_rows',
+      requested_policy: "legacy_topk",
+      applied_policy: "legacy_topk",
+      source_kind: "top_rows",
       source_candidate_count: 1,
       post_cap_count: 1,
-    })
-  })
+    });
+  });
 
-  it('builds a diversified scalar-union shortlist without changing the legacy default', () => {
+  it("builds a diversified scalar-union shortlist without changing the legacy default", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-scalar-union',
-        objective: 'Sharpe',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "DoubleMa",
+        data_id: "data-scalar-union",
+        objective: "Sharpe",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 1.5 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
-          params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 10, slow_len: 40 },
-          metrics: { pnl: 0.15, sharpe: 1.8, calmar: 0.7, omega: 1.02, max_dd: 0.32 },
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 10,
+            slow_len: 40,
+          },
+          metrics: {
+            pnl: 0.15,
+            sharpe: 1.8,
+            calmar: 0.7,
+            omega: 1.02,
+            max_dd: 0.32,
+          },
         },
         {
-          params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 12, slow_len: 48 },
-          metrics: { pnl: 0.13, sharpe: 1.4, calmar: 0.85, omega: 1.08, max_dd: 0.24 },
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 12,
+            slow_len: 48,
+          },
+          metrics: {
+            pnl: 0.13,
+            sharpe: 1.4,
+            calmar: 0.85,
+            omega: 1.08,
+            max_dd: 0.24,
+          },
         },
         {
-          params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 8, slow_len: 26 },
-          metrics: { pnl: 0.1, sharpe: 0.9, calmar: 1.6, omega: 1.35, max_dd: 0.06 },
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
+            fast_len: 8,
+            slow_len: 26,
+          },
+          metrics: {
+            pnl: 0.1,
+            sharpe: 0.9,
+            calmar: 1.6,
+            omega: 1.35,
+            max_dd: 0.06,
+          },
         },
       ],
-      candidates: '2',
-      admissionPolicy: 'scalar_union',
-    })
+      candidates: "2",
+      admissionPolicy: "scalar_union",
+    });
 
-    expect(req.admission_policy).toBe('scalar_union')
-    expect(req.candidates).toHaveLength(2)
-    expect(req.candidates[0]).toMatchObject({ fast_len: 10, slow_len: 40 })
-    expect(req.candidates[1]).toMatchObject({ fast_len: 8, slow_len: 26 })
+    expect(req.admission_policy).toBe("scalar_union");
+    expect(req.candidates).toHaveLength(2);
+    expect(req.candidates[0]).toMatchObject({ fast_len: 10, slow_len: 40 });
+    expect(req.candidates[1]).toMatchObject({ fast_len: 8, slow_len: 26 });
     expect(req.admission_provenance).toMatchObject({
-      requested_policy: 'scalar_union',
-      applied_policy: 'scalar_union',
+      requested_policy: "scalar_union",
+      applied_policy: "scalar_union",
       post_cap_count: 2,
-    })
-    expect(req.admission_provenance.heads.some((head) => head.objective === 'MaxDrawdown')).toBe(true)
-  })
+    });
+    expect(
+      req.admission_provenance.heads.some(
+        (head) => head.objective === "MaxDrawdown",
+      ),
+    ).toBe(true);
+  });
 
-  it('uses pareto-frontier admission automatically for CompositeMo artifacts', () => {
+  it("uses pareto-frontier admission automatically for CompositeMo artifacts", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeMo',
-        data_id: 'data-composite-mo',
-        ma_source: 'hlc3',
-        objectives: { maximize: 'Sharpe', minimize: 'MaxDrawdown' },
+        strategy_kind: "CompositeMo",
+        data_id: "data-composite-mo",
+        ma_source: "hlc3",
+        objectives: { maximize: "Sharpe", minimize: "MaxDrawdown" },
         strategy: { fee_bps: 1.0 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'soft_vote',
+            signal_mode: "soft_vote",
             strategy: { fee_bps: 2 },
           },
           metrics: { pnl: 0.12, sharpe: 1.1, max_dd: 0.12 },
           mo: { maximize_value: 1.1, minimize_value: 0.12, violation: 0 },
-          source_kind: 'pareto_frontier',
+          source_kind: "pareto_frontier",
         },
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 7,
             slow_len: 25,
             halftrend: { amplitude: 3 },
             macz: { fast_length: 10 },
             ott: { period: 3 },
-            signal_mode: 'hard_gate',
+            signal_mode: "hard_gate",
             strategy: { fee_bps: 2 },
           },
           metrics: { pnl: 0.1, sharpe: 1.0, max_dd: 0.08 },
           mo: { maximize_value: 1.0, minimize_value: 0.08, violation: 0 },
-          source_kind: 'pareto_frontier',
+          source_kind: "pareto_frontier",
         },
       ],
-      candidates: '4',
-      admissionPolicy: 'auto',
-    })
+      candidates: "4",
+      admissionPolicy: "auto",
+    });
 
-    expect(req.admission_policy).toBe('pareto_frontier')
+    expect(req.admission_policy).toBe("pareto_frontier");
     expect(req.admission_provenance).toMatchObject({
-      requested_policy: 'auto',
-      applied_policy: 'pareto_frontier',
-      source_kind: 'pareto_frontier',
+      requested_policy: "auto",
+      applied_policy: "pareto_frontier",
+      source_kind: "pareto_frontier",
       post_cap_count: 2,
-    })
-    expect(req.candidates).toHaveLength(2)
-  })
+    });
+    expect(req.candidates).toHaveLength(2);
+  });
 
-  it('diversity-trims dense CompositeMo frontiers when the cap is smaller than the frontier', () => {
-    const buildParetoRow = (fastLen: number, maximize: number, minimize: number) => ({
+  it("diversity-trims dense CompositeMo frontiers when the cap is smaller than the frontier", () => {
+    const buildParetoRow = (
+      fastLen: number,
+      maximize: number,
+      minimize: number,
+    ) => ({
       params: {
-        fast_ma_type: 'ema',
-        slow_ma_type: 'sma',
+        fast_ma_type: "ema",
+        slow_ma_type: "sma",
         fast_len: fastLen,
         slow_len: 40 + fastLen,
         halftrend: { amplitude: 2 },
         macz: { fast_length: 12 },
         ott: { period: 2 },
-        signal_mode: 'soft_vote',
+        signal_mode: "soft_vote",
         strategy: { fee_bps: 2 },
       },
       metrics: {
@@ -311,15 +358,15 @@ describe('validationRequestBuilder', () => {
         max_dd: minimize,
       },
       mo: { maximize_value: maximize, minimize_value: minimize, violation: 0 },
-      source_kind: 'pareto_frontier',
-    })
+      source_kind: "pareto_frontier",
+    });
 
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeMo',
-        data_id: 'data-composite-mo-dense-frontier',
-        ma_source: 'hlc3',
-        objectives: { maximize: 'Sharpe', minimize: 'MaxDrawdown' },
+        strategy_kind: "CompositeMo",
+        data_id: "data-composite-mo-dense-frontier",
+        ma_source: "hlc3",
+        objectives: { maximize: "Sharpe", minimize: "MaxDrawdown" },
         strategy: { fee_bps: 1.0 },
       },
       currentRunRes: { ok: true },
@@ -330,1169 +377,1263 @@ describe('validationRequestBuilder', () => {
         buildParetoRow(13, 1.2, 0.09),
         buildParetoRow(14, 1.1, 0.08),
       ],
-      candidates: '3',
-      admissionPolicy: 'auto',
-    })
+      candidates: "3",
+      admissionPolicy: "auto",
+    });
 
-    expect(req.admission_policy).toBe('pareto_frontier')
-    expect(req.candidates).toHaveLength(3)
-    expect(req.candidates.map((row) => row.fast_len)).toEqual([10, 12, 14])
+    expect(req.admission_policy).toBe("pareto_frontier");
+    expect(req.candidates).toHaveLength(3);
+    expect(req.candidates.map((row) => row.fast_len)).toEqual([10, 12, 14]);
     expect(req.admission_provenance).toMatchObject({
-      requested_policy: 'auto',
-      applied_policy: 'pareto_frontier',
+      requested_policy: "auto",
+      applied_policy: "pareto_frontier",
       post_dedupe_count: 5,
       post_cap_count: 3,
-      note: 'pareto_diversity_trim',
-    })
-    expect(req.admission_provenance.heads[0]?.note).toBe('pareto_diversity_trim')
-  })
+      note: "pareto_diversity_trim",
+    });
+    expect(req.admission_provenance.heads[0]?.note).toBe(
+      "pareto_diversity_trim",
+    );
+  });
 
-  it('dedupes normalized validation candidates before applying the max candidate limit', () => {
+  it("dedupes normalized validation candidates before applying the max candidate limit", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-dedupe',
-        ma_source: 'close',
-        fast_ma_types: ['alma'],
-        slow_ma_types: ['alma'],
+        strategy_kind: "DoubleMa",
+        data_id: "data-dedupe",
+        ma_source: "close",
+        fast_ma_types: ["alma"],
+        slow_ma_types: ["alma"],
         strategy: { fee_bps: 1.0 },
-        halftrend_filter: { enabled: true }
+        halftrend_filter: { enabled: true },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'alma',
-            slow_ma_type: 'alma',
+            fast_ma_type: "alma",
+            slow_ma_type: "alma",
             fast_len: 9,
             slow_len: 30,
             fast_ma_params: { sigma: 6, offset: 0.85 },
-            slow_ma_params: { offset: 0.85, sigma: 6 }
-          }
+            slow_ma_params: { offset: 0.85, sigma: 6 },
+          },
         },
         {
           params: {
-            fast_ma_type: 'alma',
-            slow_ma_type: 'alma',
+            fast_ma_type: "alma",
+            slow_ma_type: "alma",
             fast_len: 9,
             slow_len: 30,
             fast_ma_params: { offset: 0.85, sigma: 6 },
-            slow_ma_params: { sigma: 6, offset: 0.85 }
-          }
+            slow_ma_params: { sigma: 6, offset: 0.85 },
+          },
         },
         {
           params: {
-            fast_ma_type: 'alma',
-            slow_ma_type: 'alma',
+            fast_ma_type: "alma",
+            slow_ma_type: "alma",
             fast_len: 11,
             slow_len: 40,
             fast_ma_params: { offset: 0.85, sigma: 6 },
-            slow_ma_params: { offset: 0.85, sigma: 6 }
-          }
-        }
+            slow_ma_params: { offset: 0.85, sigma: 6 },
+          },
+        },
       ],
-      candidates: '2'
-    })
+      candidates: "2",
+    });
 
-    expect(req.candidates).toHaveLength(2)
-    expect(req.candidates[0]).toMatchObject({ fast_len: 9, slow_len: 30 })
-    expect(req.candidates[1]).toMatchObject({ fast_len: 11, slow_len: 40 })
-  })
+    expect(req.candidates).toHaveLength(2);
+    expect(req.candidates[0]).toMatchObject({ fast_len: 9, slow_len: 30 });
+    expect(req.candidates[1]).toMatchObject({ fast_len: 11, slow_len: 40 });
+  });
 
-  it('dedupes cross datasets by normalized path', () => {
+  it("dedupes cross datasets by normalized path", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-cross-dedupe',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['sma'],
-        strategy: { fee_bps: 1.0 }
+        strategy_kind: "DoubleMa",
+        data_id: "data-cross-dedupe",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["sma"],
+        strategy: { fee_bps: 1.0 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'sma',
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
             fast_len: 10,
-            slow_len: 40
-          }
-        }
+            slow_len: 40,
+          },
+        },
       ],
-      candidates: '4',
+      candidates: "4",
       crossEnable: true,
-      crossMax: '3',
+      crossMax: "3",
       crossDatasets: [
-        { csv_path: 'C:/data/AAPL.csv', label: 'AAPL first' },
-        { csv_path: ' c:\\DATA\\aapl.csv ', label: 'AAPL duplicate' },
-        { csv_path: 'D:/data/MSFT.csv', label: 'MSFT' }
-      ]
-    })
+        { csv_path: "C:/data/AAPL.csv", label: "AAPL first" },
+        { csv_path: " c:\\DATA\\aapl.csv ", label: "AAPL duplicate" },
+        { csv_path: "D:/data/MSFT.csv", label: "MSFT" },
+      ],
+    });
 
     expect(req.cross_ticker).toEqual({
       max_datasets: 3,
-      mode: 'preserved_finalists',
+      mode: "preserved_finalists",
       datasets: [
-        { csv_path: 'C:/data/AAPL.csv', label: 'AAPL first' },
-        { csv_path: 'D:/data/MSFT.csv', label: 'MSFT' }
-      ]
-    })
-  })
+        { csv_path: "C:/data/AAPL.csv", label: "AAPL first" },
+        { csv_path: "D:/data/MSFT.csv", label: "MSFT" },
+      ],
+    });
+  });
 
-  it('treats Marrt as a double-like validation strategy', () => {
+  it("treats Marrt as a double-like validation strategy", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Marrt',
-        data_id: 'data-ribbon',
-        ma_source: 'close',
-        fast_ma_types: ['alma'],
-        slow_ma_types: ['vwma'],
-        strategy: { fee_bps: 1.0 }
+        strategy_kind: "Marrt",
+        data_id: "data-ribbon",
+        ma_source: "close",
+        fast_ma_types: ["alma"],
+        slow_ma_types: ["vwma"],
+        strategy: { fee_bps: 1.0 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'alma',
-            slow_ma_type: 'vwma',
+            fast_ma_type: "alma",
+            slow_ma_type: "vwma",
             fast_len: 8,
             slow_len: 34,
-            fast_ma_params: { offset: 0.85 }
-          }
-        }
+            fast_ma_params: { offset: 0.85 },
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Marrt')
+    expect(req.validation_context.strategy_kind).toBe("Marrt");
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'alma',
-      slow_ma_type: 'vwma',
+      fast_ma_type: "alma",
+      slow_ma_type: "vwma",
       fast_len: 8,
-      slow_len: 34
-    })
-  })
+      slow_len: 34,
+    });
+  });
 
   it.each([
-    ['CompositeTrend', { backend: 'GpuKernel', device_id: 0 }, 'expected GPU kernel main route (CompositeTrend)'],
-    ['RegimeHybrid', { backend: 'GpuHybridKernel', device_id: 0 }, 'expected GPU hybrid main route (RegimeHybrid)'],
-    ['BreakoutMomentum', { backend: 'GpuKernel', device_id: 0 }, 'expected GPU kernel main route (BreakoutMomentum)'],
+    [
+      "CompositeTrend",
+      { backend: "GpuKernel", device_id: 0 },
+      "expected CpuOnly fallback for fixed-candidate validation (CompositeTrend)",
+    ],
+    [
+      "RegimeHybrid",
+      { backend: "GpuHybridKernel", device_id: 0 },
+      "expected GPU hybrid main route (RegimeHybrid)",
+    ],
+    [
+      "BreakoutMomentum",
+      { backend: "GpuKernel", device_id: 0 },
+      "expected GPU kernel main route (BreakoutMomentum)",
+    ],
   ] as const)(
-    'treats %s as a double-like validation strategy with preserved-finalists cross reruns',
+    "treats %s as a double-like validation strategy with preserved-finalists cross reruns",
     (strategy_kind, backend, expectedRouteFragment) => {
       const req = buildValidationRequest({
         currentRunReq: {
           strategy_kind,
           data_id: `${strategy_kind}-data`,
           backend,
-          ma_source: 'close',
-          fast_ma_types: ['ema'],
-          slow_ma_types: ['sma'],
+          ma_source: "close",
+          fast_ma_types: ["ema"],
+          slow_ma_types: ["sma"],
           strategy: { fee_bps: 1.25 },
-          halftrend_filter: { enabled: true }
+          halftrend_filter: { enabled: true },
         },
         currentRunRes: { ok: true },
         topRows: [
           {
             params: {
-              fast_ma_type: 'ema',
-              slow_ma_type: 'sma',
+              fast_ma_type: "ema",
+              slow_ma_type: "sma",
               fast_len: 11,
-              slow_len: 44
-            }
-          }
+              slow_len: 44,
+            },
+          },
         ],
         crossEnable: true,
-        crossMax: '1',
-        crossDatasets: [
-          { csv_path: 'C:/data/SPY.csv', label: 'SPY' }
-        ],
-        candidates: '4'
-      })
+        crossMax: "1",
+        crossDatasets: [{ csv_path: "C:/data/SPY.csv", label: "SPY" }],
+        candidates: "4",
+      });
 
-      expect(req.validation_context.strategy_kind).toBe(strategy_kind)
+      expect(req.validation_context.strategy_kind).toBe(strategy_kind);
       expect(req.candidates[0]).toMatchObject({
-        fast_ma_type: 'ema',
-        slow_ma_type: 'sma',
+        fast_ma_type: "ema",
+        slow_ma_type: "sma",
         fast_len: 11,
         slow_len: 44,
         strategy: { fee_bps: 1.25 },
-        halftrend_filter: { enabled: true }
-      })
+        halftrend_filter: { enabled: true },
+      });
       expect(req.cross_ticker).toEqual({
         max_datasets: 1,
-        mode: 'preserved_finalists',
-        datasets: [{ csv_path: 'C:/data/SPY.csv', label: 'SPY' }]
-      })
+        mode: "preserved_finalists",
+        datasets: [{ csv_path: "C:/data/SPY.csv", label: "SPY" }],
+      });
 
-      const summary = buildValidationCapabilitySummary(req)
-      expect(summary.routeSummary).toContain(expectedRouteFragment)
-      expect(summary.crossSummary).toContain('finalists only')
-      expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
-    }
-  )
+      const summary = buildValidationCapabilitySummary(req);
+      expect(summary.routeSummary).toContain(expectedRouteFragment);
+      expect(summary.crossSummary).toContain("finalists only (cap=4)");
+      expect(summary.warningSummary).toContain(
+        "Preserved-finalists cross reruns keep CSCV/PBO + hard gates",
+      );
+    },
+  );
 
   it.each([
-    ['CompositeTrend', { backend: 'CpuOnly' }, 'expected CPU route (CompositeTrend)'],
-    ['RegimeHybrid', { backend: 'CpuOnly' }, 'expected CPU route (RegimeHybrid)'],
-    ['BreakoutMomentum', { backend: 'GpuOnly', device_id: 0 }, 'expected CpuOnly fallback for fixed-candidate validation (BreakoutMomentum)'],
+    [
+      "CompositeTrend",
+      { backend: "CpuOnly" },
+      "expected CPU route (CompositeTrend)",
+    ],
+    [
+      "RegimeHybrid",
+      { backend: "CpuOnly" },
+      "expected CPU route (RegimeHybrid)",
+    ],
+    [
+      "BreakoutMomentum",
+      { backend: "GpuOnly", device_id: 0 },
+      "expected CpuOnly fallback for fixed-candidate validation (BreakoutMomentum)",
+    ],
   ] as const)(
-    'keeps strategy-specific route wording for %s when validation cannot stay on the GPU main route',
+    "keeps strategy-specific route wording for %s when validation cannot stay on the GPU main route",
     (strategy_kind, backend, expectedRouteFragment) => {
       const req = buildValidationRequest({
         currentRunReq: {
           strategy_kind,
           data_id: `${strategy_kind}-route-check`,
           backend,
-          ma_source: 'close',
-          fast_ma_types: ['ema'],
-          slow_ma_types: ['sma'],
+          ma_source: "close",
+          fast_ma_types: ["ema"],
+          slow_ma_types: ["sma"],
           strategy: { fee_bps: 1.25 },
         },
         currentRunRes: { ok: true },
         topRows: [
           {
             params: {
-              fast_ma_type: 'ema',
-              slow_ma_type: 'sma',
+              fast_ma_type: "ema",
+              slow_ma_type: "sma",
               fast_len: 11,
               slow_len: 44,
             },
           },
         ],
-        candidates: '4',
-      })
+        candidates: "4",
+      });
 
-      const summary = buildValidationCapabilitySummary(req)
-      expect(summary.routeSummary).toContain(expectedRouteFragment)
+      const summary = buildValidationCapabilitySummary(req);
+      expect(summary.routeSummary).toContain(expectedRouteFragment);
     },
-  )
+  );
 
   it.each([
-    ['CompositeTrend', { backend: 'CpuOnly' }],
-    ['RegimeHybrid', { backend: 'CpuOnly' }],
-    ['BreakoutMomentum', { backend: 'CpuOnly' }],
+    ["CompositeTrend", { backend: "CpuOnly" }],
+    ["RegimeHybrid", { backend: "CpuOnly" }],
+    ["BreakoutMomentum", { backend: "CpuOnly" }],
   ] as const)(
-    'keeps %s on the CPU validation route when CpuOnly is requested',
+    "keeps %s on the CPU validation route when CpuOnly is requested",
     (strategy_kind, backend) => {
       const req = buildValidationRequest({
         currentRunReq: {
           strategy_kind,
           data_id: `${strategy_kind}-cpu-data`,
           backend,
-          ma_source: 'close',
-          fast_ma_types: ['ema'],
-          slow_ma_types: ['sma'],
+          ma_source: "close",
+          fast_ma_types: ["ema"],
+          slow_ma_types: ["sma"],
           strategy: { fee_bps: 1.0 },
         },
         currentRunRes: { ok: true },
         topRows: [
           {
             params: {
-              fast_ma_type: 'ema',
-              slow_ma_type: 'sma',
+              fast_ma_type: "ema",
+              slow_ma_type: "sma",
               fast_len: 10,
               slow_len: 40,
             },
           },
         ],
-        candidates: '4',
-      })
+        candidates: "4",
+      });
 
-      const summary = buildValidationCapabilitySummary(req)
-      expect(summary.routeSummary).toContain('CpuOnly requested | expected CPU route')
-      expect(summary.routeSummary).toContain(strategy_kind)
-      expect(summary.moduleSummary).toContain(`CPU route (${strategy_kind}):`)
-      expect(summary.warningSummary).toBe('none')
+      const summary = buildValidationCapabilitySummary(req);
+      expect(summary.routeSummary).toContain(
+        "CpuOnly requested | expected CPU route",
+      );
+      expect(summary.routeSummary).toContain(strategy_kind);
+      expect(summary.moduleSummary).toContain(`CPU route (${strategy_kind}):`);
+      expect(summary.warningSummary).toBe("none");
     },
-  )
+  );
 
-  it('treats BreakoutMomentum ADX-on winners as hybrid-route validation reruns', () => {
+  it("treats BreakoutMomentum ADX-on winners as hybrid-route validation reruns", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'BreakoutMomentum',
-        data_id: 'breakout-hybrid-data',
-        backend: { backend: 'GpuHybridKernel', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['sma'],
+        strategy_kind: "BreakoutMomentum",
+        data_id: "breakout-hybrid-data",
+        backend: { backend: "GpuHybridKernel", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["sma"],
         strategy: { fee_bps: 1.0, breakout_use_adx: true },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 13,
             slow_len: 55,
           },
         },
       ],
-      candidates: '4',
-    })
+      candidates: "4",
+    });
 
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('GpuHybridKernel requested')
-    expect(summary.routeSummary).toContain('expected GPU hybrid main route')
-    expect(summary.moduleSummary).toContain('Expected GPU hybrid route')
-  })
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain("GpuHybridKernel requested");
+    expect(summary.routeSummary).toContain("expected GPU hybrid main route");
+    expect(summary.moduleSummary).toContain("Expected GPU hybrid route");
+  });
 
-  it('surfaces Auto CompositeTrend ADX-off validation previews as kernel-route expectations', () => {
+  it("surfaces Auto CompositeTrend ADX-off validation previews as CPU-route expectations", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeTrend',
-        data_id: 'composite-trend-auto-kernel',
-        backend: { backend: 'Auto', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['sma'],
+        strategy_kind: "CompositeTrend",
+        data_id: "composite-trend-auto-kernel",
+        backend: { backend: "Auto", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["sma"],
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 12,
             slow_len: 48,
           },
         },
       ],
-      candidates: '4',
-    })
+      candidates: "4",
+    });
 
-    req.candidates[0]!.strategy = { trend_quality_use_adx: false }
+    req.candidates[0]!.strategy = { trend_quality_use_adx: false };
 
-    const summary = buildValidationCapabilitySummary(req)
+    const summary = buildValidationCapabilitySummary(req);
     expect(summary.routeSummary).toContain(
-      'Auto requested | expected GPU kernel main route (CompositeTrend) when available',
-    )
-    expect(summary.moduleSummary).toContain(
-      'Expected GPU kernel route (CompositeTrend) when available',
-    )
-  })
+      "Auto requested | expected CPU route (CompositeTrend)",
+    );
+    expect(summary.moduleSummary).toContain("CPU route (CompositeTrend)");
+    expect(summary.categorySummary).toContain("CPU-only:");
+  });
 
-  it('keeps Auto CompositeTrend ADX-on validation previews on kernel-route expectations until backend auto validation supports hybrid routing', () => {
+  it("surfaces Auto CompositeTrend ADX-on validation previews as hybrid-route expectations", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeTrend',
-        data_id: 'composite-trend-auto-hybrid',
-        backend: { backend: 'Auto', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['sma'],
+        strategy_kind: "CompositeTrend",
+        data_id: "composite-trend-auto-hybrid",
+        backend: { backend: "Auto", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["sma"],
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 12,
             slow_len: 48,
           },
         },
       ],
-      candidates: '4',
-    })
+      candidates: "4",
+    });
 
-    req.candidates[0]!.strategy = { trend_quality_use_adx: true }
+    req.candidates[0]!.strategy = { trend_quality_use_adx: true };
 
-    const summary = buildValidationCapabilitySummary(req)
+    const summary = buildValidationCapabilitySummary(req);
     expect(summary.routeSummary).toContain(
-      'Auto requested | expected GPU kernel main route (CompositeTrend) when available',
-    )
+      "Auto requested | expected GPU hybrid main route (CompositeTrend) when available",
+    );
     expect(summary.moduleSummary).toContain(
-      'Expected GPU kernel route (CompositeTrend) when available',
-    )
-  })
+      "Expected GPU hybrid route (CompositeTrend) when available",
+    );
+  });
 
-  it('reroutes explicit GpuKernel BreakoutMomentum ADX-on validation previews to the hybrid route', () => {
+  it("reroutes explicit GpuKernel BreakoutMomentum ADX-on validation previews to the hybrid route", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'BreakoutMomentum',
-        data_id: 'breakout-explicit-kernel-reroute',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['sma'],
+        strategy_kind: "BreakoutMomentum",
+        data_id: "breakout-explicit-kernel-reroute",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["sma"],
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 13,
             slow_len: 55,
           },
         },
       ],
-      candidates: '4',
-    })
+      candidates: "4",
+    });
 
-    req.candidates[0]!.strategy = { breakout_use_adx: true }
+    req.candidates[0]!.strategy = { breakout_use_adx: true };
 
-    const summary = buildValidationCapabilitySummary(req)
+    const summary = buildValidationCapabilitySummary(req);
     expect(summary.routeSummary).toContain(
-      'GpuKernel requested | expected GPU hybrid main route (BreakoutMomentum)',
-    )
-    expect(summary.moduleSummary).toContain('Expected GPU hybrid route (BreakoutMomentum)')
-  })
+      "GpuKernel requested | expected GPU hybrid main route (BreakoutMomentum)",
+    );
+    expect(summary.moduleSummary).toContain(
+      "Expected GPU hybrid route (BreakoutMomentum)",
+    );
+  });
 
-  it('rejects DynamicDoubleMa validation requests until dynamic IR replay is implemented', () => {
+  it("rejects DynamicDoubleMa validation requests until dynamic IR replay is implemented", () => {
     expect(() =>
       buildValidationRequest({
         currentRunReq: {
-          strategy_kind: 'DynamicDoubleMa',
-          data_id: 'data-dynamic',
-          ma_source: 'close',
+          strategy_kind: "DynamicDoubleMa",
+          data_id: "data-dynamic",
+          ma_source: "close",
           strategy: { long_only: true },
         },
         currentRunRes: { ok: true },
         topRows: [
           {
             params: {
-              fast_ma_type: 'ema',
-              slow_ma_type: 'ema',
+              fast_ma_type: "ema",
+              slow_ma_type: "ema",
               fast_len: 12,
               slow_len: 48,
             },
           },
         ],
-        candidates: '8',
-      })
-    ).toThrow('DynamicDoubleMa validation is not supported yet')
-  })
+        candidates: "8",
+      }),
+    ).toThrow("DynamicDoubleMa validation is not supported yet");
+  });
 
-  it('treats Set as a double-like validation strategy', () => {
+  it("treats Set as a double-like validation strategy", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Set',
-        data_id: 'data-set',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['sma'],
-        strategy: { slope_efficiency_trend_enable: true, set_er_period: 14 }
+        strategy_kind: "Set",
+        data_id: "data-set",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["sma"],
+        strategy: { slope_efficiency_trend_enable: true, set_er_period: 14 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'sma',
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
             fast_len: 8,
             slow_len: 34,
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Set')
+    expect(req.validation_context.strategy_kind).toBe("Set");
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'sma',
-      slow_ma_type: 'sma',
+      fast_ma_type: "sma",
+      slow_ma_type: "sma",
       fast_len: 8,
       slow_len: 34,
-      strategy: { slope_efficiency_trend_enable: true, set_er_period: 14 }
-    })
-  })
+      strategy: { slope_efficiency_trend_enable: true, set_er_period: 14 },
+    });
+  });
 
-  it('treats Pit as a double-like validation strategy', () => {
+  it("treats Pit as a double-like validation strategy", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Pit',
-        data_id: 'data-pit',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['sma'],
-        strategy: { pressure_impulse_trend_enable: true, pit_efi_period: 13 }
+        strategy_kind: "Pit",
+        data_id: "data-pit",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["sma"],
+        strategy: { pressure_impulse_trend_enable: true, pit_efi_period: 13 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'sma',
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
             fast_len: 8,
             slow_len: 34,
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Pit')
+    expect(req.validation_context.strategy_kind).toBe("Pit");
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'sma',
-      slow_ma_type: 'sma',
+      fast_ma_type: "sma",
+      slow_ma_type: "sma",
       fast_len: 8,
       slow_len: 34,
-      strategy: { pressure_impulse_trend_enable: true, pit_efi_period: 13 }
-    })
-  })
+      strategy: { pressure_impulse_trend_enable: true, pit_efi_period: 13 },
+    });
+  });
 
-  it('treats Mts as a double-like validation strategy', () => {
+  it("treats Mts as a double-like validation strategy", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Mts',
-        data_id: 'data-mts',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['sma'],
-        strategy: { momentum_triple_stack_enable: true, mts_roc_period: 10 }
+        strategy_kind: "Mts",
+        data_id: "data-mts",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["sma"],
+        strategy: { momentum_triple_stack_enable: true, mts_roc_period: 10 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'sma',
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
             fast_len: 8,
             slow_len: 34,
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Mts')
+    expect(req.validation_context.strategy_kind).toBe("Mts");
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'sma',
-      slow_ma_type: 'sma',
+      fast_ma_type: "sma",
+      slow_ma_type: "sma",
       fast_len: 8,
       slow_len: 34,
-      strategy: { momentum_triple_stack_enable: true, mts_roc_period: 10 }
-    })
-  })
+      strategy: { momentum_triple_stack_enable: true, mts_roc_period: 10 },
+    });
+  });
 
-  it('treats Orc as a double-like validation strategy', () => {
+  it("treats Orc as a double-like validation strategy", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Orc',
-        data_id: 'data-orc',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['sma'],
-        strategy: { oscillator_reversion_confluence_enable: true, orc_rsi_period: 14 }
+        strategy_kind: "Orc",
+        data_id: "data-orc",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["sma"],
+        strategy: {
+          oscillator_reversion_confluence_enable: true,
+          orc_rsi_period: 14,
+        },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'sma',
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
             fast_len: 8,
             slow_len: 34,
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Orc')
+    expect(req.validation_context.strategy_kind).toBe("Orc");
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'sma',
-      slow_ma_type: 'sma',
+      fast_ma_type: "sma",
+      slow_ma_type: "sma",
       fast_len: 8,
       slow_len: 34,
-      strategy: { oscillator_reversion_confluence_enable: true, orc_rsi_period: 14 }
-    })
-  })
+      strategy: {
+        oscillator_reversion_confluence_enable: true,
+        orc_rsi_period: 14,
+      },
+    });
+  });
 
-  it('treats Vfct as a double-like validation strategy', () => {
+  it("treats Vfct as a double-like validation strategy", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Vfct',
-        data_id: 'data-vfct',
-        ma_source: 'close',
-        fast_ma_types: ['vwma'],
-        slow_ma_types: ['vwma'],
-        strategy: { volume_flow_confirm_enable: true, volume_flow_mfi_period: 14 }
+        strategy_kind: "Vfct",
+        data_id: "data-vfct",
+        ma_source: "close",
+        fast_ma_types: ["vwma"],
+        slow_ma_types: ["vwma"],
+        strategy: {
+          volume_flow_confirm_enable: true,
+          volume_flow_mfi_period: 14,
+        },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'vwma',
-            slow_ma_type: 'vwma',
+            fast_ma_type: "vwma",
+            slow_ma_type: "vwma",
             fast_len: 8,
             slow_len: 34,
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Vfct')
+    expect(req.validation_context.strategy_kind).toBe("Vfct");
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'vwma',
-      slow_ma_type: 'vwma',
+      fast_ma_type: "vwma",
+      slow_ma_type: "vwma",
       fast_len: 8,
       slow_len: 34,
-      strategy: { volume_flow_confirm_enable: true, volume_flow_mfi_period: 14 }
-    })
-  })
+      strategy: {
+        volume_flow_confirm_enable: true,
+        volume_flow_mfi_period: 14,
+      },
+    });
+  });
 
-  it('builds ROCB validation request using run-level ROCB config', () => {
+  it("builds ROCB validation request using run-level ROCB config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Rocb',
-        data_id: 'rocb-data',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "Rocb",
+        data_id: "rocb-data",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 1.0 },
-        rocb: { channel_period: 20, atr_period: 14, atr_stop_mult: 2.0, max_trade_bars: 80 }
+        rocb: {
+          channel_period: 20,
+          atr_period: 14,
+          atr_stop_mult: 2.0,
+          max_trade_bars: 80,
+        },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'ema',
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
             fast_len: 10,
             slow_len: 40,
-            rocb: { channel_period: 22, atr_period: 16, atr_stop_mult: 2.2, max_trade_bars: 90 }
-          }
-        }
+            rocb: {
+              channel_period: 22,
+              atr_period: 16,
+              atr_stop_mult: 2.2,
+              max_trade_bars: 90,
+            },
+          },
+        },
       ],
-      candidates: '5',
-      seed: '6'
-    })
+      candidates: "5",
+      seed: "6",
+    });
 
-    expect(req.data_id).toBe('rocb-data')
-    expect(req.seed).toBe(6)
-    expect(req.validation_context.strategy_kind).toBe('Rocb')
+    expect(req.data_id).toBe("rocb-data");
+    expect(req.seed).toBe(6);
+    expect(req.validation_context.strategy_kind).toBe("Rocb");
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'sma',
-      slow_ma_type: 'ema',
+      fast_ma_type: "sma",
+      slow_ma_type: "ema",
       fast_len: 10,
       slow_len: 40,
-      rocb: { channel_period: 22, atr_period: 16, atr_stop_mult: 2.2, max_trade_bars: 90 }
-    })
-  })
+      rocb: {
+        channel_period: 22,
+        atr_period: 16,
+        atr_stop_mult: 2.2,
+        max_trade_bars: 90,
+      },
+    });
+  });
 
-  it('builds ASR validation request using run-level ASR config', () => {
+  it("builds ASR validation request using run-level ASR config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Asr',
-        data_id: 'asr-data',
-        ma_source: 'close',
-        fast_ma_types: ['alma'],
-        slow_ma_types: ['alma'],
+        strategy_kind: "Asr",
+        data_id: "asr-data",
+        ma_source: "close",
+        fast_ma_types: ["alma"],
+        slow_ma_types: ["alma"],
         strategy: { fee_bps: 1.0 },
-        asr: { angle_deg_min: 12, z_entry: 1.8 }
+        asr: { angle_deg_min: 12, z_entry: 1.8 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'alma',
-            slow_ma_type: 'alma',
+            fast_ma_type: "alma",
+            slow_ma_type: "alma",
             fast_len: 20,
-            slow_len: 80
-          }
-        }
+            slow_len: 80,
+          },
+        },
       ],
-      candidates: '5',
-      seed: '3'
-    })
+      candidates: "5",
+      seed: "3",
+    });
 
-    expect(req.data_id).toBe('asr-data')
-    expect(req.seed).toBe(3)
-    expect(req.candidates).toHaveLength(1)
+    expect(req.data_id).toBe("asr-data");
+    expect(req.seed).toBe(3);
+    expect(req.candidates).toHaveLength(1);
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'alma',
-      slow_ma_type: 'alma',
+      fast_ma_type: "alma",
+      slow_ma_type: "alma",
       fast_len: 20,
       slow_len: 80,
-      asr: { angle_deg_min: 12, z_entry: 1.8 }
-    })
-  })
+      asr: { angle_deg_min: 12, z_entry: 1.8 },
+    });
+  });
 
-  it('builds VEMR validation request using run-level VEMR config', () => {
+  it("builds VEMR validation request using run-level VEMR config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Vemr',
-        data_id: 'vemr-data',
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "Vemr",
+        data_id: "vemr-data",
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 1.0 },
-        vemr: { z_entry: 2.1, atr_stop_mult: 1.8 }
+        vemr: { z_entry: 2.1, atr_stop_mult: 1.8 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'ema',
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
             fast_len: 14,
-            slow_len: 55
-          }
-        }
+            slow_len: 55,
+          },
+        },
       ],
-      candidates: '5',
-      seed: '9'
-    })
+      candidates: "5",
+      seed: "9",
+    });
 
-    expect(req.data_id).toBe('vemr-data')
-    expect(req.seed).toBe(9)
-    expect(req.candidates).toHaveLength(1)
+    expect(req.data_id).toBe("vemr-data");
+    expect(req.seed).toBe(9);
+    expect(req.candidates).toHaveLength(1);
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'ema',
-      slow_ma_type: 'ema',
+      fast_ma_type: "ema",
+      slow_ma_type: "ema",
       fast_len: 14,
       slow_len: 55,
-      vemr: { z_entry: 2.1, atr_stop_mult: 1.8 }
-    })
-  })
+      vemr: { z_entry: 2.1, atr_stop_mult: 1.8 },
+    });
+  });
 
-  it('builds MKCS validation request using run-level MKCS config', () => {
+  it("builds MKCS validation request using run-level MKCS config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Mkcs',
-        data_id: 'mkcs-data',
-        ma_source: 'close',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['sma'],
+        strategy_kind: "Mkcs",
+        data_id: "mkcs-data",
+        ma_source: "close",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["sma"],
         strategy: { fee_bps: 1.25 },
-        mkcs: { compression_threshold: 0.01, reexpansion_threshold: 0.03 }
+        mkcs: { compression_threshold: 0.01, reexpansion_threshold: 0.03 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 12,
             slow_len: 48,
-            mkcs: { stddev_period: 20, breakout_lookback: 30 }
-          }
-        }
+            mkcs: { stddev_period: 20, breakout_lookback: 30 },
+          },
+        },
       ],
-      candidates: '5',
-      seed: '5'
-    })
+      candidates: "5",
+      seed: "5",
+    });
 
-    expect(req.data_id).toBe('mkcs-data')
-    expect(req.seed).toBe(5)
-    expect(req.validation_context.strategy_kind).toBe('Mkcs')
-    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
-    expect(req.candidates).toHaveLength(1)
+    expect(req.data_id).toBe("mkcs-data");
+    expect(req.seed).toBe(5);
+    expect(req.validation_context.strategy_kind).toBe("Mkcs");
+    expect(req.backend).toEqual({ backend: "Auto", device_id: 0 });
+    expect(req.candidates).toHaveLength(1);
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'ema',
-      slow_ma_type: 'sma',
+      fast_ma_type: "ema",
+      slow_ma_type: "sma",
       fast_len: 12,
       slow_len: 48,
-      mkcs: { stddev_period: 20, breakout_lookback: 30 }
-    })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (MKCS)')
-    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for MKCS')
-  })
+      mkcs: { stddev_period: 20, breakout_lookback: 30 },
+    });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected CPU-preferred composite route (MKCS)",
+    );
+    expect(summary.warningSummary).toContain(
+      "Auto composite validation currently prefers CPU for MKCS",
+    );
+  });
 
-  it('builds KQSR validation request using run-level KQSR config', () => {
+  it("builds KQSR validation request using run-level KQSR config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Kqsr',
-        data_id: 'kqsr-data',
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "Kqsr",
+        data_id: "kqsr-data",
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 0.5 },
-        kqsr: { oversold: 18, overbought: 82 }
+        kqsr: { oversold: 18, overbought: 82 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'ema',
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
             fast_len: 12,
             slow_len: 36,
-            kqsr: { prb_period: 24, prb_threshold: 0.15 }
-          }
-        }
-      ]
-    })
+            kqsr: { prb_period: 24, prb_threshold: 0.15 },
+          },
+        },
+      ],
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Kqsr')
+    expect(req.validation_context.strategy_kind).toBe("Kqsr");
     expect(req.candidates[0]).toMatchObject({
       fast_len: 12,
       slow_len: 36,
-      kqsr: { prb_period: 24, prb_threshold: 0.15 }
-    })
-  })
+      kqsr: { prb_period: 24, prb_threshold: 0.15 },
+    });
+  });
 
-  it('builds CARM validation request using run-level CARM config', () => {
+  it("builds CARM validation request using run-level CARM config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Carm',
-        data_id: 'carm-data',
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "Carm",
+        data_id: "carm-data",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 0.5 },
-        carm: { otto_threshold: 0.1 }
+        carm: { otto_threshold: 0.1 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'ema',
+            fast_ma_type: "sma",
+            slow_ma_type: "ema",
             fast_len: 10,
             slow_len: 42,
-            carm: { rocr_period: 12, otto_period: 24 }
-          }
-        }
-      ]
-    })
+            carm: { rocr_period: 12, otto_period: 24 },
+          },
+        },
+      ],
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Carm')
+    expect(req.validation_context.strategy_kind).toBe("Carm");
     expect(req.candidates[0]).toMatchObject({
       fast_len: 10,
       slow_len: 42,
-      carm: { rocr_period: 12, otto_period: 24 }
-    })
-  })
+      carm: { rocr_period: 12, otto_period: 24 },
+    });
+  });
 
-  it('builds KVDF validation request using run-level KVDF config', () => {
+  it("builds KVDF validation request using run-level KVDF config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Kvdf',
-        data_id: 'kvdf-data',
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['sma'],
+        strategy_kind: "Kvdf",
+        data_id: "kvdf-data",
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["sma"],
         strategy: { fee_bps: 0.5 },
-        kvdf: { keltner_mult: 1.8, dti_threshold: 22 }
+        kvdf: { keltner_mult: 1.8, dti_threshold: 22 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 15,
             slow_len: 55,
-            kvdf: { fvg_lookback: 18, devstop_period: 16 }
-          }
-        }
-      ]
-    })
+            kvdf: { fvg_lookback: 18, devstop_period: 16 },
+          },
+        },
+      ],
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Kvdf')
+    expect(req.validation_context.strategy_kind).toBe("Kvdf");
     expect(req.candidates[0]).toMatchObject({
       fast_len: 15,
       slow_len: 55,
-      kvdf: { fvg_lookback: 18, devstop_period: 16 }
-    })
-  })
+      kvdf: { fvg_lookback: 18, devstop_period: 16 },
+    });
+  });
 
-  it('builds CDMC validation request using run-level CDMC config', () => {
+  it("builds CDMC validation request using run-level CDMC config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Cdmc',
-        data_id: 'cdmc-data',
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "Cdmc",
+        data_id: "cdmc-data",
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 0.5 },
-        cdmc: { mama_fast_limit: 0.45, mama_slow_limit: 0.08 }
+        cdmc: { mama_fast_limit: 0.45, mama_slow_limit: 0.08 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'ema',
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
             fast_len: 11,
             slow_len: 44,
-            cdmc: { dpo_period: 22, decycler_period: 34 }
-          }
-        }
-      ]
-    })
+            cdmc: { dpo_period: 22, decycler_period: 34 },
+          },
+        },
+      ],
+    });
 
-    expect(req.validation_context.strategy_kind).toBe('Cdmc')
+    expect(req.validation_context.strategy_kind).toBe("Cdmc");
     expect(req.candidates[0]).toMatchObject({
       fast_len: 11,
       slow_len: 44,
-      cdmc: { dpo_period: 22, decycler_period: 34 }
-    })
-  })
+      cdmc: { dpo_period: 22, decycler_period: 34 },
+    });
+  });
 
-  it('builds VCC validation request using run-level VCC config', () => {
+  it("builds VCC validation request using run-level VCC config", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Vcc',
-        data_id: 'vcc-data',
-        ma_source: 'close',
-        fast_ma_types: ['ema'],
-        slow_ma_types: ['ema'],
+        strategy_kind: "Vcc",
+        data_id: "vcc-data",
+        ma_source: "close",
+        fast_ma_types: ["ema"],
+        slow_ma_types: ["ema"],
         strategy: { fee_bps: 1.0 },
-        vcc: { squeeze_period: 20, trend_period: 6 }
+        vcc: { squeeze_period: 20, trend_period: 6 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'ema',
-            fast_len: 10,
-            slow_len: 40
-          }
-        }
-      ],
-      candidates: '5',
-      seed: '4'
-    })
-
-    expect(req.data_id).toBe('vcc-data')
-    expect(req.seed).toBe(4)
-    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
-    expect(req.candidates).toHaveLength(1)
-    expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'ema',
-      slow_ma_type: 'ema',
-      fast_len: 10,
-      slow_len: 40,
-      vcc: { squeeze_period: 20, trend_period: 6 }
-    })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected GPU composite route (VCC)')
-    expect(summary.warningSummary).toContain('VCC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
-  })
-
-  it('summarizes double-ma gpu preserved-finalists capability expectations', () => {
-    const req = buildValidationRequest({
-      currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-gpu',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['alma'],
-        slow_ma_types: ['alma'],
-      },
-      currentRunRes: { ok: true },
-      topRows: [
-        {
-          params: {
-            fast_ma_type: 'alma',
-            slow_ma_type: 'alma',
-            fast_len: 9,
-            slow_len: 30,
-          }
-        }
-      ],
-      wfEnable: true,
-      wfWindow: '12000',
-      wfStep: '3000',
-      reoptWfEnable: true,
-      reoptWfWindow: '12000',
-      reoptWfStep: '3000',
-      reoptWfTopN: '4',
-      spaEnable: true,
-      spaSlices: '12',
-      spaBootstrapSamples: '300',
-      spaBlockLength: '4',
-      perturbEnable: true,
-      perturbIters: '8',
-      perturbMin: '0.01',
-      perturbMax: '0.05',
-      mcEnable: true,
-      mcSims: '500',
-      mcBlockLen: '9',
-      cscvEnable: true,
-      cscvSlices: '16',
-      crossEnable: true,
-      crossMax: '2',
-      crossMode: 'preserved_finalists',
-      crossDatasets: [
-        { csv_path: 'C:/data/SPY.csv', label: 'SPY' },
-        { csv_path: 'C:/data/QQQ.csv', label: 'QQQ' }
-      ]
-    })
-
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('GpuKernel requested')
-    expect(summary.crossSummary).toContain('2 datasets')
-    expect(summary.crossSummary).toContain('finalists only')
-    expect(summary.moduleSummary).toContain('GPU main route')
-    expect(summary.moduleSummary).toContain('auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=9)')
-    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa')
-    expect(summary.categorySummary).toContain('GPU main + CPU tail: perturb + trade_bootstrap')
-    expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
-  })
-
-  it('warns when gpuonly is requested for fixed-candidate double-ma validation', () => {
-    const req = buildValidationRequest({
-      currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-gpuonly',
-        backend: { backend: 'GpuOnly', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['sma'],
-      },
-      currentRunRes: { ok: true },
-      topRows: [
-        {
-          params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'sma',
-            fast_len: 8,
-            slow_len: 34,
-          }
-        }
-      ],
-      candidates: '4'
-    })
-
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected CpuOnly fallback')
-    expect(summary.moduleSummary).toContain('Expected CPU fallback route')
-    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates')
-    expect(summary.warningSummary).toContain('GpuOnly is not supported for fixed-candidate Double-MA validation')
-  })
-
-  it('supports iid-only bootstrap mode for validation requests and summaries', () => {
-    const req = buildValidationRequest({
-      currentRunReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'data-iid',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
-        fast_ma_types: ['sma'],
-        slow_ma_types: ['alma'],
-      },
-      currentRunRes: { ok: true },
-      topRows: [
-        {
-          params: {
-            fast_ma_type: 'sma',
-            slow_ma_type: 'alma',
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
             fast_len: 10,
             slow_len: 40,
-          }
-        }
+          },
+        },
       ],
-      mcEnable: true,
-      mcSims: '400',
-      mcMode: 'iid_only',
-      mcBlockLen: '9',
-      candidates: '8'
-    })
+      candidates: "5",
+      seed: "4",
+    });
 
-    expect(req.trade_bootstrap).toEqual({ simulations: 400, stationary_mean_block_len: 0 })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.moduleSummary).toContain('trade bootstrap iid-only')
-  })
+    expect(req.data_id).toBe("vcc-data");
+    expect(req.seed).toBe(4);
+    expect(req.backend).toEqual({ backend: "Auto", device_id: 0 });
+    expect(req.candidates).toHaveLength(1);
+    expect(req.candidates[0]).toMatchObject({
+      fast_ma_type: "ema",
+      slow_ma_type: "ema",
+      fast_len: 10,
+      slow_len: 40,
+      vcc: { squeeze_period: 20, trend_period: 6 },
+    });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected GPU composite route (VCC)",
+    );
+    expect(summary.warningSummary).toContain(
+      "VCC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route",
+    );
+  });
 
-  it('surfaces CompositeMo cross-ticker fallback and lightweight-rerun expectations explicitly', () => {
+  it("summarizes double-ma gpu preserved-finalists capability expectations", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeMo',
-        data_id: 'data-composite-cross',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "DoubleMa",
+        data_id: "data-gpu",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["alma"],
+        slow_ma_types: ["alma"],
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "alma",
+            slow_ma_type: "alma",
+            fast_len: 9,
+            slow_len: 30,
+          },
+        },
+      ],
+      wfEnable: true,
+      wfWindow: "12000",
+      wfStep: "3000",
+      reoptWfEnable: true,
+      reoptWfWindow: "12000",
+      reoptWfStep: "3000",
+      reoptWfTopN: "4",
+      spaEnable: true,
+      spaSlices: "12",
+      spaBootstrapSamples: "300",
+      spaBlockLength: "4",
+      perturbEnable: true,
+      perturbIters: "8",
+      perturbMin: "0.01",
+      perturbMax: "0.05",
+      mcEnable: true,
+      mcSims: "500",
+      mcBlockLen: "9",
+      cscvEnable: true,
+      cscvSlices: "16",
+      crossEnable: true,
+      crossMax: "2",
+      crossMode: "preserved_finalists",
+      crossDatasets: [
+        { csv_path: "C:/data/SPY.csv", label: "SPY" },
+        { csv_path: "C:/data/QQQ.csv", label: "QQQ" },
+      ],
+    });
+
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain("GpuKernel requested");
+    expect(summary.crossSummary).toContain("2 datasets");
+    expect(summary.crossSummary).toContain("finalists only (cap=4)");
+    expect(summary.moduleSummary).toContain("GPU main route");
+    expect(summary.moduleSummary).toContain(
+      "auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=9)",
+    );
+    expect(summary.categorySummary).toContain(
+      "GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa",
+    );
+    expect(summary.categorySummary).toContain(
+      "GPU main + CPU tail: perturb + trade_bootstrap",
+    );
+    expect(summary.warningSummary).toContain(
+      "Preserved-finalists cross reruns keep CSCV/PBO + hard gates",
+    );
+  });
+
+  it("warns when gpuonly is requested for fixed-candidate double-ma validation", () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-gpuonly",
+        backend: { backend: "GpuOnly", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["sma"],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
+            fast_len: 8,
+            slow_len: 34,
+          },
+        },
+      ],
+      candidates: "4",
+    });
+
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain("expected CpuOnly fallback");
+    expect(summary.moduleSummary).toContain("Expected CPU fallback route");
+    expect(summary.categorySummary).toContain(
+      "CPU-only: base reruns + hard gates",
+    );
+    expect(summary.warningSummary).toContain(
+      "GpuOnly is not supported for fixed-candidate Double-MA validation",
+    );
+  });
+
+  it("supports iid-only bootstrap mode for validation requests and summaries", () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-iid",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["alma"],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "sma",
+            slow_ma_type: "alma",
+            fast_len: 10,
+            slow_len: 40,
+          },
+        },
+      ],
+      mcEnable: true,
+      mcSims: "400",
+      mcMode: "iid_only",
+      mcBlockLen: "9",
+      candidates: "8",
+    });
+
+    expect(req.trade_bootstrap).toEqual({
+      simulations: 400,
+      stationary_mean_block_len: 0,
+    });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.moduleSummary).toContain("trade bootstrap iid-only");
+  });
+
+  it("surfaces CompositeMo cross-ticker fallback and lightweight-rerun expectations explicitly", () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "CompositeMo",
+        data_id: "data-composite-cross",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'soft_vote',
-          }
-        }
+            signal_mode: "soft_vote",
+          },
+        },
       ],
       wfEnable: true,
-      wfWindow: '12000',
-      wfStep: '3000',
+      wfWindow: "12000",
+      wfStep: "3000",
       cscvEnable: true,
-      cscvSlices: '16',
+      cscvSlices: "16",
       crossEnable: true,
-      crossMax: '2',
-      crossMode: 'lightweight',
+      crossMax: "2",
+      crossMode: "lightweight",
       crossDatasets: [
-        { csv_path: 'C:/data/SPY.csv', label: 'SPY' },
-        { csv_path: 'C:/data/QQQ.csv', label: 'QQQ' }
+        { csv_path: "C:/data/SPY.csv", label: "SPY" },
+        { csv_path: "C:/data/QQQ.csv", label: "QQQ" },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected CpuOnly fallback for composite validation')
-    expect(summary.moduleSummary).toContain('Expected CPU fallback route (base composite)')
-    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates + walk_forward + cscv_pbo')
-    expect(summary.crossSummary).toContain('lightweight reruns')
-    expect(summary.skippedSummary).toContain('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap + CSCV + hard gates')
-    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only')
-    expect(summary.warningSummary).toContain('Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward')
-  })
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected CPU-preferred composite route (CompositeMo)",
+    );
+    expect(summary.moduleSummary).toContain("Expected CPU route (CompositeMo)");
+    expect(summary.categorySummary).toContain(
+      "CPU-only: base reruns + hard gates + walk_forward + cscv_pbo",
+    );
+    expect(summary.crossSummary).toContain("lightweight reruns");
+    expect(summary.skippedSummary).toContain(
+      "Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap + CSCV + hard gates",
+    );
+    expect(summary.routeSummary).toContain(
+      "expected CPU-preferred composite route (CompositeMo)",
+    );
+    expect(summary.warningSummary).toContain(
+      "CompositeMo uses the CPU-preferred validation route",
+    );
+    expect(summary.warningSummary).toContain(
+      "Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward",
+    );
+  });
 
-  it('surfaces composite preserved-finalists cross reruns as finalists-only with verdict-relevant retention', () => {
+  it("surfaces composite preserved-finalists cross reruns as finalists-only with verdict-relevant retention", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Asr',
-        data_id: 'data-composite-preserved',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "Asr",
+        data_id: "data-composite-preserved",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             asr: {},
-          }
-        }
+          },
+        },
       ],
       wfEnable: true,
-      wfWindow: '12000',
-      wfStep: '3000',
+      wfWindow: "12000",
+      wfStep: "3000",
       cscvEnable: true,
-      cscvSlices: '16',
+      cscvSlices: "16",
       crossEnable: true,
-      crossMax: '2',
-      crossMode: 'preserved_finalists',
-      crossDatasets: [
-        { csv_path: 'C:/data/SPY.csv', label: 'SPY' }
-      ],
-      candidates: '8'
-    })
+      crossMax: "2",
+      crossMode: "preserved_finalists",
+      crossDatasets: [{ csv_path: "C:/data/SPY.csv", label: "SPY" }],
+      candidates: "8",
+    });
 
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.crossSummary).toContain('finalists only')
-    expect(summary.skippedSummary).toContain('Cross reruns: preserved_finalists omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap')
-    expect(summary.warningSummary).toContain('preserved-finalists composite cross reruns keep CSCV/PBO + hard gates')
-  })
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.crossSummary).toContain("finalists only (cap=4)");
+    expect(summary.skippedSummary).toContain(
+      "Cross reruns: preserved_finalists omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap",
+    );
+    expect(summary.warningSummary).toContain(
+      "preserved-finalists composite cross reruns keep CSCV/PBO + hard gates",
+    );
+  });
 
-  it('surfaces plain CompositeCpu GPU route restrictions explicitly in previews', () => {
+  it("surfaces plain CompositeCpu GPU route restrictions explicitly in previews", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeCpu',
-        data_id: 'data-composite-cpu',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "CompositeCpu",
+        data_id: "data-composite-cpu",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
         strategy: { fee_bps: 1.0 },
         halftrend: { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
       },
@@ -1500,33 +1641,37 @@ describe('validationRequestBuilder', () => {
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'hard_gate',
+            signal_mode: "hard_gate",
             strategy: { fee_bps: 1.0 },
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected GPU composite route (base composite)')
-    expect(summary.warningSummary).toContain('Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists')
-  })
+    expect(req.backend).toEqual({ backend: "Auto", device_id: 0 });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected GPU composite route (base composite)",
+    );
+    expect(summary.warningSummary).toContain(
+      "Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists",
+    );
+  });
 
-  it('keeps the product-default plain CompositeCpu CpuOnly route explicit in previews', () => {
+  it("keeps the product-default plain CompositeCpu CpuOnly route explicit in previews", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeCpu',
-        data_id: 'data-composite-cpu-default',
-        backend: { backend: 'CpuOnly' },
-        ma_source: 'close',
+        strategy_kind: "CompositeCpu",
+        data_id: "data-composite-cpu-default",
+        backend: { backend: "CpuOnly" },
+        ma_source: "close",
         strategy: { fee_bps: 1.0 },
         halftrend: { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
       },
@@ -1534,69 +1679,77 @@ describe('validationRequestBuilder', () => {
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'hard_gate',
+            signal_mode: "hard_gate",
             strategy: { fee_bps: 1.0 },
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.backend).toEqual({ backend: 'CpuOnly' })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('CpuOnly requested | CPU composite route expected (base composite)')
-    expect(summary.moduleSummary).toContain('CPU route (base composite):')
-    expect(summary.warningSummary).toBe('none')
-  })
+    expect(req.backend).toEqual({ backend: "CpuOnly" });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "CpuOnly requested | CPU composite route expected (base composite)",
+    );
+    expect(summary.moduleSummary).toContain("CPU route (base composite):");
+    expect(summary.warningSummary).toBe("none");
+  });
 
-  it('defaults Carm composite validation to Auto so CPU-preferred policy applies after GPU optimization', () => {
+  it("defaults Carm composite validation to Auto so CPU-preferred policy applies after GPU optimization", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Carm',
-        data_id: 'data-carm-preview',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "Carm",
+        data_id: "data-carm-preview",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 10,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             carm: {},
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'hard_gate',
-          }
-        }
+            signal_mode: "hard_gate",
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (CARM)')
-    expect(summary.moduleSummary).toContain('Expected CPU route (CARM)')
-    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates')
-    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for CARM')
-  })
+    expect(req.backend).toEqual({ backend: "Auto", device_id: 0 });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected CPU-preferred composite route (CARM)",
+    );
+    expect(summary.moduleSummary).toContain("Expected CPU route (CARM)");
+    expect(summary.categorySummary).toContain(
+      "CPU-only: base reruns + hard gates",
+    );
+    expect(summary.warningSummary).toContain(
+      "Auto composite validation currently prefers CPU for CARM",
+    );
+  });
 
-  it('defaults VCET validation to Auto and carries vcet params into candidates', () => {
+  it("defaults VCET validation to Auto and carries vcet params into candidates", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Vcet',
-        data_id: 'data-vcet',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "Vcet",
+        data_id: "data-vcet",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
         vcet: {
           vidya_short_period: 6,
           vidya_long_period: 24,
@@ -1609,8 +1762,8 @@ describe('validationRequestBuilder', () => {
       topRows: [
         {
           params: {
-            fast_ma_type: 'vidya',
-            slow_ma_type: 'vidya',
+            fast_ma_type: "vidya",
+            slow_ma_type: "vidya",
             fast_len: 8,
             slow_len: 34,
             vcet: {
@@ -1620,16 +1773,16 @@ describe('validationRequestBuilder', () => {
               ce_mult: 2.8,
             },
             strategy: { fee_bps: 1.0 },
-          }
-        }
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
+    expect(req.backend).toEqual({ backend: "Auto", device_id: 0 });
     expect(req.candidates[0]).toMatchObject({
-      fast_ma_type: 'vidya',
-      slow_ma_type: 'vidya',
+      fast_ma_type: "vidya",
+      slow_ma_type: "vidya",
       fast_len: 8,
       slow_len: 34,
       vcet: {
@@ -1638,124 +1791,152 @@ describe('validationRequestBuilder', () => {
         ce_period: 34,
         ce_mult: 2.8,
       },
-    })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected GPU composite route (VCET)')
-    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates')
-    expect(summary.categorySummary).not.toContain('GPU main + CPU tail:')
-    expect(summary.warningSummary).toContain('VCET GPU validation now supports the current fixed-candidate validation module stack on the GpuKernel route')
-  })
+    });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected GPU composite route (VCET)",
+    );
+    expect(summary.categorySummary).toContain(
+      "GPU-native: base reruns + hard gates",
+    );
+    expect(summary.categorySummary).not.toContain("GPU main + CPU tail:");
+    expect(summary.warningSummary).toContain(
+      "VCET GPU validation now supports the current fixed-candidate validation module stack on the GpuKernel route",
+    );
+  });
 
-  it('treats Carm Auto composite validation as CPU-preferred in previews', () => {
+  it("treats Carm Auto composite validation as CPU-preferred in previews", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Carm',
-        data_id: 'data-carm-auto-preview',
-        backend: { backend: 'Auto', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "Carm",
+        data_id: "data-carm-auto-preview",
+        backend: { backend: "Auto", device_id: 0 },
+        ma_source: "close",
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 10,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             carm: {},
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'hard_gate',
-          }
-        }
+            signal_mode: "hard_gate",
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (CARM)')
-    expect(summary.moduleSummary).toContain('Expected CPU route (CARM)')
-    expect(summary.categorySummary).toContain('CPU-only: base reruns + hard gates')
-    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for CARM')
-  })
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected CPU-preferred composite route (CARM)",
+    );
+    expect(summary.moduleSummary).toContain("Expected CPU route (CARM)");
+    expect(summary.categorySummary).toContain(
+      "CPU-only: base reruns + hard gates",
+    );
+    expect(summary.warningSummary).toContain(
+      "Auto composite validation currently prefers CPU for CARM",
+    );
+  });
 
-  it('treats Cdmc Auto composite validation as GPU-routed in previews', () => {
+  it("treats Cdmc Auto composite validation as GPU-routed in previews", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Cdmc',
-        data_id: 'data-cdmc-auto-preview',
-        backend: { backend: 'Auto', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "Cdmc",
+        data_id: "data-cdmc-auto-preview",
+        backend: { backend: "Auto", device_id: 0 },
+        ma_source: "close",
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 10,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             cdmc: {},
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'hard_gate',
-          }
-        }
+            signal_mode: "hard_gate",
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
-    expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
-    expect(summary.categorySummary).toContain('GPU main + CPU tail: base reruns + hard gates')
-    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
-  })
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected GPU composite route (CDMC)",
+    );
+    expect(summary.moduleSummary).toContain(
+      "Expected GPU composite route (CDMC)",
+    );
+    expect(summary.categorySummary).toContain(
+      "GPU-native: base reruns + hard gates",
+    );
+    expect(summary.warningSummary).toContain(
+      "CDMC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route",
+    );
+  });
 
-  it('defaults Cdmc composite validation to Auto so the measured GPU-preferred policy remains active', () => {
+  it("defaults Cdmc composite validation to Auto so the measured GPU-preferred policy remains active", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'Cdmc',
-        data_id: 'data-cdmc-preview',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "Cdmc",
+        data_id: "data-cdmc-preview",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 10,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             cdmc: {},
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'hard_gate',
-          }
-        }
+            signal_mode: "hard_gate",
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
-    expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
-    expect(summary.categorySummary).toContain('GPU main + CPU tail: base reruns + hard gates')
-    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
-  })
+    expect(req.backend).toEqual({ backend: "Auto", device_id: 0 });
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected GPU composite route (CDMC)",
+    );
+    expect(summary.moduleSummary).toContain(
+      "Expected GPU composite route (CDMC)",
+    );
+    expect(summary.categorySummary).toContain(
+      "GPU-native: base reruns + hard gates",
+    );
+    expect(summary.warningSummary).toContain(
+      "CDMC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route",
+    );
+  });
 
-  it('treats CompositeMo GPU fixed-candidate validation as CpuOnly fallback in previews', () => {
+  it("treats CompositeMo validation as CPU-preferred in previews", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeMo',
-        data_id: 'data-composite-mo',
-        backend: { backend: 'GpuKernel', device_id: 0 },
-        ma_source: 'close',
+        strategy_kind: "CompositeMo",
+        data_id: "data-composite-mo",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
         strategy: { fee_bps: 1.0 },
         halftrend: { amplitude: 2 },
       },
@@ -1763,78 +1944,84 @@ describe('validationRequestBuilder', () => {
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'soft_vote',
-          }
-        }
+            signal_mode: "soft_vote",
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected CpuOnly fallback for composite validation')
-    expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only')
-  })
+    const summary = buildValidationCapabilitySummary(req);
+    expect(summary.routeSummary).toContain(
+      "expected CPU-preferred composite route (CompositeMo)",
+    );
+    expect(summary.warningSummary).toContain(
+      "CompositeMo uses the CPU-preferred validation route",
+    );
+  });
 
-  it('defaults CompositeMo validation without an explicit backend to Auto', () => {
+  it("defaults CompositeMo validation without an explicit backend to Auto", () => {
     const req = buildValidationRequest({
       currentRunReq: {
-        strategy_kind: 'CompositeMo',
-        data_id: 'data-composite-auto',
-        ma_source: 'close',
+        strategy_kind: "CompositeMo",
+        data_id: "data-composite-auto",
+        ma_source: "close",
         strategy: { fee_bps: 1.0 },
       },
       currentRunRes: { ok: true },
       topRows: [
         {
           params: {
-            fast_ma_type: 'ema',
-            slow_ma_type: 'sma',
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
             fast_len: 9,
             slow_len: 30,
             halftrend: { amplitude: 2 },
             macz: { fast_length: 12 },
             ott: { period: 2 },
-            signal_mode: 'soft_vote',
-          }
-        }
+            signal_mode: "soft_vote",
+          },
+        },
       ],
-      candidates: '8'
-    })
+      candidates: "8",
+    });
 
-    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
-  })
+    expect(req.backend).toEqual({ backend: "Auto", device_id: 0 });
+  });
 
-  it('throws for missing run context or rows', () => {
+  it("throws for missing run context or rows", () => {
     expect(() =>
       buildValidationRequest({
         currentRunReq: null,
         currentRunRes: { ok: true },
-        topRows: []
-      })
-    ).toThrow('Run an optimization first.')
+        topRows: [],
+      }),
+    ).toThrow("Run an optimization first.");
 
     expect(() =>
       buildValidationRequest({
-        currentRunReq: { strategy_kind: 'DoubleMa', data_id: '' },
-        currentRunRes: { ok: true },
-        topRows: []
-      })
-    ).toThrow('Missing data id (run an optimization first).')
-
-    expect(() =>
-      buildValidationRequest({
-        currentRunReq: { strategy_kind: 'DoubleMa', data_id: 'x' },
+        currentRunReq: { strategy_kind: "DoubleMa", data_id: "" },
         currentRunRes: { ok: true },
         topRows: [],
-        topRowsFiltered: []
-      })
-    ).toThrow('No Top rows available. Go to the Top tab and run an optimization.')
-  })
-})
+      }),
+    ).toThrow("Missing data id (run an optimization first).");
+
+    expect(() =>
+      buildValidationRequest({
+        currentRunReq: { strategy_kind: "DoubleMa", data_id: "x" },
+        currentRunRes: { ok: true },
+        topRows: [],
+        topRowsFiltered: [],
+      }),
+    ).toThrow(
+      "No Top rows available. Go to the Top tab and run an optimization.",
+    );
+  });
+});

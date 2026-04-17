@@ -734,7 +734,7 @@ fn workbook_zero_survivor_runs_still_emit_fallback_charts() {
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains("GpuKernel requested"));
     assert!(xml.contains("1 dataset"));
-    assert!(xml.contains("finalists only"));
+    assert!(xml.contains("finalists only (cap=4)"));
     assert!(xml.contains(
         "auxiliary CPU tails: perturb + trade bootstrap compare (iid + stationary, stat block=auto)"
     ));
@@ -839,7 +839,7 @@ fn workbook_uses_validation_context_strategy_kind_when_run_req_is_missing() {
     let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
     let xml = all_xml(&bytes);
     assert!(xml.contains(
-        "CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route."
+        "CARM GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route."
     ));
     assert!(!xml.contains(">Unknown<"));
 }
@@ -858,7 +858,7 @@ fn workbook_surfaces_composite_route_detail_note_in_expected_execution() {
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route."
+        "CARM GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route."
     ));
 }
 
@@ -897,13 +897,35 @@ fn workbook_surfaces_cdmc_gpu_route_detail_and_composite_robustness_blocks() {
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route."
+        "CDMC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route."
     ));
-    assert!(xml.contains("GPU main + CPU tail: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
+    assert!(xml.contains("GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
     assert!(xml.contains("WF Efficiency"));
     assert!(xml.contains("Bootstrap Compare"));
     assert!(xml.contains("Regime Flag"));
     assert!(xml.contains("Friction Stability"));
+}
+
+#[test]
+fn workbook_surfaces_vcet_gpu_native_expected_execution_truthfully() {
+    let mut report = baseline_report();
+    report["run"]["req"]["strategy_kind"] = json!("Vcet");
+    report["validation"]["res"]["backend_used"] = json!("Gpu");
+    report["validation"]["res"]["backend_route"] = json!("GpuKernel");
+    report["validation"]["res"]["backend_fallback_reason"] = serde_json::Value::Null;
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Expected Execution"));
+    assert!(xml.contains("Expected Categories"));
+    assert!(xml.contains("Expected Notes"));
+    assert!(xml.contains(
+        "VCET GPU validation now supports the current fixed-candidate validation module stack on the GpuKernel route, including walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap."
+    ));
+    assert!(xml.contains(
+        "GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"
+    ));
+    assert!(!xml.contains("GPU main + CPU tail: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
 }
 
 #[test]
@@ -914,7 +936,7 @@ fn workbook_surfaces_composite_mo_cpu_route_detail_note_in_expected_execution() 
     report["validation"]["res"]["backend_used"] = json!("Cpu");
     report["validation"]["res"]["backend_route"] = json!("CpuOnly");
     report["validation"]["res"]["backend_fallback_reason"] = json!(
-        "CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+        "CompositeMo uses the CPU-preferred validation route; GPU fixed-candidate validation currently follows the same plain CompositeCpu HardGate eligibility contract (uniform strategy/indicator settings, vectorized engine, no inline cross_ticker)."
     );
 
     let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
@@ -923,7 +945,7 @@ fn workbook_surfaces_composite_mo_cpu_route_detail_note_in_expected_execution() 
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
     assert!(xml.contains(
-        "CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+        "CompositeMo uses the CPU-preferred validation route; GPU fixed-candidate validation currently follows the same plain CompositeCpu HardGate eligibility contract (uniform strategy/indicator settings, vectorized engine, no inline cross_ticker)."
     ));
 }
 

@@ -99,6 +99,7 @@ If the task is about the current options backtest optimization / embedded valida
 - Tauri command boundary
   - `src-tauri/src/commands_options_expression.rs`
   - `src-tauri/src/commands_options_data.rs`
+  - `src-tauri/src/options_parent_adapters.rs`
 - app-core data / evaluation
   - `crates/app_core/src/options_types.rs`
   - `crates/app_core/src/options_signal_manifest.rs`
@@ -112,6 +113,13 @@ If the task is about the current options backtest optimization / embedded valida
   - `web/src/services/optionsExpressionService.test.ts`
 
 Use dated options implementation guides under `options_research/` only as secondary context when you are touching one of those exact hardening lanes and the current code/tests are not enough.
+
+Current shipped-slice guardrails to remember:
+
+- `src-tauri/src/options_parent_adapters.rs` owns the supported parent-family adaptation layer for the current options workflow; do not spread new parent-artifact logic across unrelated command modules.
+- saved options artifacts are now replay-provenance guarded against drift in parent artifact identity/hash, signal manifest identity, dataset id/hash, price semantics, and recorded dataset provenance.
+- options compare/reopen behavior is provenance-scoped to the saved artifact and currently-shipped dataset semantics, not to a broader future-options product lane.
+- direct provider download remains minute-aggregate only in the current shipped slice; quote-lane expansion remains future-roadmap scope.
 
 ## Top-Level Workspace Map
 
@@ -1059,19 +1067,19 @@ Current policy boundaries:
 
 #### Double-MA family
 
-| Kind | High-level indicator/features | Optimize route | Validation notes |
-| --- | --- | --- | --- |
-| `DoubleMa` | fast/slow MA pairs, optional `halftrend_filter` | `Auto`, `CpuOnly`, `GpuOnly`, `GpuHybridKernel`, `GpuKernel` | fixed-candidate validation can use CPU or GPU main route; `GpuOnly` falls back to CPU, and TrendQuality requests without ADX confirmation currently fall back to CPU on `GpuKernel`/`Auto` fixed-candidate validation |
-| `DynamicDoubleMa` | constrained `strategy_ir` builder over static profiles/indicator kinds | previewed against strategy-plan backend, then runs through normal Double-MA path | no separate validator; resolves into normal runtime flow |
-| `Pit` | EFI, VOSC, CFO | Double-MA family backends | double-like GPU main route; requires OHLCV, and the native device-regime path is still under investigation during long CUDA sweeps even though validation coverage is inherited through the shared Double-MA engine |
-| `Set` | linear-reg angle, efficiency ratio, chop | Double-MA family backends | double-like GPU main route; requires high/low |
-| `Mts` | ROC, momentum, PPO | Double-MA family backends | double-like GPU main route |
-| `Orc` | RSI, stochastic fast K/D, Williams %R | Double-MA family backends | double-like GPU main route; requires high/low |
-| `Marrt` | thin Double-MA variant, mostly `long_only=false` preset | Double-MA family backends | double-like GPU main route; current MA whitelist is a product/request-builder constraint (`sma`, `ema`, `alma`, `wma`, `zlema`, `vwma`) rather than a separate validator feature gap |
-| `Vfct` | OBV smoothing + MFI confirmation | Double-MA family backends | double-like GPU main route; requires high/low/volume, and current trend-MA `vwma`-only posture is a product/request-builder constraint rather than a separate validator feature gap |
-| `CompositeTrend` | trend-quality regime with linear-reg angle, BB width, optional ROC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; TrendQuality-without-ADX fixed-candidate validation currently falls back to CPU on `GpuKernel`/`Auto` because the exact-combo GPU validation path is not parity-safe there |
-| `RegimeHybrid` | trend-quality regime plus ADX enter/exit and mean-reversion thresholds | routed through Double-MA; current target `GpuHybridKernel`, CPU fallback | treated as double-like fixed-candidate validation |
-| `BreakoutMomentum` | Bollinger breakout, MACD, CMO, ADOSC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; requires high/low/volume |
+| Kind               | High-level indicator/features                                                    | Optimize route                                                                              | Validation notes                                                                                                                                                                                                              |
+| ------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DoubleMa`         | fast/slow MA pairs, optional `halftrend_filter`                                  | `Auto`, `CpuOnly`, `GpuOnly`, `GpuHybridKernel`, `GpuKernel`                                | fixed-candidate validation can use CPU or GPU main route; `GpuOnly` falls back to CPU, and TrendQuality requests without ADX confirmation currently fall back to CPU on `GpuKernel`/`Auto` fixed-candidate validation         |
+| `DynamicDoubleMa`  | constrained `strategy_ir` builder over static profiles/indicator kinds           | previewed against strategy-plan backend, then runs through normal Double-MA path            | no separate validator; resolves into normal runtime flow                                                                                                                                                                      |
+| `Pit`              | EFI, VOSC, CFO                                                                   | Double-MA family backends                                                                   | double-like GPU main route; requires OHLCV, and the native device-regime path is still under investigation during long CUDA sweeps even though validation coverage is inherited through the shared Double-MA engine           |
+| `Set`              | linear-reg angle, efficiency ratio, chop                                         | Double-MA family backends                                                                   | double-like GPU main route; requires high/low                                                                                                                                                                                 |
+| `Mts`              | ROC, momentum, PPO                                                               | Double-MA family backends                                                                   | double-like GPU main route                                                                                                                                                                                                    |
+| `Orc`              | RSI, stochastic fast K/D, Williams %R                                            | Double-MA family backends                                                                   | double-like GPU main route; requires high/low                                                                                                                                                                                 |
+| `Marrt`            | thin Double-MA variant, mostly `long_only=false` preset                          | Double-MA family backends                                                                   | double-like GPU main route; current MA whitelist is a product/request-builder constraint (`sma`, `ema`, `alma`, `wma`, `zlema`, `vwma`) rather than a separate validator feature gap                                          |
+| `Vfct`             | OBV smoothing + MFI confirmation                                                 | Double-MA family backends                                                                   | double-like GPU main route; requires high/low/volume, and current trend-MA `vwma`-only posture is a product/request-builder constraint rather than a separate validator feature gap                                           |
+| `CompositeTrend`   | trend-quality regime with linear-reg angle, BB width, optional ROC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; TrendQuality-without-ADX fixed-candidate validation currently falls back to CPU on `GpuKernel`/`Auto` because the exact-combo GPU validation path is not parity-safe there |
+| `RegimeHybrid`     | trend-quality regime plus ADX enter/exit and mean-reversion thresholds           | routed through Double-MA; current target `GpuHybridKernel`, CPU fallback                    | treated as double-like fixed-candidate validation                                                                                                                                                                             |
+| `BreakoutMomentum` | Bollinger breakout, MACD, CMO, ADOSC, optional ADX                               | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; requires high/low/volume                                                                                                                                                   |
 
 #### Double-MA family truth anchors
 
@@ -1096,19 +1104,19 @@ Current policy boundaries:
 
 These currently use the `CompositeCpuRequest` product surface and `Grid` mode in product routes.
 
-| Kind | High-level indicator/features | Optimize route | Validation notes |
-| --- | --- | --- | --- |
-| `CompositeCpu` | fast/slow MA core plus HalfTrend, MACZ, OTT, `CompositeSignalMode` | CPU and `GpuKernel` route exist | CPU-side validation coverage is broad; GPU fixed-candidate validation is only eligible for plain base-composite `HardGate` finalists with uniform HalfTrend/MACZ/OTT/strategy/MA contracts, vectorized engine, and no inline `cross_ticker` |
-| `Asr` | TTM squeeze, squeeze momentum, linear-reg angle, ER filter, z-score, Kaufman overlays | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU on measured workloads |
-| `Vcc` | TTM squeeze, squeeze momentum, TTM trend, optional momentum-acceleration gating | CPU and `GpuKernel` | mixed validation route; CPU-reference signal prep still matters, but `GpuKernel` now uses dedicated GPU walk-forward and reopt walk-forward helpers |
-| `Vemr` | z-score, Bollinger bands, ATR stop | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU |
-| `Rocb` | Donchian/channel breakout plus ATR risk overlay | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU |
-| `Vcet` | VIDYA trend-state plus Chandelier Exit | CPU and `GpuKernel` | main fixed-candidate GPU route exists; current runtime tests cover walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap on `GpuKernel` |
-| `Mkcs` | standard-deviation compression plus Donchian breakout | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU |
-| `Kqsr` | KDJ, stochastic RSI, IFT-RSI, QQE, PRB | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires OHLC |
-| `Carm` | Coppock, AO, ROCR, APO, OTTO HOTT/LOTT | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, `Auto` still prefers CPU, and fixed-candidate `GpuKernel` walk-forward parity is now locked through exact desired-series window metrics while reopt stays on the generic exact-series path |
-| `Kvdf` | Keltner, VWAP, DTI, DevStop, FVG trailing-stop logic | CPU and `GpuKernel` | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires high/low/close/volume |
-| `Cdmc` | DPO, correlation cycle, MAMA/FAMA, decycler, phase threshold | CPU and `GpuKernel` | full current validation module coverage exists on the active route; mixed validation route, current measured policy is more GPU-favorable than CARM, and fixed-candidate `GpuKernel` walk-forward parity is now locked through exact desired-series window metrics while reopt stays on the generic exact-series path |
+| Kind           | High-level indicator/features                                                         | Optimize route                  | Validation notes                                                                                                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CompositeCpu` | fast/slow MA core plus HalfTrend, MACZ, OTT, `CompositeSignalMode`                    | CPU and `GpuKernel` route exist | CPU-side validation coverage is broad; GPU fixed-candidate validation is only eligible for plain base-composite `HardGate` finalists with uniform HalfTrend/MACZ/OTT/strategy/MA contracts, vectorized engine, and no inline `cross_ticker`                                                                           |
+| `Asr`          | TTM squeeze, squeeze momentum, linear-reg angle, ER filter, z-score, Kaufman overlays | CPU and `GpuKernel`             | GPU route exists, but `Auto` currently prefers CPU on measured workloads                                                                                                                                                                                                                                              |
+| `Vcc`          | TTM squeeze, squeeze momentum, TTM trend, optional momentum-acceleration gating       | CPU and `GpuKernel`             | mixed validation route; CPU-reference signal prep still matters, but `GpuKernel` now uses dedicated GPU walk-forward and reopt walk-forward helpers                                                                                                                                                                   |
+| `Vemr`         | z-score, Bollinger bands, ATR stop                                                    | CPU and `GpuKernel`             | GPU route exists, but `Auto` currently prefers CPU                                                                                                                                                                                                                                                                    |
+| `Rocb`         | Donchian/channel breakout plus ATR risk overlay                                       | CPU and `GpuKernel`             | GPU route exists, but `Auto` currently prefers CPU                                                                                                                                                                                                                                                                    |
+| `Vcet`         | VIDYA trend-state plus Chandelier Exit                                                | CPU and `GpuKernel`             | main fixed-candidate GPU route exists; current runtime tests cover walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap on `GpuKernel`                                                                                                                                                       |
+| `Mkcs`         | standard-deviation compression plus Donchian breakout                                 | CPU and `GpuKernel`             | full current validation module coverage exists on the active route; `Auto` still prefers CPU                                                                                                                                                                                                                          |
+| `Kqsr`         | KDJ, stochastic RSI, IFT-RSI, QQE, PRB                                                | CPU and `GpuKernel`             | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires OHLC                                                                                                                                                                                           |
+| `Carm`         | Coppock, AO, ROCR, APO, OTTO HOTT/LOTT                                                | CPU and `GpuKernel`             | full current validation module coverage exists on the active route; mixed validation route, `Auto` still prefers CPU, and fixed-candidate `GpuKernel` walk-forward parity is now locked through exact desired-series window metrics while reopt stays on the generic exact-series path                                |
+| `Kvdf`         | Keltner, VWAP, DTI, DevStop, FVG trailing-stop logic                                  | CPU and `GpuKernel`             | full current validation module coverage exists on the active route; `Auto` still prefers CPU and the strategy requires high/low/close/volume                                                                                                                                                                          |
+| `Cdmc`         | DPO, correlation cycle, MAMA/FAMA, decycler, phase threshold                          | CPU and `GpuKernel`             | full current validation module coverage exists on the active route; mixed validation route, current measured policy is more GPU-favorable than CARM, and fixed-candidate `GpuKernel` walk-forward parity is now locked through exact desired-series window metrics while reopt stays on the generic exact-series path |
 
 #### Standalone profile cluster truth anchors
 
@@ -1435,8 +1443,9 @@ Start here:
 - tagged artifacts are retained even when they are older than the prune threshold
 - legacy `vectorbt_*` artifact kinds and filename prefixes are still accepted alongside current `vectorgrid_*` names
 - run artifact save enriches artifacts with environment metadata plus dataset identity/content-fingerprint metadata when possible
+- run artifact list, latest-run hydration, and run-detail reopen surfaces now carry canonical `report_xlsx_path` / `report_xlsx_exists` metadata; run detail still exposes `report_path` / `report_path_exists` as compatibility aliases for older callers
 - load/delete/tag-update operations are constrained to paths inside the app runs directory
-- ML-confidence policy-eval artifacts have list/save support, but there is no dedicated prune helper in the current implementation
+- ML-confidence policy-eval artifacts have list/save support and a dedicated prune helper; current retention intent is symmetric with the other saved aggregate artifact families unless explicitly tagged
 - frontend treats artifacts as canonical cross-workflow handoff objects through `web/src/stores/workflowArtifactsStore.ts`
 
 ### Meta selection and ML confidence
@@ -1456,7 +1465,7 @@ Start here:
 Important current-state notes:
 
 - Stage 4 and Stage 5 currently share the same backend implementation path
-- Stage 4 and Stage 5 currently write the same artifact path, and that path uses the Stage-5-style `vectorgrid_stage5_*` prefix
+- Stage 4 and Stage 5 currently write the same artifact path, and that path uses the Stage-5-style `vectorgrid_stage5_*` prefix; `stage4_*` response fields remain compatibility aliases around the canonical Stage-5 file contract
 - default meta strategy in `analysisStore` is currently `CompositeMo`
 - model families currently include `Auto`, `Logistic`, and `GbdtStump`
 - saved meta-selection reports go to `app_local_data_dir/reports` and saved meta-selection JSON artifacts go to `app_local_data_dir/runs`
@@ -1483,9 +1492,9 @@ Important current-state notes:
   - Stage 5 request scope resolves from the latest Meta artifact first and then Saved Meta fallback
   - Stage 5 selection order is weighted rank -> `min_ml_confidence` filter -> optional meta fallback -> decision buckets
   - `run_meta_stage5_ml_confidence` is the authoritative command while `runStage4()` remains a compatibility alias
-  - Stage 5 saved replay is JSON-only today, `stage4_json_path` and `stage5_json_path` currently point to the same artifact, and the Saved Stage 5 UI is still backed by `stage4Saved*` compatibility store fields
+  - Stage 5 saved replay is JSON-only today; `stage5_json_path` is the user-facing durable path while `stage4_json_path` remains a backend compatibility alias around the same artifact
   - policy evaluation is an offline saved-Meta history comparison over `meta_only`, `ml_only`, and `stage5_blended`, not the same thing as in-memory Apply or the current live Stage 5 rerank
-- `analysisStore.ts` remains the canonical Meta workspace state surface, and its `stage4Saved*` / `metaStage4*` families are still compatibility names for the user-facing Stage 5 surface
+- `analysisStore.ts` remains the canonical Meta workspace state surface, and its `stage4Saved*` / `metaStage4*` families are still internal compatibility names even though user-facing copy now speaks in Stage 5 terms
 - current ML UI copy also states that auto target prefers per-dataset holdout rows when present, falls back to aggregate holdout gates otherwise, and treats explicit unhealthy models differently from stale/retrain freshness signals
 
 ### ML Signal
@@ -1621,17 +1630,17 @@ Verification in this repo is layered:
 
 ### High-signal commands by area
 
-| Area | Commands |
-| --- | --- |
-| broad backend confidence | `cargo test --workspace`, `cargo test -p ta_app_core` |
-| frontend confidence | `npm --prefix web run test`, `npm --prefix web run typecheck`, `npm --prefix web run lint`, `npm --prefix web run parity`, `npm --prefix web run a11y:smoke` |
-| artifact/report shape | `npm --prefix web run parity:outputs` |
-| workflow regression | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate` |
-| CPU perf-sensitive backend change | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` |
-| GPU/CUDA path | `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` |
-| GPU/CUDA ALMA contract rows | `powershell -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate` |
-| GPU profiling | `powershell -File scripts/profile_gpu_backtest_ncu.ps1`, `powershell -File scripts/profile_gpu_backtest_nsys.ps1` |
-| frontend request-builder benchmarking | `npm --prefix web run bench:request-builder` |
+| Area                                  | Commands                                                                                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| broad backend confidence              | `cargo test --workspace`, `cargo test -p ta_app_core`                                                                                                        |
+| frontend confidence                   | `npm --prefix web run test`, `npm --prefix web run typecheck`, `npm --prefix web run lint`, `npm --prefix web run parity`, `npm --prefix web run a11y:smoke` |
+| artifact/report shape                 | `npm --prefix web run parity:outputs`                                                                                                                        |
+| workflow regression                   | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`                                                                                             |
+| CPU perf-sensitive backend change     | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`                                                                                             |
+| GPU/CUDA path                         | `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`                                                                                             |
+| GPU/CUDA ALMA contract rows           | `powershell -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`                                                                          |
+| GPU profiling                         | `powershell -File scripts/profile_gpu_backtest_ncu.ps1`, `powershell -File scripts/profile_gpu_backtest_nsys.ps1`                                            |
+| frontend request-builder benchmarking | `npm --prefix web run bench:request-builder`                                                                                                                 |
 
 ### Important scripts
 

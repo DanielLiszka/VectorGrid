@@ -8,7 +8,10 @@ import {
   parseArtifactLineage,
   parseRouteProvenance,
 } from "../utils/core/runArtifactReview";
-import { workflowStepForMlSignalStage } from "../utils/core/workflowModel";
+import {
+  applyShellStateForRunRequest,
+  isMlSignalStrategyKind,
+} from "../utils/core/workflowRunRestore";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import {
   applyWorkflowArtifactsPayload,
@@ -25,7 +28,6 @@ import { useOptimizeStore } from "../stores/optimizeStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useValidationStore } from "../stores/validationStore";
-import { useWorkflowStore } from "../stores/workflowStore";
 
 let dataServicePromise: Promise<typeof import("./dataService")> | null = null;
 let optimizeServicePromise: Promise<typeof import("./optimizeService")> | null =
@@ -92,38 +94,12 @@ function normalizeOptionalNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function isMlSignalStrategyKind(value: unknown): boolean {
-  return normalizeText(value) === "MlSignal";
-}
-
 function hasMlSignalDatasetExportShape(
   req: Record<string, unknown> | null | undefined,
 ): boolean {
   return (
     normalizeText(req?.ma_source ?? req?.maSource).length > 0 ||
     Number.isFinite(Number(req?.horizon_bars ?? req?.horizonBars))
-  );
-}
-
-function hasMlSignalValidationShape(
-  validationReq: Record<string, unknown> | null | undefined,
-): boolean {
-  return (
-    !!validationReq &&
-    Array.isArray(validationReq.candidates) &&
-    validationReq.candidates.length > 0
-  );
-}
-
-function hasMlSignalSweepShape(
-  validationReq: Record<string, unknown> | null | undefined,
-): boolean {
-  if (!validationReq || Array.isArray(validationReq.candidates)) return false;
-  return (
-    validationReq.t_long != null ||
-    validationReq.t_short != null ||
-    validationReq.delta != null ||
-    validationReq.max_hold_bars != null
   );
 }
 
@@ -174,37 +150,6 @@ function applyMlSignalScoreCacheRequestFields(
     scoreSource === "native" && nativeGpuDeviceId != null
       ? String(Math.floor(nativeGpuDeviceId))
       : "";
-}
-
-function inferMlSignalWorkflowStep(
-  req: Record<string, unknown> | null | undefined,
-  validationReq?: Record<string, unknown> | null,
-  mlSignalStage?: unknown,
-): "data" | "optimize" | "validate" | "analyze" | "finalize" {
-  const normalizedStage = normalizeText(mlSignalStage);
-  if (normalizedStage) return workflowStepForMlSignalStage(normalizedStage);
-  if (hasMlSignalDatasetExportShape(req)) return "data";
-  if (hasMlSignalValidationShape(validationReq)) return "validate";
-  if (hasMlSignalSweepShape(validationReq)) return "analyze";
-  return "optimize";
-}
-
-function selectShellStateForRunRequest(
-  req: Record<string, unknown> | null | undefined,
-  validationReq?: Record<string, unknown> | null,
-  mlSignalStage?: unknown,
-): void {
-  const pinia = resolveRuntimePinia();
-  if (!pinia) return;
-  const workflowStore = useWorkflowStore(pinia);
-  if (isMlSignalStrategyKind(req?.strategy_kind ?? req?.strategyKind)) {
-    workflowStore.selectMode("ml-signal");
-    workflowStore.selectWorkflowStep(
-      inferMlSignalWorkflowStep(req, validationReq, mlSignalStage),
-    );
-    return;
-  }
-  workflowStore.selectMode("conventional");
 }
 
 function updateAnalysisStatus(message: string): void {
@@ -385,6 +330,7 @@ interface RunArtifactSummaryResponse {
   config_fingerprint_version?: unknown;
   has_validation?: unknown;
   report_xlsx_path?: unknown;
+  report_xlsx_exists?: unknown;
   csv_path?: unknown;
   timeframe?: unknown;
   base_timeframe?: unknown;
@@ -411,6 +357,7 @@ export interface HistorySavedRunSummary {
   configFingerprintVersion?: number | null;
   hasValidation: boolean;
   reportXlsxPath: string;
+  reportXlsxExists?: boolean | null;
   csvPath: string;
   timeframe?: string;
   baseTimeframe?: string;
@@ -433,12 +380,15 @@ export interface HistorySavedRunsRefreshSummary {
 }
 
 export interface HistorySavedRunDetail {
+  ts?: string;
+  artifactPath?: string;
   strategyKind: string;
   configFingerprint?: string;
   configFingerprintVersion?: number | null;
   timeframe: string;
   csvPath: string;
   reportPath: string;
+  reportPathExists?: boolean | null;
   hasValidation: boolean;
   datasetMeta?: Record<string, unknown> | null;
   routeProvenance?: RouteProvenanceSummary | null;
@@ -460,7 +410,15 @@ export interface HistorySavedRunDetail {
   mlScoreCachePath?: string;
   mlScoreManifestPath?: string;
   mlFeatureSchemaPath?: string;
+  mlFeatureSchemaHash?: string;
   mlFeatureSchemaVersion?: string;
+  mlExportManifestPath?: string;
+  mlSourceBundleManifestPath?: string;
+  mlSourceBundleManifestHash?: string;
+  mlCalibrationState?: string;
+  mlThresholdPolicy?: string;
+  mlProducerKind?: string;
+  mlScoreContractVersion?: number | null;
   mlScoreSpace?: string;
   mlScoreScope?: string;
   mlScoreContractSummary?: string;
@@ -479,6 +437,7 @@ interface RunArtifactHydrationResponse {
 
 interface RunArtifactDetailResponse extends HistorySavedRunDetail {
   validationReq?: Record<string, unknown> | null;
+  validationRes?: Record<string, unknown> | null;
   mlSignalStage?: string;
 }
 
@@ -744,7 +703,7 @@ function firstBooleanFromList(value: unknown): boolean | null {
   return parseBooleanLike(value[0]);
 }
 
-function applyMlStrategyConfigToStores(
+function applyStrategyConfigToStores(
   optimizeStore: ReturnType<typeof useOptimizeStore>,
   settingsStore: ReturnType<typeof useSettingsStore> | null,
   executionStore: ReturnType<typeof useExecutionStore> | null,
@@ -816,11 +775,334 @@ function applyMlStrategyConfigToStores(
   optimizeStore.updatedAtUnixMs = Date.now();
 }
 
+function formatReplayNumber(value: unknown, integer = false): string {
+  const parsed = asNumber(value);
+  if (!Number.isFinite(parsed)) return "";
+  return integer ? String(Math.floor(parsed)) : String(parsed);
+}
+
+function serializeReplayJson(value: unknown): string {
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+function isMlSignalSavedRun(
+  req: Record<string, unknown> | null,
+  mlSignalStage?: unknown,
+): boolean {
+  return (
+    isMlSignalStrategyKind(req?.strategy_kind ?? req?.strategyKind) ||
+    normalizeText(mlSignalStage).length > 0
+  );
+}
+
+function applyConventionalReplayConfigToStores(
+  optimizeStore: ReturnType<typeof useOptimizeStore>,
+  advancedStore: ReturnType<typeof useAdvancedStore>,
+  strategyStore: ReturnType<typeof useStrategyStore>,
+  settingsStore: ReturnType<typeof useSettingsStore> | null,
+  executionStore: ReturnType<typeof useExecutionStore> | null,
+  req: Record<string, unknown>,
+): void {
+  const strategyConfig = asRecord(
+    req.strategy ?? req.base_strategy ?? req.baseStrategy,
+  );
+  applyStrategyConfigToStores(
+    optimizeStore,
+    settingsStore,
+    executionStore,
+    strategyStore,
+    strategyConfig,
+  );
+
+  optimizeStore.syncMaParamState({
+    fast: {
+      params: req.fast_ma_params ?? req.fastMaParams,
+      sweeps: req.fast_ma_param_sweeps ?? req.fastMaParamSweeps,
+    },
+    slow: {
+      params: req.slow_ma_params ?? req.slowMaParams,
+      sweeps: req.slow_ma_param_sweeps ?? req.slowMaParamSweeps,
+    },
+  });
+
+  const halftrend = asRecord(req.halftrend);
+  const macz = asRecord(req.macz);
+  const ott = asRecord(req.ott);
+  strategyStore.applyLegacySnapshot({
+    compositeSignalMode: normalizeText(req.signal_mode ?? req.signalMode),
+    halfTrendAmplitude: formatReplayNumber(halftrend?.amplitude),
+    halfTrendAtrPeriod: formatReplayNumber(
+      halftrend?.atr_period ?? halftrend?.atrPeriod,
+      true,
+    ),
+    halfTrendChannelDev: formatReplayNumber(
+      halftrend?.channel_deviation ?? halftrend?.channelDeviation,
+    ),
+    maczFastLength: formatReplayNumber(
+      macz?.fast_length ?? macz?.fastLength,
+      true,
+    ),
+    maczSlowLength: formatReplayNumber(
+      macz?.slow_length ?? macz?.slowLength,
+      true,
+    ),
+    maczSignalLength: formatReplayNumber(
+      macz?.signal_length ?? macz?.signalLength,
+      true,
+    ),
+    maczLengthZ: formatReplayNumber(macz?.lengthz ?? macz?.lengthZ, true),
+    maczLengthStdev: formatReplayNumber(
+      macz?.length_stdev ?? macz?.lengthStdev,
+      true,
+    ),
+    maczGamma: formatReplayNumber(macz?.gamma),
+    maczA: formatReplayNumber(macz?.a),
+    maczB: formatReplayNumber(macz?.b),
+    maczUseLag:
+      parseBooleanLike(macz?.use_lag ?? macz?.useLag) ??
+      strategyStore.maczUseLag,
+    maczUseVolume:
+      parseBooleanLike(macz?.use_volume ?? macz?.useVolume) ??
+      strategyStore.maczUseVolume,
+    ottPeriod: formatReplayNumber(ott?.period, true),
+    ottPercent: formatReplayNumber(ott?.percent),
+    ottMaType: normalizeText(ott?.ma_type ?? ott?.maType),
+    trendLrPeriod: formatReplayNumber(
+      strategyConfig?.trend_quality_linearreg_period,
+      true,
+    ),
+    trendLrMinDeg: formatReplayNumber(
+      strategyConfig?.trend_quality_angle_min_deg,
+    ),
+    trendBbwPeriod: formatReplayNumber(
+      strategyConfig?.trend_quality_bbw_period,
+      true,
+    ),
+    trendBbwMult: formatReplayNumber(strategyConfig?.trend_quality_bbw_mult),
+    trendBbwMin: formatReplayNumber(strategyConfig?.trend_quality_bbw_min),
+    trendRocPeriod: formatReplayNumber(
+      strategyConfig?.trend_quality_roc_period,
+      true,
+    ),
+    trendAdxPeriod: formatReplayNumber(
+      strategyConfig?.trend_quality_adx_period,
+      true,
+    ),
+    trendAdxMin: formatReplayNumber(strategyConfig?.trend_quality_adx_min),
+    trendUseRoc:
+      parseBooleanLike(strategyConfig?.trend_quality_use_roc) ??
+      strategyStore.trendUseRoc,
+    trendUseAdx:
+      parseBooleanLike(strategyConfig?.trend_quality_use_adx) ??
+      strategyStore.trendUseAdx,
+    regimeAdxPeriod: formatReplayNumber(
+      strategyConfig?.regime_hybrid_adx_period,
+      true,
+    ),
+    regimeAdxEnter: formatReplayNumber(strategyConfig?.regime_hybrid_adx_enter),
+    regimeAdxExit: formatReplayNumber(strategyConfig?.regime_hybrid_adx_exit),
+    regimeRevEntryRel: formatReplayNumber(
+      strategyConfig?.regime_hybrid_reversion_entry_rel,
+    ),
+    regimeRevExitRel: formatReplayNumber(
+      strategyConfig?.regime_hybrid_reversion_exit_rel,
+    ),
+    breakoutBbPeriod: formatReplayNumber(
+      strategyConfig?.breakout_bbands_period,
+      true,
+    ),
+    breakoutBbMult: formatReplayNumber(strategyConfig?.breakout_bbands_mult),
+    breakoutConfirmBars: formatReplayNumber(
+      strategyConfig?.breakout_confirm_bars,
+      true,
+    ),
+    breakoutMacdFast: formatReplayNumber(
+      strategyConfig?.breakout_macd_fast_period,
+      true,
+    ),
+    breakoutMacdSlow: formatReplayNumber(
+      strategyConfig?.breakout_macd_slow_period,
+      true,
+    ),
+    breakoutMacdSignal: formatReplayNumber(
+      strategyConfig?.breakout_macd_signal_period,
+      true,
+    ),
+    breakoutCmoPeriod: formatReplayNumber(
+      strategyConfig?.breakout_cmo_period,
+      true,
+    ),
+    breakoutCmoMinAbs: formatReplayNumber(strategyConfig?.breakout_cmo_min_abs),
+    breakoutAdoscShort: formatReplayNumber(
+      strategyConfig?.breakout_adosc_short_period,
+      true,
+    ),
+    breakoutAdoscLong: formatReplayNumber(
+      strategyConfig?.breakout_adosc_long_period,
+      true,
+    ),
+    breakoutAdxPeriod: formatReplayNumber(
+      strategyConfig?.breakout_adx_period,
+      true,
+    ),
+    breakoutAdxMin: formatReplayNumber(strategyConfig?.breakout_adx_min),
+    breakoutUseAdx:
+      parseBooleanLike(strategyConfig?.breakout_use_adx) ??
+      strategyStore.breakoutUseAdx,
+  } as never);
+
+  const searchSpace = req.search_space ?? req.searchSpace;
+  const sampler = asRecord(req.sampler);
+  const samplerConfig = asRecord(sampler?.config);
+  const constraints = asRecord(req.constraints);
+  const objectives = asRecord(req.objectives);
+  const gpuPrescan = asRecord(req.gpu_prescan ?? req.gpuPrescan);
+  const minimizeObjectives = normalizeStringList(objectives?.minimize).join(
+    ", ",
+  );
+  const samplerName = normalizeText(sampler?.sampler ?? sampler?.kind);
+  advancedStore.applyLegacySnapshot({
+    moUseRangeBuilder:
+      searchSpace == null ? advancedStore.moUseRangeBuilder : false,
+    moSearchSpace:
+      searchSpace == null
+        ? advancedStore.moSearchSpace
+        : serializeReplayJson(searchSpace),
+    moSampler: samplerName,
+    moObjectiveMin: minimizeObjectives,
+    moConstraintMinTrades: formatReplayNumber(
+      constraints?.min_trades ?? constraints?.minTrades,
+      true,
+    ),
+    moConstraintMaxDd: formatReplayNumber(
+      constraints?.max_drawdown ?? constraints?.maxDrawdown,
+    ),
+    moConstraintMaxAbsExposure: formatReplayNumber(
+      constraints?.max_abs_exposure ?? constraints?.maxAbsExposure,
+    ),
+    moPrescanEnable: gpuPrescan != null,
+    moPrescanRequireGpu:
+      parseBooleanLike(gpuPrescan?.require_gpu ?? gpuPrescan?.requireGpu) ??
+      false,
+    moPrescanTopK: formatReplayNumber(
+      gpuPrescan?.top_k ?? gpuPrescan?.topK,
+      true,
+    ),
+    moPrescanWindow: formatReplayNumber(gpuPrescan?.window, true),
+    moPrescanPredictiveTopK: formatReplayNumber(
+      gpuPrescan?.predictive_top_k ?? gpuPrescan?.predictiveTopK,
+      true,
+    ),
+    moPrescanPredictiveStride: formatReplayNumber(
+      gpuPrescan?.predictive_stride ?? gpuPrescan?.predictiveStride,
+      true,
+    ),
+    moPrescanObjectives: normalizeText(gpuPrescan?.objectives),
+    moPrescanMode: normalizeText(gpuPrescan?.mode),
+    moPrescanMaPairs: serializeReplayJson(
+      gpuPrescan?.ma_pairs ?? gpuPrescan?.maPairs,
+    ),
+    moRandomSeed:
+      samplerName === "Random"
+        ? formatReplayNumber(samplerConfig?.seed, true)
+        : advancedStore.moRandomSeed,
+    moRandomTrials:
+      samplerName === "Random"
+        ? formatReplayNumber(samplerConfig?.trials, true)
+        : advancedStore.moRandomTrials,
+    moTpeSeed:
+      samplerName === "Tpe"
+        ? formatReplayNumber(samplerConfig?.seed, true)
+        : advancedStore.moTpeSeed,
+    moTpeTrials:
+      samplerName === "Tpe"
+        ? formatReplayNumber(samplerConfig?.trials, true)
+        : advancedStore.moTpeTrials,
+    moTpeStartupTrials:
+      samplerName === "Tpe"
+        ? formatReplayNumber(
+            samplerConfig?.startup_trials ?? samplerConfig?.startupTrials,
+            true,
+          )
+        : advancedStore.moTpeStartupTrials,
+    moTpeCandidates:
+      samplerName === "Tpe"
+        ? formatReplayNumber(samplerConfig?.candidates, true)
+        : advancedStore.moTpeCandidates,
+    moTpeGamma:
+      samplerName === "Tpe"
+        ? formatReplayNumber(samplerConfig?.gamma)
+        : advancedStore.moTpeGamma,
+    moTpeBatchSize:
+      samplerName === "Tpe"
+        ? formatReplayNumber(
+            samplerConfig?.batch_size ?? samplerConfig?.batchSize,
+            true,
+          )
+        : advancedStore.moTpeBatchSize,
+    moTpeMaxModelPoints:
+      samplerName === "Tpe"
+        ? formatReplayNumber(
+            samplerConfig?.max_model_points ?? samplerConfig?.maxModelPoints,
+            true,
+          )
+        : advancedStore.moTpeMaxModelPoints,
+    moQmcSeed:
+      samplerName === "Qmc"
+        ? formatReplayNumber(samplerConfig?.seed, true)
+        : advancedStore.moQmcSeed,
+    moQmcTrials:
+      samplerName === "Qmc"
+        ? formatReplayNumber(samplerConfig?.trials, true)
+        : advancedStore.moQmcTrials,
+    moQmcSequence:
+      samplerName === "Qmc"
+        ? normalizeText(samplerConfig?.sequence)
+        : advancedStore.moQmcSequence,
+    moNsga2Seed:
+      samplerName === "Nsga2"
+        ? formatReplayNumber(samplerConfig?.seed, true)
+        : advancedStore.moNsga2Seed,
+    moNsga2Population:
+      samplerName === "Nsga2"
+        ? formatReplayNumber(samplerConfig?.population, true)
+        : advancedStore.moNsga2Population,
+    moNsga2Generations:
+      samplerName === "Nsga2"
+        ? formatReplayNumber(samplerConfig?.generations, true)
+        : advancedStore.moNsga2Generations,
+    moNsga2CrossoverProb:
+      samplerName === "Nsga2"
+        ? formatReplayNumber(
+            samplerConfig?.crossover_prob ?? samplerConfig?.crossoverProb,
+          )
+        : advancedStore.moNsga2CrossoverProb,
+    moNsga2SwappingProb:
+      samplerName === "Nsga2"
+        ? formatReplayNumber(
+            samplerConfig?.swapping_prob ?? samplerConfig?.swappingProb,
+          )
+        : advancedStore.moNsga2SwappingProb,
+    moNsga2MutationProb:
+      samplerName === "Nsga2"
+        ? formatReplayNumber(
+            samplerConfig?.mutation_prob ?? samplerConfig?.mutationProb,
+          )
+        : advancedStore.moNsga2MutationProb,
+  } as never);
+}
+
 function updateStoresFromRunRequest(
   req: Record<string, unknown>,
   csvPath: string,
   timeframe: string,
   validationReq: Record<string, unknown> | null = null,
+  mlSignalStage?: unknown,
 ): void {
   const pinia = resolveRuntimePinia();
   if (!pinia) return;
@@ -879,7 +1161,7 @@ function updateStoresFromRunRequest(
   const fastTypes = normalizeStringList(req.fast_ma_types);
   const slowTypes = normalizeStringList(req.slow_ma_types);
 
-  const mlSignalStrategy = strategyKind === "MlSignal";
+  const mlSignalStrategy = isMlSignalSavedRun(req, mlSignalStage);
   if (strategyKind && !mlSignalStrategy) {
     optimizeStore.applyLegacySnapshot({
       strategyKind,
@@ -1026,7 +1308,7 @@ function updateStoresFromRunRequest(
     const minDsr = asNumber(validationReq?.min_dsr ?? validationReq?.minDsr);
     if (Number.isFinite(minPsr)) optimizeStore.mlSignalMinPsr = String(minPsr);
     if (Number.isFinite(minDsr)) optimizeStore.mlSignalMinDsr = String(minDsr);
-    applyMlStrategyConfigToStores(
+    applyStrategyConfigToStores(
       optimizeStore,
       settingsStore,
       executionStore,
@@ -1085,8 +1367,19 @@ function updateStoresFromRunRequest(
   const slowStart = asNumber(slowRange?.start);
   const slowEnd = asNumber(slowRange?.end);
   const slowStep = asNumber(slowRange?.step);
-  const fastMaType = fastTypes[0];
-  const slowMaType = slowTypes[0];
+  applyConventionalReplayConfigToStores(
+    optimizeStore,
+    advancedStore,
+    strategyStore,
+    settingsStore,
+    executionStore,
+    req,
+  );
+
+  const fastMaType =
+    fastTypes[0] || normalizeText(req.fast_ma_type ?? req.fastMaType);
+  const slowMaType =
+    slowTypes[0] || normalizeText(req.slow_ma_type ?? req.slowMaType);
   optimizeStore.applyLegacySnapshot({
     backend,
     fastStart: Number.isFinite(fastStart)
@@ -1123,21 +1416,146 @@ function updateStoresFromRunRequest(
     const seed = asNumber(validationReq.seed);
     const minPsr = asNumber(validationReq.min_psr ?? validationReq.minPsr);
     const minDsr = asNumber(validationReq.min_dsr ?? validationReq.minDsr);
+    const minCscvRank = asNumber(
+      validationReq.min_cscv_oos_rank_frac ?? validationReq.minCscvOosRankFrac,
+    );
+    const minCscvMetric = asNumber(
+      validationReq.min_cscv_oos_metric ?? validationReq.minCscvOosMetric,
+    );
+    const maxPbo = asNumber(validationReq.max_pbo ?? validationReq.maxPbo);
     const admissionPolicy = normalizeText(
       validationReq.admission_policy ?? validationReq.admissionPolicy,
     );
+    const walkForward = asRecord(
+      validationReq.walk_forward ?? validationReq.walkForward,
+    );
+    const reoptWalkForward = asRecord(
+      validationReq.reopt_walk_forward ?? validationReq.reoptWalkForward,
+    );
+    const spa = asRecord(validationReq.spa);
+    const perturb = asRecord(validationReq.perturb);
+    const tradeBootstrap = asRecord(
+      validationReq.trade_bootstrap ?? validationReq.tradeBootstrap,
+    );
+    const cscvPbo = asRecord(validationReq.cscv_pbo ?? validationReq.cscvPbo);
+    const crossTicker = asRecord(
+      validationReq.cross_ticker ?? validationReq.crossTicker,
+    );
+    const crossDatasetsRaw = Array.isArray(crossTicker?.datasets)
+      ? crossTicker.datasets
+      : [];
+    type CrossDatasetSnapshot = {
+      path: string;
+      label: string;
+      meta: string;
+      checked: boolean;
+      disabled: boolean;
+      market?: string;
+      timeframe?: string;
+      adjusted?: boolean | null;
+    };
+    const crossDatasets = crossDatasetsRaw
+      .map((entry): CrossDatasetSnapshot | null => {
+        const row = asRecord(entry);
+        const path = normalizeText(row?.csv_path ?? row?.path);
+        if (!path) return null;
+        const label = normalizeText(row?.label) || path;
+        const timeframe = normalizeText(row?.timeframe).toLowerCase();
+        const market = normalizeText(row?.market).toLowerCase();
+        const adjusted =
+          typeof row?.adjusted === "boolean" ? row.adjusted : null;
+        const metaParts = [market, timeframe].filter((part) => part.length > 0);
+        return {
+          path,
+          label,
+          meta: metaParts.join(" • ") || "—",
+          checked: true,
+          disabled: false,
+          ...(market ? { market } : {}),
+          ...(timeframe ? { timeframe } : {}),
+          adjusted,
+        };
+      })
+      .filter((entry): entry is CrossDatasetSnapshot => entry != null);
 
-    if (Number.isFinite(maxCandidates) && maxCandidates > 0) {
-      validationStore.candidates = String(Math.floor(maxCandidates));
-    }
-    if (Number.isFinite(seed) && seed >= 0) {
-      validationStore.seed = String(Math.floor(seed));
-    }
-    if (Number.isFinite(minPsr)) validationStore.minPsr = String(minPsr);
-    if (Number.isFinite(minDsr)) validationStore.minDsr = String(minDsr);
-    if (admissionPolicy) validationStore.admissionPolicy = admissionPolicy;
-    validationStore.source = "vue";
-    validationStore.updatedAtUnixMs = Date.now();
+    validationStore.applyLegacySnapshot({
+      candidates:
+        Number.isFinite(maxCandidates) && maxCandidates > 0
+          ? String(Math.floor(maxCandidates))
+          : "32",
+      admissionPolicy: admissionPolicy || "legacy_topk",
+      seed: Number.isFinite(seed) && seed >= 0 ? String(Math.floor(seed)) : "1",
+      minPsr: Number.isFinite(minPsr) ? String(minPsr) : "",
+      minDsr: Number.isFinite(minDsr) ? String(minDsr) : "",
+      minCscvRank: Number.isFinite(minCscvRank) ? String(minCscvRank) : "",
+      minCscvMetric: Number.isFinite(minCscvMetric)
+        ? String(minCscvMetric)
+        : "",
+      maxPbo: Number.isFinite(maxPbo) ? String(maxPbo) : "",
+      wfEnable: !!walkForward,
+      wfWindow: Number.isFinite(Number(walkForward?.window_bars))
+        ? String(Math.floor(Number(walkForward?.window_bars)))
+        : "20000",
+      wfStep: Number.isFinite(Number(walkForward?.step_bars))
+        ? String(Math.floor(Number(walkForward?.step_bars)))
+        : "5000",
+      reoptWfEnable: !!reoptWalkForward,
+      reoptWfWindow: Number.isFinite(Number(reoptWalkForward?.window_bars))
+        ? String(Math.floor(Number(reoptWalkForward?.window_bars)))
+        : "20000",
+      reoptWfStep: Number.isFinite(Number(reoptWalkForward?.step_bars))
+        ? String(Math.floor(Number(reoptWalkForward?.step_bars)))
+        : "5000",
+      reoptWfTopN: Number.isFinite(Number(reoptWalkForward?.top_n_candidates))
+        ? String(Math.floor(Number(reoptWalkForward?.top_n_candidates)))
+        : "8",
+      spaEnable: !!spa,
+      spaSlices: Number.isFinite(Number(spa?.slices))
+        ? String(Math.floor(Number(spa?.slices)))
+        : "16",
+      spaBootstrapSamples: Number.isFinite(Number(spa?.bootstrap_samples))
+        ? String(Math.floor(Number(spa?.bootstrap_samples)))
+        : "500",
+      spaBlockLength: Number.isFinite(Number(spa?.block_length))
+        ? String(Math.floor(Number(spa?.block_length)))
+        : "4",
+      perturbEnable: !!perturb,
+      perturbIters: Number.isFinite(Number(perturb?.iterations))
+        ? String(Math.floor(Number(perturb?.iterations)))
+        : "8",
+      perturbMin: Number.isFinite(Number(perturb?.pct_min))
+        ? String(Number(perturb?.pct_min))
+        : "0.015",
+      perturbMax: Number.isFinite(Number(perturb?.pct_max))
+        ? String(Number(perturb?.pct_max))
+        : "0.06",
+      mcEnable: !!tradeBootstrap,
+      mcSims: Number.isFinite(Number(tradeBootstrap?.simulations))
+        ? String(Math.floor(Number(tradeBootstrap?.simulations)))
+        : "500",
+      mcBlockLen: Number.isFinite(
+        Number(tradeBootstrap?.stationary_mean_block_len),
+      )
+        ? String(Math.floor(Number(tradeBootstrap?.stationary_mean_block_len)))
+        : "",
+      mcMode:
+        Number(tradeBootstrap?.stationary_mean_block_len) === 0
+          ? "iid_only"
+          : "compare",
+      cscvEnable: !!cscvPbo,
+      cscvSlices: Number.isFinite(Number(cscvPbo?.slices))
+        ? String(Math.floor(Number(cscvPbo?.slices)))
+        : "16",
+      crossEnable: crossDatasets.length > 0,
+      crossMax: Number.isFinite(Number(crossTicker?.max_datasets))
+        ? String(Math.floor(Number(crossTicker?.max_datasets)))
+        : "6",
+      crossMode: normalizeText(crossTicker?.mode) || "auto",
+      crossDatasets,
+      crossSelectedCount: crossDatasets.length,
+      crossTotalCount: crossDatasets.length,
+      crossMeta: `selected ${crossDatasets.length}/${crossDatasets.length}`,
+    });
   }
 
   optimizeStore.statusLine = "Applied saved run settings to form.";
@@ -1150,6 +1568,93 @@ function updateStoresFromRunRequest(
   advancedStore.updatedAtUnixMs = Date.now();
   dataStore.source = "vue";
   dataStore.updatedAtUnixMs = Date.now();
+}
+
+function seedMlSignalArtifactContextFromDetail(
+  artifactPath: string,
+  detail: RunArtifactDetailResponse,
+  req: Record<string, unknown>,
+  validationReq: Record<string, unknown> | null,
+): void {
+  const mlSignalStage = normalizeText(detail.mlSignalStage);
+  const isDatasetExportStage =
+    mlSignalStage === "dataset_export" || hasMlSignalDatasetExportShape(req);
+  applyWorkflowArtifactsPayload(
+    {
+      currentRun: {
+        ts: normalizeText(detail.ts) || new Date().toISOString(),
+        artifact_path: normalizePath(artifactPath),
+        report_xlsx_path: normalizeText(detail.reportPath),
+        report_xlsx_exists: detail.reportPathExists,
+        csv_path: normalizeText(detail.csvPath),
+        tags: normalizeStringList(detail.tags),
+        dataset_meta: detail.datasetMeta,
+        route_provenance: detail.routeProvenance,
+        lineage: detail.lineage,
+        ml_signal: {
+          stage: mlSignalStage,
+          bundle_id:
+            normalizeText(detail.mlBundleId) ||
+            normalizeText(req.model_bundle_id ?? req.modelBundleId),
+          dataset_export_path: isDatasetExportStage
+            ? normalizeText(req.output_path ?? req.outputPath)
+            : "",
+          export_manifest_path: normalizeText(detail.mlExportManifestPath),
+          score_cache_path:
+            normalizeText(detail.mlScoreCachePath) ||
+            (!isDatasetExportStage
+              ? normalizeText(req.output_path ?? req.outputPath)
+              : ""),
+          score_manifest_path: normalizeText(detail.mlScoreManifestPath),
+          feature_schema_path: normalizeText(detail.mlFeatureSchemaPath),
+          feature_schema_version: normalizeText(detail.mlFeatureSchemaVersion),
+          feature_schema_hash: normalizeText(detail.mlFeatureSchemaHash),
+          score_contract_version:
+            detail.mlScoreContractVersion == null
+              ? null
+              : detail.mlScoreContractVersion,
+          source_bundle_manifest_path: normalizeText(
+            detail.mlSourceBundleManifestPath,
+          ),
+          source_bundle_manifest_hash: normalizeText(
+            detail.mlSourceBundleManifestHash,
+          ),
+          calibration_state: normalizeText(detail.mlCalibrationState),
+          threshold_policy: normalizeText(detail.mlThresholdPolicy),
+          producer_kind: normalizeText(detail.mlProducerKind),
+          native_backend_requested:
+            normalizeText(detail.mlNativeBackendRequested) ||
+            normalizeText(
+              req.native_backend_preference ?? req.nativeBackendPreference,
+            ),
+          native_backend_used: normalizeText(detail.mlNativeBackendUsed),
+          native_library_path:
+            normalizeText(detail.mlNativeLibraryPath) ||
+            normalizeText(req.native_library_path ?? req.nativeLibraryPath),
+          native_gpu_device_id:
+            detail.mlNativeGpuDeviceId == null
+              ? normalizeOptionalNumber(
+                  req.native_gpu_device_id ?? req.nativeGpuDeviceId,
+                )
+              : detail.mlNativeGpuDeviceId,
+          native_fallback_reason: normalizeText(detail.mlNativeFallbackReason),
+          score_space: normalizeText(detail.mlScoreSpace),
+          score_scope: normalizeText(detail.mlScoreScope),
+        },
+        req,
+        res: detail.runRes ?? {},
+      },
+      currentValidation:
+        validationReq || detail.validationRes
+          ? {
+              ts: normalizeText(detail.ts) || new Date().toISOString(),
+              req: validationReq ?? {},
+              res: detail.validationRes ?? {},
+            }
+          : null,
+    },
+    "vue",
+  );
 }
 
 async function loadRunArtifactHydration(
@@ -1234,7 +1739,12 @@ export async function applySession(ts: string): Promise<void> {
     },
     "vue",
   );
-  selectShellStateForRunRequest(entry.req as Record<string, unknown> | null);
+  applyShellStateForRunRequest(
+    entry.req as Record<string, unknown> | null,
+    null,
+    null,
+    { conventionalTarget: "mode-only" },
+  );
   if (
     isMlSignalStrategyKind(
       (entry.req as Record<string, unknown> | null)?.strategy_kind,
@@ -1340,6 +1850,7 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
           ),
           hasValidation: !!row.has_validation,
           reportXlsxPath: normalizeText(row.report_xlsx_path),
+          reportXlsxExists: parseBooleanLike(row.report_xlsx_exists),
           csvPath: normalizeText(row.csv_path),
           timeframe: normalizeText(row.timeframe),
           baseTimeframe: normalizeText(row.base_timeframe),
@@ -1404,12 +1915,13 @@ export async function loadSavedRun(path: string): Promise<void> {
     currentRun && currentRun.req && typeof currentRun.req === "object"
       ? (currentRun.req as Record<string, unknown>)
       : null;
-  selectShellStateForRunRequest(
+  applyShellStateForRunRequest(
     runReq,
     payload.currentValidation && typeof payload.currentValidation === "object"
       ? asRecord((payload.currentValidation as Record<string, unknown>).req)
       : null,
     currentRun?.mlSignal?.stage,
+    { conventionalTarget: "mode-only" },
   );
   if (
     isMlSignalStrategyKind(
@@ -1433,8 +1945,22 @@ export async function applySavedRun(path: string): Promise<void> {
   if (!req) throw new Error("Saved run artifact is missing run.req.");
   const csvPath = normalizeText(detail.csvPath);
   const timeframe = normalizeText(detail.timeframe);
-  selectShellStateForRunRequest(req, validationReq, detail.mlSignalStage);
-  updateStoresFromRunRequest(req, csvPath, timeframe, validationReq);
+  if (isMlSignalSavedRun(req, detail.mlSignalStage)) {
+    seedMlSignalArtifactContextFromDetail(
+      loaded.path,
+      detail,
+      req,
+      validationReq,
+    );
+  }
+  applyShellStateForRunRequest(req, validationReq, detail.mlSignalStage);
+  updateStoresFromRunRequest(
+    req,
+    csvPath,
+    timeframe,
+    validationReq,
+    detail.mlSignalStage,
+  );
 }
 
 export async function rerunSavedRun(path: string): Promise<void> {
@@ -1463,15 +1989,29 @@ export async function rerunSavedRun(path: string): Promise<void> {
     }
   }
 
-  updateStoresFromRunRequest(req, csvPath, timeframe, validationReq);
+  updateStoresFromRunRequest(
+    req,
+    csvPath,
+    timeframe,
+    validationReq,
+    detail.mlSignalStage,
+  );
 
   const request: Record<string, unknown> = { ...req };
+  delete request.dataId;
   if (currentDataId) {
     request.data_id = currentDataId;
-    request.dataId = currentDataId;
   }
-  selectShellStateForRunRequest(req, validationReq, detail.mlSignalStage);
-  if (isMlSignalStrategyKind(req.strategy_kind ?? req.strategyKind)) {
+  if (isMlSignalSavedRun(req, detail.mlSignalStage)) {
+    seedMlSignalArtifactContextFromDetail(
+      loaded.path,
+      detail,
+      req,
+      validationReq,
+    );
+  }
+  applyShellStateForRunRequest(req, validationReq, detail.mlSignalStage);
+  if (isMlSignalSavedRun(req, detail.mlSignalStage)) {
     const {
       exportMlSignalDataset,
       generateMlSignalScoreCache,
@@ -1535,6 +2075,9 @@ export async function rerunSavedRun(path: string): Promise<void> {
 export async function openSavedRunReport(path: string): Promise<void> {
   const detail = await loadSavedRunDetail(path);
   const reportPath = normalizePath(detail.reportPath);
+  if (detail.reportPathExists === false) {
+    throw new Error("Saved run report file no longer exists on disk.");
+  }
   if (!reportPath)
     throw new Error(
       "No report path for this saved run yet (run validation + export XLSX).",
@@ -1610,6 +2153,12 @@ export async function loadSavedRunDetail(
     ),
   );
   return {
+    ts: normalizeText((detail as unknown as Record<string, unknown>).ts),
+    artifactPath:
+      normalizeText(
+        (detail as unknown as Record<string, unknown>).artifactPath ??
+          (detail as unknown as Record<string, unknown>).artifact_path,
+      ) || loaded.path,
     strategyKind: normalizeText(detail.strategyKind),
     configFingerprint: normalizeText(
       detail.configFingerprint ??
@@ -1622,7 +2171,17 @@ export async function loadSavedRunDetail(
     ),
     timeframe: normalizeText(detail.timeframe),
     csvPath: normalizeText(detail.csvPath),
-    reportPath: normalizeText(detail.reportPath),
+    reportPath: normalizeText(
+      (detail as unknown as Record<string, unknown>).reportXlsxPath ??
+        (detail as unknown as Record<string, unknown>).report_xlsx_path ??
+        detail.reportPath,
+    ),
+    reportPathExists: parseBooleanLike(
+      (detail as unknown as Record<string, unknown>).reportXlsxExists ??
+        (detail as unknown as Record<string, unknown>).report_xlsx_exists ??
+        (detail as unknown as Record<string, unknown>).reportPathExists ??
+        (detail as unknown as Record<string, unknown>).report_path_exists,
+    ),
     hasValidation: !!detail.hasValidation,
     datasetMeta:
       detail.datasetMeta && typeof detail.datasetMeta === "object"
@@ -1662,7 +2221,44 @@ export async function loadSavedRunDetail(
     mlScoreCachePath: normalizeText(detail.mlScoreCachePath),
     mlScoreManifestPath: normalizeText(detail.mlScoreManifestPath),
     mlFeatureSchemaPath: normalizeText(detail.mlFeatureSchemaPath),
+    mlFeatureSchemaHash: normalizeText(
+      (detail as unknown as Record<string, unknown>).mlFeatureSchemaHash ??
+        (detail as unknown as Record<string, unknown>).ml_feature_schema_hash,
+    ),
     mlFeatureSchemaVersion: normalizeText(detail.mlFeatureSchemaVersion),
+    mlExportManifestPath: normalizeText(
+      (detail as unknown as Record<string, unknown>).mlExportManifestPath ??
+        (detail as unknown as Record<string, unknown>).ml_export_manifest_path,
+    ),
+    mlSourceBundleManifestPath: normalizeText(
+      (detail as unknown as Record<string, unknown>)
+        .mlSourceBundleManifestPath ??
+        (detail as unknown as Record<string, unknown>)
+          .ml_source_bundle_manifest_path,
+    ),
+    mlSourceBundleManifestHash: normalizeText(
+      (detail as unknown as Record<string, unknown>)
+        .mlSourceBundleManifestHash ??
+        (detail as unknown as Record<string, unknown>)
+          .ml_source_bundle_manifest_hash,
+    ),
+    mlCalibrationState: normalizeText(
+      (detail as unknown as Record<string, unknown>).mlCalibrationState ??
+        (detail as unknown as Record<string, unknown>).ml_calibration_state,
+    ),
+    mlThresholdPolicy: normalizeText(
+      (detail as unknown as Record<string, unknown>).mlThresholdPolicy ??
+        (detail as unknown as Record<string, unknown>).ml_threshold_policy,
+    ),
+    mlProducerKind: normalizeText(
+      (detail as unknown as Record<string, unknown>).mlProducerKind ??
+        (detail as unknown as Record<string, unknown>).ml_producer_kind,
+    ),
+    mlScoreContractVersion: normalizeOptionalNumber(
+      (detail as unknown as Record<string, unknown>).mlScoreContractVersion ??
+        (detail as unknown as Record<string, unknown>)
+          .ml_score_contract_version,
+    ),
     ...(mlScoreSpace ? { mlScoreSpace } : {}),
     ...(mlScoreScope ? { mlScoreScope } : {}),
     ...(mlScoreContractSummary ? { mlScoreContractSummary } : {}),

@@ -409,6 +409,49 @@ describe('history store actions', () => {
     expect(store.canOpenRunsDir).toBe(false)
   })
 
+  it('disables saved-run report open actions when persisted metadata says the report file is gone', () => {
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        reportXlsxExists: false,
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl'],
+      },
+    ]
+
+    store.syncSavedRunsView('C:/runs/aapl.json')
+
+    expect(store.canOpenSavedRunReport).toBe(false)
+  })
+
+  it('renders saved-run detail text as missing-on-disk when the persisted report flag is false', () => {
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        reportXlsxExists: false,
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl'],
+      },
+    ]
+
+    store.syncSavedRunsView('C:/runs/aapl.json')
+
+    expect(store.savedRunsMeta).toContain('xlsx=missing')
+    expect(store.savedRunDetailReport).toBe('Missing on disk')
+  })
+
   it('prunes stale saved-run detail cache entries on refresh while preserving surviving selection', async () => {
     const store = useHistoryStore()
     const detailA = {

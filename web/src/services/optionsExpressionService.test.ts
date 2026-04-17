@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { invokeCommand } from '../tauri/invoke'
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeCommand } from "../tauri/invoke";
 import {
   analyzeOptionsExpressionFeasibility,
   downloadPolygonOptionsDataset,
@@ -13,169 +13,178 @@ import {
   listOptionsExpressionArtifacts,
   loadOptionsExpressionArtifact,
   normalizeOptionsDatasetIds,
+  openOptionsPath,
   openOrRevealOptionsPath,
   pickOptionsCsvPath,
+  revealOptionsPath,
   runOptionsExpression,
-} from './optionsExpressionService'
+} from "./optionsExpressionService";
 
-vi.mock('../tauri/invoke', () => ({
+vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => ({})),
-}))
+}));
 
-const invokeCommandMock = vi.mocked(invokeCommand)
+const invokeCommandMock = vi.mocked(invokeCommand);
 
-describe('optionsExpressionService', () => {
+describe("optionsExpressionService", () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    invokeCommandMock.mockImplementation(async () => ({}))
-  })
+    vi.clearAllMocks();
+    invokeCommandMock.mockImplementation(async () => ({}));
+  });
 
-  it('normalizes imported dataset manifests', async () => {
+  it("normalizes imported dataset manifests", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       version: 1,
-      options_dataset_id: 'spy_options',
-      root_symbol: 'SPY',
-      provider_name: 'massive',
-      provider_source_surface: 'minute_aggregate',
-      quote_resolution: '1m',
-      price_semantics: 'minute_aggregate',
-      calendar_id: 'market_hours_utc',
-      timezone: 'UTC',
+      options_dataset_id: "spy_options",
+      root_symbol: "SPY",
+      provider_name: "massive",
+      provider_source_surface: "minute_aggregate",
+      quote_resolution: "1m",
+      price_semantics: "minute_aggregate",
+      calendar_id: "market_hours_utc",
+      timezone: "UTC",
       coverage_start: 100,
       coverage_end: 200,
       normalization_version: 1,
       quote_semantics_version: 1,
       corporate_action_mapping_version: 1,
-      contract_reference_source: 'massive_contract_reference',
-      underlier_reference_source: 'underlying_dataset',
-      dataset_path: 'C:/data/options.csv',
+      contract_reference_source: "massive_contract_reference",
+      underlier_reference_source: "underlying_dataset",
+      dataset_path: "C:/data/options.csv",
       row_count: 42,
       contract_count: 3,
-      aggregate_price_field: 'close',
-    })
+      aggregate_price_field: "close",
+    });
 
-    const summary = await importOptionsDataset({ csv_path: 'C:/data/options.csv' })
+    const summary = await importOptionsDataset({
+      csv_path: "C:/data/options.csv",
+    });
 
-    expect(summary.optionsDatasetId).toBe('spy_options')
-    expect(summary.rootSymbol).toBe('SPY')
-    expect(summary.rowCount).toBe(42)
-    expect(summary.priceSemantics).toBe('minute_aggregate')
-    expect(invokeCommandMock).toHaveBeenCalledWith('import_options_dataset', {
-      req: { csv_path: 'C:/data/options.csv' },
-    })
-  })
+    expect(summary.optionsDatasetId).toBe("spy_options");
+    expect(summary.rootSymbol).toBe("SPY");
+    expect(summary.rowCount).toBe(42);
+    expect(summary.priceSemantics).toBe("minute_aggregate");
+    expect(invokeCommandMock).toHaveBeenCalledWith("import_options_dataset", {
+      req: { csv_path: "C:/data/options.csv" },
+    });
+  });
 
-  it('preserves derived-mid dataset semantics during import normalization', async () => {
+  it("preserves derived-mid dataset semantics during import normalization", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       version: 1,
-      options_dataset_id: 'spy_mid',
-      root_symbol: 'SPY',
-      provider_name: 'massive',
-      provider_source_surface: 'derived_mid_snapshot',
-      quote_resolution: '1m',
-      price_semantics: 'derived_mid_snapshot',
-      calendar_id: 'market_hours_utc',
-      timezone: 'UTC',
+      options_dataset_id: "spy_mid",
+      root_symbol: "SPY",
+      provider_name: "massive",
+      provider_source_surface: "derived_mid_snapshot",
+      quote_resolution: "1m",
+      price_semantics: "derived_mid_snapshot",
+      calendar_id: "market_hours_utc",
+      timezone: "UTC",
       coverage_start: 100,
       coverage_end: 200,
       normalization_version: 1,
       quote_semantics_version: 1,
       corporate_action_mapping_version: 1,
-      contract_reference_source: 'massive_contract_reference',
-      contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
-      provider_entitlement_profile: 'options_business',
-      underlier_reference_source: 'underlying_dataset',
-      dataset_path: 'C:/data/spy_mid.csv',
+      contract_reference_source: "massive_contract_reference",
+      contract_reference_as_of_utc: "2026-04-05T00:00:00Z",
+      provider_entitlement_profile: "options_business",
+      underlier_reference_source: "underlying_dataset",
+      dataset_path: "C:/data/spy_mid.csv",
       row_count: 24,
       contract_count: 2,
       aggregate_price_field: null,
-    })
+    });
 
-    const summary = await importOptionsDataset({ csv_path: 'C:/data/spy_mid.csv' })
+    const summary = await importOptionsDataset({
+      csv_path: "C:/data/spy_mid.csv",
+    });
 
-    expect(summary.optionsDatasetId).toBe('spy_mid')
-    expect(summary.providerSourceSurface).toBe('derived_mid_snapshot')
-    expect(summary.priceSemantics).toBe('derived_mid_snapshot')
-    expect(summary.providerEntitlementProfile).toBe('options_business')
-    expect(summary.contractReferenceAsOfUtc).toBe('2026-04-05T00:00:00Z')
-    expect(summary.aggregatePriceField).toBe('')
-  })
+    expect(summary.optionsDatasetId).toBe("spy_mid");
+    expect(summary.providerSourceSurface).toBe("derived_mid_snapshot");
+    expect(summary.priceSemantics).toBe("derived_mid_snapshot");
+    expect(summary.providerEntitlementProfile).toBe("options_business");
+    expect(summary.contractReferenceAsOfUtc).toBe("2026-04-05T00:00:00Z");
+    expect(summary.aggregatePriceField).toBe("");
+  });
 
-  it('normalizes Polygon/Massive download responses', async () => {
+  it("normalizes Polygon/Massive download responses", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       manifest: {
         version: 1,
-        options_dataset_id: 'spy_options_1m',
-        root_symbol: 'SPY',
-        provider_name: 'massive',
-        provider_source_surface: 'minute_aggregate',
-        quote_resolution: '1m',
-        price_semantics: 'minute_aggregate',
-        calendar_id: 'market_hours_utc',
-        timezone: 'UTC',
+        options_dataset_id: "spy_options_1m",
+        root_symbol: "SPY",
+        provider_name: "massive",
+        provider_source_surface: "minute_aggregate",
+        quote_resolution: "1m",
+        price_semantics: "minute_aggregate",
+        calendar_id: "market_hours_utc",
+        timezone: "UTC",
         coverage_start: 100,
         coverage_end: 200,
         normalization_version: 1,
         quote_semantics_version: 1,
         corporate_action_mapping_version: 1,
-        contract_reference_source: 'massive_contract_reference',
-        contract_reference_as_of_utc: '2026-04-06T23:59:00Z',
-        underlier_reference_source: 'polygon_stocks_1m_raw:SPY',
-        dataset_path: 'C:/data/spy_options_rows.csv',
+        contract_reference_source: "massive_contract_reference",
+        contract_reference_as_of_utc: "2026-04-06T23:59:00Z",
+        underlier_reference_source: "polygon_stocks_1m_raw:SPY",
+        dataset_path: "C:/data/spy_options_rows.csv",
         row_count: 200,
         contract_count: 8,
-        aggregate_price_field: 'close',
+        aggregate_price_field: "close",
       },
       contracts_discovered: 22,
       contracts_selected: 8,
       contracts_with_rows: 6,
       downloaded_option_rows: 200,
       skipped_contracts: 2,
-      underlying_csv_path: 'C:/cache/polygon_stocks_raw_SPY_1m.csv',
+      underlying_csv_path: "C:/cache/polygon_stocks_raw_SPY_1m.csv",
       used_underlying_cache_only: true,
-    })
+    });
 
     const summary = await downloadPolygonOptionsDataset({
-      rootSymbol: 'SPY',
-      from: '2026-04-01',
-      to: '2026-04-02',
-      contractType: 'call',
-    })
+      rootSymbol: "SPY",
+      from: "2026-04-01",
+      to: "2026-04-02",
+      contractType: "call",
+    });
 
-    expect(summary.manifest.optionsDatasetId).toBe('spy_options_1m')
-    expect(summary.contractsSelected).toBe(8)
-    expect(summary.downloadedOptionRows).toBe(200)
-    expect(summary.usedUnderlyingCacheOnly).toBe(true)
-    expect(invokeCommandMock).toHaveBeenCalledWith('download_polygon_options_dataset', {
-      req: {
-        root_symbol: 'SPY',
-        from: '2026-04-01',
-        to: '2026-04-02',
-        contract_type: 'call',
+    expect(summary.manifest.optionsDatasetId).toBe("spy_options_1m");
+    expect(summary.contractsSelected).toBe(8);
+    expect(summary.downloadedOptionRows).toBe(200);
+    expect(summary.usedUnderlyingCacheOnly).toBe(true);
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "download_polygon_options_dataset",
+      {
+        req: {
+          root_symbol: "SPY",
+          from: "2026-04-01",
+          to: "2026-04-02",
+          contract_type: "call",
+        },
       },
-    })
-  })
+    );
+  });
 
-  it('normalizes run responses and artifact summaries', async () => {
+  it("normalizes run responses and artifact summaries", async () => {
     invokeCommandMock
       .mockResolvedValueOnce({
-        artifact_path: 'C:/runs/vectorgrid_options_expression_1.json',
+        artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
         artifact: {
-          ts: '2026-04-05T12:00:00Z',
-          parent_artifact_id: 'vectorgrid_run_1',
-          options_dataset_hash: 'hash-1',
+          ts: "2026-04-05T12:00:00Z",
+          parent_artifact_id: "vectorgrid_run_1",
+          options_dataset_hash: "hash-1",
           request: {
-            parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-            options_dataset_id: 'spy_options',
-            split_assignment_mode: 'session_chronological',
+            parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+            options_dataset_id: "spy_options",
+            split_assignment_mode: "session_chronological",
             delay_minutes: [0, 1],
             dte_buckets: [1, 3],
-            moneyness_buckets: ['atm', 'otm_1'],
+            moneyness_buckets: ["atm", "otm_1"],
             hold_minutes: [15, 30],
             target_return_buckets: [0.25],
             stop_return_buckets: [0.25],
-            exit_template: 'fixed_hold_or_target_stop',
-            fill_model: 'aggregate_research',
+            exit_template: "fixed_hold_or_target_stop",
+            fill_model: "aggregate_research",
             filters: {
               max_entry_lag_minutes: 5,
             },
@@ -185,9 +194,9 @@ describe('optionsExpressionService', () => {
           },
         },
         result: {
-          backend_used: 'cpu_reference',
-          backend_fallback_reason: 'GPU planner probe failed; using CPU.',
-          price_semantics: 'minute_aggregate',
+          backend_used: "cpu_reference",
+          backend_fallback_reason: "GPU planner probe failed; using CPU.",
+          price_semantics: "minute_aggregate",
           tuple_count: 2,
           staging: {
             candidate_slot_count: 12,
@@ -197,9 +206,9 @@ describe('optionsExpressionService', () => {
             harsher_exit_summary_count: 24,
           },
           diagnostics: {
-            parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-            options_dataset_id: 'spy_options',
-            root_symbol: 'SPY',
+            parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+            options_dataset_id: "spy_options",
+            root_symbol: "SPY",
             total_events: 10,
             bullish_events: 6,
             bearish_events: 4,
@@ -212,7 +221,7 @@ describe('optionsExpressionService', () => {
             coverage_end: 200,
           },
           overlap_window: {
-            contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+            contract_reference_as_of_utc: "2026-04-05T00:00:00Z",
             total_events_in_dataset_window: 9,
             search_events_in_dataset_window: 5,
             holdout_events_in_dataset_window: 2,
@@ -235,21 +244,25 @@ describe('optionsExpressionService', () => {
             sealed_test_overlap_rate: 1,
           },
           coverage_adequacy: {
-            verdict: 'mixed_fragile',
+            verdict: "mixed_fragile",
             non_promotable: false,
-            reasons: ['Dominant structural invalid reason: no_expiration_in_bucket (60.0% of invalid slots).'],
+            reasons: [
+              "Dominant structural invalid reason: no_expiration_in_bucket (60.0% of invalid slots).",
+            ],
             search_candidate_coverage_rate: 1,
             holdout_candidate_coverage_rate: 1,
             sealed_test_candidate_coverage_rate: 1,
             search_baseline_outcome_coverage_rate: 0.8,
             holdout_baseline_outcome_coverage_rate: 1,
             sealed_test_baseline_outcome_coverage_rate: 1,
-            dominant_invalid_reason: 'no_expiration_in_bucket',
+            dominant_invalid_reason: "no_expiration_in_bucket",
             dominant_invalid_reason_share: 0.6,
           },
           split_invalid_reasons: {
-            search_invalid_reasons: [{ reason: 'no_expiration_in_bucket', count: 2 }],
-            holdout_invalid_reasons: [{ reason: 'premium_too_high', count: 1 }],
+            search_invalid_reasons: [
+              { reason: "no_expiration_in_bucket", count: 2 },
+            ],
+            holdout_invalid_reasons: [{ reason: "premium_too_high", count: 1 }],
             sealed_test_invalid_reasons: [],
           },
           ranked_results: [
@@ -257,17 +270,17 @@ describe('optionsExpressionService', () => {
               tuple: {
                 delay_minutes: 0,
                 dte_days: 1,
-                moneyness_bucket: 'atm',
+                moneyness_bucket: "atm",
                 hold_minutes: 15,
                 target_return: 0.25,
                 stop_return: 0.25,
-                exit_template: 'fixed_hold_or_target_stop',
-                fill_model: 'aggregate_research',
+                exit_template: "fixed_hold_or_target_stop",
+                fill_model: "aggregate_research",
               },
               pre_sealed_rank: 0,
               sealed_finalist: false,
               sealed_final_rank: 0,
-              validation_verdict: 'stress_fragile',
+              validation_verdict: "stress_fragile",
               selection_metrics: {
                 valid_trades: 5,
                 invalid_events: 1,
@@ -348,21 +361,21 @@ describe('optionsExpressionService', () => {
       .mockResolvedValueOnce({
         optionsExpression: [
           {
-            ts: '2026-04-05T12:00:00Z',
-            path: 'C:/runs/vectorgrid_options_expression_1.json',
+            ts: "2026-04-05T12:00:00Z",
+            path: "C:/runs/vectorgrid_options_expression_1.json",
             bytes: 2048,
-            parent_artifact_id: 'vectorgrid_run_1',
-            parent_strategy_kind: 'DoubleMa',
-            root_symbol: 'SPY',
-            options_dataset_id: 'spy_options',
-            backend_used: 'cpu_reference',
-            backend_fallback_reason: 'GPU planner probe failed; using CPU.',
-            price_semantics: 'minute_aggregate',
-            request_backend_preference: 'auto',
-            request_fill_model: 'aggregate_research',
-            request_structure_family: 'long_single',
-            request_split_assignment_mode: 'event_chronological',
-            coverage_adequacy_verdict: 'mixed_fragile',
+            parent_artifact_id: "vectorgrid_run_1",
+            parent_strategy_kind: "DoubleMa",
+            root_symbol: "SPY",
+            options_dataset_id: "spy_options",
+            backend_used: "cpu_reference",
+            backend_fallback_reason: "GPU planner probe failed; using CPU.",
+            price_semantics: "minute_aggregate",
+            request_backend_preference: "auto",
+            request_fill_model: "aggregate_research",
+            request_structure_family: "long_single",
+            request_split_assignment_mode: "event_chronological",
+            coverage_adequacy_verdict: "mixed_fragile",
             coverage_non_promotable: false,
             search_overlap_rate: 0.8333,
             holdout_overlap_rate: 1,
@@ -397,7 +410,7 @@ describe('optionsExpressionService', () => {
               robust_leader_reached_sealed_finalist: false,
               robust_leader_sealed_final_rank: null,
             },
-            top_validation_verdict: 'stress_fragile',
+            top_validation_verdict: "stress_fragile",
             validated_tuple_count: 1,
             stress_fragile_tuple_count: 1,
             supported_holdout_tuple_count: 1,
@@ -410,91 +423,123 @@ describe('optionsExpressionService', () => {
             has_extreme_stress_metrics: true,
           },
         ],
-      })
+      });
 
-    const run = await runOptionsExpression({ parent_artifact_path: 'C:/runs/vectorgrid_run_1.json' })
-    const artifacts = await listOptionsExpressionArtifacts()
+    const run = await runOptionsExpression({
+      parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+    });
+    const artifacts = await listOptionsExpressionArtifacts();
 
-    expect(run.artifactPath).toBe('C:/runs/vectorgrid_options_expression_1.json')
-    expect(run.artifactTs).toBe('2026-04-05T12:00:00Z')
-    expect(run.optionsDatasetHash).toBe('hash-1')
-    expect(run.backendUsed).toBe('cpu_reference')
-    expect(run.backendFallbackReason).toBe('GPU planner probe failed; using CPU.')
-    expect(run.staging?.compiledCandidateCount).toBe(9)
-    expect(run.rankedResults[0]?.selectionMetrics.validTrades).toBe(5)
-    expect(run.request?.splitAssignmentMode).toBe('session_chronological')
-    expect(run.request?.delayMinutes).toEqual([0, 1])
-    expect(run.request?.sealedFinalistCount).toBe(5)
-    expect(run.rankedResults[0]?.preSealedRank).toBe(0)
-    expect(run.rankedResults[0]?.sealedFinalist).toBe(false)
-    expect(run.rankedResults[0]?.validationVerdict).toBe('stress_fragile')
-    expect(run.rankedResults[0]?.selectionMetrics.meanReturnOnPremium).toBe(0.16)
-    expect(run.rankedResults[0]?.selectionMetrics.returnVolatilityOnPremium).toBe(0.05)
-    expect(run.rankedResults[0]?.sealedStressMetrics?.expectancyPerPremium).toBe(0.03)
-    expect(run.rankedResults[0]?.harsherStressMetrics?.expectancyPerPremium).toBe(0.02)
-    expect(run.rankedResults[0]?.sealedHarsherStressMetrics?.expectancyPerPremium).toBe(0.01)
-    expect(run.rankedResults[0]?.extremeStressMetrics?.expectancyPerPremium).toBe(-0.01)
-    expect(run.rankedResults[0]?.sealedExtremeStressMetrics?.expectancyPerPremium).toBe(-0.02)
-    expect(run.overlapWindow.searchOverlapRate).toBe(0.8333)
-    expect(run.coverageAdequacy.verdict).toBe('mixed_fragile')
-    expect(run.coverageAdequacy.dominantInvalidReason).toBe('no_expiration_in_bucket')
-    expect(run.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2)
-    expect(artifacts[0]?.optionsDatasetId).toBe('spy_options')
-    expect(artifacts[0]?.parentStrategyKind).toBe('DoubleMa')
-    expect(artifacts[0]?.tupleCount).toBe(2)
-    expect(artifacts[0]?.bestRobustScore).toBe(0.18)
-    expect(artifacts[0]?.bestHoldoutExpectancyPerPremium).toBe(0.1)
-    expect(artifacts[0]?.bestSealedExpectancyPerPremium).toBe(0.07)
-    expect(artifacts[0]?.bestHarsherStressExpectancyPerPremium).toBe(0.02)
-    expect(artifacts[0]?.bestSealedHarsherStressExpectancyPerPremium).toBe(0.01)
-    expect(artifacts[0]?.bestExtremeStressExpectancyPerPremium).toBe(-0.01)
-    expect(artifacts[0]?.bestSealedExtremeStressExpectancyPerPremium).toBe(-0.02)
-    expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBe(1)
-    expect(artifacts[0]?.leaderSummary.robustLeaderTupleIndex).toBe(0)
-    expect(artifacts[0]?.leaderSummary.distinctLeaderCount).toBe(2)
-    expect(artifacts[0]?.leaderSummary.searchVsRobustDisagree).toBe(true)
-    expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBe(true)
-    expect(artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist).toBe(false)
-    expect(artifacts[0]?.topValidationVerdict).toBe('stress_fragile')
-    expect(artifacts[0]?.sealedFinalistBudget).toBe(0)
-    expect(artifacts[0]?.sealedEvaluatedTupleCount).toBe(0)
-    expect(artifacts[0]?.validatedTupleCount).toBe(1)
-    expect(artifacts[0]?.stressFragileTupleCount).toBe(1)
-    expect(artifacts[0]?.supportedHoldoutTupleCount).toBe(1)
-    expect(artifacts[0]?.supportedSealedTupleCount).toBe(1)
-    expect(artifacts[0]?.supportedStressTupleCount).toBe(1)
-    expect(artifacts[0]?.hasSealedEvaluationMetrics).toBe(true)
-    expect(artifacts[0]?.hasHarsherStressMetrics).toBe(true)
-    expect(artifacts[0]?.hasExtremeStressMetrics).toBe(true)
-    expect(artifacts[0]?.backendFallbackReason).toBe('GPU planner probe failed; using CPU.')
-    expect(artifacts[0]?.requestBackendPreference).toBe('auto')
-    expect(artifacts[0]?.requestFillModel).toBe('aggregate_research')
-    expect(artifacts[0]?.requestStructureFamily).toBe('long_single')
-    expect(artifacts[0]?.requestSplitAssignmentMode).toBe('event_chronological')
-    expect(artifacts[0]?.coverageAdequacyVerdict).toBe('mixed_fragile')
-    expect(artifacts[0]?.searchOverlapRate).toBe(0.8333)
-    expect(artifacts[0]?.searchBaselineOutcomeCoverageRate).toBe(0.8)
-    expect(invokeCommandMock).toHaveBeenCalledWith('list_artifact_library')
-  })
+    expect(run.artifactPath).toBe(
+      "C:/runs/vectorgrid_options_expression_1.json",
+    );
+    expect(run.artifactTs).toBe("2026-04-05T12:00:00Z");
+    expect(run.optionsDatasetHash).toBe("hash-1");
+    expect(run.backendUsed).toBe("cpu_reference");
+    expect(run.backendFallbackReason).toBe(
+      "GPU planner probe failed; using CPU.",
+    );
+    expect(run.staging?.compiledCandidateCount).toBe(9);
+    expect(run.rankedResults[0]?.selectionMetrics.validTrades).toBe(5);
+    expect(run.request?.splitAssignmentMode).toBe("session_chronological");
+    expect(run.request?.delayMinutes).toEqual([0, 1]);
+    expect(run.request?.sealedFinalistCount).toBe(5);
+    expect(run.rankedResults[0]?.preSealedRank).toBe(0);
+    expect(run.rankedResults[0]?.sealedFinalist).toBe(false);
+    expect(run.rankedResults[0]?.validationVerdict).toBe("stress_fragile");
+    expect(run.rankedResults[0]?.selectionMetrics.meanReturnOnPremium).toBe(
+      0.16,
+    );
+    expect(
+      run.rankedResults[0]?.selectionMetrics.returnVolatilityOnPremium,
+    ).toBe(0.05);
+    expect(
+      run.rankedResults[0]?.sealedStressMetrics?.expectancyPerPremium,
+    ).toBe(0.03);
+    expect(
+      run.rankedResults[0]?.harsherStressMetrics?.expectancyPerPremium,
+    ).toBe(0.02);
+    expect(
+      run.rankedResults[0]?.sealedHarsherStressMetrics?.expectancyPerPremium,
+    ).toBe(0.01);
+    expect(
+      run.rankedResults[0]?.extremeStressMetrics?.expectancyPerPremium,
+    ).toBe(-0.01);
+    expect(
+      run.rankedResults[0]?.sealedExtremeStressMetrics?.expectancyPerPremium,
+    ).toBe(-0.02);
+    expect(run.overlapWindow.searchOverlapRate).toBe(0.8333);
+    expect(run.coverageAdequacy.verdict).toBe("mixed_fragile");
+    expect(run.coverageAdequacy.dominantInvalidReason).toBe(
+      "no_expiration_in_bucket",
+    );
+    expect(run.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2);
+    expect(artifacts[0]?.optionsDatasetId).toBe("spy_options");
+    expect(artifacts[0]?.parentStrategyKind).toBe("DoubleMa");
+    expect(artifacts[0]?.tupleCount).toBe(2);
+    expect(artifacts[0]?.bestRobustScore).toBe(0.18);
+    expect(artifacts[0]?.bestHoldoutExpectancyPerPremium).toBe(0.1);
+    expect(artifacts[0]?.bestSealedExpectancyPerPremium).toBe(0.07);
+    expect(artifacts[0]?.bestHarsherStressExpectancyPerPremium).toBe(0.02);
+    expect(artifacts[0]?.bestSealedHarsherStressExpectancyPerPremium).toBe(
+      0.01,
+    );
+    expect(artifacts[0]?.bestExtremeStressExpectancyPerPremium).toBe(-0.01);
+    expect(artifacts[0]?.bestSealedExtremeStressExpectancyPerPremium).toBe(
+      -0.02,
+    );
+    expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBe(1);
+    expect(artifacts[0]?.leaderSummary.robustLeaderTupleIndex).toBe(0);
+    expect(artifacts[0]?.leaderSummary.distinctLeaderCount).toBe(2);
+    expect(artifacts[0]?.leaderSummary.searchVsRobustDisagree).toBe(true);
+    expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBe(true);
+    expect(artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist).toBe(
+      false,
+    );
+    expect(artifacts[0]?.topValidationVerdict).toBe("stress_fragile");
+    expect(artifacts[0]?.sealedFinalistBudget).toBe(0);
+    expect(artifacts[0]?.sealedEvaluatedTupleCount).toBe(0);
+    expect(artifacts[0]?.validatedTupleCount).toBe(1);
+    expect(artifacts[0]?.stressFragileTupleCount).toBe(1);
+    expect(artifacts[0]?.supportedHoldoutTupleCount).toBe(1);
+    expect(artifacts[0]?.supportedSealedTupleCount).toBe(1);
+    expect(artifacts[0]?.supportedStressTupleCount).toBe(1);
+    expect(artifacts[0]?.hasSealedEvaluationMetrics).toBe(true);
+    expect(artifacts[0]?.hasHarsherStressMetrics).toBe(true);
+    expect(artifacts[0]?.hasExtremeStressMetrics).toBe(true);
+    expect(artifacts[0]?.backendFallbackReason).toBe(
+      "GPU planner probe failed; using CPU.",
+    );
+    expect(artifacts[0]?.requestBackendPreference).toBe("auto");
+    expect(artifacts[0]?.requestFillModel).toBe("aggregate_research");
+    expect(artifacts[0]?.requestStructureFamily).toBe("long_single");
+    expect(artifacts[0]?.requestSplitAssignmentMode).toBe(
+      "event_chronological",
+    );
+    expect(artifacts[0]?.coverageAdequacyVerdict).toBe("mixed_fragile");
+    expect(artifacts[0]?.searchOverlapRate).toBe(0.8333);
+    expect(artifacts[0]?.searchBaselineOutcomeCoverageRate).toBe(0.8);
+    expect(invokeCommandMock).toHaveBeenCalledWith("list_artifact_library");
+  });
 
-  it('defaults missing retained-leader summary fields for older artifact summaries', async () => {
+  it("defaults missing retained-leader summary fields for older artifact summaries", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       options_expression: [
         {
-          ts: '2026-04-05T12:00:00Z',
-          path: 'C:/runs/vectorgrid_options_expression_legacy.json',
+          ts: "2026-04-05T12:00:00Z",
+          path: "C:/runs/vectorgrid_options_expression_legacy.json",
           bytes: 2048,
-          parent_artifact_id: 'vectorgrid_run_1',
-          parent_strategy_kind: 'DoubleMa',
-          root_symbol: 'SPY',
-          options_dataset_id: 'spy_options',
-          backend_used: 'cpu_reference',
-          price_semantics: 'minute_aggregate',
-          request_backend_preference: 'auto',
-          request_fill_model: 'aggregate_research',
-          request_structure_family: 'long_single',
-          request_split_assignment_mode: 'event_chronological',
-          coverage_adequacy_verdict: 'healthy',
+          parent_artifact_id: "vectorgrid_run_1",
+          parent_strategy_kind: "DoubleMa",
+          root_symbol: "SPY",
+          options_dataset_id: "spy_options",
+          backend_used: "cpu_reference",
+          price_semantics: "minute_aggregate",
+          request_backend_preference: "auto",
+          request_fill_model: "aggregate_research",
+          request_structure_family: "long_single",
+          request_split_assignment_mode: "event_chronological",
+          coverage_adequacy_verdict: "healthy",
           coverage_non_promotable: false,
           search_overlap_rate: 1,
           holdout_overlap_rate: 1,
@@ -516,7 +561,7 @@ describe('optionsExpressionService', () => {
           best_sealed_harsher_stress_expectancy_per_premium: null,
           best_extreme_stress_expectancy_per_premium: null,
           best_sealed_extreme_stress_expectancy_per_premium: null,
-          top_validation_verdict: 'search_only',
+          top_validation_verdict: "search_only",
           validated_tuple_count: 0,
           stress_fragile_tuple_count: 0,
           supported_holdout_tuple_count: 0,
@@ -529,28 +574,49 @@ describe('optionsExpressionService', () => {
           has_extreme_stress_metrics: false,
         },
       ],
-    })
+    });
 
-    const artifacts = await listOptionsExpressionArtifacts()
+    const artifacts = await listOptionsExpressionArtifacts();
 
-    expect(artifacts[0]?.leaderSummary.distinctLeaderCount).toBe(0)
-    expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBeNull()
-    expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBeNull()
-    expect(artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist).toBeNull()
-    expect(artifacts[0]?.supportedHoldoutTupleCount).toBe(0)
-    expect(artifacts[0]?.supportedSealedTupleCount).toBe(0)
-    expect(artifacts[0]?.supportedStressTupleCount).toBe(0)
-  })
+    expect(artifacts[0]?.leaderSummary.distinctLeaderCount).toBe(0);
+    expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBeNull();
+    expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBeNull();
+    expect(
+      artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist,
+    ).toBeNull();
+    expect(artifacts[0]?.supportedHoldoutTupleCount).toBe(0);
+    expect(artifacts[0]?.supportedSealedTupleCount).toBe(0);
+    expect(artifacts[0]?.supportedStressTupleCount).toBe(0);
+  });
 
-  it('normalizes feasibility preview responses', async () => {
+  it("normalizes feasibility preview responses", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       replay_build_ms: 18,
       total_preview_ms: 41,
+      replay_build_timing: {
+        total_us: 18_400,
+        parent_artifact_validation_us: 120,
+        source_resolution_us: 80,
+        parent_signal_process_cache_lookup_us: 40,
+        parent_signal_process_cache_hit: true,
+        persisted_signal_manifest_cache_lookup_us: 0,
+        persisted_signal_manifest_cache_hit: false,
+        candle_replay_load_us: 0,
+        parent_replay_and_drilldown_us: 0,
+        signal_manifest_materialization_us: 0,
+        options_dataset_manifest_validation_us: 70,
+        options_dataset_process_cache_lookup_us: 50,
+        options_dataset_process_cache_hit: false,
+        options_dataset_persisted_cache_lookup_us: 45,
+        options_dataset_persisted_cache_hit: true,
+        options_dataset_csv_load_us: 0,
+        request_normalization_us: 35,
+      },
       report: {
         diagnostics: {
-          parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-          options_dataset_id: 'spy_options',
-          root_symbol: 'SPY',
+          parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+          options_dataset_id: "spy_options",
+          root_symbol: "SPY",
           total_events: 10,
           bullish_events: 6,
           bearish_events: 4,
@@ -560,13 +626,15 @@ describe('optionsExpressionService', () => {
           dataset_contracts: 3,
           dataset_rows: 42,
         },
-        price_semantics: 'minute_aggregate',
-        fill_model: 'aggregate_research',
-        best_available_backend: 'gpu_compiled_tensor_hybrid',
+        price_semantics: "minute_aggregate",
+        fill_model: "aggregate_research",
+        best_available_backend: "gpu_compiled_tensor_hybrid",
         auto_backend_decision: {
-          recommended_backend: 'cpu_reference',
+          recommended_backend: "cpu_reference",
           gpu_eligible: false,
-          reasons: ['Measured GPU hybrid speedup 2.00x is below the current promotion gate of 3.0x.'],
+          reasons: [
+            "Measured GPU hybrid speedup 2.00x is below the current promotion gate of 3.0x.",
+          ],
         },
         compiled_tuple_count: 12,
         per_event_candidate_slots: 9,
@@ -646,17 +714,19 @@ describe('optionsExpressionService', () => {
           gpu_device_total_memory_bytes: 8 * 1024 * 1024 * 1024,
           gpu_device_free_memory_bytes: 512 * 1024 * 1024,
           gpu_device_usable_memory_bytes: 256 * 1024 * 1024,
-          gpu_memory_budget_source: 'free_memory_headroom',
+          gpu_memory_budget_source: "free_memory_headroom",
           gpu_outcome_tensor_fits_in_memory: true,
           gpu_chunk_plan_fits_in_memory: true,
-          gpu_plan_notes: ['GPU planner probe failed before ranking: synthetic test note'],
+          gpu_plan_notes: [
+            "GPU planner probe failed before ranking: synthetic test note",
+          ],
         },
         invalid_reasons: [
-          { reason: 'no_expiration_in_bucket', count: 20 },
-          { reason: 'premium_too_high', count: 16 },
+          { reason: "no_expiration_in_bucket", count: 20 },
+          { reason: "premium_too_high", count: 16 },
         ],
         overlap_window: {
-          contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+          contract_reference_as_of_utc: "2026-04-05T00:00:00Z",
           total_events_in_dataset_window: 8,
           search_events_in_dataset_window: 4,
           holdout_events_in_dataset_window: 2,
@@ -680,23 +750,27 @@ describe('optionsExpressionService', () => {
         },
         split_invalid_reasons: {
           search_invalid_reasons: [
-            { reason: 'entry_past_cutoff', count: 10 },
-            { reason: 'premium_too_high', count: 8 },
+            { reason: "entry_past_cutoff", count: 10 },
+            { reason: "premium_too_high", count: 8 },
           ],
-          holdout_invalid_reasons: [{ reason: 'premium_too_high', count: 4 }],
-          sealed_test_invalid_reasons: [{ reason: 'no_expiration_in_bucket', count: 3 }],
+          holdout_invalid_reasons: [{ reason: "premium_too_high", count: 4 }],
+          sealed_test_invalid_reasons: [
+            { reason: "no_expiration_in_bucket", count: 3 },
+          ],
         },
         coverage_adequacy: {
-          verdict: 'weak_dataset_overlap',
+          verdict: "weak_dataset_overlap",
           non_promotable: true,
-          reasons: ['Only 66.7% of search events and 80.0% of total events overlap the current dataset window.'],
+          reasons: [
+            "Only 66.7% of search events and 80.0% of total events overlap the current dataset window.",
+          ],
           search_candidate_coverage_rate: 1,
           holdout_candidate_coverage_rate: 1,
           sealed_test_candidate_coverage_rate: 1,
           search_baseline_outcome_coverage_rate: 0.8,
           holdout_baseline_outcome_coverage_rate: 1,
           sealed_test_baseline_outcome_coverage_rate: 1,
-          dominant_invalid_reason: 'entry_past_cutoff',
+          dominant_invalid_reason: "entry_past_cutoff",
           dominant_invalid_reason_share: 0.5,
         },
         axis_coverage: {
@@ -707,7 +781,7 @@ describe('optionsExpressionService', () => {
               valid_slot_count: 24,
               invalid_slot_count: 6,
               valid_rate: 0.8,
-              invalid_reasons: [{ reason: 'premium_too_high', count: 6 }],
+              invalid_reasons: [{ reason: "premium_too_high", count: 6 }],
             },
           ],
           dte_days: [
@@ -717,7 +791,7 @@ describe('optionsExpressionService', () => {
               valid_slot_count: 24,
               invalid_slot_count: 6,
               valid_rate: 0.8,
-              invalid_reasons: [{ reason: 'premium_too_high', count: 6 }],
+              invalid_reasons: [{ reason: "premium_too_high", count: 6 }],
             },
             {
               dte_days: 5,
@@ -725,78 +799,101 @@ describe('optionsExpressionService', () => {
               valid_slot_count: 0,
               invalid_slot_count: 30,
               valid_rate: 0,
-              invalid_reasons: [{ reason: 'no_expiration_in_bucket', count: 20 }],
+              invalid_reasons: [
+                { reason: "no_expiration_in_bucket", count: 20 },
+              ],
             },
           ],
           moneyness_buckets: [
             {
-              moneyness_bucket: 'atm',
+              moneyness_bucket: "atm",
               slot_count: 30,
               valid_slot_count: 24,
               invalid_slot_count: 6,
               valid_rate: 0.8,
-              invalid_reasons: [{ reason: 'premium_too_high', count: 6 }],
+              invalid_reasons: [{ reason: "premium_too_high", count: 6 }],
             },
           ],
         },
       },
-    })
+    });
 
     const preview = await analyzeOptionsExpressionFeasibility({
-      parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-      options_dataset_id: 'spy_options',
-    })
+      parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+      options_dataset_id: "spy_options",
+    });
 
-    expect(preview.replayBuildMs).toBe(18)
-    expect(preview.totalPreviewMs).toBe(41)
-    expect(preview.compiledTupleCount).toBe(12)
-    expect(preview.eventCoverage.totalEventsWithCandidates).toBe(9)
-    expect(preview.cacheStats.structuralCacheHits).toBe(2)
-    expect(preview.cacheStats.summaryCacheMisses).toBe(2)
-    expect(preview.cacheStats.gpuMemoryBudgetSource).toBe('free_memory_headroom')
-    expect(preview.cacheStats.gpuDeviceUsableMemoryBytes).toBe(256 * 1024 * 1024)
-    expect(preview.cacheStats.gpuPlanNotes[0]).toContain('synthetic test note')
-    expect(preview.timings.cpuRankingMs).toBe(6)
-    expect(preview.timings.cpuRankingUs).toBe(6_400)
-    expect(preview.timings.harsherExitSummaryCompileMs).toBe(7)
-    expect(preview.timings.gpuRankingMs).toBe(3)
-    expect(preview.timings.gpuRankingUs).toBe(3_100)
-    expect(preview.timings.gpuSpeedupVsCpu).toBe(2)
-    expect(preview.bestAvailableBackend).toBe('gpu_compiled_tensor_hybrid')
-    expect(preview.autoBackendDecision.recommendedBackend).toBe('cpu_reference')
-    expect(preview.autoBackendDecision.gpuEligible).toBe(false)
-    expect(preview.autoBackendDecision.reasons[0]).toContain('Measured GPU hybrid speedup 2.00x')
-    expect(preview.harsherExitSummaryDensity).toBe(0.6667)
-    expect(preview.eventCoverage.totalEventsWithHarsherOutcomes).toBe(6)
-    expect(preview.invalidReasons[0]?.reason).toBe('no_expiration_in_bucket')
-    expect(preview.overlapWindow.searchOverlapRate).toBe(0.6667)
-    expect(preview.splitInvalidReasons.searchInvalidReasons[0]?.reason).toBe('entry_past_cutoff')
-    expect(preview.coverageAdequacy.verdict).toBe('weak_dataset_overlap')
-    expect(preview.coverageAdequacy.nonPromotable).toBe(true)
-    expect(preview.axisCoverage.dteDays[1]?.dteDays).toBe(5)
-    expect(preview.axisCoverage.dteDays[1]?.validRate).toBe(0)
-    expect(preview.axisCoverage.delayMinutes[0]?.invalidReasons[0]?.reason).toBe('premium_too_high')
-    expect(invokeCommandMock).toHaveBeenCalledWith('analyze_options_expression_feasibility', {
-      req: {
-        parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-        options_dataset_id: 'spy_options',
+    expect(preview.replayBuildMs).toBe(18);
+    expect(preview.totalPreviewMs).toBe(41);
+    expect(preview.replayBuildTiming?.parentArtifactValidationUs).toBe(120);
+    expect(preview.replayBuildTiming?.parentSignalProcessCacheHit).toBe(true);
+    expect(preview.replayBuildTiming?.optionsDatasetPersistedCacheHit).toBe(
+      true,
+    );
+    expect(preview.replayBuildTiming?.requestNormalizationUs).toBe(35);
+    expect(preview.compiledTupleCount).toBe(12);
+    expect(preview.eventCoverage.totalEventsWithCandidates).toBe(9);
+    expect(preview.cacheStats.structuralCacheHits).toBe(2);
+    expect(preview.cacheStats.summaryCacheMisses).toBe(2);
+    expect(preview.cacheStats.gpuMemoryBudgetSource).toBe(
+      "free_memory_headroom",
+    );
+    expect(preview.cacheStats.gpuDeviceUsableMemoryBytes).toBe(
+      256 * 1024 * 1024,
+    );
+    expect(preview.cacheStats.gpuPlanNotes[0]).toContain("synthetic test note");
+    expect(preview.timings.cpuRankingMs).toBe(6);
+    expect(preview.timings.cpuRankingUs).toBe(6_400);
+    expect(preview.timings.harsherExitSummaryCompileMs).toBe(7);
+    expect(preview.timings.gpuRankingMs).toBe(3);
+    expect(preview.timings.gpuRankingUs).toBe(3_100);
+    expect(preview.timings.gpuSpeedupVsCpu).toBe(2);
+    expect(preview.bestAvailableBackend).toBe("gpu_compiled_tensor_hybrid");
+    expect(preview.autoBackendDecision.recommendedBackend).toBe(
+      "cpu_reference",
+    );
+    expect(preview.autoBackendDecision.gpuEligible).toBe(false);
+    expect(preview.autoBackendDecision.reasons[0]).toContain(
+      "Measured GPU hybrid speedup 2.00x",
+    );
+    expect(preview.harsherExitSummaryDensity).toBe(0.6667);
+    expect(preview.eventCoverage.totalEventsWithHarsherOutcomes).toBe(6);
+    expect(preview.invalidReasons[0]?.reason).toBe("no_expiration_in_bucket");
+    expect(preview.overlapWindow.searchOverlapRate).toBe(0.6667);
+    expect(preview.splitInvalidReasons.searchInvalidReasons[0]?.reason).toBe(
+      "entry_past_cutoff",
+    );
+    expect(preview.coverageAdequacy.verdict).toBe("weak_dataset_overlap");
+    expect(preview.coverageAdequacy.nonPromotable).toBe(true);
+    expect(preview.axisCoverage.dteDays[1]?.dteDays).toBe(5);
+    expect(preview.axisCoverage.dteDays[1]?.validRate).toBe(0);
+    expect(
+      preview.axisCoverage.delayMinutes[0]?.invalidReasons[0]?.reason,
+    ).toBe("premium_too_high");
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "analyze_options_expression_feasibility",
+      {
+        req: {
+          parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+          options_dataset_id: "spy_options",
+        },
       },
-    })
-  })
+    );
+  });
 
-  it('normalizes loaded options expression artifacts', async () => {
+  it("normalizes loaded options expression artifacts", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       version: 1,
-      kind: 'vectorgrid_options_expression_v1',
-      ts: '2026-04-05T12:00:00Z',
-      artifact_path: 'C:/runs/vectorgrid_options_expression_1.json',
-      parent_artifact_id: 'vectorgrid_run_1',
-      root_symbol: 'SPY',
-      options_dataset_id: 'spy_options',
-      options_dataset_hash: 'hash-1',
-      backend_used: 'cpu_reference',
-      backend_fallback_reason: 'GPU planner probe failed; using CPU.',
-      price_semantics: 'minute_aggregate',
+      kind: "vectorgrid_options_expression_v1",
+      ts: "2026-04-05T12:00:00Z",
+      artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
+      parent_artifact_id: "vectorgrid_run_1",
+      root_symbol: "SPY",
+      options_dataset_id: "spy_options",
+      options_dataset_hash: "hash-1",
+      backend_used: "cpu_reference",
+      backend_fallback_reason: "GPU planner probe failed; using CPU.",
+      price_semantics: "minute_aggregate",
       staging: {
         candidate_slot_count: 12,
         compiled_candidate_count: 9,
@@ -805,16 +902,16 @@ describe('optionsExpressionService', () => {
         harsher_exit_summary_count: 24,
       },
       request: {
-        parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-        options_dataset_id: 'spy_options',
+        parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+        options_dataset_id: "spy_options",
         delay_minutes: [0, 1],
         dte_buckets: [1, 3],
-        moneyness_buckets: ['atm', 'otm_1'],
+        moneyness_buckets: ["atm", "otm_1"],
         hold_minutes: [15, 30],
         target_return_buckets: [0.25],
         stop_return_buckets: [0.25],
-        exit_template: 'fixed_hold_or_target_stop',
-        fill_model: 'aggregate_research',
+        exit_template: "fixed_hold_or_target_stop",
+        fill_model: "aggregate_research",
         filters: {
           max_entry_lag_minutes: 5,
         },
@@ -823,9 +920,9 @@ describe('optionsExpressionService', () => {
         split_ratio_holdout: 0.2,
       },
       diagnostics: {
-        parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-        options_dataset_id: 'spy_options',
-        root_symbol: 'SPY',
+        parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+        options_dataset_id: "spy_options",
+        root_symbol: "SPY",
         total_events: 10,
         bullish_events: 6,
         bearish_events: 4,
@@ -836,7 +933,7 @@ describe('optionsExpressionService', () => {
         dataset_rows: 42,
       },
       overlap_window: {
-        contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+        contract_reference_as_of_utc: "2026-04-05T00:00:00Z",
         total_events_in_dataset_window: 9,
         search_events_in_dataset_window: 5,
         holdout_events_in_dataset_window: 2,
@@ -859,20 +956,24 @@ describe('optionsExpressionService', () => {
         sealed_test_overlap_rate: 1,
       },
       coverage_adequacy: {
-        verdict: 'mixed_fragile',
+        verdict: "mixed_fragile",
         non_promotable: false,
-        reasons: ['Dominant structural invalid reason: no_expiration_in_bucket (60.0% of invalid slots).'],
+        reasons: [
+          "Dominant structural invalid reason: no_expiration_in_bucket (60.0% of invalid slots).",
+        ],
         search_candidate_coverage_rate: 1,
         holdout_candidate_coverage_rate: 1,
         sealed_test_candidate_coverage_rate: 1,
         search_baseline_outcome_coverage_rate: 0.8,
         holdout_baseline_outcome_coverage_rate: 1,
         sealed_test_baseline_outcome_coverage_rate: 1,
-        dominant_invalid_reason: 'no_expiration_in_bucket',
+        dominant_invalid_reason: "no_expiration_in_bucket",
         dominant_invalid_reason_share: 0.6,
       },
       split_invalid_reasons: {
-        search_invalid_reasons: [{ reason: 'no_expiration_in_bucket', count: 2 }],
+        search_invalid_reasons: [
+          { reason: "no_expiration_in_bucket", count: 2 },
+        ],
         holdout_invalid_reasons: [],
         sealed_test_invalid_reasons: [],
       },
@@ -881,12 +982,12 @@ describe('optionsExpressionService', () => {
           tuple: {
             delay_minutes: 0,
             dte_days: 1,
-            moneyness_bucket: 'atm',
+            moneyness_bucket: "atm",
             hold_minutes: 15,
             target_return: 0.25,
             stop_return: 0.25,
-            exit_template: 'fixed_hold_or_target_stop',
-            fill_model: 'aggregate_research',
+            exit_template: "fixed_hold_or_target_stop",
+            fill_model: "aggregate_research",
           },
           selection_metrics: {
             valid_trades: 5,
@@ -903,44 +1004,53 @@ describe('optionsExpressionService', () => {
           robust_score: 0.18,
         },
       ],
-    })
+    });
 
-    const artifact = await loadOptionsExpressionArtifact('C:/runs/vectorgrid_options_expression_1.json')
+    const artifact = await loadOptionsExpressionArtifact(
+      "C:/runs/vectorgrid_options_expression_1.json",
+    );
 
-    expect(artifact.kind).toBe('vectorgrid_options_expression_v1')
-    expect(artifact.staging?.candidateSlotCount).toBe(12)
-    expect(artifact.backendFallbackReason).toBe('GPU planner probe failed; using CPU.')
-    expect(artifact.request.splitAssignmentMode).toBe('event_chronological')
-    expect(artifact.request.delayMinutes).toEqual([0, 1])
-    expect(artifact.overlapWindow.searchOverlapRate).toBe(0.8333)
-    expect(artifact.coverageAdequacy.verdict).toBe('mixed_fragile')
-    expect(artifact.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2)
-    expect(artifact.selectionMetrics[0]?.moneynessBucket).toBe('atm')
-    expect(artifact.selectionMetrics[0]?.selectionMetrics.meanReturnOnPremium).toBe(0.16)
-    expect(artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium).toBe(0.05)
-  })
+    expect(artifact.kind).toBe("vectorgrid_options_expression_v1");
+    expect(artifact.staging?.candidateSlotCount).toBe(12);
+    expect(artifact.backendFallbackReason).toBe(
+      "GPU planner probe failed; using CPU.",
+    );
+    expect(artifact.request.splitAssignmentMode).toBe("event_chronological");
+    expect(artifact.request.delayMinutes).toEqual([0, 1]);
+    expect(artifact.overlapWindow.searchOverlapRate).toBe(0.8333);
+    expect(artifact.coverageAdequacy.verdict).toBe("mixed_fragile");
+    expect(artifact.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2);
+    expect(artifact.selectionMetrics[0]?.moneynessBucket).toBe("atm");
+    expect(
+      artifact.selectionMetrics[0]?.selectionMetrics.meanReturnOnPremium,
+    ).toBe(0.16);
+    expect(
+      artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium,
+    ).toBe(0.05);
+  });
 
-  it('defaults missing single-pass expansion metric fields for older artifacts', async () => {
+  it("defaults missing single-pass expansion metric fields for older artifacts", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       version: 1,
-      kind: 'vectorgrid_options_expression_v1',
-      ts: '2026-04-05T12:00:00Z',
-      artifact_path: 'C:/runs/vectorgrid_options_expression_legacy_metrics.json',
-      parent_artifact_id: 'vectorgrid_run_1',
-      root_symbol: 'SPY',
-      options_dataset_id: 'spy_options',
-      options_dataset_hash: 'hash-1',
-      backend_used: 'cpu_reference',
-      price_semantics: 'minute_aggregate',
+      kind: "vectorgrid_options_expression_v1",
+      ts: "2026-04-05T12:00:00Z",
+      artifact_path:
+        "C:/runs/vectorgrid_options_expression_legacy_metrics.json",
+      parent_artifact_id: "vectorgrid_run_1",
+      root_symbol: "SPY",
+      options_dataset_id: "spy_options",
+      options_dataset_hash: "hash-1",
+      backend_used: "cpu_reference",
+      price_semantics: "minute_aggregate",
       request: {
-        structure_family: 'long_single',
+        structure_family: "long_single",
         delay_minutes: [0],
         dte_days: [1],
-        moneyness_buckets: ['atm'],
+        moneyness_buckets: ["atm"],
         hold_minutes: [15],
         target_returns: [0.25],
         stop_returns: [0.25],
-        split_assignment_mode: 'event_chronological',
+        split_assignment_mode: "event_chronological",
       },
       overlap_window: {
         search_start_index: 0,
@@ -954,7 +1064,7 @@ describe('optionsExpressionService', () => {
         sealed_test_overlap_rate: 1,
       },
       coverage_adequacy: {
-        verdict: 'healthy',
+        verdict: "healthy",
         coverage_non_promotable: false,
         search_candidate_coverage_rate: 1,
         holdout_candidate_coverage_rate: 1,
@@ -973,12 +1083,12 @@ describe('optionsExpressionService', () => {
           tuple: {
             delay_minutes: 0,
             dte_days: 1,
-            moneyness_bucket: 'atm',
+            moneyness_bucket: "atm",
             hold_minutes: 15,
             target_return: 0.25,
             stop_return: 0.25,
-            exit_template: 'fixed_hold_or_target_stop',
-            fill_model: 'aggregate_research',
+            exit_template: "fixed_hold_or_target_stop",
+            fill_model: "aggregate_research",
           },
           selection_metrics: {
             valid_trades: 5,
@@ -993,40 +1103,44 @@ describe('optionsExpressionService', () => {
           robust_score: 0.18,
         },
       ],
-    })
+    });
 
     const artifact = await loadOptionsExpressionArtifact(
-      'C:/runs/vectorgrid_options_expression_legacy_metrics.json',
-    )
+      "C:/runs/vectorgrid_options_expression_legacy_metrics.json",
+    );
 
-    expect(artifact.selectionMetrics[0]?.selectionMetrics.meanReturnOnPremium).toBe(0)
-    expect(artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium).toBe(0)
-  })
+    expect(
+      artifact.selectionMetrics[0]?.selectionMetrics.meanReturnOnPremium,
+    ).toBe(0);
+    expect(
+      artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium,
+    ).toBe(0);
+  });
 
-  it('loads quote-aware artifacts without losing price semantics or fill-model provenance', async () => {
+  it("loads quote-aware artifacts without losing price semantics or fill-model provenance", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       version: 1,
-      kind: 'vectorgrid_options_expression_v1',
-      ts: '2026-04-05T12:00:00Z',
-      artifact_path: 'C:/runs/vectorgrid_options_expression_quotes.json',
-      parent_artifact_id: 'vectorgrid_run_1',
-      root_symbol: 'SPY',
-      options_dataset_id: 'spy_quotes',
-      options_dataset_hash: 'hash-quotes',
-      backend_used: 'gpu_compiled_tensor',
-      price_semantics: 'top_of_book_quote',
+      kind: "vectorgrid_options_expression_v1",
+      ts: "2026-04-05T12:00:00Z",
+      artifact_path: "C:/runs/vectorgrid_options_expression_quotes.json",
+      parent_artifact_id: "vectorgrid_run_1",
+      root_symbol: "SPY",
+      options_dataset_id: "spy_quotes",
+      options_dataset_hash: "hash-quotes",
+      backend_used: "gpu_compiled_tensor",
+      price_semantics: "top_of_book_quote",
       request: {
-        parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-        options_dataset_id: 'spy_quotes',
-        split_assignment_mode: 'event_chronological',
+        parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+        options_dataset_id: "spy_quotes",
+        split_assignment_mode: "event_chronological",
         delay_minutes: [0],
         dte_buckets: [1],
-        moneyness_buckets: ['atm'],
+        moneyness_buckets: ["atm"],
         hold_minutes: [15],
         target_return_buckets: [0.25],
         stop_return_buckets: [0.25],
-        exit_template: 'fixed_hold_or_target_stop',
-        fill_model: 'quote_conservative',
+        exit_template: "fixed_hold_or_target_stop",
+        fill_model: "quote_conservative",
         filters: {
           max_entry_lag_minutes: 5,
         },
@@ -1035,9 +1149,9 @@ describe('optionsExpressionService', () => {
         split_ratio_holdout: 0.2,
       },
       diagnostics: {
-        parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
-        options_dataset_id: 'spy_quotes',
-        root_symbol: 'SPY',
+        parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+        options_dataset_id: "spy_quotes",
+        root_symbol: "SPY",
         total_events: 10,
         bullish_events: 6,
         bearish_events: 4,
@@ -1048,7 +1162,7 @@ describe('optionsExpressionService', () => {
         dataset_rows: 42,
       },
       overlap_window: {
-        contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+        contract_reference_as_of_utc: "2026-04-05T00:00:00Z",
         total_events_in_dataset_window: 10,
         search_events_in_dataset_window: 6,
         holdout_events_in_dataset_window: 2,
@@ -1071,7 +1185,7 @@ describe('optionsExpressionService', () => {
         sealed_test_overlap_rate: 1,
       },
       coverage_adequacy: {
-        verdict: 'healthy',
+        verdict: "healthy",
         non_promotable: false,
         reasons: [],
         search_candidate_coverage_rate: 1,
@@ -1080,7 +1194,7 @@ describe('optionsExpressionService', () => {
         search_baseline_outcome_coverage_rate: 1,
         holdout_baseline_outcome_coverage_rate: 1,
         sealed_test_baseline_outcome_coverage_rate: 1,
-        dominant_invalid_reason: '',
+        dominant_invalid_reason: "",
         dominant_invalid_reason_share: 0,
       },
       split_invalid_reasons: {
@@ -1089,16 +1203,18 @@ describe('optionsExpressionService', () => {
         sealed_test_invalid_reasons: [],
       },
       selection_metrics: [],
-    })
+    });
 
-    const artifact = await loadOptionsExpressionArtifact('C:/runs/vectorgrid_options_expression_quotes.json')
+    const artifact = await loadOptionsExpressionArtifact(
+      "C:/runs/vectorgrid_options_expression_quotes.json",
+    );
 
-    expect(artifact.priceSemantics).toBe('top_of_book_quote')
-    expect(artifact.optionsDatasetId).toBe('spy_quotes')
-    expect(artifact.request.fillModel).toBe('quote_conservative')
-  })
+    expect(artifact.priceSemantics).toBe("top_of_book_quote");
+    expect(artifact.optionsDatasetId).toBe("spy_quotes");
+    expect(artifact.request.fillModel).toBe("quote_conservative");
+  });
 
-  it('normalizes tuple inspection responses', async () => {
+  it("normalizes tuple inspection responses", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       tuple_index: 1,
       tuple_count: 4,
@@ -1110,12 +1226,12 @@ describe('optionsExpressionService', () => {
         tuple: {
           delay_minutes: 5,
           dte_days: 3,
-          moneyness_bucket: 'otm_1',
+          moneyness_bucket: "otm_1",
           hold_minutes: 30,
           target_return: 0.5,
           stop_return: 0.25,
-          exit_template: 'fixed_hold_or_target_stop',
-          fill_model: 'aggregate_research',
+          exit_template: "fixed_hold_or_target_stop",
+          fill_model: "aggregate_research",
         },
         selection_metrics: {
           valid_trades: 2,
@@ -1134,17 +1250,17 @@ describe('optionsExpressionService', () => {
       rows: [
         {
           event_index: 0,
-          event_id: 'event-1',
-          split: 'search',
-          side: 'bullish',
+          event_id: "event-1",
+          split: "search",
+          side: "bullish",
           decision_timestamp: 100,
           earliest_tradable_timestamp: 160,
           requested_entry_timestamp: 460,
           raw_underlier_price: 501.25,
           base_exit_timestamp: 700,
-          status: 'executed',
-          contract_id: 'SPY_C_1',
-          expiration_date: '2026-04-12',
+          status: "executed",
+          contract_id: "SPY_C_1",
+          expiration_date: "2026-04-12",
           strike: 505,
           multiplier: 100,
           entry_timestamp: 460,
@@ -1162,121 +1278,151 @@ describe('optionsExpressionService', () => {
           path_option_low: 1.35,
           path_underlier_high: 503.1,
           path_underlier_low: 500.8,
-          exit_reason: 'target_hit',
+          exit_reason: "target_hit",
         },
         {
           event_index: 1,
-          event_id: 'event-2',
-          split: 'holdout',
-          side: 'bearish',
+          event_id: "event-2",
+          split: "holdout",
+          side: "bearish",
           decision_timestamp: 200,
           earliest_tradable_timestamp: 260,
           requested_entry_timestamp: 560,
           raw_underlier_price: 498.75,
-          status: 'candidate_missing',
-          candidate_invalid_reason: 'no_expiration_in_bucket',
+          status: "candidate_missing",
+          candidate_invalid_reason: "no_expiration_in_bucket",
         },
       ],
-    })
+    });
 
     const inspection = await inspectOptionsExpressionTuple({
-      artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+      artifactPath: "C:/runs/vectorgrid_options_expression_1.json",
       tupleIndex: 1,
-    })
+    });
 
-    expect(inspection.tupleIndex).toBe(1)
-    expect(inspection.executedEvents).toBe(2)
-    expect(inspection.rows[0]?.contractId).toBe('SPY_C_1')
-    expect(inspection.rows[0]?.exitReason).toBe('target_hit')
-    expect(inspection.rows[0]?.entryLagMinutes).toBe(5)
-    expect(inspection.rows[0]?.minutesToExpiryAtEntry).toBe(1440)
-    expect(inspection.rows[0]?.pathOptionHigh).toBe(1.95)
-    expect(inspection.rows[1]?.status).toBe('candidate_missing')
-    expect(inspection.rows[1]?.candidateInvalidReason).toBe('no_expiration_in_bucket')
-    expect(invokeCommandMock).toHaveBeenCalledWith('inspect_options_expression_tuple', {
-      req: {
-        artifact_path: 'C:/runs/vectorgrid_options_expression_1.json',
-        tuple_index: 1,
+    expect(inspection.tupleIndex).toBe(1);
+    expect(inspection.executedEvents).toBe(2);
+    expect(inspection.rows[0]?.contractId).toBe("SPY_C_1");
+    expect(inspection.rows[0]?.exitReason).toBe("target_hit");
+    expect(inspection.rows[0]?.entryLagMinutes).toBe(5);
+    expect(inspection.rows[0]?.minutesToExpiryAtEntry).toBe(1440);
+    expect(inspection.rows[0]?.pathOptionHigh).toBe(1.95);
+    expect(inspection.rows[1]?.status).toBe("candidate_missing");
+    expect(inspection.rows[1]?.candidateInvalidReason).toBe(
+      "no_expiration_in_bucket",
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "inspect_options_expression_tuple",
+      {
+        req: {
+          artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
+          tuple_index: 1,
+        },
       },
-    })
-  })
+    );
+  });
 
-  it('normalizes dataset id lists', () => {
-    expect(normalizeOptionsDatasetIds([' spy ', '', 42, null])).toEqual(['spy', '42'])
-  })
+  it("normalizes dataset id lists", () => {
+    expect(normalizeOptionsDatasetIds([" spy ", "", 42, null])).toEqual([
+      "spy",
+      "42",
+    ]);
+  });
 
-  it('lists dataset manifests', async () => {
+  it("lists dataset manifests", async () => {
     invokeCommandMock.mockResolvedValueOnce([
       {
         version: 1,
-        options_dataset_id: 'spy_options',
-        root_symbol: 'SPY',
+        options_dataset_id: "spy_options",
+        root_symbol: "SPY",
       },
-    ])
+    ]);
 
-    const rows = await listOptionsDatasets()
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.optionsDatasetId).toBe('spy_options')
-  })
+    const rows = await listOptionsDatasets();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.optionsDatasetId).toBe("spy_options");
+  });
 
-  it('uses the CSV picker and open-path fallback helpers', async () => {
+  it("uses the CSV picker plus explicit open/reveal helpers", async () => {
     invokeCommandMock
-      .mockResolvedValueOnce(' C:/data/options.csv ')
-      .mockRejectedValueOnce(new Error('open failed'))
+      .mockResolvedValueOnce(" C:/data/options.csv ")
       .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("open failed"))
+      .mockResolvedValueOnce({});
 
-    const picked = await pickOptionsCsvPath()
-    const opened = await openOrRevealOptionsPath('C:/runs/vectorgrid_options_expression_1.json')
+    const picked = await pickOptionsCsvPath();
+    const opened = await openOptionsPath(
+      "C:/runs/vectorgrid_options_expression_1.json",
+    );
+    const revealed = await revealOptionsPath(
+      "C:/runs/vectorgrid_options_expression_1.json",
+    );
+    const fallback = await openOrRevealOptionsPath(
+      "C:/runs/vectorgrid_options_expression_2.json",
+    );
 
-    expect(picked).toBe('C:/data/options.csv')
+    expect(picked).toBe("C:/data/options.csv");
     expect(opened).toEqual({
-      path: 'C:/runs/vectorgrid_options_expression_1.json',
-      openedWith: 'reveal_path',
-    })
-  })
+      path: "C:/runs/vectorgrid_options_expression_1.json",
+      openedWith: "open_path",
+    });
+    expect(revealed).toEqual({
+      path: "C:/runs/vectorgrid_options_expression_1.json",
+      openedWith: "reveal_path",
+    });
+    expect(fallback).toEqual({
+      path: "C:/runs/vectorgrid_options_expression_2.json",
+      openedWith: "reveal_path",
+    });
+  });
 
-  it('falls back to a browser download when desktop CSV save is unavailable', async () => {
+  it("falls back to a browser download when desktop CSV save is unavailable", async () => {
     const createObjectURL = vi
-      .spyOn(URL, 'createObjectURL')
-      .mockImplementation(() => 'blob:options-expression')
+      .spyOn(URL, "createObjectURL")
+      .mockImplementation(() => "blob:options-expression");
     const revokeObjectURL = vi
-      .spyOn(URL, 'revokeObjectURL')
-      .mockImplementation(() => undefined)
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => undefined);
 
-    let clicked = 0
-    const createElement = vi.spyOn(document, 'createElement')
+    let clicked = 0;
+    const createElement = vi.spyOn(document, "createElement");
     createElement.mockImplementation(((tagName: string) => {
-      const element = document.createElementNS('http://www.w3.org/1999/xhtml', tagName)
-      if (tagName.toLowerCase() === 'a') {
-        ;(element as HTMLAnchorElement).click = () => {
-          clicked += 1
-        }
+      const element = document.createElementNS(
+        "http://www.w3.org/1999/xhtml",
+        tagName,
+      );
+      if (tagName.toLowerCase() === "a") {
+        (element as HTMLAnchorElement).click = () => {
+          clicked += 1;
+        };
       }
-      return element
-    }) as typeof document.createElement)
+      return element;
+    }) as typeof document.createElement);
 
     invokeCommandMock.mockImplementation(async (command) => {
-      if (command === 'pick_save_csv') throw new Error('save dialog unavailable')
-      return {}
-    })
+      if (command === "pick_save_csv")
+        throw new Error("save dialog unavailable");
+      return {};
+    });
 
     const exported = await exportOptionsExpressionCsv({
-      filenameStem: 'vectorgrid_options_expression_spy',
-      rootSymbol: 'SPY',
-      backendUsed: 'cpu_reference',
-      priceSemantics: 'minute_aggregate',
+      filenameStem: "vectorgrid_options_expression_spy",
+      rootSymbol: "SPY",
+      backendUsed: "cpu_reference",
+      priceSemantics: "minute_aggregate",
       tuples: [
         {
-          structureFamily: 'debit_vertical',
+          structureFamily: "debit_vertical",
           delayMinutes: 1,
           dteDays: 3,
-          moneynessBucket: 'otm_1',
+          moneynessBucket: "otm_1",
           holdMinutes: 15,
           targetReturn: 0.5,
           stopReturn: 0.25,
-          exitTemplate: 'fixed_hold_or_target_stop',
-          fillModel: 'aggregate_research',
-          validationVerdict: 'stress_fragile',
+          exitTemplate: "fixed_hold_or_target_stop",
+          fillModel: "aggregate_research",
+          validationVerdict: "stress_fragile",
           robustScore: 0.42,
           selectionMetrics: {
             validTrades: 12,
@@ -1322,57 +1468,60 @@ describe('optionsExpressionService', () => {
           },
         },
       ],
-    })
+    });
 
-    expect(exported.mode).toBe('downloaded')
-    expect(exported.path).toBeNull()
-    expect(clicked).toBe(1)
-    expect(createObjectURL).toHaveBeenCalledTimes(1)
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:options-expression')
+    expect(exported.mode).toBe("downloaded");
+    expect(exported.path).toBeNull();
+    expect(clicked).toBe(1);
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:options-expression");
 
-    const blobArg = createObjectURL.mock.calls[0]?.[0]
-    expect(blobArg).toBeInstanceOf(Blob)
-    const csvBlob = blobArg instanceof Blob ? blobArg : null
-    const csvText = await csvBlob?.text()
-    expect(csvText).toContain('delay_minutes,dte_days,structure_family,moneyness_bucket')
-    expect(csvText).toContain('validation_verdict')
-    expect(csvText).toContain('extreme_stress_expectancy_per_premium')
-    expect(csvText).toContain('sealed_extreme_stress_expectancy_per_premium')
-    expect(csvText).toContain('stress_fragile')
-    expect(csvText).toContain('cpu_reference,minute_aggregate')
-    expect(csvText).toContain('1,3,debit_vertical,otm_1,15,0.5,0.25')
-    expect(csvText).toContain(',-0.05,-0.08,')
-  })
+    const blobArg = createObjectURL.mock.calls[0]?.[0];
+    expect(blobArg).toBeInstanceOf(Blob);
+    const csvBlob = blobArg instanceof Blob ? blobArg : null;
+    const csvText = await csvBlob?.text();
+    expect(csvText).toContain(
+      "delay_minutes,dte_days,structure_family,moneyness_bucket",
+    );
+    expect(csvText).toContain("validation_verdict");
+    expect(csvText).toContain("extreme_stress_expectancy_per_premium");
+    expect(csvText).toContain("sealed_extreme_stress_expectancy_per_premium");
+    expect(csvText).toContain("stress_fragile");
+    expect(csvText).toContain("cpu_reference,minute_aggregate");
+    expect(csvText).toContain("1,3,debit_vertical,otm_1,15,0.5,0.25");
+    expect(csvText).toContain(",-0.05,-0.08,");
+  });
 
-  it('saves ranked tuples through the desktop picker and reveals the saved file', async () => {
+  it("saves ranked tuples through the desktop picker and reveals the saved file", async () => {
     invokeCommandMock.mockImplementation(async (command) => {
-      if (command === 'pick_save_csv') return 'C:/exports/vectorgrid_options_expression_spy.csv'
-      if (command === 'save_options_csv') {
+      if (command === "pick_save_csv")
+        return "C:/exports/vectorgrid_options_expression_spy.csv";
+      if (command === "save_options_csv") {
         return {
-          path: 'C:/exports/vectorgrid_options_expression_spy.csv',
+          path: "C:/exports/vectorgrid_options_expression_spy.csv",
           bytes: 256,
-        }
+        };
       }
-      if (command === 'reveal_path') return true
-      return {}
-    })
+      if (command === "reveal_path") return true;
+      return {};
+    });
 
     const exported = await exportOptionsExpressionCsv({
-      filenameStem: 'vectorgrid_options_expression_spy',
-      rootSymbol: 'SPY',
-      backendUsed: 'gpu_compiled_tensor',
-      priceSemantics: 'minute_aggregate',
+      filenameStem: "vectorgrid_options_expression_spy",
+      rootSymbol: "SPY",
+      backendUsed: "gpu_compiled_tensor",
+      priceSemantics: "minute_aggregate",
       tuples: [
         {
-          structureFamily: 'long_single',
+          structureFamily: "long_single",
           delayMinutes: 0,
           dteDays: 1,
-          moneynessBucket: 'atm',
+          moneynessBucket: "atm",
           holdMinutes: 15,
           targetReturn: 0.25,
           stopReturn: 0.25,
-          exitTemplate: 'fixed_hold_or_target_stop',
-          fillModel: 'aggregate_research',
+          exitTemplate: "fixed_hold_or_target_stop",
+          fillModel: "aggregate_research",
           robustScore: 0.3,
           selectionMetrics: {
             validTrades: 3,
@@ -1389,55 +1538,57 @@ describe('optionsExpressionService', () => {
           stressMetrics: null,
         },
       ],
-    })
+    });
 
     expect(exported).toEqual({
-      mode: 'saved',
-      filename: 'vectorgrid_options_expression_spy.csv',
-      path: 'C:/exports/vectorgrid_options_expression_spy.csv',
+      mode: "saved",
+      filename: "vectorgrid_options_expression_spy.csv",
+      path: "C:/exports/vectorgrid_options_expression_spy.csv",
       bytes: 256,
       revealed: true,
-    })
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'pick_save_csv', {
-      defaultName: 'vectorgrid_options_expression_spy.csv',
-    })
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'save_options_csv', {
+    });
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "pick_save_csv", {
+      defaultName: "vectorgrid_options_expression_spy.csv",
+    });
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "save_options_csv", {
       req: {
-        path: 'C:/exports/vectorgrid_options_expression_spy.csv',
-        csv_text: expect.stringContaining('delay_minutes,dte_days,structure_family,moneyness_bucket'),
+        path: "C:/exports/vectorgrid_options_expression_spy.csv",
+        csv_text: expect.stringContaining(
+          "delay_minutes,dte_days,structure_family,moneyness_bucket",
+        ),
       },
-    })
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'reveal_path', {
-      path: 'C:/exports/vectorgrid_options_expression_spy.csv',
-    })
-  })
+    });
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, "reveal_path", {
+      path: "C:/exports/vectorgrid_options_expression_spy.csv",
+    });
+  });
 
-  it('treats a cancelled desktop save as a cancelled export', async () => {
+  it("treats a cancelled desktop save as a cancelled export", async () => {
     invokeCommandMock.mockImplementation(async (command) => {
-      if (command === 'pick_save_csv') return null
-      return {}
-    })
+      if (command === "pick_save_csv") return null;
+      return {};
+    });
 
     const exported = await exportOptionsExpressionInspectionCsv({
-      filenameStem: 'vectorgrid_tuple_1_inspection',
-      artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+      filenameStem: "vectorgrid_tuple_1_inspection",
+      artifactPath: "C:/runs/vectorgrid_options_expression_1.json",
       tupleIndex: 0,
       rows: [
         {
           eventIndex: 0,
-          eventId: 'evt-1',
-          split: 'search',
-          side: 'bullish',
+          eventId: "evt-1",
+          split: "search",
+          side: "bullish",
           decisionTimestamp: 100,
           earliestTradableTimestamp: 160,
           requestedEntryTimestamp: 160,
           rawUnderlierPrice: 500,
           baseExitTimestamp: null,
-          status: 'executed',
-          candidateInvalidReason: '',
-          contractId: 'SPY_C_1',
-          companionContractId: '',
-          expirationDate: '2026-04-12',
+          status: "executed",
+          candidateInvalidReason: "",
+          contractId: "SPY_C_1",
+          companionContractId: "",
+          expirationDate: "2026-04-12",
           strike: 505,
           companionStrike: null,
           multiplier: 100,
@@ -1458,48 +1609,52 @@ describe('optionsExpressionService', () => {
           pathOptionLow: 1.1,
           pathUnderlierHigh: 501.5,
           pathUnderlierLow: 499.8,
-          exitReason: 'target_hit',
+          exitReason: "target_hit",
         },
       ],
-    })
+    });
 
-    expect(exported.mode).toBe('cancelled')
-    expect(exported.path).toBeNull()
-    expect(invokeCommandMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenCalledWith('pick_save_csv', {
-      defaultName: 'vectorgrid_tuple_1_inspection.csv',
-    })
-  })
+    expect(exported.mode).toBe("cancelled");
+    expect(exported.path).toBeNull();
+    expect(invokeCommandMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenCalledWith("pick_save_csv", {
+      defaultName: "vectorgrid_tuple_1_inspection.csv",
+    });
+  });
 
-  it('falls back to a browser download for event path replay exports when desktop save is unavailable', async () => {
-    let clicked = 0
+  it("falls back to a browser download for event path replay exports when desktop save is unavailable", async () => {
+    let clicked = 0;
     const createObjectURL = vi
-      .spyOn(URL, 'createObjectURL')
-      .mockImplementation(() => 'blob:event-path')
+      .spyOn(URL, "createObjectURL")
+      .mockImplementation(() => "blob:event-path");
     const revokeObjectURL = vi
-      .spyOn(URL, 'revokeObjectURL')
-      .mockImplementation(() => undefined)
-    const createElement = vi.spyOn(document, 'createElement')
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => undefined);
+    const createElement = vi.spyOn(document, "createElement");
     createElement.mockImplementation(((tagName: string) => {
-      const element = document.createElementNS('http://www.w3.org/1999/xhtml', tagName)
-      if (tagName.toLowerCase() === 'a') {
-        ;(element as HTMLAnchorElement).click = () => {
-          clicked += 1
-        }
+      const element = document.createElementNS(
+        "http://www.w3.org/1999/xhtml",
+        tagName,
+      );
+      if (tagName.toLowerCase() === "a") {
+        (element as HTMLAnchorElement).click = () => {
+          clicked += 1;
+        };
       }
-      return element
-    }) as typeof document.createElement)
+      return element;
+    }) as typeof document.createElement);
 
     invokeCommandMock.mockImplementation(async (command) => {
-      if (command === 'pick_save_csv') throw new Error('save dialog unavailable')
-      return {}
-    })
+      if (command === "pick_save_csv")
+        throw new Error("save dialog unavailable");
+      return {};
+    });
 
     const exported = await exportOptionsExpressionEventPathCsv({
-      filenameStem: 'vectorgrid_event_path',
-      artifactPath: 'C:/runs/vectorgrid_options_expression.json',
+      filenameStem: "vectorgrid_event_path",
+      artifactPath: "C:/runs/vectorgrid_options_expression.json",
       tupleIndex: 0,
-      eventId: 'evt-1',
+      eventId: "evt-1",
       points: [
         {
           timestampMs: 1_700_000_060_000,
@@ -1510,16 +1665,21 @@ describe('optionsExpressionService', () => {
           underlyingPrice: 100.5,
         },
       ],
-    })
+    });
 
-    expect(exported.mode).toBe('downloaded')
-    expect(clicked).toBe(1)
-    expect(createObjectURL).toHaveBeenCalledTimes(1)
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:event-path')
-    const blobArg = createObjectURL.mock.calls[createObjectURL.mock.calls.length - 1]?.[0]
-    const csvBlob = blobArg instanceof Blob ? blobArg : null
-    const csvText = await csvBlob?.text()
-    expect(csvText).toContain('timestamp_ms,option_open,option_high,option_low,option_close,underlying_price,artifact_path,tuple_index,event_id')
-    expect(csvText).toContain('1700000060000,0.4,0.8,0.2,0.45,100.5,C:/runs/vectorgrid_options_expression.json,0,evt-1')
-  })
-})
+    expect(exported.mode).toBe("downloaded");
+    expect(clicked).toBe(1);
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:event-path");
+    const blobArg =
+      createObjectURL.mock.calls[createObjectURL.mock.calls.length - 1]?.[0];
+    const csvBlob = blobArg instanceof Blob ? blobArg : null;
+    const csvText = await csvBlob?.text();
+    expect(csvText).toContain(
+      "timestamp_ms,option_open,option_high,option_low,option_close,underlying_price,artifact_path,tuple_index,event_id",
+    );
+    expect(csvText).toContain(
+      "1700000060000,0.4,0.8,0.2,0.45,100.5,C:/runs/vectorgrid_options_expression.json,0,evt-1",
+    );
+  });
+});

@@ -5,6 +5,7 @@ import {
   useWorkflowArtifactsStore,
 } from '../stores/workflowArtifactsStore'
 import { resolveRuntimePinia } from '../stores/runtimePinia'
+import { applyShellStateForRunRequest } from '../utils/core/workflowRunRestore'
 import { refreshAnalysisFromWorkflowRun } from './analysisService'
 import { measureArtifactHistoryPerf } from './artifactHistoryPerf'
 
@@ -12,6 +13,15 @@ type WorkflowArtifactsSource = 'legacy-runtime' | 'vue'
 
 function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
+}
+
+function normalizeOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return null
+  if (text === '1' || text === 'true' || text === 'yes' || text === 'on') return true
+  if (text === '0' || text === 'false' || text === 'no' || text === 'off') return false
+  return null
 }
 
 function normalizeTags(value: unknown): string[] {
@@ -25,17 +35,25 @@ function normalizeTags(value: unknown): string[] {
   return out
 }
 
-function sameStringArray(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false
-  }
-  return true
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   return value as Record<string, unknown>
+}
+
+function stableStringify(value: unknown): string {
+  if (value == null) return 'null'
+  const kind = typeof value
+  if (kind === 'number' || kind === 'boolean') return JSON.stringify(value)
+  if (kind === 'string') return JSON.stringify(value)
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`
+  }
+  if (kind !== 'object') return JSON.stringify(String(value))
+  const row = value as Record<string, unknown>
+  const keys = Object.keys(row).sort()
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(row[key])}`)
+    .join(',')}}`
 }
 
 function syncSourceIfStoreBound(source: WorkflowArtifactsSource): void {
@@ -44,18 +62,85 @@ function syncSourceIfStoreBound(source: WorkflowArtifactsSource): void {
   useWorkflowArtifactsStore(pinia).source = source
 }
 
+function realignShellStateFromCurrentArtifacts(): void {
+  const pinia = resolveRuntimePinia()
+  if (!pinia) return
+  const store = useWorkflowArtifactsStore(pinia)
+  applyShellStateForRunRequest(
+    asRecord(store.currentRun?.req),
+    asRecord(store.currentValidation?.req),
+    store.currentRun?.mlSignal?.stage,
+  )
+}
+
 function latestSummaryMatchesCurrentStore(latest: Record<string, unknown>): boolean {
   const pinia = resolveRuntimePinia()
   if (!pinia) return true
   const currentRun = useWorkflowArtifactsStore(pinia).currentRun
   if (!currentRun) return true
-  return (
-    normalizeText(latest.report_xlsx_path ?? latest.reportXlsxPath) ===
-      normalizeText(currentRun.reportXlsxPath) &&
-    normalizeText(latest.csv_path ?? latest.csvPath) ===
-      normalizeText(currentRun.csvPath) &&
-    sameStringArray(normalizeTags(latest.tags), normalizeTags(currentRun.tags))
-  )
+  const currentCalibration = asRecord(currentRun.mlSignal?.calibration)
+  const currentScoreCacheProvenance = asRecord(currentRun.mlSignal?.scoreCacheProvenance)
+  const latestMl = {
+    featureSchemaHash: normalizeText(latest.ml_feature_schema_hash ?? latest.mlFeatureSchemaHash),
+    calibrationState: normalizeText(latest.ml_calibration_state ?? latest.mlCalibrationState),
+    thresholdPolicy: normalizeText(latest.ml_threshold_policy ?? latest.mlThresholdPolicy),
+    producerKind: normalizeText(latest.ml_producer_kind ?? latest.mlProducerKind),
+    nativeBackendUsed: normalizeText(latest.ml_native_backend_used ?? latest.mlNativeBackendUsed),
+    nativeFallbackReason: normalizeText(latest.ml_native_fallback_reason ?? latest.mlNativeFallbackReason),
+    scoreContractVersion: normalizeText(latest.ml_score_contract_version ?? latest.mlScoreContractVersion),
+    sourceBundleManifestHash: normalizeText(latest.ml_source_bundle_manifest_hash ?? latest.mlSourceBundleManifestHash),
+    scoreSpace: normalizeText(latest.ml_score_space ?? latest.mlScoreSpace),
+    scoreScope: normalizeText(latest.ml_score_scope ?? latest.mlScoreScope),
+  }
+  const currentMl = {
+    featureSchemaHash: normalizeText(currentRun.mlSignal?.featureSchemaHash),
+    calibrationState: normalizeText(
+      currentCalibration?.calibration_state ??
+        currentCalibration?.calibrationState ??
+        currentScoreCacheProvenance?.calibration_state ??
+        currentScoreCacheProvenance?.calibrationState,
+    ),
+    thresholdPolicy: normalizeText(
+      currentScoreCacheProvenance?.threshold_policy ??
+        currentScoreCacheProvenance?.thresholdPolicy,
+    ),
+    producerKind: normalizeText(
+      currentScoreCacheProvenance?.producer_kind ??
+        currentScoreCacheProvenance?.producerKind,
+    ),
+    nativeBackendUsed: normalizeText(currentRun.mlSignal?.nativeBackendUsed),
+    nativeFallbackReason: normalizeText(currentRun.mlSignal?.nativeFallbackReason),
+    scoreContractVersion: normalizeText(currentRun.mlSignal?.scoreContractVersion),
+    sourceBundleManifestHash: normalizeText(
+      currentScoreCacheProvenance?.source_bundle_manifest_hash ??
+        currentScoreCacheProvenance?.sourceBundleManifestHash,
+    ),
+    scoreSpace: normalizeText(currentRun.mlSignal?.scoreSpace),
+    scoreScope: normalizeText(currentRun.mlSignal?.scoreScope),
+  }
+  return stableStringify({
+    reportXlsxPath: normalizeText(latest.report_xlsx_path ?? latest.reportXlsxPath),
+    reportXlsxExists: normalizeOptionalBoolean(
+      latest.report_xlsx_exists ?? latest.reportXlsxExists,
+    ),
+    csvPath: normalizeText(latest.csv_path ?? latest.csvPath),
+    configFingerprint: normalizeText(latest.config_fingerprint ?? latest.configFingerprint),
+    configFingerprintVersion: normalizeText(latest.config_fingerprint_version ?? latest.configFingerprintVersion),
+    routeProvenance: latest.route_provenance ?? latest.routeProvenance ?? null,
+    lineage: latest.lineage ?? null,
+    tags: normalizeTags(latest.tags),
+    ml: latestMl,
+  }) === stableStringify({
+    reportXlsxPath: normalizeText(currentRun.reportXlsxPath),
+    reportXlsxExists: normalizeOptionalBoolean(currentRun.reportXlsxExists),
+    csvPath: normalizeText(currentRun.csvPath),
+    configFingerprint: normalizeText(currentRun.configFingerprint),
+    configFingerprintVersion: normalizeText(currentRun.configFingerprintVersion),
+    routeProvenance: currentRun.routeProvenance ?? null,
+    lineage: currentRun.lineage ?? null,
+    tags: normalizeTags(currentRun.tags),
+    ml: currentMl,
+  })
 }
 
 export async function syncWorkflowArtifactsFromLegacyRuntime(
@@ -74,7 +159,10 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
 
           const applied = applyWorkflowArtifactsPayload(payload, source)
           const meaningfullyApplied = applied.runChanged || applied.validationChanged
-          if (meaningfullyApplied) refreshAnalysisFromWorkflowRun()
+          if (meaningfullyApplied) {
+            realignShellStateFromCurrentArtifacts()
+            refreshAnalysisFromWorkflowRun()
+          }
           return meaningfullyApplied
         },
         {
@@ -135,7 +223,10 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
 
     const applied = applyWorkflowArtifactsPayload(payload, source)
     const meaningfullyApplied = applied.runChanged || applied.validationChanged
-    if (meaningfullyApplied) refreshAnalysisFromWorkflowRun()
+    if (meaningfullyApplied) {
+      realignShellStateFromCurrentArtifacts()
+      refreshAnalysisFromWorkflowRun()
+    }
     return meaningfullyApplied
   } catch {
     return false

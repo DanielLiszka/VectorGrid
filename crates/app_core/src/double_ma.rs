@@ -1313,6 +1313,7 @@ pub(crate) fn robust_margin_10_score(metrics: &ta_strategies::double_ma::Metrics
     0.72 * soft_margin + 0.28 * mean_margin
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub(crate) fn score_mode_metrics_count_floor(score_mode: Option<DoubleMaScoreMode>) -> usize {
     match score_mode {
         Some(DoubleMaScoreMode::BalancedRiskAdjusted10)
@@ -14745,6 +14746,7 @@ mod tests {
             .map(|info| info.id.to_string())
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn find_cpu_staged_kernel_capable_period_single_ma() -> Option<String> {
         let registry = vector_ta::indicators::moving_averages::registry::list_moving_averages();
         let is_cpu_staged_kernel_capable =

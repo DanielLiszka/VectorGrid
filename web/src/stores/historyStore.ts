@@ -80,6 +80,25 @@ function normalizePath(value: string): string {
   return normalizeText(value);
 }
 
+function normalizeOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  const text = normalizeText(value).toLowerCase();
+  if (!text) return null;
+  if (text === "1" || text === "true" || text === "yes" || text === "on")
+    return true;
+  if (text === "0" || text === "false" || text === "no" || text === "off")
+    return false;
+  return null;
+}
+
+function canOpenPersistedReport(
+  path: string,
+  exists: boolean | null | undefined,
+): boolean {
+  if (!normalizePath(path)) return false;
+  return exists == null ? true : exists;
+}
+
 function normalizeTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -132,7 +151,12 @@ function runtimeRunning(): boolean {
 
 function savedRunLabel(entry: HistorySavedRunEntry): string {
   const hasVal = entry.hasValidation ? "val" : "-";
-  const hasXlsx = entry.reportXlsxPath ? "xlsx" : "-";
+  const hasXlsx = canOpenPersistedReport(
+    entry.reportXlsxPath,
+    entry.reportXlsxExists,
+  )
+    ? "xlsx"
+    : "-";
   const tagsHint = entry.tags.length ? ` | tags=${entry.tags.length}` : "";
   return `${entry.ts || "unknown"} | ${entry.strategyKind || ""} | ${hasVal}/${hasXlsx}${tagsHint}`;
 }
@@ -388,6 +412,7 @@ function sanitizeSavedRunsArray(value: unknown): HistorySavedRunEntry[] {
         : null,
       hasValidation: !!typed.hasValidation,
       reportXlsxPath: normalizePath(String(typed.reportXlsxPath || "")),
+      reportXlsxExists: normalizeOptionalBoolean(typed.reportXlsxExists),
       csvPath: normalizePath(String(typed.csvPath || "")),
       timeframe: normalizeText(typed.timeframe),
       baseTimeframe: normalizeText(typed.baseTimeframe),
@@ -1109,6 +1134,10 @@ export const useHistoryStore = defineStore("history", {
         const lineageText = formatArtifactLineageCompact(
           selectedDetail?.lineage ?? selectedEntry.lineage ?? null,
         );
+        const canOpenReport = canOpenPersistedReport(
+          reportPath,
+          selectedDetail?.reportPathExists ?? selectedEntry.reportXlsxExists,
+        );
 
         const parts: string[] = [];
         if (selectedEntry.ts) parts.push(`ts=${selectedEntry.ts}`);
@@ -1117,7 +1146,7 @@ export const useHistoryStore = defineStore("history", {
         if (strategyKind === "MlSignal") parts.push("ml/cache");
         if (mlScoreContractSummary)
           parts.push(`score=${mlScoreContractSummary}`);
-        if (reportPath) parts.push("xlsx=yes");
+        if (reportPath) parts.push(canOpenReport ? "xlsx=yes" : "xlsx=missing");
         if (csvPath) parts.push(`csv=${csvPath}`);
         if (tags.length) parts.push(`tags=${tags.join(",")}`);
         if (selectedEntry.bytes > 0) parts.push(`bytes=${selectedEntry.bytes}`);
@@ -1142,7 +1171,9 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailAdmissionDetail =
           normalizeText(selectedDetail?.validationAdmissionDetail) || "—";
         this.savedRunDetailReport = reportPath
-          ? "XLSX available"
+          ? canOpenReport
+            ? "XLSX available"
+            : "Missing on disk"
           : "Not exported";
         this.savedRunDetailSize =
           formatBytesCompact(selectedEntry.bytes) || "—";
@@ -1201,7 +1232,12 @@ export const useHistoryStore = defineStore("history", {
       this.canLoadSavedRun = canMutate && hasSelection;
       this.canApplySavedRun = canMutate && hasSelection;
       this.canRerunSavedRun = canMutate && hasSelection;
-      this.canOpenSavedRunReport = canMutate && !!selectedEntry?.reportXlsxPath;
+      this.canOpenSavedRunReport =
+        canMutate &&
+        canOpenPersistedReport(
+          selectedDetail?.reportPath || selectedEntry?.reportXlsxPath || "",
+          selectedDetail?.reportPathExists ?? selectedEntry?.reportXlsxExists,
+        );
       this.canRevealSavedRun = canMutate && hasSelection;
       this.canDeleteSavedRun = canMutate && hasSelection;
       this.canOpenRunsDir = canMutate;

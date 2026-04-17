@@ -6,6 +6,7 @@ import { refreshAnalysisFromWorkflowRun } from './analysisService'
 import { clearArtifactHistoryPerfEntries, readArtifactHistoryPerfEntries } from './artifactHistoryPerf'
 import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 
 vi.mock('../tauri/invoke', () => ({
   invokeCommand: vi.fn(async () => undefined),
@@ -69,6 +70,8 @@ describe('workflowArtifactsSync', () => {
     expect(store.currentRun?.artifactPath).toContain('run.json')
     expect(store.currentValidation?.ts).toBe('2026-02-25T12:00:00Z')
     expect(store.source).toBe('legacy-runtime')
+    expect(useWorkflowStore(pinia).mode).toBe('conventional')
+    expect(useWorkflowStore(pinia).workflowStep).toBe('validate')
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
     expect(invokeCommandMock).toHaveBeenCalledTimes(1)
     expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_hydration')
@@ -242,6 +245,8 @@ describe('workflowArtifactsSync', () => {
 
     expect(synced).toBe(true)
     expect(store.currentValidation?.req).toMatchObject({ candidates: 32 })
+    expect(useWorkflowStore(pinia).mode).toBe('conventional')
+    expect(useWorkflowStore(pinia).workflowStep).toBe('validate')
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
@@ -325,6 +330,157 @@ describe('workflowArtifactsSync', () => {
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
+  })
+
+  it('reloads same-path same-ts artifacts when config fingerprint drifted', async () => {
+    const store = useWorkflowArtifactsStore(pinia)
+    store.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        artifact_path: 'C:/runs/run.json',
+        config_fingerprint: 'old-fingerprint',
+        req: { strategy_kind: 'DoubleMa' },
+        res: { rows: 1 },
+      },
+      currentValidation: {
+        ts: '2026-02-25T12:00:00Z',
+        req: { candidates: 32 },
+        res: { rows: [] },
+      },
+    })
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'load_latest_run_artifact_summary') {
+        return {
+          ts: '2026-02-25T12:00:00Z',
+          path: 'C:/runs/run.json',
+          config_fingerprint: 'new-fingerprint',
+        }
+      }
+      if (command === 'load_run_artifact_hydration') {
+        return {
+          currentRun: {
+            ts: '2026-02-25T12:00:00Z',
+            artifact_path: 'C:/runs/run.json',
+            config_fingerprint: 'new-fingerprint',
+            req: { strategy_kind: 'DoubleMa' },
+            res: { rows: 1 },
+          },
+          currentValidation: {
+            ts: '2026-02-25T12:00:00Z',
+            req: { candidates: 32 },
+            res: { rows: [] },
+          },
+        }
+      }
+      return undefined
+    })
+
+    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+
+    expect(synced).toBe(true)
+    expect(store.currentRun?.configFingerprint).toBe('new-fingerprint')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
+  })
+
+  it('reloads same-path same-ts artifacts when MlSignal provenance drifted', async () => {
+    const store = useWorkflowArtifactsStore(pinia)
+    store.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        artifact_path: 'C:/runs/run.json',
+        req: { strategy_kind: 'MlSignal' },
+        res: { rows: 1 },
+        ml_signal: {
+          stage: 'validation',
+          source_bundle_manifest_path: 'C:/models/bundle-a/manifest.json',
+          source_bundle_manifest_hash: 'old-hash',
+          feature_schema_hash: 'schema-a',
+        },
+      },
+      currentValidation: {
+        ts: '2026-02-25T12:00:00Z',
+        req: { candidates: [{ t_long: 0.6 }] },
+        res: { rows: [] },
+      },
+    })
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'load_latest_run_artifact_summary') {
+        return {
+          ts: '2026-02-25T12:00:00Z',
+          path: 'C:/runs/run.json',
+          ml_source_bundle_manifest_hash: 'new-hash',
+          ml_feature_schema_hash: 'schema-a',
+        }
+      }
+      if (command === 'load_run_artifact_hydration') {
+        return {
+          currentRun: {
+            ts: '2026-02-25T12:00:00Z',
+            artifact_path: 'C:/runs/run.json',
+            req: { strategy_kind: 'MlSignal' },
+            res: { rows: 1 },
+            ml_signal: {
+              stage: 'validation',
+              source_bundle_manifest_path: 'C:/models/bundle-a/manifest.json',
+              source_bundle_manifest_hash: 'new-hash',
+              feature_schema_hash: 'schema-a',
+            },
+          },
+          currentValidation: {
+            ts: '2026-02-25T12:00:00Z',
+            req: { candidates: [{ t_long: 0.6 }] },
+            res: { rows: [] },
+          },
+        }
+      }
+      return undefined
+    })
+
+    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+
+    expect(synced).toBe(true)
+    expect(store.currentRun?.mlSignal?.sourceBundleManifestPath).toBe('C:/models/bundle-a/manifest.json')
+    expect(store.currentRun?.mlSignal?.scoreCacheProvenance).toMatchObject({
+      source_bundle_manifest_hash: 'new-hash',
+    })
+  })
+
+  it('aligns shell mode and workflow step from an MlSignal validation artifact on first hydration', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'load_latest_run_artifact_hydration') {
+        return {
+          summary: {
+            ts: '2026-02-25T12:00:00Z',
+            path: 'C:/runs/ml_run.json',
+          },
+          hydration: {
+            currentRun: {
+              ts: '2026-02-25T12:00:00Z',
+              artifact_path: 'C:/runs/ml_run.json',
+              req: { strategy_kind: 'MlSignal' },
+              res: { rows: 1 },
+              ml_signal: {
+                stage: 'validation',
+              },
+            },
+            currentValidation: {
+              ts: '2026-02-25T12:00:00Z',
+              req: { candidates: [{ t_long: 0.6, t_short: 0.55 }] },
+              res: { rows: [] },
+            },
+          },
+        }
+      }
+
+      return undefined
+    })
+
+    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+
+    expect(synced).toBe(true)
+    expect(useWorkflowStore(pinia).mode).toBe('ml-signal')
+    expect(useWorkflowStore(pinia).workflowStep).toBe('validate')
   })
 
   it('returns false when the hydration payload is malformed', async () => {

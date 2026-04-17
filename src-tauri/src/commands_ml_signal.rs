@@ -1,3 +1,4 @@
+use super::validation_common;
 use crate::state::{AppState, LoadedDataContext};
 use serde::Serialize;
 use std::path::Component;
@@ -29,10 +30,6 @@ fn normalize_timeframe_label(raw: &str) -> String {
         .unwrap_or_else(|_| trimmed.to_ascii_lowercase())
 }
 
-fn normalize_path_key(raw: &str) -> String {
-    raw.trim().replace('/', "\\").to_ascii_lowercase()
-}
-
 fn validate_ml_signal_context(
     ctx: Option<&ta_app_core::ValidationArtifactContext>,
     loaded: &LoadedDataContext,
@@ -49,8 +46,8 @@ fn validate_ml_signal_context(
     }
 
     if let Some(expected_csv_path) = ctx.csv_path.as_deref() {
-        let expected = normalize_path_key(expected_csv_path);
-        let actual = normalize_path_key(&loaded.csv_path);
+        let expected = validation_common::normalize_path_key(expected_csv_path);
+        let actual = validation_common::normalize_path_key(&loaded.csv_path);
         if !expected.is_empty() && !actual.is_empty() && expected != actual {
             let label = ctx
                 .label

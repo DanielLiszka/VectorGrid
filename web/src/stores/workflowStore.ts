@@ -418,8 +418,12 @@ export const useWorkflowStore = defineStore('workflow', {
         controls: explicitControls || this.controlsTab,
         results: explicitResults || this.resultsTab,
       })
-      const controls = explicitControls || fallbackTabs.controls
-      const results = explicitResults || fallbackTabs.results
+      const controls = explicitControls && tabAllowed('controls', nextMode, workflow, explicitControls)
+        ? explicitControls
+        : fallbackTabs.controls
+      const results = explicitResults && tabAllowed('results', nextMode, workflow, explicitResults)
+        ? explicitResults
+        : fallbackTabs.results
 
       const explicitWorkspace = normalizeWorkspace(snapshot.workspace)
       const keepSettingsOverride = this.workspace === 'settings' && workflow === 'data'

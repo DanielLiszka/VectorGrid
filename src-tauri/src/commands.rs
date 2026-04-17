@@ -49,10 +49,10 @@ pub use commands_analysis::{
     compute_double_ma_drilldown, compute_double_ma_local_stability,
 };
 pub use commands_artifacts::{
-    delete_run_artifact, list_artifact_library, list_live_session_artifacts, list_meta_artifacts,
-    list_ml_policy_eval_artifacts, list_run_artifacts, list_stage4_artifacts,
-    list_stage5_artifacts, load_latest_run_artifact_hydration, load_latest_run_artifact_summary,
-    load_live_session_artifact_detail, load_meta_artifact_replay,
+    delete_artifact, delete_run_artifact, list_artifact_library, list_live_session_artifacts,
+    list_meta_artifacts, list_ml_policy_eval_artifacts, list_run_artifacts, list_stage4_artifacts,
+    list_stage5_artifacts, load_artifact, load_latest_run_artifact_hydration,
+    load_latest_run_artifact_summary, load_live_session_artifact_detail, load_meta_artifact_replay,
     load_ml_policy_eval_artifact_replay, load_run_artifact, load_run_artifact_detail,
     load_run_artifact_hydration, load_stage5_artifact_replay, open_runs_dir, save_batch_summary,
     save_run_artifact, update_artifact_tags,

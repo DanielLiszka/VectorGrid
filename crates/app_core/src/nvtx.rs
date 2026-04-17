@@ -455,8 +455,8 @@ mod tests {
     };
     use crate::test_support::lock_test_env;
     use std::ffi::OsString;
-    use std::sync::Mutex;
     use std::sync::atomic::Ordering;
+    use std::sync::Mutex;
 
     static API_LOAD_TEST_LOCK: Mutex<()> = Mutex::new(());
 

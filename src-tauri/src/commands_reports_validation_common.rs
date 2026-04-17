@@ -942,22 +942,15 @@ fn normalize_boolish_json(value: Option<&Value>) -> bool {
     }
 }
 
-fn composite_double_like_expected_route_text(
+fn resolve_composite_double_like_validation_target(
     strategy_kind: &str,
     validation_req: &Value,
     backend: &str,
-    mode: &str,
-) -> Option<(String, String)> {
+) -> Option<(&'static str, bool)> {
     if !is_composite_double_like_strategy(strategy_kind) {
         return None;
     }
 
-    let requested_backend = match backend {
-        "CpuOnly" => "CpuOnly",
-        "Auto" => "Auto",
-        "GpuOnly" | "GpuHybridKernel" | "GpuKernel" => "GpuKernel",
-        _ => "Auto",
-    };
     let strategy = validation_req
         .get("candidates")
         .and_then(Value::as_array)
@@ -968,17 +961,38 @@ fn composite_double_like_expected_route_text(
     let breakout_use_adx =
         normalize_boolish_json(strategy.and_then(|row| row.get("breakout_use_adx")));
 
-    let target_backend = if requested_backend == "CpuOnly" {
-        "CpuOnly"
-    } else if strategy_kind == "RegimeHybrid" {
-        "GpuHybridKernel"
-    } else if strategy_kind == "CompositeTrend" && trend_use_adx {
-        "GpuHybridKernel"
-    } else if strategy_kind == "BreakoutMomentum" && breakout_use_adx {
-        "GpuHybridKernel"
-    } else {
-        "GpuKernel"
-    };
+    if backend == "CpuOnly" {
+        return Some(("CpuOnly", false));
+    }
+    if matches!(backend, "Auto" | "GpuKernel")
+        && strategy_kind == "CompositeTrend"
+        && !trend_use_adx
+    {
+        return Some(("CpuOnly", backend != "Auto"));
+    }
+    if backend == "GpuHybridKernel" {
+        return Some(("GpuHybridKernel", false));
+    }
+    if strategy_kind == "RegimeHybrid" {
+        return Some(("GpuHybridKernel", false));
+    }
+    if strategy_kind == "CompositeTrend" && trend_use_adx {
+        return Some(("GpuHybridKernel", false));
+    }
+    if strategy_kind == "BreakoutMomentum" && breakout_use_adx {
+        return Some(("GpuHybridKernel", false));
+    }
+    Some(("GpuKernel", false))
+}
+
+fn composite_double_like_expected_route_text(
+    strategy_kind: &str,
+    validation_req: &Value,
+    backend: &str,
+    mode: &str,
+) -> Option<(String, String)> {
+    let (target_backend, cpu_fallback) =
+        resolve_composite_double_like_validation_target(strategy_kind, validation_req, backend)?;
 
     let route_descriptor = match target_backend {
         "GpuHybridKernel" => "GPU hybrid main route",
@@ -990,20 +1004,28 @@ fn composite_double_like_expected_route_text(
         "GpuKernel" => "Expected GPU kernel route",
         _ => "CPU route",
     };
-    let suffix = if mode == "auto" {
+    let suffix = if mode == "auto" && target_backend != "CpuOnly" {
         " when available"
     } else {
         ""
     };
-    let auto_route_descriptor = "GPU kernel main route";
-    let auto_module_route_descriptor = "Expected GPU kernel route";
+
+    if mode == "requested" && cpu_fallback {
+        return Some((
+            format!(
+                "{backend} requested | expected CpuOnly fallback for fixed-candidate validation ({strategy_kind})"
+            ),
+            format!("Expected CPU fallback route ({strategy_kind})"),
+        ));
+    }
+
     let route_summary = if mode == "auto" {
-        format!("Auto requested | expected {auto_route_descriptor} ({strategy_kind}){suffix}")
+        format!("Auto requested | expected {route_descriptor} ({strategy_kind}){suffix}")
     } else {
         format!("{backend} requested | expected {route_descriptor} ({strategy_kind})")
     };
     let module_summary_prefix = if mode == "auto" {
-        format!("{auto_module_route_descriptor} ({strategy_kind}){suffix}")
+        format!("{module_route_descriptor} ({strategy_kind}){suffix}")
     } else {
         format!("{module_route_descriptor} ({strategy_kind}){suffix}")
     };
@@ -1563,6 +1585,42 @@ fn describe_aux_cpu_tails(validation_req: &Value) -> Vec<String> {
     aux_cpu
 }
 
+fn is_composite_gpu_native_advanced_strategy(strategy_kind: &str) -> bool {
+    matches!(
+        strategy_kind,
+        "Asr" | "Vcc" | "Vemr" | "Rocb" | "Vcet" | "Mkcs" | "Kqsr" | "Carm" | "Kvdf" | "Cdmc"
+    )
+}
+
+fn describe_composite_gpu_native_optional_modules(validation_req: &Value) -> Vec<String> {
+    let mut modules = Vec::new();
+    if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
+        modules.push("perturb".to_string());
+    }
+    if let Some(bootstrap) = validation_req
+        .get("trade_bootstrap")
+        .filter(|v| !v.is_null())
+    {
+        if bootstrap
+            .get("stationary_mean_block_len")
+            .and_then(Value::as_u64)
+            == Some(0)
+        {
+            modules.push("trade bootstrap iid-only".to_string());
+            return modules;
+        }
+        let stat_block = bootstrap
+            .get("stationary_mean_block_len")
+            .and_then(Value::as_u64)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "auto".to_string());
+        modules.push(format!(
+            "trade bootstrap compare (iid + stationary, stat block={stat_block})"
+        ));
+    }
+    modules
+}
+
 fn describe_disabled_modules(validation_req: &Value) -> Vec<String> {
     let mut disabled = Vec::new();
     for module in [
@@ -1702,7 +1760,13 @@ fn build_expected_execution_category_summary(
 ) -> String {
     let modules = enabled_execution_category_modules(validation_req);
     if is_double_like_strategy(strategy_kind) {
-        if backend == "CpuOnly" || backend == "GpuOnly" {
+        let composite_double_like_target =
+            resolve_composite_double_like_validation_target(strategy_kind, validation_req, backend)
+                .map(|(target, _)| target);
+        if backend == "CpuOnly"
+            || backend == "GpuOnly"
+            || composite_double_like_target.is_some_and(|target| target == "CpuOnly")
+        {
             return format_execution_category_summary(vec![("CPU-only", modules)]);
         }
         let mut gpu_native = vec!["base reruns", "hard gates"];
@@ -1747,14 +1811,9 @@ fn build_expected_execution_category_summary(
     }
     let mut gpu_native = Vec::new();
     let mut gpu_tail = Vec::new();
-    let is_cpu_reference_hybrid = strategy_kind == "Carm" || strategy_kind == "Cdmc";
-    let is_vcet_mixed = strategy_kind == "Vcet";
+    let gpu_native_advanced = is_composite_gpu_native_advanced_strategy(strategy_kind);
 
-    let base_category = if is_cpu_reference_hybrid {
-        &mut gpu_tail
-    } else {
-        &mut gpu_native
-    };
+    let base_category = &mut gpu_native;
     base_category.push("base reruns");
     base_category.push("hard gates");
 
@@ -1762,44 +1821,36 @@ fn build_expected_execution_category_summary(
         .get("walk_forward")
         .is_some_and(|v| !v.is_null())
     {
-        if is_cpu_reference_hybrid || is_vcet_mixed {
-            gpu_tail.push("walk_forward");
-        } else {
-            gpu_native.push("walk_forward");
-        }
+        gpu_native.push("walk_forward");
     }
     if validation_req
         .get("reopt_walk_forward")
         .is_some_and(|v| !v.is_null())
     {
-        if is_cpu_reference_hybrid || is_vcet_mixed {
-            gpu_tail.push("reopt_walk_forward");
-        } else {
-            gpu_native.push("reopt_walk_forward");
-        }
+        gpu_native.push("reopt_walk_forward");
     }
     if validation_req.get("cscv_pbo").is_some_and(|v| !v.is_null()) {
-        if is_cpu_reference_hybrid {
-            gpu_tail.push("cscv_pbo");
-        } else {
-            gpu_native.push("cscv_pbo");
-        }
+        gpu_native.push("cscv_pbo");
     }
     if validation_req.get("spa").is_some_and(|v| !v.is_null()) {
-        if is_cpu_reference_hybrid {
-            gpu_tail.push("spa");
-        } else {
-            gpu_native.push("spa");
-        }
+        gpu_native.push("spa");
     }
     if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
-        gpu_tail.push("perturb");
+        if gpu_native_advanced {
+            gpu_native.push("perturb");
+        } else {
+            gpu_tail.push("perturb");
+        }
     }
     if validation_req
         .get("trade_bootstrap")
         .is_some_and(|v| !v.is_null())
     {
-        gpu_tail.push("trade_bootstrap");
+        if gpu_native_advanced {
+            gpu_native.push("trade_bootstrap");
+        } else {
+            gpu_tail.push("trade_bootstrap");
+        }
     }
     format_execution_category_summary(vec![
         ("GPU-native", gpu_native),
@@ -1821,7 +1872,7 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Vcc" => Some(
-            "VCC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. This removes the old fp32 momentum roundtrip fallback while keeping strict validation parity."
+            "VCC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route while keeping strict validation parity."
                 .to_string(),
         ),
         "Vemr" => Some(
@@ -1833,7 +1884,7 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Vcet" => Some(
-            "VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward and reopt walk-forward currently use the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work."
+            "VCET GPU validation now supports the current fixed-candidate validation module stack on the GpuKernel route, including walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturb, and trade bootstrap."
                 .to_string(),
         ),
         "Mkcs" => Some(
@@ -1841,7 +1892,7 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "CompositeMo" => Some(
-            "CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+            "CompositeMo uses the CPU-preferred validation route; GPU fixed-candidate validation currently follows the same plain CompositeCpu HardGate eligibility contract (uniform strategy/indicator settings, vectorized engine, no inline cross_ticker)."
                 .to_string(),
         ),
         "Kqsr" => Some(
@@ -1853,11 +1904,11 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Carm" => Some(
-            "CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
+            "CARM GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."
                 .to_string(),
         ),
         "Cdmc" => Some(
-            "CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads."
+            "CDMC GPU validation now runs the current fixed-candidate validation module stack on the GpuKernel route. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads."
                 .to_string(),
         ),
         _ => None,
@@ -1945,7 +1996,23 @@ fn build_expected_execution_summary(
         .unwrap_or("CpuOnly")
         .trim();
     let enabled_main = describe_enabled_modules(validation_req);
-    let aux_cpu = describe_aux_cpu_tails(validation_req);
+    let composite_gpu_native_advanced = !is_double_like_strategy(strategy_kind)
+        && is_composite_gpu_native_advanced_strategy(strategy_kind);
+    let gpu_native_optional_modules = if composite_gpu_native_advanced {
+        describe_composite_gpu_native_optional_modules(validation_req)
+    } else {
+        Vec::new()
+    };
+    let aux_cpu = if composite_gpu_native_advanced {
+        Vec::new()
+    } else {
+        describe_aux_cpu_tails(validation_req)
+    };
+    let gpu_native_optional_module_suffix = if gpu_native_optional_modules.is_empty() {
+        String::new()
+    } else {
+        format!(" + {}", gpu_native_optional_modules.join(" + "))
+    };
     let disabled_module_summary = summary_or_dash(describe_disabled_modules(validation_req), " + ");
     let cross_omitted_summary = summary_or_dash(
         describe_cross_omitted_modules(strategy_kind, validation_req),
@@ -1960,6 +2027,8 @@ fn build_expected_execution_summary(
     let mut fallback_summary = "-".to_string();
     let mut route_note_summary = "-".to_string();
     let is_double_like = is_double_like_strategy(strategy_kind);
+    let composite_double_like_target =
+        resolve_composite_double_like_validation_target(strategy_kind, validation_req, backend);
     let composite_double_like_route = composite_double_like_expected_route_text(
         strategy_kind,
         validation_req,
@@ -2032,6 +2101,10 @@ fn build_expected_execution_summary(
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
+                    } else if composite_double_like_target
+                        .is_some_and(|(target, _)| target == "CpuOnly")
+                    {
+                        format!(" + {}", aux_cpu.join(" + "))
                     } else {
                         format!(" | auxiliary CPU tails: {}", aux_cpu.join(" + "))
                     }
@@ -2051,6 +2124,10 @@ fn build_expected_execution_summary(
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
+                    } else if composite_double_like_target
+                        .is_some_and(|(target, _)| target == "CpuOnly")
+                    {
+                        format!(" + {}", aux_cpu.join(" + "))
                     } else {
                         format!(" | auxiliary CPU tails: {}", aux_cpu.join(" + "))
                     }
@@ -2074,10 +2151,14 @@ fn build_expected_execution_summary(
                     auto_composite_double_like_route
                         .as_ref()
                         .map(|(_, module)| module.as_str())
-                        .unwrap_or("Expected GPU main route"),
+                        .unwrap_or("Expected route"),
                     enabled_main.join(" + "),
                     if aux_cpu.is_empty() {
                         String::new()
+                    } else if composite_double_like_target
+                        .is_some_and(|(target, _)| target == "CpuOnly")
+                    {
+                        format!(" + {}", aux_cpu.join(" + "))
                     } else {
                         format!(" | auxiliary CPU tails: {}", aux_cpu.join(" + "))
                     }
@@ -2089,6 +2170,7 @@ fn build_expected_execution_summary(
             && !aux_cpu.is_empty()
             && backend != "CpuOnly"
             && backend != "GpuOnly"
+            && !composite_double_like_target.is_some_and(|(target, _)| target == "CpuOnly")
         {
             route_note_summary = format!(
                 "Main GPU route is preserved; {} currently run as intentional auxiliary CPU work.",
@@ -2099,7 +2181,7 @@ fn build_expected_execution_summary(
         let mut warning_notes = Vec::new();
         let composite_profile = composite_profile_label_for_expected_summary(strategy_kind);
         let composite_route_detail = describe_composite_route_detail(strategy_kind, backend);
-        let composite_cpu_fallback = strategy_kind == "CompositeMo";
+        let composite_mo_cpu_preferred = strategy_kind == "CompositeMo";
         if backend == "CpuOnly" {
             route_summary =
                 format!("CpuOnly requested | CPU composite route expected ({composite_profile})");
@@ -2107,7 +2189,7 @@ fn build_expected_execution_summary(
                 "CPU route ({composite_profile}): {}{}",
                 enabled_main.join(" + "),
                 if aux_cpu.is_empty() {
-                    String::new()
+                    gpu_native_optional_module_suffix.clone()
                 } else {
                     format!(" + {}", aux_cpu.join(" + "))
                 }
@@ -2122,20 +2204,21 @@ fn build_expected_execution_summary(
                 "Expected CPU route ({composite_profile}): {}{}",
                 enabled_main.join(" + "),
                 if aux_cpu.is_empty() {
-                    String::new()
+                    gpu_native_optional_module_suffix.clone()
                 } else {
                     format!(" + {}", aux_cpu.join(" + "))
                 }
             );
             fallback_summary = auto_pref;
-        } else if composite_cpu_fallback {
-            route_summary =
-                format!("{backend} requested | expected CpuOnly fallback for composite validation");
+        } else if composite_mo_cpu_preferred {
+            route_summary = format!(
+                "{backend} requested | expected CPU-preferred composite route ({composite_profile})"
+            );
             module_summary = format!(
-                "Expected CPU fallback route ({composite_profile}): {}{}",
+                "Expected CPU route ({composite_profile}): {}{}",
                 enabled_main.join(" + "),
                 if aux_cpu.is_empty() {
-                    String::new()
+                    gpu_native_optional_module_suffix.clone()
                 } else {
                     format!(" + {}", aux_cpu.join(" + "))
                 }
@@ -2150,7 +2233,7 @@ fn build_expected_execution_summary(
                 "Expected GPU composite route ({composite_profile}): {}{}",
                 enabled_main.join(" + "),
                 if aux_cpu.is_empty() {
-                    String::new()
+                    gpu_native_optional_module_suffix.clone()
                 } else {
                     format!(" + {}", aux_cpu.join(" + "))
                 }
@@ -2194,7 +2277,7 @@ fn build_expected_execution_summary(
             mode
         );
         if is_double_like && mode == "preserved_finalists" {
-            cross_summary = format!("{base} | finalists only");
+            cross_summary = format!("{base} | finalists only (cap=4)");
             let cross_warning = "Preserved-finalists cross reruns keep CSCV/PBO + hard gates; auxiliary cross reruns omit walk-forward, SPA, reopt WF, perturb, and trade bootstrap.";
             warning_summary = if warning_summary == "none" {
                 cross_warning.to_string()
@@ -2205,7 +2288,7 @@ fn build_expected_execution_summary(
             cross_summary = format!("{base} | lightweight reruns");
         } else if !is_double_like {
             cross_summary = if mode == "preserved_finalists" {
-                format!("{base} | finalists only")
+                format!("{base} | finalists only (cap=4)")
             } else {
                 format!("{base} | lightweight reruns")
             };
@@ -2606,7 +2689,13 @@ pub(super) fn build_model_from_report(
             describe_cross_omitted_modules(&model.strategy_kind, validation_req),
             " + ",
         );
-        let aux_cpu = describe_aux_cpu_tails(validation_req);
+        let aux_cpu = if !is_double_like_strategy(&model.strategy_kind)
+            && is_composite_gpu_native_advanced_strategy(&model.strategy_kind)
+        {
+            Vec::new()
+        } else {
+            describe_aux_cpu_tails(validation_req)
+        };
         if model.backend_used.eq_ignore_ascii_case("gpu")
             && !model.backend_route.contains("->CpuOnly")
             && !aux_cpu.is_empty()
@@ -2796,7 +2885,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_preserved_finalists_cross_summary_reports_finalists_only() {
+    fn composite_preserved_finalists_cross_summary_reports_cap_limited_finalists_only() {
         let req = json!({
             "backend": { "backend": "Auto" },
             "cross_ticker": {
@@ -2810,7 +2899,7 @@ mod tests {
         let summary = build_expected_execution_summary("CompositeCpu", Some(&req));
         assert!(summary
             .cross_summary
-            .contains("1 dataset | preserved_finalists | finalists only"));
+            .contains("1 dataset | preserved_finalists | finalists only (cap=4)"));
         assert!(summary
             .warning_summary
             .contains("preserved-finalists composite cross reruns keep CSCV/PBO + hard gates"));
@@ -2835,7 +2924,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_mo_gpu_fallback_remains_explicit() {
+    fn composite_mo_validation_remains_cpu_preferred() {
         let req = json!({
             "backend": { "backend": "GpuKernel" }
         });
@@ -2843,9 +2932,9 @@ mod tests {
         let summary = build_expected_execution_summary("CompositeMo", Some(&req));
         assert!(summary
             .route_summary
-            .contains("expected CpuOnly fallback for composite validation"));
+            .contains("expected CPU-preferred composite route (CompositeMo)"));
         assert!(summary.route_note_summary.contains(
-            "CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+            "CompositeMo uses the CPU-preferred validation route; GPU fixed-candidate validation currently follows the same plain CompositeCpu HardGate eligibility contract"
         ));
         assert!(summary
             .category_summary
@@ -2871,7 +2960,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_trend_auto_expected_summary_stays_on_kernel_wording_even_with_adx() {
+    fn composite_trend_auto_expected_summary_tracks_cpu_and_hybrid_validation_routes() {
         let kernel_req = json!({
             "backend": { "backend": "Auto" },
             "candidates": [
@@ -2896,18 +2985,19 @@ mod tests {
         let kernel_summary = build_expected_execution_summary("CompositeTrend", Some(&kernel_req));
         assert!(kernel_summary
             .route_summary
-            .contains("expected GPU kernel main route (CompositeTrend) when available"));
+            .contains("expected CPU route (CompositeTrend)"));
         assert!(kernel_summary
             .module_summary
-            .contains("Expected GPU kernel route (CompositeTrend) when available:"));
+            .contains("CPU route (CompositeTrend):"));
+        assert!(kernel_summary.category_summary.contains("CPU-only:"));
 
         let hybrid_summary = build_expected_execution_summary("CompositeTrend", Some(&hybrid_req));
         assert!(hybrid_summary
             .route_summary
-            .contains("expected GPU kernel main route (CompositeTrend) when available"));
+            .contains("expected GPU hybrid main route (CompositeTrend) when available"));
         assert!(hybrid_summary
             .module_summary
-            .contains("Expected GPU kernel route (CompositeTrend) when available:"));
+            .contains("Expected GPU hybrid route (CompositeTrend) when available:"));
     }
 
     #[test]

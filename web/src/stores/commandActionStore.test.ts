@@ -162,6 +162,26 @@ describe('command action store', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/from_artifacts.xlsx' })
   })
 
+  it('does not expose a workflow-artifact report path when the hydrated existence flag is false', () => {
+    const store = useCommandActionStore()
+    const artifactsStore = useWorkflowArtifactsStore()
+    artifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        report_xlsx_path: 'C:/reports/from_artifacts.xlsx',
+        report_xlsx_exists: false,
+        req: {},
+        res: {},
+      },
+    })
+
+    store.openLatestReport()
+
+    expect(store.canOpenLatestReport).toBe(false)
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('open_path', {
+      path: 'C:/reports/from_artifacts.xlsx',
+    })
+  })
+
   it('falls back to runtime dataset for latest meta report path when no legacy snapshot exists', () => {
     const dataset = ensureDocumentDataset()
     dataset.latestMetaReportPath = 'C:/reports/runtime_meta.xlsx'
@@ -185,6 +205,21 @@ describe('command action store', () => {
 
     expect(store.canOpenLatestMetaReport).toBe(true)
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/runtime_meta.xlsx' })
+  })
+
+  it('suppresses stale latest meta report quick actions when the existence flag is false', () => {
+    const store = useCommandActionStore()
+    store.applyLegacyQuickActionsSnapshot({
+      latestMetaReportPath: 'C:/reports/stale_meta.xlsx',
+      latestMetaReportExists: false,
+    })
+
+    store.openLatestMetaReport()
+
+    expect(store.canOpenLatestMetaReport).toBe(false)
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('open_path', {
+      path: 'C:/reports/stale_meta.xlsx',
+    })
   })
 
   it('prefers the local store report path over artifact and runtime fallback paths', () => {

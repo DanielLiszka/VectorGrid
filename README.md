@@ -4,50 +4,50 @@ GPU-accelerated Tauri desktop app for exact-grid trading strategy optimization a
 
 The desktop product and the benchmarked execution engine are both referred to as **VectorGrid** in this repository. `VectorBT` is mentioned only for explicit external benchmark comparisons.
 
-## Historical Benchmark Snapshots
+## Stored Benchmark Snapshots
 
-These figures are saved faceoff artifacts, not current perf-gate outputs. Every number below is a **warm app-path** snapshot tied to a specific scenario, timing boundary, and saved artifact date.
+These figures are saved faceoff artifacts, not current perf-gate outputs. The VectorGrid timings for the two active warm app-path rows below were refreshed on `2026-04-16`; the VectorBT timings remain the last stored runs for those same scenarios and keep their original artifact dates.
 
-**Fastest saved warm app-path snapshot (`2026-03-13` artifacts)**
+**Latest `58,300`-pair VectorGrid refresh (`2026-04-16` artifacts; VectorBT reference from `2026-03-13`)**
 
 - Scenario: `Double MA`, `ALMA/ALMA`, exact grid
 - Workload: `58,300` backtests over `200,000` bars
 - Timing boundary: warm app-path faceoff, same-thread, dataset already loaded
 - Hardware: `AMD Ryzen 9 9950X`, `NVIDIA GeForce RTX 4090`
-- VectorGrid GPU kernel: `101.886 ms`
-- VectorGrid CPU: `3486.134 ms`
-- VectorBT CPU workflow: `92377.801 ms`
+- VectorGrid GPU kernel: `71.329 ms`
+- VectorGrid CPU: `4852.416 ms`
+- Historical VectorBT CPU workflow (`2026-03-13` artifact): `92377.801 ms`
 
-Saved comparison ratios from those artifacts:
+Reference ratios using the stored VectorBT artifact:
 
-- `907x` faster than the measured VectorBT CPU workflow
-- `34x` faster than the app's own CPU path on the same scenario
+- `1295x` faster than the last stored VectorBT CPU workflow for that scenario
+- `68x` faster than the refreshed VectorGrid CPU path on the same scenario
 
-**Latest saved `250,000`-pair warm app-path rerun (`2026-04-03` artifacts)**
+**Latest `250,000`-pair VectorGrid refresh (`2026-04-16` artifacts; VectorBT reference from `2026-04-03`)**
 
 - Scenario: `Double MA`, `ALMA/ALMA`, exact grid
 - Workload: `250,000` backtests over `200,000` bars
 - Timing boundary: warm app-path faceoff, same-thread, dataset already loaded
 - Hardware: `AMD Ryzen 9 9950X`, `NVIDIA GeForce RTX 4090`
-- VectorGrid GPU kernel: `166.896 ms`
-- VectorGrid CPU: `25709.363 ms`
-- VectorBT CPU workflow: `422945.901 ms`
+- VectorGrid GPU kernel: `172.519 ms`
+- VectorGrid CPU: `25472.924 ms`
+- Historical VectorBT CPU workflow (`2026-04-03` artifact): `422945.901 ms`
 
-Saved comparison ratios from those artifacts:
+Reference ratios using the stored VectorBT artifact:
 
-- `2534x` faster than the latest saved VectorBT CPU workflow
-- `154x` faster than the latest saved VectorGrid CPU path on the same scenario
+- `2452x` faster than the last stored VectorBT CPU workflow for that scenario
+- `148x` faster than the refreshed VectorGrid CPU path on the same scenario
 
 ![VectorGrid vs VectorBT 250k benchmark chart](docs/assets/benchmark-double-ma-250k.svg)
 
-_The chart above is the earlier March public `250,000`-pair warm app-path snapshot. The bullets above lead with the fastest saved snapshot and the latest heavier rerun set, both with explicit artifact-date context._
+_The chart above is the earlier March public `250,000`-pair warm app-path snapshot. The bullets above lead with the two VectorGrid-only refreshes plus their historical VectorBT references, while the chart remains the earlier public March snapshot._
 
-**Saved benchmark snapshots**
+**Stored benchmark snapshots**
 
 | Scenario | VectorGrid GPU kernel | VectorGrid CPU | VectorBT CPU |
 | --- | --- | --- | --- |
-| `200k bars / 58,300 pairs` | `101.886 ms` | `3486.134 ms` | `92377.801 ms` |
-| `200k bars / 250,000 pairs` | `166.896 ms` | `25709.363 ms` | `422945.901 ms` |
+| `200k bars / 58,300 pairs (VectorGrid refreshed 2026-04-16)` | `71.329 ms` | `4852.416 ms` | `92377.801 ms (2026-03-13)` |
+| `200k bars / 250,000 pairs (VectorGrid refreshed 2026-04-16)` | `172.519 ms` | `25472.924 ms` | `422945.901 ms (2026-04-03)` |
 | `200k bars / 250,000 pairs (March public chart)` | `233.660 ms` | `15202.400 ms` | `445240.337 ms` |
 
 ## What This Measures
@@ -60,7 +60,7 @@ These README benchmark snapshots are **warm app-path** faceoff numbers, not the 
 - The `58,300`-pair and `250,000`-pair snapshots use `top_k=10` and `heatmap_bins=0`.
 - The latest `250,000`-pair rerun set uses the real-workflow `10`-row benchmark lane.
 - VectorBT is measured as a CPU Python workflow on `vectorbt 0.28.4`, with local ALMA generation and local metric aggregation that keeps the faceoff semantics aligned with the app's next-bar workflow.
-- Treat the scenario identity and saved-artifact date above as part of the claim. If you need a current number, rerun the matching faceoff scenario instead of reusing the saved snapshot prose.
+- Treat the scenario identity and saved-artifact date above as part of the claim. Some rows intentionally combine refreshed VectorGrid-only timings with the last stored VectorBT reference for the same scenario; keep both dates when repeating those comparisons.
 
 This repo also has a tighter engine benchmark boundary for the classic `58,300`-pair ALMA case:
 
@@ -188,6 +188,9 @@ Each faceoff run now writes the lockfile hash plus same-interpreter Python prove
 
 Preserved faceoff artifacts now belong under `output/benchmarks/`. Older historical snapshots may still exist under legacy `target/...` paths from before this convention.
 
+- latest VectorGrid-only refreshes:
+  - `output/benchmarks/vectorgrid_app_faceoff_only_20260416/`
+  - `output/benchmarks/vectorgrid_app_faceoff_only_250k_20260416/`
 - fastest saved `58,300`-pair snapshot:
   - `output/benchmarks/vectorgrid_app_faceoff_only_20260313/`
   - `output/benchmarks/vectorbt_vs_vectorgrid_faceoff_58300_rerun/`

@@ -207,6 +207,26 @@ describe('workflow bootstrap service', () => {
     expect(store.resultsTab).toBe('top')
   })
 
+  it('clamps invalid persisted live-workspace tabs for MlSignal posture', async () => {
+    installStorage({
+      vta_workflow_mode_v1: 'ml-signal',
+      vta_workspace_tab_v1: 'live',
+      vta_workflow_tab_v1: 'validate',
+      vta_workflow_step_v1: 'validate',
+      vectorgrid_controls_tab_v1: 'strategy',
+      vectorgrid_results_tab_v1: 'top',
+    })
+
+    await applyWorkflowBootstrapFromStorage()
+    const store = useWorkflowStore(pinia)
+    expect(store.workspace).toBe('live')
+    expect(store.mode).toBe('ml-signal')
+    expect(store.workflow).toBe('validate')
+    expect(store.workflowStep).toBe('validate')
+    expect(store.controlsTab).toBe('opt')
+    expect(store.resultsTab).toBe('overview')
+  })
+
   it('restores the finalizer workflow step from storage', async () => {
     installStorage({
       vta_workspace_tab_v1: 'workflow',

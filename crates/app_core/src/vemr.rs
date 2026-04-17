@@ -7,8 +7,10 @@ use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_direct_with_inputs, compute_dynamic_indicator_cuda_with_inputs,
     DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
+#[cfg(any(test, feature = "cuda"))]
+use crate::indicator_catalog::IndicatorInputKind;
 use crate::indicator_catalog::{
-    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
+    find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(all(test, feature = "cuda"))]
@@ -232,6 +234,7 @@ struct VemrIndicatorIds {
     zscore_nbdev_key: String,
     zscore_devtype_key: String,
     zscore_output: String,
+    #[cfg(any(test, feature = "cuda"))]
     zscore_input_kind: IndicatorInputKind,
     bollinger_period_key: String,
     bollinger_devup_key: String,
@@ -531,9 +534,16 @@ fn vemr_indicator_ids() -> Result<&'static VemrIndicatorIds, String> {
     static IDS: OnceLock<Result<VemrIndicatorIds, String>> = OnceLock::new();
 
     IDS.get_or_init(|| {
+        #[cfg(any(test, feature = "cuda"))]
         let zscore_descriptor = find_dynamic_indicator_descriptor("zscore").ok_or_else(|| {
             "VEMR indicator 'zscore' is not registered for dynamic dispatch".to_string()
         })?;
+        #[cfg(not(any(test, feature = "cuda")))]
+        if find_dynamic_indicator_descriptor("zscore").is_none() {
+            return Err(
+                "VEMR indicator 'zscore' is not registered for dynamic dispatch".to_string(),
+            );
+        }
         Ok(VemrIndicatorIds {
             zscore_period_key: resolve_param_key("zscore", &["period", "length", "timeperiod"])?,
             zscore_ma_type_key: resolve_param_key("zscore", &["ma_type", "matype", "ma"])?,
@@ -546,6 +556,7 @@ fn vemr_indicator_ids() -> Result<&'static VemrIndicatorIds, String> {
                 &["devtype", "deviation_type", "dev_type"],
             )?,
             zscore_output: resolve_output_id("zscore", &["value", "zscore"])?,
+            #[cfg(any(test, feature = "cuda"))]
             zscore_input_kind: zscore_descriptor.input_kind,
             bollinger_period_key: resolve_param_key(
                 "bollinger_bands",
