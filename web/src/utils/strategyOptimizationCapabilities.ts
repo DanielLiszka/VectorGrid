@@ -168,7 +168,7 @@ function describeCompositeOutputSummary(
       supportsShortlistConfidenceMode: true,
       supportsShortlistUnionMode: true,
       supportsAdvancedExactKernelControls: true,
-      outputSummary: `Top-K, heatmap, include-all, export, and advanced exact-kernel shortlist/score/metric-contract controls apply to ${kind} through the current kernel-targeted double-MA route. Saved optimization artifacts on this audited route emit the canonical Core17 surface.`,
+      outputSummary: `Top-K, heatmap, include-all, export, and advanced exact-kernel shortlist/score/metric-contract controls apply to ${kind} through the current kernel-targeted double-MA route. Saved optimization artifacts on this audited route emit the canonical Core17 surface. Replay-free exact union/confidence reranks and replay-backed exact slice/neighborhood diagnostics stay route-aligned on this surface.`,
     }
   }
 
@@ -271,14 +271,14 @@ export function describeStrategyOptimizationCapabilities(
             kind === 'DynamicDoubleMa'
               ? 'DynamicDoubleMa builds constrained strategy_ir payloads, previews the resolved backend, and runs through the normal optimizer path after validation. Include-all stays available broadly; extra shortlist objectives are requestable on the GpuKernel preview path for exact-compatible dynamic_strategy_v1 shapes.'
                 + ' Explicit 17-row and 22-row metric-contract overrides are available on exact-compatible dynamic_strategy_v1 GpuKernel shapes and on audited dynamic CPU fallback surfaces, including constrained composite/profile plans that resolve to CPU.'
-                + ' Shortlist confidence mode follows that same exact-compatible dynamic GpuKernel path.'
-                + ' Shortlist union mode follows that same exact-compatible dynamic GpuKernel path once extra shortlist heads are present.'
-                + ' Shortlist slice and neighborhood diagnostics follow that same exact-compatible dynamic GpuKernel path.'
-              : kind === 'Vfct'
-                ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend. Saved optimization artifacts on this audited route emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; advanced shortlist/score controls stay exact-route only.'
+                + ' Shortlist confidence mode follows that same exact-compatible dynamic GpuKernel path as a replay-free exact rerank.'
+                + ' Shortlist union mode follows that same exact-compatible dynamic GpuKernel path as a replay-free exact rerank once extra shortlist heads are present.'
+                + ' Shortlist slice and neighborhood diagnostics follow that same exact-compatible dynamic GpuKernel path as replay-backed exact diagnostics.'
+                : kind === 'Vfct'
+                ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend. Saved optimization artifacts on this audited route emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; replay-free exact union/confidence reranks and replay-backed exact slice/neighborhood diagnostics stay exact-route only.'
               : kind === 'DoubleMa'
-                  ? 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs. Saved optimization artifacts on current audited Double-MA routes emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; advanced shortlist/score controls stay exact-route only.'
-                  : `Top-K, heatmap, include-all, and export controls apply to ${kind} through the double-MA backend. Saved optimization artifacts on current audited ${kind} routes emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; advanced shortlist/score controls stay exact-route only.`,
+                  ? 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs. Saved optimization artifacts on current audited Double-MA routes emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; replay-free exact union/confidence reranks and replay-backed exact slice/neighborhood diagnostics stay exact-route only.'
+                  : `Top-K, heatmap, include-all, and export controls apply to ${kind} through the double-MA backend. Saved optimization artifacts on current audited ${kind} routes emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; replay-free exact union/confidence reranks and replay-backed exact slice/neighborhood diagnostics stay exact-route only.`,
         }
 
     return {
@@ -388,7 +388,7 @@ export function describeStrategyOptimizationCapabilities(
                     : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
         outputSummary: standaloneGpuKernelPreview
-        ? `${kind} supports Top-K and include-all native candidate returns. On requested standalone kernel-capable previews it also supports host-side extra shortlist heads, union reranking, and retained-shortlist confidence reranking. Extra shortlist heads and union reranking currently require include_all=true, confidence reranking requires top_k > 0, include-all is meaningful and not free, and this route does not emit the Double MA heatmap or per-pair CSV export. Explicit Full17 and Trade22 metric-contract requests are available on both CPU-backed and standalone GpuKernel previews; Trade22 on standalone GpuKernel uses bounded host-side enrichment after GPU search.`
+        ? `${kind} supports Top-K and include-all native candidate returns. On requested standalone kernel-capable previews it also supports host-side extra shortlist heads plus route-aligned retained-shortlist union and confidence reranking. Extra shortlist heads and retained-shortlist union reranking currently require include_all=true, retained-shortlist confidence reranking requires top_k > 0, include-all is meaningful and not free, and this route does not emit the Double MA heatmap or per-pair CSV export. Explicit Full17 and Trade22 metric-contract requests are available on both CPU-backed and standalone GpuKernel previews; Trade22 on standalone GpuKernel uses bounded host-side enrichment after GPU search.`
         : supportsRequestedCore17MetricSurface(kind, inputs)
           ? `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface. Explicit Full17 and Trade22 metric-contract requests are available on this CPU-backed route.`
           : `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface.`,

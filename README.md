@@ -98,6 +98,11 @@ For the current detailed tracker set, see:
 
 ## Quick Start
 
+Toolchain posture:
+
+- the repo now pins Rust via `rust-toolchain.toml`
+- expected channel remains `stable`
+
 Install frontend dependencies:
 
 ```powershell
@@ -119,6 +124,35 @@ cargo run -p ta_desktop_demo_app --release
 ```
 
 For Windows build variants, PTX packaging, and public release posture, use [RELEASE.md](RELEASE.md).
+
+## Local Release Candidate Gate
+
+Use the local release-candidate wrapper when you want one orchestrated command that composes the repo-quality lane, parity checks, workflow regression, variant-aware bundle build, manifest generation, and optional packaged smoke:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant cpu
+```
+
+GPU MA variant:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant gpu-ma
+```
+
+GPU kernel variant:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant gpu-kernel
+```
+
+Useful switches:
+
+- `-IncludePerf`
+- `-IncludeDesktopSmoke`
+- `-IncludeLiveSafetyHarness`
+- `-SkipWorkspaceTests`
+
+Local release-candidate outputs are written under `output/release_candidates/`.
 
 ## Local Quality Gate
 
@@ -237,6 +271,7 @@ powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_ncu.ps1
 
 ## Repo Layout
 
+- `Archive/`: retired implementation plans, review packets, prompt packs, and historical trackers moved out of the repo root
 - `src-tauri/`: Tauri app crate, commands, desktop integration
 - `crates/app_core/`: optimization, validation, CUDA/runtime plumbing
 - `crates/strategies/`: strategy configuration and shared strategy logic

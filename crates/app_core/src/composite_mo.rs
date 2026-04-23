@@ -6,7 +6,7 @@ use crate::double_ma::{
     resolve_alma_params_for_side, run_double_ma_optimization_blocking_with_candles,
     strategy_cfg_for_optimization, validate_ma_kind, validate_strategy_cfg,
     validate_strategy_cfg_for_optimization, Backend, BackendUsed, DoubleMaMetricContract,
-    DoubleMaRequest, HalfTrendRegimeFilter,
+    DoubleMaRequest, HalfTrendRegimeFilter, OptimizationSearchSemanticsSummary,
 };
 use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
 use crate::progress::ProgressSink;
@@ -410,6 +410,10 @@ pub struct CompositeMoPoint {
 pub struct CompositeMoPrescanTypePairTelemetry {
     pub fast_ma_type: String,
     pub slow_ma_type: String,
+    #[serde(default)]
+    pub window_seed_pairs: usize,
+    #[serde(default)]
+    pub predictive_seed_pairs: usize,
     pub candidate_fast_periods: usize,
     pub candidate_slow_periods: usize,
     pub candidate_pairs: usize,
@@ -427,10 +431,16 @@ pub struct CompositeMoPrescanTelemetry {
     pub require_gpu: bool,
     pub runtime_ms: u64,
     pub requested_scan_pairs: usize,
+    #[serde(default)]
+    pub window_seed_pairs: usize,
+    #[serde(default)]
+    pub predictive_seed_pairs: usize,
     pub candidate_fast_periods: usize,
     pub candidate_slow_periods: usize,
     pub candidate_pairs: usize,
     pub pair_density: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_pair_reduction_factor: Option<f64>,
     pub type_pairs: Vec<CompositeMoPrescanTypePairTelemetry>,
 }
 
@@ -449,8 +459,16 @@ pub struct CompositeMoSearchTelemetry {
     pub rejected_decode_or_order: usize,
     pub rejected_prescan_pair: usize,
     pub rejected_other_constraints: usize,
+    /// Execution-path label only. Pair this with `search_semantics.declared_domain` before making
+    /// any exactness claim about the searched space.
     pub exact_grid_used: bool,
     pub exact_grid_total_combinations: Option<usize>,
+    /// Exact CPU `Trade22` enrichment work applied after search completes.
+    #[serde(default)]
+    pub post_search_trade22_points: usize,
+    /// Wall-clock time spent in the exact CPU `Trade22` enrichment pass.
+    #[serde(default)]
+    pub post_search_trade22_runtime_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -465,6 +483,8 @@ pub struct CompositeMoResult {
     pub pareto: Vec<CompositeMoPoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric_surface_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics: Option<OptimizationSearchSemanticsSummary>,
     pub total_evaluations: usize,
     pub runtime_ms: u64,
     pub telemetry: CompositeMoTelemetry,
@@ -1261,6 +1281,10 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             let mut fast_set: BTreeSet<u16> = BTreeSet::new();
             let mut slow_set: BTreeSet<u16> = BTreeSet::new();
             let mut allowed_pairs_map: AllowedPairsByType = HashMap::new();
+            let mut window_seed_pairs_by_type: HashMap<(String, String), BTreeSet<(u16, u16)>> =
+                HashMap::new();
+            let mut predictive_seed_pairs_by_type: HashMap<(String, String), BTreeSet<(u16, u16)>> =
+                HashMap::new();
 
             let max_pairs = 8usize;
             let mut scan_pairs: Vec<(String, String)> = cfg
@@ -1402,6 +1426,12 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                     for (p, _) in &dm_res.top {
                         pairs.push((p.fast_len, p.slow_len));
                     }
+                    let seed_pairs_entry = window_seed_pairs_by_type
+                        .entry(type_key.clone())
+                        .or_default();
+                    for pair in pairs.iter().copied() {
+                        seed_pairs_entry.insert(pair);
+                    }
 
                     let allowed_entry = allowed_pairs_map.entry(type_key.clone()).or_default();
                     for (f, s) in pairs {
@@ -1439,6 +1469,12 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         period_stride: cfg.predictive_stride,
                     })?;
 
+                    let predictive_seed_entry = predictive_seed_pairs_by_type
+                        .entry(type_key.clone())
+                        .or_default();
+                    for pair in rescue.iter().copied() {
+                        predictive_seed_entry.insert(pair);
+                    }
                     for (f, s) in rescue {
                         let allowed_entry = allowed_pairs_map.entry(type_key.clone()).or_default();
                         let fast_window = period_window_slice(&fast_periods, f, cfg.window);
@@ -1516,6 +1552,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             let mut type_pairs: Vec<CompositeMoPrescanTypePairTelemetry> = Vec::new();
             let mut candidate_pair_total = 0usize;
             let mut possible_pair_total = 0usize;
+            let mut window_seed_pair_total = 0usize;
+            let mut predictive_seed_pair_total = 0usize;
             let mut type_keys: Vec<_> = allowed_pairs_map.keys().cloned().collect();
             type_keys.sort();
             for (fast_ma_type, slow_ma_type) in type_keys {
@@ -1539,17 +1577,41 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 }
                 let possible_pairs =
                     count_valid_period_pairs(&fast_candidates_for_type, &slow_candidates_for_type);
+                let window_seed_pairs = window_seed_pairs_by_type
+                    .get(&(fast_ma_type.clone(), slow_ma_type.clone()))
+                    .map(|pairs| pairs.len())
+                    .unwrap_or(0);
+                let predictive_seed_pairs = predictive_seed_pairs_by_type
+                    .get(&(fast_ma_type.clone(), slow_ma_type.clone()))
+                    .map(|pairs| pairs.len())
+                    .unwrap_or(0);
                 candidate_pair_total = candidate_pair_total.saturating_add(pairs.len());
                 possible_pair_total = possible_pair_total.saturating_add(possible_pairs);
+                window_seed_pair_total = window_seed_pair_total.saturating_add(window_seed_pairs);
+                predictive_seed_pair_total =
+                    predictive_seed_pair_total.saturating_add(predictive_seed_pairs);
                 type_pairs.push(CompositeMoPrescanTypePairTelemetry {
                     fast_ma_type,
                     slow_ma_type,
+                    window_seed_pairs,
+                    predictive_seed_pairs,
                     candidate_fast_periods: fast_candidates_for_type.len(),
                     candidate_slow_periods: slow_candidates_for_type.len(),
                     candidate_pairs: pairs.len(),
                     pair_density: pair_density(pairs.len(), possible_pairs),
                 });
             }
+            let full_fast_periods: BTreeSet<u16> = fast_periods.iter().copied().collect();
+            let full_slow_periods: BTreeSet<u16> = slow_periods.iter().copied().collect();
+            let full_requested_pairs_per_type =
+                count_valid_period_pairs(&full_fast_periods, &full_slow_periods);
+            let requested_pair_total =
+                full_requested_pairs_per_type.saturating_mul(scan_pairs.len());
+            let candidate_pair_reduction_factor = if candidate_pair_total == 0 {
+                None
+            } else {
+                Some(requested_pair_total as f64 / candidate_pair_total as f64)
+            };
 
             prescan_telemetry = Some(CompositeMoPrescanTelemetry {
                 requested_device_id: cfg.device_id,
@@ -1561,10 +1623,13 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 require_gpu: cfg.require_gpu,
                 runtime_ms: prescan_started.elapsed().as_millis() as u64,
                 requested_scan_pairs: scan_pairs.len(),
+                window_seed_pairs: window_seed_pair_total,
+                predictive_seed_pairs: predictive_seed_pair_total,
                 candidate_fast_periods: fast_periods.len(),
                 candidate_slow_periods: slow_periods.len(),
                 candidate_pairs: candidate_pair_total,
                 pair_density: pair_density(candidate_pair_total, possible_pair_total),
+                candidate_pair_reduction_factor,
                 type_pairs,
             });
             allowed_pairs_by_type = Some(allowed_pairs_map);
@@ -2824,6 +2889,50 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         },
     }
 
+    let build_search_semantics =
+        |plan: Option<&ExactGridPlan>| -> OptimizationSearchSemanticsSummary {
+            let base_ranker = Some("constrained_pareto_maximize_both".to_string());
+            let rerank_operator = Some("trade22_exactify_pareto_members_only".to_string());
+            let heatmap_semantics = Some("sampled_bin_summary_only".to_string());
+            match plan {
+                Some(ExactGridPlan::FullSpace { .. }) => OptimizationSearchSemanticsSummary {
+                    approx_mode: "exact_declared_repaired_domain".to_string(),
+                    workload_family: "composite_mo_exact_grid_full_space".to_string(),
+                    contract_summary: "Exact on the repaired unique full request domain under the constrained Pareto base ranker. `exact_grid_used` is an execution label, not proof about the unrepaired request space; any heatmap remains a sampled-bin summary only.".to_string(),
+                    declared_domain: Some("full_repaired_request_domain".to_string()),
+                    base_ranker,
+                    rerank_operator,
+                    heatmap_semantics,
+                },
+                Some(ExactGridPlan::ExplicitCandidates { .. }) => OptimizationSearchSemanticsSummary {
+                    approx_mode: "exact_declared_repaired_domain".to_string(),
+                    workload_family: "composite_mo_exact_grid_explicit_candidates".to_string(),
+                    contract_summary: "Exact on the repaired unique explicit-candidate domain under the constrained Pareto base ranker. `exact_grid_used` does not prove full original-domain exactness; any heatmap remains a sampled-bin summary only.".to_string(),
+                    declared_domain: Some("explicit_repaired_candidate_domain".to_string()),
+                    base_ranker,
+                    rerank_operator,
+                    heatmap_semantics,
+                },
+                None => {
+                    let workload_family = match &req.sampler {
+                        CompositeMoSampler::Nsga2 { .. } => "composite_mo_nsga2",
+                        CompositeMoSampler::Random { .. } => "composite_mo_random",
+                        CompositeMoSampler::Tpe { .. } => "composite_mo_tpe",
+                        CompositeMoSampler::Qmc { .. } => "composite_mo_qmc",
+                    };
+                    OptimizationSearchSemanticsSummary {
+                        approx_mode: "heuristic_sampled_repaired_domain".to_string(),
+                        workload_family: workload_family.to_string(),
+                        contract_summary: "Heuristic sampler over the repaired domain. Surfaced Pareto members depend on sampler coverage and do not certify full-domain exactness; any heatmap remains a sampled-bin summary only.".to_string(),
+                        declared_domain: Some("sampler_visited_repaired_candidates".to_string()),
+                        base_ranker,
+                        rerank_operator,
+                        heatmap_semantics,
+                    }
+                }
+            }
+        };
+
     let max_exact_grid_combos = EXACT_GRID_MAX_COMBOS.min(requested_eval_budget.max(1));
     let prescan_exact_grid_plan = if let Some(pairs_by_type) =
         allowed_pairs_by_type.as_ref().map(|pairs| &**pairs)
@@ -2970,7 +3079,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             out
         };
 
-    let (pareto_points, search_stats, sampler_label) = if let Some(plan) = exact_grid_plan {
+    let (pareto_points, search_stats, sampler_label) = if let Some(ref plan) = exact_grid_plan {
         let res = match plan {
             ExactGridPlan::FullSpace { .. } => ta_optimizer::mo::exact_grid_mo_search_with_stats(
                 &req.search_space,
@@ -2982,7 +3091,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             )?,
             ExactGridPlan::ExplicitCandidates { candidates, .. } => {
                 ta_optimizer::mo::candidate_set_mo_search_with_stats(
-                    candidates,
+                    candidates.clone(),
                     256,
                     repair,
                     eval_with_progress,
@@ -3059,6 +3168,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         })
         .collect::<Vec<_>>();
 
+    let trade22_started = std::time::Instant::now();
     for point in pareto.iter_mut() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
@@ -3071,6 +3181,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
     let runtime_ms = start.elapsed().as_millis() as u64;
     let actual_evaluations = done_counter.load(Ordering::Relaxed);
+    let search_semantics = Some(build_search_semantics(exact_grid_plan.as_ref()));
     let telemetry = CompositeMoTelemetry {
         prescan: prescan_telemetry.clone(),
         search: CompositeMoSearchTelemetry {
@@ -3089,6 +3200,8 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             rejected_other_constraints: rejected_other_constraints.load(Ordering::Relaxed),
             exact_grid_used: search_stats.exact_grid_used,
             exact_grid_total_combinations,
+            post_search_trade22_points: pareto.len(),
+            post_search_trade22_runtime_ms: trade22_started.elapsed().as_millis() as u64,
         },
     };
     let shadow_sampled = if dynamic_shadow_enabled {
@@ -3126,6 +3239,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
         data_id: req.data_id,
         pareto,
         metric_surface_kind: Some("trade22".to_string()),
+        search_semantics,
         total_evaluations: actual_evaluations,
         runtime_ms,
         telemetry,
@@ -3304,6 +3418,31 @@ mod tests {
         assert_eq!(res.telemetry.search.actual_evaluations, 9);
         assert!(res.telemetry.search.exact_grid_used);
         assert_eq!(res.telemetry.search.exact_grid_total_combinations, Some(9));
+        let search_semantics = res.search_semantics.as_ref().expect("search semantics");
+        assert_eq!(
+            search_semantics.approx_mode,
+            "exact_declared_repaired_domain"
+        );
+        assert_eq!(
+            search_semantics.workload_family,
+            "composite_mo_exact_grid_full_space"
+        );
+        assert_eq!(
+            search_semantics.declared_domain.as_deref(),
+            Some("full_repaired_request_domain")
+        );
+        assert_eq!(
+            search_semantics.base_ranker.as_deref(),
+            Some("constrained_pareto_maximize_both")
+        );
+        assert_eq!(
+            search_semantics.rerank_operator.as_deref(),
+            Some("trade22_exactify_pareto_members_only")
+        );
+        assert_eq!(
+            search_semantics.heatmap_semantics.as_deref(),
+            Some("sampled_bin_summary_only")
+        );
         assert!(res
             .pareto
             .iter()
@@ -3388,6 +3527,11 @@ mod tests {
         assert!(point.metrics.underwater_fraction.is_finite());
         assert!(point.metrics.gross_profit >= 0.0);
         assert!(point.metrics.gross_loss >= 0.0);
+        assert_eq!(
+            res.telemetry.search.post_search_trade22_points,
+            res.pareto.len()
+        );
+        assert!(res.telemetry.search.post_search_trade22_runtime_ms <= res.runtime_ms);
         assert_eq!(point.metrics.closed_trades, expected.closed_trades);
         assert_eq!(point.metrics.winning_trades, expected.winning_trades);
         assert_eq!(point.metrics.losing_trades, expected.losing_trades);
@@ -4144,8 +4288,11 @@ mod tests {
         let prescan = res.telemetry.prescan.expect("prescan telemetry");
         assert_eq!(prescan.requested_device_id, Some(7));
         assert_eq!(prescan.resolved_device_id, Some(7));
+        assert!(prescan.window_seed_pairs >= 2);
+        assert_eq!(prescan.predictive_seed_pairs, 0);
         assert!(prescan.candidate_pairs > 0);
         assert!(prescan.pair_density > 0.0);
+        assert!(prescan.candidate_pair_reduction_factor.unwrap_or(0.0) >= 1.0);
     }
 
     #[test]
@@ -4220,6 +4367,22 @@ mod tests {
             res.total_evaluations
         );
         assert!(res.telemetry.search.exact_grid_used);
+        let search_semantics = res.search_semantics.as_ref().expect("search semantics");
+        assert_eq!(
+            search_semantics.approx_mode,
+            "exact_declared_repaired_domain"
+        );
+        assert_eq!(
+            search_semantics.workload_family,
+            "composite_mo_exact_grid_explicit_candidates"
+        );
+        assert_eq!(
+            search_semantics.declared_domain.as_deref(),
+            Some("explicit_repaired_candidate_domain")
+        );
+        assert!(search_semantics
+            .contract_summary
+            .contains("does not prove full original-domain exactness"));
         assert_eq!(
             res.telemetry.search.exact_grid_total_combinations,
             Some(res.total_evaluations)
@@ -4227,8 +4390,11 @@ mod tests {
         let prescan = res.telemetry.prescan.expect("prescan telemetry");
         assert_eq!(prescan.requested_device_id, Some(5));
         assert_eq!(prescan.resolved_device_id, Some(5));
+        assert!(prescan.window_seed_pairs >= 1);
+        assert_eq!(prescan.predictive_seed_pairs, 0);
         assert_eq!(prescan.candidate_pairs, res.total_evaluations);
         assert!(prescan.pair_density > 0.0);
+        assert!(prescan.candidate_pair_reduction_factor.unwrap_or(0.0) >= 1.0);
     }
 
     #[test]
@@ -4308,6 +4474,9 @@ mod tests {
         assert!(!res.pareto.is_empty());
         let prescan = res.telemetry.prescan.expect("prescan telemetry");
         assert_eq!(prescan.type_pairs.len(), 2);
+        assert!(prescan.window_seed_pairs >= 2);
+        assert!(prescan.predictive_seed_pairs > 0);
+        assert!(prescan.candidate_pair_reduction_factor.unwrap_or(0.0) >= 1.0);
         assert!(prescan
             .type_pairs
             .iter()
@@ -4316,6 +4485,14 @@ mod tests {
             .type_pairs
             .iter()
             .any(|row| row.fast_ma_type == "ema"));
+        assert!(prescan
+            .type_pairs
+            .iter()
+            .all(|row| row.window_seed_pairs >= 1));
+        assert!(prescan
+            .type_pairs
+            .iter()
+            .any(|row| row.predictive_seed_pairs > 0));
     }
 
     #[test]
@@ -4442,6 +4619,75 @@ mod tests {
         assert_eq!(res.total_evaluations, 1);
         assert_eq!(res.telemetry.search.requested_evaluations, 8);
         assert_eq!(res.telemetry.search.actual_evaluations, 1);
+    }
+
+    #[test]
+    fn composite_mo_heuristic_sampler_labels_sampled_domain_semantics() {
+        let candles = make_trending_candles(512);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 120,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 10,
+                            high: 160,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Sharpe,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig {
+                    seed: 11,
+                    trials: 8,
+                },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode: None,
+        };
+
+        let res = run_composite_mo_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("heuristic composite mo run");
+
+        assert!(!res.telemetry.search.exact_grid_used);
+        let search_semantics = res.search_semantics.as_ref().expect("search semantics");
+        assert_eq!(
+            search_semantics.approx_mode,
+            "heuristic_sampled_repaired_domain"
+        );
+        assert_eq!(search_semantics.workload_family, "composite_mo_random");
+        assert_eq!(
+            search_semantics.declared_domain.as_deref(),
+            Some("sampler_visited_repaired_candidates")
+        );
+        assert!(search_semantics
+            .contract_summary
+            .contains("do not certify full-domain exactness"));
     }
 
     #[test]

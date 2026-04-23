@@ -6,10 +6,10 @@ use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 
 use ta_app_core::{
-    read_candles_from_csv_compat, Backend, CrossTickerConfig, CrossTickerDataset, CscvPboConfig,
-    DoubleMaRequest, DoubleMaValidationParams, DoubleMaValidationRequest, PerturbConfig,
-    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional, TradeBootstrapConfig,
-    ValidationArtifactContext, WalkForwardConfigOptional,
+    read_candles_from_csv_compat, Backend, CrossTickerConfig, CrossTickerDataset,
+    CrossTickerGateConfig, CscvPboConfig, DoubleMaRequest, DoubleMaValidationParams,
+    DoubleMaValidationRequest, PerturbConfig, ReoptWalkForwardConfigOptional, SpaBenchmarkKind,
+    SpaConfigOptional, TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
 };
 use ta_desktop_demo_app::commands::{
     apply_cross_ticker_validation_double_ma_headless, build_report_xlsx_bytes_headless,
@@ -235,6 +235,9 @@ struct Cli {
     #[arg(long, default_value_t = 8)]
     cross_max_datasets: usize,
 
+    #[arg(long, default_value_t = false)]
+    cross_gate_disabled: bool,
+
     #[arg(long, default_value_t = 0.85)]
     alma_offset: f64,
 
@@ -274,6 +277,14 @@ fn to_cross_mode(arg: CrossModeArg) -> ta_app_core::CrossTickerMode {
         CrossModeArg::Lightweight => ta_app_core::CrossTickerMode::Lightweight,
         CrossModeArg::PreservedFinalists => ta_app_core::CrossTickerMode::PreservedFinalists,
     }
+}
+
+fn build_cross_ticker_gate(cli: &Cli) -> CrossTickerGateConfig {
+    let mut gate = CrossTickerGateConfig::default();
+    if cli.cross_gate_disabled {
+        gate.enabled = false;
+    }
+    gate
 }
 
 fn alma_params_if_needed(ma: &str, offset: f64, sigma: f64) -> Option<HashMap<String, f64>> {
@@ -364,7 +375,7 @@ fn main() -> Result<(), String> {
     }
 
     let backend = to_backend(cli.backend.clone());
-    let objective = to_objective(cli.objective);
+    let objective = to_objective(cli.objective.clone());
 
     let fast_ma_params = alma_params_if_needed(&cli.fast_ma, cli.alma_offset, cli.alma_sigma);
     let slow_ma_params = alma_params_if_needed(&cli.slow_ma, cli.alma_offset, cli.alma_sigma);
@@ -588,7 +599,7 @@ fn main() -> Result<(), String> {
             datasets,
             max_datasets: cli.cross_max_datasets,
             mode: to_cross_mode(cli.cross_mode.clone()),
-            gate: ta_app_core::CrossTickerGateConfig::default(),
+            gate: build_cross_ticker_gate(&cli),
         };
         println!(
             "Applying cross-ticker validation on {} dataset(s)...",
@@ -683,7 +694,8 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_default_xlsx_path, report_ts_path_fragment};
+    use super::{build_cross_ticker_gate, make_default_xlsx_path, report_ts_path_fragment, Cli};
+    use clap::Parser;
     use std::path::Path;
 
     #[test]
@@ -703,5 +715,17 @@ mod tests {
                 .join("headless_reports")
                 .join("AAPL_report_20260318_160405.xlsx")
         );
+    }
+
+    #[test]
+    fn cross_gate_disabled_flag_turns_off_headless_cross_gate() {
+        let cli = Cli::parse_from([
+            "ta_headless_validate",
+            "--csv",
+            "data/AAPL.csv",
+            "--cross-gate-disabled",
+        ]);
+        let gate = build_cross_ticker_gate(&cli);
+        assert!(!gate.enabled);
     }
 }

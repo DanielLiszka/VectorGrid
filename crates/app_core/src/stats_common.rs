@@ -67,6 +67,50 @@ pub fn median_in_place(values: &mut [f64]) -> f64 {
     quantile_in_place(values, 0.5)
 }
 
+/// Returns the mean of the lower `q` tail from an unsorted slice in place.
+pub fn lower_tail_mean_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let idx = quantile_index(values.len(), q).min(values.len() - 1);
+    let (_, _, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for value in values.iter().take(idx.saturating_add(1)) {
+        if value.is_finite() {
+            sum += *value;
+            count = count.saturating_add(1);
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f64
+    }
+}
+
+/// Returns the mean of the upper `q` tail from an unsorted slice in place.
+pub fn upper_tail_mean_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let idx = quantile_index(values.len(), q).min(values.len() - 1);
+    let (_, _, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for value in values.iter().skip(idx) {
+        if value.is_finite() {
+            sum += *value;
+            count = count.saturating_add(1);
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f64
+    }
+}
+
 /// Returns the minimum finite value, or `0.0` when the selected extreme is not finite.
 pub fn worst_min(xs: &[f64]) -> f64 {
     let v = xs
@@ -121,6 +165,11 @@ pub fn worst_min_u32(xs: &[u32]) -> u32 {
     xs.iter().copied().min().unwrap_or(0)
 }
 
+/// Returns the maximum value from a `u32` slice, or `0` for empty input.
+pub fn worst_max_u32(xs: &[u32]) -> u32 {
+    xs.iter().copied().max().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +220,15 @@ mod tests {
     }
 
     #[test]
+    fn tail_mean_helpers_match_expected_lower_and_upper_means() {
+        let mut lower = [4.0, 1.0, 3.0, 2.0, 5.0];
+        assert!((lower_tail_mean_in_place(&mut lower, 0.25) - 1.5).abs() <= 1.0e-12);
+
+        let mut upper = [4.0, 1.0, 3.0, 2.0, 5.0];
+        assert!((upper_tail_mean_in_place(&mut upper, 0.75) - 4.5).abs() <= 1.0e-12);
+    }
+
+    #[test]
     fn median_u32_even_length_uses_upper_middle_policy() {
         assert_eq!(median_u32(&[8, 2, 6, 4]), 6);
     }
@@ -179,6 +237,12 @@ mod tests {
     fn median_u32_in_place_matches_sorted_policy() {
         let mut values = [8, 2, 6, 4];
         assert_eq!(median_u32_in_place(&mut values), median_u32(&[8, 2, 6, 4]));
+    }
+
+    #[test]
+    fn worst_max_u32_returns_maximum_or_zero() {
+        assert_eq!(worst_max_u32(&[8, 2, 6, 4]), 8);
+        assert_eq!(worst_max_u32(&[]), 0);
     }
 
     #[test]

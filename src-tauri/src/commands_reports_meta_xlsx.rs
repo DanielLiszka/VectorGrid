@@ -195,9 +195,15 @@ pub(crate) fn build_meta_report_xlsx_bytes(
             summary
                 .write_number_with_format(r, 9, row.max_dd_p90, &num6_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
-            summary
-                .write_number_with_format(r, 10, row.cross_score_median, &num6_fmt)
-                .map_err(|e: XlsxError| e.to_string())?;
+            if let Some(cross_score_median) = row.cross_score_median {
+                summary
+                    .write_number_with_format(r, 10, cross_score_median, &num6_fmt)
+                    .map_err(|e: XlsxError| e.to_string())?;
+            } else {
+                summary
+                    .write_string(r, 10, "")
+                    .map_err(|e: XlsxError| e.to_string())?;
+            }
             summary
                 .write_number_with_format(r, 11, row.psr_median, &num6_fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
@@ -850,6 +856,7 @@ mod tests {
             slow_ma_params: None,
             representatives: vec![sample_params()],
             samples: 3,
+            effective_samples_lower_bound: 3,
             datasets_covered: 3,
             pass_rate: 1.0,
             robust_score_median: 0.42,
@@ -857,7 +864,7 @@ mod tests {
             evidence_flags: Vec::new(),
             tail_gap: 0.21,
             max_dd_p90: 0.18,
-            cross_score_median: 0.17,
+            cross_score_median: Some(0.17),
             psr_median: 0.63,
             dsr_median: 0.51,
             meta_score: 0.33,

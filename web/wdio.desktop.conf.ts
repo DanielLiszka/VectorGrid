@@ -4,7 +4,13 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import process from 'node:process'
-import { desktopAppBinaryPath, ensureDir, webRoot } from './e2e/desktop/support/appPaths.js'
+import {
+  desktopAppBinaryPath,
+  desktopSmokeAppUrl,
+  desktopSmokeDisablePreview,
+  ensureDir,
+  webRoot,
+} from './e2e/desktop/support/appPaths.js'
 import {
   appendLogLine,
   createDesktopArtifactContext,
@@ -65,6 +71,16 @@ function closePreviewServer(): void {
   if (!previewServerProcess) return
   previewServerProcess.kill()
   previewServerProcess = null
+}
+
+function appendEnvironmentSummary(prereqSummary: string): void {
+  const extraLines = [
+    `desktopBinary: ${desktopAppBinaryPath}`,
+    `skipBuild: ${process.env.VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD === '1'}`,
+    `disablePreview: ${desktopSmokeDisablePreview}`,
+    `appUrl: ${desktopSmokeAppUrl}`,
+  ]
+  writeTextFile(artifactContext.envSummaryPath, `${prereqSummary}\n${extraLines.join('\n')}\n`)
 }
 
 function registerShutdown(): void {
@@ -355,7 +371,7 @@ export const config: WebdriverIO.Config = {
     const prereqs = verifyDesktopSmokePrereqs()
     tauriDriverPath = prereqs.tauriDriverPath
     edgeDriverPath = prereqs.edgeDriverPath
-    writeTextFile(artifactContext.envSummaryPath, prereqs.summary)
+    appendEnvironmentSummary(prereqs.summary)
     if (process.env.VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD !== '1') {
       buildDesktopSmokeApp()
     } else {
@@ -364,7 +380,14 @@ export const config: WebdriverIO.Config = {
     if (!fs.existsSync(desktopAppBinaryPath)) {
       throw new Error(`Expected desktop app binary at ${desktopAppBinaryPath} after build.`)
     }
-    await startPreviewServer()
+    if (!desktopSmokeDisablePreview) {
+      await startPreviewServer()
+    } else {
+      appendLogLine(
+        artifactContext.driverLogPath,
+        'Skipping preview bootstrap because VECTORGRID_DESKTOP_SMOKE_DISABLE_PREVIEW=1.',
+      )
+    }
     await startTauriDriver()
   },
   afterTest: async function (test, _context, result) {

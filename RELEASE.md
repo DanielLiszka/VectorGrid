@@ -37,22 +37,22 @@ cargo run -p ta_desktop_demo_app --release --features cuda-backtest-kernel
 
 ## Installer / Bundle Build
 
-From `ta_desktop_demo/`:
+From `ta_desktop_demo/`, run the bundler commands from `src-tauri/`:
 
 ```powershell
-cd ta_desktop_demo
+cd ta_desktop_demo\src-tauri
 cargo tauri build
 ```
 
 GPU variants:
 
 ```powershell
-cd ta_desktop_demo
+cd ta_desktop_demo\src-tauri
 cargo tauri build --features cuda
 ```
 
 ```powershell
-cd ta_desktop_demo
+cd ta_desktop_demo\src-tauri
 $env:VECTORBT_USE_PREBUILT_PTX="1"
 cargo tauri build --features cuda-backtest-kernel
 ```
@@ -91,11 +91,59 @@ Those environment variable names are legacy internal names kept for compatibilit
 Before publishing a public release or prerelease:
 
 1. confirm which variant(s) are being published and name them explicitly
-2. run the repo quality lane and the relevant build verification for those variants
+2. run the local release doctor and release-candidate gate for those variants
 3. confirm `web/dist` handoff, command parity, and Tauri config sync are still green
 4. confirm release assets use the normalized naming convention below
 5. draft release notes using the minimum section set below
 6. keep benchmark evidence linked as supporting material rather than as the release note body
+
+### Local release-doctor command
+
+Use the release doctor first when you want a fast machine/repo readiness answer before a full release rehearsal:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_doctor.ps1 -Variant cpu
+```
+
+GPU kernel readiness with packaged smoke prerequisites required:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_doctor.ps1 -Variant gpu-kernel -RequirePackagedSmoke
+```
+
+The doctor writes `readiness.json` under `output/release_candidates/<stamp>-<variant>/`.
+
+### Local release-candidate gate
+
+The authoritative local release rehearsal is now:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant cpu
+```
+
+Recommended higher-confidence rehearsal for a public-facing candidate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 `
+  -Variant gpu-kernel `
+  -IncludePerf `
+  -IncludeDesktopSmoke `
+  -IncludeLiveSafetyHarness
+```
+
+What the gate does:
+
+1. release doctor
+2. release provenance capture
+3. repo quality gate
+4. frontend/backend parity checks
+5. workflow regression gate
+6. optional perf gates
+7. variant-aware `cargo tauri build` from `src-tauri/`
+8. release manifest + SHA-256 generation
+9. optional packaged desktop smoke
+
+All retained local evidence is written under `output/release_candidates/`.
 
 ### Release asset naming
 
@@ -132,6 +180,27 @@ Benchmark or faceoff evidence may be linked, but should stay subordinate to oper
   - the published asset does not match the documented variant
 - Use `scripts/post_release_telemetry_review.mjs` as supplemental follow-up evidence, not as the sole release gate.
 - Keep retained local benchmark/profiling evidence under `output/`; do not rely on `target/` for anything you want to survive routine build-cache cleanup.
+
+### Release manifest and provenance outputs
+
+The local release flow now emits:
+
+- `provenance.json`
+- `provenance.txt`
+- `manifest.json`
+- `SHA256SUMS.txt`
+- `summary.json`
+- `summary.md`
+
+These live under the selected `output/release_candidates/<stamp>-<variant>/` directory and are intended to answer:
+
+- what machine/toolchain built the candidate
+- which variant was built
+- which public-facing bundle artifacts were staged
+- what their SHA-256 hashes are
+- whether packaged smoke and optional live-safety checks were run
+
+If no `target/release/bundle/` artifact is emitted on the current machine, manifest generation falls back to the built release executable and records `artifact_source_kind: "release_binary"` so the resulting evidence still tells you exactly what was staged and smoked.
 
 ## Vue + Vite Migration Notes (2026-02-26)
 

@@ -364,15 +364,33 @@ describe("mlSignalService", () => {
       if (command === "run_ml_signal_validation") {
         return {
           runtime_ms: 42,
-          candidates: [{ params: {}, robust_score: 1.2 }],
+          candidates: [
+            {
+              params: {},
+              robust_score: 1.2,
+              boundary_diagnostics: {
+                near_long_threshold_frac: 0.25,
+                near_delta_boundary_frac: 0.125,
+              },
+            },
+          ],
           score_space: "Probability",
           score_scope: "CalibrationSlice",
           coverage_ratio: 0.75,
           duplicate_timestamps: 2,
+          dependence_summary: {
+            raw_score_observations: 75,
+            effective_score_observations_lower_bound: 48,
+            raw_walkforward_test_windows: 5,
+            effective_walkforward_test_windows_upper_bound: 2,
+          },
           run_verdict: {
             approved_candidate_count: 1,
             candidates_survived_hard_gates: 1,
-            warning_flags: ["score_scope_calibration_slice"],
+            warning_flags: [
+              "score_scope_calibration_slice",
+              "score_scope_walkforward_overlap_adjusted",
+            ],
           },
         };
       }
@@ -514,8 +532,20 @@ describe("mlSignalService", () => {
     expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
       "calibration-only score scope",
     );
+    expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
+      "walk-forward overlap adjusted (obs 48/75, windows 2/5)",
+    );
+    expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
+      "boundary long~25.0%, delta~12.5%",
+    );
     expect(useOptimizeStore(pinia).statusLine).toContain(
       "calibration-only score scope",
+    );
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "walk-forward overlap adjusted (obs 48/75, windows 2/5)",
+    );
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "boundary long~25.0%, delta~12.5%",
     );
   });
 
@@ -639,12 +669,26 @@ describe("mlSignalService", () => {
           top_k: 4,
           validation: {
             runtime_ms: 24,
+            dependence_summary: {
+              raw_score_observations: 120,
+              effective_score_observations_lower_bound: 60,
+              raw_walkforward_test_windows: 6,
+              effective_walkforward_test_windows_upper_bound: 3,
+            },
             run_verdict: {
-              warning_flags: ["score_scope_custom_partial"],
+              warning_flags: [
+                "score_scope_custom_partial",
+                "score_scope_walkforward_overlap_adjusted",
+              ],
             },
             candidates: [
               {
                 robust_score: 1.44,
+                boundary_diagnostics: {
+                  near_long_threshold_frac: 0.2,
+                  near_short_threshold_frac: 0.1,
+                  near_delta_boundary_frac: 0.05,
+                },
                 params: {
                   label: "best_sweep",
                   t_long: 0.6,
@@ -740,7 +784,19 @@ describe("mlSignalService", () => {
     expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
       "partial score scope",
     );
+    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
+      "walk-forward overlap adjusted (obs 60/120, windows 3/6)",
+    );
+    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
+      "boundary long~20.0%, short~10.0%, delta~5.0%",
+    );
     expect(useOptimizeStore(pinia).statusLine).toContain("partial score scope");
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "walk-forward overlap adjusted (obs 60/120, windows 3/6)",
+    );
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "boundary long~20.0%, short~10.0%, delta~5.0%",
+    );
     expect(workflowArtifacts.currentRun?.mlSignal?.policy).toMatchObject({
       label: "best_sweep",
       t_long: 0.6,
@@ -1008,7 +1064,13 @@ describe("mlSignalService", () => {
         }),
       },
     );
-    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain("9 candidates");
+    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
+      "9 candidates evaluated",
+    );
+    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain("retained top_k");
+    expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
+      "retained from 9 full-sweep candidates",
+    );
   });
 
   it("opens ML artifact paths with open-path fallback to reveal-path", async () => {

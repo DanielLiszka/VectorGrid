@@ -109,7 +109,90 @@ pub enum OptionsPriceSemantics {
     DerivedMidSnapshot,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExactnessClass {
+    QuoteClass,
+    #[default]
+    AggregateClass,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsMedianReplayContract {
+    #[default]
+    RankingIrrelevantDeferred,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsRetainedFrontierCertification {
+    CertifiedExact,
+    ProvisionalMixedPrecision,
+    #[default]
+    ProvisionalMissingExtremeLane,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExactPruningContract {
+    ExactCertified,
+    RequiresIntervalCertificate,
+    #[default]
+    RequiresExactExtremeLaneAndIntervalCertificate,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub struct OptionsExpressionExactnessSemantics {
+    pub exactness_class: OptionsExactnessClass,
+    pub median_replay_contract: OptionsMedianReplayContract,
+    pub retained_frontier_certification: OptionsRetainedFrontierCertification,
+    pub exact_pruning_contract: OptionsExactPruningContract,
+}
+
 impl OptionsPriceSemantics {
+    pub fn exactness_class(self) -> OptionsExactnessClass {
+        match self {
+            OptionsPriceSemantics::TopOfBookQuote => OptionsExactnessClass::QuoteClass,
+            OptionsPriceSemantics::MinuteAggregate | OptionsPriceSemantics::DerivedMidSnapshot => {
+                OptionsExactnessClass::AggregateClass
+            }
+        }
+    }
+
+    pub fn exactness_semantics_for_backend(
+        self,
+        backend_used: &str,
+    ) -> OptionsExpressionExactnessSemantics {
+        match self.exactness_class() {
+            OptionsExactnessClass::QuoteClass => {
+                let cpu_exact = backend_used.trim().eq_ignore_ascii_case("cpu_reference");
+                OptionsExpressionExactnessSemantics {
+                    exactness_class: OptionsExactnessClass::QuoteClass,
+                    median_replay_contract: OptionsMedianReplayContract::RankingIrrelevantDeferred,
+                    retained_frontier_certification: if cpu_exact {
+                        OptionsRetainedFrontierCertification::CertifiedExact
+                    } else {
+                        OptionsRetainedFrontierCertification::ProvisionalMixedPrecision
+                    },
+                    exact_pruning_contract: if cpu_exact {
+                        OptionsExactPruningContract::ExactCertified
+                    } else {
+                        OptionsExactPruningContract::RequiresIntervalCertificate
+                    },
+                }
+            }
+            OptionsExactnessClass::AggregateClass => OptionsExpressionExactnessSemantics {
+                exactness_class: OptionsExactnessClass::AggregateClass,
+                median_replay_contract: OptionsMedianReplayContract::RankingIrrelevantDeferred,
+                retained_frontier_certification:
+                    OptionsRetainedFrontierCertification::ProvisionalMissingExtremeLane,
+                exact_pruning_contract:
+                    OptionsExactPruningContract::RequiresExactExtremeLaneAndIntervalCertificate,
+            },
+        }
+    }
+
     pub fn supports_fill_model(self, fill_model: OptionsFillModelFamily) -> bool {
         match (self, fill_model) {
             (OptionsPriceSemantics::MinuteAggregate, OptionsFillModelFamily::AggregateResearch) => {
@@ -302,6 +385,10 @@ pub struct OptionsStaticFilterBundle {
     pub min_volume: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_open_interest: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_quote_age_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_spread_bps: Option<f64>,
 }
 
 impl Default for OptionsStaticFilterBundle {
@@ -312,6 +399,8 @@ impl Default for OptionsStaticFilterBundle {
             min_premium: None,
             min_volume: None,
             min_open_interest: None,
+            max_quote_age_ms: None,
+            max_spread_bps: None,
         }
     }
 }
@@ -774,6 +863,16 @@ pub struct OptionsExpressionStagingStats {
     pub baseline_exit_summary_count: usize,
     pub conservative_exit_summary_count: usize,
     pub harsher_exit_summary_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exactify_buffered_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exactify_final_top_k: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exactify_rescued_from_buffer_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisional_final_robust_score_drift_mean_abs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisional_final_robust_score_drift_max_abs: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -1011,6 +1110,8 @@ pub struct OptionsExpressionAutoBackendDecision {
 pub struct OptionsExpressionFeasibilityReport {
     pub diagnostics: OptionsExpressionDiagnostics,
     pub price_semantics: OptionsPriceSemantics,
+    #[serde(default)]
+    pub exactness_semantics: OptionsExpressionExactnessSemantics,
     pub fill_model: OptionsFillModelFamily,
     pub best_available_backend: String,
     #[serde(default)]
@@ -1112,6 +1213,8 @@ pub struct OptionsExpressionRunResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
     pub price_semantics: OptionsPriceSemantics,
+    #[serde(default)]
+    pub exactness_semantics: OptionsExpressionExactnessSemantics,
     pub tuple_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging: Option<OptionsExpressionStagingStats>,
@@ -1159,6 +1262,8 @@ pub struct OptionsExpressionArtifactV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
     pub price_semantics: OptionsPriceSemantics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exactness_semantics: Option<OptionsExpressionExactnessSemantics>,
     pub request: OptionsExpressionRunRequest,
     pub diagnostics: OptionsExpressionDiagnostics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1268,6 +1373,8 @@ mod tests {
         assert_eq!(req.filters.min_premium, None);
         assert_eq!(req.filters.min_volume, None);
         assert_eq!(req.filters.min_open_interest, None);
+        assert_eq!(req.filters.max_quote_age_ms, None);
+        assert_eq!(req.filters.max_spread_bps, None);
     }
 
     #[test]
@@ -1282,6 +1389,8 @@ mod tests {
         assert_eq!(req.filters.min_premium, None);
         assert_eq!(req.filters.min_volume, None);
         assert_eq!(req.filters.min_open_interest, None);
+        assert_eq!(req.filters.max_quote_age_ms, None);
+        assert_eq!(req.filters.max_spread_bps, None);
     }
 
     #[test]
@@ -1540,6 +1649,12 @@ mod tests {
 
         assert_eq!(run_result.tuple_count, 7);
         assert_eq!(run_result.ranked_results.len(), 1);
+        assert_eq!(
+            run_result
+                .exactness_semantics
+                .retained_frontier_certification,
+            OptionsRetainedFrontierCertification::ProvisionalMissingExtremeLane
+        );
     }
 
     #[test]
@@ -1599,6 +1714,63 @@ mod tests {
         assert_eq!(
             OptionsPriceSemantics::TopOfBookQuote.recommended_fill_model(),
             OptionsFillModelFamily::QuoteConservative
+        );
+    }
+
+    #[test]
+    fn price_semantics_exactness_contracts_match_current_runtime_matrix() {
+        assert_eq!(
+            OptionsPriceSemantics::TopOfBookQuote.exactness_class(),
+            OptionsExactnessClass::QuoteClass
+        );
+        assert_eq!(
+            OptionsPriceSemantics::MinuteAggregate.exactness_class(),
+            OptionsExactnessClass::AggregateClass
+        );
+        assert_eq!(
+            OptionsPriceSemantics::DerivedMidSnapshot.exactness_class(),
+            OptionsExactnessClass::AggregateClass
+        );
+
+        let quote_cpu =
+            OptionsPriceSemantics::TopOfBookQuote.exactness_semantics_for_backend("cpu_reference");
+        assert_eq!(
+            quote_cpu.retained_frontier_certification,
+            OptionsRetainedFrontierCertification::CertifiedExact
+        );
+        assert_eq!(
+            quote_cpu.exact_pruning_contract,
+            OptionsExactPruningContract::ExactCertified
+        );
+
+        let quote_gpu = OptionsPriceSemantics::TopOfBookQuote
+            .exactness_semantics_for_backend("gpu_compiled_tensor");
+        assert_eq!(
+            quote_gpu.retained_frontier_certification,
+            OptionsRetainedFrontierCertification::ProvisionalMixedPrecision
+        );
+        assert_eq!(
+            quote_gpu.exact_pruning_contract,
+            OptionsExactPruningContract::RequiresIntervalCertificate
+        );
+        assert_eq!(
+            quote_gpu.median_replay_contract,
+            OptionsMedianReplayContract::RankingIrrelevantDeferred
+        );
+
+        let aggregate_cpu =
+            OptionsPriceSemantics::MinuteAggregate.exactness_semantics_for_backend("cpu_reference");
+        assert_eq!(
+            aggregate_cpu.retained_frontier_certification,
+            OptionsRetainedFrontierCertification::ProvisionalMissingExtremeLane
+        );
+        assert_eq!(
+            aggregate_cpu.exact_pruning_contract,
+            OptionsExactPruningContract::RequiresExactExtremeLaneAndIntervalCertificate
+        );
+        assert_eq!(
+            aggregate_cpu.median_replay_contract,
+            OptionsMedianReplayContract::RankingIrrelevantDeferred
         );
     }
 }

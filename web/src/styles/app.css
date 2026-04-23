@@ -1750,17 +1750,26 @@ canvas.chart {
 
 .heatmapCanvasStack {
   position: relative;
+  inline-size: min(100%, 512px);
+  aspect-ratio: 1 / 1;
+  margin-inline: auto;
 }
 
 #heatmapCanvas,
 #heatmapCanvasVue {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
   pointer-events: none;
 }
 
 #heatmapOverlay,
 #heatmapOverlayVue {
+  display: block;
   position: absolute;
   inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
   border: none;
   background: transparent;
   border-radius: 12px;
@@ -1782,6 +1791,8 @@ canvas.chart {
 }
 
 canvas.heatmapLegendCanvas {
+  display: block;
+  inline-size: min(100%, 512px);
   height: 18px;
   image-rendering: auto;
 }
@@ -1790,6 +1801,7 @@ canvas.heatmapLegendCanvas {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
+  max-inline-size: min(100%, 512px);
   margin-top: 0.35rem;
   font-size: 0.78rem;
   color: var(--muted);

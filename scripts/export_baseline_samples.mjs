@@ -4,6 +4,15 @@ import path from 'node:path'
 
 const ROOT = process.cwd()
 const OUT_DIR = path.resolve(ROOT, 'scripts', 'baselines', 'samples')
+const OUTPUT_PARITY_PACK_PATH = path.resolve(ROOT, 'scripts', 'headless_output_parity_pack.json')
+
+function loadOutputParityPack() {
+  if (!fs.existsSync(OUTPUT_PARITY_PACK_PATH)) return null
+  return JSON.parse(fs.readFileSync(OUTPUT_PARITY_PACK_PATH, 'utf8'))
+}
+
+const outputParityPack = loadOutputParityPack()
+const outputParityPackOutputs = outputParityPack?.outputs || {}
 
 const RUN_ARTIFACT_CANDIDATES = [
   path.resolve(ROOT, '_write_test', 'cli_runs', 'AAPL_opt.json'),
@@ -11,14 +20,20 @@ const RUN_ARTIFACT_CANDIDATES = [
 ]
 
 const REPORT_JSON_CANDIDATES = [
+  outputParityPackOutputs.report_json
+    ? path.resolve(ROOT, String(outputParityPackOutputs.report_json))
+    : null,
   path.resolve(ROOT, '_write_test', 'headless_reports', 'AAPL_headless_test.json'),
   path.resolve(ROOT, 'scripts', 'baselines', 'samples', 'report.json'),
-]
+].filter(Boolean)
 
 const REPORT_XLSX_CANDIDATES = [
+  outputParityPackOutputs.report_xlsx
+    ? path.resolve(ROOT, String(outputParityPackOutputs.report_xlsx))
+    : null,
   path.resolve(ROOT, '_write_test', 'headless_reports', 'AAPL_headless_test.xlsx'),
   path.resolve(ROOT, 'scripts', 'baselines', 'samples', 'report.xlsx'),
-]
+].filter(Boolean)
 
 const BATCH_SUMMARY_CANDIDATES = [
   path.resolve(ROOT, 'output', 'benchmarks', 'workflow_regression_summary.json'),

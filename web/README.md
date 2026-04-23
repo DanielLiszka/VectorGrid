@@ -18,7 +18,8 @@ npm run test:desktop:smoke
 ```
 
 - `npm run parity` checks frontend/backend command-surface drift.
-- `npm run parity:outputs` is structural report-artifact parity for the configured representative JSON/XLSX outputs.
+- `npm run parity:outputs` is structural JSON/XLSX report-artifact parity plus semantic JSON parity for the configured representative headless report outputs.
+- `npm run parity:outputs:refresh` regenerates the representative headless report outputs, refreshes the checked-in report baselines, and updates the sample baseline manifest.
 
 ## Runtime notes
 
@@ -35,7 +36,7 @@ npm run test:desktop:smoke
 - `src/tauri/runtimeError.ts` defines normalized runtime errors (`TauriRuntimeError`) used by `src/tauri/invoke.ts` and `src/tauri/events.ts` for consistent invoke/listen failure handling.
 - `src/tauri/commands.ts` is generated from Rust `generate_handler!` via `npm run gen:commands`; `npm run check:commands` and `scripts/check-known-tauri-commands.mjs` gate command drift and unknown literal command strings.
 - `scripts/check-tauri-parity.mjs` enforces command parity between backend `generate_handler!` and frontend command registry.
-- `npm run parity:outputs` deterministically regenerates current headless JSON/XLSX candidate artifacts via `ta_headless_validate`, writes a provenance sidecar, and then runs `scripts/check_output_parity.mjs` for structural output compatibility against the checked-in sample baselines.
+- `npm run parity:outputs` deterministically regenerates current headless JSON/XLSX candidate artifacts via `ta_headless_validate`, writes a provenance sidecar, runs `scripts/check_output_parity.mjs` for structural output compatibility, and then runs `scripts/check_output_semantic_parity.mjs` for exact JSON regression coverage with a small ignore list for timestamps/runtime measurements.
 - `wdio.desktop.conf.ts` plus `e2e/desktop/` own the Windows-first `WebdriverIO + tauri-driver` desktop smoke harness for the real Tauri shell.
 - The desktop smoke harness starts its own preview host on `127.0.0.1:1420` and bootstraps blank desktop contexts to that URL when `tauri-driver` initially attaches to `about:blank`.
 - Desktop smoke local run instructions and prerequisite notes live in `e2e/desktop/README.md`.

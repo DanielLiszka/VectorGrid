@@ -196,6 +196,14 @@ describe("optionsExpressionService", () => {
         result: {
           backend_used: "cpu_reference",
           backend_fallback_reason: "GPU planner probe failed; using CPU.",
+          exactness_semantics: {
+            exactness_class: "aggregate_class",
+            median_replay_contract: "ranking_irrelevant_deferred",
+            retained_frontier_certification:
+              "provisional_missing_extreme_lane",
+            exact_pruning_contract:
+              "requires_exact_extreme_lane_and_interval_certificate",
+          },
           price_semantics: "minute_aggregate",
           tuple_count: 2,
           staging: {
@@ -368,6 +376,12 @@ describe("optionsExpressionService", () => {
             parent_strategy_kind: "DoubleMa",
             root_symbol: "SPY",
             options_dataset_id: "spy_options",
+            exactness_semantics: {
+              exactness_class: "quote_class",
+              median_replay_contract: "ranking_irrelevant_deferred",
+              retained_frontier_certification: "certified_exact",
+              exact_pruning_contract: "exact_certified",
+            },
             backend_used: "cpu_reference",
             backend_fallback_reason: "GPU planner probe failed; using CPU.",
             price_semantics: "minute_aggregate",
@@ -436,6 +450,13 @@ describe("optionsExpressionService", () => {
     expect(run.artifactTs).toBe("2026-04-05T12:00:00Z");
     expect(run.optionsDatasetHash).toBe("hash-1");
     expect(run.backendUsed).toBe("cpu_reference");
+    expect(run.exactnessSemantics).toEqual({
+      exactnessClass: "aggregate_class",
+      medianReplayContract: "ranking_irrelevant_deferred",
+      retainedFrontierCertification: "provisional_missing_extreme_lane",
+      exactPruningContract:
+        "requires_exact_extreme_lane_and_interval_certificate",
+    });
     expect(run.backendFallbackReason).toBe(
       "GPU planner probe failed; using CPU.",
     );
@@ -476,6 +497,12 @@ describe("optionsExpressionService", () => {
     expect(run.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2);
     expect(artifacts[0]?.optionsDatasetId).toBe("spy_options");
     expect(artifacts[0]?.parentStrategyKind).toBe("DoubleMa");
+    expect(artifacts[0]?.exactnessSemantics).toEqual({
+      exactnessClass: "quote_class",
+      medianReplayContract: "ranking_irrelevant_deferred",
+      retainedFrontierCertification: "certified_exact",
+      exactPruningContract: "exact_certified",
+    });
     expect(artifacts[0]?.tupleCount).toBe(2);
     expect(artifacts[0]?.bestRobustScore).toBe(0.18);
     expect(artifacts[0]?.bestHoldoutExpectancyPerPremium).toBe(0.1);
@@ -581,6 +608,7 @@ describe("optionsExpressionService", () => {
     expect(artifacts[0]?.leaderSummary.distinctLeaderCount).toBe(0);
     expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBeNull();
     expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBeNull();
+    expect(artifacts[0]?.exactnessSemantics).toBeNull();
     expect(
       artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist,
     ).toBeNull();
@@ -613,6 +641,12 @@ describe("optionsExpressionService", () => {
         request_normalization_us: 35,
       },
       report: {
+        exactness_semantics: {
+          exactness_class: "quote_class",
+          median_replay_contract: "ranking_irrelevant_deferred",
+          retained_frontier_certification: "provisional_mixed_precision",
+          exact_pruning_contract: "requires_interval_certificate",
+        },
         diagnostics: {
           parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
           options_dataset_id: "spy_options",
@@ -831,6 +865,12 @@ describe("optionsExpressionService", () => {
       true,
     );
     expect(preview.replayBuildTiming?.requestNormalizationUs).toBe(35);
+    expect(preview.exactnessSemantics).toEqual({
+      exactnessClass: "quote_class",
+      medianReplayContract: "ranking_irrelevant_deferred",
+      retainedFrontierCertification: "provisional_mixed_precision",
+      exactPruningContract: "requires_interval_certificate",
+    });
     expect(preview.compiledTupleCount).toBe(12);
     expect(preview.eventCoverage.totalEventsWithCandidates).toBe(9);
     expect(preview.cacheStats.structuralCacheHits).toBe(2);
@@ -891,6 +931,14 @@ describe("optionsExpressionService", () => {
       root_symbol: "SPY",
       options_dataset_id: "spy_options",
       options_dataset_hash: "hash-1",
+      exactness_semantics: {
+        exactness_class: "aggregate_class",
+        median_replay_contract: "ranking_irrelevant_deferred",
+        retained_frontier_certification:
+          "provisional_missing_extreme_lane",
+        exact_pruning_contract:
+          "requires_exact_extreme_lane_and_interval_certificate",
+      },
       backend_used: "cpu_reference",
       backend_fallback_reason: "GPU planner probe failed; using CPU.",
       price_semantics: "minute_aggregate",
@@ -1012,6 +1060,13 @@ describe("optionsExpressionService", () => {
 
     expect(artifact.kind).toBe("vectorgrid_options_expression_v1");
     expect(artifact.staging?.candidateSlotCount).toBe(12);
+    expect(artifact.exactnessSemantics).toEqual({
+      exactnessClass: "aggregate_class",
+      medianReplayContract: "ranking_irrelevant_deferred",
+      retainedFrontierCertification: "provisional_missing_extreme_lane",
+      exactPruningContract:
+        "requires_exact_extreme_lane_and_interval_certificate",
+    });
     expect(artifact.backendFallbackReason).toBe(
       "GPU planner probe failed; using CPU.",
     );
@@ -1115,6 +1170,7 @@ describe("optionsExpressionService", () => {
     expect(
       artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium,
     ).toBe(0);
+    expect(artifact.exactnessSemantics).toBeNull();
   });
 
   it("loads quote-aware artifacts without losing price semantics or fill-model provenance", async () => {

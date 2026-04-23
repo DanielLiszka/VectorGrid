@@ -87,6 +87,7 @@ export const TAURI_COMMANDS = [
   'load_run_artifact',
   'load_run_artifact_hydration',
   'load_run_artifact_detail',
+  'repair_run_artifact',
   'load_live_session_artifact_detail',
   'load_meta_artifact_replay',
   'load_stage5_artifact_replay',

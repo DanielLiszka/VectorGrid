@@ -508,6 +508,30 @@ pub struct RunArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_provenance: Option<RouteProvenanceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_approx_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_workload_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_contract_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_declared_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_base_ranker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_rerank_operator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_heatmap_semantics: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vdps_quality_check_top_k_overlap: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vdps_quality_check_best_score_regret: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vdps_quality_check_exact_winner_rank: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vdps_quality_check_holdout_regret: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vdps_quality_check_speedup_vs_exact: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<ArtifactLineageSummary>,
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2599,11 +2623,13 @@ fn format_ml_policy_sweep_summary(value: Option<&Value>) -> String {
         return String::new();
     };
     let mut parts = Vec::new();
-    for (key, label) in [("sweep_size", "size"), ("top_k", "top_k")] {
-        let text = normalize_text_value(sweep.get(key));
-        if !text.is_empty() {
-            parts.push(format!("{label}={text}"));
-        }
+    let sweep_size = normalize_text_value(sweep.get("sweep_size"));
+    if !sweep_size.is_empty() {
+        parts.push(format!("evaluated={sweep_size}"));
+    }
+    let top_k = normalize_text_value(sweep.get("top_k"));
+    if !top_k.is_empty() {
+        parts.push(format!("retained_top_k={top_k}"));
     }
     for key in ["best_label", "best_robust_score"] {
         let text = normalize_text_value(sweep.get(key));
@@ -2627,15 +2653,21 @@ fn format_ml_run_verdict_summary(validation_res: Option<&Value>) -> String {
         return String::new();
     };
     let mut parts = Vec::new();
-    for (key, label) in [
-        ("approved_candidate_count", "approved"),
-        ("candidates_survived_hard_gates", "survived"),
-        ("candidates_considered", "considered"),
-    ] {
-        let text = normalize_text_value(verdict.get(key));
-        if !text.is_empty() {
-            parts.push(format!("{label}={text}"));
-        }
+    let approved = normalize_text_value(verdict.get("approved_candidate_count"));
+    if !approved.is_empty() {
+        parts.push(format!("approved_retained={approved}"));
+    }
+    let survived = normalize_text_value(verdict.get("candidates_survived_hard_gates"));
+    if !survived.is_empty() {
+        parts.push(format!("survived_retained={survived}"));
+    }
+    let tested = normalize_text_value(
+        verdict
+            .get("candidates_tested")
+            .or_else(|| verdict.get("candidates_considered")),
+    );
+    if !tested.is_empty() {
+        parts.push(format!("tested_full_sweep={tested}"));
     }
     parts.join(" | ")
 }
@@ -2671,6 +2703,50 @@ fn format_ml_top_candidates_summary(validation_res: Option<&Value>) -> String {
                 other => other,
             };
             parts.push(format!("{label}={text}"));
+        }
+    }
+    if let Some(request_words) = candidate
+        .get("request_word_diagnostics")
+        .and_then(Value::as_object)
+    {
+        let no_request = normalize_text_value(request_words.get("no_request_bars"));
+        let flat = normalize_text_value(request_words.get("explicit_flat_request_bars"));
+        let nonflat = normalize_text_value(request_words.get("explicit_nonflat_request_bars"));
+        if !(no_request.is_empty() && flat.is_empty() && nonflat.is_empty()) {
+            parts.push(format!(
+                "request_words=no_request:{}, flat:{}, nonflat:{}",
+                if no_request.is_empty() {
+                    "0"
+                } else {
+                    &no_request
+                },
+                if flat.is_empty() { "0" } else { &flat },
+                if nonflat.is_empty() { "0" } else { &nonflat }
+            ));
+        }
+    }
+    if let Some(boundary) = candidate
+        .get("boundary_diagnostics")
+        .and_then(Value::as_object)
+    {
+        let pct = |value: Option<&Value>| -> Option<String> {
+            value
+                .and_then(Value::as_f64)
+                .filter(|raw| raw.is_finite())
+                .map(|raw| format!("{:.1}%", raw * 100.0))
+        };
+        let mut boundary_parts = Vec::new();
+        if let Some(text) = pct(boundary.get("near_long_threshold_frac")) {
+            boundary_parts.push(format!("long~{text}"));
+        }
+        if let Some(text) = pct(boundary.get("near_short_threshold_frac")) {
+            boundary_parts.push(format!("short~{text}"));
+        }
+        if let Some(text) = pct(boundary.get("near_delta_boundary_frac")) {
+            boundary_parts.push(format!("delta~{text}"));
+        }
+        if !boundary_parts.is_empty() {
+            parts.push(format!("boundary={}", boundary_parts.join(", ")));
         }
     }
     parts.join(" | ")
@@ -3194,6 +3270,64 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let route_provenance = extract_route_provenance_from_artifact(v);
+    let search_semantics_approx_mode = v
+        .pointer("/run/res/search_semantics/approx_mode")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let search_semantics_workload_family = v
+        .pointer("/run/res/search_semantics/workload_family")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let search_semantics_contract_summary = v
+        .pointer("/run/res/search_semantics/contract_summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let search_semantics_declared_domain = v
+        .pointer("/run/res/search_semantics/declared_domain")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let search_semantics_base_ranker = v
+        .pointer("/run/res/search_semantics/base_ranker")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let search_semantics_rerank_operator = v
+        .pointer("/run/res/search_semantics/rerank_operator")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let search_semantics_heatmap_semantics = v
+        .pointer("/run/res/search_semantics/heatmap_semantics")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let vdps_quality_check_top_k_overlap = v
+        .pointer("/run/res/vdps/quality_check_top_k_overlap")
+        .and_then(Value::as_f64);
+    let vdps_quality_check_best_score_regret = v
+        .pointer("/run/res/vdps/quality_check_best_score_regret")
+        .and_then(Value::as_f64);
+    let vdps_quality_check_exact_winner_rank = v
+        .pointer("/run/res/vdps/quality_check_exact_winner_rank")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let vdps_quality_check_holdout_regret = v
+        .pointer("/run/res/vdps/quality_check_holdout_regret")
+        .and_then(Value::as_f64);
+    let vdps_quality_check_speedup_vs_exact = v
+        .pointer("/run/res/vdps/quality_check_speedup_vs_exact")
+        .and_then(Value::as_f64);
     let lineage = extract_artifact_lineage_from_artifact(v);
     let ml_score_space = extract_ml_score_space(v);
     let ml_score_scope = extract_ml_score_scope(v);
@@ -3223,6 +3357,18 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         source_mtime_utc_ms,
         source_content_fingerprint,
         route_provenance,
+        search_semantics_approx_mode,
+        search_semantics_workload_family,
+        search_semantics_contract_summary,
+        search_semantics_declared_domain,
+        search_semantics_base_ranker,
+        search_semantics_rerank_operator,
+        search_semantics_heatmap_semantics,
+        vdps_quality_check_top_k_overlap,
+        vdps_quality_check_best_score_regret,
+        vdps_quality_check_exact_winner_rank,
+        vdps_quality_check_holdout_regret,
+        vdps_quality_check_speedup_vs_exact,
         lineage,
         tags: normalized_tags(v),
         ml_feature_schema_hash: ml_signal_optional_text_value(v, "feature_schema_hash"),
@@ -4112,11 +4258,12 @@ mod tests {
         list_run_artifacts_blocking, load_artifact_value_checked_blocking,
         load_latest_run_artifact_hydration_blocking, load_latest_run_artifact_summary_blocking,
         load_live_session_artifact_detail_blocking, load_run_artifact_detail_blocking,
-        normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
-        prune_old_meta_artifacts_blocking, repair_run_artifact_blocking,
-        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
-        resolve_run_artifact_timeframe, runs_dir, save_run_artifact_blocking,
-        suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
+        normalize_dataset_meta, normalize_run_artifact_value_canonical,
+        open_runs_dir_blocking_with_revealer, prune_old_meta_artifacts_blocking,
+        repair_run_artifact_blocking, resolve_run_artifact_csv_path,
+        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
+        save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
+        update_artifact_tags_blocking,
     };
     use crate::settings;
     use crate::state::{AppState, BackgroundTaskState};
@@ -4717,6 +4864,79 @@ mod tests {
     }
 
     #[test]
+    fn normalize_run_artifact_backfills_trade_tail_exact_for_trade22_surfaces() {
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-04-02T12:00:00Z",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "15m"
+            },
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "backend_used": "Cpu",
+                    "backend_route": "CpuOnly",
+                    "metric_surface_kind": "trade22",
+                    "best_metrics": {
+                        "pnl": 1.0,
+                        "sharpe": 0.5,
+                        "volatility": 0.25,
+                        "max_dd": 0.2,
+                        "trades": 8,
+                        "exposure": 0.6,
+                        "net_exposure": 0.2,
+                        "downside_deviation": 0.1,
+                        "ulcer_index": 0.08,
+                        "omega": 1.2,
+                        "downside_frequency": 0.15,
+                        "downside_severity": 0.04,
+                        "long_mean_return": 0.03,
+                        "short_mean_return": -0.02,
+                        "kappa_tau": 0.2,
+                        "underwater_fraction": 0.18,
+                        "max_underwater_duration_bars": 11,
+                        "closed_trades": 6,
+                        "winning_trades": 4,
+                        "losing_trades": 2,
+                        "gross_profit": 1.8,
+                        "gross_loss": 0.7
+                    },
+                    "top": []
+                }
+            }
+        });
+
+        let normalized = normalize_run_artifact_value_canonical(
+            Path::new("C:/runs/vectorgrid_run_trade22.json"),
+            &artifact,
+        )
+        .expect("normalize trade22 artifact");
+
+        assert_eq!(
+            normalized
+                .value
+                .pointer("/optimization_metric_surface/surface")
+                .and_then(|value| value.as_str()),
+            Some("trade22")
+        );
+        assert_eq!(
+            normalized
+                .value
+                .pointer("/optimization_metric_surface/trade_tail_exact")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(normalized
+            .changes
+            .iter()
+            .any(|change| change == "backfilled optimization_metric_surface"));
+    }
+
+    #[test]
     fn route_provenance_extracts_requested_resolved_realized_and_fallback_reason() {
         let artifact = json!({
             "run": {
@@ -5018,6 +5238,81 @@ mod tests {
     }
 
     #[test]
+    fn run_artifact_summary_surfaces_search_semantics_when_present() {
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-04-18T12:00:00Z",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m"
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": {
+                    "mode_used": "GpuVdps",
+                    "search_semantics": {
+                        "approx_mode": "heuristic_reduced_output",
+                        "workload_family": "double_ma_gpu_vdps",
+                        "contract_summary": "Heuristic reduced-output mode; audit with best-score regret, top-k overlap, exact winner rank, holdout regret, and speedup versus exact before promotion.",
+                        "declared_domain": "sampler_visited_repaired_candidates",
+                        "base_ranker": "constrained_pareto_maximize_both",
+                        "rerank_operator": "trade22_exactify_pareto_members_only",
+                        "heatmap_semantics": "sampled_bin_summary_only"
+                    },
+                    "vdps": {
+                        "quality_check_top_k_overlap": 0.8,
+                        "quality_check_best_score_regret": 0.12,
+                        "quality_check_exact_winner_rank": 2,
+                        "quality_check_holdout_regret": 0.05,
+                        "quality_check_speedup_vs_exact": 3.5
+                    }
+                }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_search_semantics.json"),
+            512,
+            &artifact,
+        )
+        .expect("summary");
+
+        assert_eq!(
+            summary.search_semantics_approx_mode.as_deref(),
+            Some("heuristic_reduced_output")
+        );
+        assert_eq!(
+            summary.search_semantics_workload_family.as_deref(),
+            Some("double_ma_gpu_vdps")
+        );
+        assert!(summary
+            .search_semantics_contract_summary
+            .as_deref()
+            .is_some_and(|value| value.contains("best-score regret")));
+        assert_eq!(
+            summary.search_semantics_declared_domain.as_deref(),
+            Some("sampler_visited_repaired_candidates")
+        );
+        assert_eq!(
+            summary.search_semantics_base_ranker.as_deref(),
+            Some("constrained_pareto_maximize_both")
+        );
+        assert_eq!(
+            summary.search_semantics_rerank_operator.as_deref(),
+            Some("trade22_exactify_pareto_members_only")
+        );
+        assert_eq!(
+            summary.search_semantics_heatmap_semantics.as_deref(),
+            Some("sampled_bin_summary_only")
+        );
+        assert_eq!(summary.vdps_quality_check_top_k_overlap, Some(0.8));
+        assert_eq!(summary.vdps_quality_check_best_score_regret, Some(0.12));
+        assert_eq!(summary.vdps_quality_check_exact_winner_rank, Some(2));
+        assert_eq!(summary.vdps_quality_check_holdout_regret, Some(0.05));
+        assert_eq!(summary.vdps_quality_check_speedup_vs_exact, Some(3.5));
+    }
+
+    #[test]
     fn run_artifact_detail_response_formats_ml_summaries() {
         let artifact = json!({
             "ts": "2026-04-02T12:00:00Z",
@@ -5096,7 +5391,17 @@ mod tests {
                             "label": "best_sweep",
                             "robust_score": 1.0,
                             "psr": 0.7,
-                            "dsr": 0.6
+                            "dsr": 0.6,
+                            "boundary_diagnostics": {
+                                "near_long_threshold_frac": 0.25,
+                                "near_short_threshold_frac": 0.125,
+                                "near_delta_boundary_frac": 0.05
+                            },
+                            "request_word_diagnostics": {
+                                "no_request_bars": 18,
+                                "explicit_flat_request_bars": 3,
+                                "explicit_nonflat_request_bars": 6
+                            }
                         }
                     ]
                 }
@@ -5162,15 +5467,15 @@ mod tests {
         );
         assert_eq!(
             detail.ml_policy_sweep_summary,
-            "size=27 | top_k=4 | best=best_sweep | score=1.44"
+            "evaluated=27 | retained_top_k=4 | best=best_sweep | score=1.44"
         );
         assert_eq!(
             detail.ml_run_verdict_summary,
-            "approved=1 | survived=1 | considered=27"
+            "approved_retained=1 | survived_retained=1 | tested_full_sweep=27"
         );
         assert_eq!(
             detail.ml_top_candidates_summary,
-            "best_sweep | robust=1 | psr=0.7 | dsr=0.6"
+            "best_sweep | robust=1 | psr=0.7 | dsr=0.6 | request_words=no_request:18, flat:3, nonflat:6 | boundary=long~25.0%, short~12.5%, delta~5.0%"
         );
         assert!(detail.params_text.contains("strategy: MlSignal"));
         assert!(detail.params_text.contains("policy t_long: 0.6"));

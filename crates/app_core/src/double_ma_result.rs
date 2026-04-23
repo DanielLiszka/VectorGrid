@@ -6,14 +6,16 @@ use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 use crate::double_ma::{
     BackendOptimizationResult, BackendUsed, DoubleMaParamsResolved, GpuKernelTimingMs,
     GpuResidencySummary, HybridTimingMs, IndicatorRoutePlanSummary, OptimizationModeResolved,
-    PairObservationScoreContextResolved, ShortlistSliceCandidateDiagnosticsResolved,
-    ShortlistSliceDiagnostics, ShortlistSliceDiagnosticsResolved,
-    ShortlistSliceModeDiagnosticsResolved, ShortlistSliceSnapshotResolved, VdpsTelemetry,
+    OptimizationSearchSemanticsSummary, PairObservationScoreContextResolved,
+    ShortlistSliceCandidateDiagnosticsResolved, ShortlistSliceDiagnostics,
+    ShortlistSliceDiagnosticsResolved, ShortlistSliceModeDiagnosticsResolved,
+    ShortlistSliceSnapshotResolved, ShortlistUnionTelemetry, VdpsTelemetry,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 
 pub(crate) struct BackendResultContext<'a> {
     pub mode_used: OptimizationModeResolved,
+    pub exhaustive_output_requested: bool,
     pub backend_used: BackendUsed,
     pub fast_periods: &'a [u16],
     pub slow_periods: &'a [u16],
@@ -36,6 +38,67 @@ pub(crate) struct BackendResultContext<'a> {
     pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnostics>,
     pub score_observation_context: Option<PairObservationScoreContextResolved>,
     pub metric_surface_kind: Option<String>,
+    pub shortlist_union_telemetry: Option<ShortlistUnionTelemetry>,
+}
+
+const EXACT_EXHAUSTIVE_WORKLOAD_FAMILY: &str = "double_ma_exact_grid_full_output";
+const EXACT_REDUCED_OUTPUT_WORKLOAD_FAMILY: &str = "double_ma_exact_grid_reduced_output";
+const COARSE_TO_FINE_WORKLOAD_FAMILY: &str = "double_ma_coarse_to_fine";
+const GPU_VDPS_WORKLOAD_FAMILY: &str = "double_ma_gpu_vdps";
+const EXACT_EXHAUSTIVE_CONTRACT_SUMMARY: &str =
+    "Exact exhaustive search over the full requested candidate space.";
+const EXACT_REDUCED_OUTPUT_CONTRACT_SUMMARY: &str =
+    "Same exact candidate scores, same tie order, and same retained-output semantics on the retained candidate set.";
+const HEURISTIC_REDUCED_OUTPUT_CONTRACT_SUMMARY: &str =
+    "Heuristic reduced-output mode; audit with best-score regret, top-k overlap, exact winner rank, holdout regret, and speedup versus exact before promotion.";
+
+fn build_optimization_search_semantics_summary(
+    mode_used: &OptimizationModeResolved,
+    exhaustive_output_requested: bool,
+) -> OptimizationSearchSemanticsSummary {
+    match mode_used {
+        OptimizationModeResolved::Grid => {
+            if exhaustive_output_requested {
+                OptimizationSearchSemanticsSummary {
+                    approx_mode: "exact_exhaustive".to_string(),
+                    workload_family: EXACT_EXHAUSTIVE_WORKLOAD_FAMILY.to_string(),
+                    contract_summary: EXACT_EXHAUSTIVE_CONTRACT_SUMMARY.to_string(),
+                    declared_domain: None,
+                    base_ranker: None,
+                    rerank_operator: None,
+                    heatmap_semantics: None,
+                }
+            } else {
+                OptimizationSearchSemanticsSummary {
+                    approx_mode: "exact_reduced_output".to_string(),
+                    workload_family: EXACT_REDUCED_OUTPUT_WORKLOAD_FAMILY.to_string(),
+                    contract_summary: EXACT_REDUCED_OUTPUT_CONTRACT_SUMMARY.to_string(),
+                    declared_domain: None,
+                    base_ranker: None,
+                    rerank_operator: None,
+                    heatmap_semantics: None,
+                }
+            }
+        }
+        OptimizationModeResolved::CoarseToFine => OptimizationSearchSemanticsSummary {
+            approx_mode: "heuristic_reduced_output".to_string(),
+            workload_family: COARSE_TO_FINE_WORKLOAD_FAMILY.to_string(),
+            contract_summary: HEURISTIC_REDUCED_OUTPUT_CONTRACT_SUMMARY.to_string(),
+            declared_domain: None,
+            base_ranker: None,
+            rerank_operator: None,
+            heatmap_semantics: None,
+        },
+        OptimizationModeResolved::GpuVdps => OptimizationSearchSemanticsSummary {
+            approx_mode: "heuristic_reduced_output".to_string(),
+            workload_family: GPU_VDPS_WORKLOAD_FAMILY.to_string(),
+            contract_summary: HEURISTIC_REDUCED_OUTPUT_CONTRACT_SUMMARY.to_string(),
+            declared_domain: None,
+            base_ranker: None,
+            rerank_operator: None,
+            heatmap_semantics: None,
+        },
+    }
 }
 
 fn debug_assert_result_alignment(result: &OptimizationResult, ctx: &BackendResultContext<'_>) {
@@ -169,6 +232,10 @@ pub(crate) fn build_backend_optimization_result(
 ) -> BackendOptimizationResult {
     debug_assert_result_alignment(&result, &ctx);
     let mode_used = ctx.mode_used.clone();
+    let search_semantics = build_optimization_search_semantics_summary(
+        &ctx.mode_used,
+        ctx.exhaustive_output_requested,
+    );
     let best_params = resolve_params(
         &result.best_params,
         ctx.fast_ma_label,
@@ -312,6 +379,8 @@ pub(crate) fn build_backend_optimization_result(
         shortlist_slice_diagnostics,
         score_observation_context: ctx.score_observation_context,
         metric_surface_kind: ctx.metric_surface_kind,
+        shortlist_union_telemetry: ctx.shortlist_union_telemetry,
+        search_semantics: Some(search_semantics),
     }
 }
 
@@ -355,6 +424,7 @@ mod tests {
             result,
             BackendResultContext {
                 mode_used: OptimizationModeResolved::Grid,
+                exhaustive_output_requested: false,
                 backend_used: BackendUsed::Gpu,
                 fast_periods: &[5],
                 slow_periods: &[20],
@@ -385,6 +455,7 @@ mod tests {
                 shortlist_slice_diagnostics: None,
                 score_observation_context: Some(expected),
                 metric_surface_kind: None,
+                shortlist_union_telemetry: None,
             },
         );
 
@@ -404,6 +475,7 @@ mod tests {
             result,
             BackendResultContext {
                 mode_used: OptimizationModeResolved::Grid,
+                exhaustive_output_requested: false,
                 backend_used: BackendUsed::Gpu,
                 fast_periods: &[5],
                 slow_periods: &[20],
@@ -426,6 +498,7 @@ mod tests {
                 shortlist_slice_diagnostics: None,
                 score_observation_context: None,
                 metric_surface_kind: None,
+                shortlist_union_telemetry: None,
             },
         );
 
@@ -439,6 +512,7 @@ mod tests {
             result,
             BackendResultContext {
                 mode_used: OptimizationModeResolved::Grid,
+                exhaustive_output_requested: false,
                 backend_used: BackendUsed::Gpu,
                 fast_periods: &[5],
                 slow_periods: &[20],
@@ -461,10 +535,195 @@ mod tests {
                 shortlist_slice_diagnostics: None,
                 score_observation_context: None,
                 metric_surface_kind: Some("trade22".to_string()),
+                shortlist_union_telemetry: None,
             },
         );
 
         assert_eq!(built.metric_surface_kind.as_deref(), Some("trade22"));
+    }
+
+    #[test]
+    fn build_backend_result_labels_exact_grid_output_contracts() {
+        let reduced = build_backend_optimization_result(
+            base_result(),
+            BackendResultContext {
+                mode_used: OptimizationModeResolved::Grid,
+                exhaustive_output_requested: false,
+                backend_used: BackendUsed::Gpu,
+                fast_periods: &[5],
+                slow_periods: &[20],
+                fast_ma_label: "sma",
+                slow_ma_label: "ema",
+                fast_param_variants: &[None],
+                slow_param_variants: &[None],
+                num_combos: 1,
+                num_candles: 200,
+                runtime_ms: 1,
+                vdps: None,
+                hybrid_timing_ms: None,
+                gpu_kernel_timing_ms: None,
+                backend_route: Some("GpuKernel".to_string()),
+                backend_fallback_reason: None,
+                route_diagnostics: None,
+                indicator_route_plan: None,
+                residency: None,
+                followup_cache_key: None,
+                shortlist_slice_diagnostics: None,
+                score_observation_context: None,
+                metric_surface_kind: None,
+                shortlist_union_telemetry: None,
+            },
+        );
+        let exhaustive = build_backend_optimization_result(
+            base_result(),
+            BackendResultContext {
+                mode_used: OptimizationModeResolved::Grid,
+                exhaustive_output_requested: true,
+                backend_used: BackendUsed::Gpu,
+                fast_periods: &[5],
+                slow_periods: &[20],
+                fast_ma_label: "sma",
+                slow_ma_label: "ema",
+                fast_param_variants: &[None],
+                slow_param_variants: &[None],
+                num_combos: 1,
+                num_candles: 200,
+                runtime_ms: 1,
+                vdps: None,
+                hybrid_timing_ms: None,
+                gpu_kernel_timing_ms: None,
+                backend_route: Some("GpuKernel".to_string()),
+                backend_fallback_reason: None,
+                route_diagnostics: None,
+                indicator_route_plan: None,
+                residency: None,
+                followup_cache_key: None,
+                shortlist_slice_diagnostics: None,
+                score_observation_context: None,
+                metric_surface_kind: None,
+                shortlist_union_telemetry: None,
+            },
+        );
+
+        assert_eq!(
+            reduced
+                .search_semantics
+                .as_ref()
+                .map(|value| value.approx_mode.as_str()),
+            Some("exact_reduced_output")
+        );
+        assert_eq!(
+            reduced
+                .search_semantics
+                .as_ref()
+                .map(|value| value.workload_family.as_str()),
+            Some(EXACT_REDUCED_OUTPUT_WORKLOAD_FAMILY)
+        );
+        assert_eq!(
+            exhaustive
+                .search_semantics
+                .as_ref()
+                .map(|value| value.approx_mode.as_str()),
+            Some("exact_exhaustive")
+        );
+        assert_eq!(
+            exhaustive
+                .search_semantics
+                .as_ref()
+                .map(|value| value.workload_family.as_str()),
+            Some(EXACT_EXHAUSTIVE_WORKLOAD_FAMILY)
+        );
+    }
+
+    #[test]
+    fn build_backend_result_labels_heuristic_modes_for_audit_workloads() {
+        let coarse = build_backend_optimization_result(
+            base_result(),
+            BackendResultContext {
+                mode_used: OptimizationModeResolved::CoarseToFine,
+                exhaustive_output_requested: false,
+                backend_used: BackendUsed::Cpu,
+                fast_periods: &[5],
+                slow_periods: &[20],
+                fast_ma_label: "sma",
+                slow_ma_label: "ema",
+                fast_param_variants: &[None],
+                slow_param_variants: &[None],
+                num_combos: 1,
+                num_candles: 200,
+                runtime_ms: 1,
+                vdps: None,
+                hybrid_timing_ms: None,
+                gpu_kernel_timing_ms: None,
+                backend_route: Some("CpuOnly".to_string()),
+                backend_fallback_reason: None,
+                route_diagnostics: None,
+                indicator_route_plan: None,
+                residency: None,
+                followup_cache_key: None,
+                shortlist_slice_diagnostics: None,
+                score_observation_context: None,
+                metric_surface_kind: None,
+                shortlist_union_telemetry: None,
+            },
+        );
+        let vdps = build_backend_optimization_result(
+            base_result(),
+            BackendResultContext {
+                mode_used: OptimizationModeResolved::GpuVdps,
+                exhaustive_output_requested: false,
+                backend_used: BackendUsed::Gpu,
+                fast_periods: &[5],
+                slow_periods: &[20],
+                fast_ma_label: "sma",
+                slow_ma_label: "ema",
+                fast_param_variants: &[None],
+                slow_param_variants: &[None],
+                num_combos: 1,
+                num_candles: 200,
+                runtime_ms: 1,
+                vdps: None,
+                hybrid_timing_ms: None,
+                gpu_kernel_timing_ms: None,
+                backend_route: Some("GpuVdps".to_string()),
+                backend_fallback_reason: None,
+                route_diagnostics: None,
+                indicator_route_plan: None,
+                residency: None,
+                followup_cache_key: None,
+                shortlist_slice_diagnostics: None,
+                score_observation_context: None,
+                metric_surface_kind: None,
+                shortlist_union_telemetry: None,
+            },
+        );
+
+        for (value, expected_workload) in [
+            (coarse, COARSE_TO_FINE_WORKLOAD_FAMILY),
+            (vdps, GPU_VDPS_WORKLOAD_FAMILY),
+        ] {
+            assert_eq!(
+                value
+                    .search_semantics
+                    .as_ref()
+                    .map(|entry| entry.approx_mode.as_str()),
+                Some("heuristic_reduced_output")
+            );
+            assert_eq!(
+                value
+                    .search_semantics
+                    .as_ref()
+                    .map(|entry| entry.workload_family.as_str()),
+                Some(expected_workload)
+            );
+            assert!(
+                value
+                    .search_semantics
+                    .as_ref()
+                    .is_some_and(|entry| entry.contract_summary.contains("best-score regret")),
+                "expected heuristic audit contract summary"
+            );
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -583,6 +842,7 @@ mod tests {
             result,
             BackendResultContext {
                 mode_used: OptimizationModeResolved::Grid,
+                exhaustive_output_requested: false,
                 backend_used: BackendUsed::Gpu,
                 fast_periods: &[5],
                 slow_periods: &[20],
@@ -605,6 +865,7 @@ mod tests {
                 shortlist_slice_diagnostics: None,
                 score_observation_context: None,
                 metric_surface_kind: None,
+                shortlist_union_telemetry: None,
             },
         );
     }
@@ -631,6 +892,7 @@ mod tests {
             result,
             BackendResultContext {
                 mode_used: OptimizationModeResolved::Grid,
+                exhaustive_output_requested: false,
                 backend_used: BackendUsed::Gpu,
                 fast_periods: &[5],
                 slow_periods: &[20],
@@ -653,6 +915,7 @@ mod tests {
                 shortlist_slice_diagnostics: None,
                 score_observation_context: None,
                 metric_surface_kind: None,
+                shortlist_union_telemetry: None,
             },
         );
     }

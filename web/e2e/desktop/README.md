@@ -46,6 +46,35 @@ npm --prefix web run test:desktop:smoke
 
 The default smoke suite intentionally excludes the opt-in geometry resize spec until it proves stable enough for wider use.
 
+## Packaged smoke against a release-built executable
+
+The desktop harness can already run against an existing desktop executable instead of rebuilding the debug app.
+
+Use the repo wrapper for packaged smoke:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_packaged_smoke.ps1
+```
+
+That wrapper expects either:
+
+- an explicit `-BinaryPath <path-to-release-exe>`, or
+- a previously generated `manifest.json` in the selected release-candidate output directory
+
+The release-candidate gate generates the manifest automatically before packaged smoke.
+If the manifest says `artifact_source_kind: "release_binary"`, the smoke run is exercising the raw release-built executable rather than a bundle output. That is still useful evidence, but blank-shell failures in that mode need app-log confirmation because WebDriver may initially stay attached to `about:blank` even while the packaged shell is already loading.
+
+Or run the harness manually against a specific executable:
+
+```powershell
+$env:VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD="1"
+$env:VECTORGRID_DESKTOP_SMOKE_BINARY="C:\\path\\to\\ta_desktop_demo_app.exe"
+$env:VECTORGRID_DESKTOP_SMOKE_DISABLE_PREVIEW="1"
+npm --prefix web run test:desktop:smoke
+```
+
+`VECTORGRID_DESKTOP_SMOKE_DISABLE_PREVIEW=1` is important for packaged smoke because it disables the preview-host bootstrap fallback. In that mode the harness now gives the packaged shell a short grace period and, if needed, explicitly bootstraps the WebDriver context to `http://tauri.localhost/` instead of falling back to preview content.
+
 Run a single spec:
 
 ```powershell
@@ -105,6 +134,9 @@ Optional local overrides:
   - point the harness at a specific desktop executable instead of `target\\debug\\ta_desktop_demo_app.exe`
 - `VECTORGRID_DESKTOP_SMOKE_APP_URL=http://127.0.0.1:1420/`
   - override the preview/bootstrap URL if needed
+- `VECTORGRID_DESKTOP_SMOKE_DISABLE_PREVIEW=1`
+  - disable the preview host and blank-shell bootstrap path
+  - use this when you want the smoke run to prove the packaged executable loaded its own frontend bundle
 
 Recommended local command while geometry remains opt-in:
 
@@ -142,7 +174,9 @@ Each run records:
 - app launches manually but smoke fails before shell readiness:
   - inspect the `tauri-driver.log`, `preview-server.log`, and the failure screenshot under `output/wdio/desktop-smoke`
 - desktop automation attached to a blank shell:
-  - this harness already bootstraps `about:blank` to the managed preview host; if that still fails, inspect `preview-server.log` and verify `http://127.0.0.1:1420/` is reachable
+  - in normal browser-backed smoke, the harness bootstraps `about:blank` to the managed preview host
+  - in packaged smoke with `VECTORGRID_DESKTOP_SMOKE_DISABLE_PREVIEW=1`, the harness first gives the packaged shell a bounded grace period and then explicitly targets `http://tauri.localhost/`
+  - if the packaged run still fails, inspect the copied app log under `desktop-smoke/logs/app/` before treating it as a packaging failure
 - maximize/restore assertion fails intermittently:
   - treat that as a harness bug and keep flaky native assertions out of the default green path
 

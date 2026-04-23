@@ -23,6 +23,23 @@ fn cuda_available_now() -> bool {
     false
 }
 
+fn gpu_status_impl() -> Result<GpuStatus, String> {
+    let (auto_device_name, auto_device_memory_bytes, auto_device_error) =
+        match ta_app_core::preferred_cuda_device() {
+            Ok(Some(device)) => (Some(device.name), Some(device.total_memory_bytes), None),
+            Ok(None) => (None, None, None),
+            Err(error) => (None, None, Some(error)),
+        };
+    Ok(GpuStatus {
+        built_with_cuda: cfg!(feature = "cuda"),
+        built_with_cuda_backtest_kernel: cfg!(feature = "cuda-backtest-kernel"),
+        cuda_available: cuda_available_now(),
+        auto_device_name,
+        auto_device_memory_bytes,
+        auto_device_error,
+    })
+}
+
 fn normalized_window_effect(effect: Option<String>) -> String {
     effect
         .unwrap_or_else(|| "none".to_string())
@@ -67,21 +84,10 @@ fn parse_macos_window_effect(effect: &str) -> Result<MacosWindowEffect, String> 
 }
 
 #[tauri::command]
-pub fn get_gpu_status() -> Result<GpuStatus, String> {
-    let (auto_device_name, auto_device_memory_bytes, auto_device_error) =
-        match ta_app_core::preferred_cuda_device() {
-            Ok(Some(device)) => (Some(device.name), Some(device.total_memory_bytes), None),
-            Ok(None) => (None, None, None),
-            Err(error) => (None, None, Some(error)),
-        };
-    Ok(GpuStatus {
-        built_with_cuda: cfg!(feature = "cuda"),
-        built_with_cuda_backtest_kernel: cfg!(feature = "cuda-backtest-kernel"),
-        cuda_available: cuda_available_now(),
-        auto_device_name,
-        auto_device_memory_bytes,
-        auto_device_error,
-    })
+pub async fn get_gpu_status() -> Result<GpuStatus, String> {
+    tauri::async_runtime::spawn_blocking(gpu_status_impl)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -155,11 +161,11 @@ pub fn set_window_effect(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_gpu_status, normalized_window_effect};
+    use super::{gpu_status_impl, normalized_window_effect};
 
     #[test]
     fn get_gpu_status_reports_consistent_diagnostics_shape() {
-        let status = get_gpu_status().expect("gpu diagnostics should not fail");
+        let status = gpu_status_impl().expect("gpu diagnostics should not fail");
 
         assert_eq!(status.built_with_cuda, cfg!(feature = "cuda"));
         assert_eq!(

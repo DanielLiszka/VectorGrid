@@ -228,6 +228,11 @@ function normalizeFiniteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(num) ? num : fallback;
 }
 
+function normalizeMaybeFiniteNumber(value: unknown): number | null {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -1796,7 +1801,7 @@ function toMlFeatureGroup(
     robust_score_p10: normalizeFiniteNumber(group.robust_score_p10),
     robust_score_median: normalizeFiniteNumber(group.robust_score_median),
     max_dd_p90: normalizeFiniteNumber(group.max_dd_p90),
-    cross_score_median: normalizeFiniteNumber(group.cross_score_median),
+    cross_score_median: normalizeMaybeFiniteNumber(group.cross_score_median),
     meta_score: normalizeFiniteNumber(group.meta_score),
   };
 }

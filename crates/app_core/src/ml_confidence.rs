@@ -244,6 +244,8 @@ pub struct MlConfidenceModelMeta {
     pub target: MlConfidenceTarget,
     #[serde(default = "default_model_kind")]
     pub model_kind: MlConfidenceModelKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_key: Option<MlConfidenceCompatibilityKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta_artifacts_used: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -258,6 +260,18 @@ pub struct MlConfidenceModelMeta {
     pub healthy: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MlConfidenceCompatibilityKey {
+    #[serde(default)]
+    pub target_family: String,
+    #[serde(default)]
+    pub train_score_semantics: String,
+    #[serde(default)]
+    pub grouping_mode: String,
+    #[serde(default)]
+    pub shortlist_policy: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -310,20 +324,21 @@ pub struct MlConfidenceGroupFeatures {
     pub robust_score_p10: f64,
     pub robust_score_median: f64,
     pub max_dd_p90: f64,
-    #[serde(default)]
-    pub cross_score_median: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_score_median: Option<f64>,
     pub meta_score: f64,
 }
 
 impl MlConfidenceGroupFeatures {
     fn to_feature_vec(&self) -> Option<Vec<f64>> {
+        let cross_score_median = self.cross_score_median?;
         let x = vec![
             self.samples as f64,
             self.pass_rate,
             self.robust_score_p10,
             self.robust_score_median,
             self.max_dd_p90,
-            self.cross_score_median,
+            cross_score_median,
             self.meta_score,
         ];
         if x.iter().all(|v| v.is_finite()) {
@@ -337,6 +352,7 @@ impl MlConfidenceGroupFeatures {
 #[derive(Clone, Debug)]
 pub struct MlConfidenceDatasetRow {
     pub group_id: String,
+    pub cv_group_id: String,
     pub x: Vec<f64>,
     pub y: f64,
 }
@@ -344,6 +360,7 @@ pub struct MlConfidenceDatasetRow {
 #[derive(Clone, Debug)]
 pub struct MlConfidencePreparedArtifactRows {
     pub ts: Option<String>,
+    pub compatibility_key: MlConfidenceCompatibilityKey,
     pub holdout_gate_rows: Vec<MlConfidenceDatasetRow>,
     pub holdout_dataset_rows: Vec<MlConfidenceDatasetRow>,
 }
@@ -351,8 +368,10 @@ pub struct MlConfidencePreparedArtifactRows {
 #[derive(Clone, Debug)]
 pub struct MlConfidencePreparedRows {
     pub scope: MlConfidenceScope,
+    pub compatibility_key: Option<MlConfidenceCompatibilityKey>,
     pub artifacts: Vec<MlConfidencePreparedArtifactRows>,
     pub has_holdout_dataset_rows: bool,
+    pub skipped_incompatible_artifacts: usize,
     pub warnings: Vec<String>,
 }
 
@@ -388,6 +407,94 @@ struct DatasetBuildSummary {
     used_meta: usize,
     newest_meta_ts: Option<String>,
     target: MlConfidenceTargetResolved,
+    compatibility_key: Option<MlConfidenceCompatibilityKey>,
+}
+
+fn meta_artifact_grouping_mode(meta: &Value) -> String {
+    meta.pointer("/req/grouping_mode")
+        .and_then(|v| v.as_str())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "legacy_unknown".to_string())
+}
+
+fn meta_artifact_shortlist_policy(meta: &Value) -> String {
+    let strict = meta
+        .pointer("/req/strict_shortlist")
+        .and_then(|v| v.as_bool());
+    let fallback = meta
+        .pointer("/req/allow_shortlist_fallback")
+        .and_then(|v| v.as_bool());
+    match (strict, fallback) {
+        (Some(true), Some(true)) => "strict_with_fallback".to_string(),
+        (Some(true), Some(false)) => "strict_no_fallback".to_string(),
+        (Some(false), Some(true)) => "permissive_with_fallback".to_string(),
+        (Some(false), Some(false)) => "permissive_no_fallback".to_string(),
+        _ => "legacy_unknown".to_string(),
+    }
+}
+
+fn meta_artifact_cv_group_id(meta: &Value, ts: Option<&str>) -> String {
+    let payload = serde_json::to_string(meta).unwrap_or_default();
+    let fingerprint = fnv1a64(&payload);
+    match ts.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(ts) => format!("{ts}#{fingerprint:016x}"),
+        None => format!("meta-run#{fingerprint:016x}"),
+    }
+}
+
+fn meta_artifact_target_family(meta: &Value) -> String {
+    let has_dataset_rows = meta
+        .pointer("/res/groups")
+        .and_then(|v| v.as_array())
+        .map(|groups| {
+            groups.iter().any(|group| {
+                group
+                    .get("holdout_rows")
+                    .and_then(|v| v.as_array())
+                    .map(|rows| !rows.is_empty())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if has_dataset_rows {
+        "holdout_dataset_pass_available".to_string()
+    } else {
+        "holdout_gate_only".to_string()
+    }
+}
+
+fn meta_artifact_train_score_semantics(meta: &Value) -> String {
+    let missing_cross_score = meta
+        .pointer("/res/groups")
+        .and_then(|v| v.as_array())
+        .map(|groups| {
+            groups
+                .iter()
+                .any(|group| group.get("cross_score_median").is_none())
+        })
+        .unwrap_or(true);
+    if missing_cross_score {
+        "meta_score_v1_missing_cross_score".to_string()
+    } else {
+        "meta_score_v1_full".to_string()
+    }
+}
+
+fn compatibility_key_for_meta_artifact(meta: &Value) -> MlConfidenceCompatibilityKey {
+    MlConfidenceCompatibilityKey {
+        target_family: meta_artifact_target_family(meta),
+        train_score_semantics: meta_artifact_train_score_semantics(meta),
+        grouping_mode: meta_artifact_grouping_mode(meta),
+        shortlist_policy: meta_artifact_shortlist_policy(meta),
+    }
+}
+
+fn compatibility_key_label(key: &MlConfidenceCompatibilityKey) -> String {
+    format!(
+        "target={} | score={} | grouping={} | shortlist={}",
+        key.target_family, key.train_score_semantics, key.grouping_mode, key.shortlist_policy
+    )
 }
 
 fn normalize_timeframe_label(raw: &str) -> String {
@@ -495,10 +602,7 @@ pub fn extract_ml_confidence_group_features(group: &Value) -> Option<MlConfidenc
         robust_score_p10: group.get("robust_score_p10").and_then(|v| v.as_f64())?,
         robust_score_median: group.get("robust_score_median").and_then(|v| v.as_f64())?,
         max_dd_p90: group.get("max_dd_p90").and_then(|v| v.as_f64())?,
-        cross_score_median: group
-            .get("cross_score_median")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0),
+        cross_score_median: group.get("cross_score_median").and_then(|v| v.as_f64()),
         meta_score: group.get("meta_score").and_then(|v| v.as_f64())?,
     })
 }
@@ -557,6 +661,7 @@ struct PreparedHistoryCounters {
     skipped_kind: usize,
     skipped_scope: usize,
     skipped_missing: usize,
+    skipped_incompatible: usize,
     gate_missing_holdout: usize,
     gate_insufficient_datasets: usize,
     dataset_missing_holdout_rows: usize,
@@ -598,6 +703,7 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
     let mut artifacts: Vec<MlConfidencePreparedArtifactRows> = Vec::new();
     let mut has_holdout_dataset_rows = false;
     let mut counters = PreparedHistoryCounters::default();
+    let mut scoped: Vec<(&Value, Option<String>, MlConfidenceCompatibilityKey)> = Vec::new();
 
     for meta in meta_artifacts {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -613,17 +719,38 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
             counters.skipped_scope = counters.skipped_scope.saturating_add(1);
             continue;
         }
+        scoped.push((
+            meta,
+            meta.get("ts")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            compatibility_key_for_meta_artifact(meta),
+        ));
+    }
+
+    let active_compatibility_key = scoped
+        .iter()
+        .max_by(|left, right| left.1.as_deref().cmp(&right.1.as_deref()))
+        .map(|(_, _, key)| key.clone());
+
+    for (meta, ts, compatibility_key) in scoped {
+        if active_compatibility_key
+            .as_ref()
+            .map(|active| active != &compatibility_key)
+            .unwrap_or(false)
+        {
+            counters.skipped_incompatible = counters.skipped_incompatible.saturating_add(1);
+            continue;
+        }
+
         let groups = meta
             .pointer("/res/groups")
             .and_then(|v| v.as_array())
             .map(|xs| xs.as_slice())
             .unwrap_or(&[]);
 
-        let group_id = meta
-            .get("ts")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let group_id = ts.clone().unwrap_or_default();
+        let cv_group_id = meta_artifact_cv_group_id(meta, ts.as_deref());
         let mut holdout_gate_rows: Vec<DatasetRow> = Vec::new();
         let mut holdout_dataset_rows: Vec<DatasetRow> = Vec::new();
         for g in groups {
@@ -652,6 +779,7 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
                     };
                     holdout_dataset_rows.push(DatasetRow {
                         group_id: ds,
+                        cv_group_id: cv_group_id.clone(),
                         x: x.clone(),
                         y,
                     });
@@ -666,6 +794,7 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
             if let Some(y) = label_from_holdout(h, cfg) {
                 holdout_gate_rows.push(DatasetRow {
                     group_id: group_id.clone(),
+                    cv_group_id: cv_group_id.clone(),
                     x: x.clone(),
                     y,
                 });
@@ -692,6 +821,7 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
                 };
                 holdout_dataset_rows.push(DatasetRow {
                     group_id: ds,
+                    cv_group_id: cv_group_id.clone(),
                     x: x.clone(),
                     y,
                 });
@@ -703,10 +833,8 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
         }
 
         artifacts.push(MlConfidencePreparedArtifactRows {
-            ts: meta
-                .get("ts")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
+            ts,
+            compatibility_key,
             holdout_gate_rows,
             holdout_dataset_rows,
         });
@@ -734,11 +862,23 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
             counters.skipped_missing
         ));
     }
+    if counters.skipped_incompatible > 0 {
+        let key_text = active_compatibility_key
+            .as_ref()
+            .map(compatibility_key_label)
+            .unwrap_or_else(|| "none".to_string());
+        warnings.push(format!(
+            "Skipped {} meta artifact(s) with incompatible ML-confidence history contracts (active: {}).",
+            counters.skipped_incompatible, key_text
+        ));
+    }
 
     MlConfidencePreparedRows {
         scope: scope.clone(),
+        compatibility_key: active_compatibility_key,
         artifacts,
         has_holdout_dataset_rows,
+        skipped_incompatible_artifacts: counters.skipped_incompatible,
         warnings,
     }
 }
@@ -813,6 +953,7 @@ fn build_dataset_from_prepared_rows(
             used_meta,
             newest_meta_ts,
             target,
+            compatibility_key: prepared.compatibility_key.clone(),
         },
         warnings,
     )
@@ -1174,7 +1315,7 @@ fn train_logistic_candidate(
         use std::collections::HashSet;
         let mut s = HashSet::new();
         for r in rows {
-            s.insert(r.group_id.clone());
+            s.insert(r.cv_group_id.clone());
         }
         s.len()
     };
@@ -1187,7 +1328,7 @@ fn train_logistic_candidate(
             let mut test_y: Vec<f64> = Vec::new();
 
             for (r, x) in rows.iter().zip(xs_raw.iter()) {
-                let f = (fnv1a64(&r.group_id) % (k as u64)) as usize;
+                let f = (fnv1a64(&r.cv_group_id) % (k as u64)) as usize;
                 if f == fold {
                     test_x.push(x.clone());
                     test_y.push(r.y);
@@ -1266,7 +1407,7 @@ fn train_gbdt_candidate(
         use std::collections::HashSet;
         let mut s = HashSet::new();
         for r in rows {
-            s.insert(r.group_id.clone());
+            s.insert(r.cv_group_id.clone());
         }
         s.len()
     };
@@ -1279,7 +1420,7 @@ fn train_gbdt_candidate(
             let mut test_y: Vec<f64> = Vec::new();
 
             for (r, x) in rows.iter().zip(xs_raw.iter()) {
-                let f = (fnv1a64(&r.group_id) % (k as u64)) as usize;
+                let f = (fnv1a64(&r.cv_group_id) % (k as u64)) as usize;
                 if f == fold {
                     test_x.push(x.clone());
                     test_y.push(r.y);
@@ -1500,7 +1641,7 @@ fn train_ml_confidence_model_from_rows_inner(
         use std::collections::HashSet;
         let mut s = HashSet::new();
         for r in rows {
-            s.insert(r.group_id.clone());
+            s.insert(r.cv_group_id.clone());
         }
         s.len()
     };
@@ -1669,6 +1810,7 @@ fn train_ml_confidence_model_from_rows_inner(
             trained_negatives: negatives,
             target: target_used.clone(),
             model_kind: trained.model_kind.clone(),
+            compatibility_key: build.compatibility_key.clone(),
             meta_artifacts_used: Some(build.used_meta),
             newest_meta_ts_used: build.newest_meta_ts.clone(),
             cv_auc,
@@ -1723,6 +1865,7 @@ pub fn train_ml_confidence_model_from_rows(
                 MlConfidenceTargetResolved::HoldoutDatasetPass
             }
         },
+        compatibility_key: None,
     };
     train_ml_confidence_model_from_rows_inner(scope, rows, cfg, build, warnings)
 }
@@ -1814,8 +1957,10 @@ mod tests {
         (0..rows)
             .map(|idx| {
                 let positive = idx % 2 == 0;
+                let group_id = format!("group-{:03}", idx % group_count);
                 MlConfidenceDatasetRow {
-                    group_id: format!("group-{:03}", idx % group_count),
+                    group_id: group_id.clone(),
+                    cv_group_id: group_id,
                     x: vec![
                         32.0 + idx as f64,
                         if positive { 0.78 } else { 0.24 },
@@ -2088,6 +2233,46 @@ mod tests {
     }
 
     #[test]
+    fn extract_features_preserves_missing_cross_score_median() {
+        let group = json!({
+            "samples": 40,
+            "pass_rate": 0.75,
+            "robust_score_p10": 0.10,
+            "robust_score_median": 0.18,
+            "max_dd_p90": 0.22,
+            "meta_score": 0.24
+        });
+
+        let features = extract_ml_confidence_group_features(&group).expect("features");
+        assert_eq!(features.cross_score_median, None);
+        assert!(features.to_feature_vec().is_none());
+    }
+
+    #[test]
+    fn prepared_rows_skip_incompatible_history_contracts() {
+        let (scope, cfg, metas) = mixed_history_scope_cfg_and_artifacts();
+        let prepared = prepare_ml_confidence_rows_from_meta_artifacts(&scope, &metas, &cfg.label);
+        let compatibility = prepared
+            .compatibility_key
+            .as_ref()
+            .expect("active compatibility key");
+
+        assert_eq!(prepared.artifacts.len(), 1);
+        assert_eq!(prepared.skipped_incompatible_artifacts, 1);
+        assert_eq!(
+            compatibility.target_family,
+            "holdout_dataset_pass_available"
+        );
+        assert_eq!(compatibility.train_score_semantics, "meta_score_v1_full");
+        assert_eq!(compatibility.grouping_mode, "legacy_unknown");
+        assert_eq!(compatibility.shortlist_policy, "legacy_unknown");
+        assert!(prepared
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("incompatible ML-confidence history contracts")));
+    }
+
+    #[test]
     fn prepared_row_prefix_auto_target_preserves_meta_usage() {
         let (scope, cfg, metas) = mixed_history_scope_cfg_and_artifacts();
         let prepared = prepare_ml_confidence_rows_from_meta_artifacts(&scope, &metas, &cfg.label);
@@ -2102,21 +2287,51 @@ mod tests {
         let (_dataset_model, dataset_metrics) =
             train_ml_confidence_model_from_prepared_rows(scope, &prepared, cfg, Some(2)).unwrap();
 
-        assert_eq!(gate_metrics.target, MlConfidenceTarget::HoldoutGate);
+        assert_eq!(gate_metrics.target, MlConfidenceTarget::HoldoutDatasetPass);
         assert_eq!(gate_metrics.meta_artifacts_used, Some(1));
         assert_eq!(
             gate_metrics.newest_meta_ts_used.as_deref(),
-            Some("2026-03-01T00:00:00Z")
+            Some("2026-03-02T00:00:00Z")
         );
 
         assert_eq!(
             dataset_metrics.target,
             MlConfidenceTarget::HoldoutDatasetPass
         );
-        assert_eq!(dataset_metrics.meta_artifacts_used, Some(2));
+        assert_eq!(dataset_metrics.meta_artifacts_used, Some(1));
         assert_eq!(
             dataset_metrics.newest_meta_ts_used.as_deref(),
             Some("2026-03-02T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn prepared_row_training_persists_compatibility_key_in_model_meta() {
+        let (scope, cfg, metas) = mixed_history_scope_cfg_and_artifacts();
+        let prepared = prepare_ml_confidence_rows_from_meta_artifacts(&scope, &metas, &cfg.label);
+        let (model, _metrics) =
+            train_ml_confidence_model_from_prepared_rows(scope, &prepared, cfg, None).unwrap();
+
+        assert_eq!(
+            model
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.compatibility_key.as_ref()),
+            prepared.compatibility_key.as_ref()
+        );
+        let serialized = serde_json::to_value(
+            model
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.compatibility_key.clone())
+                .expect("compatibility key"),
+        )
+        .expect("serialize compatibility key");
+        assert_eq!(
+            serialized
+                .get("target_family")
+                .and_then(|value| value.as_str()),
+            Some("holdout_dataset_pass_available")
         );
     }
 
@@ -2236,6 +2451,87 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("train Brier and calibration bins")));
+    }
+
+    #[test]
+    fn dataset_pass_training_groups_cv_by_meta_run_instead_of_dataset_id() {
+        let mk_group = |gid: usize| {
+            let mut rows = Vec::new();
+            for ds in 0..6usize {
+                let pass = (gid + ds) % 2 == 0;
+                rows.push(json!({
+                    "dataset": format!("DS{gid:03}_{ds:02}"),
+                    "score_median": if pass { 0.18 } else { -0.12 },
+                    "score_p10": if pass { 0.08 } else { -0.16 },
+                    "sharpe_median": if pass { 0.90 } else { -0.55 },
+                    "max_dd_worst": if pass { 0.24 } else { 0.58 },
+                    "pnl_median": if pass { 0.80 } else { -0.70 },
+                    "pass": pass
+                }));
+            }
+            json!({
+                "samples": 44,
+                "pass_rate": 0.55,
+                "robust_score_p10": 0.02,
+                "robust_score_median": 0.08,
+                "max_dd_p90": 0.30,
+                "cross_score_median": 0.01,
+                "meta_score": 0.06,
+                "key": format!("rows-{gid:03}"),
+                "holdout": {
+                    "datasets": rows.len(),
+                    "pass_rate": 0.50,
+                    "score_p10": 0.00,
+                    "score_median": 0.04,
+                    "sharpe_median": 0.20,
+                    "max_dd_p90": 0.30,
+                    "pnl_median": 0.10
+                },
+                "holdout_rows": rows
+            })
+        };
+
+        let meta = json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": "2026-04-01T00:00:00Z",
+            "req": { "strategy_kind": "CompositeMo", "timeframe": "1m" },
+            "res": {
+                "strategy_kind": "CompositeMo",
+                "timeframe": "1m",
+                "groups": (0..6usize).map(mk_group).collect::<Vec<_>>()
+            }
+        });
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let mut cfg = MlConfidenceTrainConfig::default();
+        cfg.target = MlConfidenceTarget::HoldoutDatasetPass;
+        cfg.label.min_holdout_datasets = 1;
+        cfg.label.min_holdout_score_p10 = 0.0;
+
+        let prepared =
+            prepare_ml_confidence_rows_from_meta_artifacts(&scope, &[meta.clone()], &cfg.label);
+        let dataset_rows = &prepared.artifacts[0].holdout_dataset_rows;
+        let unique_cv_groups: std::collections::HashSet<_> = dataset_rows
+            .iter()
+            .map(|row| row.cv_group_id.clone())
+            .collect();
+        let unique_dataset_ids: std::collections::HashSet<_> = dataset_rows
+            .iter()
+            .map(|row| row.group_id.clone())
+            .collect();
+        assert!(dataset_rows.len() >= 25);
+        assert_eq!(unique_cv_groups.len(), 1);
+        assert!(unique_dataset_ids.len() > 1);
+
+        let (_model, metrics) =
+            train_ml_confidence_model_from_meta_artifacts(scope, &[meta], cfg).unwrap();
+        assert!(metrics.cv_auc.is_none());
+        assert!(metrics
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("CV skipped (need at least 2 unique meta runs).")));
     }
 
     #[test]

@@ -6,6 +6,16 @@ pub struct SharpeStats {
     pub dsr: f64,
 }
 
+pub fn effective_sample_count(raw_samples: usize, effective_samples: Option<usize>) -> usize {
+    let raw_floor = raw_samples.max(2);
+    effective_samples.unwrap_or(raw_floor).clamp(2, raw_floor)
+}
+
+pub fn effective_trial_count(raw_trials: usize, effective_trials: Option<usize>) -> usize {
+    let raw_floor = raw_trials.max(1);
+    effective_trials.unwrap_or(raw_floor).clamp(1, raw_floor)
+}
+
 fn normal_cdf(x: f64) -> f64 {
     // Abramowitz and Stegun 7.1.26
     let z = x.abs();
@@ -101,6 +111,23 @@ pub fn probabilistic_sharpe_ratio(
     normal_cdf(z).clamp(0.0, 1.0)
 }
 
+pub fn probabilistic_sharpe_ratio_with_effective_samples(
+    sr_hat: f64,
+    benchmark_sr: f64,
+    raw_samples: usize,
+    effective_samples: Option<usize>,
+    skewness: f64,
+    kurtosis: f64,
+) -> f64 {
+    probabilistic_sharpe_ratio(
+        sr_hat,
+        benchmark_sr,
+        effective_sample_count(raw_samples, effective_samples),
+        skewness,
+        kurtosis,
+    )
+}
+
 pub fn mean_std(xs: &[f64]) -> (f64, f64) {
     if xs.is_empty() {
         return (0.0, 0.0);
@@ -149,6 +176,32 @@ pub fn deflated_sharpe_ratio(
     probabilistic_sharpe_ratio(sr_hat, sr_star, samples, skewness, kurtosis)
 }
 
+pub fn deflated_sharpe_ratio_with_effective_counts(
+    sr_hat: f64,
+    raw_samples: usize,
+    effective_samples: Option<usize>,
+    skewness: f64,
+    kurtosis: f64,
+    raw_trials: usize,
+    effective_trials: Option<usize>,
+    peer_sr_mean: f64,
+    peer_sr_std: f64,
+) -> f64 {
+    let sr_star = expected_max_sharpe(
+        effective_trial_count(raw_trials, effective_trials),
+        peer_sr_mean,
+        peer_sr_std,
+    );
+    probabilistic_sharpe_ratio_with_effective_samples(
+        sr_hat,
+        sr_star,
+        raw_samples,
+        effective_samples,
+        skewness,
+        kurtosis,
+    )
+}
+
 pub fn minimum_track_record_length(
     sr_hat: f64,
     benchmark_sr: f64,
@@ -181,6 +234,22 @@ pub fn minimum_track_record_length(
     } else {
         Some(required.ceil().max(2.0) as usize)
     }
+}
+
+pub fn inflate_effective_requirement_to_raw_bars(
+    required_effective_obs: usize,
+    raw_obs: usize,
+    effective_obs: usize,
+) -> usize {
+    let raw_floor = raw_obs.max(2);
+    let effective_floor = effective_obs.clamp(2, raw_floor);
+    if effective_floor >= raw_floor {
+        return required_effective_obs.max(2);
+    }
+    ((required_effective_obs as f64) * (raw_floor as f64) / (effective_floor as f64))
+        .ceil()
+        .max(required_effective_obs as f64)
+        .max(2.0) as usize
 }
 
 #[cfg(test)]
@@ -254,6 +323,50 @@ mod tests {
     }
 
     #[test]
+    fn effective_count_wrappers_match_legacy_when_counts_are_unchanged() {
+        let legacy_psr = probabilistic_sharpe_ratio(0.8, 0.1, 64, 0.0, 3.0);
+        let wrapped_psr =
+            probabilistic_sharpe_ratio_with_effective_samples(0.8, 0.1, 64, Some(64), 0.0, 3.0);
+        approx_eq(legacy_psr, wrapped_psr, 1e-12);
+
+        let legacy_dsr = deflated_sharpe_ratio(1.0, 64, 0.0, 3.0, 12, 0.4, 0.2);
+        let wrapped_dsr = deflated_sharpe_ratio_with_effective_counts(
+            1.0,
+            64,
+            Some(64),
+            0.0,
+            3.0,
+            12,
+            Some(12),
+            0.4,
+            0.2,
+        );
+        approx_eq(legacy_dsr, wrapped_dsr, 1e-12);
+    }
+
+    #[test]
+    fn effective_count_wrappers_weaken_probability_when_effective_counts_shrink() {
+        let legacy_psr = probabilistic_sharpe_ratio(0.8, 0.0, 128, 0.0, 3.0);
+        let overlap_psr =
+            probabilistic_sharpe_ratio_with_effective_samples(0.8, 0.0, 128, Some(32), 0.0, 3.0);
+        assert!(overlap_psr < legacy_psr);
+
+        let legacy_dsr = deflated_sharpe_ratio(1.0, 128, 0.0, 3.0, 16, 0.4, 0.2);
+        let overlap_dsr = deflated_sharpe_ratio_with_effective_counts(
+            1.0,
+            128,
+            Some(32),
+            0.0,
+            3.0,
+            16,
+            Some(4),
+            0.4,
+            0.2,
+        );
+        assert!(overlap_dsr < legacy_dsr);
+    }
+
+    #[test]
     fn minimum_track_record_length_increases_with_confidence() {
         let a = minimum_track_record_length(1.0, 0.0, 0.0, 3.0, 0.80).expect("mintrl");
         let b = minimum_track_record_length(1.0, 0.0, 0.0, 3.0, 0.95).expect("mintrl");
@@ -264,5 +377,16 @@ mod tests {
     fn minimum_track_record_length_requires_excess_sharpe() {
         assert!(minimum_track_record_length(0.0, 0.0, 0.0, 3.0, 0.95).is_none());
         assert!(minimum_track_record_length(-0.2, 0.0, 0.0, 3.0, 0.95).is_none());
+    }
+
+    #[test]
+    fn inflate_effective_requirement_to_raw_bars_is_identity_without_overlap() {
+        assert_eq!(inflate_effective_requirement_to_raw_bars(12, 48, 48), 12);
+    }
+
+    #[test]
+    fn inflate_effective_requirement_to_raw_bars_increases_raw_threshold_under_overlap() {
+        assert_eq!(inflate_effective_requirement_to_raw_bars(12, 48, 24), 24);
+        assert_eq!(inflate_effective_requirement_to_raw_bars(5, 1, 2), 5);
     }
 }

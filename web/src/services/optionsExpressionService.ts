@@ -34,6 +34,40 @@ function normalizeStringList(value: unknown): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+export interface OptionsExpressionExactnessSemanticsSummary {
+  exactnessClass: string;
+  medianReplayContract: string;
+  retainedFrontierCertification: string;
+  exactPruningContract: string;
+}
+
+function normalizeExactnessSemantics(
+  raw: unknown,
+): OptionsExpressionExactnessSemanticsSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const exactnessClass = normalizeText(row.exactness_class);
+  const medianReplayContract = normalizeText(row.median_replay_contract);
+  const retainedFrontierCertification = normalizeText(
+    row.retained_frontier_certification,
+  );
+  const exactPruningContract = normalizeText(row.exact_pruning_contract);
+  if (
+    !exactnessClass &&
+    !medianReplayContract &&
+    !retainedFrontierCertification &&
+    !exactPruningContract
+  ) {
+    return null;
+  }
+  return {
+    exactnessClass,
+    medianReplayContract,
+    retainedFrontierCertification,
+    exactPruningContract,
+  };
+}
+
 export interface OptionsDatasetManifestSummary {
   version: number;
   optionsDatasetId: string;
@@ -381,6 +415,7 @@ export interface AnalyzeOptionsExpressionFeasibilitySummary {
   replayBuildMs: number;
   totalPreviewMs: number;
   replayBuildTiming: OptionsExpressionReplayBuildTimingSummary | null;
+  exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   diagnostics: OptionsExpressionDiagnosticsSummary;
   priceSemantics: string;
   fillModel: string;
@@ -423,6 +458,7 @@ export interface RunOptionsExpressionSummary {
   artifactTs: string;
   parentArtifactId: string;
   optionsDatasetHash: string;
+  exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   backendUsed: string;
   backendFallbackReason?: string;
   priceSemantics: string;
@@ -444,6 +480,7 @@ export interface OptionsExpressionArtifactSummary {
   parentStrategyKind?: string;
   rootSymbol: string;
   optionsDatasetId: string;
+  exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   backendUsed: string;
   backendFallbackReason?: string;
   priceSemantics: string;
@@ -512,6 +549,7 @@ export interface OptionsExpressionArtifactRecord {
   rootSymbol: string;
   optionsDatasetId: string;
   optionsDatasetHash: string;
+  exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   backendUsed: string;
   backendFallbackReason?: string;
   priceSemantics: string;
@@ -1279,6 +1317,12 @@ function normalizeFeasibilityResponse(
     replayBuildMs: normalizeNumber(row.replay_build_ms),
     totalPreviewMs: normalizeNumber(row.total_preview_ms),
     replayBuildTiming: normalizeReplayBuildTiming(row.replay_build_timing),
+    exactnessSemantics: normalizeExactnessSemantics(
+      row.exactness_semantics ??
+        row.exactnessSemantics ??
+        report.exactness_semantics ??
+        report.exactnessSemantics,
+    ),
     diagnostics: normalizeDiagnostics(report.diagnostics),
     priceSemantics: normalizeText(report.price_semantics),
     fillModel: normalizeText(report.fill_model),
@@ -1370,6 +1414,14 @@ function normalizeRunOptionsExpression(
     artifactTs: normalizeText(artifact.ts),
     parentArtifactId: normalizeText(artifact.parent_artifact_id),
     optionsDatasetHash: normalizeText(artifact.options_dataset_hash),
+    exactnessSemantics: normalizeExactnessSemantics(
+      row.exactness_semantics ??
+        row.exactnessSemantics ??
+        result.exactness_semantics ??
+        result.exactnessSemantics ??
+        artifact.exactness_semantics ??
+        artifact.exactnessSemantics,
+    ),
     backendUsed: normalizeText(result.backend_used),
     backendFallbackReason: normalizeText(result.backend_fallback_reason),
     priceSemantics: normalizeText(result.price_semantics),
@@ -1470,6 +1522,9 @@ function normalizeOptionsExpressionArtifactSummary(
     parentStrategyKind: normalizeText(row.parent_strategy_kind),
     rootSymbol: normalizeText(row.root_symbol),
     optionsDatasetId: normalizeText(row.options_dataset_id),
+    exactnessSemantics: normalizeExactnessSemantics(
+      row.exactness_semantics ?? row.exactnessSemantics,
+    ),
     backendUsed: normalizeText(row.backend_used),
     backendFallbackReason: normalizeText(row.backend_fallback_reason),
     priceSemantics: normalizeText(row.price_semantics),
@@ -1614,6 +1669,9 @@ function normalizeOptionsExpressionArtifact(
     rootSymbol: normalizeText(row.root_symbol),
     optionsDatasetId: normalizeText(row.options_dataset_id),
     optionsDatasetHash: normalizeText(row.options_dataset_hash),
+    exactnessSemantics: normalizeExactnessSemantics(
+      row.exactness_semantics ?? row.exactnessSemantics,
+    ),
     backendUsed: normalizeText(row.backend_used),
     backendFallbackReason: normalizeText(row.backend_fallback_reason),
     priceSemantics: normalizeText(row.price_semantics),

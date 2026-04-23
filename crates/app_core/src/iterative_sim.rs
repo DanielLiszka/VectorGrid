@@ -396,12 +396,20 @@ fn simulate_iterative_from_signals_inner(
     let mut count: u64 = 0;
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
+    let mut count_neg: u64 = 0;
     let mut sum_neg_sq = 0.0_f64;
     let mut sum_pos_r = 0.0_f64;
     let mut sum_neg_abs_r = 0.0_f64;
+    let mut long_obs: u64 = 0;
+    let mut short_obs: u64 = 0;
+    let mut long_sum_r = 0.0_f64;
+    let mut short_sum_r = 0.0_f64;
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
+    let mut underwater_bars: u64 = 0;
+    let mut underwater_run: u64 = 0;
+    let mut max_underwater_duration_bars: u64 = 0;
     let mut overlay_state = ExecutionOverlayState::default();
 
     for t in start_t..n_total {
@@ -410,6 +418,9 @@ fn simulate_iterative_from_signals_inner(
         if cfg.long_only && desired < 0 {
             desired = 0;
         }
+        // Generic iterative simulation applies overlay semantics here. Callers
+        // such as `ml_signal` that already resolved cooldown/persistence/flip
+        // policy into `desired_pos` must neutralize those overlay fields first.
         desired = overlay_apply_signal_persistence(desired, pos, &overlays, &mut overlay_state);
         desired = overlay_apply_entry_cooldown(desired, pos, &overlay_state);
 
@@ -455,9 +466,14 @@ fn simulate_iterative_from_signals_inner(
             }
         }
 
-        let mut step_log = if pos == 0 { 0.0 } else { (pos as f64) * lr[t] };
+        let step_side = pos;
+        let mut step_log = if step_side == 0 {
+            0.0
+        } else {
+            (step_side as f64) * lr[t]
+        };
 
-        if pos != 0 {
+        if step_side != 0 {
             if !entry_px.is_finite() || entry_px <= 0.0 {
                 entry_px = if t > 0 {
                     ohlc.close[t - 1]
@@ -481,7 +497,7 @@ fn simulate_iterative_from_signals_inner(
                 };
                 if prev_px.is_finite() && prev_px > 0.0 && fill_px.is_finite() && fill_px > 0.0 {
                     let bar_log = (fill_px / prev_px).ln();
-                    step_log = if pos > 0 { bar_log } else { -bar_log };
+                    step_log = if step_side > 0 { bar_log } else { -bar_log };
                 }
                 if log_cost != 0.0 {
                     log_eq += log_cost;
@@ -509,6 +525,13 @@ fn simulate_iterative_from_signals_inner(
             0.0
         };
         ulcer_sum_sq += dd * dd;
+        if dd_log > 0.0 {
+            underwater_bars = underwater_bars.saturating_add(1);
+            underwater_run = underwater_run.saturating_add(1);
+            max_underwater_duration_bars = max_underwater_duration_bars.max(underwater_run);
+        } else {
+            underwater_run = 0;
+        }
 
         count = count.saturating_add(1);
         let delta = step_r - mean;
@@ -517,10 +540,18 @@ fn simulate_iterative_from_signals_inner(
         m2 += delta * delta2;
 
         if step_r < 0.0 {
+            count_neg = count_neg.saturating_add(1);
             sum_neg_sq += step_r * step_r;
             sum_neg_abs_r += -step_r;
         } else {
             sum_pos_r += step_r;
+        }
+        if step_side > 0 {
+            long_obs = long_obs.saturating_add(1);
+            long_sum_r += step_r;
+        } else if step_side < 0 {
+            short_obs = short_obs.saturating_add(1);
+            short_sum_r += step_r;
         }
 
         // Exposure is derived from the end-of-bar position state after this
@@ -554,6 +585,22 @@ fn simulate_iterative_from_signals_inner(
         0.0
     };
     let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
+    let downside_frequency = count_neg as f64 / denom;
+    let downside_severity = if count_neg > 0 {
+        sum_neg_abs_r / count_neg as f64
+    } else {
+        0.0
+    };
+    let long_mean_return = if long_obs > 0 {
+        long_sum_r / long_obs as f64
+    } else {
+        0.0
+    };
+    let short_mean_return = if short_obs > 0 {
+        short_sum_r / short_obs as f64
+    } else {
+        0.0
+    };
     let omega = if sum_neg_abs_r > EPS_DENOM {
         (sum_pos_r / sum_neg_abs_r).clamp(0.0, CLAMP_MAX)
     } else if sum_pos_r > 0.0 {
@@ -596,14 +643,19 @@ fn simulate_iterative_from_signals_inner(
     } else {
         0.0
     };
+    let underwater_fraction = if obs > 0.0 {
+        underwater_bars as f64 / obs
+    } else {
+        0.0
+    };
 
     Metrics {
         pnl,
         sharpe,
         sortino,
         downside_deviation: downside_dev,
-        downside_frequency: 0.0,
-        downside_severity: 0.0,
+        downside_frequency,
+        downside_severity,
         calmar,
         omega,
         kappa_tau: 0.0,
@@ -614,15 +666,15 @@ fn simulate_iterative_from_signals_inner(
         trades,
         exposure,
         net_exposure,
-        long_mean_return: 0.0,
-        short_mean_return: 0.0,
+        long_mean_return,
+        short_mean_return,
         closed_trades: 0,
         winning_trades: 0,
         losing_trades: 0,
         gross_profit: 0.0,
         gross_loss: 0.0,
-        underwater_fraction: 0.0,
-        max_underwater_duration_bars: 0,
+        underwater_fraction,
+        max_underwater_duration_bars: max_underwater_duration_bars.min(u32::MAX as u64) as u32,
     }
 }
 
@@ -881,5 +933,36 @@ mod tests {
 
         assert_eq!(metrics.exposure, 0.0);
         assert_eq!(metrics.net_exposure, 0.0);
+    }
+
+    #[test]
+    fn iterative_exports_nonzero_downside_side_return_and_underwater_fields() {
+        let lr = vec![0.0, 0.02, -0.04, 0.03, -0.01, 0.0];
+        let sig = vec![0, 1, 1, -1, -1, 0];
+        let cfg = StrategyConfig {
+            long_only: false,
+            allow_flip: true,
+            ..StrategyConfig::default()
+        };
+        let sim = IterativeSimConfig::default();
+
+        let metrics =
+            simulate_iterative_from_signals(&lr, make_flat_ohlc(lr.len()), &sig, 1, &cfg, &sim);
+
+        let long_r1 = lr[1].exp_m1();
+        let long_r2 = lr[2].exp_m1();
+        let short_r1 = (-lr[3]).exp_m1();
+        let short_r2 = (-lr[4]).exp_m1();
+        let expected_downside_frequency = 2.0 / 5.0;
+        let expected_downside_severity = ((-long_r2) + (-short_r1)) / 2.0;
+        let expected_long_mean = (long_r1 + long_r2) / 2.0;
+        let expected_short_mean = (short_r1 + short_r2) / 2.0;
+
+        assert!((metrics.downside_frequency - expected_downside_frequency).abs() <= 1.0e-12);
+        assert!((metrics.downside_severity - expected_downside_severity).abs() <= 1.0e-12);
+        assert!((metrics.long_mean_return - expected_long_mean).abs() <= 1.0e-12);
+        assert!((metrics.short_mean_return - expected_short_mean).abs() <= 1.0e-12);
+        assert!((metrics.underwater_fraction - 0.8).abs() <= 1.0e-12);
+        assert_eq!(metrics.max_underwater_duration_bars, 4);
     }
 }

@@ -100,6 +100,8 @@ describe('strategyOptimizationCapabilities', () => {
     expect(caps.executionSummary).toContain('GPU')
     expect(caps.outputSummary).toContain('runs through the normal optimizer path')
     expect(caps.outputSummary).toContain('Explicit 17-row and 22-row metric-contract overrides are available')
+    expect(caps.outputSummary).toContain('replay-free exact rerank')
+    expect(caps.outputSummary).toContain('replay-backed exact diagnostics')
   })
 
   it('describes the full double-MA family instead of classifying overlay kinds as unknown', () => {
@@ -226,6 +228,8 @@ describe('strategyOptimizationCapabilities', () => {
     expect(kernelCaps.supportsAdvancedExactKernelControls).toBe(true)
     expect(kernelCaps.outputSummary).toContain('export')
     expect(kernelCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/metric-contract controls apply')
+    expect(kernelCaps.outputSummary).toContain('Replay-free exact union/confidence reranks')
+    expect(kernelCaps.outputSummary).toContain('replay-backed exact slice/neighborhood diagnostics')
     expect(hybridCaps.supportsExportAll).toBe(false)
     expect(hybridCaps.supportsHeatmap).toBe(true)
     expect(hybridCaps.supportsTopK).toBe(true)
@@ -288,7 +292,8 @@ describe('strategyOptimizationCapabilities', () => {
 
     expect(trendKernelCaps.executionSummary).toContain('GPU kernel route')
     expect(trendKernelCaps.executionSummary).toContain('ADX is off')
-    expect(trendKernelCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/metric-contract controls apply')
+    expect(trendKernelCaps.outputSummary).toContain('Replay-free exact union/confidence reranks')
+    expect(trendKernelCaps.outputSummary).toContain('replay-backed exact slice/neighborhood diagnostics')
     expect(breakoutHybridCaps.executionSummary).toContain('hybrid GPU route')
     expect(breakoutHybridCaps.executionSummary).toContain('ADX is on')
     expect(breakoutHybridCaps.outputSummary).toContain('advanced exact-kernel shortlist/score controls remain disabled')
@@ -386,7 +391,9 @@ describe('strategyOptimizationCapabilities', () => {
       expect(kernelCaps.supportsShortlistUnionMode).toBe(true)
       expect(kernelCaps.supportsAdvancedExactKernelControls).toBe(false)
       expect(kernelCaps.outputSummary).toContain('host-side extra shortlist heads')
-      expect(kernelCaps.outputSummary).toContain('retained-shortlist confidence reranking')
+      expect(kernelCaps.outputSummary).toContain('route-aligned retained-shortlist union and confidence reranking')
+      expect(kernelCaps.outputSummary).toContain('retained-shortlist union reranking currently require include_all=true')
+      expect(kernelCaps.outputSummary).toContain('retained-shortlist confidence reranking requires top_k > 0')
       expect(kernelCaps.outputSummary).toContain('Trade22 on standalone GpuKernel uses bounded host-side enrichment after GPU search')
 
       expect(cpuCaps.supportsIncludeAll).toBe(true)
@@ -472,6 +479,7 @@ describe('strategyOptimizationCapabilities', () => {
     expect(kernelCaps.outputSummary).toContain('top_k > 0')
     expect(kernelCaps.outputSummary).toContain('per-pair CSV export')
     expect(kernelCaps.outputSummary).toContain('not emit the Double MA heatmap')
+    expect(kernelCaps.outputSummary).toContain('route-aligned retained-shortlist union and confidence reranking')
     expect(kernelCaps.outputSummary).toContain('Trade22 on standalone GpuKernel uses bounded host-side enrichment after GPU search')
     expect(cpuCaps.outputSummary).toContain('Include-all remains meaningful and not free')
     expect(cpuCaps.outputSummary).toContain('per-pair CSV export')

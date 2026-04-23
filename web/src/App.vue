@@ -4,7 +4,9 @@ import { storeToRefs } from 'pinia'
 import AppRuntimeBanner from './components/AppRuntimeBanner.vue'
 import DesktopTitlebar from './components/DesktopTitlebar.vue'
 import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
-import RunFooterPanel from './components/RunFooterPanel.vue'
+import OptimizeWorkspacePanel from './components/OptimizeWorkspacePanel.vue'
+import ActionStatusBar from './components/ActionStatusBar.vue'
+import StrategyWorkspacePanel from './components/StrategyWorkspacePanel.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
 import { useWorkflowStore } from './stores/workflowStore'
 import {
@@ -27,11 +29,9 @@ const HistoryContextDock = defineAsyncComponent(() => import('./components/Histo
 const MetaWorkspacePanel = defineAsyncComponent(() => import('./components/MetaWorkspacePanel.vue'))
 const MlSignalShellPanel = defineAsyncComponent(() => import('./components/MlSignalShellPanel.vue'))
 const OptimizeContextDock = defineAsyncComponent(() => import('./components/OptimizeContextDock.vue'))
-const OptimizeWorkspacePanel = defineAsyncComponent(() => import('./components/OptimizeWorkspacePanel.vue'))
 const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
 const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/ParetoWorkspacePanel.vue'))
 const SettingsWorkspacePanel = defineAsyncComponent(() => import('./components/SettingsWorkspacePanel.vue'))
-const StrategyWorkspacePanel = defineAsyncComponent(() => import('./components/StrategyWorkspacePanel.vue'))
 const TaskCenterOverlay = defineAsyncComponent(() => import('./components/TaskCenterOverlay.vue'))
 const TopWorkspacePanel = defineAsyncComponent(() => import('./components/TopWorkspacePanel.vue'))
 const ValidationContextDock = defineAsyncComponent(() => import('./components/ValidationContextDock.vue'))
@@ -149,7 +149,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <OptimizeContextDock v-if="optimizeDockActive" />
   <ParetoWorkspacePanel v-if="paretoPanelActive" />
   <OptimizeWorkspacePanel v-if="mountedPanels.optimize && !mlSignalModeActive" />
-  <RunFooterPanel />
+  <ActionStatusBar />
   <SettingsWorkspacePanel v-if="settingsWorkspaceActive" />
   <StrategyWorkspacePanel v-if="strategyPanelActive" />
   <TopWorkspacePanel v-if="topPanelActive" />

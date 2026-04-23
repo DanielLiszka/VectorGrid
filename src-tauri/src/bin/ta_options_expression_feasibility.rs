@@ -1502,6 +1502,8 @@ fn build_request(
             min_premium: cli.min_premium,
             min_volume: cli.min_volume,
             min_open_interest: cli.min_open_interest,
+            max_quote_age_ms: None,
+            max_spread_bps: None,
         },
         top_k,
         min_valid_trades: cli.min_valid_trades,

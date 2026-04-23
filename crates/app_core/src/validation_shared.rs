@@ -52,8 +52,18 @@ pub struct ValidationAdmissionProvenance {
     pub post_dedupe_count: usize,
     #[serde(default)]
     pub post_cap_count: usize,
+    #[serde(default)]
+    pub candidate_cap_limit: usize,
+    #[serde(default)]
+    pub trimmed_count: usize,
+    #[serde(default)]
+    pub trim_ratio: f64,
+    #[serde(default)]
+    pub cap_applied: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heads: Vec<ValidationAdmissionHeadProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_bias_note: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -168,18 +178,28 @@ pub struct SpaConfigOptional {
 #[derive(Clone, Debug, Serialize)]
 pub struct WalkForwardStats {
     pub windows: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_windows_upper_bound: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bars_covered: Option<usize>,
     pub sharpe_median: f64,
     pub sharpe_worst: f64,
     pub max_dd_median: f64,
     pub max_dd_worst: f64,
+    pub max_dd_tail_mean_p95: f64,
     pub pnl_median: f64,
     pub pnl_worst: f64,
+    pub pnl_tail_mean_p05: f64,
     pub downside_vol_ratio_median: f64,
     pub downside_vol_ratio_worst: f64,
     pub ulcer_index_median: f64,
     pub ulcer_index_worst: f64,
     pub martin_ratio_median: f64,
     pub martin_ratio_worst: f64,
+    pub underwater_fraction_median: f64,
+    pub underwater_fraction_worst: f64,
+    pub max_underwater_duration_bars_median: u32,
+    pub max_underwater_duration_bars_worst: u32,
     pub trades_median: u32,
     pub trades_worst: u32,
 }
@@ -307,16 +327,20 @@ pub struct TradeBootstrapStats {
     pub trade_count: usize,
     pub prob_pnl_positive: f64,
     pub pnl_p05: f64,
+    pub pnl_tail_mean_p05: f64,
     pub pnl_p50: f64,
     pub pnl_p95: f64,
     pub max_dd_p50: f64,
     pub max_dd_p95: f64,
+    pub max_dd_tail_mean_p95: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stationary_mean_block_len: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stationary_prob_pnl_positive: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stationary_pnl_p05: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_pnl_tail_mean_p05: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stationary_pnl_p50: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -325,6 +349,8 @@ pub struct TradeBootstrapStats {
     pub stationary_max_dd_p50: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stationary_max_dd_p95: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_max_dd_tail_mean_p95: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -398,6 +424,63 @@ pub struct CrossTickerValidationSummary {
     pub datasets: Vec<CrossTickerDatasetMeta>,
 }
 
+/// Additive semantics/provenance contract for validation artifacts.
+///
+/// This is intentionally descriptive metadata layered on top of the existing
+/// validation outputs. It does not change ranking, gating, or approval logic.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ValidationSemanticsProvenance {
+    /// Stage order for the current validation stack.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stage_sequence: Vec<String>,
+    /// Metric channel used for the candidate-local score basis.
+    #[serde(default)]
+    pub score_channel: String,
+    /// Source contract for PSR/DSR.
+    #[serde(default)]
+    pub probability_metric_source: String,
+    /// Source contract for the stored track-record bars.
+    #[serde(default)]
+    pub track_record_source: String,
+    /// CSCV coverage state at the run level.
+    #[serde(default)]
+    pub cscv_coverage_state: String,
+    /// Candidate-stat coverage shape for CSCV outputs.
+    #[serde(default)]
+    pub cscv_candidate_stat_coverage: String,
+    /// Whether evaluated CSCV selected any candidates.
+    #[serde(default)]
+    pub cscv_selection_state: String,
+    #[serde(default)]
+    pub cscv_selected_candidate_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cscv_skipped_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_mode: Option<CrossTickerMode>,
+    /// Current cross-ticker aggregation scope. Success-only summaries do not
+    /// imply full-panel robustness over failed reruns.
+    #[serde(default)]
+    pub cross_summary_scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_summary_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_summary_role: Option<String>,
+    #[serde(default)]
+    pub passed_semantics: String,
+    #[serde(default)]
+    pub approved_semantics: String,
+    #[serde(default)]
+    pub passed_can_diverge_from_approved: bool,
+    #[serde(default)]
+    pub passed_vs_approved_contract: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_summary_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_summary_semantics: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_summary_descriptive_only: Option<bool>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CrossTickerStats {
     pub datasets: usize,
@@ -420,6 +503,7 @@ pub struct ValidationAuxWorkMask {
     pub entry_margin_fragility: bool,
     pub underwater_duration: bool,
     pub checkpoint_robustness: bool,
+    pub contiguous_segment_robustness: bool,
     pub benchmark_slice_summary: bool,
 }
 
@@ -431,6 +515,7 @@ impl ValidationAuxWorkMask {
             entry_margin_fragility: true,
             underwater_duration: true,
             checkpoint_robustness: true,
+            contiguous_segment_robustness: true,
             benchmark_slice_summary: true,
         }
     }
@@ -442,6 +527,7 @@ impl ValidationAuxWorkMask {
             entry_margin_fragility: false,
             underwater_duration: false,
             checkpoint_robustness: false,
+            contiguous_segment_robustness: false,
             benchmark_slice_summary: false,
         }
     }
@@ -568,6 +654,7 @@ mod tests {
         assert!(!mask.entry_margin_fragility);
         assert!(!mask.underwater_duration);
         assert!(!mask.checkpoint_robustness);
+        assert!(!mask.contiguous_segment_robustness);
         assert!(!mask.benchmark_slice_summary);
     }
 

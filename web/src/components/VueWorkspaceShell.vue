@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ChevronDown, ListTodo } from 'lucide-vue-next'
+import { ListTodo } from 'lucide-vue-next'
 import AppVisualIcon from './AppVisualIcon.vue'
+import RunContextBar from './RunContextBar.vue'
 import { TASK_CENTER_PANEL_ID, openTaskCenter as requestTaskCenterOpen, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
 import { useDataStore } from '../stores/dataStore'
@@ -657,37 +658,11 @@ onBeforeUnmount(() => {
         {{ shellSelectionAnnouncement }}
       </div>
 
-      <section class="contextStrip surfaceSunken" aria-label="Run context">
-        <article
-          v-for="item in contextItems"
-          :key="`ctx_${item.key}`"
-          class="contextCard"
-          :class="{ current: item.current }"
-        >
-          <div class="contextKey">{{ item.key }}</div>
-          <div class="contextValue mono">{{ item.value }}</div>
-        </article>
-
-        <details v-if="secondaryContextItems.length > 0" class="contextOverflow">
-          <summary class="contextOverflowSummary">
-            <span class="contextOverflowBody">
-              <span class="contextKey">More</span>
-              <span class="contextValue mono">{{ secondaryContextSummary }}</span>
-            </span>
-            <ChevronDown class="contextOverflowIcon" :size="14" aria-hidden="true" />
-          </summary>
-          <div class="contextOverflowPanel" role="group" aria-label="Additional run context">
-            <article
-              v-for="item in secondaryContextItems"
-              :key="`ctx_more_${item.key}`"
-              class="contextCard"
-            >
-              <div class="contextKey">{{ item.key }}</div>
-              <div class="contextValue mono">{{ item.value }}</div>
-            </article>
-          </div>
-        </details>
-      </section>
+      <RunContextBar
+        :items="contextItems"
+        :secondary-items="secondaryContextItems"
+        :secondary-summary="secondaryContextSummary"
+      />
     </div>
 
     <main class="shellMain">

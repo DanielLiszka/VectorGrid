@@ -42,6 +42,8 @@ use crate::validation_shared::SpaBenchmarkKind;
 
 static DYNAMIC_GPU_PREFLIGHT_CACHE: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
 static FOLLOWUP_CACHE: OnceLock<Mutex<HashMap<String, FollowupCacheEntry>>> = OnceLock::new();
+static LAST_SHORTLIST_UNION_TELEMETRY: OnceLock<Mutex<Option<ShortlistUnionTelemetry>>> =
+    OnceLock::new();
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 thread_local! {
     static DYNAMIC_GPU_BATCH_CACHE: RefCell<HashMap<String, Rc<crate::gpu_backtest_kernel::UploadedDoubleMaDynamicProgramBatch>>> =
@@ -73,15 +75,40 @@ fn followup_cache() -> &'static Mutex<HashMap<String, FollowupCacheEntry>> {
     FOLLOWUP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn shortlist_union_telemetry_slot() -> &'static Mutex<Option<ShortlistUnionTelemetry>> {
+    LAST_SHORTLIST_UNION_TELEMETRY.get_or_init(|| Mutex::new(None))
+}
+
+fn clear_last_shortlist_union_telemetry() {
+    if let Ok(mut guard) = shortlist_union_telemetry_slot().lock() {
+        *guard = None;
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn record_last_shortlist_union_telemetry(telemetry: ShortlistUnionTelemetry) {
+    if let Ok(mut guard) = shortlist_union_telemetry_slot().lock() {
+        *guard = Some(telemetry);
+    }
+}
+
+fn take_last_shortlist_union_telemetry() -> Option<ShortlistUnionTelemetry> {
+    shortlist_union_telemetry_slot()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
 #[cfg(test)]
 #[path = "double_ma_test_support.rs"]
 mod double_ma_test_support;
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use vector_ta::cuda::CudaDeviceCloseVolumeRef;
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::{
     cuda_available,
     moving_averages::{CudaAlma, CudaMaData, CudaMaSelector},
-    CudaDeviceCloseVolumeRef,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use vector_ta::indicators::dispatch::{
@@ -95,7 +122,8 @@ use vector_ta::utilities::enums::Kernel;
 use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_from_device_matrix_row,
     compute_dynamic_indicator_cuda_with_inputs, device_slice_ref_from_matrix_row,
-    DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
+    prepared_cuda_semantic_identity_for_candles, DynamicIndicatorCudaSeries,
+    PreparedCudaIndicatorInputs, PreparedCudaSemanticIdentity,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::indicator_catalog::{
@@ -405,6 +433,32 @@ pub enum BackendUsed {
     Gpu,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OptimizationSearchSemanticsSummary {
+    pub approx_mode: String,
+    pub workload_family: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub contract_summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ranker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_operator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heatmap_semantics: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ShortlistUnionTelemetry {
+    pub head_count: usize,
+    pub per_head_top_k: usize,
+    pub union_size: usize,
+    pub overlap_pick_count: usize,
+    pub union_overlap_ratio: f64,
+    pub primary_winner_head_count: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DoubleMaCampaignVramPrefetchOutcome {
     Staged,
@@ -556,6 +610,49 @@ pub struct ShortlistNeighborhoodRobustnessSummary {
     pub roughness_stability: f64,
     pub curvature_penalty: f64,
     pub curvature_stability: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_left_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_right_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_down_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_up_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_curvature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_curvature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_axis_half_width_steps: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_axis_half_width_steps: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anisotropy_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dominant_fragility_axis: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_geometry_label: Option<String>,
+    #[serde(default)]
+    pub cliff_flag: bool,
+    #[serde(default)]
+    pub path_change_proxy_neighbors: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_surrogate_admission: Option<LocalSurrogateAdmissionSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LocalSurrogateAdmissionSummary {
+    pub model: String,
+    pub metric_only_score_mode: bool,
+    pub admitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elite_margin: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residual_bound: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_term_coeff: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -653,6 +750,10 @@ pub struct BackendOptimizationResult {
     pub score_observation_context: Option<PairObservationScoreContextResolved>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metric_surface_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortlist_union_telemetry: Option<ShortlistUnionTelemetry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_semantics: Option<OptimizationSearchSemanticsSummary>,
 }
 
 fn resolve_followup_ma_params<'a>(
@@ -862,6 +963,12 @@ pub struct VdpsTelemetry {
     pub quality_check_top_k_overlap: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_check_best_score_regret: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_exact_winner_rank: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_holdout_regret: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_speedup_vs_exact: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_check_baseline_runtime_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2070,6 +2177,11 @@ fn summarize_shortlist_neighborhood_robustness(
             !(point.fast_len == local.base.fast_len && point.slow_len == local.base.slow_len)
         })
         .collect();
+    let point_index: HashMap<(u16, u16), &LocalStabilityPoint> = local
+        .points
+        .iter()
+        .map(|point| ((point.fast_len, point.slow_len), point))
+        .collect();
     let basin_min_score = neighbor_points
         .iter()
         .map(|point| point.score)
@@ -2096,34 +2208,45 @@ fn summarize_shortlist_neighborhood_robustness(
             _ => None,
         }
     };
-    let left_score = neighbor_points
-        .iter()
-        .find(|point| {
-            point.fast_len + local.step == local.base.fast_len
-                && point.slow_len == local.base.slow_len
-        })
-        .map(|point| point.score);
-    let right_score = neighbor_points
-        .iter()
-        .find(|point| {
-            point.fast_len == local.base.fast_len + local.step
-                && point.slow_len == local.base.slow_len
-        })
-        .map(|point| point.score);
-    let down_score = neighbor_points
-        .iter()
-        .find(|point| {
-            point.fast_len == local.base.fast_len
-                && point.slow_len + local.step == local.base.slow_len
-        })
-        .map(|point| point.score);
-    let up_score = neighbor_points
-        .iter()
-        .find(|point| {
-            point.fast_len == local.base.fast_len
-                && point.slow_len == local.base.slow_len + local.step
-        })
-        .map(|point| point.score);
+    let neighbor_point = |fast_len: u16, slow_len: u16| -> Option<&LocalStabilityPoint> {
+        point_index.get(&(fast_len, slow_len)).copied()
+    };
+    let left_point = local
+        .base
+        .fast_len
+        .checked_sub(local.step)
+        .and_then(|fast_len| neighbor_point(fast_len, local.base.slow_len));
+    let right_point = local
+        .base
+        .fast_len
+        .checked_add(local.step)
+        .and_then(|fast_len| neighbor_point(fast_len, local.base.slow_len));
+    let down_point = local
+        .base
+        .slow_len
+        .checked_sub(local.step)
+        .and_then(|slow_len| neighbor_point(local.base.fast_len, slow_len));
+    let up_point = local
+        .base
+        .slow_len
+        .checked_add(local.step)
+        .and_then(|slow_len| neighbor_point(local.base.fast_len, slow_len));
+    let left_score = left_point.map(|point| point.score);
+    let right_score = right_point.map(|point| point.score);
+    let down_score = down_point.map(|point| point.score);
+    let up_score = up_point.map(|point| point.score);
+    let fast_left_delta = left_score.map(|score| score - base_score);
+    let fast_right_delta = right_score.map(|score| score - base_score);
+    let slow_down_delta = down_score.map(|score| score - base_score);
+    let slow_up_delta = up_score.map(|score| score - base_score);
+    let fast_curvature = match (left_score, right_score) {
+        (Some(left), Some(right)) => Some(left - 2.0 * base_score + right),
+        _ => None,
+    };
+    let slow_curvature = match (down_score, up_score) {
+        (Some(down), Some(up)) => Some(down - 2.0 * base_score + up),
+        _ => None,
+    };
     let curvature_terms: Vec<f64> = [
         axial_pair_curvature(left_score, right_score),
         axial_pair_curvature(down_score, up_score),
@@ -2137,6 +2260,126 @@ fn summarize_shortlist_neighborhood_robustness(
         curvature_terms.iter().copied().sum::<f64>() / (curvature_terms.len() as f64)
     };
     let curvature_stability = 1.0 / (1.0 + curvature_penalty / score_scale);
+    let plateau_tolerance = 0.05 * score_scale;
+    let base_metrics = local
+        .points
+        .iter()
+        .find(|point| {
+            point.fast_len == local.base.fast_len && point.slow_len == local.base.slow_len
+        })
+        .map(|point| &point.metrics)
+        .expect("base point should always exist in local stability neighborhood");
+    let axis_half_width_steps = |vary_fast: bool| -> Option<u16> {
+        let axis_pair_scores = |distance: u16| -> Option<(f64, f64)> {
+            let offset = distance.checked_mul(local.step)?;
+            let (neg_fast, neg_slow, pos_fast, pos_slow) = if vary_fast {
+                (
+                    local.base.fast_len.checked_sub(offset)?,
+                    local.base.slow_len,
+                    local.base.fast_len.checked_add(offset)?,
+                    local.base.slow_len,
+                )
+            } else {
+                (
+                    local.base.fast_len,
+                    local.base.slow_len.checked_sub(offset)?,
+                    local.base.fast_len,
+                    local.base.slow_len.checked_add(offset)?,
+                )
+            };
+            Some((
+                neighbor_point(neg_fast, neg_slow)?.score,
+                neighbor_point(pos_fast, pos_slow)?.score,
+            ))
+        };
+        let mut width = 0u16;
+        for distance in 1..=local.radius {
+            let Some((neg, pos)) = axis_pair_scores(distance) else {
+                break;
+            };
+            if (base_score - neg).max(0.0) <= plateau_tolerance
+                && (base_score - pos).max(0.0) <= plateau_tolerance
+            {
+                width = distance;
+            } else {
+                break;
+            }
+        }
+        let has_both_sides = axis_pair_scores(1).is_some();
+        if has_both_sides {
+            Some(width)
+        } else {
+            None
+        }
+    };
+    let fast_axis_half_width_steps = axis_half_width_steps(true);
+    let slow_axis_half_width_steps = axis_half_width_steps(false);
+    let fast_axis_max_delta = [fast_left_delta, fast_right_delta]
+        .into_iter()
+        .flatten()
+        .map(f64::abs)
+        .reduce(f64::max);
+    let slow_axis_max_delta = [slow_down_delta, slow_up_delta]
+        .into_iter()
+        .flatten()
+        .map(f64::abs)
+        .reduce(f64::max);
+    let anisotropy_ratio = match (fast_axis_max_delta, slow_axis_max_delta) {
+        (Some(fast), Some(slow)) => Some((fast + 1.0e-12) / (slow + 1.0e-12)),
+        _ => None,
+    };
+    let dominant_fragility_axis = match (fast_axis_max_delta, slow_axis_max_delta) {
+        (Some(fast), Some(slow)) if fast <= 1.0e-12 && slow <= 1.0e-12 => {
+            Some("balanced".to_string())
+        }
+        (Some(fast), Some(slow)) => {
+            let ratio = (fast + 1.0e-12) / (slow + 1.0e-12);
+            if ratio >= 1.25 {
+                Some("fast".to_string())
+            } else if ratio <= 0.8 {
+                Some("slow".to_string())
+            } else {
+                Some("balanced".to_string())
+            }
+        }
+        (Some(_), None) => Some("fast".to_string()),
+        (None, Some(_)) => Some("slow".to_string()),
+        (None, None) => None,
+    };
+    let coarse_path_signature_changed = |candidate: &Metrics| -> bool {
+        base_metrics.trades != candidate.trades
+            || base_metrics.closed_trades != candidate.closed_trades
+            || base_metrics.winning_trades != candidate.winning_trades
+            || base_metrics.losing_trades != candidate.losing_trades
+            || base_metrics.max_underwater_duration_bars != candidate.max_underwater_duration_bars
+            || (base_metrics.exposure - candidate.exposure).abs() > 1.0e-9
+            || (base_metrics.net_exposure - candidate.net_exposure).abs() > 1.0e-9
+            || (base_metrics.underwater_fraction - candidate.underwater_fraction).abs() > 1.0e-9
+    };
+    let path_change_proxy_neighbors = [left_point, right_point, down_point, up_point]
+        .into_iter()
+        .flatten()
+        .filter(|point| coarse_path_signature_changed(&point.metrics))
+        .count();
+    let strong_delta_threshold = 0.25 * score_scale;
+    let cliff_flag = path_change_proxy_neighbors > 0
+        || matches!(fast_axis_max_delta, Some(delta) if delta > strong_delta_threshold)
+            && matches!(slow_axis_max_delta, Some(delta) if delta > strong_delta_threshold);
+    let local_geometry_label = dominant_fragility_axis.as_deref().map(|axis| {
+        if cliff_flag {
+            match axis {
+                "fast" => "Fast-axis cliff".to_string(),
+                "slow" => "Slow-axis cliff".to_string(),
+                _ => "Balanced cliff".to_string(),
+            }
+        } else {
+            match axis {
+                "fast" => "Fast-axis ridge".to_string(),
+                "slow" => "Slow-axis ridge".to_string(),
+                _ => "Balanced plateau".to_string(),
+            }
+        }
+    });
     let base_max_dd = local
         .points
         .iter()
@@ -2161,14 +2404,32 @@ fn summarize_shortlist_neighborhood_robustness(
     };
     let plateau_score =
         (0.45 * support_strength + 0.35 * score_stability + 0.20 * dd_stability).clamp(0.0, 1.0);
+    let score_agreement = summarize_shortlist_surface_agreement(local);
+    let explanation = summarize_shortlist_surface_explanation(local, score_mode);
+    let local_surrogate_admission = Some(admit_local_surrogate(
+        local,
+        score_mode,
+        score_agreement
+            .as_ref()
+            .map(|summary| summary.agreement_floor),
+        plateau_score,
+        roughness_stability,
+        curvature_stability,
+        fast_left_delta,
+        fast_right_delta,
+        slow_down_delta,
+        slow_up_delta,
+        fast_curvature,
+        slow_curvature,
+    ));
 
     Some(ShortlistNeighborhoodRobustnessSummary {
         plateau_score,
         plateau_label: label_shortlist_plateau(plateau_score, neighbor_count),
         objective: local.objective,
         score_mode,
-        score_agreement: summarize_shortlist_surface_agreement(local),
-        explanation: summarize_shortlist_surface_explanation(local, score_mode),
+        score_agreement,
+        explanation,
         radius: local.radius,
         step: local.step,
         point_count,
@@ -2184,7 +2445,180 @@ fn summarize_shortlist_neighborhood_robustness(
         roughness_stability,
         curvature_penalty,
         curvature_stability,
+        fast_left_delta,
+        fast_right_delta,
+        slow_down_delta,
+        slow_up_delta,
+        fast_curvature,
+        slow_curvature,
+        fast_axis_half_width_steps,
+        slow_axis_half_width_steps,
+        anisotropy_ratio,
+        dominant_fragility_axis,
+        local_geometry_label,
+        cliff_flag,
+        path_change_proxy_neighbors,
+        local_surrogate_admission,
     })
+}
+
+fn admit_local_surrogate(
+    local: &LocalStabilityResult,
+    score_mode: Option<DoubleMaScoreMode>,
+    agreement_floor: Option<f64>,
+    plateau_score: f64,
+    roughness_stability: f64,
+    curvature_stability: f64,
+    fast_left_delta: Option<f64>,
+    fast_right_delta: Option<f64>,
+    slow_down_delta: Option<f64>,
+    slow_up_delta: Option<f64>,
+    fast_curvature: Option<f64>,
+    slow_curvature: Option<f64>,
+) -> LocalSurrogateAdmissionSummary {
+    const MODEL: &str = "axis_quadratic_common_start";
+
+    if score_mode_needs_pair_observation_context(score_mode) {
+        return LocalSurrogateAdmissionSummary {
+            model: MODEL.to_string(),
+            metric_only_score_mode: false,
+            admitted: false,
+            rejection_reason: Some("score_mode_requires_pair_observation_context".to_string()),
+            elite_margin: None,
+            residual_bound: None,
+            cross_term_coeff: None,
+        };
+    }
+
+    let (left_delta, right_delta, down_delta, up_delta, fast_curvature, slow_curvature) = match (
+        fast_left_delta,
+        fast_right_delta,
+        slow_down_delta,
+        slow_up_delta,
+        fast_curvature,
+        slow_curvature,
+    ) {
+        (
+            Some(left_delta),
+            Some(right_delta),
+            Some(down_delta),
+            Some(up_delta),
+            Some(fast_curvature),
+            Some(slow_curvature),
+        ) => (
+            left_delta,
+            right_delta,
+            down_delta,
+            up_delta,
+            fast_curvature,
+            slow_curvature,
+        ),
+        _ => {
+            return LocalSurrogateAdmissionSummary {
+                model: MODEL.to_string(),
+                metric_only_score_mode: true,
+                admitted: false,
+                rejection_reason: Some("requires_immediate_axis_neighbors".to_string()),
+                elite_margin: None,
+                residual_bound: None,
+                cross_term_coeff: None,
+            };
+        }
+    };
+
+    let mut sorted_scores: Vec<f64> = local.points.iter().map(|point| point.score).collect();
+    sorted_scores.sort_by(|a, b| b.total_cmp(a));
+    let elite_margin = if sorted_scores.len() >= 2 {
+        Some((sorted_scores[0] - sorted_scores[1]).max(0.0))
+    } else {
+        None
+    };
+    let Some(elite_margin) = elite_margin else {
+        return LocalSurrogateAdmissionSummary {
+            model: MODEL.to_string(),
+            metric_only_score_mode: true,
+            admitted: false,
+            rejection_reason: Some("requires_at_least_two_local_scores".to_string()),
+            elite_margin: None,
+            residual_bound: None,
+            cross_term_coeff: None,
+        };
+    };
+
+    let step = f64::from(local.step.max(1));
+    let base_score = local.summary.base;
+    let fast_slope = (right_delta - left_delta) * 0.5;
+    let slow_slope = (up_delta - down_delta) * 0.5;
+    let cross_term_coeff = {
+        let coeffs: Vec<f64> = local
+            .points
+            .iter()
+            .filter_map(|point| {
+                let x = (f64::from(point.fast_len) - f64::from(local.base.fast_len)) / step;
+                let y = (f64::from(point.slow_len) - f64::from(local.base.slow_len)) / step;
+                if x.abs() <= 1.0e-12 || y.abs() <= 1.0e-12 {
+                    return None;
+                }
+                let separable_pred = base_score
+                    + fast_slope * x
+                    + slow_slope * y
+                    + 0.5 * fast_curvature * x * x
+                    + 0.5 * slow_curvature * y * y;
+                Some((point.score - separable_pred) / (x * y))
+            })
+            .collect();
+        if coeffs.is_empty() {
+            None
+        } else {
+            Some(coeffs.iter().copied().sum::<f64>() / coeffs.len() as f64)
+        }
+    };
+    let predict = |point: &LocalStabilityPoint| -> f64 {
+        let x = (f64::from(point.fast_len) - f64::from(local.base.fast_len)) / step;
+        let y = (f64::from(point.slow_len) - f64::from(local.base.slow_len)) / step;
+        base_score
+            + fast_slope * x
+            + slow_slope * y
+            + 0.5 * fast_curvature * x * x
+            + 0.5 * slow_curvature * y * y
+            + cross_term_coeff.unwrap_or(0.0) * x * y
+    };
+    let residual_bound = local
+        .points
+        .iter()
+        .map(|point| (predict(point) - point.score).abs())
+        .fold(0.0_f64, f64::max);
+    let agreement_floor = agreement_floor.unwrap_or(0.0);
+    let admitted = elite_margin > 2.0 * residual_bound
+        && plateau_score >= 0.70
+        && agreement_floor >= 0.0
+        && roughness_stability >= 0.80
+        && curvature_stability >= 0.80;
+    let rejection_reason = if admitted {
+        None
+    } else if elite_margin <= 2.0 * residual_bound {
+        Some("elite_margin_not_above_2x_residual".to_string())
+    } else if plateau_score < 0.70 {
+        Some("plateau_score_below_gate".to_string())
+    } else if agreement_floor < 0.0 {
+        Some("agreement_floor_below_gate".to_string())
+    } else if roughness_stability < 0.80 {
+        Some("roughness_stability_below_gate".to_string())
+    } else if curvature_stability < 0.80 {
+        Some("curvature_stability_below_gate".to_string())
+    } else {
+        Some("local_surrogate_gate_rejected".to_string())
+    };
+
+    LocalSurrogateAdmissionSummary {
+        model: MODEL.to_string(),
+        metric_only_score_mode: true,
+        admitted,
+        rejection_reason,
+        elite_margin: Some(elite_margin),
+        residual_bound: Some(residual_bound),
+        cross_term_coeff,
+    }
 }
 
 fn merge_optional_note(target: &mut Option<String>, incoming: Option<String>) {
@@ -2434,14 +2868,24 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
     not(all(feature = "cuda", feature = "cuda-backtest-kernel")),
     allow(dead_code)
 )]
-pub(crate) fn build_exact_extra_shortlist_rows(
+fn build_exact_extra_shortlist_rows_with_telemetry(
     rows: &[(DoubleMaParams, Metrics)],
     primary_objective: ObjectiveKind,
     extra_objectives: &[ObjectiveKind],
     top_k: usize,
-) -> Vec<(DoubleMaParams, Metrics)> {
+) -> (Vec<(DoubleMaParams, Metrics)>, ShortlistUnionTelemetry) {
     if rows.is_empty() || top_k == 0 {
-        return Vec::new();
+        return (
+            Vec::new(),
+            ShortlistUnionTelemetry {
+                head_count: 0,
+                per_head_top_k: top_k,
+                union_size: 0,
+                overlap_pick_count: 0,
+                union_overlap_ratio: 0.0,
+                primary_winner_head_count: 0,
+            },
+        );
     }
 
     let mut objectives = Vec::with_capacity(extra_objectives.len().saturating_add(1));
@@ -2454,6 +2898,9 @@ pub(crate) fn build_exact_extra_shortlist_rows(
 
     let mut union_rows: Vec<(DoubleMaParams, Metrics)> = Vec::new();
     let mut seen: BTreeSet<(u16, u16, u16, u16)> = BTreeSet::new();
+    let mut head_hits: HashMap<(u16, u16, u16, u16), usize> = HashMap::new();
+    let mut total_head_picks = 0usize;
+    let head_count = objectives.len();
     for head_objective in objectives {
         let mut ranked = rows.to_vec();
         ranked.sort_by(|a, b| {
@@ -2469,12 +2916,14 @@ pub(crate) fn build_exact_extra_shortlist_rows(
             })
         });
         for (params, metrics) in ranked.into_iter().take(top_k) {
+            total_head_picks = total_head_picks.saturating_add(1);
             let key = (
                 params.fast_len,
                 params.slow_len,
                 params.fast_ma_id,
                 params.slow_ma_id,
             );
+            *head_hits.entry(key).or_insert(0) += 1;
             if seen.insert(key) {
                 union_rows.push((params, metrics));
             }
@@ -2493,7 +2942,52 @@ pub(crate) fn build_exact_extra_shortlist_rows(
             ))
         })
     });
-    union_rows
+    let primary_winner_head_count = union_rows
+        .first()
+        .map(|(params, _)| {
+            head_hits
+                .get(&(
+                    params.fast_len,
+                    params.slow_len,
+                    params.fast_ma_id,
+                    params.slow_ma_id,
+                ))
+                .copied()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let overlap_pick_count = total_head_picks.saturating_sub(union_rows.len());
+    let union_overlap_ratio = if total_head_picks == 0 {
+        0.0
+    } else {
+        overlap_pick_count as f64 / total_head_picks as f64
+    };
+    (
+        union_rows,
+        ShortlistUnionTelemetry {
+            head_count,
+            per_head_top_k: top_k,
+            union_size: seen.len(),
+            overlap_pick_count,
+            union_overlap_ratio,
+            primary_winner_head_count,
+        },
+    )
+}
+
+pub(crate) fn build_exact_extra_shortlist_rows(
+    rows: &[(DoubleMaParams, Metrics)],
+    primary_objective: ObjectiveKind,
+    extra_objectives: &[ObjectiveKind],
+    top_k: usize,
+) -> Vec<(DoubleMaParams, Metrics)> {
+    build_exact_extra_shortlist_rows_with_telemetry(
+        rows,
+        primary_objective,
+        extra_objectives,
+        top_k,
+    )
+    .0
 }
 
 #[inline]
@@ -4985,6 +5479,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
+    clear_last_shortlist_union_telemetry();
     run_double_ma_optimization_blocking_with_candles_and_eval_range(
         req, candles, cancel, progress, None,
     )
@@ -5201,6 +5696,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
             total_combos
         ));
     }
+    let exhaustive_output_requested =
+        include_all || heatmap_bins > 0 || export_all_csv_path.is_some();
     let kernel_blockers_for_request = gpu_kernel_blockers_for_request(
         fast_ma.as_str(),
         slow_ma.as_str(),
@@ -6958,6 +7455,9 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                     .fold(0u64, |acc, r| acc.saturating_add(r.runtime_ms));
                 let mut quality_check_top_k_overlap: Option<f64> = None;
                 let mut quality_check_best_score_regret: Option<f64> = None;
+                let mut quality_check_exact_winner_rank: Option<usize> = None;
+                let mut quality_check_holdout_regret: Option<f64> = None;
+                let mut quality_check_speedup_vs_exact: Option<f64> = None;
                 let mut quality_check_baseline_runtime_ms: Option<u64> = None;
                 let mut quality_check_baseline_backend: Option<BackendUsed> = None;
                 let mut quality_check_baseline_pairs: Option<usize> = None;
@@ -6996,10 +7496,14 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                         );
                         merge_optional_note(&mut route_note_acc, baseline_route_note);
                         merge_optional_note(&mut fallback_reason_acc, baseline_fallback_reason);
-                        quality_check_baseline_runtime_ms =
-                            Some(quality_start.elapsed().as_millis() as u64);
+                        let baseline_runtime_ms = quality_start.elapsed().as_millis() as u64;
+                        quality_check_baseline_runtime_ms = Some(baseline_runtime_ms);
                         quality_check_baseline_backend = Some(baseline_backend);
                         quality_check_baseline_pairs = Some(baseline_res.num_combos);
+                        if runtime_ms_total > 0 {
+                            quality_check_speedup_vs_exact =
+                                Some((baseline_runtime_ms as f64) / (runtime_ms_total as f64));
+                        }
 
                         let mut baseline_ranked_input: Vec<(DoubleMaParams, Metrics)> =
                             Vec::with_capacity(baseline_res.top.len().saturating_add(1));
@@ -7060,6 +7564,16 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                             quality_check_best_score_regret =
                                 Some((baseline_best_score - vdps_best_score).max(0.0));
                         }
+                        quality_check_exact_winner_rank = baseline_ranked
+                            .iter()
+                            .position(|(params, _)| {
+                                params.fast_len == final_res.best_params.fast_len
+                                    && params.slow_len == final_res.best_params.slow_len
+                                    && params.fast_ma_id == final_res.best_params.fast_ma_id
+                                    && params.slow_ma_id == final_res.best_params.slow_ma_id
+                            })
+                            .map(|idx| idx.saturating_add(1));
+                        quality_check_holdout_regret = None;
                     }
                 }
                 let vdps = VdpsTelemetry {
@@ -7083,6 +7597,9 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                     runtime_ms_total,
                     quality_check_top_k_overlap,
                     quality_check_best_score_regret,
+                    quality_check_exact_winner_rank,
+                    quality_check_holdout_regret,
+                    quality_check_speedup_vs_exact,
                     quality_check_baseline_runtime_ms,
                     quality_check_baseline_backend,
                     quality_check_baseline_pairs,
@@ -7654,6 +8171,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
     } else {
         None
     };
+    let shortlist_union_telemetry = take_last_shortlist_union_telemetry();
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let route_diagnostics: Option<Vec<String>> = None;
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -7731,6 +8249,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
             result,
             BackendResultContext {
                 mode_used,
+                exhaustive_output_requested,
                 backend_used,
                 fast_periods: &fast_periods,
                 slow_periods: &slow_periods,
@@ -7753,6 +8272,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                 shortlist_slice_diagnostics,
                 score_observation_context,
                 metric_surface_kind,
+                shortlist_union_telemetry,
             },
         )
     };
@@ -13314,6 +13834,67 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct DynamicGpuBatchSemanticIdentity {
+    executable_identity: crate::strategy_gpu_runtime::GpuStrategyExecutable,
+    prepared_input_identity: PreparedCudaSemanticIdentity,
+    fast_ma_type: String,
+    slow_ma_type: String,
+    fast_ma_params_bits: Option<BTreeMap<String, u64>>,
+    slow_ma_params_bits: Option<BTreeMap<String, u64>>,
+    fast_periods: Vec<u16>,
+    slow_periods: Vec<u16>,
+    first_valid: usize,
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn dynamic_gpu_batch_param_bits(
+    params: Option<&HashMap<String, f64>>,
+) -> Option<BTreeMap<String, u64>> {
+    params.map(|map| {
+        map.iter()
+            .map(|(key, value)| (key.clone(), value.to_bits()))
+            .collect()
+    })
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn dynamic_gpu_batch_semantic_identity(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    device_id: u32,
+    handle: &crate::strategy_gpu_runtime::StrategyHandle,
+    ma_source: &str,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    first_valid: usize,
+) -> Result<DynamicGpuBatchSemanticIdentity, String> {
+    Ok(DynamicGpuBatchSemanticIdentity {
+        executable_identity: crate::strategy_gpu_runtime::GpuStrategyExecutable::from_handle(
+            handle, device_id,
+        )?,
+        prepared_input_identity: prepared_cuda_semantic_identity_for_candles(
+            candles, ma_source, None,
+        ),
+        fast_ma_type: fast_ma_type.to_string(),
+        slow_ma_type: slow_ma_type.to_string(),
+        fast_ma_params_bits: dynamic_gpu_batch_param_bits(fast_ma_params),
+        slow_ma_params_bits: dynamic_gpu_batch_param_bits(slow_ma_params),
+        fast_periods: fast_periods.to_vec(),
+        slow_periods: slow_periods.to_vec(),
+        first_valid,
+    })
+}
+
+/// Operational thread-local cache key for uploaded dynamic GPU batches.
+///
+/// This key intentionally preserves the current runtime reuse behavior and must not be treated as
+/// an exact semantic identity. For layer-exact observability and tests, use
+/// `dynamic_gpu_batch_semantic_identity(...)` instead.
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn dynamic_gpu_batch_cache_key(
     candles: &vector_ta::utilities::data_loader::Candles,
     device_id: u32,
@@ -13682,12 +14263,14 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
     let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> = Vec::new();
     if let Some(extra_objectives) = extra_shortlist_objectives.filter(|values| !values.is_empty()) {
         let top_limit = result.top.len().max(1);
-        materialized_shortlist_rows = build_exact_extra_shortlist_rows(
+        let (rows, telemetry) = build_exact_extra_shortlist_rows_with_telemetry(
             filtered_rows.as_slice(),
             objective,
             extra_objectives,
             top_limit,
         );
+        record_last_shortlist_union_telemetry(telemetry);
+        materialized_shortlist_rows = rows;
         let (best_params, best_metrics) =
             materialized_shortlist_rows
                 .first()
@@ -17734,6 +18317,186 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn test_dynamic_gpu_batch_semantic_handle(
+        ma_source: &str,
+        fast_ma_type: &str,
+        slow_ma_type: &str,
+        fast_ma_params: Option<&HashMap<String, f64>>,
+        slow_ma_params: Option<&HashMap<String, f64>>,
+        strategy: &StrategyConfig,
+    ) -> crate::strategy_gpu_runtime::StrategyHandle {
+        let plan = crate::strategy_dynamic::compile_dynamic_plan_for_double_ma_config(
+            ma_source,
+            fast_ma_type,
+            slow_ma_type,
+            fast_ma_params,
+            slow_ma_params,
+            strategy,
+            None,
+            crate::strategy_plan::StrategyPlanBackend::GpuUnified,
+        )
+        .expect("dynamic plan");
+        crate::strategy_gpu_runtime::StrategyHandle::from_plan(
+            plan,
+            crate::strategy_gpu_runtime::StrategyCapabilityReport::gpu_dynamic_ready(),
+        )
+        .expect("dynamic gpu handle")
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn dynamic_gpu_batch_semantic_identity_repeats_for_same_inputs() {
+        let strategy = StrategyConfig::default();
+        let candles = make_trending_candles(256);
+        let handle =
+            test_dynamic_gpu_batch_semantic_handle("close", "sma", "ema", None, None, &strategy);
+        let fast_periods = [5, 6, 7];
+        let slow_periods = [12, 13, 14];
+
+        let first = dynamic_gpu_batch_semantic_identity(
+            &candles,
+            0,
+            &handle,
+            "close",
+            "sma",
+            "ema",
+            None,
+            None,
+            &fast_periods,
+            &slow_periods,
+            11,
+        )
+        .expect("first identity");
+        let second = dynamic_gpu_batch_semantic_identity(
+            &candles,
+            0,
+            &handle,
+            "close",
+            "sma",
+            "ema",
+            None,
+            None,
+            &fast_periods,
+            &slow_periods,
+            11,
+        )
+        .expect("second identity");
+
+        assert_eq!(first, second);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn dynamic_gpu_batch_semantic_identity_distinguishes_same_close_with_different_ma_source() {
+        let strategy = StrategyConfig::default();
+        let candles = make_trending_candles(256);
+        let close_handle =
+            test_dynamic_gpu_batch_semantic_handle("close", "sma", "ema", None, None, &strategy);
+        let hlc3_handle =
+            test_dynamic_gpu_batch_semantic_handle("hlc3", "sma", "ema", None, None, &strategy);
+        let fast_periods = [5, 6, 7];
+        let slow_periods = [12, 13, 14];
+
+        let close_identity = dynamic_gpu_batch_semantic_identity(
+            &candles,
+            0,
+            &close_handle,
+            "close",
+            "sma",
+            "ema",
+            None,
+            None,
+            &fast_periods,
+            &slow_periods,
+            11,
+        )
+        .expect("close identity");
+        let hlc3_identity = dynamic_gpu_batch_semantic_identity(
+            &candles,
+            0,
+            &hlc3_handle,
+            "hlc3",
+            "sma",
+            "ema",
+            None,
+            None,
+            &fast_periods,
+            &slow_periods,
+            11,
+        )
+        .expect("hlc3 identity");
+
+        assert_eq!(
+            close_identity
+                .prepared_input_identity
+                .dataset_content_fingerprint_hex,
+            hlc3_identity
+                .prepared_input_identity
+                .dataset_content_fingerprint_hex
+        );
+        assert_ne!(
+            close_identity.prepared_input_identity.source_key,
+            hlc3_identity.prepared_input_identity.source_key
+        );
+        assert_ne!(close_identity, hlc3_identity);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn dynamic_gpu_batch_semantic_identity_changes_when_source_dependent_series_changes() {
+        let strategy = StrategyConfig::default();
+        let candles = make_trending_candles(256);
+        let mut mutated = candles.clone();
+        mutated.high[128] += 7.5;
+        let handle =
+            test_dynamic_gpu_batch_semantic_handle("high", "sma", "ema", None, None, &strategy);
+        let fast_periods = [5, 6, 7];
+        let slow_periods = [12, 13, 14];
+
+        let original_identity = dynamic_gpu_batch_semantic_identity(
+            &candles,
+            0,
+            &handle,
+            "high",
+            "sma",
+            "ema",
+            None,
+            None,
+            &fast_periods,
+            &slow_periods,
+            11,
+        )
+        .expect("original identity");
+        let mutated_identity = dynamic_gpu_batch_semantic_identity(
+            &mutated,
+            0,
+            &handle,
+            "high",
+            "sma",
+            "ema",
+            None,
+            None,
+            &fast_periods,
+            &slow_periods,
+            11,
+        )
+        .expect("mutated identity");
+
+        assert_eq!(candles.close, mutated.close);
+        assert_eq!(candles.timestamp, mutated.timestamp);
+        assert_ne!(candles.high, mutated.high);
+        assert_ne!(
+            original_identity
+                .prepared_input_identity
+                .dataset_content_fingerprint_hex,
+            mutated_identity
+                .prepared_input_identity
+                .dataset_content_fingerprint_hex
+        );
+        assert_ne!(original_identity, mutated_identity);
+    }
+
     #[test]
     fn auto_backend_records_route_metadata() {
         let _guard = lock_env();
@@ -20869,7 +21632,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn gpu_vdps_quality_check_emits_overlap_and_regret() {
+    fn gpu_vdps_quality_check_emits_overlap_regret_and_winner_rank() {
         if !cuda_available() {
             return;
         }
@@ -20932,6 +21695,12 @@ mod tests {
 
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect("vdps quality-check run");
+        let search_semantics = res
+            .search_semantics
+            .as_ref()
+            .expect("vdps search semantics");
+        assert_eq!(search_semantics.approx_mode, "heuristic_reduced_output");
+        assert_eq!(search_semantics.workload_family, "double_ma_gpu_vdps");
         let vdps = res.vdps.expect("vdps telemetry");
         let overlap = vdps
             .quality_check_top_k_overlap
@@ -20939,6 +21708,12 @@ mod tests {
         let regret = vdps
             .quality_check_best_score_regret
             .expect("best-score regret should be present");
+        let exact_winner_rank = vdps
+            .quality_check_exact_winner_rank
+            .expect("exact winner rank should be present");
+        let speedup_vs_exact = vdps
+            .quality_check_speedup_vs_exact
+            .expect("speedup vs exact should be present");
         let baseline_pairs = vdps
             .quality_check_baseline_pairs
             .expect("baseline pair count should be present");
@@ -20949,8 +21724,65 @@ mod tests {
         assert!(overlap.is_finite() && (0.0..=1.0).contains(&overlap));
         assert!(regret.is_finite() && regret >= 0.0);
         assert!(overlap >= 0.2, "unexpectedly low top-k overlap: {overlap}");
+        assert!(exact_winner_rank >= 1);
+        assert!(speedup_vs_exact.is_finite() && speedup_vs_exact > 0.0);
+        assert!(vdps.quality_check_holdout_regret.is_none());
         assert!(baseline_pairs > 0);
         assert!(baseline_ms > 0);
+    }
+
+    #[test]
+    fn coarse_to_fine_result_surfaces_heuristic_search_semantics() {
+        let candles = make_trending_candles(2_048);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "test".to_string(),
+            fast_range: (5, 80, 1),
+            slow_range: (10, 160, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::CoarseToFine,
+            top_k: Some(10),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: false,
+            metric_contract: None,
+            hurdle_tau: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("coarse-to-fine run");
+        let search_semantics = res
+            .search_semantics
+            .as_ref()
+            .expect("coarse-to-fine search semantics");
+
+        assert_eq!(search_semantics.approx_mode, "heuristic_reduced_output");
+        assert_eq!(search_semantics.workload_family, "double_ma_coarse_to_fine");
+        assert!(search_semantics.contract_summary.contains("speedup"));
     }
 
     #[test]
@@ -23199,6 +24031,53 @@ mod tests {
         assert!((summary.roughness_stability - 0.980879145385629).abs() <= 1.0e-12);
         assert!((summary.curvature_penalty - 0.005).abs() <= 1.0e-12);
         assert!((summary.curvature_stability - (1.0 / 1.005)).abs() <= 1.0e-12);
+        assert!(summary
+            .fast_left_delta
+            .map(|delta| (delta + 0.02).abs() <= 1.0e-12)
+            .unwrap_or(false));
+        assert!(summary
+            .fast_right_delta
+            .map(|delta| (delta - 0.01).abs() <= 1.0e-12)
+            .unwrap_or(false));
+        assert!(summary
+            .slow_down_delta
+            .map(|delta| (delta + 0.01).abs() <= 1.0e-12)
+            .unwrap_or(false));
+        assert!(summary
+            .slow_up_delta
+            .map(|delta| (delta - 0.02).abs() <= 1.0e-12)
+            .unwrap_or(false));
+        assert!(summary
+            .fast_curvature
+            .map(|delta| (delta + 0.01).abs() <= 1.0e-12)
+            .unwrap_or(false));
+        assert!(summary
+            .slow_curvature
+            .map(|delta| (delta - 0.01).abs() <= 1.0e-12)
+            .unwrap_or(false));
+        assert_eq!(summary.fast_axis_half_width_steps, Some(1));
+        assert_eq!(summary.slow_axis_half_width_steps, Some(1));
+        assert!(summary
+            .anisotropy_ratio
+            .map(|ratio| (ratio - 1.0).abs() <= 1.0e-9)
+            .unwrap_or(false));
+        assert_eq!(summary.dominant_fragility_axis.as_deref(), Some("balanced"));
+        assert_eq!(
+            summary.local_geometry_label.as_deref(),
+            Some("Balanced plateau")
+        );
+        assert!(!summary.cliff_flag);
+        assert_eq!(summary.path_change_proxy_neighbors, 0);
+        let surrogate = summary
+            .local_surrogate_admission
+            .as_ref()
+            .expect("local surrogate admission");
+        assert!(surrogate.metric_only_score_mode);
+        assert!(surrogate.elite_margin.unwrap_or(0.0) > 0.0);
+        assert!(surrogate
+            .residual_bound
+            .unwrap_or(f64::INFINITY)
+            .is_finite());
         assert!(summary.plateau_score >= 0.78);
         assert_eq!(summary.plateau_label, "Strong");
         let agreement = summary
@@ -23240,6 +24119,443 @@ mod tests {
         assert!((aligned - 1.0).abs() <= 1.0e-12);
         assert!((inverted + 1.0).abs() <= 1.0e-12);
         assert!((tied - 1.0).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn shortlist_neighborhood_robustness_requires_local_neighbor_surface_not_just_base_row() {
+        let base = DoubleMaParamsResolved {
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+        };
+        let point = |fast_len, slow_len, score| LocalStabilityPoint {
+            fast_len,
+            slow_len,
+            score,
+            metrics: Metrics {
+                sharpe: score,
+                max_dd: 0.10,
+                ..Metrics::default()
+            },
+        };
+
+        let smooth = LocalStabilityResult {
+            base: base.clone(),
+            objective: ObjectiveKind::Sharpe,
+            radius: 1,
+            step: 1,
+            start_t: 0,
+            points: vec![
+                point(10, 30, 1.00),
+                point(9, 30, 0.99),
+                point(11, 30, 1.01),
+                point(10, 29, 0.99),
+                point(10, 31, 1.01),
+            ],
+            summary: LocalStabilitySummary {
+                base: 1.00,
+                min: 0.99,
+                median: 1.00,
+                max: 1.01,
+            },
+        };
+        let fragile = LocalStabilityResult {
+            base: base.clone(),
+            objective: ObjectiveKind::Sharpe,
+            radius: 1,
+            step: 1,
+            start_t: 0,
+            points: vec![
+                point(10, 30, 1.00),
+                point(9, 30, 0.20),
+                point(11, 30, 1.60),
+                point(10, 29, 0.10),
+                point(10, 31, 1.50),
+            ],
+            summary: LocalStabilitySummary {
+                base: 1.00,
+                min: 0.10,
+                median: 1.00,
+                max: 1.60,
+            },
+        };
+
+        let smooth_summary =
+            summarize_shortlist_neighborhood_robustness(&smooth, None).expect("smooth summary");
+        let fragile_summary =
+            summarize_shortlist_neighborhood_robustness(&fragile, None).expect("fragile summary");
+
+        assert_eq!(smooth.points[0].fast_len, fragile.points[0].fast_len);
+        assert_eq!(smooth.points[0].slow_len, fragile.points[0].slow_len);
+        assert!((smooth.points[0].score - fragile.points[0].score).abs() <= 1.0e-12);
+        assert!((smooth_summary.base_score - fragile_summary.base_score).abs() <= 1.0e-12);
+        assert!(smooth_summary.plateau_score > fragile_summary.plateau_score);
+        assert!(smooth_summary.curvature_penalty < fragile_summary.curvature_penalty);
+        assert!(smooth_summary.roughness_rms_delta < fragile_summary.roughness_rms_delta);
+        assert!(!smooth_summary.cliff_flag);
+        assert!(fragile_summary.cliff_flag);
+        assert_eq!(
+            fragile_summary.local_geometry_label.as_deref(),
+            Some("Balanced cliff")
+        );
+        assert!(
+            !fragile_summary
+                .local_surrogate_admission
+                .as_ref()
+                .expect("fragile surrogate admission")
+                .admitted
+        );
+    }
+
+    #[test]
+    fn shortlist_neighborhood_robustness_surfaces_axis_dominant_ridge_geometry() {
+        let base = DoubleMaParamsResolved {
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+        };
+        let point = |fast_len, slow_len, score| LocalStabilityPoint {
+            fast_len,
+            slow_len,
+            score,
+            metrics: Metrics {
+                max_dd: 0.10,
+                ..Metrics::default()
+            },
+        };
+        let local = LocalStabilityResult {
+            base,
+            objective: ObjectiveKind::Sharpe,
+            radius: 1,
+            step: 1,
+            start_t: 0,
+            points: vec![
+                point(10, 30, 1.00),
+                point(9, 30, 0.60),
+                point(11, 30, 1.38),
+                point(10, 29, 0.99),
+                point(10, 31, 1.01),
+            ],
+            summary: LocalStabilitySummary {
+                base: 1.00,
+                min: 0.60,
+                median: 1.00,
+                max: 1.38,
+            },
+        };
+
+        let summary = summarize_shortlist_neighborhood_robustness(&local, None)
+            .expect("axis-dominant ridge summary");
+
+        assert_eq!(summary.dominant_fragility_axis.as_deref(), Some("fast"));
+        assert_eq!(
+            summary.local_geometry_label.as_deref(),
+            Some("Fast-axis ridge")
+        );
+        assert!(!summary.cliff_flag);
+        assert_eq!(summary.fast_axis_half_width_steps, Some(0));
+        assert_eq!(summary.slow_axis_half_width_steps, Some(1));
+        assert!(summary.anisotropy_ratio.unwrap_or(0.0) > 20.0);
+    }
+
+    #[test]
+    fn shortlist_neighborhood_robustness_path_change_proxy_is_descriptive_only() {
+        let base = DoubleMaParamsResolved {
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+        };
+        let point =
+            |fast_len, slow_len, score, trades, closed_trades, exposure| LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                score,
+                metrics: Metrics {
+                    trades,
+                    closed_trades,
+                    exposure,
+                    net_exposure: exposure,
+                    max_dd: 0.10,
+                    ..Metrics::default()
+                },
+            };
+        let local = LocalStabilityResult {
+            base,
+            objective: ObjectiveKind::Sharpe,
+            radius: 1,
+            step: 1,
+            start_t: 0,
+            points: vec![
+                point(10, 30, 1.00, 4, 4, 0.50),
+                point(9, 30, 0.98, 4, 4, 0.50),
+                point(11, 30, 1.01, 5, 5, 0.75),
+                point(10, 29, 0.99, 4, 4, 0.50),
+                point(10, 31, 1.02, 7, 6, 0.25),
+            ],
+            summary: LocalStabilitySummary {
+                base: 1.00,
+                min: 0.98,
+                median: 1.00,
+                max: 1.02,
+            },
+        };
+
+        let summary =
+            summarize_shortlist_neighborhood_robustness(&local, None).expect("path-change summary");
+
+        assert_eq!(summary.path_change_proxy_neighbors, 2);
+        assert!(summary.cliff_flag);
+        assert_eq!(
+            summary.local_geometry_label.as_deref(),
+            Some("Balanced cliff")
+        );
+        assert!(summary.plateau_score.is_finite());
+    }
+
+    #[test]
+    fn shortlist_neighborhood_robustness_summary_deserializes_legacy_payloads() {
+        let legacy = serde_json::json!({
+            "plateau_score": 0.8,
+            "plateau_label": "Strong",
+            "objective": "Sharpe",
+            "radius": 1,
+            "step": 1,
+            "point_count": 5,
+            "neighbor_count": 4,
+            "base_score": 1.0,
+            "median_score": 1.0,
+            "min_score": 0.9,
+            "max_score": 1.1,
+            "peak_delta": 0.1,
+            "basin_min_score": 0.9,
+            "basin_floor_stability": 0.9,
+            "roughness_rms_delta": 0.05,
+            "roughness_stability": 0.95,
+            "curvature_penalty": 0.02,
+            "curvature_stability": 0.98
+        });
+
+        let summary: ShortlistNeighborhoodRobustnessSummary =
+            serde_json::from_value(legacy).expect("legacy neighborhood summary");
+
+        assert_eq!(summary.fast_left_delta, None);
+        assert_eq!(summary.fast_right_delta, None);
+        assert_eq!(summary.slow_down_delta, None);
+        assert_eq!(summary.slow_up_delta, None);
+        assert_eq!(summary.fast_curvature, None);
+        assert_eq!(summary.slow_curvature, None);
+        assert_eq!(summary.fast_axis_half_width_steps, None);
+        assert_eq!(summary.slow_axis_half_width_steps, None);
+        assert_eq!(summary.anisotropy_ratio, None);
+        assert_eq!(summary.dominant_fragility_axis, None);
+        assert_eq!(summary.local_geometry_label, None);
+        assert!(!summary.cliff_flag);
+        assert_eq!(summary.path_change_proxy_neighbors, 0);
+        assert_eq!(summary.local_surrogate_admission, None);
+    }
+
+    #[test]
+    fn local_surrogate_admission_admits_stable_metric_only_neighborhoods() {
+        let base = DoubleMaParamsResolved {
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+        };
+        let point = |fast_len, slow_len, score| LocalStabilityPoint {
+            fast_len,
+            slow_len,
+            score,
+            metrics: Metrics {
+                pnl: score,
+                sharpe: score,
+                sortino: score,
+                omega: score.max(0.0),
+                max_dd: 0.10,
+                ..Metrics::default()
+            },
+        };
+        let local = LocalStabilityResult {
+            base,
+            objective: ObjectiveKind::Sharpe,
+            radius: 1,
+            step: 1,
+            start_t: 0,
+            points: vec![
+                point(10, 30, 1.00),
+                point(9, 30, 0.95),
+                point(11, 30, 1.00),
+                point(10, 29, 0.95),
+                point(10, 31, 1.00),
+                point(11, 31, 1.03),
+            ],
+            summary: LocalStabilitySummary {
+                base: 1.00,
+                min: 0.95,
+                median: 1.00,
+                max: 1.03,
+            },
+        };
+
+        let summary =
+            summarize_shortlist_neighborhood_robustness(&local, None).expect("stable summary");
+        let surrogate = summary
+            .local_surrogate_admission
+            .as_ref()
+            .expect("surrogate admission");
+
+        assert!(surrogate.metric_only_score_mode);
+        assert!(surrogate.admitted, "surrogate: {:?}", surrogate);
+        assert_eq!(surrogate.rejection_reason, None);
+        assert!(surrogate.elite_margin.unwrap_or(0.0) >= 0.03);
+        assert!(surrogate.residual_bound.unwrap_or(f64::INFINITY) <= 1.0e-9);
+    }
+
+    #[test]
+    fn local_surrogate_admission_rejects_pair_context_score_modes() {
+        let base = DoubleMaParamsResolved {
+            fast_len: 10,
+            slow_len: 30,
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+        };
+        let point = |fast_len, slow_len, score| LocalStabilityPoint {
+            fast_len,
+            slow_len,
+            score,
+            metrics: Metrics {
+                sharpe: score,
+                max_dd: 0.10,
+                ..Metrics::default()
+            },
+        };
+        let local = LocalStabilityResult {
+            base,
+            objective: ObjectiveKind::Sharpe,
+            radius: 1,
+            step: 1,
+            start_t: 0,
+            points: vec![
+                point(10, 30, 1.00),
+                point(9, 30, 0.99),
+                point(11, 30, 1.01),
+                point(10, 29, 0.99),
+                point(10, 31, 1.01),
+            ],
+            summary: LocalStabilitySummary {
+                base: 1.00,
+                min: 0.99,
+                median: 1.00,
+                max: 1.01,
+            },
+        };
+
+        let summary = summarize_shortlist_neighborhood_robustness(
+            &local,
+            Some(DoubleMaScoreMode::EffectiveSampleLcb10),
+        )
+        .expect("pair-context summary");
+        let surrogate = summary
+            .local_surrogate_admission
+            .as_ref()
+            .expect("surrogate admission");
+
+        assert!(!surrogate.metric_only_score_mode);
+        assert!(!surrogate.admitted);
+        assert_eq!(
+            surrogate.rejection_reason.as_deref(),
+            Some("score_mode_requires_pair_observation_context")
+        );
+    }
+
+    #[test]
+    fn build_exact_extra_shortlist_rows_reports_union_telemetry() {
+        let rows = vec![
+            (
+                DoubleMaParams {
+                    fast_len: 5,
+                    slow_len: 20,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 1.0,
+                    pnl: 10.0,
+                    omega: 1.2,
+                    ..Metrics::default()
+                },
+            ),
+            (
+                DoubleMaParams {
+                    fast_len: 6,
+                    slow_len: 22,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 0.9,
+                    pnl: 12.0,
+                    omega: 1.1,
+                    ..Metrics::default()
+                },
+            ),
+            (
+                DoubleMaParams {
+                    fast_len: 7,
+                    slow_len: 24,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 0.8,
+                    pnl: 9.0,
+                    omega: 1.5,
+                    ..Metrics::default()
+                },
+            ),
+            (
+                DoubleMaParams {
+                    fast_len: 8,
+                    slow_len: 26,
+                    fast_ma_id: 0,
+                    slow_ma_id: 0,
+                },
+                Metrics {
+                    sharpe: 0.7,
+                    pnl: 8.0,
+                    omega: 1.4,
+                    ..Metrics::default()
+                },
+            ),
+        ];
+
+        let (union_rows, telemetry) = build_exact_extra_shortlist_rows_with_telemetry(
+            &rows,
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl, ObjectiveKind::Omega],
+            2,
+        );
+
+        assert_eq!(telemetry.head_count, 3);
+        assert_eq!(telemetry.per_head_top_k, 2);
+        assert_eq!(telemetry.union_size, union_rows.len());
+        assert_eq!(telemetry.union_size, 4);
+        assert_eq!(telemetry.overlap_pick_count, 2);
+        assert!((telemetry.union_overlap_ratio - (2.0 / 6.0)).abs() <= 1.0e-12);
+        assert_eq!(telemetry.primary_winner_head_count, 2);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -23545,7 +24861,7 @@ mod tests {
             shortlist_confidence_mode: None,
             shortlist_union_mode: None,
             shortlist_slice_mode: None,
-            shortlist_slice_benchmark: None,
+            shortlist_slice_benchmark: Some(SpaBenchmarkKind::BuyAndHold),
             shortlist_neighborhood_radius: None,
             shortlist_neighborhood_step: None,
             mode: OptimizationMode::Grid,
@@ -24766,6 +26082,10 @@ mod tests {
         slow_periods.sort_unstable();
         slow_periods.dedup();
         let total_bars = candles.close.len();
+        let benchmark_log_returns = crate::double_ma::compute_log_returns_f64(
+            vector_ta::utilities::data_loader::source_type(&candles, "close"),
+        );
+        let mut saw_slice_local_only_difference = false;
 
         for (mode, slice_count, mode_label) in [
             (DoubleMaShortlistSliceMode::Halves, 2usize, "halves"),
@@ -24810,13 +26130,32 @@ mod tests {
             let combo_count = combos.len();
             assert_eq!(range_metrics.len(), combo_count * slice_count);
 
-            let mut expected_ranked: Vec<((u16, u16), f64, f64, f64, f64, f64, f64, f64)> =
-                Vec::with_capacity(combo_count);
+            #[derive(Clone, Debug)]
+            struct ExpectedSliceRank {
+                key: (u16, u16),
+                worst_slice_score: f64,
+                positive_slice_frac: f64,
+                mean_slice_score: f64,
+                worst_omission_score: f64,
+                omission_score_spread: f64,
+                full_sharpe: f64,
+                full_max_dd: f64,
+                beat_rate: f64,
+                mean_excess_return: f64,
+                worst_excess_return: f64,
+                best_excess_return: f64,
+                worst_omission_excess_return: f64,
+                best_omission_excess_return: f64,
+                omission_excess_spread: f64,
+            }
+
+            let mut expected_ranked: Vec<ExpectedSliceRank> = Vec::with_capacity(combo_count);
             for (combo_idx, (params, metrics)) in union_rows.iter().enumerate() {
                 let mut worst_slice_score = f64::INFINITY;
                 let mut positive_slice_count = 0usize;
                 let mut mean_slice_score = 0.0f64;
                 let mut slice_scores: Vec<f64> = Vec::with_capacity(slice_count);
+                let mut slice_excess_returns: Vec<f64> = Vec::with_capacity(slice_count);
                 for slice_idx in 0..slice_count {
                     let slice_metrics = &range_metrics[slice_idx * combo_count + combo_idx];
                     let slice_score = objective_score(slice_metrics, ObjectiveKind::Sharpe);
@@ -24826,6 +26165,28 @@ mod tests {
                     }
                     mean_slice_score += slice_score;
                     slice_scores.push(slice_score);
+
+                    let (start, end) = ranges[slice_idx];
+                    let obs = end.saturating_sub(start);
+                    let candidate_sum = if obs == 0 {
+                        0.0
+                    } else if slice_metrics.volatility > 1.0e-12 {
+                        derived_mean(slice_metrics) * obs as f64
+                    } else {
+                        let base = (1.0 + slice_metrics.pnl).max(0.0);
+                        let step_return = if base > 0.0 {
+                            base.powf(1.0 / obs as f64) - 1.0
+                        } else {
+                            -1.0
+                        };
+                        step_return * obs as f64
+                    };
+                    let benchmark_sum = benchmark_log_returns[start..end]
+                        .iter()
+                        .copied()
+                        .map(f64::exp_m1)
+                        .sum::<f64>();
+                    slice_excess_returns.push(candidate_sum - benchmark_sum);
                 }
                 mean_slice_score /= slice_count as f64;
                 let omission_denom = (slice_scores.len() - 1) as f64;
@@ -24837,31 +26198,73 @@ mod tests {
                     worst_omission_score = worst_omission_score.min(omission_score);
                     best_omission_score = best_omission_score.max(omission_score);
                 }
-                expected_ranked.push((
-                    (params.fast_len, params.slow_len),
+                let omission_excess_denom = (slice_excess_returns.len() - 1) as f64;
+                let total_excess = slice_excess_returns.iter().copied().sum::<f64>();
+                let mut worst_omission_excess_return = f64::INFINITY;
+                let mut best_omission_excess_return = f64::NEG_INFINITY;
+                for excess_return in slice_excess_returns.iter().copied() {
+                    let omission_excess = (total_excess - excess_return) / omission_excess_denom;
+                    worst_omission_excess_return =
+                        worst_omission_excess_return.min(omission_excess);
+                    best_omission_excess_return = best_omission_excess_return.max(omission_excess);
+                }
+                expected_ranked.push(ExpectedSliceRank {
+                    key: (params.fast_len, params.slow_len),
                     worst_slice_score,
-                    positive_slice_count as f64 / slice_count as f64,
+                    positive_slice_frac: positive_slice_count as f64 / slice_count as f64,
                     mean_slice_score,
                     worst_omission_score,
-                    best_omission_score - worst_omission_score,
-                    metrics.sharpe,
-                    metrics.max_dd,
-                ));
+                    omission_score_spread: best_omission_score - worst_omission_score,
+                    full_sharpe: metrics.sharpe,
+                    full_max_dd: metrics.max_dd,
+                    beat_rate: slice_excess_returns
+                        .iter()
+                        .filter(|&&value| value > 1.0e-12)
+                        .count() as f64
+                        / slice_count as f64,
+                    mean_excess_return: total_excess / slice_count as f64,
+                    worst_excess_return: slice_excess_returns
+                        .iter()
+                        .copied()
+                        .fold(f64::INFINITY, f64::min),
+                    best_excess_return: slice_excess_returns
+                        .iter()
+                        .copied()
+                        .fold(f64::NEG_INFINITY, f64::max),
+                    worst_omission_excess_return,
+                    best_omission_excess_return,
+                    omission_excess_spread: best_omission_excess_return
+                        - worst_omission_excess_return,
+                });
             }
             expected_ranked.sort_by(|a, b| {
-                b.1.total_cmp(&a.1)
-                    .then_with(|| b.4.total_cmp(&a.4))
-                    .then_with(|| b.2.total_cmp(&a.2))
-                    .then_with(|| a.5.total_cmp(&b.5))
-                    .then_with(|| b.3.total_cmp(&a.3))
-                    .then_with(|| b.6.total_cmp(&a.6))
-                    .then_with(|| a.7.total_cmp(&b.7))
+                b.worst_slice_score
+                    .total_cmp(&a.worst_slice_score)
+                    .then_with(|| b.worst_omission_score.total_cmp(&a.worst_omission_score))
+                    .then_with(|| b.positive_slice_frac.total_cmp(&a.positive_slice_frac))
+                    .then_with(|| a.omission_score_spread.total_cmp(&b.omission_score_spread))
+                    .then_with(|| b.mean_slice_score.total_cmp(&a.mean_slice_score))
+                    .then_with(|| b.full_sharpe.total_cmp(&a.full_sharpe))
+                    .then_with(|| a.full_max_dd.total_cmp(&b.full_max_dd))
             });
             let expected_keys: Vec<(u16, u16)> = expected_ranked
                 .iter()
                 .take(top_k)
-                .map(|entry| entry.0)
+                .map(|entry| entry.key)
                 .collect();
+            let mut naive_full_period_ranked = union_rows.clone();
+            naive_full_period_ranked.sort_by(|a, b| {
+                let sa = objective_score(&a.1, ObjectiveKind::Sharpe);
+                let sb = objective_score(&b.1, ObjectiveKind::Sharpe);
+                sb.total_cmp(&sa)
+                    .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+            });
+            let naive_full_period_keys: Vec<(u16, u16)> = naive_full_period_ranked
+                .iter()
+                .take(top_k)
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+            saw_slice_local_only_difference |= naive_full_period_keys != expected_keys;
 
             let mut req_slice = req_union.clone();
             req_slice.shortlist_slice_mode = Some(mode);
@@ -24906,30 +26309,71 @@ mod tests {
             } else {
                 &best_diag.quartiles
             };
-            let expected_best = expected_ranked[0];
+            let expected_best = &expected_ranked[0];
             assert!(
-                (active_diag.worst_slice_score - expected_best.1).abs() < 1.0e-3,
+                (active_diag.worst_slice_score - expected_best.worst_slice_score).abs() < 1.0e-3,
                 "worst slice score should match expected {mode_label} rerank summary: actual={} expected={}",
                 active_diag.worst_slice_score,
-                expected_best.1
+                expected_best.worst_slice_score
             );
             assert!(
-                (active_diag.positive_slice_frac - expected_best.2).abs() < 1.0e-12,
+                (active_diag.positive_slice_frac - expected_best.positive_slice_frac).abs()
+                    < 1.0e-12,
                 "positive slice fraction should match expected {mode_label} rerank summary"
             );
             assert!(
-                (active_diag.mean_slice_score - expected_best.3).abs() < 1.0e-3,
+                (active_diag.mean_slice_score - expected_best.mean_slice_score).abs() < 1.0e-3,
                 "mean slice score should match expected {mode_label} rerank summary"
             );
             assert!(
-                (active_diag.worst_omission_score - expected_best.4).abs() < 1.0e-3,
+                (active_diag.worst_omission_score - expected_best.worst_omission_score).abs()
+                    < 1.0e-3,
                 "worst omission score should match expected {mode_label} rerank summary"
             );
             assert!(
-                (active_diag.omission_score_spread - expected_best.5).abs() < 1.0e-3,
+                (active_diag.omission_score_spread - expected_best.omission_score_spread).abs()
+                    < 1.0e-3,
                 "omission spread should match expected {mode_label} rerank summary"
             );
+            let active_benchmark = active_diag
+                .benchmark_relative
+                .as_ref()
+                .expect("benchmark-relative summary should be present");
+            assert!((active_benchmark.beat_rate - expected_best.beat_rate).abs() < 1.0e-12);
+            assert!(
+                (active_benchmark.mean_excess_return - expected_best.mean_excess_return).abs()
+                    < 1.0e-12
+            );
+            assert!(
+                (active_benchmark.worst_excess_return - expected_best.worst_excess_return).abs()
+                    < 1.0e-12
+            );
+            assert!(
+                (active_benchmark.best_excess_return - expected_best.best_excess_return).abs()
+                    < 1.0e-12
+            );
+            assert!(
+                (active_benchmark.worst_omission_excess_return
+                    - expected_best.worst_omission_excess_return)
+                    .abs()
+                    < 1.0e-12
+            );
+            assert!(
+                (active_benchmark.best_omission_excess_return
+                    - expected_best.best_omission_excess_return)
+                    .abs()
+                    < 1.0e-12
+            );
+            assert!(
+                (active_benchmark.omission_excess_spread - expected_best.omission_excess_spread)
+                    .abs()
+                    < 1.0e-12
+            );
         }
+        assert!(
+            saw_slice_local_only_difference,
+            "shortlist slice exactness should require slice-local state rather than full-period winner rows alone"
+        );
 
         match prev_global_topk {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
@@ -25138,6 +26582,75 @@ mod tests {
         assert!(
             (neighborhood.curvature_stability - expected_neighborhood.curvature_stability).abs()
                 <= 1.0e-9
+        );
+        assert_eq!(
+            neighborhood.fast_left_delta,
+            expected_neighborhood.fast_left_delta
+        );
+        assert_eq!(
+            neighborhood.fast_right_delta,
+            expected_neighborhood.fast_right_delta
+        );
+        assert_eq!(
+            neighborhood.slow_down_delta,
+            expected_neighborhood.slow_down_delta
+        );
+        assert_eq!(
+            neighborhood.slow_up_delta,
+            expected_neighborhood.slow_up_delta
+        );
+        assert_eq!(
+            neighborhood.fast_curvature,
+            expected_neighborhood.fast_curvature
+        );
+        assert_eq!(
+            neighborhood.slow_curvature,
+            expected_neighborhood.slow_curvature
+        );
+        assert_eq!(
+            neighborhood.fast_axis_half_width_steps,
+            expected_neighborhood.fast_axis_half_width_steps
+        );
+        assert_eq!(
+            neighborhood.slow_axis_half_width_steps,
+            expected_neighborhood.slow_axis_half_width_steps
+        );
+        assert_eq!(
+            neighborhood.anisotropy_ratio,
+            expected_neighborhood.anisotropy_ratio
+        );
+        assert_eq!(
+            neighborhood.dominant_fragility_axis,
+            expected_neighborhood.dominant_fragility_axis
+        );
+        assert_eq!(
+            neighborhood.local_geometry_label,
+            expected_neighborhood.local_geometry_label
+        );
+        assert_eq!(neighborhood.cliff_flag, expected_neighborhood.cliff_flag);
+        assert_eq!(
+            neighborhood.path_change_proxy_neighbors,
+            expected_neighborhood.path_change_proxy_neighbors
+        );
+        assert_eq!(
+            neighborhood
+                .local_surrogate_admission
+                .as_ref()
+                .map(|summary| summary.admitted),
+            expected_neighborhood
+                .local_surrogate_admission
+                .as_ref()
+                .map(|summary| summary.admitted)
+        );
+        assert_eq!(
+            neighborhood
+                .local_surrogate_admission
+                .as_ref()
+                .and_then(|summary| summary.rejection_reason.clone()),
+            expected_neighborhood
+                .local_surrogate_admission
+                .as_ref()
+                .and_then(|summary| summary.rejection_reason.clone())
         );
         let expected_agreement = expected_neighborhood
             .score_agreement

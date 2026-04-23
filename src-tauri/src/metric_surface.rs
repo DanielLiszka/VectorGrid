@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::Value;
 use ta_strategies::double_ma::Metrics;
 
-const OPTIMIZATION_METRIC_SURFACE_SCHEMA_VERSION: u64 = 2;
+const OPTIMIZATION_METRIC_SURFACE_SCHEMA_VERSION: u64 = 3;
 
 pub(crate) const CORE17_FIELDS: [&str; 17] = [
     "pnl",
@@ -102,6 +102,8 @@ pub(crate) struct OptimizationMetricSurfaceArtifact {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_tail_exact: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best_metrics_row: Option<Vec<f64>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub top_metric_rows: Vec<Vec<f64>>,
@@ -143,21 +145,6 @@ fn artifact_requested_metric_contract(artifact: &Value) -> String {
     normalize_text(artifact.pointer("/run/req/metric_contract")).to_ascii_lowercase()
 }
 
-fn artifact_requested_trade22(artifact: &Value) -> bool {
-    let metric_contract = artifact_requested_metric_contract(artifact);
-    if matches!(
-        metric_contract.as_str(),
-        "trade_22" | "trade22" | "trade-22"
-    ) {
-        return true;
-    }
-
-    artifact
-        .pointer("/run/req/include_trade_metrics")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
 fn artifact_requested_full17(artifact: &Value) -> bool {
     matches!(
         artifact_requested_metric_contract(artifact).as_str(),
@@ -191,6 +178,20 @@ fn artifact_runtime_metric_surface_kind(artifact: &Value) -> Option<Optimization
     }
 }
 
+fn artifact_published_trade_tail_exact(artifact: &Value) -> bool {
+    artifact
+        .pointer("/optimization_metric_surface/trade_tail_exact")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn artifact_runtime_trade_tail_exact(artifact: &Value) -> bool {
+    artifact
+        .pointer("/run/res/metric_surface_trade_tail_exact")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn is_cpu_metric_route(artifact: &Value) -> bool {
     let backend_route = artifact_backend_route(artifact);
     if backend_route.contains("CpuOnly") {
@@ -219,17 +220,6 @@ fn strategy_kind_supports_core17(artifact: &Value) -> bool {
     }
 }
 
-fn strategy_kind_supports_trade22(artifact: &Value) -> bool {
-    let strategy_kind = artifact_strategy_kind(artifact);
-    match strategy_kind.as_str() {
-        "DoubleMa" | "Pit" | "Set" | "Mts" | "Orc" | "Marrt" | "Vfct" => true,
-        "CompositeTrend" | "BreakoutMomentum" => {
-            is_exact_gpu_kernel_route(&artifact_backend_route(artifact))
-        }
-        _ => false,
-    }
-}
-
 fn strategy_kind_supports_exact_gpu_metric_surface(artifact: &Value) -> bool {
     matches!(
         artifact_strategy_kind(artifact).as_str(),
@@ -244,6 +234,25 @@ fn strategy_kind_supports_exact_gpu_metric_surface(artifact: &Value) -> bool {
             | "BreakoutMomentum"
             | "RegimeHybrid"
             | "DynamicDoubleMa"
+    )
+}
+
+fn artifact_has_exact_trade_tail_support(artifact: &Value) -> bool {
+    if artifact_published_trade_tail_exact(artifact) || artifact_runtime_trade_tail_exact(artifact)
+    {
+        return true;
+    }
+
+    let backend_route = artifact_backend_route(artifact);
+    if is_exact_gpu_kernel_route(&backend_route) {
+        return artifact_gpu_kernel_metrics_count(artifact)
+            .map(|metrics_count| metrics_count >= TRADE22_FIELDS.len())
+            .unwrap_or(false);
+    }
+
+    matches!(
+        artifact_runtime_metric_surface_kind(artifact),
+        Some(OptimizationMetricSurfaceKind::Trade22)
     )
 }
 
@@ -265,7 +274,7 @@ fn detect_exact_gpu_kernel_surface_kind(artifact: &Value) -> Option<Optimization
         });
     }
 
-    if artifact_requested_trade22(artifact) {
+    if artifact_has_exact_trade_tail_support(artifact) {
         return Some(OptimizationMetricSurfaceKind::Trade22);
     }
     if artifact_requested_full17(artifact) {
@@ -284,24 +293,40 @@ fn heuristic_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
         return OptimizationMetricSurfaceKind::Legacy;
     }
 
-    if artifact_requested_trade22(artifact) && strategy_kind_supports_trade22(artifact) {
+    if artifact_has_exact_trade_tail_support(artifact) {
         return OptimizationMetricSurfaceKind::Trade22;
     }
 
     OptimizationMetricSurfaceKind::Core17
 }
 
+fn current_surface_kind_from_metadata(artifact: &Value) -> Option<OptimizationMetricSurfaceKind> {
+    let kind = artifact
+        .pointer("/optimization_metric_surface/surface")
+        .and_then(Value::as_str)
+        .and_then(parse_surface_label)?;
+
+    match kind {
+        OptimizationMetricSurfaceKind::Trade22
+            if !artifact_published_trade_tail_exact(artifact) =>
+        {
+            None
+        }
+        _ => Some(kind),
+    }
+}
+
 fn rebuild_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
     if let Some(runtime_kind) = artifact_runtime_metric_surface_kind(artifact) {
-        return runtime_kind;
+        if !matches!(runtime_kind, OptimizationMetricSurfaceKind::Trade22)
+            || artifact_has_exact_trade_tail_support(artifact)
+        {
+            return runtime_kind;
+        }
     }
 
     if has_current_metric_surface_metadata(artifact) {
-        if let Some(current_kind) = artifact
-            .pointer("/optimization_metric_surface/surface")
-            .and_then(Value::as_str)
-            .and_then(parse_surface_label)
-        {
+        if let Some(current_kind) = current_surface_kind_from_metadata(artifact) {
             return current_kind;
         }
     }
@@ -397,10 +422,7 @@ fn has_current_metric_surface_metadata(artifact: &Value) -> bool {
 
 pub(crate) fn artifact_metric_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
     if has_current_metric_surface_metadata(artifact) {
-        artifact
-            .pointer("/optimization_metric_surface/surface")
-            .and_then(Value::as_str)
-            .and_then(parse_surface_label)
+        current_surface_kind_from_metadata(artifact)
             .unwrap_or_else(|| detect_surface_kind(artifact))
     } else {
         detect_surface_kind(artifact)
@@ -444,6 +466,9 @@ pub(crate) fn build_optimization_metric_surface_artifact(
         .iter()
         .map(|field| (*field).to_string())
         .collect::<Vec<_>>();
+    let trade_tail_exact = matches!(surface_kind, OptimizationMetricSurfaceKind::Trade22)
+        .then(|| artifact_has_exact_trade_tail_support(artifact))
+        .filter(|exact| *exact);
     let best_metrics_row = parse_metrics(artifact.pointer("/run/res/best_metrics"))
         .and_then(|metrics| project_metrics_row(&metrics, surface_kind));
     let mut top_metric_rows = artifact
@@ -476,6 +501,7 @@ pub(crate) fn build_optimization_metric_surface_artifact(
         schema_version: OPTIMIZATION_METRIC_SURFACE_SCHEMA_VERSION,
         surface: surface_kind.as_str().to_string(),
         fields,
+        trade_tail_exact,
         best_metrics_row,
         top_metric_rows,
     }
@@ -1426,7 +1452,7 @@ mod tests {
         });
         let core17 = json!({
             "optimization_metric_surface": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "surface": "core17"
             },
             "run": {
@@ -1440,8 +1466,9 @@ mod tests {
         });
         let trade22 = json!({
             "optimization_metric_surface": {
-                "schema_version": 2,
-                "surface": "trade22"
+                "schema_version": 3,
+                "surface": "trade22",
+                "trade_tail_exact": true
             },
             "run": {
                 "req": {
@@ -1525,7 +1552,7 @@ mod tests {
     {
         let artifact = json!({
             "optimization_metric_surface": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "surface": "core17"
             },
             "run": {
@@ -1581,7 +1608,7 @@ mod tests {
     fn build_metric_surface_artifact_falls_back_when_current_surface_label_is_invalid() {
         let artifact = json!({
             "optimization_metric_surface": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "surface": "bogus"
             },
             "run": {
@@ -1628,17 +1655,129 @@ mod tests {
     }
 
     #[test]
+    fn metric_surface_refuses_trade22_without_exact_trade_tail_evidence_on_exact_gpu_routes() {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "best_metrics": sample_metrics(),
+                    "top": [[{"fast_len": 5}, sample_metrics()]]
+                }
+            }
+        });
+
+        let surface = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            surface.surface,
+            OptimizationMetricSurfaceKind::Legacy.as_str()
+        );
+        assert!(surface.trade_tail_exact.is_none());
+        assert!(surface.best_metrics_row.is_none());
+    }
+
+    #[test]
+    fn metric_surface_refuses_runtime_trade22_hint_without_exact_trade_tail_evidence_on_exact_gpu_routes(
+    ) {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "metric_surface_kind": "trade22",
+                    "best_metrics": sample_metrics(),
+                    "top": [[{"fast_len": 5}, sample_metrics()]]
+                }
+            }
+        });
+
+        let surface = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            surface.surface,
+            OptimizationMetricSurfaceKind::Legacy.as_str()
+        );
+        assert!(surface.trade_tail_exact.is_none());
+        assert!(surface.best_metrics_row.is_none());
+    }
+
+    #[test]
+    fn metric_surface_prefers_current_trade22_metadata_only_when_trade_tail_exact_is_published() {
+        let artifact = json!({
+            "optimization_metric_surface": {
+                "schema_version": 3,
+                "surface": "trade22",
+                "trade_tail_exact": true
+            },
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "best_metrics": sample_metrics(),
+                    "top": [[{"fast_len": 5}, sample_metrics()]]
+                }
+            }
+        });
+
+        let rebuilt = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            rebuilt.surface,
+            OptimizationMetricSurfaceKind::Trade22.as_str()
+        );
+        assert_eq!(rebuilt.trade_tail_exact, Some(true));
+        assert_eq!(rebuilt.fields.len(), TRADE22_FIELDS.len());
+    }
+
+    #[test]
+    fn metric_surface_publishes_trade_tail_exact_for_non_exact_trade22_surfaces() {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "backend_used": "Cpu",
+                    "backend_route": "CpuOnly",
+                    "best_metrics": sample_metrics(),
+                    "top": [[{"fast_len": 5}, sample_metrics()]]
+                }
+            }
+        });
+
+        let surface = build_optimization_metric_surface_artifact(&artifact);
+        assert_eq!(
+            surface.surface,
+            OptimizationMetricSurfaceKind::Trade22.as_str()
+        );
+        assert_eq!(surface.trade_tail_exact, Some(true));
+        assert_eq!(surface.best_metrics_row.as_ref().map(Vec::len), Some(22));
+    }
+
+    #[test]
     fn metric_surface_row_serialization_turns_non_finite_cells_into_null() {
         let mut metrics: Metrics = serde_json::from_value(sample_metrics()).expect("metrics");
         metrics.pnl = f64::NAN;
 
         let artifact_value = serde_json::to_value(super::OptimizationMetricSurfaceArtifact {
-            schema_version: 2,
+            schema_version: 3,
             surface: OptimizationMetricSurfaceKind::Core17.as_str().to_string(),
             fields: CORE17_FIELDS
                 .iter()
                 .map(|field| (*field).to_string())
                 .collect(),
+            trade_tail_exact: None,
             best_metrics_row: project_metrics_row(&metrics, OptimizationMetricSurfaceKind::Core17),
             top_metric_rows: Vec::new(),
         })

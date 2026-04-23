@@ -140,6 +140,7 @@ pub use double_ma::{
     stage_double_ma_campaign_vram_prefetch, Backend, BackendOptimizationResult, BackendUsed,
     DoubleMaCampaignVramPrefetchOutcome, DoubleMaDrilldownRequest, DoubleMaLocalStabilityRequest,
     DoubleMaParamsResolved, DoubleMaRequest, LocalStabilityResult, OptimizationModeResolved,
+    OptimizationSearchSemanticsSummary,
 };
 
 pub use composite_cpu::{
@@ -186,7 +187,7 @@ pub use validation_shared::{
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
     TradeBootstrapStats, ValidationAdmissionHeadProvenance, ValidationAdmissionPolicy,
     ValidationAdmissionProvenance, ValidationArtifactContext, ValidationAuxWorkMask,
-    WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
+    ValidationSemanticsProvenance, WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
 };
 
 pub use iterative_sim::{
@@ -223,11 +224,11 @@ pub use ml_confidence::{
     extract_ml_confidence_group_features, predict_ml_confidence_for_features,
     predict_ml_confidence_for_group, prepare_ml_confidence_rows_from_meta_artifacts,
     train_ml_confidence_model_from_meta_artifacts, train_ml_confidence_model_from_prepared_rows,
-    train_ml_confidence_model_from_rows, MlConfidenceCalibrationBin, MlConfidenceDatasetRow,
-    MlConfidenceGroupFeatures, MlConfidenceLabelConfig, MlConfidenceModel, MlConfidenceModelFamily,
-    MlConfidenceModelKind, MlConfidenceModelSummary, MlConfidencePreparedArtifactRows,
-    MlConfidencePreparedRows, MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
-    MlConfidenceTrainMetrics,
+    train_ml_confidence_model_from_rows, MlConfidenceCalibrationBin, MlConfidenceCompatibilityKey,
+    MlConfidenceDatasetRow, MlConfidenceGroupFeatures, MlConfidenceLabelConfig, MlConfidenceModel,
+    MlConfidenceModelFamily, MlConfidenceModelKind, MlConfidenceModelSummary,
+    MlConfidencePreparedArtifactRows, MlConfidencePreparedRows, MlConfidenceScope,
+    MlConfidenceTarget, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
 };
 
 pub use ml_signal::{

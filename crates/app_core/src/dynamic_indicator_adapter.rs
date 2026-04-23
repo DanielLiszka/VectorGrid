@@ -249,6 +249,16 @@ enum PreparedCudaSourceKind {
 }
 
 #[cfg(feature = "cuda")]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct PreparedCudaSemanticIdentity {
+    pub dataset_content_fingerprint_hex: String,
+    pub source_key: String,
+    pub source_kind: String,
+    pub required_fields: PreparedCudaFieldMask,
+    pub len: usize,
+}
+
+#[cfg(feature = "cuda")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PreparedCudaDatasetSignature {
     len: usize,
@@ -268,8 +278,8 @@ struct PreparedCudaDeviceState {
 }
 
 #[cfg(feature = "cuda")]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct PreparedCudaFieldMask {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct PreparedCudaFieldMask {
     open: bool,
     high: bool,
     low: bool,
@@ -433,6 +443,11 @@ pub struct PreparedCudaDispatchStats {
 }
 
 #[cfg(feature = "cuda")]
+const PREPARED_CUDA_FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+#[cfg(feature = "cuda")]
+const PREPARED_CUDA_FNV_PRIME: u64 = 0x100000001b3;
+
+#[cfg(feature = "cuda")]
 /// Return and reset the current thread's prepared-input CUDA dispatch stats.
 ///
 /// The counters are thread-local so tests and callers can sample fallback
@@ -519,6 +534,67 @@ fn prepared_cuda_dataset_signature(candles: &Candles) -> PreparedCudaDatasetSign
         low_ptr: candles.low.as_ptr() as usize,
         close_ptr: candles.close.as_ptr() as usize,
         volume_ptr: candles.volume.as_ptr() as usize,
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[inline]
+fn prepared_cuda_source_kind_label(source_kind: PreparedCudaSourceKind) -> &'static str {
+    match source_kind {
+        PreparedCudaSourceKind::Open => "open",
+        PreparedCudaSourceKind::High => "high",
+        PreparedCudaSourceKind::Low => "low",
+        PreparedCudaSourceKind::Close => "close",
+        PreparedCudaSourceKind::Volume => "volume",
+        PreparedCudaSourceKind::Derived => "derived",
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[inline]
+fn prepared_cuda_fnv1a64_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PREPARED_CUDA_FNV_PRIME);
+    }
+    hash
+}
+
+#[cfg(feature = "cuda")]
+fn prepared_cuda_dataset_content_fingerprint_hex(candles: &Candles) -> String {
+    let mut hash = PREPARED_CUDA_FNV_OFFSET_BASIS;
+    hash = prepared_cuda_fnv1a64_update(hash, &candles.close.len().to_le_bytes());
+    for value in candles.timestamp.iter() {
+        hash = prepared_cuda_fnv1a64_update(hash, &value.to_le_bytes());
+    }
+    for series in [
+        candles.open.as_slice(),
+        candles.high.as_slice(),
+        candles.low.as_slice(),
+        candles.close.as_slice(),
+        candles.volume.as_slice(),
+    ] {
+        for value in series.iter() {
+            hash = prepared_cuda_fnv1a64_update(hash, &value.to_le_bytes());
+        }
+    }
+    format!("fnv1a64-{hash:016x}")
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn prepared_cuda_semantic_identity_for_candles(
+    candles: &Candles,
+    ma_source: &str,
+    input_kinds: Option<&[IndicatorInputKind]>,
+) -> PreparedCudaSemanticIdentity {
+    let source_key = normalize_prepared_cuda_source_key(ma_source);
+    let source_kind = prepared_cuda_source_kind(source_key.as_str());
+    PreparedCudaSemanticIdentity {
+        dataset_content_fingerprint_hex: prepared_cuda_dataset_content_fingerprint_hex(candles),
+        source_key,
+        source_kind: prepared_cuda_source_kind_label(source_kind).to_string(),
+        required_fields: required_prepared_cuda_fields(source_kind, input_kinds),
+        len: candles.close.len(),
     }
 }
 
@@ -644,6 +720,7 @@ pub struct PreparedCudaIndicatorInputs {
     d_low: Option<Arc<CudaDeviceVectorF32>>,
     d_close: Option<Arc<CudaDeviceVectorF32>>,
     d_volume: Option<Arc<CudaDeviceVectorF32>>,
+    reused_resident_dataset: bool,
     source_first_valid_cache: OnceLock<usize>,
     high_low_first_valid_cache: OnceLock<usize>,
     hlc_first_valid_cache: OnceLock<usize>,
@@ -737,6 +814,7 @@ impl PreparedCudaIndicatorInputs {
                 .as_ref()
                 .map(|entry| entry.signature != signature)
                 .unwrap_or(true);
+            let reused_resident_dataset = !rebuild;
             if rebuild {
                 device_state.dataset = Some(ResidentCudaIndicatorDataset {
                     signature,
@@ -798,6 +876,7 @@ impl PreparedCudaIndicatorInputs {
                 d_low: entry.d_low.clone(),
                 d_close: entry.d_close.clone(),
                 d_volume: entry.d_volume.clone(),
+                reused_resident_dataset,
                 source_first_valid_cache: OnceLock::new(),
                 high_low_first_valid_cache: OnceLock::new(),
                 hlc_first_valid_cache: OnceLock::new(),
@@ -836,6 +915,10 @@ impl PreparedCudaIndicatorInputs {
         self.volume
             .as_ref()
             .expect("prepared CUDA inputs missing volume field")
+    }
+
+    pub(crate) fn reused_resident_dataset(&self) -> bool {
+        self.reused_resident_dataset
     }
 
     fn open_device_ref(&self) -> &Arc<CudaDeviceVectorF32> {
@@ -1679,6 +1762,85 @@ mod tests {
             take_prepared_cuda_dispatch_stats(),
             PreparedCudaDispatchStats::default()
         );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepared_cuda_semantic_identity_distinguishes_same_close_with_different_ma_source() {
+        let candles = make_trending_candles(256);
+
+        let close_identity = prepared_cuda_semantic_identity_for_candles(
+            &candles,
+            "close",
+            Some(&[IndicatorInputKind::Slice]),
+        );
+        let hlc3_identity = prepared_cuda_semantic_identity_for_candles(
+            &candles,
+            "hlc3",
+            Some(&[IndicatorInputKind::Slice]),
+        );
+
+        assert_eq!(
+            close_identity.dataset_content_fingerprint_hex,
+            hlc3_identity.dataset_content_fingerprint_hex
+        );
+        assert_ne!(close_identity.source_key, hlc3_identity.source_key);
+        assert_ne!(close_identity.source_kind, hlc3_identity.source_kind);
+        assert_ne!(close_identity, hlc3_identity);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn prepared_cuda_semantic_equality_does_not_imply_thread_local_cache_hit() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        reset_test_cuda_input_cache();
+        let candles = make_trending_candles(256);
+        let expected_identity = prepared_cuda_semantic_identity_for_candles(
+            &candles,
+            "close",
+            Some(&[IndicatorInputKind::Slice]),
+        );
+
+        let first = PreparedCudaIndicatorInputs::from_candles_for_input_kinds(
+            &candles,
+            "close",
+            &[IndicatorInputKind::Slice],
+        )
+        .expect("initial prepared inputs");
+        assert!(!first.reused_resident_dataset());
+
+        let second = PreparedCudaIndicatorInputs::from_candles_for_input_kinds(
+            &candles,
+            "close",
+            &[IndicatorInputKind::Slice],
+        )
+        .expect("repeat prepared inputs");
+        assert!(second.reused_resident_dataset());
+
+        let thread_identity = std::thread::spawn(move || {
+            reset_test_cuda_input_cache();
+            let thread_candles = make_trending_candles(256);
+            let identity = prepared_cuda_semantic_identity_for_candles(
+                &thread_candles,
+                "close",
+                Some(&[IndicatorInputKind::Slice]),
+            );
+            let prepared = PreparedCudaIndicatorInputs::from_candles_for_input_kinds(
+                &thread_candles,
+                "close",
+                &[IndicatorInputKind::Slice],
+            )
+            .expect("thread prepared inputs");
+            (identity, prepared.reused_resident_dataset())
+        })
+        .join()
+        .expect("thread identity");
+
+        assert_eq!(thread_identity.0, expected_identity);
+        assert!(!thread_identity.1);
     }
 
     #[cfg(feature = "cuda")]

@@ -27,6 +27,26 @@ pub(super) struct ExportRunVerdict {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ExportValidationProvenance {
+    pub stage_sequence: String,
+    pub score_channel: String,
+    pub passed_vs_approved_contract: String,
+    pub probability_metric_source: String,
+    pub track_record_source: String,
+    pub cscv_coverage_state: String,
+    pub cscv_candidate_stat_coverage: String,
+    pub cscv_selection_state: String,
+    pub cross_summary_scope: String,
+    pub cross_mode: String,
+    pub cross_summary_mode: String,
+    pub regime_summary_family: String,
+    pub regime_summary_role: String,
+    pub regime_summary_semantics: String,
+    pub regime_summary_descriptive_only: Option<bool>,
+}
+
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub(super) struct ExportSpaSummary {
     pub scope: String,
@@ -215,6 +235,8 @@ pub(super) struct ValidationExportModel {
     pub min_cscv_oos_metric: Option<f64>,
     pub max_pbo: Option<f64>,
     pub run_verdict: Option<ExportRunVerdict>,
+    #[allow(dead_code)]
+    pub validation_provenance: Option<ExportValidationProvenance>,
     pub spa: Option<ExportSpaSummary>,
     pub reopt_walk_forward: Option<ExportReoptSummary>,
     pub cscv_pbo: Option<ExportCscvSummary>,
@@ -240,6 +262,40 @@ struct ExpectedExecutionSummary {
 
 fn normalize_text(value: Option<&str>) -> String {
     value.unwrap_or("").trim().to_string()
+}
+
+fn first_nonempty_text(v: &Value, ptrs: &[&str]) -> String {
+    ptrs.iter()
+        .find_map(|ptr| {
+            v.pointer(ptr)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+}
+
+fn first_bool(v: &Value, ptrs: &[&str]) -> Option<bool> {
+    ptrs.iter()
+        .find_map(|ptr| v.pointer(ptr).and_then(Value::as_bool))
+}
+
+fn first_joined_text_array(v: &Value, ptrs: &[&str], sep: &str) -> String {
+    ptrs.iter()
+        .find_map(|ptr| {
+            v.pointer(ptr).and_then(Value::as_array).map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(sep)
+            })
+        })
+        .filter(|joined| !joined.is_empty())
+        .unwrap_or_default()
 }
 
 fn opt_f64(v: &Value, ptr: &str) -> Option<f64> {
@@ -751,6 +807,136 @@ fn parse_run_verdict(validation_res: &Value) -> Option<ExportRunVerdict> {
             .and_then(Value::as_f64)
             .filter(|v| v.is_finite()),
     })
+}
+
+fn parse_validation_provenance(validation_res: &Value) -> Option<ExportValidationProvenance> {
+    let provenance = validation_res
+        .get("validation_provenance")
+        .or_else(|| validation_res.get("provenance"))?;
+
+    let parsed = ExportValidationProvenance {
+        stage_sequence: first_joined_text_array(
+            provenance,
+            &["/stage_sequence", "/stages", "/validation_stage_sequence"],
+            " -> ",
+        ),
+        score_channel: first_nonempty_text(
+            provenance,
+            &["/score_channel", "/score_channel/name", "/score/name"],
+        ),
+        passed_vs_approved_contract: first_nonempty_text(
+            provenance,
+            &[
+                "/passed_vs_approved_contract",
+                "/passed_approved_contract",
+                "/run_verdict/passed_vs_approved_contract",
+                "/run_verdict/contract",
+            ],
+        ),
+        probability_metric_source: first_nonempty_text(
+            provenance,
+            &[
+                "/probability_metric_source",
+                "/probability_metric/source",
+                "/probability/source",
+                "/score_channel/source",
+            ],
+        ),
+        track_record_source: first_nonempty_text(
+            provenance,
+            &["/track_record_source", "/track_record/source"],
+        ),
+        cscv_coverage_state: first_nonempty_text(
+            provenance,
+            &[
+                "/cscv_coverage_state",
+                "/cscv/coverage_state",
+                "/cscv/state/coverage",
+            ],
+        ),
+        cscv_candidate_stat_coverage: first_nonempty_text(
+            provenance,
+            &[
+                "/cscv_candidate_stat_coverage",
+                "/cscv/candidate_stat_coverage",
+                "/cscv/state/candidate_stat_coverage",
+            ],
+        ),
+        cscv_selection_state: first_nonempty_text(
+            provenance,
+            &[
+                "/cscv_selection_state",
+                "/cscv/selection_state",
+                "/cscv/state/selection",
+            ],
+        ),
+        cross_summary_scope: first_nonempty_text(
+            provenance,
+            &[
+                "/cross_summary_scope",
+                "/cross_summary/scope",
+                "/cross/scope",
+            ],
+        ),
+        cross_mode: first_nonempty_text(provenance, &["/cross_mode", "/cross/mode_kind"]),
+        cross_summary_mode: first_nonempty_text(
+            provenance,
+            &["/cross_summary_mode", "/cross_summary/mode", "/cross/mode"],
+        ),
+        regime_summary_family: first_nonempty_text(
+            provenance,
+            &[
+                "/regime_summary_family",
+                "/regime_summary/family",
+                "/regime_summary/tag",
+            ],
+        ),
+        regime_summary_role: first_nonempty_text(
+            provenance,
+            &[
+                "/regime_summary_role",
+                "/regime_summary/role",
+                "/regime_summary/channel",
+            ],
+        ),
+        regime_summary_semantics: first_nonempty_text(
+            provenance,
+            &[
+                "/regime_summary_semantics",
+                "/regime_summary/semantics",
+                "/regime_summary/contract",
+            ],
+        ),
+        regime_summary_descriptive_only: first_bool(
+            provenance,
+            &[
+                "/regime_summary_descriptive_only",
+                "/regime_summary/descriptive_only",
+                "/regime_summary/is_descriptive_only",
+            ],
+        ),
+    };
+
+    if parsed.stage_sequence.is_empty()
+        && parsed.score_channel.is_empty()
+        && parsed.passed_vs_approved_contract.is_empty()
+        && parsed.probability_metric_source.is_empty()
+        && parsed.track_record_source.is_empty()
+        && parsed.cscv_coverage_state.is_empty()
+        && parsed.cscv_candidate_stat_coverage.is_empty()
+        && parsed.cscv_selection_state.is_empty()
+        && parsed.cross_summary_scope.is_empty()
+        && parsed.cross_mode.is_empty()
+        && parsed.cross_summary_mode.is_empty()
+        && parsed.regime_summary_family.is_empty()
+        && parsed.regime_summary_role.is_empty()
+        && parsed.regime_summary_semantics.is_empty()
+        && parsed.regime_summary_descriptive_only.is_none()
+    {
+        None
+    } else {
+        Some(parsed)
+    }
 }
 
 fn parse_spa_summary(validation_res: &Value) -> Option<ExportSpaSummary> {
@@ -2803,6 +2989,7 @@ fn build_model_from_validation_res_with_context(
         min_cscv_oos_metric: None,
         max_pbo: None,
         run_verdict,
+        validation_provenance: parse_validation_provenance(validation_res),
         spa: parse_spa_summary(validation_res),
         reopt_walk_forward: parse_reopt_summary(validation_res),
         cscv_pbo: parse_cscv_summary(validation_res),
@@ -3077,6 +3264,202 @@ mod tests {
         assert!(verdict.passed);
         assert!(!verdict.approved);
         assert_eq!(verdict.approved_candidate_count, 2);
+    }
+
+    #[test]
+    fn validation_provenance_is_optional_when_payload_is_absent() {
+        let validation_res = json!({
+            "data_id": "dataset",
+            "candidates": [
+                test_candidate(
+                    1.0,
+                    true,
+                    120,
+                    60,
+                    json!({
+                        "fast_ma_type": "ema",
+                        "slow_ma_type": "sma",
+                        "fast_len": 10,
+                        "slow_len": 20
+                    }),
+                    0.4,
+                    0.2
+                )
+            ],
+            "run_verdict": {
+                "passed": true,
+                "approved": true
+            }
+        });
+
+        let model = build_model_from_validation_res(&validation_res, None)
+            .expect("report model should build without provenance");
+        assert!(model.validation_provenance.is_none());
+    }
+
+    #[test]
+    fn validation_provenance_round_trips_from_validation_res_into_report_model() {
+        let validation_res = json!({
+            "data_id": "dataset",
+            "validation_provenance": {
+                "stage_sequence": [
+                    "local_path_evidence",
+                    "probability_metrics",
+                    "cscv_pbo",
+                    "cross_ticker_aggregation",
+                    "final_verdict_rebuild"
+                ],
+                "score_channel": "walk_forward_median_guarded",
+                "passed_vs_approved_contract": "passed is hard-gate survival; approved requires retained final verdict support",
+                "track_record_source": "raw_track_record_bars_with_effective_probability_counts",
+                "probability_metric": {
+                    "source": "psr_dsr_top_candidate"
+                },
+                "cscv": {
+                    "coverage_state": "full_mask",
+                    "candidate_stat_coverage": "all_candidates",
+                    "selection_state": "nonzero_selection"
+                },
+                "cross_mode": "preserved_finalists",
+                "cross_summary": {
+                    "scope": "success_only",
+                    "mode": "preserved_finalists"
+                },
+                "regime_summary": {
+                    "family": "checkpoint_robustness",
+                    "role": "descriptive",
+                    "semantics": "descriptive-only family-tagged summary",
+                    "descriptive_only": true
+                }
+            },
+            "candidates": [
+                test_candidate(
+                    1.0,
+                    true,
+                    120,
+                    60,
+                    json!({
+                        "fast_ma_type": "ema",
+                        "slow_ma_type": "sma",
+                        "fast_len": 10,
+                        "slow_len": 20
+                    }),
+                    0.4,
+                    0.2
+                )
+            ],
+            "run_verdict": {
+                "passed": true,
+                "approved": true
+            }
+        });
+
+        let direct_model = build_model_from_validation_res(&validation_res, None)
+            .expect("direct validation result should parse");
+        let report = json!({
+            "ts": "2026-04-18T00:00:00Z",
+            "run": { "req": { "strategy_kind": "DoubleMa" } },
+            "validation": {
+                "res": validation_res
+            }
+        });
+        let report_model =
+            build_model_from_report(&report, None).expect("full report should parse");
+
+        let expected = Some(ExportValidationProvenance {
+            stage_sequence:
+                "local_path_evidence -> probability_metrics -> cscv_pbo -> cross_ticker_aggregation -> final_verdict_rebuild"
+                    .to_string(),
+            score_channel: "walk_forward_median_guarded".to_string(),
+            passed_vs_approved_contract:
+                "passed is hard-gate survival; approved requires retained final verdict support"
+                    .to_string(),
+            probability_metric_source: "psr_dsr_top_candidate".to_string(),
+            track_record_source: "raw_track_record_bars_with_effective_probability_counts".to_string(),
+            cscv_coverage_state: "full_mask".to_string(),
+            cscv_candidate_stat_coverage: "all_candidates".to_string(),
+            cscv_selection_state: "nonzero_selection".to_string(),
+            cross_summary_scope: "success_only".to_string(),
+            cross_mode: "preserved_finalists".to_string(),
+            cross_summary_mode: "preserved_finalists".to_string(),
+            regime_summary_family: "checkpoint_robustness".to_string(),
+            regime_summary_role: "descriptive".to_string(),
+            regime_summary_semantics: "descriptive-only family-tagged summary".to_string(),
+            regime_summary_descriptive_only: Some(true),
+        });
+
+        assert_eq!(direct_model.validation_provenance, expected);
+        assert_eq!(report_model.validation_provenance, expected);
+    }
+
+    #[test]
+    fn validation_provenance_keeps_passed_true_and_approved_false_distinct() {
+        let validation_res = json!({
+            "data_id": "dataset",
+            "validation_provenance": {
+                "score_channel": "selection_robust_score",
+                "passed_vs_approved_contract": "passed can remain true when approval is withheld after later retained-state checks",
+                "probability_metric_source": "psr_dsr_top_candidate",
+                "cscv_coverage_state": "partial_mask",
+                "cscv_selection_state": "zero_selected",
+                "cross_mode": "lightweight",
+                "cross_summary_scope": "success_only",
+                "cross_summary_mode": "lightweight",
+                "regime_summary_family": "regime_buckets",
+                "regime_summary_role": "descriptive",
+                "regime_summary_descriptive_only": true,
+                "regime_summary_semantics": "descriptive-only; not an approval gate"
+            },
+            "candidates": [
+                test_candidate(
+                    1.0,
+                    true,
+                    120,
+                    60,
+                    json!({
+                        "fast_ma_type": "ema",
+                        "slow_ma_type": "sma",
+                        "fast_len": 10,
+                        "slow_len": 20
+                    }),
+                    0.4,
+                    0.2
+                )
+            ],
+            "run_verdict": {
+                "passed": true,
+                "approved": false,
+                "warning_flags": ["spa_not_significant"]
+            }
+        });
+
+        let model = build_model_from_validation_res(&validation_res, None)
+            .expect("report model should build");
+        let verdict = model.run_verdict.as_ref().expect("run verdict");
+        let provenance = model
+            .validation_provenance
+            .as_ref()
+            .expect("validation provenance");
+
+        assert!(verdict.passed);
+        assert!(!verdict.approved);
+        assert!(model.approved_rows.is_empty());
+        assert_eq!(model.all_rows[0].approval_label, "not_approved");
+        assert_eq!(
+            model.all_rows[0].approval_reason,
+            "run verdict: spa_not_significant"
+        );
+        assert_eq!(
+            provenance.passed_vs_approved_contract,
+            "passed can remain true when approval is withheld after later retained-state checks"
+        );
+        assert_eq!(provenance.score_channel, "selection_robust_score");
+        assert_eq!(provenance.cross_mode, "lightweight");
+        assert_eq!(provenance.cscv_selection_state, "zero_selected");
+        assert_eq!(provenance.cross_summary_scope, "success_only");
+        assert_eq!(provenance.regime_summary_family, "regime_buckets");
+        assert_eq!(provenance.regime_summary_role, "descriptive");
+        assert_eq!(provenance.regime_summary_descriptive_only, Some(true));
     }
 
     #[test]

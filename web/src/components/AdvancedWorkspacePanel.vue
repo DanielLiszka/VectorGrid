@@ -170,7 +170,7 @@ const extraShortlistObjectivesStateNote = computed(() => {
       return 'Requires top K greater than 0.'
     }
     return hasValue
-      ? 'Builds additional host-side shortlist heads for the standalone unified-GPU route before any optional union or confidence rerank.'
+      ? 'Builds additional host-side shortlist heads for the standalone unified-GPU route before any optional route-aligned retained-shortlist union or confidence rerank.'
       : 'Optional host-side extra shortlist heads for the standalone unified-GPU route. This currently requires include all = true.'
   }
   if (scoreModeDraft.value.trim().length > 0) {
@@ -227,8 +227,8 @@ const shortlistConfidenceModeStateNote = computed(() => {
       return 'Requires top K greater than 0.'
     }
     return hasValue
-      ? 'Reranks the returned standalone unified-GPU shortlist by PSR or DSR confidence without adding slice or neighborhood diagnostics.'
-      : 'Optional PSR / DSR rerank over the returned standalone unified-GPU shortlist.'
+      ? 'Reranks the route-aligned retained standalone unified-GPU shortlist by PSR or DSR confidence without claiming replay-backed slice or neighborhood diagnostics.'
+      : 'Optional PSR / DSR rerank over the route-aligned retained standalone unified-GPU shortlist.'
   }
   if (scoreModeDraft.value.trim().length > 0) {
     return 'Requires objective-only ranking. Clear Score mode to rerank the exact shortlist by PSR or DSR.'
@@ -241,12 +241,12 @@ const shortlistConfidenceModeStateNote = computed(() => {
   }
   if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
     return hasValue
-      ? 'Reranks the exact DynamicDoubleMa shortlist by PSR or DSR for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
-      : 'Optional PSR / DSR rerank over the DynamicDoubleMa shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
+      ? 'Replay-free exact rerank of the DynamicDoubleMa shortlist by PSR or DSR for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
+      : 'Optional replay-free exact PSR / DSR rerank over the DynamicDoubleMa shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   return hasValue
-    ? 'Reranks the exact returned shortlist using validation-aligned PSR or DSR confidence. Works with the primary top-K or the union shortlist.'
-    : 'Optional PSR / DSR rerank over the exact returned shortlist. Leaving this off preserves the current ranking order.'
+    ? 'Replay-free exact rerank of the returned shortlist using validation-aligned PSR or DSR confidence. Works with the primary top-K or the union shortlist.'
+    : 'Optional replay-free exact PSR / DSR rerank over the returned shortlist. Leaving this off preserves the current ranking order.'
 })
 const shortlistUnionModeStateNote = computed(() => {
   const hasValue = shortlistUnionModeDraft.value.trim().length > 0
@@ -266,8 +266,8 @@ const shortlistUnionModeStateNote = computed(() => {
       return 'Requires top K greater than 0.'
     }
     return hasValue
-      ? 'Reranks the standalone host-side union shortlist using lexicographic, weighted-rank, Pareto-front, or epsilon-front semantics.'
-      : 'Optional rerank over the standalone host-side union shortlist.'
+      ? 'Reranks the route-aligned retained standalone unified-GPU union shortlist using lexicographic, weighted-rank, Pareto-front, or epsilon-front semantics.'
+      : 'Optional rerank over the route-aligned retained standalone unified-GPU union shortlist.'
   }
   if (scoreModeDraft.value.trim().length > 0) {
     return 'Requires objective-only ranking. Clear Score mode to enable exact union reranking.'
@@ -283,12 +283,12 @@ const shortlistUnionModeStateNote = computed(() => {
   }
   if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
     return hasValue
-      ? 'Reranks the exact DynamicDoubleMa union shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
-      : 'Optional exact rerank over the DynamicDoubleMa union shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
+      ? 'Replay-free exact rerank of the DynamicDoubleMa union shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
+      : 'Optional replay-free exact rerank over the DynamicDoubleMa union shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   return hasValue
-    ? 'Reranks the exact union shortlist using lexicographic, weighted-rank, Pareto-front, or epsilon-front semantics before any optional confidence or slice reranks.'
-    : 'Optional exact rerank over the union shortlist. Leaving this off preserves primary-objective ordering.'
+    ? 'Replay-free exact rerank of the union shortlist using lexicographic, weighted-rank, Pareto-front, or epsilon-front semantics before any optional confidence or replay-backed slice diagnostics.'
+    : 'Optional replay-free exact rerank over the union shortlist. Leaving this off preserves primary-objective ordering.'
 })
 const shortlistSliceModeStateNote = computed(() => {
   const hasValue = shortlistSliceModeDraft.value.trim().length > 0
@@ -308,29 +308,29 @@ const shortlistSliceModeStateNote = computed(() => {
   }
   if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
     return hasValue
-      ? 'Adds exact slice diagnostics to DynamicDoubleMa for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
-      : 'Optional exact slice diagnostics over the DynamicDoubleMa shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
+      ? 'Adds replay-backed exact slice diagnostics to DynamicDoubleMa for exact-compatible GpuKernel(dynamic_strategy_v1) shapes. Unsupported dynamic shapes will reject or fall back cleanly.'
+      : 'Optional replay-backed exact slice diagnostics over the DynamicDoubleMa shortlist for exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   return hasValue
-    ? 'Adds exact half-split or quartile shortlist diagnostics and optional benchmark-relative summaries for the returned shortlist.'
-    : 'Optional exact slice diagnostics over the returned shortlist. Leaving this off preserves the current result surface.'
+    ? 'Adds replay-backed exact half-split or quartile shortlist diagnostics and optional benchmark-relative summaries for the returned shortlist.'
+    : 'Optional replay-backed exact slice diagnostics over the returned shortlist. Leaving this off preserves the current result surface.'
 })
 const shortlistSliceBenchmarkStateNote = computed(() => {
   if (shortlistSliceModeDraft.value.trim().length === 0) {
     return 'Requires shortlist slice mode.'
   }
   return shortlistSliceBenchmarkDraft.value.trim().length > 0
-    ? 'Compares each slice against the chosen benchmark without replacing downstream SPA.'
-    : 'Optional benchmark-relative slice summaries such as beat rate and worst-slice excess return.'
+    ? 'Compares each replay-backed exact slice against the chosen benchmark without replacing downstream SPA.'
+    : 'Optional replay-backed exact benchmark-relative slice summaries such as beat rate and worst-slice excess return.'
 })
 const shortlistNeighborhoodStateNote = computed(() => {
   if (shortlistSliceModeDraft.value.trim().length === 0) {
     return 'Requires shortlist slice mode.'
   }
   if (shortlistNeighborhoodRadiusDraft.value.trim().length === 0) {
-    return 'Optional local plateau / neighborhood robustness summary around the best shortlist candidate.'
+    return 'Optional replay-backed exact local plateau / neighborhood robustness summary around the best shortlist candidate.'
   }
-  return 'Exact local neighborhood robustness summary. Radius is required; step defaults to 1 when left blank.'
+  return 'Replay-backed exact local neighborhood robustness summary. Radius is required; step defaults to 1 when left blank.'
 })
 const hurdleTauStateNote = computed(() =>
   hurdleTauDraft.value.trim().length > 0

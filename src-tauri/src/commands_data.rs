@@ -77,14 +77,26 @@ pub fn clear_loaded_data(
     clear_loaded_data_impl(&base_data_id, state.inner())
 }
 
-#[tauri::command]
-pub fn list_moving_averages() -> Vec<MaInfo> {
+fn list_moving_averages_impl() -> Vec<MaInfo> {
     crate::ma_registry::list_mas()
 }
 
 #[tauri::command]
-pub fn list_dynamic_indicators() -> Vec<ta_app_core::IndicatorDescriptor> {
+pub async fn list_moving_averages() -> Result<Vec<MaInfo>, String> {
+    tauri::async_runtime::spawn_blocking(list_moving_averages_impl)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn list_dynamic_indicators_impl() -> Vec<ta_app_core::IndicatorDescriptor> {
     ta_app_core::list_dynamic_indicator_descriptors_cached().to_vec()
+}
+
+#[tauri::command]
+pub async fn list_dynamic_indicators() -> Result<Vec<ta_app_core::IndicatorDescriptor>, String> {
+    tauri::async_runtime::spawn_blocking(list_dynamic_indicators_impl)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2147,7 +2159,7 @@ mod tests {
 
     #[test]
     fn list_moving_averages_returns_nonempty_unique_ids() {
-        let rows = super::list_moving_averages();
+        let rows = super::list_moving_averages_impl();
         assert!(!rows.is_empty(), "expected at least one moving average");
 
         let mut ids = std::collections::HashSet::new();
@@ -2163,7 +2175,7 @@ mod tests {
 
     #[test]
     fn list_dynamic_indicators_returns_only_dynamic_strategy_eligible_descriptors() {
-        let rows = super::list_dynamic_indicators();
+        let rows = super::list_dynamic_indicators_impl();
         assert!(!rows.is_empty(), "expected at least one dynamic indicator");
 
         let expected = ta_app_core::list_dynamic_indicator_descriptors_cached();

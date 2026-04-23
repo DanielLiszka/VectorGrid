@@ -347,20 +347,117 @@ function resolveMlRunVerdictRecord(
   return null;
 }
 
+function resolveMlDependenceSummaryRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (row.dependence_summary && typeof row.dependence_summary === "object") {
+    return row.dependence_summary as Record<string, unknown>;
+  }
+  const validation =
+    row.validation && typeof row.validation === "object"
+      ? (row.validation as Record<string, unknown>)
+      : null;
+  if (
+    validation?.dependence_summary &&
+    typeof validation.dependence_summary === "object"
+  ) {
+    return validation.dependence_summary as Record<string, unknown>;
+  }
+  return null;
+}
+
 function formatMlScoreScopeAdvisory(value: unknown): string {
   const verdict = resolveMlRunVerdictRecord(value);
   if (!verdict) return "";
   const flags = readStringList(verdict.warning_flags ?? verdict.warningFlags);
+  const advisories: string[] = [];
   if (flags.includes("score_scope_calibration_slice")) {
-    return "calibration-only score scope";
+    advisories.push("calibration-only score scope");
   }
   if (flags.includes("score_scope_full_dataset")) {
-    return "full-dataset score scope";
+    advisories.push("full-dataset score scope");
   }
   if (flags.includes("score_scope_custom_partial")) {
-    return "partial score scope";
+    advisories.push("partial score scope");
   }
-  return "";
+  if (flags.includes("score_scope_walkforward_overlap_metadata_missing")) {
+    advisories.push("walk-forward overlap metadata missing");
+  }
+  if (flags.includes("score_scope_walkforward_overlap_adjusted")) {
+    const dependence = resolveMlDependenceSummaryRecord(value);
+    const detailParts: string[] = [];
+    const rawObs = parseOptionalInteger(
+      dependence?.raw_score_observations ?? dependence?.rawScoreObservations,
+    );
+    const effectiveObs = parseOptionalInteger(
+      dependence?.effective_score_observations_lower_bound ??
+        dependence?.effectiveScoreObservationsLowerBound,
+    );
+    if (
+      rawObs != null &&
+      effectiveObs != null &&
+      rawObs > 0 &&
+      effectiveObs < rawObs
+    ) {
+      detailParts.push(`obs ${effectiveObs}/${rawObs}`);
+    }
+    const rawWindows = parseOptionalInteger(
+      dependence?.raw_walkforward_test_windows ??
+        dependence?.rawWalkforwardTestWindows,
+    );
+    const effectiveWindows = parseOptionalInteger(
+      dependence?.effective_walkforward_test_windows_upper_bound ??
+        dependence?.effectiveWalkforwardTestWindowsUpperBound,
+    );
+    if (
+      rawWindows != null &&
+      effectiveWindows != null &&
+      rawWindows > 0 &&
+      effectiveWindows < rawWindows
+    ) {
+      detailParts.push(`windows ${effectiveWindows}/${rawWindows}`);
+    }
+    advisories.push(
+      detailParts.length > 0
+        ? `walk-forward overlap adjusted (${detailParts.join(", ")})`
+        : "walk-forward overlap adjusted",
+    );
+  }
+  return advisories.join("; ");
+}
+
+function formatMlBoundaryAdvisory(value: unknown): string {
+  const best = readCandidateRows(value)[0];
+  if (
+    !best ||
+    !best.boundary_diagnostics ||
+    typeof best.boundary_diagnostics !== "object"
+  ) {
+    return "";
+  }
+  const diagnostics = best.boundary_diagnostics as Record<string, unknown>;
+  const parts: string[] = [];
+  const nearLong = parseOptionalNumber(
+    diagnostics.near_long_threshold_frac ?? diagnostics.nearLongThresholdFrac,
+  );
+  const nearShort = parseOptionalNumber(
+    diagnostics.near_short_threshold_frac ?? diagnostics.nearShortThresholdFrac,
+  );
+  const nearDelta = parseOptionalNumber(
+    diagnostics.near_delta_boundary_frac ?? diagnostics.nearDeltaBoundaryFrac,
+  );
+  if (nearLong != null) {
+    parts.push(`long~${(nearLong * 100).toFixed(1)}%`);
+  }
+  if (nearShort != null) {
+    parts.push(`short~${(nearShort * 100).toFixed(1)}%`);
+  }
+  if (nearDelta != null) {
+    parts.push(`delta~${(nearDelta * 100).toFixed(1)}%`);
+  }
+  return parts.length > 0 ? `boundary ${parts.join(", ")}` : "";
 }
 
 function extractMlPolicy(
@@ -387,20 +484,141 @@ function extractMlPolicySweepSummary(
 ): Record<string, unknown> | null {
   if (!validationRes || typeof validationRes !== "object") return null;
   const row = validationRes as Record<string, unknown>;
-  const sweepSize = parseOptionalInteger(row.sweep_size);
-  const topK = parseOptionalInteger(row.top_k);
-  if (sweepSize == null && topK == null) return null;
-  const best = readCandidateRows(validationRes)[0];
-  return {
-    sweep_size: sweepSize ?? 0,
-    top_k: topK ?? 0,
-    best_label: normalizeText(
+  const validation =
+    row.validation && typeof row.validation === "object"
+      ? (row.validation as Record<string, unknown>)
+      : null;
+  const sweepSize = parseOptionalInteger(
+    firstMeaningfulValue(
+      row.full_sweep_size,
+      row.fullSweepSize,
+      row.sweep_size,
+      row.sweepSize,
+      validation?.full_sweep_size,
+      validation?.fullSweepSize,
+      validation?.sweep_size,
+      validation?.sweepSize,
+    ),
+  );
+  const topK = parseOptionalInteger(
+    firstMeaningfulValue(
+      row.retained_top_k,
+      row.retainedTopK,
+      row.top_k,
+      row.topK,
+      validation?.retained_top_k,
+      validation?.retainedTopK,
+      validation?.top_k,
+      validation?.topK,
+    ),
+  );
+  const candidates = readCandidateRows(validationRes);
+  const best = candidates[0];
+  const retainedCandidateCount =
+    parseOptionalInteger(
+      firstMeaningfulValue(
+        row.retained_candidate_count,
+        row.retainedCandidateCount,
+        validation?.retained_candidate_count,
+        validation?.retainedCandidateCount,
+      ),
+    ) ?? (best ? candidates.length : null);
+  const ordering = normalizeText(
+    firstMeaningfulValue(
+      row.ordering,
+      row.candidate_ordering,
+      row.candidateOrdering,
+      row.ranking_key,
+      row.rankingKey,
+      validation?.ordering,
+      validation?.candidate_ordering,
+      validation?.candidateOrdering,
+      validation?.ranking_key,
+      validation?.rankingKey,
+    ),
+  );
+  const verdictScope = normalizeText(
+    firstMeaningfulValue(
+      row.verdict_scope,
+      row.verdictScope,
+      row.verdict_rebuild_scope,
+      row.verdictRebuildScope,
+      validation?.verdict_scope,
+      validation?.verdictScope,
+      validation?.verdict_rebuild_scope,
+      validation?.verdictRebuildScope,
+    ),
+  );
+  const bestLabel = normalizeText(
+    firstMeaningfulValue(
+      row.best_label,
+      row.bestLabel,
+      validation?.best_label,
+      validation?.bestLabel,
       best?.params && typeof best.params === "object"
         ? (best.params as Record<string, unknown>).label
         : "",
     ),
-    best_robust_score: Number(best?.robust_score ?? 0),
+  );
+  const bestRobustScore = parseOptionalNumber(
+    firstMeaningfulValue(
+      row.best_robust_score,
+      row.bestRobustScore,
+      validation?.best_robust_score,
+      validation?.bestRobustScore,
+      best?.robust_score,
+    ),
+  );
+  if (
+    sweepSize == null &&
+    topK == null &&
+    retainedCandidateCount == null &&
+    !ordering &&
+    !verdictScope &&
+    !bestLabel &&
+    bestRobustScore == null
+  ) {
+    return null;
+  }
+  return {
+    full_sweep_size: sweepSize ?? 0,
+    sweep_size: sweepSize ?? 0,
+    retained_top_k: topK ?? 0,
+    top_k: topK ?? 0,
+    retained_candidate_count: retainedCandidateCount ?? 0,
+    ordering: ordering || "robust_score_desc",
+    verdict_scope: verdictScope || "retained_shortlist",
+    best_label: bestLabel,
+    best_robust_score: bestRobustScore ?? 0,
   };
+}
+
+function formatMlSweepOrderingText(value: unknown): string {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) return "robust-score ordering";
+  if (
+    normalized === "robust_score_desc" ||
+    normalized === "robust-score-desc" ||
+    normalized === "robust_score" ||
+    normalized === "robust-score"
+  ) {
+    return "robust-score ordering";
+  }
+  return normalizeText(value).replace(/[_-]+/g, " ");
+}
+
+function formatMlVerdictScopeText(value: unknown): string {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) return "retained shortlist";
+  if (
+    normalized === "retained_shortlist" ||
+    normalized === "retained-shortlist" ||
+    normalized === "retained shortlist" ||
+    normalized === "shortlist"
+  ) {
+    return "retained shortlist";
+  }
+  return normalizeText(value).replace(/[_-]+/g, " ");
 }
 
 function readPiniaState(storeId: string): Record<string, unknown> | null {
@@ -1824,11 +2042,13 @@ export async function runMlSignalValidation(): Promise<unknown> {
       : [];
     const scoreCoverageMeta = formatMlScoreCoverageMeta(validationRecord);
     const scopeAdvisory = formatMlScoreScopeAdvisory(validationRecord);
+    const boundaryAdvisory = formatMlBoundaryAdvisory(validationRecord);
     patchOptimizeState({
       mlSignalValidationMeta: [
         `ML validation: ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} tested`,
         scoreCoverageMeta,
         scopeAdvisory,
+        boundaryAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),
@@ -1836,6 +2056,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
       statusLine: [
         formatMlStageStatus("ML validation completed.", validationRecord),
         scopeAdvisory,
+        boundaryAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),
@@ -1932,11 +2153,52 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
       sweepRes && typeof sweepRes === "object"
         ? (sweepRes as Record<string, unknown>)
         : {};
+    const sweepSummary = extractMlPolicySweepSummary(sweepRes);
     const sweepSize = Math.max(
       0,
-      Math.floor(parseNumber(sweepRow.sweep_size, 0)),
+      Math.floor(
+        parseNumber(
+          firstMeaningfulValue(
+            sweepSummary?.full_sweep_size,
+            sweepSummary?.sweep_size,
+            sweepRow.full_sweep_size,
+            sweepRow.fullSweepSize,
+            sweepRow.sweep_size,
+          ),
+          0,
+        ),
+      ),
+    );
+    const retainedTopK = Math.max(
+      0,
+      Math.floor(
+        parseNumber(
+          firstMeaningfulValue(
+            sweepSummary?.retained_top_k,
+            sweepSummary?.top_k,
+            sweepRow.retained_top_k,
+            sweepRow.retainedTopK,
+            sweepRow.top_k,
+          ),
+          0,
+        ),
+      ),
     );
     const candidates = readCandidateRows(sweepRes);
+    const retainedCount = Math.max(
+      0,
+      Math.floor(
+        parseNumber(
+          firstMeaningfulValue(
+            sweepSummary?.retained_candidate_count,
+            sweepRow.retained_candidate_count,
+            sweepRow.retainedCandidateCount,
+            candidates.length,
+          ),
+          candidates.length,
+        ),
+      ),
+    );
     const best = candidates[0];
     const bestScore = Number(best?.robust_score ?? Number.NaN);
     const bestLabel = normalizeText(
@@ -1944,29 +2206,56 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
         ? (best.params as Record<string, unknown>).label
         : "",
     );
+    const sweepFlow = [
+      "full sweep",
+      formatMlSweepOrderingText(
+        firstMeaningfulValue(
+          sweepSummary?.ordering,
+          sweepRow.ordering,
+          sweepRow.candidate_ordering,
+          sweepRow.candidateOrdering,
+        ),
+      ),
+      retainedTopK > 0 ? `retained top_k ${retainedTopK}` : "retained top_k",
+    ].join(" -> ");
+    const verdictFlow = `verdict rebuilt from ${formatMlVerdictScopeText(
+      firstMeaningfulValue(
+        sweepSummary?.verdict_scope,
+        sweepRow.verdict_scope,
+        sweepRow.verdictScope,
+      ),
+    )}`;
     const scoreCoverageMeta = formatMlScoreCoverageMeta(sweepRow);
     const scopeAdvisory = formatMlScoreScopeAdvisory(sweepRow);
+    const boundaryAdvisory = formatMlBoundaryAdvisory(sweepRow);
     patchOptimizeState({
       mlSignalSweepMeta: [
-        `ML policy sweep: ${sweepSize.toFixed(0)} candidates`,
+        `ML policy sweep: ${sweepSize.toFixed(0)} candidate${sweepSize === 1 ? "" : "s"} evaluated`,
+        sweepFlow,
         Number.isFinite(bestScore) ? `best ${bestScore.toFixed(4)}` : "",
         bestLabel || "",
         scoreCoverageMeta,
         scopeAdvisory,
+        boundaryAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),
       mlSignalValidationMeta: [
-        `ML validation: ${candidates.length} sweep candidate${candidates.length === 1 ? "" : "s"} retained`,
+        `ML validation: ${candidates.length} retained from ${sweepSize.toFixed(0)} full-sweep candidate${sweepSize === 1 ? "" : "s"}`,
+        verdictFlow,
+        retainedCount > 0 ? `${retainedCount} retained` : "",
         scoreCoverageMeta,
         scopeAdvisory,
+        boundaryAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),
-      progressMeta: `ML policy sweep • ${sweepSize.toFixed(0)} candidate${sweepSize === 1 ? "" : "s"}`,
+      progressMeta: `ML policy sweep • ${sweepSize.toFixed(0)} candidate${sweepSize === 1 ? "" : "s"} evaluated`,
       statusLine: [
         formatMlStageStatus("ML policy sweep completed.", sweepRow),
+        `${sweepFlow} -> ${verdictFlow}`,
         scopeAdvisory,
+        boundaryAdvisory,
       ]
         .filter((part) => part)
         .join(" • "),

@@ -370,7 +370,7 @@ export const useAdvancedStore = defineStore('advanced', {
     mode: 'Grid',
     modeOptions: [],
     vdpsVisible: false,
-    vdpsTelemetryHint: 'VDPS telemetry appears after a run.',
+    vdpsTelemetryHint: 'VDPS telemetry appears after a run. Treat reduced-output VDPS telemetry as heuristic audit evidence, not exact pruning proof.',
     compositeMoVisible: false,
     heatmapBins: '128',
     topK: '20',
@@ -498,7 +498,7 @@ export const useAdvancedStore = defineStore('advanced', {
       this.mode = normalizeOptimizationMode(snapshot.mode ?? this.mode ?? 'Grid')
       this.modeOptions = normalizeModeOptions(snapshot.modeOptions ?? this.modeOptions ?? [])
       this.vdpsVisible = Boolean(snapshot.vdpsVisible ?? this.vdpsVisible)
-      this.vdpsTelemetryHint = String(snapshot.vdpsTelemetryHint ?? this.vdpsTelemetryHint ?? 'VDPS telemetry appears after a run.').trim() || 'VDPS telemetry appears after a run.'
+      this.vdpsTelemetryHint = String(snapshot.vdpsTelemetryHint ?? this.vdpsTelemetryHint ?? 'VDPS telemetry appears after a run. Treat reduced-output VDPS telemetry as heuristic audit evidence, not exact pruning proof.').trim() || 'VDPS telemetry appears after a run. Treat reduced-output VDPS telemetry as heuristic audit evidence, not exact pruning proof.'
       this.compositeMoVisible = Boolean(snapshot.compositeMoVisible ?? this.compositeMoVisible)
       this.heatmapBins = String(snapshot.heatmapBins ?? this.heatmapBins ?? '128').trim() || '128'
       this.topK = String(snapshot.topK ?? this.topK ?? '20').trim() || '20'

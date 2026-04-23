@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "base_dir": "..",
+  "pairs": [
+    {
+      "name": "report-json-semantic",
+      "baseline": "scripts/baselines/samples/report.json",
+      "candidate": "_write_test/headless_reports/AAPL_headless_current.json",
+      "ignore_paths": [
+        "$.ts",
+        "$.optimization.res.runtime_ms",
+        "$.validation.res.runtime_ms"
+      ]
+    }
+  ]
+}

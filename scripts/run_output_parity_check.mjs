@@ -57,11 +57,16 @@ function rel(filePath) {
 function main() {
   const packArg = argValue('--pack', 'scripts/headless_output_parity_pack.json')
   const pairsArg = argValue('--pairs', 'scripts/output_parity_pairs.json')
+  const semanticPairsArg = argValue('--semantic-pairs', '')
   const packPath = inputPath(packArg, 'scripts/headless_output_parity_pack.json')
   const pairsPath = inputPath(pairsArg, 'scripts/output_parity_pairs.json')
+  const semanticPairsPath = semanticPairsArg
+    ? inputPath(semanticPairsArg, 'scripts/output_parity_semantic_pairs.json')
+    : path.resolve(path.dirname(pairsPath), 'output_parity_semantic_pairs.json')
 
   if (!fs.existsSync(packPath)) fail(`Headless parity pack not found: ${packPath}`)
   if (!fs.existsSync(pairsPath)) fail(`Parity pairs file not found: ${pairsPath}`)
+  if (!fs.existsSync(semanticPairsPath)) fail(`Semantic parity pairs file not found: ${semanticPairsPath}`)
 
   const pack = readJson(packPath)
   const schemaVersion = Number(pack.schema_version ?? 1)
@@ -102,6 +107,7 @@ function main() {
     generated_at_utc: new Date().toISOString(),
     pack_path: rel(packPath),
     pairs_path: rel(pairsPath),
+    semantic_pairs_path: rel(semanticPairsPath),
     command: {
       executable: 'cargo',
       args: cargoArgs,
@@ -121,6 +127,7 @@ function main() {
   console.log(`Wrote headless parity manifest: ${rel(parityManifestPath)}`)
 
   runOrFail('node', [rel(rootPath('scripts/check_output_parity.mjs')), '--pairs', rel(pairsPath)])
+  runOrFail('node', [rel(rootPath('scripts/check_output_semantic_parity.mjs')), '--pairs', rel(semanticPairsPath)])
 }
 
 main()

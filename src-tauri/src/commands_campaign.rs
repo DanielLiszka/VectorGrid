@@ -175,6 +175,18 @@ pub struct ResearchCampaignItemDiagnostics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vram_prefetch_wall_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_attempted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_success: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_failure_risk_event: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_stage_cost_vs_optimize_frac: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_stage_cost_vs_prepare_wait_frac: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub optimize_wall_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optimize_artifact_save_ms: Option<f64>,
@@ -338,6 +350,10 @@ struct CampaignPrefetchDiagnostics {
     outcome: &'static str,
     note: Option<String>,
     wall_ms: f64,
+    policy: &'static str,
+    attempted: bool,
+    success: bool,
+    failure_risk_event: bool,
 }
 
 impl CampaignPrefetchDiagnostics {
@@ -346,6 +362,10 @@ impl CampaignPrefetchDiagnostics {
             outcome: "not_attempted",
             note: None,
             wall_ms: 0.0,
+            policy: "heuristic_observational",
+            attempted: false,
+            success: false,
+            failure_risk_event: false,
         }
     }
 }
@@ -832,12 +852,23 @@ fn build_item_diagnostics(
     optimize_artifact_save_ms: Option<f64>,
     checkpoint_save_ms: Option<f64>,
 ) -> ResearchCampaignItemDiagnostics {
+    let stage_cost_vs_optimize_frac = optimize_wall_ms
+        .filter(|value| *value > 0.0)
+        .map(|value| prefetch.wall_ms / value);
+    let stage_cost_vs_prepare_wait_frac =
+        (prepare_wait_ms > 0.0).then_some(prefetch.wall_ms / prepare_wait_ms);
     ResearchCampaignItemDiagnostics {
         prepare_source: Some(prepare_source.as_str().to_string()),
         prepare_wait_ms: Some(prepare_wait_ms),
         vram_prefetch_outcome: Some(prefetch.outcome.to_string()),
         vram_prefetch_note: prefetch.note.clone(),
         vram_prefetch_wall_ms: Some(prefetch.wall_ms),
+        vram_prefetch_policy: Some(prefetch.policy.to_string()),
+        vram_prefetch_attempted: Some(prefetch.attempted),
+        vram_prefetch_success: Some(prefetch.success),
+        vram_prefetch_failure_risk_event: Some(prefetch.failure_risk_event),
+        vram_prefetch_stage_cost_vs_optimize_frac: stage_cost_vs_optimize_frac,
+        vram_prefetch_stage_cost_vs_prepare_wait_frac: stage_cost_vs_prepare_wait_frac,
         optimize_wall_ms,
         optimize_artifact_save_ms,
         checkpoint_save_ms,
@@ -858,6 +889,10 @@ fn record_prefetch_feedback(
                 outcome: "staged",
                 note: None,
                 wall_ms: stage_wall_ms,
+                policy: "heuristic_observational",
+                attempted: true,
+                success: true,
+                failure_risk_event: false,
             }
         }
         DoubleMaCampaignVramPrefetchFeedback::AlreadyResident { stage_wall_ms } => {
@@ -865,6 +900,10 @@ fn record_prefetch_feedback(
                 outcome: "already_resident",
                 note: None,
                 wall_ms: stage_wall_ms,
+                policy: "heuristic_observational",
+                attempted: true,
+                success: true,
+                failure_risk_event: false,
             }
         }
         DoubleMaCampaignVramPrefetchFeedback::Warning {
@@ -876,6 +915,10 @@ fn record_prefetch_feedback(
                 outcome: "warning",
                 note: Some(note),
                 wall_ms: stage_wall_ms,
+                policy: "heuristic_observational",
+                attempted: true,
+                success: false,
+                failure_risk_event: true,
             }
         }
         DoubleMaCampaignVramPrefetchFeedback::Fatal {
@@ -888,6 +931,10 @@ fn record_prefetch_feedback(
                 outcome: "fatal",
                 note: Some(note),
                 wall_ms: stage_wall_ms,
+                policy: "heuristic_observational",
+                attempted: true,
+                success: false,
+                failure_risk_event: true,
             }
         }
     }
@@ -1359,6 +1406,21 @@ fn dedupe_validation_admission_rows(
     Ok(out)
 }
 
+fn admission_trim_telemetry(
+    deduped_count: usize,
+    post_cap_count: usize,
+    candidate_cap_limit: usize,
+) -> (usize, f64, bool) {
+    let trimmed_count = deduped_count.saturating_sub(post_cap_count);
+    let trim_ratio = if deduped_count == 0 {
+        0.0
+    } else {
+        trimmed_count as f64 / deduped_count as f64
+    };
+    let cap_applied = deduped_count > post_cap_count && candidate_cap_limit > 0;
+    (trimmed_count, trim_ratio, cap_applied)
+}
+
 fn build_legacy_validation_admission_selection(
     rows: &[CampaignValidationAdmissionRow],
     source_kind: &str,
@@ -1367,6 +1429,9 @@ fn build_legacy_validation_admission_selection(
     note: Option<&str>,
 ) -> Result<CampaignValidationAdmissionSelection, String> {
     let deduped = dedupe_validation_admission_rows(rows)?;
+    let post_cap_count = deduped.len().min(max_candidates);
+    let (trimmed_count, trim_ratio, cap_applied) =
+        admission_trim_telemetry(deduped.len(), post_cap_count, max_candidates);
     Ok(CampaignValidationAdmissionSelection {
         rows: deduped.iter().take(max_candidates).cloned().collect(),
         provenance: ValidationAdmissionProvenance {
@@ -1376,13 +1441,18 @@ fn build_legacy_validation_admission_selection(
             source_candidate_count: rows.len(),
             pre_dedupe_count: rows.len(),
             post_dedupe_count: deduped.len(),
-            post_cap_count: deduped.len().min(max_candidates),
+            post_cap_count,
+            candidate_cap_limit: max_candidates,
+            trimmed_count,
+            trim_ratio,
+            cap_applied,
             heads: vec![ValidationAdmissionHeadProvenance {
                 head: "legacy_topk".to_string(),
                 objective: None,
                 candidate_count: rows.len(),
                 note: note.map(str::to_string),
             }],
+            selection_bias_note: cap_applied.then_some("candidate_cap_trim".to_string()),
             note: note.map(str::to_string),
         },
     })
@@ -1468,6 +1538,9 @@ fn build_scalar_union_validation_admission_selection(
         }
     }
     let deduped = dedupe_validation_admission_rows(&concatenated)?;
+    let post_cap_count = deduped.len().min(max_candidates);
+    let (trimmed_count, trim_ratio, cap_applied) =
+        admission_trim_telemetry(deduped.len(), post_cap_count, max_candidates);
     Ok(CampaignValidationAdmissionSelection {
         rows: deduped.iter().take(max_candidates).cloned().collect(),
         provenance: ValidationAdmissionProvenance {
@@ -1477,8 +1550,13 @@ fn build_scalar_union_validation_admission_selection(
             source_candidate_count: rows.len(),
             pre_dedupe_count: concatenated.len(),
             post_dedupe_count: deduped.len(),
-            post_cap_count: deduped.len().min(max_candidates),
+            post_cap_count,
+            candidate_cap_limit: max_candidates,
+            trimmed_count,
+            trim_ratio,
+            cap_applied,
             heads,
+            selection_bias_note: cap_applied.then_some("candidate_cap_trim".to_string()),
             note: None,
         },
     })
@@ -1556,6 +1634,9 @@ fn build_pareto_frontier_validation_admission_selection(
     } else {
         None
     };
+    let post_cap_count = trimmed_rows.len();
+    let (trimmed_count, trim_ratio, cap_applied) =
+        admission_trim_telemetry(deduped.len(), post_cap_count, max_candidates);
     Ok(CampaignValidationAdmissionSelection {
         rows: trimmed_rows.clone(),
         provenance: ValidationAdmissionProvenance {
@@ -1565,13 +1646,18 @@ fn build_pareto_frontier_validation_admission_selection(
             source_candidate_count: rows.len(),
             pre_dedupe_count: rows.len(),
             post_dedupe_count: deduped.len(),
-            post_cap_count: trimmed_rows.len(),
+            post_cap_count,
+            candidate_cap_limit: max_candidates,
+            trimmed_count,
+            trim_ratio,
+            cap_applied,
             heads: vec![ValidationAdmissionHeadProvenance {
                 head: "pareto_frontier".to_string(),
                 objective: None,
                 candidate_count: rows.len(),
                 note: trim_note.clone(),
             }],
+            selection_bias_note: cap_applied.then_some("heuristic_frontier_trim".to_string()),
             note: trim_note,
         },
     })
@@ -3995,17 +4081,18 @@ pub async fn run_research_campaign(
 mod tests {
     use super::{
         build_composite_candidate_value, build_doublema_vram_prefetch_config,
-        can_reuse_optimization_artifact_for_validation, candidate_selection_from_optimization,
-        candidate_values_from_optimization, existing_optimization_match, existing_validation_match,
-        is_double_like_kind, normalize_backend_value, normalize_campaign_datasets,
-        optimization_family_for_kind, optimization_result_from_artifact_value, push_unique_warning,
+        build_item_diagnostics, can_reuse_optimization_artifact_for_validation,
+        candidate_selection_from_optimization, candidate_values_from_optimization,
+        existing_optimization_match, existing_validation_match, is_double_like_kind,
+        normalize_backend_value, normalize_campaign_datasets, optimization_family_for_kind,
+        optimization_result_from_artifact_value, push_unique_warning, record_prefetch_feedback,
         requested_gpu_device_id, resolve_campaign_strategy_kind,
         save_campaign_summary_checkpoint_blocking, should_load_existing_artifacts, Backend,
         CampaignDoubleMaVramPrefetchConfig, CampaignOptimizationFamily, CampaignOptimizationResult,
-        DatasetPreloadJob, DoubleMaRequest, PreparedCampaignDataset, ResearchCampaignCounts,
-        ResearchCampaignDatasetInput, ResearchCampaignExecutionMode,
-        ResearchCampaignItemDiagnostics, ResearchCampaignItemSummary, ResearchCampaignSummary,
-        ResearchCampaignValidationConfig,
+        CampaignPrefetchDiagnostics, DatasetPreloadJob, DatasetPrepareSource, DoubleMaRequest,
+        PreparedCampaignDataset, ResearchCampaignCounts, ResearchCampaignDatasetInput,
+        ResearchCampaignExecutionMode, ResearchCampaignItemDiagnostics,
+        ResearchCampaignItemSummary, ResearchCampaignSummary, ResearchCampaignValidationConfig,
     };
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
@@ -4013,6 +4100,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use ta_app_core::double_ma::GpuExecutionPolicy;
+    use ta_app_core::progress::DoubleMaCampaignVramPrefetchFeedback;
     use ta_app_core::ValidationAdmissionPolicy;
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
     use ta_strategies::double_ma::{Metrics, StrategyConfig};
@@ -4118,6 +4206,18 @@ mod tests {
             source_mtime_utc_ms: Some(1712000000000),
             source_content_fingerprint: Some("sha256:prepared".to_string()),
             route_provenance: None,
+            search_semantics_approx_mode: None,
+            search_semantics_workload_family: None,
+            search_semantics_contract_summary: None,
+            search_semantics_declared_domain: None,
+            search_semantics_base_ranker: None,
+            search_semantics_rerank_operator: None,
+            search_semantics_heatmap_semantics: None,
+            vdps_quality_check_top_k_overlap: None,
+            vdps_quality_check_best_score_regret: None,
+            vdps_quality_check_exact_winner_rank: None,
+            vdps_quality_check_holdout_regret: None,
+            vdps_quality_check_speedup_vs_exact: None,
             lineage: None,
             tags: vec!["campaign-main".to_string()],
             ml_feature_schema_hash: None,
@@ -4480,6 +4580,8 @@ mod tests {
             shortlist_slice_diagnostics: None,
             score_observation_context: None,
             metric_surface_kind: None,
+            shortlist_union_telemetry: None,
+            search_semantics: None,
         }
     }
 
@@ -4537,6 +4639,133 @@ mod tests {
         push_unique_warning(&mut warnings, String::new());
         push_unique_warning(&mut warnings, "new".to_string());
         assert_eq!(warnings, vec!["existing".to_string(), "new".to_string()]);
+    }
+
+    #[test]
+    fn record_prefetch_feedback_keeps_observational_outcomes_explicit() {
+        let mut warnings = Vec::new();
+        let mut disabled = false;
+
+        let not_attempted = record_prefetch_feedback(&mut warnings, &mut disabled, None);
+        assert_eq!(not_attempted.outcome, "not_attempted");
+        assert_eq!(not_attempted.note, None);
+        assert_eq!(not_attempted.wall_ms, 0.0);
+        assert_eq!(not_attempted.policy, "heuristic_observational");
+        assert!(!not_attempted.attempted);
+        assert!(!not_attempted.success);
+        assert!(!not_attempted.failure_risk_event);
+        assert!(!disabled);
+        assert!(warnings.is_empty());
+
+        let staged = record_prefetch_feedback(
+            &mut warnings,
+            &mut disabled,
+            Some(DoubleMaCampaignVramPrefetchFeedback::Staged {
+                stage_wall_ms: 12.5,
+            }),
+        );
+        assert_eq!(staged.outcome, "staged");
+        assert_eq!(staged.note, None);
+        assert_eq!(staged.wall_ms, 12.5);
+        assert_eq!(staged.policy, "heuristic_observational");
+        assert!(staged.attempted);
+        assert!(staged.success);
+        assert!(!staged.failure_risk_event);
+        assert!(!disabled);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn record_prefetch_feedback_surfaces_warning_and_fatal_without_claiming_optimality() {
+        let mut warnings = Vec::new();
+        let mut disabled = false;
+
+        let warning = record_prefetch_feedback(
+            &mut warnings,
+            &mut disabled,
+            Some(DoubleMaCampaignVramPrefetchFeedback::Warning {
+                note: "staging skipped after measured warning".to_string(),
+                stage_wall_ms: 8.0,
+            }),
+        );
+        assert_eq!(warning.outcome, "warning");
+        assert_eq!(
+            warning.note.as_deref(),
+            Some("staging skipped after measured warning")
+        );
+        assert_eq!(warning.wall_ms, 8.0);
+        assert_eq!(warning.policy, "heuristic_observational");
+        assert!(warning.attempted);
+        assert!(!warning.success);
+        assert!(warning.failure_risk_event);
+        assert!(!disabled);
+        assert_eq!(
+            warnings,
+            vec!["staging skipped after measured warning".to_string()]
+        );
+
+        let fatal = record_prefetch_feedback(
+            &mut warnings,
+            &mut disabled,
+            Some(DoubleMaCampaignVramPrefetchFeedback::Fatal {
+                note: "staging disabled after measured failure".to_string(),
+                stage_wall_ms: 9.5,
+            }),
+        );
+        assert_eq!(fatal.outcome, "fatal");
+        assert_eq!(
+            fatal.note.as_deref(),
+            Some("staging disabled after measured failure")
+        );
+        assert_eq!(fatal.wall_ms, 9.5);
+        assert_eq!(fatal.policy, "heuristic_observational");
+        assert!(fatal.attempted);
+        assert!(!fatal.success);
+        assert!(fatal.failure_risk_event);
+        assert!(disabled);
+        assert_eq!(
+            warnings,
+            vec![
+                "staging skipped after measured warning".to_string(),
+                "staging disabled after measured failure".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn build_item_diagnostics_labels_prefetch_economics_as_heuristic_observational() {
+        let diagnostics = build_item_diagnostics(
+            DatasetPrepareSource::SyncPrepare,
+            20.0,
+            &CampaignPrefetchDiagnostics {
+                outcome: "staged",
+                note: None,
+                wall_ms: 5.0,
+                policy: "heuristic_observational",
+                attempted: true,
+                success: true,
+                failure_risk_event: false,
+            },
+            Some(10.0),
+            Some(2.5),
+            Some(1.0),
+        );
+
+        assert_eq!(
+            diagnostics.vram_prefetch_policy.as_deref(),
+            Some("heuristic_observational")
+        );
+        assert_eq!(diagnostics.vram_prefetch_attempted, Some(true));
+        assert_eq!(diagnostics.vram_prefetch_success, Some(true));
+        assert_eq!(diagnostics.vram_prefetch_failure_risk_event, Some(false));
+        assert_eq!(
+            diagnostics.vram_prefetch_stage_cost_vs_optimize_frac,
+            Some(0.5)
+        );
+        assert_eq!(
+            diagnostics.vram_prefetch_stage_cost_vs_prepare_wait_frac,
+            Some(0.25)
+        );
     }
 
     #[test]
@@ -4633,6 +4862,12 @@ mod tests {
                 vram_prefetch_outcome: Some("not_attempted".to_string()),
                 vram_prefetch_note: None,
                 vram_prefetch_wall_ms: Some(0.0),
+                vram_prefetch_policy: Some("heuristic_observational".to_string()),
+                vram_prefetch_attempted: Some(false),
+                vram_prefetch_success: Some(false),
+                vram_prefetch_failure_risk_event: Some(false),
+                vram_prefetch_stage_cost_vs_optimize_frac: Some(0.0),
+                vram_prefetch_stage_cost_vs_prepare_wait_frac: Some(0.0),
                 optimize_wall_ms: Some(2.0),
                 optimize_artifact_save_ms: Some(3.0),
                 checkpoint_save_ms: None,
@@ -4690,6 +4925,12 @@ mod tests {
                 .and_then(Value::as_f64)
                 .is_some(),
             "checkpoint timing should be serialized into the saved summary"
+        );
+        assert_eq!(
+            saved
+                .pointer("/items/0/diagnostics/vram_prefetch_policy")
+                .and_then(Value::as_str),
+            Some("heuristic_observational")
         );
     }
 
@@ -4808,6 +5049,14 @@ mod tests {
         assert_eq!(
             provenance.applied_policy,
             ValidationAdmissionPolicy::ScalarUnion
+        );
+        assert_eq!(provenance.candidate_cap_limit, 2);
+        assert_eq!(provenance.trimmed_count, 1);
+        assert!((provenance.trim_ratio - (1.0 / 3.0)).abs() <= 1.0e-12);
+        assert!(provenance.cap_applied);
+        assert_eq!(
+            provenance.selection_bias_note.as_deref(),
+            Some("candidate_cap_trim")
         );
         assert_eq!(candidates.len(), 2);
         assert_eq!(
@@ -4996,6 +5245,14 @@ mod tests {
         );
         assert_eq!(provenance.post_dedupe_count, 5);
         assert_eq!(provenance.post_cap_count, 3);
+        assert_eq!(provenance.candidate_cap_limit, 3);
+        assert_eq!(provenance.trimmed_count, 2);
+        assert!((provenance.trim_ratio - 0.4).abs() <= 1.0e-12);
+        assert!(provenance.cap_applied);
+        assert_eq!(
+            provenance.selection_bias_note.as_deref(),
+            Some("heuristic_frontier_trim")
+        );
         assert_eq!(provenance.note.as_deref(), Some("pareto_diversity_trim"));
         assert_eq!(
             provenance

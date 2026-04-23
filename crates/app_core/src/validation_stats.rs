@@ -43,6 +43,54 @@ pub fn compute_psr_dsr(
     (psr_out, dsr_out)
 }
 
+pub fn compute_psr_dsr_with_effective_counts(
+    sharpe: f64,
+    raw_obs: usize,
+    effective_obs: Option<usize>,
+    raw_trials: usize,
+    effective_trials: Option<usize>,
+    peer_mean: f64,
+    peer_std: f64,
+) -> (Option<f64>, Option<f64>) {
+    let psr = crate::sharpe_stats::probabilistic_sharpe_ratio_with_effective_samples(
+        sharpe,
+        0.0,
+        raw_obs,
+        effective_obs,
+        0.0,
+        3.0,
+    );
+    let dsr = crate::sharpe_stats::deflated_sharpe_ratio_with_effective_counts(
+        sharpe,
+        raw_obs,
+        effective_obs,
+        0.0,
+        3.0,
+        raw_trials,
+        effective_trials,
+        peer_mean,
+        peer_std,
+    );
+
+    let psr_out = if psr.is_finite() {
+        Some(psr.clamp(0.0, 1.0))
+    } else {
+        None
+    };
+    let dsr_out = if dsr.is_finite() {
+        Some(dsr.clamp(0.0, 1.0))
+    } else {
+        None
+    };
+    (psr_out, dsr_out)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissingProbabilityGatePolicy {
+    TreatMissingAsZero,
+    RequirePresent,
+}
+
 /// Evaluates optional PSR/DSR gates without changing missing-value semantics.
 ///
 /// When a threshold is present, a missing PSR/DSR is compared as `0.0`. This
@@ -54,8 +102,33 @@ pub fn passes_probability_gates(
     min_psr: Option<f64>,
     min_dsr: Option<f64>,
 ) -> bool {
-    let psr_ok = min_psr.map(|thr| psr.unwrap_or(0.0) >= thr).unwrap_or(true);
-    let dsr_ok = min_dsr.map(|thr| dsr.unwrap_or(0.0) >= thr).unwrap_or(true);
+    passes_probability_gates_with_policy(
+        psr,
+        dsr,
+        min_psr,
+        min_dsr,
+        MissingProbabilityGatePolicy::TreatMissingAsZero,
+    )
+}
+
+pub fn passes_probability_gates_with_policy(
+    psr: Option<f64>,
+    dsr: Option<f64>,
+    min_psr: Option<f64>,
+    min_dsr: Option<f64>,
+    missing_policy: MissingProbabilityGatePolicy,
+) -> bool {
+    let metric_passes = |value: Option<f64>, threshold: Option<f64>| match threshold {
+        None => true,
+        Some(thr) => match missing_policy {
+            MissingProbabilityGatePolicy::TreatMissingAsZero => value.unwrap_or(0.0) >= thr,
+            MissingProbabilityGatePolicy::RequirePresent => {
+                value.is_some_and(|metric| metric >= thr)
+            }
+        },
+    };
+    let psr_ok = metric_passes(psr, min_psr);
+    let dsr_ok = metric_passes(dsr, min_dsr);
     psr_ok && dsr_ok
 }
 
@@ -103,6 +176,30 @@ mod tests {
     }
 
     #[test]
+    fn compute_psr_dsr_preserves_legacy_short_sample_fallback() {
+        let (psr, dsr) = compute_psr_dsr(1.0, 1, 12, 0.4, 0.2);
+        assert_eq!(psr, Some(0.5));
+        assert!(dsr.is_some());
+    }
+
+    #[test]
+    fn compute_psr_dsr_with_effective_counts_matches_legacy_when_counts_are_unchanged() {
+        let legacy = compute_psr_dsr(1.25, 128, 12, 0.4, 0.2);
+        let overlap =
+            compute_psr_dsr_with_effective_counts(1.25, 128, Some(128), 12, Some(12), 0.4, 0.2);
+        assert_eq!(legacy, overlap);
+    }
+
+    #[test]
+    fn compute_psr_dsr_with_effective_counts_weakens_outputs_when_overlap_reduces_evidence() {
+        let legacy = compute_psr_dsr(1.25, 128, 12, 0.4, 0.2);
+        let overlap =
+            compute_psr_dsr_with_effective_counts(1.25, 128, Some(32), 12, Some(4), 0.4, 0.2);
+        assert!(overlap.0.expect("overlap psr") < legacy.0.expect("legacy psr"));
+        assert!(overlap.1.expect("overlap dsr") < legacy.1.expect("legacy dsr"));
+    }
+
+    #[test]
     fn probability_gates_treat_missing_stats_as_failures_when_thresholds_are_present() {
         assert!(!passes_probability_gates(None, Some(0.8), Some(0.7), None));
         assert!(!passes_probability_gates(Some(0.8), None, None, Some(0.7)));
@@ -114,5 +211,36 @@ mod tests {
         assert!(passes_probability_gates(None, Some(0.8), Some(0.0), None));
         assert!(passes_probability_gates(Some(0.8), None, None, Some(0.0)));
         assert!(passes_probability_gates(None, None, Some(0.0), Some(0.0)));
+    }
+
+    #[test]
+    fn probability_gates_with_policy_preserve_default_zero_imputation_behavior() {
+        let legacy = passes_probability_gates(None, Some(0.8), Some(0.0), Some(0.7));
+        let explicit = passes_probability_gates_with_policy(
+            None,
+            Some(0.8),
+            Some(0.0),
+            Some(0.7),
+            MissingProbabilityGatePolicy::TreatMissingAsZero,
+        );
+        assert_eq!(legacy, explicit);
+    }
+
+    #[test]
+    fn probability_gates_with_policy_can_require_present_stats() {
+        assert!(!passes_probability_gates_with_policy(
+            None,
+            Some(0.8),
+            Some(0.0),
+            None,
+            MissingProbabilityGatePolicy::RequirePresent,
+        ));
+        assert!(passes_probability_gates_with_policy(
+            Some(0.8),
+            Some(0.8),
+            Some(0.7),
+            Some(0.7),
+            MissingProbabilityGatePolicy::RequirePresent,
+        ));
     }
 }

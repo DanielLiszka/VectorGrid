@@ -12,6 +12,7 @@ import {
   drillPrevTrade,
   invalidateAnalysisExecutionCaches,
   refreshAnalysisFromWorkflowRun,
+  refreshHeatmapFromWorkflowRun,
   restoreHeatmapVisible,
   refreshParetoFromWorkflowRun,
   refreshTopTableFromWorkflowRun,
@@ -22,6 +23,7 @@ import {
 } from "./analysisService";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useHistoryStore } from "../stores/historyStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => ({
@@ -125,6 +127,31 @@ function mountDrillDom(): void {
     <div id="stabilityTableWrapVue" style="display:none;"></div>
     <table><tbody id="stabilityTableBodyVue"></tbody></table>
   `;
+}
+
+function appendDrillDom(): void {
+  document.body.insertAdjacentHTML(
+    "beforeend",
+    `
+      <div id="drillEmptyHintVue"></div>
+      <div id="drillWrapVue" style="display:none;"></div>
+      <div id="drillMetaVue">-</div>
+      <div id="drillStatusVue">-</div>
+      <div id="drillTvChartVue"></div>
+      <div id="drillTvChartMetaVue">-</div>
+      <canvas id="equityCanvasVue" width="1024" height="160"></canvas>
+      <canvas id="drawdownCanvasVue" width="1024" height="160"></canvas>
+      <div id="tradeStatsWrapVue" style="display:none;"></div>
+      <div id="tradeStatsVue">-</div>
+      <table><tbody id="tradeTableBodyVue"></tbody></table>
+      <div id="stabilityWrapVue" style="display:none;"></div>
+      <div id="stabilityStatusVue">-</div>
+      <div id="stabilityMetaVue">-</div>
+      <div id="rejectMetaVue">-</div>
+      <div id="stabilityTableWrapVue" style="display:none;"></div>
+      <table><tbody id="stabilityTableBodyVue"></tbody></table>
+    `,
+  );
 }
 
 function mountHeatmapDom(): void {
@@ -1207,6 +1234,672 @@ describe("analysis service", () => {
 
     expect(restoreHeatmapVisible()).toBe(true);
     expect(heatmapCanvasFillRectCalls).toBe(basePaintCalls);
+  });
+
+  it("rebinds hover and click handlers when the heatmap DOM is remounted", async () => {
+    mountHeatmapDom();
+    const workflowStore = useWorkflowStore(pinia);
+    workflowStore.selectWorkflow("analyze", { persist: false });
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-1",
+        ma_source: "close",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "ema",
+              slow_len: 20,
+            },
+            { pnl: 0.1, sharpe: 0.5, max_dd: 0.2, trades: 10, exposure: 0.4 },
+          ],
+        ],
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, -0.1, 0.05],
+        },
+      },
+    });
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "compute_double_ma_local_stability") {
+        return {
+          base: {
+            fast_len: 5,
+            slow_len: 20,
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") {
+        return [] as never;
+      }
+      return undefined as never;
+    });
+
+    expect(refreshAnalysisFromWorkflowRun()).toBe(true);
+    mountHeatmapDom();
+    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
+    const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
+    expect(overlay).not.toBeNull();
+    expect(tooltip).not.toBeNull();
+    Object.defineProperty(overlay!, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 0,
+        top: 0,
+        width: 512,
+        height: 512,
+        right: 512,
+        bottom: 512,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    });
+
+    expect(restoreHeatmapVisible()).toBe(true);
+    expect(typeof overlay!.onmousemove).toBe("function");
+    expect(typeof overlay!.onclick).toBe("function");
+
+    overlay!.onmousemove?.(
+      new MouseEvent("mousemove", { clientX: 128, clientY: 128 }) as unknown as PointerEvent,
+    );
+
+    expect(String(tooltip?.style.display || "")).toBe("block");
+    expect(String(tooltip?.textContent || "")).toContain("Sharpe");
+
+    overlay!.onclick?.(
+      new MouseEvent("click", { clientX: 128, clientY: 384 }) as unknown as PointerEvent,
+    );
+
+    expect(workflowStore.resultsTab).toBe("drill");
+    await vi.waitFor(() => {
+      expect(invokeCommandMock).toHaveBeenCalledWith(
+        "compute_double_ma_drilldown",
+        expect.objectContaining({
+          req: expect.objectContaining({
+            params: expect.objectContaining({
+              fast_len: 5,
+              slow_len: 20,
+            }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it("keeps derived plateau hover scores stable under additive shifts of the full density-aware plateau surface", () => {
+    mountHeatmapDom();
+    const store = useAnalysisStore(pinia);
+    store.heatmapMode = "plateau";
+    const readPlateauTooltip = (
+      values: number[],
+      meanValues: number[],
+    ): string => {
+      seedWorkflowRun({
+        req: {
+          strategy_kind: "DoubleMa",
+          objective: "Sharpe",
+          top_k: 20,
+          heatmap_bins: 3,
+          fast_ma_type: "ema",
+          slow_ma_type: "ema",
+        },
+        res: {
+          top: [
+            [
+              {
+                fast_ma_type: "ema",
+                fast_len: 7,
+                slow_ma_type: "ema",
+                slow_len: 25,
+              },
+              { pnl: 0.2, sharpe: 1.1, max_dd: 0.12, trades: 18, exposure: 0.45 },
+            ],
+          ],
+          heatmap: {
+            bins_fast: 3,
+            bins_slow: 3,
+            fast_min: 5,
+            fast_max: 9,
+            slow_min: 20,
+            slow_max: 30,
+            values,
+            mean_values: meanValues,
+            sample_counts: [
+              1, 1, 1,
+              1, 4, 1,
+              1, 1, 1,
+            ],
+          },
+        },
+      });
+
+      expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+      const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
+      const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
+      expect(overlay).not.toBeNull();
+      expect(tooltip).not.toBeNull();
+      Object.defineProperty(overlay!, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({
+          left: 0,
+          top: 0,
+          width: 512,
+          height: 512,
+          right: 512,
+          bottom: 512,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }),
+      });
+      overlay!.onmousemove?.(
+        new MouseEvent("mousemove", { clientX: 256, clientY: 256 }),
+      );
+      return String(tooltip?.textContent || "");
+    };
+
+    const centeredTooltip = readPlateauTooltip(
+      [
+        1, 2, 1,
+        2, 3, 2,
+        1, 2, 1,
+      ],
+      [
+        0.9, 1.8, 0.9,
+        1.8, 2.6, 1.8,
+        0.9, 1.8, 0.9,
+      ],
+    );
+    const shiftedTooltip = readPlateauTooltip(
+      [
+        11, 12, 11,
+        12, 13, 12,
+        11, 12, 11,
+      ],
+      [
+        10.9, 11.8, 10.9,
+        11.8, 12.6, 11.8,
+        10.9, 11.8, 10.9,
+      ],
+    );
+    const centeredScore = centeredTooltip.match(/Plateau\s+\w+\s+([0-9.]+)/)?.[1];
+    const shiftedScore = shiftedTooltip.match(/Plateau\s+\w+\s+([0-9.]+)/)?.[1];
+
+    expect(centeredScore).toBeTruthy();
+    expect(shiftedScore).toBeTruthy();
+    expect(shiftedScore).toBe(centeredScore);
+  });
+
+  it("switches cached heatmaps into derived plateau mode and exposes plateau hover details", () => {
+    mountHeatmapDom();
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 3,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 25,
+            },
+            { pnl: 0.2, sharpe: 1.1, max_dd: 0.12, trades: 18, exposure: 0.45 },
+          ],
+        ],
+        heatmap: {
+          bins_fast: 3,
+          bins_slow: 3,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [
+            0.42, 0.61, 0.39,
+            0.57, 0.86, 0.58,
+            0.35, 0.54, 0.33,
+          ],
+          mean_values: [
+            0.40, 0.58, 0.37,
+            0.54, 0.74, 0.55,
+            0.34, 0.52, 0.32,
+          ],
+          sample_counts: [
+            1, 1, 1,
+            1, 4, 1,
+            1, 1, 1,
+          ],
+        },
+        shortlist_slice_diagnostics: {
+          ranking_mode: "score",
+          neighborhood_robustness: {
+            plateau_score: 0.8125,
+            plateau_label: "Strong",
+            neighbor_count: 8,
+            radius: 2,
+            step: 1,
+          },
+          candidates: [],
+        },
+      },
+    });
+
+    expect(refreshAnalysisFromWorkflowRun()).toBe(true);
+    store.heatmapMode = "plateau";
+    expect(restoreHeatmapVisible()).toBe(false);
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(String(store.heatmapMeta || "")).toContain("Derived plateau heatmap");
+    expect(String(store.heatmapMeta || "")).toContain("supportive=8-neighbor agreement");
+    expect(String(store.heatmapMeta || "")).toContain("density-aware=1 multi-sample cells");
+    expect(String(store.heatmapStatusLine || "")).toContain(
+      "exact winner robustness Strong 0.8125",
+    );
+    expect(String(store.heatmapStatusLine || "")).toContain(
+      "representative parameter pair",
+    );
+
+    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
+    const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
+    const legendMin = document.querySelector<HTMLElement>("#heatmapLegendMinVue");
+    const legendMax = document.querySelector<HTMLElement>("#heatmapLegendMaxVue");
+    expect(overlay).not.toBeNull();
+    expect(tooltip).not.toBeNull();
+    Object.defineProperty(overlay!, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 0,
+        top: 0,
+        width: 512,
+        height: 512,
+        right: 512,
+        bottom: 512,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    });
+
+    overlay!.onmousemove?.(
+      new MouseEvent("mousemove", { clientX: 256, clientY: 256 }),
+    );
+
+    expect(String(tooltip?.textContent || "")).toContain("Plateau");
+    expect(String(tooltip?.textContent || "")).toContain("Sharpe");
+    expect(String(tooltip?.textContent || "")).toContain("supportive ");
+    expect(String(tooltip?.textContent || "")).toContain("samples 4");
+    expect(String(tooltip?.textContent || "")).toContain("mean 0.74");
+    expect(String(tooltip?.textContent || "")).toContain("bin ");
+    expect(String(legendMin?.textContent || "")).toBe("0");
+    expect(String(legendMax?.textContent || "")).toBe("1");
+  });
+
+  it("clears the heatmap tooltip when the pointer moves from a populated cell onto an empty cell", () => {
+    mountHeatmapDom();
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, null, -0.1, 0.05],
+        },
+      },
+    });
+
+    expect(refreshAnalysisFromWorkflowRun()).toBe(true);
+    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
+    const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
+    expect(overlay).not.toBeNull();
+    expect(tooltip).not.toBeNull();
+    Object.defineProperty(overlay!, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 0,
+        top: 0,
+        width: 512,
+        height: 512,
+        right: 512,
+        bottom: 512,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    });
+
+    overlay!.onmousemove?.(
+      new MouseEvent("mousemove", { clientX: 128, clientY: 384 }),
+    );
+
+    expect(String(tooltip?.style.display || "")).toBe("block");
+    expect(String(tooltip?.textContent || "")).toContain("Sharpe");
+
+    overlay!.onmousemove?.(
+      new MouseEvent("mousemove", { clientX: 384, clientY: 384 }),
+    );
+
+    expect(store.heatmapWrapVisible).toBe(true);
+    expect(String(tooltip?.style.display || "")).toBe("none");
+    expect(String(tooltip?.textContent || "")).not.toContain("Sharpe -");
+  });
+
+  it("keeps heatmap markers aligned with the visible filtered shortlist", () => {
+    mountHeatmapDom();
+    const overlayMarkers: Array<{ label: string; cx: number; cy: number }> = [];
+    let lastArcCenter: { cx: number; cy: number } | null = null;
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      function (this: HTMLCanvasElement) {
+        const id = this.id;
+        return ({
+          clearRect: () => undefined,
+          fillRect: () => undefined,
+          strokeRect: () => undefined,
+          beginPath: () => undefined,
+          arc: (cx: number, cy: number) => {
+            if (id === "heatmapOverlayVue") lastArcCenter = { cx, cy };
+          },
+          fill: () => undefined,
+          stroke: () => undefined,
+          fillText: (value: string) => {
+            if (id === "heatmapOverlayVue" && lastArcCenter) {
+              overlayMarkers.push({
+                label: String(value),
+                cx: lastArcCenter.cx,
+                cy: lastArcCenter.cy,
+              });
+            }
+          },
+          moveTo: () => undefined,
+          lineTo: () => undefined,
+          save: () => undefined,
+          restore: () => undefined,
+          translate: () => undefined,
+          rotate: () => undefined,
+          createLinearGradient: () => ({ addColorStop: () => undefined }),
+        }) as never;
+      },
+    );
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 3,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "ema",
+              slow_len: 20,
+            },
+            { pnl: 0.1, sharpe: 0.5, max_dd: 0.2, trades: 10, exposure: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 25,
+            },
+            { pnl: 0.2, sharpe: 1.1, max_dd: 0.12, trades: 18, exposure: 0.45 },
+          ],
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 9,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.18, sharpe: 0.8, max_dd: 0.15, trades: 16, exposure: 0.5 },
+          ],
+        ],
+        heatmap: {
+          bins_fast: 3,
+          bins_slow: 3,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [
+            0.42, 0.61, 0.39,
+            0.57, 0.86, 0.58,
+            0.35, 0.54, 0.33,
+          ],
+        },
+      },
+    });
+
+    store.filterMinSharpe = "0.75";
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+
+    const marker2 = overlayMarkers.find((marker) => marker.label === "2");
+    const marker3 = overlayMarkers.find((marker) => marker.label === "3");
+    expect(marker2).toBeTruthy();
+    expect(marker3).toBeTruthy();
+    expect(overlayMarkers.some((marker) => marker.label === "1")).toBe(false);
+    expect(marker2?.cx).toBeCloseTo(256, 0);
+    expect(marker2?.cy).toBeCloseTo(256, 0);
+    expect(marker3?.cx).toBeCloseTo(426.6667, 0);
+    expect(marker3?.cy).toBeCloseTo(85.3333, 0);
+  });
+
+  it("keeps the best-candidate marker available when top_k is disabled", () => {
+    mountHeatmapDom();
+    const overlayLabels: string[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      function (this: HTMLCanvasElement) {
+        const id = this.id;
+        return ({
+          clearRect: () => undefined,
+          fillRect: () => undefined,
+          strokeRect: () => undefined,
+          beginPath: () => undefined,
+          arc: () => undefined,
+          fill: () => undefined,
+          stroke: () => undefined,
+          fillText: (value: string) => {
+            if (id === "heatmapOverlayVue") overlayLabels.push(String(value));
+          },
+          moveTo: () => undefined,
+          lineTo: () => undefined,
+          save: () => undefined,
+          restore: () => undefined,
+          translate: () => undefined,
+          rotate: () => undefined,
+          createLinearGradient: () => ({ addColorStop: () => undefined }),
+        }) as never;
+      },
+    );
+    const store = useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 0,
+        heatmap_bins: 2,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        best_params: {
+          fast_ma_type: "ema",
+          fast_len: 5,
+          slow_ma_type: "ema",
+          slow_len: 20,
+        },
+        best_metrics: {
+          pnl: 0.12,
+          sharpe: 0.9,
+          max_dd: 0.18,
+          trades: 9,
+          exposure: 0.4,
+        },
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, -0.1, 0.05],
+        },
+      },
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    expect(store.heatmapStatusLine).toContain("markers use the best candidate only.");
+    expect(overlayLabels).toContain("1");
+  });
+
+  it("omits synthetic heatmap metrics from representative-bin drill headers", async () => {
+    mountHeatmapDom();
+    appendDrillDom();
+    const workflowStore = useWorkflowStore(pinia);
+    workflowStore.selectWorkflow("analyze", { persist: false });
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-1",
+        ma_source: "close",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 3,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        heatmap: {
+          bins_fast: 3,
+          bins_slow: 3,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [
+            0.42, 0.61, 0.39,
+            0.57, 0.86, 0.58,
+            0.35, 0.54, 0.33,
+          ],
+        },
+      },
+    });
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "compute_double_ma_local_stability") {
+        return {
+          base: {
+            fast_len: 7,
+            slow_len: 25,
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") {
+        return [] as never;
+      }
+      return undefined as never;
+    });
+
+    expect(refreshHeatmapFromWorkflowRun()).toBe(true);
+    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
+    expect(overlay).not.toBeNull();
+    Object.defineProperty(overlay!, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 0,
+        top: 0,
+        width: 512,
+        height: 512,
+        right: 512,
+        bottom: 512,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    });
+
+    overlay!.onclick?.(
+      new MouseEvent("click", { clientX: 256, clientY: 256 }) as unknown as PointerEvent,
+    );
+
+    expect(workflowStore.resultsTab).toBe("drill");
+    await vi.waitFor(() => {
+      const store = useAnalysisStore(pinia);
+      expect(String(store.drillMeta || "")).toContain("ema(7) vs ema(25)");
+      expect(String(store.drillMeta || "")).not.toContain("pnl=");
+      expect(String(store.drillMeta || "")).not.toContain("sharpe=");
+    });
   });
 
   it("marks heatmap as disabled when heatmap_bins is 0", () => {

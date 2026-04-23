@@ -134,6 +134,8 @@ interface AnalysisState {
   stabilityWrapVisible: boolean
   tradeStatsWrapVisible: boolean
   heatmapWrapVisible: boolean
+  heatmapMode: string
+  heatmapModeOptions: { value: string; label: string; disabled: boolean }[]
   heatmapColor: string
   heatmapColorOptions: { value: string; label: string; disabled: boolean }[]
   heatmapRange: string
@@ -300,6 +302,9 @@ function applyVueAnalysisFieldUpdate(state: AnalysisState, field: string, value:
       return true
     case 'heatmapColor':
       state.heatmapColor = next || 'cividis'
+      return true
+    case 'heatmapMode':
+      state.heatmapMode = next || 'objective'
       return true
     case 'heatmapRange':
       state.heatmapRange = next || 'q2_98'
@@ -538,6 +543,8 @@ export const useAnalysisStore = defineStore('analysis', {
     stabilityWrapVisible: false,
     tradeStatsWrapVisible: false,
     heatmapWrapVisible: false,
+    heatmapMode: 'objective',
+    heatmapModeOptions: [],
     heatmapColor: 'cividis',
     heatmapColorOptions: [],
     heatmapRange: 'q2_98',
@@ -726,6 +733,8 @@ export const useAnalysisStore = defineStore('analysis', {
       this.stabilityWrapVisible = Boolean(snapshot.stabilityWrapVisible ?? this.stabilityWrapVisible)
       this.tradeStatsWrapVisible = Boolean(snapshot.tradeStatsWrapVisible ?? this.tradeStatsWrapVisible)
       this.heatmapWrapVisible = Boolean(snapshot.heatmapWrapVisible ?? this.heatmapWrapVisible)
+      this.heatmapMode = String(snapshot.heatmapMode ?? this.heatmapMode ?? 'objective').trim() || 'objective'
+      this.heatmapModeOptions = rawArray(snapshot.heatmapModeOptions, this.heatmapModeOptions)
       this.heatmapColor = String(snapshot.heatmapColor ?? this.heatmapColor ?? 'cividis').trim() || 'cividis'
       this.heatmapColorOptions = rawArray(snapshot.heatmapColorOptions, this.heatmapColorOptions)
       this.heatmapRange = String(snapshot.heatmapRange ?? this.heatmapRange ?? 'q2_98').trim() || 'q2_98'
@@ -876,6 +885,7 @@ export const useAnalysisStore = defineStore('analysis', {
         this.updatedAtUnixMs = Date.now()
         if (isTopFilterKey) {
           queueAnalysisServiceCall((service) => service.refreshTopTableFromWorkflowRun())
+          queueAnalysisServiceCall((service) => service.refreshHeatmapFromWorkflowRun())
         }
       }
     },
@@ -899,7 +909,7 @@ export const useAnalysisStore = defineStore('analysis', {
         if (key === 'paretoX' || key === 'paretoY') {
           queueAnalysisServiceCall((service) => service.refreshParetoFromWorkflowRun())
         }
-        if (key === 'heatmapColor' || key === 'heatmapRange' || key === 'heatmapShowTop' || key === 'heatmapShowCrosshair') {
+        if (key === 'heatmapMode' || key === 'heatmapColor' || key === 'heatmapRange' || key === 'heatmapShowTop' || key === 'heatmapShowCrosshair') {
           queueAnalysisServiceCall((service) => service.refreshHeatmapFromWorkflowRun())
         }
       }

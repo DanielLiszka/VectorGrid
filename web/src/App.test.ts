@@ -8,9 +8,9 @@ import { useWorkflowStore } from './stores/workflowStore'
 
 const APP_STUBS = {
   AppRuntimeBanner: { template: '<div data-stub="AppRuntimeBanner" />' },
+  ActionStatusBar: { template: '<div data-stub="ActionStatusBar" />' },
   DesktopTitlebar: { template: '<div data-stub="DesktopTitlebar" />' },
   GlobalShortcutBridge: { template: '<div data-stub="GlobalShortcutBridge" />' },
-  RunFooterPanel: { template: '<div data-stub="RunFooterPanel" />' },
   VueWorkspaceShell: { template: '<div data-stub="VueWorkspaceShell" />' },
   AdvancedWorkspacePanel: { template: '<div data-stub="AdvancedWorkspacePanel" />' },
   AnalysisContextDock: { template: '<div data-stub="AnalysisContextDock" />' },
@@ -67,7 +67,7 @@ describe('App root shell', () => {
     expect(document.querySelector('[data-stub="GlobalShortcutBridge"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="AppRuntimeBanner"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="TaskCenterOverlay"]')).not.toBeNull()
-    expect(document.querySelector('[data-stub="RunFooterPanel"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="ActionStatusBar"]')).not.toBeNull()
   })
 
   it('keeps lazily mounted workflow panels mounted once they have been visited', async () => {

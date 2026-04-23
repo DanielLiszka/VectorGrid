@@ -1147,6 +1147,8 @@ mod tests {
                 shortlist_slice_diagnostics: None,
                 score_observation_context: None,
                 metric_surface_kind: None,
+                shortlist_union_telemetry: None,
+                search_semantics: None,
             },
         }
     }

@@ -1445,6 +1445,16 @@ function maParamInputId(side: MaSide, key: string): string {
   return `vue_${side}_${maId || "ma"}_param_${key}`;
 }
 
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== "function") {
+      setTimeout(() => resolve(), 0);
+      return;
+    }
+    requestAnimationFrame(() => resolve());
+  });
+}
+
 async function loadMaParamCatalog(): Promise<void> {
   try {
     const catalog = await listMovingAverageCatalog();
@@ -1492,6 +1502,16 @@ async function loadDynamicCatalogMeta(): Promise<void> {
     if (panelDisposed) return;
     dynamicCatalogEntries.value = [];
   }
+}
+
+async function hydrateCatalogMeta(): Promise<void> {
+  await Promise.all([
+    loadMaParamCatalog(),
+    loadMaSpeedups(),
+    loadDynamicCatalogMeta(),
+  ]);
+  if (panelDisposed) return;
+  syncMaParamStateFromVue();
 }
 
 watch(
@@ -1582,13 +1602,14 @@ watch(
 
 onMounted(async () => {
   await nextTick();
-  await Promise.all([
-    loadMaParamCatalog(),
-    loadMaSpeedups(),
-    loadDynamicCatalogMeta(),
-  ]);
+  if (hasTauriRuntime.value) {
+    await waitForNextPaint();
+    void hydrateCatalogMeta();
+    optimizeStore.refreshGpuStatus(true);
+    return;
+  }
+  await hydrateCatalogMeta();
   optimizeStore.refreshGpuStatus(true);
-  syncMaParamStateFromVue();
 });
 
 onBeforeUnmount(() => {

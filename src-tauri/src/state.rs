@@ -78,6 +78,15 @@ enum DatasetRetentionKind {
     Derived,
 }
 
+impl DatasetRetentionKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Base => "base",
+            Self::Derived => "derived",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DatasetKind {
     Base,
@@ -968,30 +977,98 @@ fn expanded_protect_ids_locked(
     expanded
 }
 
+/// Observational snapshot of the current retention heuristic input set.
+///
+/// This is intentionally descriptive only. It mirrors the current tree-aware
+/// `(shared Arc, last_access_seq, id)` candidate ranking and subtree removal
+/// scope, but it does not claim to be LRU or globally optimal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DatasetRetentionCandidate {
+    id: String,
+    arc_shared: bool,
+    strong_count: usize,
+    last_access_seq: u64,
+    descendant_count: usize,
+    subtree_size: usize,
+    heuristic_rebuild_cost_nodes: usize,
+    sharing_state: &'static str,
+    reuse_outcome_hint: &'static str,
+}
+
+fn retention_candidates_locked(
+    map: &HashMap<String, DatasetEntry>,
+    kind: DatasetRetentionKind,
+    protect_ids: &HashSet<String>,
+) -> Vec<DatasetRetentionCandidate> {
+    map.iter()
+        .filter_map(|(id, entry)| {
+            (entry.version_meta.kind.retention_kind() == kind && !protect_ids.contains(id)).then(
+                || {
+                    let strong_count = Arc::strong_count(&entry.candles);
+                    let arc_shared = strong_count > 1;
+                    let descendant_count = descendant_ids_locked(map, id).len();
+                    let subtree_size = descendant_count.saturating_add(1);
+                    let sharing_state = if arc_shared {
+                        "arc_shared"
+                    } else {
+                        "exclusive"
+                    };
+                    let reuse_outcome_hint = if descendant_count > 0 {
+                        "evicts_parent_tree"
+                    } else if arc_shared {
+                        "evicts_shared_leaf"
+                    } else {
+                        "evicts_exclusive_leaf"
+                    };
+                    DatasetRetentionCandidate {
+                        id: id.clone(),
+                        arc_shared,
+                        strong_count,
+                        last_access_seq: entry.last_access_seq,
+                        descendant_count,
+                        subtree_size,
+                        heuristic_rebuild_cost_nodes: subtree_size,
+                        sharing_state,
+                        reuse_outcome_hint,
+                    }
+                },
+            )
+        })
+        .collect()
+}
+
+/// Picks the current eviction candidate for a retention boundary crossing.
+///
+/// The policy is intentionally heuristic and tree-aware: prefer exclusive data
+/// before externally shared `Arc` data, then evict the coldest candidate by
+/// `last_access_seq`, with `id` as the final deterministic tie-breaker.
 fn eviction_candidate_locked(
     map: &HashMap<String, DatasetEntry>,
     kind: DatasetRetentionKind,
     protect_ids: &HashSet<String>,
 ) -> Option<String> {
-    let mut candidates: Vec<(bool, u64, String)> =
-        map.iter()
-            .filter_map(|(id, entry)| {
-                (entry.version_meta.kind.retention_kind() == kind && !protect_ids.contains(id))
-                    .then(|| {
-                        (
-                            Arc::strong_count(&entry.candles) > 1,
-                            entry.last_access_seq,
-                            id.clone(),
-                        )
-                    })
-            })
-            .collect();
+    let mut candidates = retention_candidates_locked(map, kind, protect_ids);
     candidates.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
+        a.arc_shared
+            .cmp(&b.arc_shared)
+            .then_with(|| a.last_access_seq.cmp(&b.last_access_seq))
+            .then_with(|| a.id.cmp(&b.id))
     });
-    candidates.into_iter().next().map(|(_, _, id)| id)
+    let chosen = candidates.into_iter().next();
+    if let Some(candidate) = chosen.as_ref() {
+        log::debug!(
+            "dataset retention heuristic selected candidate kind={} id={} subtree_size={} rebuild_cost_nodes={} sharing_state={} reuse_outcome_hint={} strong_count={} last_access_seq={}",
+            kind.as_str(),
+            candidate.id,
+            candidate.subtree_size,
+            candidate.heuristic_rebuild_cost_nodes,
+            candidate.sharing_state,
+            candidate.reuse_outcome_hint,
+            candidate.strong_count,
+            candidate.last_access_seq
+        );
+    }
+    chosen.map(|candidate| candidate.id)
 }
 
 fn enforce_dataset_retention_locked(
@@ -1637,6 +1714,177 @@ mod state_residency_tests {
         assert_eq!(removed, vec!["cold-unshared".to_string()]);
         assert!(map.contains_key("shared-hot"));
         assert_eq!(Arc::strong_count(&shared_external), 2);
+
+        if let Some(value) = prev_base {
+            std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", value);
+        } else {
+            std::env::remove_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS");
+        }
+    }
+
+    #[test]
+    fn retention_candidates_expose_tree_and_sharing_heuristics_observationally() {
+        let shared = Arc::new(make_trending_candles(8, 0.2));
+        let shared_external = shared.clone();
+        let mut map = HashMap::new();
+        map.insert(
+            "base-parent".to_string(),
+            DatasetEntry {
+                candles: shared.clone(),
+                version_meta: DatasetVersionMeta {
+                    version: 1,
+                    kind: DatasetKind::Base,
+                    source_version: Some(1),
+                },
+                last_access_seq: 3,
+            },
+        );
+        map.insert(
+            "base-parent@5m".to_string(),
+            DatasetEntry {
+                candles: shared.clone(),
+                version_meta: DatasetVersionMeta {
+                    version: 1,
+                    kind: DatasetKind::Derived {
+                        parent_data_id: "base-parent".to_string(),
+                        timeframe: "5m".to_string(),
+                    },
+                    source_version: Some(1),
+                },
+                last_access_seq: 4,
+            },
+        );
+        map.insert(
+            "base-cold".to_string(),
+            DatasetEntry {
+                candles: Arc::new(make_trending_candles(8, 0.4)),
+                version_meta: DatasetVersionMeta {
+                    version: 2,
+                    kind: DatasetKind::Base,
+                    source_version: Some(2),
+                },
+                last_access_seq: 1,
+            },
+        );
+
+        let mut candidates =
+            retention_candidates_locked(&map, DatasetRetentionKind::Base, &HashSet::new());
+        candidates.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(Arc::strong_count(&shared_external), 4);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[0],
+            DatasetRetentionCandidate {
+                id: "base-cold".to_string(),
+                arc_shared: false,
+                strong_count: 1,
+                last_access_seq: 1,
+                descendant_count: 0,
+                subtree_size: 1,
+                heuristic_rebuild_cost_nodes: 1,
+                sharing_state: "exclusive",
+                reuse_outcome_hint: "evicts_exclusive_leaf",
+            }
+        );
+        assert_eq!(
+            candidates[1],
+            DatasetRetentionCandidate {
+                id: "base-parent".to_string(),
+                arc_shared: true,
+                strong_count: 4,
+                last_access_seq: 3,
+                descendant_count: 1,
+                subtree_size: 2,
+                heuristic_rebuild_cost_nodes: 2,
+                sharing_state: "arc_shared",
+                reuse_outcome_hint: "evicts_parent_tree",
+            }
+        );
+    }
+
+    #[test]
+    fn retention_candidate_tie_breaks_by_id_after_share_and_access_seq() {
+        let shared = Arc::new(make_trending_candles(8, 0.2));
+        let mut map = HashMap::new();
+        for id in ["base-b", "base-a"] {
+            map.insert(
+                id.to_string(),
+                DatasetEntry {
+                    candles: shared.clone(),
+                    version_meta: DatasetVersionMeta {
+                        version: 1,
+                        kind: DatasetKind::Base,
+                        source_version: Some(1),
+                    },
+                    last_access_seq: 9,
+                },
+            );
+        }
+
+        let chosen = eviction_candidate_locked(&map, DatasetRetentionKind::Base, &HashSet::new());
+        assert_eq!(chosen.as_deref(), Some("base-a"));
+    }
+
+    #[test]
+    fn retention_eviction_removes_parent_and_descendants_together() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let prev_base = std::env::var("VECTORBT_MAX_ACTIVE_BASE_DATASETS").ok();
+        std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", "1");
+
+        let drop_tree = Arc::new(make_trending_candles(8, 0.2));
+        let keep_tree = Arc::new(make_trending_candles(8, 0.4));
+        let _keep_tree_external = keep_tree.clone();
+        let mut map = HashMap::new();
+        map.insert(
+            "base-keep".to_string(),
+            DatasetEntry {
+                candles: keep_tree,
+                version_meta: DatasetVersionMeta {
+                    version: 2,
+                    kind: DatasetKind::Base,
+                    source_version: Some(2),
+                },
+                last_access_seq: 10,
+            },
+        );
+        map.insert(
+            "base-drop".to_string(),
+            DatasetEntry {
+                candles: drop_tree.clone(),
+                version_meta: DatasetVersionMeta {
+                    version: 1,
+                    kind: DatasetKind::Base,
+                    source_version: Some(1),
+                },
+                last_access_seq: 1,
+            },
+        );
+        map.insert(
+            "base-drop@5m".to_string(),
+            DatasetEntry {
+                candles: drop_tree,
+                version_meta: DatasetVersionMeta {
+                    version: 1,
+                    kind: DatasetKind::Derived {
+                        parent_data_id: "base-drop".to_string(),
+                        timeframe: "5m".to_string(),
+                    },
+                    source_version: Some(1),
+                },
+                last_access_seq: 2,
+            },
+        );
+
+        let removed = enforce_dataset_retention_locked(&mut map, &HashSet::new());
+
+        assert_eq!(
+            removed,
+            vec!["base-drop".to_string(), "base-drop@5m".to_string()]
+        );
+        assert!(map.contains_key("base-keep"));
+        assert!(!map.contains_key("base-drop"));
+        assert!(!map.contains_key("base-drop@5m"));
 
         if let Some(value) = prev_base {
             std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", value);

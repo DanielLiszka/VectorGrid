@@ -97,11 +97,16 @@ struct CaseAudit {
     objective: String,
     pair_count: usize,
     optimization: OptimizationFidelityAudit,
+    optimization_audits: Vec<OptimizationFidelityAudit>,
     validation: ValidationFidelityAudit,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct OptimizationFidelityAudit {
+    approx_mode: String,
+    workload_family: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    contract_summary: String,
     exact_runtime_ms: u64,
     approx_runtime_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,7 +123,7 @@ struct OptimizationFidelityAudit {
     vdps: Option<VdpsAuditSummary>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct VdpsAuditSummary {
     eta: u32,
     rungs: Vec<f64>,
@@ -132,6 +137,12 @@ struct VdpsAuditSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     quality_check_best_score_regret: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    quality_check_exact_winner_rank: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quality_check_holdout_regret: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quality_check_speedup_vs_exact: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     quality_check_baseline_runtime_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     quality_check_baseline_backend: Option<BackendUsed>,
@@ -139,7 +150,7 @@ struct VdpsAuditSummary {
     quality_check_baseline_pairs: Option<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct OptimizationHoldoutEval {
     bars: usize,
     exact_best: MetricsSummary,
@@ -265,7 +276,7 @@ struct HoldoutCandidateEval {
     metrics: MetricsSummary,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct CandidateSummary {
     fast_ma: String,
     slow_ma: String,
@@ -353,40 +364,54 @@ fn main() -> Result<(), String> {
                 let exact_res = run_double_ma_optimization_blocking_with_candles(
                     exact_req, &train, &cancel, None,
                 )?;
-
-                let approx_req = build_request(
-                    ma,
-                    strategy_case,
-                    cfg.fast_range,
-                    cfg.slow_range,
-                    ObjectiveKind::Sharpe,
-                    cfg.top_k,
-                    false,
-                    Backend::GpuKernel {
-                        device_id: cfg.device_id,
-                    },
-                    OptimizationMode::GpuVdps,
-                    Some(default_vdps_config(cfg.top_k)),
-                );
-                let approx_res = run_double_ma_optimization_blocking_with_candles(
-                    approx_req, &train, &cancel, None,
-                )?;
-
-                let optimization = build_optimization_audit(
-                    ma,
-                    strategy_case,
-                    &holdout,
-                    ObjectiveKind::Sharpe,
-                    &exact_res,
-                    &approx_res,
-                    &cancel,
-                )?;
+                let mut optimization_audits: Vec<OptimizationFidelityAudit> = Vec::new();
+                let mut primary_approx_res: Option<BackendOptimizationResult> = None;
+                for approx_mode in [OptimizationMode::GpuVdps, OptimizationMode::CoarseToFine] {
+                    let vdps_cfg = matches!(approx_mode, OptimizationMode::GpuVdps)
+                        .then(|| default_vdps_config(cfg.top_k));
+                    let approx_req = build_request(
+                        ma,
+                        strategy_case,
+                        cfg.fast_range,
+                        cfg.slow_range,
+                        ObjectiveKind::Sharpe,
+                        cfg.top_k,
+                        false,
+                        Backend::GpuKernel {
+                            device_id: cfg.device_id,
+                        },
+                        approx_mode,
+                        vdps_cfg,
+                    );
+                    let approx_res = run_double_ma_optimization_blocking_with_candles(
+                        approx_req, &train, &cancel, None,
+                    )?;
+                    optimization_audits.push(build_optimization_audit(
+                        ma,
+                        strategy_case,
+                        &holdout,
+                        ObjectiveKind::Sharpe,
+                        &exact_res,
+                        &approx_res,
+                        &cancel,
+                    )?);
+                    if primary_approx_res.is_none() {
+                        primary_approx_res = Some(approx_res);
+                    }
+                }
+                let optimization = optimization_audits
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| "optimization audits unexpectedly empty".to_string())?;
+                let primary_approx_res = primary_approx_res
+                    .as_ref()
+                    .ok_or_else(|| "primary approximate optimization result missing".to_string())?;
 
                 let candidate_pool = build_validation_candidate_pool(
                     ma,
                     strategy_case,
                     &exact_res,
-                    &approx_res,
+                    primary_approx_res,
                     cfg.candidate_pool,
                 );
                 if candidate_pool.is_empty() {
@@ -439,6 +464,7 @@ fn main() -> Result<(), String> {
                     objective: "Sharpe".to_string(),
                     pair_count,
                     optimization,
+                    optimization_audits,
                     validation,
                 });
             }
@@ -633,8 +659,21 @@ fn build_optimization_audit(
         compare_against_exact(exact, approx, objective)?;
     let holdout_winner_eval =
         evaluate_optimization_winner_holdout(ma, strategy_case, holdout, exact, approx, cancel)?;
+    let holdout_regret_fallback = {
+        let exact_holdout_score =
+            metrics_summary_objective_score(&holdout_winner_eval.exact_best, objective);
+        let approx_holdout_score =
+            metrics_summary_objective_score(&holdout_winner_eval.approx_best, objective);
+        (exact_holdout_score.is_finite() && approx_holdout_score.is_finite())
+            .then_some((exact_holdout_score - approx_holdout_score).max(0.0))
+    };
+    let (approx_mode, workload_family, contract_summary) =
+        optimization_search_semantics_fields(approx);
 
     Ok(OptimizationFidelityAudit {
+        approx_mode,
+        workload_family,
+        contract_summary,
         exact_runtime_ms: exact.runtime_ms,
         approx_runtime_ms: approx.runtime_ms,
         approx_speedup_vs_exact: ratio(exact.runtime_ms, approx.runtime_ms),
@@ -655,11 +694,41 @@ fn build_optimization_audit(
             runtime_ms_total: vdps.runtime_ms_total,
             quality_check_top_k_overlap: vdps.quality_check_top_k_overlap,
             quality_check_best_score_regret: vdps.quality_check_best_score_regret,
+            quality_check_exact_winner_rank: vdps.quality_check_exact_winner_rank.or(approx_rank),
+            quality_check_holdout_regret: vdps
+                .quality_check_holdout_regret
+                .or(holdout_regret_fallback),
+            quality_check_speedup_vs_exact: vdps
+                .quality_check_speedup_vs_exact
+                .or(ratio(exact.runtime_ms, approx.runtime_ms)),
             quality_check_baseline_runtime_ms: vdps.quality_check_baseline_runtime_ms,
             quality_check_baseline_backend: vdps.quality_check_baseline_backend.clone(),
             quality_check_baseline_pairs: vdps.quality_check_baseline_pairs,
         }),
     })
+}
+
+fn optimization_search_semantics_fields(
+    approx: &BackendOptimizationResult,
+) -> (String, String, String) {
+    if let Some(search_semantics) = approx.search_semantics.as_ref() {
+        return (
+            search_semantics.approx_mode.clone(),
+            search_semantics.workload_family.clone(),
+            search_semantics.contract_summary.clone(),
+        );
+    }
+
+    let workload_family = match approx.mode_used {
+        ta_app_core::OptimizationModeResolved::Grid => "double_ma_exact_grid_reduced_output",
+        ta_app_core::OptimizationModeResolved::CoarseToFine => "double_ma_coarse_to_fine",
+        ta_app_core::OptimizationModeResolved::GpuVdps => "double_ma_gpu_vdps",
+    };
+    (
+        "legacy_unlabeled".to_string(),
+        workload_family.to_string(),
+        String::new(),
+    )
 }
 
 fn build_validation_audit(
@@ -1525,6 +1594,18 @@ fn metrics_summary(metrics: &Metrics) -> MetricsSummary {
     }
 }
 
+fn metrics_summary_objective_score(metrics: &MetricsSummary, objective: ObjectiveKind) -> f64 {
+    match objective {
+        ObjectiveKind::Sharpe => metrics.sharpe,
+        ObjectiveKind::Sortino => metrics.sortino,
+        ObjectiveKind::Calmar => metrics.calmar,
+        ObjectiveKind::Omega => metrics.omega,
+        ObjectiveKind::Volatility => -metrics.volatility,
+        ObjectiveKind::Pnl => metrics.pnl,
+        ObjectiveKind::MaxDrawdown => -metrics.max_dd,
+    }
+}
+
 fn objective_score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
     match objective {
         ObjectiveKind::Sharpe => metrics.sharpe,
@@ -1630,6 +1711,76 @@ mod tests {
             fast_ma: "sma".to_string(),
             slow_ma: "sma".to_string(),
         }
+    }
+
+    fn backend_result_with_search_semantics(
+        mode_used: ta_app_core::OptimizationModeResolved,
+        approx_mode: &str,
+        workload_family: &str,
+    ) -> BackendOptimizationResult {
+        BackendOptimizationResult {
+            best_params: DoubleMaParamsResolved {
+                fast_len: 5,
+                slow_len: 20,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+            },
+            best_metrics: Metrics::default(),
+            best_score: Some(1.0),
+            mode_used,
+            backend_used: BackendUsed::Gpu,
+            matrix_index: None,
+            best_col: None,
+            top_cols: None,
+            num_combos: 1,
+            num_candles: 100,
+            runtime_ms: 10,
+            top: Vec::new(),
+            top_scores: None,
+            all: None,
+            all_scores: None,
+            heatmap: None,
+            vdps: None,
+            hybrid_timing_ms: None,
+            gpu_kernel_timing_ms: None,
+            backend_route: None,
+            backend_fallback_reason: None,
+            route_diagnostics: None,
+            indicator_route_plan: None,
+            residency: None,
+            followup_cache_key: None,
+            shortlist_slice_diagnostics: None,
+            score_observation_context: None,
+            metric_surface_kind: None,
+            shortlist_union_telemetry: None,
+            search_semantics: Some(ta_app_core::OptimizationSearchSemanticsSummary {
+                approx_mode: approx_mode.to_string(),
+                workload_family: workload_family.to_string(),
+                contract_summary: "contract".to_string(),
+                declared_domain: None,
+                base_ranker: None,
+                rerank_operator: None,
+                heatmap_semantics: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn optimization_search_semantics_fields_prefers_persisted_contract_labels() {
+        let result = backend_result_with_search_semantics(
+            ta_app_core::OptimizationModeResolved::GpuVdps,
+            "heuristic_reduced_output",
+            "double_ma_gpu_vdps",
+        );
+
+        let (approx_mode, workload_family, contract_summary) =
+            optimization_search_semantics_fields(&result);
+
+        assert_eq!(approx_mode, "heuristic_reduced_output");
+        assert_eq!(workload_family, "double_ma_gpu_vdps");
+        assert_eq!(contract_summary, "contract");
     }
 
     #[test]

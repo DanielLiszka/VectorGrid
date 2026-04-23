@@ -18,6 +18,7 @@ pub fn run_validation_candidates<P, C, FProcess, FSliceStats>(
     cscv_prep_phase: &'static str,
     hard_gates: &ValidationHardGateConfig,
     cscv_cfg: Option<&CscvPboConfig>,
+    spa_requested: bool,
     total_bars: usize,
     process_one: FProcess,
     build_slice_stats_for_candidate: FSliceStats,
@@ -28,14 +29,32 @@ where
     FProcess: Fn(usize, &P, &mut StdRng) -> Result<(C, usize, usize), String> + Sync,
     FSliceStats: FnMut(&C, usize, usize, usize) -> Result<Vec<SliceReturnStats>, String>,
 {
-    let tmp = crate::validation_pipeline::parallel_collect_validation_candidates(
-        candidates,
-        seed,
-        cancel,
-        progress,
-        validate_phase,
-        process_one,
-    )?;
+    let tmp = match crate::validation_pipeline::select_validation_collection_mode(
+        hard_gates,
+        cscv_cfg,
+        spa_requested,
+    ) {
+        crate::validation_pipeline::ValidationCollectionMode::SequentialFastPath => {
+            crate::validation_pipeline::sequential_collect_validation_candidates(
+                candidates,
+                seed,
+                cancel,
+                progress,
+                validate_phase,
+                |idx, candidate, rng| process_one(idx, candidate, rng),
+            )?
+        }
+        crate::validation_pipeline::ValidationCollectionMode::ParallelFullSet => {
+            crate::validation_pipeline::parallel_collect_validation_candidates(
+                candidates,
+                seed,
+                cancel,
+                progress,
+                validate_phase,
+                process_one,
+            )?
+        }
+    };
 
     let mut out: Vec<C> = Vec::with_capacity(tmp.len());
     let mut sample_obs: Vec<usize> = Vec::with_capacity(tmp.len());
@@ -69,7 +88,8 @@ mod tests {
     use crate::cscv_pbo::CscvCandidatePboStats;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
     use crate::validation_pipeline::{
-        ValidationCandidateVerdict, ValidationHardGateConfig, ValidationPostCandidate,
+        build_run_verdict, ValidationCandidateVerdict, ValidationHardGateConfig,
+        ValidationPostCandidate,
     };
     use crate::validation_shared::WalkForwardStats;
     use rand::Rng;
@@ -112,6 +132,10 @@ mod tests {
 
         fn cscv_oos_rank_frac_p50(&self) -> Option<f64> {
             self.cscv_pbo.as_ref().and_then(|v| v.oos_rank_frac_p50)
+        }
+
+        fn cscv_selected_frac(&self) -> Option<f64> {
+            self.cscv_pbo.as_ref().map(|v| v.is_selected_frac)
         }
 
         fn psr(&self) -> Option<f64> {
@@ -202,6 +226,7 @@ mod tests {
             "unit_cscv",
             &ValidationHardGateConfig::default(),
             None,
+            false,
             128,
             |_, p, _| {
                 let m = Metrics {
@@ -250,6 +275,7 @@ mod tests {
             "unit_cscv",
             &ValidationHardGateConfig::default(),
             None,
+            false,
             128,
             |_, p, _| {
                 let m = Metrics {
@@ -299,6 +325,7 @@ mod tests {
                 max_combinations: 16,
                 threshold: 0.0,
             }),
+            false,
             256,
             |_, p, _| {
                 let m = Metrics {
@@ -407,6 +434,7 @@ mod tests {
                 max_combinations: 16,
                 threshold: 0.0,
             }),
+            false,
             256,
             |_, p, _| {
                 let start_t = match *p {
@@ -477,6 +505,7 @@ mod tests {
             "unit_cscv",
             &ValidationHardGateConfig::default(),
             None,
+            false,
             128,
             |_, p, _| {
                 Ok((
@@ -525,6 +554,7 @@ mod tests {
                 "unit_cscv",
                 &ValidationHardGateConfig::default(),
                 None,
+                false,
                 128,
                 |_, p, rng| {
                     let score = rng.gen_range(0.0..1.0);
@@ -560,5 +590,65 @@ mod tests {
         }
 
         assert_eq!(run_once(29), run_once(29));
+    }
+
+    #[test]
+    fn shared_validation_core_end_to_end_preserves_rank_one_metadata_when_later_candidate_is_first_approved(
+    ) {
+        let candidates = vec![1usize, 2];
+        let cancel = AtomicBool::new(false);
+        let gates = ValidationHardGateConfig {
+            min_psr: Some(0.90),
+            ..ValidationHardGateConfig::default()
+        };
+
+        let (out, cscv_pbo) = run_validation_candidates(
+            &candidates,
+            7,
+            &cancel,
+            None,
+            "unit_validate",
+            "unit_cscv",
+            &gates,
+            None,
+            false,
+            256,
+            |_, p, _| {
+                let (sharpe, sample_obs) = if *p == 1 { (1.1, 256) } else { (1.4, 2) };
+                Ok((
+                    DummyCandidate {
+                        id: *p,
+                        in_sample: Metrics {
+                            sharpe,
+                            ..Metrics::default()
+                        },
+                        psr: None,
+                        dsr: None,
+                        track_record_bars: 0,
+                        min_track_record_length_bars: None,
+                        robust_score: sharpe,
+                        robust_pareto: false,
+                        cscv_pbo: None,
+                        validation_verdict: ValidationCandidateVerdict::default(),
+                    },
+                    0,
+                    sample_obs,
+                ))
+            },
+            |_cand, _cscv_start_t, _slice_bars, _slices| Ok(Vec::<SliceReturnStats>::new()),
+        )
+        .expect("validation core run");
+
+        assert!(cscv_pbo.is_none());
+
+        let verdict = build_run_verdict(&out, out.len(), &gates, None, None);
+        let top_candidate = out.first().expect("sorted validation output");
+
+        assert!(verdict.approved);
+        assert_eq!(verdict.candidates_survived_hard_gates, 1);
+        assert_eq!(verdict.approved_candidate_count, 1);
+        assert_eq!(verdict.first_approved_rank, Some(2));
+        assert_eq!(verdict.top_candidate_psr, top_candidate.psr());
+        assert_eq!(verdict.top_candidate_dsr, top_candidate.dsr());
     }
 }

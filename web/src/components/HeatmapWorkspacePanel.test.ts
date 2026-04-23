@@ -81,7 +81,7 @@ describe('HeatmapWorkspacePanel', () => {
     expect(exportSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('refreshes the visible heatmap again when analysis data changes in-place', async () => {
+  it('does not trigger a redundant heatmap rebuild just because the analysis timestamp changes', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflowStore = useWorkflowStore(pinia)
@@ -100,7 +100,7 @@ describe('HeatmapWorkspacePanel', () => {
     analysisStore.updatedAtUnixMs = 1_700_000_000_000
     await flushPanel()
 
-    expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalledTimes(2)
+    expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalledTimes(1)
   })
 
   it('keeps an explicit Review Top results handoff', async () => {
@@ -123,5 +123,58 @@ describe('HeatmapWorkspacePanel', () => {
     await flushPanel()
 
     expect(workflowStore.resultsTab).toBe('top')
+  })
+
+  it('routes display-mode changes through the analysis store selector action and updates the live copy contract', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('heatmap', { persist: false })
+    analysisStore.heatmapMode = 'objective'
+    analysisStore.heatmapModeOptions = [
+      { value: 'objective', label: 'Objective score', disabled: false },
+      { value: 'plateau', label: 'Derived plateau', disabled: false },
+    ]
+    const setSelectFieldSpy = vi.spyOn(analysisStore, 'setSelectField')
+
+    mount(HeatmapWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const select = document.querySelector<HTMLSelectElement>('#vueHeatmapMode')
+    expect(select).not.toBeNull()
+    select!.value = 'plateau'
+    select!.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPanel()
+
+    expect(setSelectFieldSpy).toHaveBeenCalledWith('heatmapMode', 'plateau')
+    expect(document.body.textContent || '').toContain('supportive 8-neighbor agreement')
+    expect(document.body.textContent || '').toContain('representative parameter pair')
+    expect(document.querySelector('#heatmapCanvasStackVue')?.getAttribute('aria-label') || '').toContain('Derived plateau heatmap')
+  })
+
+  it('explains the plateau score as a derived robustness view', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('heatmap', { persist: false })
+    analysisStore.heatmapMode = 'plateau'
+
+    mount(HeatmapWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    expect(document.body.textContent || '').toContain('supportive 8-neighbor agreement')
+    expect(document.body.textContent || '').toContain('bin-consistency')
+    expect(document.body.textContent || '').toContain('representative parameter pair')
+    expect(document.body.textContent || '').toContain('exact retained-candidate path')
   })
 })

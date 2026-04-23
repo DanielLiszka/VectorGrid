@@ -126,6 +126,7 @@ describe('AdvancedWorkspacePanel', () => {
     expect(document.querySelector('#vueShortlistSliceMode')).toBeNull()
     expect(document.body.textContent || '').toContain('standalone unified-GPU')
     expect(document.body.textContent || '').toContain('host-side')
+    expect(document.body.textContent || '').toContain('route-aligned retained')
 
     wrapper.unmount()
   })
@@ -147,7 +148,7 @@ describe('AdvancedWorkspacePanel', () => {
     await flushPanelTimers()
 
     expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('PSR / DSR rerank')
+    expect(document.body.textContent || '').toContain('replay-free exact PSR / DSR rerank')
 
     wrapper.unmount()
   })
@@ -327,7 +328,7 @@ describe('AdvancedWorkspacePanel', () => {
     await flushPanelTimers()
 
     expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('DynamicDoubleMa shortlist')
+    expect(document.body.textContent || '').toContain('Optional replay-free exact PSR / DSR rerank over the DynamicDoubleMa shortlist')
 
     wrapper.unmount()
   })
@@ -350,7 +351,7 @@ describe('AdvancedWorkspacePanel', () => {
     await flushPanelTimers()
 
     expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('union shortlist')
+    expect(document.body.textContent || '').toContain('replay-free exact rerank over the union shortlist')
 
     wrapper.unmount()
   })
@@ -475,7 +476,7 @@ describe('AdvancedWorkspacePanel', () => {
     expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
     expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
     expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('DynamicDoubleMa union shortlist')
+    expect(document.body.textContent || '').toContain('Optional replay-free exact rerank over the DynamicDoubleMa union shortlist')
 
     wrapper.unmount()
   })
@@ -502,7 +503,8 @@ describe('AdvancedWorkspacePanel', () => {
     expect(document.querySelector('#vueShortlistSliceBenchmark')).not.toBeNull()
     expect(document.querySelector('#vueShortlistNeighborhoodRadius')).not.toBeNull()
     expect(document.querySelector('#vueShortlistNeighborhoodStep')).not.toBeNull()
-    expect(document.body.textContent || '').toContain('Shortlist slice mode')
+    expect(document.body.textContent || '').toContain('Adds replay-backed exact half-split or quartile shortlist diagnostics')
+    expect(document.body.textContent || '').toContain('replay-backed exact local plateau / neighborhood robustness summary')
 
     wrapper.unmount()
   })

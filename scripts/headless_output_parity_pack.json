@@ -15,6 +15,8 @@
     "data/AAPL.csv",
     "--cross-csv",
     "data/AAPL.csv",
+    "--cross-mode",
+    "preserved-finalists",
     "--backend",
     "cpu",
     "--fast-ma",
@@ -53,6 +55,7 @@
     "2048",
     "--cross-max-datasets",
     "1",
+    "--cross-gate-disabled",
     "--cache-dir",
     "_write_test/headless_cache/section19_output_parity"
   ]

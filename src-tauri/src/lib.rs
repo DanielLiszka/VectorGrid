@@ -2,6 +2,7 @@ pub mod commands;
 pub mod data_cache;
 pub mod ma_registry;
 pub mod polygon;
+pub mod release_readiness;
 pub mod settings;
 pub mod state;
 

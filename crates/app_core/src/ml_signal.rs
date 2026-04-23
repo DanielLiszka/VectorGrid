@@ -4,7 +4,8 @@ use crate::dynamic_indicator_adapter::{compute_dynamic_indicator_cpu, DynamicInd
 use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
 use crate::iterative_sim::{simulate_iterative_from_signals, IterativeSimConfig, OhlcSlice};
 use crate::validation_pipeline::{
-    apply_candidate_hard_gates, build_run_verdict, compute_probability_metrics, mark_robust_pareto,
+    apply_candidate_hard_gates, build_run_verdict,
+    compute_probability_metrics_with_effective_counts, mark_robust_pareto,
     robust_score_from_metrics, sanitize_hard_gates, ValidationCandidateVerdict,
     ValidationPostCandidate, ValidationRunVerdict,
 };
@@ -504,6 +505,27 @@ pub struct MlSignalPolicySweepResult {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct MlSignalBoundaryDiagnostics {
+    pub scored_points: usize,
+    pub near_boundary_epsilon: f64,
+    pub near_long_threshold_frac: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_short_threshold_frac: Option<f64>,
+    pub near_delta_boundary_frac: f64,
+    pub min_abs_long_threshold_distance: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_abs_short_threshold_distance: Option<f64>,
+    pub min_abs_delta_boundary_distance: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MlSignalRequestWordDiagnostics {
+    pub no_request_bars: usize,
+    pub explicit_flat_request_bars: usize,
+    pub explicit_nonflat_request_bars: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct MlSignalValidationCandidateResult {
     pub params: MlSignalPolicyParams,
     pub in_sample: Metrics,
@@ -518,6 +540,10 @@ pub struct MlSignalValidationCandidateResult {
     pub min_track_record_length_bars: Option<usize>,
     #[serde(default)]
     pub validation_verdict: ValidationCandidateVerdict,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary_diagnostics: Option<MlSignalBoundaryDiagnostics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_word_diagnostics: Option<MlSignalRequestWordDiagnostics>,
     pub robust_score: f64,
     pub robust_pareto: bool,
 }
@@ -540,6 +566,10 @@ impl ValidationPostCandidate for MlSignalValidationCandidateResult {
     }
 
     fn cscv_oos_rank_frac_p50(&self) -> Option<f64> {
+        None
+    }
+
+    fn cscv_selected_frac(&self) -> Option<f64> {
         None
     }
 
@@ -609,8 +639,24 @@ pub struct MlSignalValidationResult {
     pub backend_fallback_reason: Option<String>,
     pub score_cache_path: String,
     pub score_summary: MlSignalScoreCacheSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependence_summary: Option<MlSignalDependenceSummary>,
     pub candidates: Vec<MlSignalValidationCandidateResult>,
     pub run_verdict: ValidationRunVerdict,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MlSignalDependenceSummary {
+    pub raw_score_observations: usize,
+    pub effective_score_observations_lower_bound: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_horizon_bars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_walkforward_test_windows: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_walkforward_test_windows_upper_bound: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub walkforward_test_bars_covered: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2893,11 +2939,18 @@ struct MlSignalScoreCacheFile {
 struct LoadedScoreCache {
     points: Vec<Option<ScorePoint>>,
     summary: MlSignalScoreCacheSummary,
+    overlap_metadata: MlSignalOverlapMetadata,
     has_probability_long: bool,
     has_probability_short: bool,
     rows_with_probability: usize,
     rows_missing_long_probability: usize,
     rows_missing_short_probability: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MlSignalOverlapMetadata {
+    label_horizon_bars: Option<usize>,
+    split_windows: Vec<MlSignalSplitWindow>,
 }
 
 fn find_header_index(headers: &StringRecord, names: &[&str]) -> Option<usize> {
@@ -3423,6 +3476,8 @@ fn load_score_cache(
             cache.duplicate_timestamps
         ));
     }
+    let overlap_metadata =
+        load_ml_signal_overlap_metadata(score_cache_path, cache.export_manifest_path.as_deref());
 
     let mut out = vec![None; candles.close.len()];
     let mut has_probability_long = false;
@@ -3513,12 +3568,199 @@ fn load_score_cache(
             native_gpu_device_id: cache.native_gpu_device_id,
             native_fallback_reason: cache.native_fallback_reason,
         },
+        overlap_metadata,
         has_probability_long,
         has_probability_short,
         rows_with_probability,
         rows_missing_long_probability,
         rows_missing_short_probability,
     })
+}
+
+fn resolve_relative_metadata_path(anchor: &Path, raw: Option<&str>) -> Option<PathBuf> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        Some(candidate.to_path_buf())
+    } else {
+        let base_dir = anchor.parent().unwrap_or_else(|| Path::new("."));
+        Some(base_dir.join(candidate))
+    }
+}
+
+fn load_ml_signal_overlap_metadata(
+    score_cache_path: &str,
+    export_manifest_path: Option<&str>,
+) -> MlSignalOverlapMetadata {
+    let score_cache_path = Path::new(score_cache_path);
+    let Some(export_manifest_path) =
+        resolve_relative_metadata_path(score_cache_path, export_manifest_path)
+    else {
+        return MlSignalOverlapMetadata::default();
+    };
+
+    let export_manifest_file = match File::open(&export_manifest_path) {
+        Ok(file) => file,
+        Err(_) => return MlSignalOverlapMetadata::default(),
+    };
+    let export_manifest: MlSignalDatasetExportManifest =
+        match serde_json::from_reader(BufReader::new(export_manifest_file)) {
+            Ok(manifest) => manifest,
+            Err(_) => return MlSignalOverlapMetadata::default(),
+        };
+
+    let label_horizon_bars = resolve_relative_metadata_path(
+        &export_manifest_path,
+        Some(export_manifest.feature_schema_path.as_str()),
+    )
+    .and_then(|path| read_feature_schema_from_path(&path).ok())
+    .map(|schema| schema.label_horizon_bars.max(schema.horizon_bars).max(1))
+    .or_else(|| (export_manifest.horizon_bars > 0).then_some(export_manifest.horizon_bars.max(1)));
+
+    let split_windows = resolve_relative_metadata_path(
+        &export_manifest_path,
+        export_manifest.split_manifest_path.as_deref(),
+    )
+    .and_then(|path| {
+        File::open(path).ok().and_then(|file| {
+            serde_json::from_reader::<_, MlSignalSplitPlan>(BufReader::new(file)).ok()
+        })
+    })
+    .map(|plan| plan.windows)
+    .unwrap_or_default();
+
+    MlSignalOverlapMetadata {
+        label_horizon_bars,
+        split_windows,
+    }
+}
+
+fn lower_bound_effective_score_observations(
+    raw_score_observations: usize,
+    label_horizon_bars: Option<usize>,
+) -> usize {
+    let Some(horizon_bars) = label_horizon_bars.filter(|value| *value > 1) else {
+        return raw_score_observations;
+    };
+    if raw_score_observations == 0 {
+        0
+    } else {
+        (raw_score_observations / horizon_bars).max(1)
+    }
+}
+
+fn walkforward_test_intervals(split_windows: &[MlSignalSplitWindow]) -> Vec<(usize, usize)> {
+    split_windows
+        .iter()
+        .filter_map(|window| {
+            (window.test_end > window.test_start).then_some((window.test_start, window.test_end))
+        })
+        .collect()
+}
+
+fn merged_interval_len(intervals: &[(usize, usize)]) -> usize {
+    if intervals.is_empty() {
+        return 0;
+    }
+    let mut sorted = intervals.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut total = 0usize;
+    let mut current = sorted[0];
+    for interval in sorted.into_iter().skip(1) {
+        if interval.0 <= current.1 {
+            current.1 = current.1.max(interval.1);
+        } else {
+            total = total.saturating_add(current.1.saturating_sub(current.0));
+            current = interval;
+        }
+    }
+    total.saturating_add(current.1.saturating_sub(current.0))
+}
+
+fn max_pairwise_disjoint_interval_count(intervals: &[(usize, usize)]) -> usize {
+    if intervals.is_empty() {
+        return 0;
+    }
+    let mut sorted = intervals.to_vec();
+    sorted.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let mut count = 0usize;
+    let mut last_end = 0usize;
+    let mut has_last = false;
+    for (start, end) in sorted {
+        if !has_last || start >= last_end {
+            count = count.saturating_add(1);
+            last_end = end;
+            has_last = true;
+        }
+    }
+    count
+}
+
+fn summarize_ml_signal_dependence(
+    raw_score_observations: usize,
+    overlap_metadata: &MlSignalOverlapMetadata,
+) -> MlSignalDependenceSummary {
+    let intervals = walkforward_test_intervals(&overlap_metadata.split_windows);
+    MlSignalDependenceSummary {
+        raw_score_observations,
+        effective_score_observations_lower_bound: lower_bound_effective_score_observations(
+            raw_score_observations,
+            overlap_metadata.label_horizon_bars,
+        ),
+        label_horizon_bars: overlap_metadata.label_horizon_bars,
+        raw_walkforward_test_windows: (!intervals.is_empty()).then_some(intervals.len()),
+        effective_walkforward_test_windows_upper_bound: (!intervals.is_empty())
+            .then(|| max_pairwise_disjoint_interval_count(&intervals)),
+        walkforward_test_bars_covered: (!intervals.is_empty())
+            .then(|| merged_interval_len(&intervals)),
+    }
+}
+
+fn push_validation_warning_flag(run_verdict: &mut ValidationRunVerdict, flag: &'static str) {
+    if !run_verdict
+        .warning_flags
+        .iter()
+        .any(|existing| existing == flag)
+    {
+        run_verdict.warning_flags.push(flag.to_string());
+    }
+}
+
+fn append_overlap_adjustment_warning_flags(
+    run_verdict: &mut ValidationRunVerdict,
+    score_summary: &MlSignalScoreCacheSummary,
+    dependence_summary: &MlSignalDependenceSummary,
+) {
+    if dependence_summary.effective_score_observations_lower_bound
+        < dependence_summary.raw_score_observations
+    {
+        push_validation_warning_flag(run_verdict, "score_obs_overlap_adjusted");
+    }
+
+    if score_summary.score_scope != MlSignalScoreScope::WalkforwardTest {
+        return;
+    }
+
+    let raw_windows = dependence_summary.raw_walkforward_test_windows.unwrap_or(0);
+    let effective_windows = dependence_summary
+        .effective_walkforward_test_windows_upper_bound
+        .unwrap_or(raw_windows);
+    if raw_windows == 0 {
+        push_validation_warning_flag(
+            run_verdict,
+            "score_scope_walkforward_overlap_metadata_missing",
+        );
+        return;
+    }
+    if effective_windows < raw_windows
+        || dependence_summary.effective_score_observations_lower_bound
+            < dependence_summary.raw_score_observations
+    {
+        push_validation_warning_flag(run_verdict, "score_scope_walkforward_overlap_adjusted");
+    }
 }
 
 fn score_target(point: Option<ScorePoint>, params: &MlSignalPolicyParams) -> Option<i32> {
@@ -3539,6 +3781,75 @@ fn score_target(point: Option<ScorePoint>, params: &MlSignalPolicyParams) -> Opt
     Some(0)
 }
 
+fn summarize_ml_signal_boundary_diagnostics(
+    score_points: &[Option<ScorePoint>],
+    params: &MlSignalPolicyParams,
+) -> Option<MlSignalBoundaryDiagnostics> {
+    const NEAR_BOUNDARY_EPSILON: f64 = 0.02;
+
+    let mut scored_points = 0usize;
+    let mut near_long = 0usize;
+    let mut near_short = 0usize;
+    let mut near_delta = 0usize;
+    let mut min_long = f64::INFINITY;
+    let mut min_short = f64::INFINITY;
+    let mut min_delta = f64::INFINITY;
+
+    for point in score_points.iter().copied().flatten() {
+        let Some(p_long) = point.p_long.filter(|value| value.is_finite()) else {
+            continue;
+        };
+        let p_short = match point.p_short.filter(|value| value.is_finite()) {
+            Some(value) => value,
+            None if params.strategy.long_only => 0.0,
+            None => continue,
+        };
+
+        scored_points = scored_points.saturating_add(1);
+
+        let long_distance = (p_long - params.t_long).abs();
+        min_long = min_long.min(long_distance);
+        if long_distance <= NEAR_BOUNDARY_EPSILON {
+            near_long = near_long.saturating_add(1);
+        }
+
+        let delta_distance = ((p_long - p_short).abs() - params.delta).abs();
+        min_delta = min_delta.min(delta_distance);
+        if delta_distance <= NEAR_BOUNDARY_EPSILON {
+            near_delta = near_delta.saturating_add(1);
+        }
+
+        if !params.strategy.long_only {
+            let short_distance = (p_short - params.t_short).abs();
+            min_short = min_short.min(short_distance);
+            if short_distance <= NEAR_BOUNDARY_EPSILON {
+                near_short = near_short.saturating_add(1);
+            }
+        }
+    }
+
+    if scored_points == 0 {
+        return None;
+    }
+
+    let scored_points_f64 = scored_points as f64;
+    Some(MlSignalBoundaryDiagnostics {
+        scored_points,
+        near_boundary_epsilon: NEAR_BOUNDARY_EPSILON,
+        near_long_threshold_frac: near_long as f64 / scored_points_f64,
+        near_short_threshold_frac: (!params.strategy.long_only)
+            .then_some(near_short as f64 / scored_points_f64),
+        near_delta_boundary_frac: near_delta as f64 / scored_points_f64,
+        min_abs_long_threshold_distance: min_long,
+        min_abs_short_threshold_distance: (!params.strategy.long_only).then_some(min_short),
+        min_abs_delta_boundary_distance: min_delta,
+    })
+}
+
+// Distinguishes "no new request on this bar" from an explicit flat/0 request.
+// The sentinel keeps request-word semantics intact so `fill_desired_positions`
+// can preserve the current target through silent bars while still allowing
+// `exit_on_flat` to react to an explicit flat request.
 const ML_SIGNAL_NO_REQUEST: i32 = i32::MIN;
 
 #[derive(Clone, Copy, Default)]
@@ -3602,6 +3913,8 @@ fn fill_requested_targets(
     params: &MlSignalPolicyParams,
     requested: &mut [i32],
 ) {
+    // Start every bar in the no-request state. Only explicit score-derived
+    // targets overwrite the sentinel; absent scores do not imply flat.
     requested.fill(ML_SIGNAL_NO_REQUEST);
     for (idx, point) in score_points.iter().copied().enumerate() {
         let Some(target) = score_target(point, params) else {
@@ -3686,6 +3999,26 @@ fn fill_desired_positions(requested: &[i32], params: &MlSignalPolicyParams, desi
     }
 }
 
+fn summarize_ml_signal_request_word_diagnostics(
+    requested: &[i32],
+) -> MlSignalRequestWordDiagnostics {
+    let mut diagnostics = MlSignalRequestWordDiagnostics {
+        no_request_bars: 0,
+        explicit_flat_request_bars: 0,
+        explicit_nonflat_request_bars: 0,
+    };
+    for &target in requested {
+        if target == ML_SIGNAL_NO_REQUEST {
+            diagnostics.no_request_bars += 1;
+        } else if target.clamp(-1, 1) == 0 {
+            diagnostics.explicit_flat_request_bars += 1;
+        } else {
+            diagnostics.explicit_nonflat_request_bars += 1;
+        }
+    }
+    diagnostics
+}
+
 #[cfg(test)]
 fn build_desired_positions(
     score_points: &[Option<ScorePoint>],
@@ -3699,6 +4032,9 @@ fn build_desired_positions(
 }
 
 fn neutralize_ml_signal_execution_overlays(strategy: &StrategyConfig) -> StrategyConfig {
+    // `fill_desired_positions` has already applied ML-policy persistence,
+    // cooldown, and flip/exit behavior. `iterative_sim` must therefore receive
+    // a neutralized strategy so those overlays are not double-applied.
     let mut normalized = strategy.clone();
     normalized.allow_flip = true;
     normalized.cooldown_bars = 0;
@@ -3710,6 +4046,7 @@ fn validate_ml_signal_candidates(
     data_id: String,
     score_cache_path: String,
     score_summary: MlSignalScoreCacheSummary,
+    overlap_metadata: &MlSignalOverlapMetadata,
     score_points: &[Option<ScorePoint>],
     candidates: Vec<MlSignalPolicyParams>,
     candles: &Candles,
@@ -3720,6 +4057,7 @@ fn validate_ml_signal_candidates(
 ) -> Result<MlSignalValidationResult, String> {
     let started = std::time::Instant::now();
     let actual_score_obs = score_points.iter().filter(|point| point.is_some()).count();
+    let dependence_summary = summarize_ml_signal_dependence(actual_score_obs, overlap_metadata);
     let gates = sanitize_hard_gates(min_psr, min_dsr, None, None, None);
     let lr = log_returns_from_close(&candles.close);
     let mut requested = Vec::new();
@@ -3732,7 +4070,9 @@ fn validate_ml_signal_candidates(
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
+        let boundary_diagnostics = summarize_ml_signal_boundary_diagnostics(score_points, &params);
         fill_requested_targets(score_points, &params, &mut requested);
+        let request_word_diagnostics = summarize_ml_signal_request_word_diagnostics(&requested);
         fill_desired_positions(&requested, &params, &mut desired);
         let strategy = neutralize_ml_signal_execution_overlays(&params.strategy);
         let metrics = simulate_iterative_from_signals(
@@ -3758,17 +4098,31 @@ fn validate_ml_signal_candidates(
             track_record_bars: actual_score_obs,
             min_track_record_length_bars: None,
             validation_verdict: ValidationCandidateVerdict::default(),
+            boundary_diagnostics,
+            request_word_diagnostics: Some(request_word_diagnostics),
             robust_score,
             robust_pareto: false,
         });
     }
 
     let sample_obs = vec![actual_score_obs; out.len()];
-    compute_probability_metrics(&mut out, &sample_obs);
+    let effective_sample_obs = vec![
+        dependence_summary
+            .effective_score_observations_lower_bound
+            .max(2);
+        out.len()
+    ];
+    compute_probability_metrics_with_effective_counts(
+        &mut out,
+        &sample_obs,
+        Some(&effective_sample_obs),
+        None,
+    );
     mark_robust_pareto(&mut out);
     apply_candidate_hard_gates(&mut out, &gates, None);
     let mut run_verdict = build_run_verdict(&out, out.len(), &gates, None, None);
     append_score_scope_warning_flag(&mut run_verdict, &score_summary);
+    append_overlap_adjustment_warning_flags(&mut run_verdict, &score_summary, &dependence_summary);
 
     Ok(MlSignalValidationResult {
         data_id,
@@ -3778,6 +4132,7 @@ fn validate_ml_signal_candidates(
         backend_fallback_reason: None,
         score_cache_path,
         score_summary,
+        dependence_summary: Some(dependence_summary),
         candidates: out,
         run_verdict,
     })
@@ -3931,7 +4286,8 @@ pub fn run_ml_signal_validation_blocking_with_candles(
     validate_ml_signal_candidates(
         req.data_id,
         req.score_cache_path,
-        score_cache.summary,
+        score_cache.summary.clone(),
+        &score_cache.overlap_metadata,
         &score_cache.points,
         req.candidates,
         candles,
@@ -4017,6 +4373,7 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
         req.data_id,
         req.score_cache_path,
         score_cache.summary.clone(),
+        &score_cache.overlap_metadata,
         &score_cache.points,
         candidates,
         candles,
@@ -4028,6 +4385,10 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
     validation
         .candidates
         .sort_by(|a, b| b.robust_score.total_cmp(&a.robust_score));
+    // Exhaustive-sweep contract: evaluate the full Cartesian grid, rank the
+    // full candidate set by robust score, truncate to retained `top_k`, then
+    // rebuild the run verdict from the retained shortlist while preserving the
+    // original `sweep_size` in `candidates_tested`.
     if req.top_k > 0 && validation.candidates.len() > req.top_k {
         validation.candidates.truncate(req.top_k);
     }
@@ -4039,6 +4400,13 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
         None,
     );
     append_score_scope_warning_flag(&mut validation.run_verdict, &validation.score_summary);
+    if let Some(summary) = validation.dependence_summary.as_ref() {
+        append_overlap_adjustment_warning_flags(
+            &mut validation.run_verdict,
+            &validation.score_summary,
+            summary,
+        );
+    }
     Ok(MlSignalPolicySweepResult {
         sweep_size,
         top_k: req.top_k,
@@ -4380,6 +4748,89 @@ mod tests {
         )
     }
 
+    fn write_overlap_metadata_files(
+        data_id: &str,
+        label_horizon_bars: usize,
+        split_windows: Vec<MlSignalSplitWindow>,
+    ) -> (String, String, String) {
+        let feature_schema_path = temp_file_path("ml_overlap_feature_schema", "json");
+        let split_manifest_path = temp_file_path("ml_overlap_split_manifest", "json");
+        let export_manifest_path = temp_file_path("ml_overlap_export_manifest", "json");
+
+        let feature_schema = MlSignalFeatureSchema {
+            schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
+            strategy_kind: "MlSignal".to_string(),
+            horizon_bars: label_horizon_bars,
+            ma_source: "close".to_string(),
+            first_valid_bar: 0,
+            feature_names: vec!["feature_a".to_string()],
+            pattern_ids: vec!["pattern_a".to_string()],
+            schema_hash: "schema-hash".to_string(),
+            exporter_version: ML_SIGNAL_EXPORTER_VERSION.to_string(),
+            feature_block_versions: HashMap::new(),
+            indicator_config: None,
+            label_horizon_bars,
+            first_valid_reasoning: None,
+        };
+        fs::write(
+            &feature_schema_path,
+            serde_json::to_vec_pretty(&feature_schema).expect("serialize feature schema"),
+        )
+        .expect("write feature schema");
+
+        let split_manifest = MlSignalSplitPlan {
+            version: ML_SIGNAL_SPLIT_PLAN_VERSION,
+            train_bars: 12,
+            calibration_bars: 4,
+            test_bars: 6,
+            gap_bars: 0,
+            step_bars: 3,
+            windows: split_windows,
+        };
+        fs::write(
+            &split_manifest_path,
+            serde_json::to_vec_pretty(&split_manifest).expect("serialize split manifest"),
+        )
+        .expect("write split manifest");
+
+        let export_manifest = MlSignalDatasetExportManifest {
+            version: ML_SIGNAL_EXPORT_MANIFEST_VERSION,
+            strategy_kind: "MlSignal".to_string(),
+            data_id: data_id.to_string(),
+            output_path: temp_file_path("ml_overlap_dataset", "csv"),
+            row_count: 0,
+            feature_schema_path: feature_schema_path.clone(),
+            feature_schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
+            split_manifest_path: Some(split_manifest_path.clone()),
+            split_count: split_manifest.windows.len(),
+            horizon_bars: label_horizon_bars,
+            first_valid_bar: 0,
+            pattern_count: 1,
+            feature_count: 1,
+            first_timestamp: None,
+            last_timestamp: None,
+            ticker_holdout: None,
+            feature_schema_hash: "schema-hash".to_string(),
+            exporter_version: ML_SIGNAL_EXPORTER_VERSION.to_string(),
+            indicator_config: None,
+            warmup_policy: None,
+            label_policy: None,
+            sample_weight_policy: None,
+            created_at_unix_ms: None,
+        };
+        fs::write(
+            &export_manifest_path,
+            serde_json::to_vec_pretty(&export_manifest).expect("serialize export manifest"),
+        )
+        .expect("write export manifest");
+
+        (
+            export_manifest_path,
+            feature_schema_path,
+            split_manifest_path,
+        )
+    }
+
     #[test]
     fn score_cache_build_request_defaults_to_native_cpu_when_backend_missing() {
         let parsed: MlSignalScoreCacheBuildRequest = serde_json::from_value(serde_json::json!({
@@ -4445,6 +4896,57 @@ mod tests {
             ),
             Some(0)
         );
+    }
+
+    #[test]
+    fn boundary_diagnostics_track_threshold_and_delta_proximity() {
+        let mut params = MlSignalPolicyParams::default();
+        params.strategy.long_only = false;
+        let diagnostics = summarize_ml_signal_boundary_diagnostics(
+            &[
+                Some(ScorePoint {
+                    p_long: Some(0.56),
+                    p_short: Some(0.20),
+                }),
+                Some(ScorePoint {
+                    p_long: Some(0.20),
+                    p_short: Some(0.56),
+                }),
+                Some(ScorePoint {
+                    p_long: Some(0.44),
+                    p_short: Some(0.40),
+                }),
+                Some(ScorePoint {
+                    p_long: Some(f64::NAN),
+                    p_short: Some(0.44),
+                }),
+            ],
+            &params,
+        )
+        .expect("boundary diagnostics");
+
+        assert_eq!(diagnostics.scored_points, 3);
+        assert!((diagnostics.near_boundary_epsilon - 0.02).abs() < 1e-12);
+        assert!((diagnostics.near_long_threshold_frac - (1.0 / 3.0)).abs() < 1e-12);
+        assert!(
+            (diagnostics
+                .near_short_threshold_frac
+                .expect("short threshold frac")
+                - (1.0 / 3.0))
+                .abs()
+                < 1e-12
+        );
+        assert!((diagnostics.near_delta_boundary_frac - (1.0 / 3.0)).abs() < 1e-12);
+        assert!((diagnostics.min_abs_long_threshold_distance - 0.01).abs() < 1e-12);
+        assert!(
+            (diagnostics
+                .min_abs_short_threshold_distance
+                .expect("short distance")
+                - 0.01)
+                .abs()
+                < 1e-12
+        );
+        assert!((diagnostics.min_abs_delta_boundary_distance - 0.01).abs() < 1e-12);
     }
 
     #[test]
@@ -4565,6 +5067,135 @@ mod tests {
         assert_eq!(
             build_desired_positions(&score_points, &params),
             vec![0, 1, 1, 0, 0, -1]
+        );
+    }
+
+    #[test]
+    fn fill_desired_positions_distinguishes_no_request_from_explicit_flat_request() {
+        let mut params = MlSignalPolicyParams::default();
+        params.strategy.long_only = false;
+        params.strategy.trade_on_next_bar = false;
+        params.exit_on_flat = true;
+        params.exit_on_opposite = true;
+
+        let requested = vec![1, ML_SIGNAL_NO_REQUEST, 0, ML_SIGNAL_NO_REQUEST];
+        let request_words = summarize_ml_signal_request_word_diagnostics(&requested);
+        let mut desired = vec![0; requested.len()];
+        fill_desired_positions(&requested, &params, &mut desired);
+
+        assert_eq!(request_words.no_request_bars, 2);
+        assert_eq!(request_words.explicit_flat_request_bars, 1);
+        assert_eq!(request_words.explicit_nonflat_request_bars, 1);
+        assert_eq!(desired, vec![1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn neutralize_ml_signal_execution_overlays_clears_overlay_controls_only() {
+        let mut strategy = StrategyConfig::default();
+        strategy.allow_flip = false;
+        strategy.cooldown_bars = 3;
+        strategy.signal_persistence_bars = 4;
+        strategy.long_only = true;
+        strategy.stop_loss_pct = Some(0.05);
+
+        let neutralized = neutralize_ml_signal_execution_overlays(&strategy);
+
+        assert!(neutralized.allow_flip);
+        assert_eq!(neutralized.cooldown_bars, 0);
+        assert_eq!(neutralized.signal_persistence_bars, 1);
+        assert_eq!(neutralized.long_only, strategy.long_only);
+        assert_eq!(neutralized.stop_loss_pct, strategy.stop_loss_pct);
+    }
+
+    #[test]
+    fn iterative_sim_matches_prebaked_desired_positions_after_overlay_neutralization() {
+        let mut params = MlSignalPolicyParams::default();
+        params.strategy.long_only = false;
+        params.strategy.trade_on_next_bar = false;
+        params.strategy.allow_flip = false;
+        params.strategy.cooldown_bars = 2;
+        params.strategy.signal_persistence_bars = 2;
+        params.max_hold_bars = 0;
+        params.exit_on_flat = false;
+        params.exit_on_opposite = true;
+
+        let score_points = vec![
+            Some(ScorePoint {
+                p_long: Some(0.80),
+                p_short: Some(0.10),
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.82),
+                p_short: Some(0.10),
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.12),
+                p_short: Some(0.81),
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.10),
+                p_short: Some(0.84),
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.09),
+                p_short: Some(0.86),
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.08),
+                p_short: Some(0.88),
+            }),
+        ];
+        let desired = build_desired_positions(&score_points, &params);
+        assert_eq!(desired, vec![0, 1, 1, 0, 0, -1]);
+
+        let expected_trades = {
+            let mut prev = 0i32;
+            let mut trades = 0u32;
+            for &pos in &desired {
+                let next = pos.clamp(-1, 1);
+                if next != prev {
+                    trades += if prev == 0 || next == 0 { 1 } else { 2 };
+                    prev = next;
+                }
+            }
+            trades
+        };
+        let expected_exposure =
+            desired.iter().filter(|&&pos| pos != 0).count() as f64 / desired.len() as f64;
+        let expected_net_exposure =
+            desired.iter().map(|&pos| pos as f64).sum::<f64>() / desired.len() as f64;
+
+        let candles = sample_candles(desired.len());
+        let lr = vec![0.0; desired.len()];
+        let ohlc = OhlcSlice {
+            open: &candles.open,
+            high: &candles.high,
+            low: &candles.low,
+            close: &candles.close,
+        };
+        let sim = IterativeSimConfig::default();
+
+        let neutralized_metrics = simulate_iterative_from_signals(
+            &lr,
+            ohlc,
+            &desired,
+            0,
+            &neutralize_ml_signal_execution_overlays(&params.strategy),
+            &sim,
+        );
+        assert_eq!(neutralized_metrics.trades, expected_trades);
+        assert!((neutralized_metrics.exposure - expected_exposure).abs() <= 1.0e-12);
+        assert!((neutralized_metrics.net_exposure - expected_net_exposure).abs() <= 1.0e-12);
+
+        let overlay_reapplied_metrics =
+            simulate_iterative_from_signals(&lr, ohlc, &desired, 0, &params.strategy, &sim);
+        assert_eq!(overlay_reapplied_metrics.trades, 2);
+        assert!((overlay_reapplied_metrics.exposure - (1.0 / 6.0)).abs() <= 1.0e-12);
+        assert!((overlay_reapplied_metrics.net_exposure - (1.0 / 6.0)).abs() <= 1.0e-12);
+        assert_ne!(overlay_reapplied_metrics.trades, expected_trades);
+        assert!(
+            (overlay_reapplied_metrics.exposure - expected_exposure).abs() > 1.0e-12,
+            "overlay-bearing iterative sim should diverge from the pre-baked desired path"
         );
     }
 
@@ -4768,6 +5399,12 @@ mod tests {
             MlSignalScoreSpace::Probability
         );
         assert_eq!(validation.candidates.len(), 1);
+        let diagnostics = validation.candidates[0]
+            .boundary_diagnostics
+            .as_ref()
+            .expect("boundary diagnostics");
+        assert_eq!(diagnostics.scored_points, 12);
+        assert_eq!(diagnostics.near_short_threshold_frac, None);
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
@@ -5284,7 +5921,7 @@ mod tests {
     }
 
     #[test]
-    fn walkforward_scope_does_not_add_extra_warning_flag() {
+    fn walkforward_scope_warns_when_overlap_metadata_is_missing() {
         let _guard = lock_test_env();
         let candles = sample_candles(32);
         let input_path = temp_file_path("scope_walkforward_scores_in", "csv");
@@ -5331,15 +5968,164 @@ mod tests {
             &cancel,
         )
         .expect("validation should succeed");
-        assert!(!validation
+        assert!(validation
             .run_verdict
             .warning_flags
             .iter()
-            .any(|flag| flag.starts_with("score_scope_")));
+            .any(|flag| flag == "score_scope_walkforward_overlap_metadata_missing"));
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
         let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_reports_overlap_adjusted_dependence_summary_from_export_metadata() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(32);
+        let input_path = temp_file_path("scope_overlap_scores_in", "csv");
+        let baseline_cache_path = temp_file_path("scope_overlap_scores_baseline_cache", "json");
+        let cache_path = temp_file_path("scope_overlap_scores_cache", "json");
+        let cancel = AtomicBool::new(false);
+        let split_windows = vec![
+            MlSignalSplitWindow {
+                split_id: "roll_000".to_string(),
+                train_start: 0,
+                train_end: 12,
+                calibration_start: 12,
+                calibration_end: 16,
+                test_start: 16,
+                test_end: 22,
+            },
+            MlSignalSplitWindow {
+                split_id: "roll_001".to_string(),
+                train_start: 3,
+                train_end: 15,
+                calibration_start: 15,
+                calibration_end: 19,
+                test_start: 19,
+                test_end: 25,
+            },
+            MlSignalSplitWindow {
+                split_id: "roll_002".to_string(),
+                train_start: 6,
+                train_end: 18,
+                calibration_start: 18,
+                calibration_end: 22,
+                test_start: 22,
+                test_end: 28,
+            },
+        ];
+        let (export_manifest_path, feature_schema_path, split_manifest_path) =
+            write_overlap_metadata_files("data-1", 4, split_windows);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short", "score_scope"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(8).take(12) {
+            writer
+                .write_record([
+                    ts.to_string(),
+                    "0.81".to_string(),
+                    "0.19".to_string(),
+                    "WalkforwardTest".to_string(),
+                ])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+
+        let mut req = score_cache_build_request("data-1", &input_path, &cache_path, None);
+        req.export_manifest_path = Some(export_manifest_path.clone());
+        let build =
+            build_ml_signal_score_cache_from_csv(req, &candles, &cancel).expect("build cache");
+
+        let baseline_build = build_ml_signal_score_cache_from_csv(
+            score_cache_build_request("data-1", &input_path, &baseline_cache_path, None),
+            &candles,
+            &cancel,
+        )
+        .expect("build baseline cache");
+        let baseline = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: baseline_cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("baseline validation should succeed");
+
+        let validation = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("validation should succeed");
+
+        assert_eq!(validation.candidates.len(), 1);
+        assert_eq!(validation.candidates[0].track_record_bars, 12);
+        assert_eq!(baseline.candidates[0].track_record_bars, 12);
+        let dependence = validation
+            .dependence_summary
+            .as_ref()
+            .expect("dependence summary");
+        assert_eq!(dependence.raw_score_observations, 12);
+        assert_eq!(dependence.effective_score_observations_lower_bound, 3);
+        assert_eq!(dependence.label_horizon_bars, Some(4));
+        assert_eq!(dependence.raw_walkforward_test_windows, Some(3));
+        assert_eq!(
+            dependence.effective_walkforward_test_windows_upper_bound,
+            Some(2)
+        );
+        assert_eq!(dependence.walkforward_test_bars_covered, Some(12));
+        assert!(validation
+            .run_verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "score_obs_overlap_adjusted"));
+        assert!(validation
+            .run_verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "score_scope_walkforward_overlap_adjusted"));
+        assert!(
+            validation.candidates[0].psr.expect("overlap psr")
+                < baseline.candidates[0].psr.expect("baseline psr")
+        );
+        assert!(
+            validation.candidates[0]
+                .min_track_record_length_bars
+                .expect("overlap mintrl")
+                > baseline.candidates[0]
+                    .min_track_record_length_bars
+                    .expect("baseline mintrl")
+        );
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&baseline_cache_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&baseline_build.manifest_path);
+        let _ = fs::remove_file(&build.manifest_path);
+        let _ = fs::remove_file(&export_manifest_path);
+        let _ = fs::remove_file(&feature_schema_path);
+        let _ = fs::remove_file(&split_manifest_path);
     }
 
     #[test]
@@ -5731,6 +6517,11 @@ mod tests {
         assert_eq!(sweep.top_k, 3);
         assert!(sweep.sweep_size >= 8);
         assert_eq!(sweep.validation.candidates.len(), 3);
+        assert_eq!(
+            sweep.validation.run_verdict.candidates_tested,
+            sweep.sweep_size
+        );
+        assert!(sweep.validation.run_verdict.approved_candidate_count <= sweep.top_k);
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);

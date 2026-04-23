@@ -350,6 +350,9 @@ pub(crate) fn merge_vdps_telemetry(
         cur.runtime_ms_total = cur.runtime_ms_total.saturating_add(inc.runtime_ms_total);
         cur.quality_check_top_k_overlap = None;
         cur.quality_check_best_score_regret = None;
+        cur.quality_check_exact_winner_rank = None;
+        cur.quality_check_holdout_regret = None;
+        cur.quality_check_speedup_vs_exact = None;
         cur.quality_check_baseline_runtime_ms = None;
         cur.quality_check_baseline_backend = None;
         cur.quality_check_baseline_pairs = None;

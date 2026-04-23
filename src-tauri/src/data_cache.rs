@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
 
 const MAGIC: &[u8; 4] = b"VTA1";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const HEADER_LEN: usize = 64;
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV1A64_PRIME: u64 = 0x100000001b3;
@@ -79,10 +79,7 @@ fn hash_file_range(file: &mut fs::File, start: u64, len: u64, mut h: u64) -> Res
     Ok(h)
 }
 
-/// Content fingerprint for reproducibility:
-/// - Small/medium files: full-file FNV-1a 64 hash (`fnv1a64-full-*`)
-/// - Large files: sampled FNV-1a 64 hash over first/middle/last windows (`fnv1a64-sampled-*`)
-pub fn content_fingerprint_for_source(path: &Path) -> Result<String, String> {
+fn content_fingerprint_parts_for_source(path: &Path) -> Result<(&'static str, u64), String> {
     let md = fs::metadata(path).map_err(|e| e.to_string())?;
     let size = md.len();
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -92,7 +89,7 @@ pub fn content_fingerprint_for_source(path: &Path) -> Result<String, String> {
 
     if size <= CONTENT_FP_FULL_MAX_BYTES {
         h = hash_file_range(&mut file, 0, size, h)?;
-        return Ok(format!("fnv1a64-full-{h:016x}"));
+        return Ok(("full", h));
     }
 
     let w = CONTENT_FP_SAMPLE_BYTES.min(size);
@@ -108,7 +105,20 @@ pub fn content_fingerprint_for_source(path: &Path) -> Result<String, String> {
         h = hash_file_range(&mut file, mid_start, w, h)?;
     }
 
-    Ok(format!("fnv1a64-sampled-{h:016x}"))
+    Ok(("sampled", h))
+}
+
+fn content_fingerprint_hash_for_source(path: &Path) -> Result<u64, String> {
+    let (_, hash) = content_fingerprint_parts_for_source(path)?;
+    Ok(hash)
+}
+
+/// Content fingerprint for reproducibility:
+/// - Small/medium files: full-file FNV-1a 64 hash (`fnv1a64-full-*`)
+/// - Large files: sampled FNV-1a 64 hash over first/middle/last windows (`fnv1a64-sampled-*`)
+pub fn content_fingerprint_for_source(path: &Path) -> Result<String, String> {
+    let (mode, hash) = content_fingerprint_parts_for_source(path)?;
+    Ok(format!("fnv1a64-{mode}-{hash:016x}"))
 }
 
 fn sidecar_cache_path(csv_path: &Path) -> PathBuf {
@@ -174,6 +184,7 @@ fn write_header(
     csv_mtime_ms: i64,
     min_ts: i64,
     max_ts: i64,
+    source_content_hash: u64,
 ) {
     out.fill(0);
     out[0..4].copy_from_slice(MAGIC);
@@ -184,9 +195,10 @@ fn write_header(
     out[32..40].copy_from_slice(&csv_mtime_ms.to_le_bytes());
     out[40..48].copy_from_slice(&min_ts.to_le_bytes());
     out[48..56].copy_from_slice(&max_ts.to_le_bytes());
+    out[56..64].copy_from_slice(&source_content_hash.to_le_bytes());
 }
 
-fn read_header(input: &[u8; HEADER_LEN]) -> Option<(u32, u64, u64, i64)> {
+fn read_header(input: &[u8; HEADER_LEN]) -> Option<(u32, u64, u64, i64, u64)> {
     if &input[0..4] != MAGIC {
         return None;
     }
@@ -198,7 +210,14 @@ fn read_header(input: &[u8; HEADER_LEN]) -> Option<(u32, u64, u64, i64)> {
     let len = u64::from_le_bytes(input[16..24].try_into().ok()?);
     let csv_size = u64::from_le_bytes(input[24..32].try_into().ok()?);
     let csv_mtime_ms = i64::from_le_bytes(input[32..40].try_into().ok()?);
-    Some((fields_mask, len, csv_size, csv_mtime_ms))
+    let source_content_hash = u64::from_le_bytes(input[56..64].try_into().ok()?);
+    Some((
+        fields_mask,
+        len,
+        csv_size,
+        csv_mtime_ms,
+        source_content_hash,
+    ))
 }
 
 fn write_le_slice_i64(w: &mut dyn Write, v: &[i64]) -> Result<(), String> {
@@ -316,7 +335,7 @@ pub fn load_or_build_with_identity(
     let sidecar = sidecar_cache_path(csv_path);
     let fallback = fallback_cache_path(app_cache_dir, csv_path);
 
-    if let Ok(Some(candles)) = try_load_cache(&sidecar, src_id) {
+    if let Ok(Some(candles)) = try_load_cache(&sidecar, csv_path, src_id) {
         return Ok(LoadOutcome {
             candles,
             cache_hit: true,
@@ -326,7 +345,7 @@ pub fn load_or_build_with_identity(
     }
 
     if sidecar != fallback {
-        if let Ok(Some(candles)) = try_load_cache(&fallback, src_id) {
+        if let Ok(Some(candles)) = try_load_cache(&fallback, csv_path, src_id) {
             return Ok(LoadOutcome {
                 candles,
                 cache_hit: true,
@@ -340,10 +359,10 @@ pub fn load_or_build_with_identity(
     let candles = ta_app_core::read_candles_from_csv_compat(csv_path.to_string_lossy().as_ref())?;
 
     let mut wrote_path = None;
-    if let Ok(()) = write_cache(&sidecar, &candles, src_id) {
+    if let Ok(()) = write_cache(&sidecar, csv_path, &candles, src_id) {
         wrote_path = Some(sidecar);
     } else if sidecar != fallback {
-        if let Ok(()) = write_cache(&fallback, &candles, src_id) {
+        if let Ok(()) = write_cache(&fallback, csv_path, &candles, src_id) {
             wrote_path = Some(fallback);
         }
     }
@@ -356,7 +375,11 @@ pub fn load_or_build_with_identity(
     })
 }
 
-fn try_load_cache(cache_path: &Path, src_id: SourceIdentity) -> Result<Option<Candles>, String> {
+fn try_load_cache(
+    cache_path: &Path,
+    csv_path: &Path,
+    src_id: SourceIdentity,
+) -> Result<Option<Candles>, String> {
     let mut f = match fs::File::open(cache_path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -369,11 +392,18 @@ fn try_load_cache(cache_path: &Path, src_id: SourceIdentity) -> Result<Option<Ca
     let mut header = [0u8; HEADER_LEN];
     f.read_exact(&mut header).map_err(|e| e.to_string())?;
 
-    let Some((fields_mask, len_u64, csv_size, csv_mtime_ms)) = read_header(&header) else {
+    let Some((fields_mask, len_u64, csv_size, csv_mtime_ms, source_content_hash)) =
+        read_header(&header)
+    else {
         return Ok(None);
     };
 
     if csv_size != src_id.size || csv_mtime_ms != src_id.mtime_utc_ms {
+        return Ok(None);
+    }
+
+    let current_source_content_hash = content_fingerprint_hash_for_source(csv_path)?;
+    if source_content_hash != current_source_content_hash {
         return Ok(None);
     }
 
@@ -402,7 +432,12 @@ fn try_load_cache(cache_path: &Path, src_id: SourceIdentity) -> Result<Option<Ca
     )))
 }
 
-fn write_cache(cache_path: &Path, candles: &Candles, src_id: SourceIdentity) -> Result<(), String> {
+fn write_cache(
+    cache_path: &Path,
+    csv_path: &Path,
+    candles: &Candles,
+    src_id: SourceIdentity,
+) -> Result<(), String> {
     let len = candles.timestamp.len();
     if candles.open.len() != len
         || candles.high.len() != len
@@ -429,6 +464,7 @@ fn write_cache(cache_path: &Path, candles: &Candles, src_id: SourceIdentity) -> 
     }
 
     let fields_mask = flags_to_mask(candles.fields);
+    let source_content_hash = content_fingerprint_hash_for_source(csv_path)?;
     let mut header = [0u8; HEADER_LEN];
     write_header(
         &mut header,
@@ -438,6 +474,7 @@ fn write_cache(cache_path: &Path, candles: &Candles, src_id: SourceIdentity) -> 
         src_id.mtime_utc_ms,
         min_ts,
         max_ts,
+        source_content_hash,
     );
 
     let (tmp, f) = create_unique_temp_cache_file(cache_path)?;
@@ -566,6 +603,19 @@ mod tests {
         .expect("write short candles csv");
     }
 
+    fn write_candles_csv_same_size_variant(path: &Path) {
+        fs::write(
+            path,
+            concat!(
+                "timestamp,open,high,low,close,volume\n",
+                "1700000000000,110,111,98,110.5,1001\n",
+                "1700000060000,110.5,111.5,109,111,1101\n",
+                "1700000120000,111,112,110.5,111.5,1201\n"
+            ),
+        )
+        .expect("write same-size candles csv variant");
+    }
+
     fn temp_file_path(name: &str) -> std::path::PathBuf {
         let pid = std::process::id();
         std::env::temp_dir().join(format!("vta_fp_test_{pid}_{name}.bin"))
@@ -645,6 +695,49 @@ mod tests {
     }
 
     #[test]
+    fn cache_reparse_is_forced_when_content_changes_with_same_size_and_mtime() {
+        let temp = make_temp_dir("data_cache_same_identity_content_drift");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+
+        let initial_identity = identity_for_source(&csv).expect("initial source identity");
+        let initial_fingerprint =
+            content_fingerprint_for_source(&csv).expect("initial content fingerprint");
+        let initial_modified = fs::metadata(&csv)
+            .expect("csv metadata")
+            .modified()
+            .expect("csv modified time");
+
+        let first =
+            load_or_build_with_identity(&csv, &cache_dir, initial_identity).expect("initial load");
+        assert!(!first.cache_hit);
+
+        write_candles_csv_same_size_variant(&csv);
+        let reopened = fs::File::options()
+            .write(true)
+            .open(&csv)
+            .expect("reopen variant csv");
+        reopened
+            .set_times(std::fs::FileTimes::new().set_modified(initial_modified))
+            .expect("restore original modified time");
+        drop(reopened);
+
+        let drifted_identity = identity_for_source(&csv).expect("drifted source identity");
+        let drifted_fingerprint =
+            content_fingerprint_for_source(&csv).expect("drifted content fingerprint");
+        assert_eq!(drifted_identity, initial_identity);
+        assert_ne!(drifted_fingerprint, initial_fingerprint);
+
+        let second =
+            load_or_build_with_identity(&csv, &cache_dir, drifted_identity).expect("reload");
+        assert!(!second.cache_hit);
+        assert_ne!(first.candles.close, second.candles.close);
+    }
+
+    #[test]
     fn loader_uses_fallback_cache_when_sidecar_is_missing() {
         let temp = make_temp_dir("data_cache_fallback");
         let cache_dir = temp.join("cache");
@@ -656,7 +749,7 @@ mod tests {
         let candles =
             ta_app_core::read_candles_from_csv_compat(csv.to_string_lossy().as_ref()).expect("csv");
         let fallback = fallback_cache_path(&cache_dir, &csv);
-        write_cache(&fallback, &candles, src_id).expect("write fallback cache");
+        write_cache(&fallback, &csv, &candles, src_id).expect("write fallback cache");
 
         let load = load_or_build_with_identity(&csv, &cache_dir, src_id).expect("fallback load");
         assert!(load.cache_hit);
@@ -684,8 +777,8 @@ mod tests {
 
         let sidecar = csv.with_extension("vta");
         let fallback = fallback_cache_path(&cache_dir, &csv);
-        write_cache(&sidecar, &sidecar_candles, src_id).expect("write sidecar cache");
-        write_cache(&fallback, &fallback_candles, src_id).expect("write fallback cache");
+        write_cache(&sidecar, &csv, &sidecar_candles, src_id).expect("write sidecar cache");
+        write_cache(&fallback, &csv, &fallback_candles, src_id).expect("write fallback cache");
 
         let load = load_or_build_with_identity(&csv, &cache_dir, src_id).expect("sidecar load");
         assert!(load.cache_hit);
@@ -732,6 +825,7 @@ mod tests {
             src_id.mtime_utc_ms,
             0,
             0,
+            0,
         );
         fs::write(&sidecar, header).expect("write malformed cache header");
 
@@ -754,7 +848,8 @@ mod tests {
         let legacy_tmp = cache_path.with_extension("vta.tmp");
         fs::write(&legacy_tmp, b"sentinel").expect("write legacy tmp collision file");
 
-        write_cache(&cache_path, &candles, src_id).expect("write cache with fixed tmp collision");
+        write_cache(&cache_path, &csv, &candles, src_id)
+            .expect("write cache with fixed tmp collision");
 
         assert_eq!(fs::read(&legacy_tmp).expect("read legacy tmp"), b"sentinel");
         assert!(cache_path.exists());
@@ -779,7 +874,7 @@ mod tests {
                     ta_app_core::read_candles_from_csv_compat(csv.to_string_lossy().as_ref())
                         .expect("read csv");
                 barrier.wait();
-                write_cache(&cache_path, &candles, src_id)
+                write_cache(&cache_path, &csv, &candles, src_id)
             }));
         }
 

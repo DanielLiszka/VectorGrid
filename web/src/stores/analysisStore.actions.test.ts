@@ -176,6 +176,7 @@ describe('analysis store actions', () => {
     store.setInputField('filterMinSharpe', ' 0.9 ')
     store.setSelectField('paretoX', 'sharpe')
     store.setSelectField('heatmapRange', 'q1_99')
+    store.setSelectField('heatmapMode', 'plateau')
     store.setSelectField('compareSelect', 'latest')
     store.setMetaInputField('metaTopK', ' 40 ')
     store.setMetaSelectField('metaStrategyKind', 'MeanReversion')
@@ -193,7 +194,7 @@ describe('analysis store actions', () => {
 
     await vi.waitFor(() => {
       expect(refreshTopTableFromWorkflowRunMock).toHaveBeenCalledTimes(2)
-      expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalledTimes(1)
+      expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalledTimes(4)
       expect(refreshParetoFromWorkflowRunMock).toHaveBeenCalledTimes(1)
       expect(refreshCompareSummaryMock).toHaveBeenCalledTimes(1)
     })
@@ -201,6 +202,7 @@ describe('analysis store actions', () => {
     expect(store.filterMinPnl).toBe('1.5')
     expect(store.filterMinSharpe).toBe('0.9')
     expect(store.paretoX).toBe('sharpe')
+    expect(store.heatmapMode).toBe('plateau')
     expect(store.heatmapRange).toBe('q1_99')
     expect(historyStore.compareSelectedValue).toBe('latest')
     expect(store.compareSummary).toBe('Baseline selected: latest')

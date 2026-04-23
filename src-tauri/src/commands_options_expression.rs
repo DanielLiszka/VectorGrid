@@ -154,6 +154,8 @@ pub struct OptionsExpressionArtifactSummary {
     pub has_stress_metrics: bool,
     pub has_harsher_stress_metrics: bool,
     pub has_extreme_stress_metrics: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exactness_semantics: Option<Value>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -449,6 +451,20 @@ fn serialize_scalar_to_string<T: serde::Serialize>(value: &T) -> String {
         .ok()
         .and_then(|entry| entry.as_str().map(str::to_string))
         .unwrap_or_default()
+}
+
+fn extract_optional_serialized_field<T: serde::Serialize>(
+    value: &T,
+    field_name: &str,
+) -> Option<Value> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|entry| {
+            entry
+                .as_object()
+                .and_then(|object| object.get(field_name).cloned())
+        })
+        .filter(|entry| !entry.is_null())
 }
 
 fn resolve_options_parent_strategy_kind_from_saved_artifact_within_dir(
@@ -1107,6 +1123,7 @@ fn build_options_expression_artifact(
         backend_used: result.backend_used.clone(),
         backend_fallback_reason: result.backend_fallback_reason.clone(),
         price_semantics: result.price_semantics,
+        exactness_semantics: Some(result.exactness_semantics),
         request,
         diagnostics: result.diagnostics.clone(),
         staging: result.staging.clone(),
@@ -1438,6 +1455,7 @@ fn summarize_options_expression_artifact_with_runs_dir(
         has_stress_metrics,
         has_harsher_stress_metrics,
         has_extreme_stress_metrics,
+        exactness_semantics: extract_optional_serialized_field(artifact, "exactness_semantics"),
     }
 }
 
@@ -2533,6 +2551,9 @@ mod tests {
             backend_used: "cpu_reference".to_string(),
             backend_fallback_reason: None,
             price_semantics,
+            exactness_semantics: Some(
+                price_semantics.exactness_semantics_for_backend("cpu_reference"),
+            ),
             request: sample_summary_request(parent_artifact_path, options_dataset_id, fill_model),
             diagnostics: OptionsExpressionDiagnostics {
                 parent_artifact_path: parent_artifact_path.to_string_lossy().to_string(),
@@ -2670,6 +2691,8 @@ mod tests {
                 coverage_end: None,
             },
             price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            exactness_semantics: OptionsPriceSemantics::MinuteAggregate
+                .exactness_semantics_for_backend("cpu_reference"),
             fill_model: OptionsFillModelFamily::AggregateResearch,
             best_available_backend: "cpu_reference".to_string(),
             auto_backend_decision: Default::default(),
@@ -3131,6 +3154,10 @@ mod tests {
             backend_used: "cpu_reference".to_string(),
             backend_fallback_reason: None,
             price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            exactness_semantics: Some(
+                OptionsPriceSemantics::MinuteAggregate
+                    .exactness_semantics_for_backend("cpu_reference"),
+            ),
             request,
             diagnostics: OptionsExpressionDiagnostics {
                 parent_artifact_path: "C:/runs/vectorgrid_run_1.json".to_string(),
@@ -3575,6 +3602,43 @@ mod tests {
             assert_eq!(summary.price_semantics, price_semantics);
             assert_eq!(summary.options_dataset_id, options_dataset_id);
             assert_eq!(summary.request_fill_model, expected_fill_model);
+            let exactness = summary
+                .exactness_semantics
+                .as_ref()
+                .expect("exactness semantics");
+            assert_eq!(
+                exactness
+                    .get("median_replay_contract")
+                    .and_then(Value::as_str),
+                Some("ranking_irrelevant_deferred")
+            );
+            match price_semantics {
+                OptionsPriceSemantics::TopOfBookQuote => {
+                    assert_eq!(
+                        exactness.get("exactness_class").and_then(Value::as_str),
+                        Some("quote_class")
+                    );
+                    assert_eq!(
+                        exactness
+                            .get("retained_frontier_certification")
+                            .and_then(Value::as_str),
+                        Some("certified_exact")
+                    );
+                }
+                OptionsPriceSemantics::MinuteAggregate
+                | OptionsPriceSemantics::DerivedMidSnapshot => {
+                    assert_eq!(
+                        exactness.get("exactness_class").and_then(Value::as_str),
+                        Some("aggregate_class")
+                    );
+                    assert_eq!(
+                        exactness
+                            .get("retained_frontier_certification")
+                            .and_then(Value::as_str),
+                        Some("provisional_missing_extreme_lane")
+                    );
+                }
+            }
         }
 
         let _ = std::fs::remove_file(&parent_artifact_path);

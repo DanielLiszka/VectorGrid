@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ta_app_core::{
-    MetaSelectionRequest, MetaSelectionResult, MlConfidenceGroupFeatures, MlConfidenceLabelConfig,
-    MlConfidenceModel, MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTrainConfig,
-    MlConfidenceTrainMetrics,
+    MetaSelectionRequest, MetaSelectionResult, MlConfidenceCompatibilityKey,
+    MlConfidenceGroupFeatures, MlConfidenceLabelConfig, MlConfidenceModel,
+    MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
 };
 use tauri::Manager;
 
@@ -504,6 +504,38 @@ fn build_ml_confidence_status(
                 );
             }
         } else if let Some(mm) = meta {
+            match (
+                mm.compatibility_key.as_ref(),
+                meta_summary.active_compatibility_key.as_ref(),
+            ) {
+                (Some(model_key), Some(active_key)) if model_key != active_key => {
+                    stale = true;
+                    retrain_recommended = true;
+                    retrain_reason = Some(format!(
+                        "Model compatibility changed: saved model expects target={} score={} grouping={} shortlist={}, but current compatible history is target={} score={} grouping={} shortlist={}.",
+                        model_key.target_family,
+                        model_key.train_score_semantics,
+                        model_key.grouping_mode,
+                        model_key.shortlist_policy,
+                        active_key.target_family,
+                        active_key.train_score_semantics,
+                        active_key.grouping_mode,
+                        active_key.shortlist_policy
+                    ));
+                }
+                (None, Some(active_key)) => {
+                    stale = true;
+                    retrain_recommended = true;
+                    retrain_reason = Some(format!(
+                        "Model is missing compatibility metadata; current compatible history contract is target={} score={} grouping={} shortlist={}.",
+                        active_key.target_family,
+                        active_key.train_score_semantics,
+                        active_key.grouping_mode,
+                        active_key.shortlist_policy
+                    ));
+                }
+                _ => {}
+            }
             if let (Some(used), Some(avail)) = (
                 mm.newest_meta_ts_used.as_ref(),
                 newest_meta_ts_available.as_ref(),
@@ -533,7 +565,9 @@ fn build_ml_confidence_status(
                 .min(u128::from(u64::MAX)) as u64;
             let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000;
 
-            if stale && new_rows >= threshold && cooldown_ok {
+            if retrain_reason.is_some() {
+                // Keep the explicit compatibility warning as the primary reason.
+            } else if stale && new_rows >= threshold && cooldown_ok {
                 retrain_recommended = true;
                 retrain_reason = Some(format!(
                     "Model stale: new labeled rows {new_rows} (threshold {threshold})."
@@ -555,6 +589,12 @@ fn build_ml_confidence_status(
         stale,
         retrain_recommended,
     );
+    if retrain_reason.is_none() && meta_summary.skipped_incompatible_artifacts > 0 {
+        retrain_reason = Some(format!(
+            "Skipped {} historical artifact(s) with incompatible ML-confidence history contracts.",
+            meta_summary.skipped_incompatible_artifacts
+        ));
+    }
 
     MlConfidenceModelStatus {
         exists,
@@ -797,37 +837,6 @@ fn extract_meta_scope(meta: &Value) -> Option<(String, String)> {
     Some((strat, tf))
 }
 
-fn valid_holdout_row(row: &Value) -> bool {
-    let dataset_ok = row
-        .get("dataset")
-        .and_then(|v| v.as_str())
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    if !dataset_ok {
-        return false;
-    }
-    let score = row.get("score_median").and_then(|v| v.as_f64());
-    if score.is_none() || !score.unwrap().is_finite() {
-        return false;
-    }
-    let dd = row
-        .get("max_dd_worst")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    dd.is_finite()
-}
-
-fn group_has_required_ml_features(g: &Value) -> bool {
-    g.get("samples").and_then(|v| v.as_u64()).is_some()
-        && g.get("pass_rate").and_then(|v| v.as_f64()).is_some()
-        && g.get("robust_score_p10").and_then(|v| v.as_f64()).is_some()
-        && g.get("robust_score_median")
-            .and_then(|v| v.as_f64())
-            .is_some()
-        && g.get("max_dd_p90").and_then(|v| v.as_f64()).is_some()
-        && g.get("meta_score").and_then(|v| v.as_f64()).is_some()
-}
-
 fn meta_candidate_group_features(
     group: &ta_app_core::MetaCandidateAggregate,
 ) -> MlConfidenceGroupFeatures {
@@ -849,6 +858,8 @@ struct MlMetaScopeSummary {
     available_labeled_rows_holdout: usize,
     available_labeled_rows_dataset: usize,
     has_holdout_dataset_rows: bool,
+    active_compatibility_key: Option<MlConfidenceCompatibilityKey>,
+    skipped_incompatible_artifacts: usize,
 }
 
 fn summarize_meta_artifacts_for_scope(
@@ -856,87 +867,32 @@ fn summarize_meta_artifacts_for_scope(
     scope: &MlConfidenceScope,
     cfg: &MlConfidenceLabelConfig,
 ) -> MlMetaScopeSummary {
-    let mut count = 0usize;
-    let mut newest: Option<String> = None;
-    let mut labeled_rows_holdout = 0usize;
-    let mut labeled_rows_dataset = 0usize;
-    let mut has_holdout_dataset_rows = false;
-
-    let scope_tf = normalize_timeframe_label(&scope.timeframe);
-    let scope_sk = scope.strategy_kind.trim();
-
-    for meta in metas {
-        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if !run_artifacts::is_meta_selection_kind(kind) {
-            continue;
-        }
-        let Some((sk, tf)) = extract_meta_scope(meta) else {
-            continue;
-        };
-        if sk != scope_sk || tf != scope_tf {
-            continue;
-        }
-        count = count.saturating_add(1);
-        if let Some(ts) = meta
-            .get("ts")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-        {
-            let is_newest = newest
-                .as_ref()
-                .map(|cur| ts.as_str() > cur.as_str())
-                .unwrap_or(true);
-            if is_newest {
-                newest = Some(ts);
-            }
-        }
-        let groups = meta
-            .pointer("/res/groups")
-            .and_then(|v| v.as_array())
-            .map(|xs| xs.as_slice())
-            .unwrap_or(&[]);
-
-        for g in groups {
-            if !group_has_required_ml_features(g) {
-                continue;
-            }
-
-            if let Some(h) = g.get("holdout") {
-                let datasets = h.get("datasets").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                if datasets >= cfg.min_holdout_datasets {
-                    let pass_rate = h.get("pass_rate").and_then(|v| v.as_f64());
-                    let score_p10 = h.get("score_p10").and_then(|v| v.as_f64());
-                    if pass_rate.is_some() && score_p10.is_some() {
-                        labeled_rows_holdout = labeled_rows_holdout.saturating_add(1);
-                    }
-                }
-            }
-
-            let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            if holdout_rows.len() < cfg.min_holdout_datasets {
-                continue;
-            }
-            let mut valid_rows = 0usize;
-            for r in holdout_rows {
-                if valid_holdout_row(r) {
-                    valid_rows = valid_rows.saturating_add(1);
-                }
-            }
-            if valid_rows > 0 {
-                has_holdout_dataset_rows = true;
-                labeled_rows_dataset = labeled_rows_dataset.saturating_add(valid_rows);
-            }
-        }
-    }
+    let prepared = ta_app_core::prepare_ml_confidence_rows_from_meta_artifacts(scope, metas, cfg);
+    let count = prepared.artifacts.len();
+    let newest = prepared
+        .artifacts
+        .iter()
+        .filter_map(|artifact| artifact.ts.clone())
+        .max();
+    let labeled_rows_holdout = prepared
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.holdout_gate_rows.len())
+        .sum();
+    let labeled_rows_dataset = prepared
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.holdout_dataset_rows.len())
+        .sum();
 
     MlMetaScopeSummary {
         available_meta_artifacts: count,
         newest_meta_ts_available: newest,
         available_labeled_rows_holdout: labeled_rows_holdout,
         available_labeled_rows_dataset: labeled_rows_dataset,
-        has_holdout_dataset_rows,
+        has_holdout_dataset_rows: prepared.has_holdout_dataset_rows,
+        active_compatibility_key: prepared.compatibility_key,
+        skipped_incompatible_artifacts: prepared.skipped_incompatible_artifacts,
     }
 }
 
@@ -3541,8 +3497,9 @@ mod tests {
     use ta_app_core::{
         meta_group_key_for_request, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig,
         MetaGroupingMode, MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest,
-        MetaSelectionResult, MlConfidenceLabelConfig, MlConfidenceModelKind,
-        MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
+        MetaSelectionResult, MlConfidenceCompatibilityKey, MlConfidenceLabelConfig,
+        MlConfidenceModelKind, MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTarget,
+        MlConfidenceTrainConfig,
     };
 
     fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -3610,13 +3567,14 @@ mod tests {
             slow_ma_params: None,
             representatives: vec![params],
             samples: 8,
+            effective_samples_lower_bound: 1,
             datasets_covered: 1,
             pass_rate: 1.0,
             robust_score_median: meta_score + 0.1,
             robust_score_p10: meta_score,
             tail_gap: 0.05,
             max_dd_p90: 0.20,
-            cross_score_median: 0.05,
+            cross_score_median: Some(0.05),
             psr_median: 0.0,
             dsr_median: 0.0,
             meta_score,
@@ -4136,6 +4094,7 @@ mod tests {
                 trained_negatives: 20,
                 target: MlConfidenceTarget::HoldoutDatasetPass,
                 model_kind: MlConfidenceModelKind::Logistic,
+                compatibility_key: None,
                 meta_artifacts_used: Some(2),
                 newest_meta_ts_used: Some("2026-03-01T00:00:00Z".to_string()),
                 cv_auc: Some(0.71),
@@ -4152,6 +4111,8 @@ mod tests {
             available_labeled_rows_holdout: 9,
             available_labeled_rows_dataset: 14,
             has_holdout_dataset_rows: true,
+            active_compatibility_key: None,
+            skipped_incompatible_artifacts: 0,
         };
 
         let status = build_ml_confidence_status(
@@ -4171,6 +4132,74 @@ mod tests {
         assert!(status.model_summary.is_some());
         assert_eq!(status.model_healthy, Some(true));
         assert_eq!(status.state, MlConfidenceModelState::Warning);
+    }
+
+    #[test]
+    fn build_ml_confidence_status_marks_compatibility_mismatch_as_stale() {
+        let summary = MlConfidenceModelSummary {
+            version: 1,
+            scope: MlConfidenceScope {
+                strategy_kind: "CompositeMo".to_string(),
+                timeframe: "1m".to_string(),
+            },
+            model_kind: MlConfidenceModelKind::Logistic,
+            label: MlConfidenceLabelConfig::default(),
+            meta: Some(MlConfidenceModelMeta {
+                trained_at_ms: 1,
+                trained_rows: 40,
+                trained_positives: 20,
+                trained_negatives: 20,
+                target: MlConfidenceTarget::HoldoutDatasetPass,
+                model_kind: MlConfidenceModelKind::Logistic,
+                compatibility_key: Some(MlConfidenceCompatibilityKey {
+                    target_family: "holdout_gate_only".to_string(),
+                    train_score_semantics: "meta_score_v1_full".to_string(),
+                    grouping_mode: "exact".to_string(),
+                    shortlist_policy: "strict_no_fallback".to_string(),
+                }),
+                meta_artifacts_used: Some(2),
+                newest_meta_ts_used: Some("2026-03-01T00:00:00Z".to_string()),
+                cv_auc: Some(0.71),
+                cv_brier: Some(0.21),
+                cv_brier_calibrated: Some(0.19),
+                baseline_brier: 0.25,
+                healthy: true,
+                warnings: Vec::new(),
+            }),
+        };
+        let meta_summary = MlMetaScopeSummary {
+            available_meta_artifacts: 3,
+            newest_meta_ts_available: Some("2026-03-02T00:00:00Z".to_string()),
+            available_labeled_rows_holdout: 9,
+            available_labeled_rows_dataset: 14,
+            has_holdout_dataset_rows: true,
+            active_compatibility_key: Some(MlConfidenceCompatibilityKey {
+                target_family: "holdout_dataset_pass_available".to_string(),
+                train_score_semantics: "meta_score_v1_full".to_string(),
+                grouping_mode: "clustered".to_string(),
+                shortlist_policy: "legacy_unknown".to_string(),
+            }),
+            skipped_incompatible_artifacts: 1,
+        };
+
+        let status = build_ml_confidence_status(
+            true,
+            "models/confidence/ml_confidence_test_1m.json".to_string(),
+            1024,
+            Some(summary),
+            None,
+            None,
+            &meta_summary,
+        );
+
+        assert_eq!(status.state, MlConfidenceModelState::Warning);
+        assert!(status.stale);
+        assert!(status.retrain_recommended);
+        assert!(status
+            .retrain_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Model compatibility changed"));
     }
 
     #[test]

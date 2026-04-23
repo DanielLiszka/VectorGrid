@@ -335,6 +335,8 @@ fn smoke_request(
             min_premium: Some(10.0),
             min_volume: Some(100.0),
             min_open_interest: Some(500.0),
+            max_quote_age_ms: None,
+            max_spread_bps: None,
         },
         top_k: 10,
         min_valid_trades: Some(1),

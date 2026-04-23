@@ -53,11 +53,13 @@ mod imp {
         first_wall_ms: f64,
         second_wall_ms: f64,
         pair_wall_ms: f64,
+        first_minus_second_wall_ms: f64,
         first_backend_route: Option<String>,
         second_backend_route: Option<String>,
         first_backend_used: String,
         second_backend_used: String,
         stage_outcome: StageOutcomeLabel,
+        stage_wall_ms: f64,
         stage_note: Option<String>,
     }
 
@@ -78,9 +80,13 @@ mod imp {
         stage_already_resident: usize,
         stage_skips: usize,
         stage_errors: usize,
+        stage_success_rate: f64,
+        stage_error_rate: f64,
         mean_first_wall_ms: f64,
         mean_second_wall_ms: f64,
         mean_pair_wall_ms: f64,
+        mean_first_minus_second_wall_ms: f64,
+        mean_stage_wall_ms: Option<f64>,
         measured_iterations: Vec<IterationSummary>,
     }
 
@@ -92,6 +98,7 @@ mod imp {
         ma_source: &'a str,
         attempted: AtomicBool,
         outcome: Mutex<StageOutcomeLabel>,
+        stage_wall_ms: Mutex<f64>,
         note: Mutex<Option<String>>,
     }
 
@@ -111,13 +118,15 @@ mod imp {
                 ma_source,
                 attempted: AtomicBool::new(false),
                 outcome: Mutex::new(StageOutcomeLabel::NotAttempted),
+                stage_wall_ms: Mutex::new(0.0),
                 note: Mutex::new(None),
             }
         }
 
-        fn take_summary(&self) -> (StageOutcomeLabel, Option<String>) {
+        fn take_summary(&self) -> (StageOutcomeLabel, f64, Option<String>) {
             (
                 *self.outcome.lock().unwrap_or_else(|e| e.into_inner()),
+                *self.stage_wall_ms.lock().unwrap_or_else(|e| e.into_inner()),
                 self.note.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             )
         }
@@ -146,21 +155,24 @@ mod imp {
             &self,
             feedback: DoubleMaCampaignVramPrefetchFeedback,
         ) {
-            let (outcome, note) = match feedback {
-                DoubleMaCampaignVramPrefetchFeedback::Staged { .. } => {
-                    (StageOutcomeLabel::Staged, None)
+            let (outcome, stage_wall_ms, note) = match feedback {
+                DoubleMaCampaignVramPrefetchFeedback::Staged { stage_wall_ms } => {
+                    (StageOutcomeLabel::Staged, stage_wall_ms, None)
                 }
-                DoubleMaCampaignVramPrefetchFeedback::AlreadyResident { .. } => {
-                    (StageOutcomeLabel::AlreadyResident, None)
+                DoubleMaCampaignVramPrefetchFeedback::AlreadyResident { stage_wall_ms } => {
+                    (StageOutcomeLabel::AlreadyResident, stage_wall_ms, None)
                 }
-                DoubleMaCampaignVramPrefetchFeedback::Warning { note, .. } => {
-                    (StageOutcomeLabel::Skipped, Some(note))
-                }
-                DoubleMaCampaignVramPrefetchFeedback::Fatal { note, .. } => {
-                    (StageOutcomeLabel::Error, Some(note))
-                }
+                DoubleMaCampaignVramPrefetchFeedback::Warning {
+                    note,
+                    stage_wall_ms,
+                } => (StageOutcomeLabel::Skipped, stage_wall_ms, Some(note)),
+                DoubleMaCampaignVramPrefetchFeedback::Fatal {
+                    note,
+                    stage_wall_ms,
+                } => (StageOutcomeLabel::Error, stage_wall_ms, Some(note)),
             };
             *self.outcome.lock().unwrap_or_else(|e| e.into_inner()) = outcome;
+            *self.stage_wall_ms.lock().unwrap_or_else(|e| e.into_inner()) = stage_wall_ms;
             *self.note.lock().unwrap_or_else(|e| e.into_inner()) = note;
         }
     }
@@ -369,6 +381,23 @@ mod imp {
         }
     }
 
+    fn mean_nonzero(values: &[f64]) -> Option<f64> {
+        let filtered: Vec<f64> = values
+            .iter()
+            .copied()
+            .filter(|value| *value > 0.0)
+            .collect();
+        (!filtered.is_empty()).then(|| mean(&filtered))
+    }
+
+    fn rate(numerator: usize, denominator: usize) -> f64 {
+        if denominator == 0 {
+            0.0
+        } else {
+            numerator as f64 / denominator as f64
+        }
+    }
+
     fn run_profile(cfg: &Config) -> Result<RunSummary, String> {
         #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
         {
@@ -469,20 +498,22 @@ mod imp {
                 }
 
                 if iteration >= cfg.warmup_iterations {
-                    let (stage_outcome, stage_note) = stage_sink
+                    let (stage_outcome, stage_wall_ms, stage_note) = stage_sink
                         .as_ref()
                         .map(StageNextDatasetSink::take_summary)
-                        .unwrap_or((StageOutcomeLabel::NotAttempted, None));
+                        .unwrap_or((StageOutcomeLabel::NotAttempted, 0.0, None));
                     measured_iterations.push(IterationSummary {
                         iteration,
                         first_wall_ms,
                         second_wall_ms,
                         pair_wall_ms,
+                        first_minus_second_wall_ms: first_wall_ms - second_wall_ms,
                         first_backend_route: first_res.backend_route.clone(),
                         second_backend_route: second_res.backend_route.clone(),
                         first_backend_used: backend_used_label(first_res.backend_used),
                         second_backend_used: backend_used_label(second_res.backend_used),
                         stage_outcome,
+                        stage_wall_ms,
                         stage_note,
                     });
                 }
@@ -529,6 +560,8 @@ mod imp {
                 stage_already_resident,
                 stage_skips,
                 stage_errors,
+                stage_success_rate: rate(stage_successes + stage_already_resident, stage_attempts),
+                stage_error_rate: rate(stage_errors, stage_attempts),
                 mean_first_wall_ms: mean(
                     &measured_iterations
                         .iter()
@@ -545,6 +578,18 @@ mod imp {
                     &measured_iterations
                         .iter()
                         .map(|entry| entry.pair_wall_ms)
+                        .collect::<Vec<_>>(),
+                ),
+                mean_first_minus_second_wall_ms: mean(
+                    &measured_iterations
+                        .iter()
+                        .map(|entry| entry.first_minus_second_wall_ms)
+                        .collect::<Vec<_>>(),
+                ),
+                mean_stage_wall_ms: mean_nonzero(
+                    &measured_iterations
+                        .iter()
+                        .map(|entry| entry.stage_wall_ms)
                         .collect::<Vec<_>>(),
                 ),
                 measured_iterations,

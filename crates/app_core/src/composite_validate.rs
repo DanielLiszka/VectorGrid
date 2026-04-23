@@ -107,8 +107,8 @@ use crate::rocb_gpu_kernel::{
     eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
 };
 use crate::validation_pipeline::{
-    build_run_verdict, sanitize_hard_gates, ValidationCandidateVerdict, ValidationPostCandidate,
-    ValidationRunVerdict,
+    build_run_verdict, build_validation_semantics_provenance, sanitize_hard_gates,
+    ValidationCandidateVerdict, ValidationPostCandidate, ValidationRunVerdict,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::vcc_momentum_roundtrip_parity;
@@ -183,8 +183,8 @@ pub use crate::validation_shared::{
     CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
     ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfig, WalkForwardConfigOptional,
-    WalkForwardStats,
+    TradeBootstrapStats, ValidationArtifactContext, ValidationSemanticsProvenance,
+    WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
 };
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -843,22 +843,59 @@ fn summarize_walk_forward_metric_samples_full(
     mut downside_ratios: Vec<f64>,
     mut ulcers: Vec<f64>,
     mut martins: Vec<f64>,
-    trades: Vec<u32>,
+    mut trades: Vec<u32>,
+) -> WalkForwardStats {
+    summarize_walk_forward_metric_samples_rich(
+        sharpes,
+        dds,
+        pnls,
+        downside_ratios,
+        ulcers,
+        martins,
+        Vec::new(),
+        Vec::new(),
+        trades,
+    )
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn summarize_walk_forward_metric_samples_rich(
+    mut sharpes: Vec<f64>,
+    mut dds: Vec<f64>,
+    mut pnls: Vec<f64>,
+    mut downside_ratios: Vec<f64>,
+    mut ulcers: Vec<f64>,
+    mut martins: Vec<f64>,
+    mut underwater_fracs: Vec<f64>,
+    mut underwater_durations: Vec<u32>,
+    mut trades: Vec<u32>,
 ) -> WalkForwardStats {
     WalkForwardStats {
         windows: sharpes.len(),
+        effective_windows_upper_bound: None,
+        bars_covered: None,
         sharpe_median: crate::stats_common::median_in_place(&mut sharpes),
         sharpe_worst: crate::stats_common::worst_min(&sharpes),
         max_dd_median: crate::stats_common::median_in_place(&mut dds),
         max_dd_worst: crate::stats_common::worst_max(&dds),
+        max_dd_tail_mean_p95: crate::stats_common::upper_tail_mean_in_place(&mut dds, 0.95),
         pnl_median: crate::stats_common::median_in_place(&mut pnls),
         pnl_worst: crate::stats_common::worst_min(&pnls),
+        pnl_tail_mean_p05: crate::stats_common::lower_tail_mean_in_place(&mut pnls, 0.05),
         downside_vol_ratio_median: crate::stats_common::median_in_place(&mut downside_ratios),
         downside_vol_ratio_worst: crate::stats_common::worst_max(&downside_ratios),
         ulcer_index_median: crate::stats_common::median_in_place(&mut ulcers),
         ulcer_index_worst: crate::stats_common::worst_max(&ulcers),
         martin_ratio_median: crate::stats_common::median_in_place(&mut martins),
         martin_ratio_worst: crate::stats_common::worst_min(&martins),
+        underwater_fraction_median: crate::stats_common::median_in_place(&mut underwater_fracs),
+        underwater_fraction_worst: crate::stats_common::worst_max(&underwater_fracs),
+        max_underwater_duration_bars_median: crate::stats_common::median_u32_in_place(
+            &mut underwater_durations,
+        ),
+        max_underwater_duration_bars_worst: crate::stats_common::worst_max_u32(
+            &underwater_durations,
+        ),
         trades_median: crate::stats_common::median_u32_in_place(&mut trades),
         trades_worst: crate::stats_common::worst_min_u32(&trades),
     }
@@ -871,10 +908,12 @@ fn summarize_walk_forward_metric_samples(
     pnls: Vec<f64>,
     trades: Vec<u32>,
 ) -> WalkForwardStats {
-    summarize_walk_forward_metric_samples_full(
+    summarize_walk_forward_metric_samples_rich(
         sharpes,
         dds,
         pnls,
+        Vec::new(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -9596,6 +9635,10 @@ impl ValidationPostCandidate for CompositeValidationCandidateResult {
         self.cscv_pbo.as_ref().and_then(|c| c.oos_rank_frac_p50)
     }
 
+    fn cscv_selected_frac(&self) -> Option<f64> {
+        self.cscv_pbo.as_ref().map(|c| c.is_selected_frac)
+    }
+
     fn psr(&self) -> Option<f64> {
         self.psr
     }
@@ -9680,6 +9723,8 @@ pub struct CompositeValidationResult {
     pub cross_ticker: Option<CrossTickerValidationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cscv_pbo: Option<CscvPboResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_provenance: Option<ValidationSemanticsProvenance>,
     pub run_verdict: ValidationRunVerdict,
 }
 
@@ -12297,6 +12342,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
         "composite_validate_cscv_prep",
         &hard_gates,
         cscv_cfg.as_ref(),
+        req.spa.is_some(),
         candles.close.len(),
         |_, p, rng| {
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -12824,6 +12870,13 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
         cscv_pbo.as_ref(),
         spa.as_ref(),
     );
+    let validation_provenance = Some(build_validation_semantics_provenance(
+        &out,
+        req.cscv_pbo.is_some(),
+        cscv_pbo.as_ref(),
+        None,
+        Some("volatility_terciles_plus_trend_range"),
+    ));
     let route_diagnostics = take_validation_strategy_route_diagnostics(&req.candidates)
         .filter(|entries| !entries.is_empty());
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -12852,6 +12905,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
         spa,
         cross_ticker: None,
         cscv_pbo,
+        validation_provenance,
         run_verdict,
     })
 }
@@ -13794,6 +13848,73 @@ mod tests {
         assert_eq!(c.perturb.as_ref().unwrap().iterations, 3);
         assert_eq!(c.trade_bootstrap.as_ref().unwrap().simulations, 50);
         assert!(c.robust_score.is_finite());
+    }
+
+    #[test]
+    fn composite_validation_serializes_validation_provenance_contract() {
+        let candles = make_trending_candles(4000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeValidationRequest {
+            data_id: "composite-validation-provenance".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![mkcs_validation_test_candidate(8, 24)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 17,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        let value = serde_json::to_value(&res).expect("serialize validation result");
+
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/score_channel")
+                .and_then(|entry| entry.as_str()),
+            Some("in_sample_only")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/probability_metric_source")
+                .and_then(|entry| entry.as_str()),
+            Some("candidate_sharpe_peer_distribution_psr_dsr")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/cross_summary_scope")
+                .and_then(|entry| entry.as_str()),
+            Some("not_requested")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/regime_summary_role")
+                .and_then(|entry| entry.as_str()),
+            Some("descriptive_only")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/passed_semantics")
+                .and_then(|entry| entry.as_str()),
+            Some("hard_gates_only")
+        );
     }
 
     #[test]

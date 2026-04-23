@@ -9,9 +9,10 @@ use crate::iterative_sim::{
 use crate::progress::ProgressSink;
 use crate::stats_common::{worst_max, worst_min, worst_min_u32};
 use crate::validation_shared::{
-    PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
-    ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
+    CrossTickerValidationSummary, PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional,
+    ReoptWalkForwardStats, ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats,
+    TradeBootstrapConfig, TradeBootstrapStats, ValidationSemanticsProvenance,
+    WalkForwardConfigOptional, WalkForwardStats,
 };
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -100,6 +101,7 @@ pub trait ValidationPostCandidate {
     fn walk_forward_stats(&self) -> Option<&WalkForwardStats>;
     fn cscv_oos_metric_p50(&self) -> Option<f64>;
     fn cscv_oos_rank_frac_p50(&self) -> Option<f64>;
+    fn cscv_selected_frac(&self) -> Option<f64>;
 
     fn psr(&self) -> Option<f64>;
     fn dsr(&self) -> Option<f64>;
@@ -117,6 +119,14 @@ pub trait ValidationPostCandidate {
     fn validation_verdict(&self) -> &ValidationCandidateVerdict;
     fn set_validation_verdict(&mut self, v: ValidationCandidateVerdict);
 }
+
+const VALIDATION_STAGE_SEQUENCE: [&str; 5] = [
+    "local_path_evidence",
+    "probability_metrics",
+    "cscv_pbo_layer",
+    "cross_ticker_aggregation",
+    "run_verdict_rebuild",
+];
 
 pub fn downside_vol_ratio_from_metrics(metrics: &Metrics) -> Option<f64> {
     if metrics.downside_deviation.is_finite()
@@ -231,6 +241,19 @@ fn risk_warning_flags_from_metrics(
             flags.push(format!("downside_vol_ratio_high:{ratio:.3}"));
         }
     }
+    if let Some(stats) = wf.filter(|stats| {
+        stats.windows > 0
+            && stats
+                .effective_windows_upper_bound
+                .map(|effective| effective < stats.windows)
+                .unwrap_or(false)
+    }) {
+        flags.push(format!(
+            "walk_forward_overlap_adjusted:{}/{}",
+            stats.effective_windows_upper_bound.unwrap_or(stats.windows),
+            stats.windows
+        ));
+    }
     flags
 }
 
@@ -269,6 +292,15 @@ pub fn compute_probability_metrics<C: ValidationPostCandidate>(
     out: &mut Vec<C>,
     sample_obs: &[usize],
 ) {
+    compute_probability_metrics_with_effective_counts(out, sample_obs, None, None);
+}
+
+pub fn compute_probability_metrics_with_effective_counts<C: ValidationPostCandidate>(
+    out: &mut Vec<C>,
+    sample_obs: &[usize],
+    effective_obs: Option<&[usize]>,
+    effective_trials: Option<usize>,
+) {
     let sharpe_peers: Vec<f64> = out
         .iter()
         .map(|c| {
@@ -279,21 +311,39 @@ pub fn compute_probability_metrics<C: ValidationPostCandidate>(
         .collect();
 
     let (peer_mean, peer_std) = crate::sharpe_stats::mean_std(&sharpe_peers);
-    let trials = sharpe_peers.iter().filter(|x| x.is_finite()).count().max(1);
+    let raw_trials = sharpe_peers.iter().filter(|x| x.is_finite()).count().max(1);
 
     for (i, cand) in out.iter_mut().enumerate() {
         let m = cand
             .iterative_in_sample_metrics()
             .unwrap_or_else(|| cand.in_sample_metrics());
-        let requested_obs = sample_obs.get(i).copied().unwrap_or(2);
-        let obs = requested_obs.max(2);
-        let (psr, dsr) =
-            crate::validation_stats::compute_psr_dsr(m.sharpe, obs, trials, peer_mean, peer_std);
-        let mintrl =
-            crate::sharpe_stats::minimum_track_record_length(m.sharpe, 0.0, 0.0, 3.0, 0.95);
+        let raw_obs = sample_obs.get(i).copied().unwrap_or(2);
+        let effective_obs_i = effective_obs
+            .and_then(|counts| counts.get(i).copied())
+            .or(Some(raw_obs.max(2)));
+        let effective_obs_i = crate::sharpe_stats::effective_sample_count(raw_obs, effective_obs_i);
+        let (psr, dsr) = crate::validation_stats::compute_psr_dsr_with_effective_counts(
+            m.sharpe,
+            raw_obs,
+            Some(effective_obs_i),
+            raw_trials,
+            effective_trials,
+            peer_mean,
+            peer_std,
+        );
+        let mintrl = crate::sharpe_stats::minimum_track_record_length(
+            m.sharpe, 0.0, 0.0, 3.0, 0.95,
+        )
+        .map(|required_eff_obs| {
+            crate::sharpe_stats::inflate_effective_requirement_to_raw_bars(
+                required_eff_obs,
+                raw_obs,
+                effective_obs_i,
+            )
+        });
         cand.set_psr(psr);
         cand.set_dsr(dsr);
-        cand.set_track_record_bars(requested_obs);
+        cand.set_track_record_bars(raw_obs);
         cand.set_min_track_record_length_bars(mintrl);
     }
 }
@@ -579,6 +629,108 @@ pub fn build_run_verdict<C: ValidationPostCandidate>(
     }
 }
 
+pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
+    out: &[C],
+    cscv_requested: bool,
+    cscv_pbo: Option<&CscvPboResult>,
+    cross_summary: Option<&CrossTickerValidationSummary>,
+    regime_summary_family: Option<&str>,
+) -> ValidationSemanticsProvenance {
+    let score_channel = if out
+        .iter()
+        .any(|cand| cand.iterative_in_sample_metrics().is_some())
+    {
+        "iterative_in_sample_preferred"
+    } else {
+        "in_sample_only"
+    };
+
+    let cscv_coverage_state = if !cscv_requested {
+        "not_requested"
+    } else if let Some(result) = cscv_pbo {
+        if result.skipped_reason.is_some() || result.combinations == 0 {
+            "skipped"
+        } else {
+            "evaluated"
+        }
+    } else {
+        "requested_but_unavailable"
+    };
+
+    let cscv_candidates_with_stats = out
+        .iter()
+        .filter(|cand| {
+            cand.cscv_selected_frac()
+                .filter(|value| value.is_finite())
+                .is_some()
+                || cand.cscv_oos_metric_p50().is_some()
+                || cand.cscv_oos_rank_frac_p50().is_some()
+        })
+        .count();
+    let cscv_selected_candidate_count = out
+        .iter()
+        .filter_map(|cand| cand.cscv_selected_frac())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .count();
+    let cscv_candidate_stat_coverage = if !cscv_requested {
+        "not_requested"
+    } else if cscv_candidates_with_stats == 0 {
+        "none"
+    } else if cscv_candidates_with_stats < out.len() {
+        "partial"
+    } else {
+        "complete"
+    };
+    let cscv_selection_state = if !cscv_requested {
+        "not_requested"
+    } else if cscv_coverage_state != "evaluated" {
+        "unavailable"
+    } else if cscv_selected_candidate_count == 0 {
+        "zero_selected"
+    } else {
+        "selected_candidates_present"
+    };
+
+    ValidationSemanticsProvenance {
+        stage_sequence: VALIDATION_STAGE_SEQUENCE
+            .iter()
+            .map(|stage| (*stage).to_string())
+            .collect(),
+        score_channel: score_channel.to_string(),
+        probability_metric_source: "candidate_sharpe_peer_distribution_psr_dsr".to_string(),
+        track_record_source: "sample_obs_raw_bars".to_string(),
+        cscv_coverage_state: cscv_coverage_state.to_string(),
+        cscv_candidate_stat_coverage: cscv_candidate_stat_coverage.to_string(),
+        cscv_selection_state: cscv_selection_state.to_string(),
+        cscv_selected_candidate_count,
+        cscv_skipped_reason: cscv_pbo.and_then(|result| result.skipped_reason.clone()),
+        cross_mode: cross_summary.map(|summary| summary.mode.clone()),
+        cross_summary_scope: if cross_summary.is_some() {
+            "passed_candidates_only".to_string()
+        } else {
+            "not_requested".to_string()
+        },
+        regime_summary_family: regime_summary_family.map(str::to_string),
+        regime_summary_role: regime_summary_family.map(|_| "descriptive_only".to_string()),
+        passed_semantics: "hard_gates_only".to_string(),
+        approved_semantics: "passed_and_min_track_record_length_satisfied".to_string(),
+        passed_can_diverge_from_approved: true,
+        passed_vs_approved_contract:
+            "passed is hard-gate survival; approved also requires retained final verdict support"
+                .to_string(),
+        cross_summary_mode: cross_summary.map(|summary| match summary.mode {
+            crate::validation_shared::CrossTickerMode::Lightweight => "lightweight".to_string(),
+            crate::validation_shared::CrossTickerMode::PreservedFinalists => {
+                "preserved_finalists".to_string()
+            }
+        }),
+        regime_summary_semantics: regime_summary_family.map(|family| {
+            format!("{family} summaries are descriptive-only unless a later gate promotes them")
+        }),
+        regime_summary_descriptive_only: regime_summary_family.map(|_| true),
+    }
+}
+
 pub fn parallel_collect_validation_candidates<P, C, F>(
     candidates: &[P],
     seed: u64,
@@ -616,6 +768,56 @@ where
         .collect::<Result<Vec<_>, String>>()
 }
 
+pub fn sequential_collect_validation_candidates<P, C, F>(
+    candidates: &[P],
+    seed: u64,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    phase: &'static str,
+    process_one: F,
+) -> Result<Vec<(C, usize, usize)>, String>
+where
+    F: Fn(usize, &P, &mut StdRng) -> Result<(C, usize, usize), String>,
+{
+    let total = candidates.len();
+    let mut out = Vec::with_capacity(total);
+    for (i, candidate) in candidates.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+        let mut rng = StdRng::seed_from_u64(seed ^ (i as u64).wrapping_mul(0x9e3779b97f4a7c15));
+        out.push(process_one(i, candidate, &mut rng)?);
+        let done = i.saturating_add(1);
+        if (done & 0x3) == 0 || done == total {
+            crate::progress::emit_double_ma_progress(progress, done, total, phase);
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValidationCollectionMode {
+    SequentialFastPath,
+    ParallelFullSet,
+}
+
+pub fn select_validation_collection_mode(
+    hard_gates: &ValidationHardGateConfig,
+    cscv_cfg: Option<&CscvPboConfig>,
+    spa_requested: bool,
+) -> ValidationCollectionMode {
+    let global_set_level_obligations = spa_requested
+        || cscv_cfg.is_some()
+        || hard_gates.min_cscv_oos_rank_frac.is_some()
+        || hard_gates.min_cscv_oos_metric.is_some()
+        || hard_gates.max_pbo.is_some();
+    if global_set_level_obligations {
+        ValidationCollectionMode::ParallelFullSet
+    } else {
+        ValidationCollectionMode::SequentialFastPath
+    }
+}
+
 fn estimated_window_count(n: usize, start_t: usize, window: usize, step: usize) -> usize {
     if n < 3 || start_t + 2 > n {
         return 0;
@@ -632,6 +834,44 @@ fn estimated_window_count(n: usize, start_t: usize, window: usize, step: usize) 
             break;
         }
         t0 = t0.saturating_add(step);
+    }
+    count
+}
+
+pub(crate) fn merged_interval_len(intervals: &[(usize, usize)]) -> usize {
+    if intervals.is_empty() {
+        return 0;
+    }
+    let mut sorted = intervals.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut total = 0usize;
+    let mut current = sorted[0];
+    for interval in sorted.into_iter().skip(1) {
+        if interval.0 <= current.1 {
+            current.1 = current.1.max(interval.1);
+        } else {
+            total = total.saturating_add(current.1.saturating_sub(current.0));
+            current = interval;
+        }
+    }
+    total.saturating_add(current.1.saturating_sub(current.0))
+}
+
+pub(crate) fn max_pairwise_disjoint_interval_count(intervals: &[(usize, usize)]) -> usize {
+    if intervals.is_empty() {
+        return 0;
+    }
+    let mut sorted = intervals.to_vec();
+    sorted.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let mut count = 0usize;
+    let mut last_end = 0usize;
+    let mut has_last = false;
+    for (start, end) in sorted {
+        if !has_last || start >= last_end {
+            count = count.saturating_add(1);
+            last_end = end;
+            has_last = true;
+        }
     }
     count
 }
@@ -656,6 +896,48 @@ fn select_quantile_in_place(values: &mut [f64], q: f64) -> f64 {
     let (_, nth, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
     if nth.is_finite() {
         *nth
+    } else {
+        0.0
+    }
+}
+
+fn select_lower_tail_mean_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let idx = quantile_index(values.len(), q).min(values.len() - 1);
+    let (_, _, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for &value in &values[..=idx] {
+        if value.is_finite() {
+            sum += value;
+            count += 1;
+        }
+    }
+    if count > 0 {
+        sum / count as f64
+    } else {
+        0.0
+    }
+}
+
+fn select_upper_tail_mean_in_place(values: &mut [f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let idx = quantile_index(values.len(), q).min(values.len() - 1);
+    let (_, _, _) = values.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for &value in &values[idx..] {
+        if value.is_finite() {
+            sum += value;
+            count += 1;
+        }
+    }
+    if count > 0 {
+        sum / count as f64
     } else {
         0.0
     }
@@ -693,7 +975,10 @@ where
     let mut downside_ratios: Vec<f64> = Vec::with_capacity(estimated_windows);
     let mut ulcers: Vec<f64> = Vec::with_capacity(estimated_windows);
     let mut martins: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut underwater_fracs: Vec<f64> = Vec::with_capacity(estimated_windows);
+    let mut underwater_durations: Vec<u32> = Vec::with_capacity(estimated_windows);
     let mut trades: Vec<u32> = Vec::with_capacity(estimated_windows);
+    let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(estimated_windows);
 
     let mut t0 = start_t;
     while t0 + 2 <= n {
@@ -701,6 +986,7 @@ where
         if end <= t0 + 1 {
             break;
         }
+        intervals.push((t0, end));
         let m = eval_metrics_window(t0, end);
         sharpes.push(m.sharpe);
         dds.push(m.max_dd);
@@ -710,6 +996,8 @@ where
         }
         ulcers.push(m.ulcer_index);
         martins.push(m.martin_ratio);
+        underwater_fracs.push(m.underwater_fraction);
+        underwater_durations.push(m.max_underwater_duration_bars);
         trades.push(m.trades);
         if end == n {
             break;
@@ -719,26 +1007,39 @@ where
 
     let sharpe_worst = worst_min(&sharpes);
     let max_dd_worst = worst_max(&dds);
+    let max_dd_tail_mean_p95 = select_upper_tail_mean_in_place(&mut dds, 0.95);
     let pnl_worst = worst_min(&pnls);
+    let pnl_tail_mean_p05 = select_lower_tail_mean_in_place(&mut pnls, 0.05);
     let downside_vol_ratio_worst = worst_max(&downside_ratios);
     let ulcer_index_worst = worst_max(&ulcers);
     let martin_ratio_worst = worst_min(&martins);
+    let underwater_fraction_worst = worst_max(&underwater_fracs);
+    let max_underwater_duration_bars_worst =
+        crate::stats_common::worst_max_u32(&underwater_durations);
     let trades_worst = worst_min_u32(&trades);
 
     WalkForwardStats {
         windows: sharpes.len(),
+        effective_windows_upper_bound: Some(max_pairwise_disjoint_interval_count(&intervals)),
+        bars_covered: Some(merged_interval_len(&intervals)),
         sharpe_median: select_median_in_place(&mut sharpes),
         sharpe_worst,
         max_dd_median: select_median_in_place(&mut dds),
         max_dd_worst,
+        max_dd_tail_mean_p95,
         pnl_median: select_median_in_place(&mut pnls),
         pnl_worst,
+        pnl_tail_mean_p05,
         downside_vol_ratio_median: select_median_in_place(&mut downside_ratios),
         downside_vol_ratio_worst,
         ulcer_index_median: select_median_in_place(&mut ulcers),
         ulcer_index_worst,
         martin_ratio_median: select_median_in_place(&mut martins),
         martin_ratio_worst,
+        underwater_fraction_median: select_median_in_place(&mut underwater_fracs),
+        underwater_fraction_worst,
+        max_underwater_duration_bars_median: select_median_u32_in_place(&mut underwater_durations),
+        max_underwater_duration_bars_worst,
         trades_median: select_median_u32_in_place(&mut trades),
         trades_worst,
     }
@@ -1222,17 +1523,21 @@ pub fn compute_trade_bootstrap_stats(
             trade_count,
             prob_pnl_positive: 0.0,
             pnl_p05: 0.0,
+            pnl_tail_mean_p05: 0.0,
             pnl_p50: 0.0,
             pnl_p95: 0.0,
             max_dd_p50: 0.0,
             max_dd_p95: 0.0,
+            max_dd_tail_mean_p95: 0.0,
             stationary_mean_block_len: None,
             stationary_prob_pnl_positive: None,
             stationary_pnl_p05: None,
+            stationary_pnl_tail_mean_p05: None,
             stationary_pnl_p50: None,
             stationary_pnl_p95: None,
             stationary_max_dd_p50: None,
             stationary_max_dd_p95: None,
+            stationary_max_dd_tail_mean_p95: None,
         };
     }
 
@@ -1263,27 +1568,33 @@ pub fn compute_trade_bootstrap_stats(
         dds.push(max_dd);
     }
     let pnl_p05 = select_quantile_in_place(&mut pnls, 0.05);
+    let pnl_tail_mean_p05 = select_lower_tail_mean_in_place(&mut pnls, 0.05);
     let pnl_p50 = select_quantile_in_place(&mut pnls, 0.5);
     let pnl_p95 = select_quantile_in_place(&mut pnls, 0.95);
     let max_dd_p50 = select_quantile_in_place(&mut dds, 0.5);
     let max_dd_p95 = select_quantile_in_place(&mut dds, 0.95);
+    let max_dd_tail_mean_p95 = select_upper_tail_mean_in_place(&mut dds, 0.95);
     if cfg.stationary_mean_block_len == Some(0) {
         return TradeBootstrapStats {
             simulations,
             trade_count,
             prob_pnl_positive: pos as f64 / simulations as f64,
             pnl_p05,
+            pnl_tail_mean_p05,
             pnl_p50,
             pnl_p95,
             max_dd_p50,
             max_dd_p95,
+            max_dd_tail_mean_p95,
             stationary_mean_block_len: None,
             stationary_prob_pnl_positive: None,
             stationary_pnl_p05: None,
+            stationary_pnl_tail_mean_p05: None,
             stationary_pnl_p50: None,
             stationary_pnl_p95: None,
             stationary_max_dd_p50: None,
             stationary_max_dd_p95: None,
+            stationary_max_dd_tail_mean_p95: None,
         };
     }
     let stationary_mean_block_len = cfg
@@ -1318,26 +1629,33 @@ pub fn compute_trade_bootstrap_stats(
         stationary_dds.push(max_dd);
     }
     let stationary_pnl_p05 = select_quantile_in_place(&mut stationary_pnls, 0.05);
+    let stationary_pnl_tail_mean_p05 = select_lower_tail_mean_in_place(&mut stationary_pnls, 0.05);
     let stationary_pnl_p50 = select_quantile_in_place(&mut stationary_pnls, 0.5);
     let stationary_pnl_p95 = select_quantile_in_place(&mut stationary_pnls, 0.95);
     let stationary_max_dd_p50 = select_quantile_in_place(&mut stationary_dds, 0.5);
     let stationary_max_dd_p95 = select_quantile_in_place(&mut stationary_dds, 0.95);
+    let stationary_max_dd_tail_mean_p95 =
+        select_upper_tail_mean_in_place(&mut stationary_dds, 0.95);
     TradeBootstrapStats {
         simulations,
         trade_count,
         prob_pnl_positive: pos as f64 / simulations as f64,
         pnl_p05,
+        pnl_tail_mean_p05,
         pnl_p50,
         pnl_p95,
         max_dd_p50,
         max_dd_p95,
+        max_dd_tail_mean_p95,
         stationary_mean_block_len: Some(stationary_mean_block_len),
         stationary_prob_pnl_positive: Some(stationary_pos as f64 / simulations as f64),
         stationary_pnl_p05: Some(stationary_pnl_p05),
+        stationary_pnl_tail_mean_p05: Some(stationary_pnl_tail_mean_p05),
         stationary_pnl_p50: Some(stationary_pnl_p50),
         stationary_pnl_p95: Some(stationary_pnl_p95),
         stationary_max_dd_p50: Some(stationary_max_dd_p50),
         stationary_max_dd_p95: Some(stationary_max_dd_p95),
+        stationary_max_dd_tail_mean_p95: Some(stationary_max_dd_tail_mean_p95),
     }
 }
 
@@ -1650,6 +1968,8 @@ pub fn compute_spa_validation_stats(
 mod tests {
     use super::*;
     use crate::validation_pipeline::ValidationRecommendation;
+    use rand::Rng;
+    use std::sync::atomic::AtomicBool;
     use ta_strategies::double_ma::Metrics;
 
     #[derive(Clone, Debug)]
@@ -1684,6 +2004,10 @@ mod tests {
 
         fn cscv_oos_rank_frac_p50(&self) -> Option<f64> {
             self.cscv_pbo.as_ref().and_then(|v| v.oos_rank_frac_p50)
+        }
+
+        fn cscv_selected_frac(&self) -> Option<f64> {
+            self.cscv_pbo.as_ref().map(|v| v.is_selected_frac)
         }
 
         fn psr(&self) -> Option<f64> {
@@ -1755,18 +2079,26 @@ mod tests {
         let a = robust_score_from_metrics(&m, None);
         let wf = WalkForwardStats {
             windows: 3,
+            effective_windows_upper_bound: Some(3),
+            bars_covered: Some(128),
             sharpe_median: 2.0,
             sharpe_worst: 1.0,
             max_dd_median: 0.2,
             max_dd_worst: 0.3,
+            max_dd_tail_mean_p95: 0.3,
             pnl_median: 0.1,
             pnl_worst: 0.0,
+            pnl_tail_mean_p05: 0.0,
             downside_vol_ratio_median: 0.5,
             downside_vol_ratio_worst: 0.8,
             ulcer_index_median: 0.05,
             ulcer_index_worst: 0.1,
             martin_ratio_median: 1.0,
             martin_ratio_worst: 0.5,
+            underwater_fraction_median: 0.4,
+            underwater_fraction_worst: 0.6,
+            max_underwater_duration_bars_median: 12,
+            max_underwater_duration_bars_worst: 18,
             trades_median: 10,
             trades_worst: 5,
         };
@@ -1815,6 +2147,104 @@ mod tests {
                 .any(|flag| flag == "downside_vol_ratio_high:0.950"),
             "expected downside ratio warning in {flags:?}"
         );
+    }
+
+    #[test]
+    fn risk_warning_flags_surface_walk_forward_overlap_adjustment() {
+        let flags = risk_warning_flags_from_metrics(
+            &Metrics::default(),
+            Some(&WalkForwardStats {
+                windows: 3,
+                effective_windows_upper_bound: Some(1),
+                bars_covered: Some(66),
+                sharpe_median: 0.0,
+                sharpe_worst: 0.0,
+                max_dd_median: 0.0,
+                max_dd_worst: 0.0,
+                max_dd_tail_mean_p95: 0.0,
+                pnl_median: 0.0,
+                pnl_worst: 0.0,
+                pnl_tail_mean_p05: 0.0,
+                downside_vol_ratio_median: 0.0,
+                downside_vol_ratio_worst: 0.0,
+                ulcer_index_median: 0.0,
+                ulcer_index_worst: 0.0,
+                martin_ratio_median: 0.0,
+                martin_ratio_worst: 0.0,
+                underwater_fraction_median: 0.0,
+                underwater_fraction_worst: 0.0,
+                max_underwater_duration_bars_median: 0,
+                max_underwater_duration_bars_worst: 0,
+                trades_median: 0,
+                trades_worst: 0,
+            }),
+        );
+
+        assert!(flags
+            .iter()
+            .any(|flag| flag == "walk_forward_overlap_adjusted:1/3"));
+    }
+
+    #[test]
+    fn apply_candidate_hard_gates_marks_cscv_rank_gate_unavailable_when_cscv_missing() {
+        let gates = ValidationHardGateConfig {
+            min_cscv_oos_rank_frac: Some(0.60),
+            ..ValidationHardGateConfig::default()
+        };
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.0,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(64),
+            robust_score: 1.0,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+
+        apply_candidate_hard_gates(&mut out, &gates, None);
+
+        let verdict = out[0].validation_verdict();
+        assert!(!verdict.passed);
+        assert!(verdict
+            .fail_reasons
+            .iter()
+            .any(|reason| reason == "cscv_rank_gate_requested_but_cscv_unavailable"));
+    }
+
+    #[test]
+    fn apply_candidate_hard_gates_marks_cscv_metric_gate_unavailable_when_cscv_missing() {
+        let gates = ValidationHardGateConfig {
+            min_cscv_oos_metric: Some(0.25),
+            ..ValidationHardGateConfig::default()
+        };
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.0,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(64),
+            robust_score: 1.0,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+
+        apply_candidate_hard_gates(&mut out, &gates, None);
+
+        let verdict = out[0].validation_verdict();
+        assert!(!verdict.passed);
+        assert!(verdict
+            .fail_reasons
+            .iter()
+            .any(|reason| reason == "cscv_metric_gate_requested_but_cscv_unavailable"));
     }
 
     #[test]
@@ -1903,6 +2333,80 @@ mod tests {
     }
 
     #[test]
+    fn compute_probability_metrics_with_effective_counts_matches_legacy_when_overlap_is_absent() {
+        let mut legacy = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.20,
+                ..Metrics::default()
+            },
+            psr: None,
+            dsr: None,
+            track_record_bars: 0,
+            min_track_record_length_bars: None,
+            robust_score: 1.2,
+            robust_pareto: false,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        let mut overlap = legacy.clone();
+
+        compute_probability_metrics(&mut legacy, &[120]);
+        compute_probability_metrics_with_effective_counts(
+            &mut overlap,
+            &[120],
+            Some(&[120]),
+            Some(1),
+        );
+
+        assert_eq!(legacy[0].track_record_bars, overlap[0].track_record_bars);
+        assert_eq!(
+            legacy[0].min_track_record_length_bars,
+            overlap[0].min_track_record_length_bars
+        );
+        assert_eq!(legacy[0].psr, overlap[0].psr);
+        assert_eq!(legacy[0].dsr, overlap[0].dsr);
+    }
+
+    #[test]
+    fn compute_probability_metrics_preserves_raw_track_record_bars_when_effective_counts_shrink() {
+        let mut baseline = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.20,
+                ..Metrics::default()
+            },
+            psr: None,
+            dsr: None,
+            track_record_bars: 0,
+            min_track_record_length_bars: None,
+            robust_score: 1.2,
+            robust_pareto: false,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        let mut overlap = baseline.clone();
+
+        compute_probability_metrics(&mut baseline, &[120]);
+        compute_probability_metrics_with_effective_counts(
+            &mut overlap,
+            &[120],
+            Some(&[40]),
+            Some(1),
+        );
+
+        assert_eq!(overlap[0].track_record_bars, 120);
+        assert!(overlap[0].psr.expect("overlap psr") < baseline[0].psr.expect("baseline psr"));
+        assert!(overlap[0].dsr.expect("overlap dsr") <= baseline[0].dsr.expect("baseline dsr"));
+        assert!(
+            overlap[0]
+                .min_track_record_length_bars
+                .expect("overlap mintrl")
+                > baseline[0]
+                    .min_track_record_length_bars
+                    .expect("baseline mintrl")
+        );
+    }
+
+    #[test]
     fn compute_walk_forward_stats_clamps_window_and_step_to_minimums() {
         let cfg = WalkForwardConfigOptional {
             window_bars: 0,
@@ -1921,6 +2425,8 @@ mod tests {
 
         assert_eq!(observed_windows, vec![(0, 64), (1, 65), (2, 66)]);
         assert_eq!(stats.windows, 3);
+        assert_eq!(stats.effective_windows_upper_bound, Some(1));
+        assert_eq!(stats.bars_covered, Some(66));
     }
 
     #[test]
@@ -2027,6 +2533,90 @@ mod tests {
                 "q={q} expected={expected:?} actual={actual:?}"
             );
         }
+    }
+
+    #[test]
+    fn select_tail_mean_helpers_match_sorted_tail_means() {
+        let values = vec![5.0, 1.0, 4.0, 2.0, 3.0];
+
+        let mut lower = values.clone();
+        let lower_tail = select_lower_tail_mean_in_place(&mut lower, 0.25);
+        assert!((lower_tail - 1.5).abs() <= 1.0e-12);
+
+        let mut upper = values;
+        let upper_tail = select_upper_tail_mean_in_place(&mut upper, 0.75);
+        assert!((upper_tail - 4.5).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn compute_walk_forward_stats_retains_tail_means_and_underwater_persistence() {
+        let pnls: Vec<f64> = (-10..10).map(|value| value as f64).collect();
+        let dds: Vec<f64> = (1..=20).map(|value| value as f64 / 100.0).collect();
+        let underwater_fracs: Vec<f64> = (1..=20).map(|value| value as f64 / 20.0).collect();
+        let underwater_durations: Vec<u32> = (1..=20).collect();
+        let metrics: Vec<Metrics> = (0..20)
+            .map(|idx| Metrics {
+                sharpe: idx as f64 / 10.0,
+                max_dd: dds[idx],
+                pnl: pnls[idx],
+                ulcer_index: dds[idx] / 2.0,
+                martin_ratio: 1.0 - dds[idx],
+                trades: underwater_durations[idx],
+                underwater_fraction: underwater_fracs[idx],
+                max_underwater_duration_bars: underwater_durations[idx],
+                ..Metrics::default()
+            })
+            .collect();
+        let cfg = WalkForwardConfigOptional {
+            window_bars: 64,
+            step_bars: 1,
+        };
+
+        let mut next_metric = 0usize;
+        let stats = compute_walk_forward_stats(83, 0, &cfg, |_start, _end| {
+            let metric = metrics[next_metric].clone();
+            next_metric = next_metric.saturating_add(1);
+            metric
+        });
+
+        let mut expected_pnls = pnls.clone();
+        let mut expected_dds = dds.clone();
+        let mut expected_underwater_fracs = underwater_fracs.clone();
+        let mut expected_underwater_durations = underwater_durations.clone();
+
+        assert_eq!(stats.windows, 20);
+        assert_eq!(stats.effective_windows_upper_bound, Some(1));
+        assert_eq!(stats.bars_covered, Some(83));
+        assert!(
+            (stats.pnl_tail_mean_p05
+                - crate::stats_common::lower_tail_mean_in_place(&mut expected_pnls, 0.05))
+            .abs()
+                <= 1.0e-12
+        );
+        assert!(
+            (stats.max_dd_tail_mean_p95
+                - crate::stats_common::upper_tail_mean_in_place(&mut expected_dds, 0.95))
+            .abs()
+                <= 1.0e-12
+        );
+        assert!(
+            (stats.underwater_fraction_median
+                - crate::stats_common::median_in_place(&mut expected_underwater_fracs))
+            .abs()
+                <= 1.0e-12
+        );
+        assert_eq!(
+            stats.underwater_fraction_worst,
+            crate::stats_common::worst_max(&underwater_fracs)
+        );
+        assert_eq!(
+            stats.max_underwater_duration_bars_median,
+            crate::stats_common::median_u32_in_place(&mut expected_underwater_durations)
+        );
+        assert_eq!(
+            stats.max_underwater_duration_bars_worst,
+            crate::stats_common::worst_max_u32(&underwater_durations)
+        );
     }
 
     #[test]
@@ -2179,8 +2769,12 @@ mod tests {
         assert_eq!(stats.simulations, 128);
         assert_eq!(stats.trade_count, 5);
         assert_eq!(stats.stationary_mean_block_len, Some(3));
+        assert!(stats.pnl_tail_mean_p05 <= stats.pnl_p05 + 1.0e-12);
+        assert!(stats.max_dd_tail_mean_p95 + 1.0e-12 >= stats.max_dd_p95);
         assert!(stats.stationary_pnl_p05.is_some());
+        assert!(stats.stationary_pnl_tail_mean_p05.is_some());
         assert!(stats.stationary_max_dd_p95.is_some());
+        assert!(stats.stationary_max_dd_tail_mean_p95.is_some());
     }
 
     #[test]
@@ -2261,9 +2855,13 @@ mod tests {
         let stats = compute_trade_bootstrap_stats(&trades, &cfg, &mut rng);
         assert_eq!(stats.trade_count, 2);
         assert!(stats.pnl_p50.is_finite());
+        assert!(stats.pnl_tail_mean_p05.is_finite());
+        assert!(stats.max_dd_tail_mean_p95.is_finite());
         assert!(stats.stationary_mean_block_len.is_none());
         assert!(stats.stationary_pnl_p05.is_none());
+        assert!(stats.stationary_pnl_tail_mean_p05.is_none());
         assert!(stats.stationary_max_dd_p95.is_none());
+        assert!(stats.stationary_max_dd_tail_mean_p95.is_none());
     }
 
     #[test]
@@ -2512,6 +3110,245 @@ mod tests {
     }
 
     #[test]
+    fn build_run_verdict_fails_when_max_pbo_requested_but_cscv_missing() {
+        let gates = ValidationHardGateConfig {
+            max_pbo: Some(0.30),
+            ..ValidationHardGateConfig::default()
+        };
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.1,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(64),
+            robust_score: 1.1,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        apply_candidate_hard_gates(&mut out, &ValidationHardGateConfig::default(), None);
+
+        let verdict = build_run_verdict(&out, 1, &gates, None, None);
+
+        assert!(!verdict.passed);
+        assert!(!verdict.approved);
+        assert_eq!(verdict.max_pbo, Some(0.30));
+        assert!(verdict
+            .fail_reasons
+            .iter()
+            .any(|reason| reason == "pbo_gate_requested_but_cscv_unavailable"));
+    }
+
+    #[test]
+    fn build_run_verdict_warns_when_cscv_result_is_skipped() {
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.1,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(64),
+            robust_score: 1.1,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        apply_candidate_hard_gates(&mut out, &ValidationHardGateConfig::default(), None);
+
+        let cscv = CscvPboResult {
+            slices: 8,
+            slice_bars: 32,
+            candidates: 1,
+            combinations: 0,
+            combinations_possible: 0,
+            pbo: 0.0,
+            lambda_p25: 0.0,
+            lambda_p50: 0.0,
+            lambda_p75: 0.0,
+            degradation_slope: 0.0,
+            degradation_intercept: 0.0,
+            degradation_r2: 0.0,
+            threshold: 0.0,
+            prob_oos_below_threshold: 0.0,
+            skipped_reason: Some("CSCV/PBO requires at least 2 candidates.".to_string()),
+        };
+
+        let verdict = build_run_verdict(
+            &out,
+            1,
+            &ValidationHardGateConfig::default(),
+            Some(&cscv),
+            None,
+        );
+
+        assert!(verdict.passed);
+        assert!(verdict.approved);
+        assert_eq!(
+            verdict.final_recommendation,
+            ValidationRecommendation::ApprovedWithWarnings
+        );
+        assert!(verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "cscv_skipped"));
+        assert_eq!(verdict.pbo, None);
+    }
+
+    #[test]
+    fn validation_semantics_provenance_marks_zero_selected_cscv_state() {
+        let out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.0,
+                ..Metrics::default()
+            },
+            psr: Some(0.9),
+            dsr: Some(0.8),
+            track_record_bars: 64,
+            min_track_record_length_bars: Some(32),
+            robust_score: 1.0,
+            robust_pareto: true,
+            cscv_pbo: Some(CscvCandidatePboStats {
+                is_selected_frac: 0.0,
+                oos_rank_frac_p50: None,
+                oos_metric_p50: None,
+            }),
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        let cscv = CscvPboResult {
+            slices: 8,
+            slice_bars: 32,
+            candidates: 1,
+            combinations: 12,
+            combinations_possible: 12,
+            pbo: 0.2,
+            lambda_p25: -0.1,
+            lambda_p50: 0.0,
+            lambda_p75: 0.1,
+            degradation_slope: 0.0,
+            degradation_intercept: 0.0,
+            degradation_r2: 1.0,
+            threshold: 0.0,
+            prob_oos_below_threshold: 0.2,
+            skipped_reason: None,
+        };
+
+        let provenance = build_validation_semantics_provenance(
+            &out,
+            true,
+            Some(&cscv),
+            None,
+            Some("volatility_terciles_plus_trend_range"),
+        );
+
+        assert_eq!(provenance.cscv_coverage_state, "evaluated");
+        assert_eq!(provenance.cscv_candidate_stat_coverage, "complete");
+        assert_eq!(provenance.cscv_selection_state, "zero_selected");
+        assert_eq!(provenance.cscv_selected_candidate_count, 0);
+        assert_eq!(provenance.cross_summary_scope, "not_requested");
+        assert_eq!(
+            provenance.approved_semantics,
+            "passed_and_min_track_record_length_satisfied"
+        );
+        assert!(provenance.passed_can_diverge_from_approved);
+    }
+
+    #[test]
+    fn validation_semantics_provenance_marks_partial_cscv_candidate_coverage() {
+        let out = vec![
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.1,
+                    ..Metrics::default()
+                },
+                psr: Some(0.9),
+                dsr: Some(0.8),
+                track_record_bars: 64,
+                min_track_record_length_bars: Some(32),
+                robust_score: 1.1,
+                robust_pareto: true,
+                cscv_pbo: Some(CscvCandidatePboStats {
+                    is_selected_frac: 0.4,
+                    oos_rank_frac_p50: Some(0.7),
+                    oos_metric_p50: Some(1.0),
+                }),
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 0.9,
+                    ..Metrics::default()
+                },
+                psr: Some(0.85),
+                dsr: Some(0.8),
+                track_record_bars: 64,
+                min_track_record_length_bars: Some(32),
+                robust_score: 0.9,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+        ];
+        let cscv = CscvPboResult {
+            slices: 8,
+            slice_bars: 32,
+            candidates: 2,
+            combinations: 12,
+            combinations_possible: 12,
+            pbo: 0.2,
+            lambda_p25: -0.1,
+            lambda_p50: 0.0,
+            lambda_p75: 0.1,
+            degradation_slope: 0.0,
+            degradation_intercept: 0.0,
+            degradation_r2: 1.0,
+            threshold: 0.0,
+            prob_oos_below_threshold: 0.2,
+            skipped_reason: None,
+        };
+
+        let provenance = build_validation_semantics_provenance(&out, true, Some(&cscv), None, None);
+
+        assert_eq!(provenance.cscv_coverage_state, "evaluated");
+        assert_eq!(provenance.cscv_candidate_stat_coverage, "partial");
+        assert_eq!(
+            provenance.cscv_selection_state,
+            "selected_candidates_present"
+        );
+        assert_eq!(provenance.cscv_selected_candidate_count, 1);
+        assert_eq!(provenance.regime_summary_family, None);
+    }
+
+    #[test]
+    fn validation_semantics_provenance_marks_success_only_cross_summary_scope() {
+        let summary = CrossTickerValidationSummary {
+            mode: crate::validation_shared::CrossTickerMode::PreservedFinalists,
+            datasets: Vec::new(),
+        };
+        let provenance = build_validation_semantics_provenance::<DummyCandidate>(
+            &[],
+            false,
+            None,
+            Some(&summary),
+            Some("volatility_terciles_plus_trend_range"),
+        );
+
+        assert_eq!(provenance.cross_summary_scope, "passed_candidates_only");
+        assert_eq!(
+            provenance.cross_mode,
+            Some(crate::validation_shared::CrossTickerMode::PreservedFinalists)
+        );
+        assert_eq!(
+            provenance.regime_summary_role.as_deref(),
+            Some("descriptive_only")
+        );
+    }
+
+    #[test]
     fn run_verdict_preserves_rank_one_stats_when_later_candidate_is_first_approved() {
         let gates = ValidationHardGateConfig {
             min_psr: Some(0.70),
@@ -2561,6 +3398,110 @@ mod tests {
             verdict.final_recommendation,
             ValidationRecommendation::ApprovedWithWarnings
         );
+    }
+
+    #[test]
+    fn finalize_with_probability_and_optional_cscv_returns_skipped_result_without_slice_builder_when_out_len_lt_2_or_slice_bars_lt_2(
+    ) {
+        let cancel = AtomicBool::new(false);
+        let cfg = CscvPboConfig {
+            slices: 4,
+            max_combinations: 16,
+            threshold: 0.0,
+        };
+
+        let mut single_out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.0,
+                ..Metrics::default()
+            },
+            psr: None,
+            dsr: None,
+            track_record_bars: 0,
+            min_track_record_length_bars: None,
+            robust_score: 1.0,
+            robust_pareto: false,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        let single_calls = AtomicUsize::new(0);
+        let single_cscv = finalize_with_probability_and_optional_cscv(
+            &mut single_out,
+            &[128],
+            &ValidationHardGateConfig::default(),
+            Some(&cfg),
+            256,
+            0,
+            7,
+            &cancel,
+            None,
+            "unit_cscv",
+            |_cand, _start, _slice_bars, _slices| {
+                single_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(Vec::<SliceReturnStats>::new())
+            },
+        )
+        .expect("single candidate finalize")
+        .expect("single candidate cscv result");
+
+        assert_eq!(single_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(single_cscv.combinations, 0);
+        assert!(single_cscv.skipped_reason.is_some());
+
+        let mut short_slice_out = vec![
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 1.1,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 1.1,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+            DummyCandidate {
+                in_sample: Metrics {
+                    sharpe: 0.9,
+                    ..Metrics::default()
+                },
+                psr: None,
+                dsr: None,
+                track_record_bars: 0,
+                min_track_record_length_bars: None,
+                robust_score: 0.9,
+                robust_pareto: false,
+                cscv_pbo: None,
+                validation_verdict: ValidationCandidateVerdict::default(),
+            },
+        ];
+        let short_slice_calls = AtomicUsize::new(0);
+        let short_slice_cscv = finalize_with_probability_and_optional_cscv(
+            &mut short_slice_out,
+            &[128, 128],
+            &ValidationHardGateConfig::default(),
+            Some(&cfg),
+            5,
+            2,
+            11,
+            &cancel,
+            None,
+            "unit_cscv",
+            |_cand, _start, _slice_bars, _slices| {
+                short_slice_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(Vec::<SliceReturnStats>::new())
+            },
+        )
+        .expect("short slice finalize")
+        .expect("short slice cscv result");
+
+        assert_eq!(short_slice_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(short_slice_cscv.slice_bars, 0);
+        assert_eq!(short_slice_cscv.combinations, 0);
+        assert!(short_slice_cscv.skipped_reason.is_some());
     }
 
     #[test]
@@ -2650,5 +3591,123 @@ mod tests {
             .warning_flags
             .iter()
             .any(|flag| flag == "ulcer_index_high:0.150"));
+    }
+
+    #[test]
+    fn select_validation_collection_mode_uses_sequential_fast_path_without_set_level_obligations() {
+        let mode =
+            select_validation_collection_mode(&ValidationHardGateConfig::default(), None, false);
+        assert_eq!(mode, ValidationCollectionMode::SequentialFastPath);
+    }
+
+    #[test]
+    fn select_validation_collection_mode_falls_back_when_set_level_obligations_exist() {
+        let cscv_mode = select_validation_collection_mode(
+            &ValidationHardGateConfig::default(),
+            Some(&CscvPboConfig {
+                slices: 4,
+                max_combinations: 16,
+                threshold: 0.0,
+            }),
+            false,
+        );
+        assert_eq!(cscv_mode, ValidationCollectionMode::ParallelFullSet);
+
+        let spa_mode =
+            select_validation_collection_mode(&ValidationHardGateConfig::default(), None, true);
+        assert_eq!(spa_mode, ValidationCollectionMode::ParallelFullSet);
+
+        let pbo_gate_mode = select_validation_collection_mode(
+            &ValidationHardGateConfig {
+                max_pbo: Some(0.30),
+                ..ValidationHardGateConfig::default()
+            },
+            None,
+            false,
+        );
+        assert_eq!(pbo_gate_mode, ValidationCollectionMode::ParallelFullSet);
+    }
+
+    #[test]
+    fn sequential_collection_and_finalize_matches_parallel_full_collection_without_cscv() {
+        let candidates = vec![1usize, 2, 3, 4];
+        let cancel = AtomicBool::new(false);
+        let process_one = |idx: usize, p: &usize, rng: &mut StdRng| {
+            let noise = rng.gen_range(0.0..0.05);
+            let sharpe = (*p as f64) + noise;
+            Ok((
+                DummyCandidate {
+                    in_sample: Metrics {
+                        sharpe,
+                        max_dd: 0.1 * (*p as f64),
+                        ..Metrics::default()
+                    },
+                    psr: None,
+                    dsr: None,
+                    track_record_bars: 0,
+                    min_track_record_length_bars: None,
+                    robust_score: sharpe,
+                    robust_pareto: false,
+                    cscv_pbo: None,
+                    validation_verdict: ValidationCandidateVerdict::default(),
+                },
+                idx,
+                64 + idx,
+            ))
+        };
+
+        let mut sequential = sequential_collect_validation_candidates(
+            &candidates,
+            17,
+            &cancel,
+            None,
+            "unit_validate",
+            &process_one,
+        )
+        .expect("sequential collect");
+        let mut parallel = parallel_collect_validation_candidates(
+            &candidates,
+            17,
+            &cancel,
+            None,
+            "unit_validate",
+            &process_one,
+        )
+        .expect("parallel collect");
+
+        let finalize = |collected: &mut Vec<(DummyCandidate, usize, usize)>| {
+            let mut out = Vec::with_capacity(collected.len());
+            let mut sample_obs = Vec::with_capacity(collected.len());
+            for (cand, _start_t, obs) in collected.drain(..) {
+                out.push(cand);
+                sample_obs.push(obs.max(2));
+            }
+            compute_probability_metrics(&mut out, &sample_obs);
+            mark_robust_pareto(&mut out);
+            apply_candidate_hard_gates(&mut out, &ValidationHardGateConfig::default(), None);
+            fold_cscv_into_robust_and_sort(&mut out);
+            out
+        };
+
+        let sequential_out = finalize(&mut sequential);
+        let parallel_out = finalize(&mut parallel);
+
+        let summarize = |out: Vec<DummyCandidate>| {
+            out.into_iter()
+                .map(|cand| {
+                    (
+                        cand.in_sample.sharpe.to_bits(),
+                        cand.psr.map(f64::to_bits),
+                        cand.dsr.map(f64::to_bits),
+                        cand.track_record_bars,
+                        cand.min_track_record_length_bars,
+                        cand.robust_pareto,
+                        cand.validation_verdict.passed,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(summarize(sequential_out), summarize(parallel_out));
     }
 }

@@ -719,6 +719,8 @@ pub struct MoSearchStats {
     pub actual_evaluations: usize,
     pub unique_evaluations: usize,
     pub duplicate_evaluations_avoided: usize,
+    /// Execution-path label only. This does not by itself prove exactness on the full original
+    /// request space; callers must pair it with the declared evaluated domain.
     pub exact_grid_used: bool,
 }
 

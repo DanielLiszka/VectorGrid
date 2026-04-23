@@ -10,14 +10,15 @@ use crate::double_ma::{ma_matrix_cpu_f32_staging, GpuExecutionPolicy};
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
 use crate::validation_pipeline::{
-    build_run_verdict, sanitize_hard_gates, ValidationCandidateVerdict, ValidationPostCandidate,
-    ValidationRunVerdict,
+    build_run_verdict, build_validation_semantics_provenance, sanitize_hard_gates,
+    ValidationCandidateVerdict, ValidationPostCandidate, ValidationRunVerdict,
 };
 use crate::validation_shared::{
     canonical_json_key, CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary,
     PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfigOptional, WalkForwardStats,
+    TradeBootstrapStats, ValidationArtifactContext, ValidationSemanticsProvenance,
+    WalkForwardConfigOptional, WalkForwardStats,
 };
 
 use rand::rngs::StdRng;
@@ -484,7 +485,10 @@ fn compute_gpu_walk_forward_stats_for_candidates(
         let mut downside_ratios = Vec::new();
         let mut ulcers = Vec::new();
         let mut martins = Vec::new();
+        let mut underwater_fracs = Vec::new();
+        let mut underwater_durations = Vec::new();
         let mut trades = Vec::new();
+        let mut intervals = Vec::new();
         for &t0 in &candidate_windows[idx] {
             let range_idx = unique_window_starts
                 .binary_search(&t0)
@@ -499,6 +503,8 @@ fn compute_gpu_walk_forward_stats_for_candidates(
                     )
                 })?;
             let metric = dense.metric(range_idx, combo_idx);
+            let end = t0.saturating_add(window).min(n);
+            intervals.push((t0, end));
             sharpes.push(metric.sharpe);
             dds.push(metric.max_dd);
             pnls.push(metric.pnl);
@@ -509,22 +515,38 @@ fn compute_gpu_walk_forward_stats_for_candidates(
             }
             ulcers.push(metric.ulcer_index);
             martins.push(metric.martin_ratio);
+            underwater_fracs.push(metric.underwater_fraction);
+            underwater_durations.push(metric.max_underwater_duration_bars);
             trades.push(metric.trades);
         }
         out.push(WalkForwardStats {
             windows: sharpes.len(),
+            effective_windows_upper_bound: Some(
+                crate::validation_pipeline::max_pairwise_disjoint_interval_count(&intervals),
+            ),
+            bars_covered: Some(crate::validation_pipeline::merged_interval_len(&intervals)),
             sharpe_median: crate::stats_common::median_in_place(&mut sharpes),
             sharpe_worst: crate::stats_common::worst_min(&sharpes),
             max_dd_median: crate::stats_common::median_in_place(&mut dds),
             max_dd_worst: crate::stats_common::worst_max(&dds),
+            max_dd_tail_mean_p95: crate::stats_common::upper_tail_mean_in_place(&mut dds, 0.95),
             pnl_median: crate::stats_common::median_in_place(&mut pnls),
             pnl_worst: crate::stats_common::worst_min(&pnls),
+            pnl_tail_mean_p05: crate::stats_common::lower_tail_mean_in_place(&mut pnls, 0.05),
             downside_vol_ratio_median: crate::stats_common::median_in_place(&mut downside_ratios),
             downside_vol_ratio_worst: crate::stats_common::worst_max(&downside_ratios),
             ulcer_index_median: crate::stats_common::median_in_place(&mut ulcers),
             ulcer_index_worst: crate::stats_common::worst_max(&ulcers),
             martin_ratio_median: crate::stats_common::median_in_place(&mut martins),
             martin_ratio_worst: crate::stats_common::worst_min(&martins),
+            underwater_fraction_median: crate::stats_common::median_in_place(&mut underwater_fracs),
+            underwater_fraction_worst: crate::stats_common::worst_max(&underwater_fracs),
+            max_underwater_duration_bars_median: crate::stats_common::median_u32_in_place(
+                &mut underwater_durations,
+            ),
+            max_underwater_duration_bars_worst: crate::stats_common::worst_max_u32(
+                &underwater_durations,
+            ),
             trades_median: crate::stats_common::median_u32_in_place(&mut trades),
             trades_worst: crate::stats_common::worst_min_u32(&trades),
         });
@@ -1616,6 +1638,10 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
         self.cscv_pbo.as_ref().and_then(|c| c.oos_rank_frac_p50)
     }
 
+    fn cscv_selected_frac(&self) -> Option<f64> {
+        self.cscv_pbo.as_ref().map(|c| c.is_selected_frac)
+    }
+
     fn psr(&self) -> Option<f64> {
         self.psr
     }
@@ -1698,6 +1724,8 @@ pub struct DoubleMaValidationResult {
     pub cscv_pbo: Option<CscvPboResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_profile: Option<ValidationExecutionProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_provenance: Option<ValidationSemanticsProvenance>,
     pub run_verdict: ValidationRunVerdict,
 }
 
@@ -1785,6 +1813,37 @@ pub struct CheckpointOmissionStats {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ContiguousSegmentSliceStats {
+    pub label: String,
+    pub start_bar: usize,
+    pub end_bar: usize,
+    pub dominant_vol_bucket: String,
+    pub dominant_spread_regime: String,
+    pub stats: RegimeBucketStats,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContiguousSegmentRobustnessStats {
+    pub min_segment_bars: usize,
+    pub segment_count: usize,
+    pub worst_segment_label: String,
+    pub worst_segment_sharpe: f64,
+    pub worst_segment_pnl: f64,
+    pub best_segment_label: String,
+    pub best_segment_sharpe: f64,
+    pub best_segment_pnl: f64,
+    pub sharpe_spread: f64,
+    pub pnl_spread: f64,
+    pub half_gap_sharpe: f64,
+    pub half_gap_pnl: f64,
+    pub quartile_gap_sharpe: f64,
+    pub quartile_gap_pnl: f64,
+    pub half_understates_worst_segment: bool,
+    pub quartile_understates_worst_segment: bool,
+    pub segments: Vec<ContiguousSegmentSliceStats>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct CheckpointRobustnessStats {
     pub half_slices: Vec<CheckpointSliceStats>,
     pub quartile_slices: Vec<CheckpointSliceStats>,
@@ -1797,6 +1856,8 @@ pub struct CheckpointRobustnessStats {
     pub best_quartile_omission: CheckpointOmissionStats,
     pub worst_quartile_omission: CheckpointOmissionStats,
     pub omission_sharpe_spread: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contiguous_segment_summary: Option<ContiguousSegmentRobustnessStats>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2141,6 +2202,10 @@ const DEFAULT_ENTRY_MARGIN_FRAGILITY_FINALISTS: usize = 5;
 const DEFAULT_UNDERWATER_DURATION_FINALISTS: usize = 5;
 const DEFAULT_CHECKPOINT_ROBUSTNESS_FINALISTS: usize = 5;
 const DEFAULT_BENCHMARK_SLICE_FINALISTS: usize = 5;
+const DEFAULT_CONTIGUOUS_SEGMENT_MIN_BARS: usize = 32;
+const DEFAULT_CONTIGUOUS_SEGMENT_MAX_SEGMENTS: usize = 6;
+const DEFAULT_CONTIGUOUS_SEGMENT_SHARPE_UNDERSTATE_DELTA: f64 = 0.25;
+const DEFAULT_CONTIGUOUS_SEGMENT_PNL_UNDERSTATE_DELTA: f64 = 0.02;
 const DEFAULT_FRICTION_SPREAD_FLOOR_BPS: f64 = 4.0;
 const DEFAULT_FRICTION_SLIPPAGE_FLOOR_BPS: f64 = 2.0;
 
@@ -2420,6 +2485,142 @@ fn checkpoint_omission_stats_from_bucket(
     }
 }
 
+#[derive(Clone, Copy)]
+struct SegmentBoundary {
+    start_bar: usize,
+    end_bar: usize,
+}
+
+fn contiguous_segment_min_bars(start_t: usize, end_t: usize) -> usize {
+    let available = end_t.saturating_sub(start_t);
+    DEFAULT_CONTIGUOUS_SEGMENT_MIN_BARS.min((available / 8).max(8))
+}
+
+fn contiguous_segment_state_key(vol_state: u8, spread_ratio: f64, spread_threshold: f64) -> u8 {
+    let vol_bucket = match vol_state {
+        0..=2 => vol_state,
+        _ => 1,
+    };
+    let spread_bucket = u8::from(spread_ratio.is_finite() && spread_ratio >= spread_threshold);
+    (vol_bucket << 1) | spread_bucket
+}
+
+fn build_contiguous_segment_boundaries(
+    vol_states: &[u8],
+    spread_ratio: &[f64],
+    start_t: usize,
+    end_t: usize,
+    spread_threshold: f64,
+    min_segment_bars: usize,
+) -> Vec<SegmentBoundary> {
+    if end_t <= start_t.saturating_add(1) {
+        return Vec::new();
+    }
+
+    let mut segments: Vec<SegmentBoundary> = Vec::new();
+    let mut segment_start = start_t;
+    let mut current_key =
+        contiguous_segment_state_key(vol_states[start_t], spread_ratio[start_t], spread_threshold);
+    for idx in start_t + 1..end_t {
+        let next_key =
+            contiguous_segment_state_key(vol_states[idx], spread_ratio[idx], spread_threshold);
+        if next_key != current_key {
+            segments.push(SegmentBoundary {
+                start_bar: segment_start,
+                end_bar: idx,
+            });
+            segment_start = idx;
+            current_key = next_key;
+        }
+    }
+    segments.push(SegmentBoundary {
+        start_bar: segment_start,
+        end_bar: end_t,
+    });
+
+    while segments.len() > 1 {
+        let Some(short_idx) = segments.iter().position(|segment| {
+            segment.end_bar.saturating_sub(segment.start_bar) < min_segment_bars
+        }) else {
+            break;
+        };
+        if short_idx == 0 {
+            let start_bar = segments[short_idx].start_bar;
+            segments[short_idx + 1].start_bar = start_bar;
+            segments.remove(short_idx);
+        } else if short_idx + 1 == segments.len() {
+            let end_bar = segments[short_idx].end_bar;
+            segments[short_idx - 1].end_bar = end_bar;
+            segments.remove(short_idx);
+        } else {
+            let prev_len = segments[short_idx - 1]
+                .end_bar
+                .saturating_sub(segments[short_idx - 1].start_bar);
+            let next_len = segments[short_idx + 1]
+                .end_bar
+                .saturating_sub(segments[short_idx + 1].start_bar);
+            let start_bar = segments[short_idx].start_bar;
+            let end_bar = segments[short_idx].end_bar;
+            if prev_len >= next_len {
+                segments[short_idx - 1].end_bar = end_bar;
+                segments.remove(short_idx);
+            } else {
+                segments[short_idx + 1].start_bar = start_bar;
+                segments.remove(short_idx);
+            }
+        }
+    }
+
+    while segments.len() > DEFAULT_CONTIGUOUS_SEGMENT_MAX_SEGMENTS {
+        let (merge_idx, _) = segments
+            .windows(2)
+            .enumerate()
+            .min_by_key(|(_, pair)| pair[1].end_bar.saturating_sub(pair[0].start_bar))
+            .expect("segment pair for merge");
+        let end_bar = segments[merge_idx + 1].end_bar;
+        segments[merge_idx].end_bar = end_bar;
+        segments.remove(merge_idx + 1);
+    }
+
+    segments
+}
+
+fn dominant_contiguous_segment_vol_bucket(vol_counts: &[usize; 3]) -> String {
+    if vol_counts[0] >= vol_counts[1] && vol_counts[0] >= vol_counts[2] {
+        "low_vol".to_string()
+    } else if vol_counts[1] >= vol_counts[2] {
+        "mid_vol".to_string()
+    } else {
+        "high_vol".to_string()
+    }
+}
+
+fn dominant_contiguous_segment_spread_regime(trend_bars: usize, range_bars: usize) -> String {
+    if trend_bars >= range_bars {
+        "trend".to_string()
+    } else {
+        "range".to_string()
+    }
+}
+
+fn contiguous_segment_slice_stats_from_bucket(
+    label: String,
+    start_bar: usize,
+    end_bar: usize,
+    dominant_vol_bucket: String,
+    dominant_spread_regime: String,
+    stats: RegimeBucketStats,
+) -> ContiguousSegmentSliceStats {
+    ContiguousSegmentSliceStats {
+        label,
+        start_bar,
+        end_bar,
+        dominant_vol_bucket,
+        dominant_spread_regime,
+        stats,
+    }
+}
+
 fn compute_checkpoint_robustness_from_arrays(
     step_returns: &[f64],
     active_flags: &[bool],
@@ -2528,6 +2729,161 @@ fn compute_checkpoint_robustness_from_arrays(
         best_quartile_omission,
         worst_quartile_omission,
         omission_sharpe_spread,
+        contiguous_segment_summary: None,
+    })
+}
+
+fn compute_contiguous_segment_summary_from_arrays(
+    step_returns: &[f64],
+    active_flags: &[bool],
+    trade_entries: &[bool],
+    spread_ratio: &[f64],
+    vol_states: &[u8],
+    start_t: usize,
+    half_slices: &[CheckpointSliceStats],
+    quartile_slices: &[CheckpointSliceStats],
+) -> Option<ContiguousSegmentRobustnessStats> {
+    let n = step_returns
+        .len()
+        .min(active_flags.len())
+        .min(trade_entries.len())
+        .min(spread_ratio.len())
+        .min(vol_states.len());
+    if n <= start_t.saturating_add(1) {
+        return None;
+    }
+
+    let mut spreads: Vec<f64> = spread_ratio[start_t..n]
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect();
+    if spreads.is_empty() {
+        return None;
+    }
+    let spread_threshold = crate::stats_common::median_in_place(&mut spreads);
+    let min_segment_bars = contiguous_segment_min_bars(start_t, n);
+    let boundaries = build_contiguous_segment_boundaries(
+        vol_states,
+        spread_ratio,
+        start_t,
+        n,
+        spread_threshold,
+        min_segment_bars,
+    );
+    if boundaries.len() < 2 {
+        return None;
+    }
+
+    let segments: Vec<ContiguousSegmentSliceStats> = boundaries
+        .into_iter()
+        .enumerate()
+        .map(|(idx, boundary)| {
+            let mut membership = vec![false; n];
+            membership[boundary.start_bar..boundary.end_bar].fill(true);
+
+            let mut vol_counts = [0usize; 3];
+            let mut trend_bars = 0usize;
+            let mut range_bars = 0usize;
+            for bar in boundary.start_bar..boundary.end_bar {
+                match vol_states[bar] {
+                    0 => vol_counts[0] += 1,
+                    2 => vol_counts[2] += 1,
+                    _ => vol_counts[1] += 1,
+                }
+                if spread_ratio[bar].is_finite() && spread_ratio[bar] >= spread_threshold {
+                    trend_bars += 1;
+                } else {
+                    range_bars += 1;
+                }
+            }
+
+            let dominant_vol_bucket = dominant_contiguous_segment_vol_bucket(&vol_counts);
+            let dominant_spread_regime =
+                dominant_contiguous_segment_spread_regime(trend_bars, range_bars);
+            contiguous_segment_slice_stats_from_bucket(
+                format!(
+                    "seg{}_{}_{}",
+                    idx + 1,
+                    dominant_vol_bucket,
+                    dominant_spread_regime
+                ),
+                boundary.start_bar,
+                boundary.end_bar,
+                dominant_vol_bucket,
+                dominant_spread_regime,
+                summarize_regime_bucket(step_returns, active_flags, trade_entries, &membership),
+            )
+        })
+        .collect();
+    if segments.len() < 2 {
+        return None;
+    }
+
+    let worst_segment = segments
+        .iter()
+        .min_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+    let best_segment = segments
+        .iter()
+        .max_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+    let worst_half = half_slices
+        .iter()
+        .min_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+    let worst_quartile = quartile_slices
+        .iter()
+        .min_by(|a, b| {
+            a.stats
+                .sharpe
+                .total_cmp(&b.stats.sharpe)
+                .then_with(|| a.stats.pnl.total_cmp(&b.stats.pnl))
+        })
+        .cloned()?;
+
+    let half_gap_sharpe = worst_segment.stats.sharpe - worst_half.stats.sharpe;
+    let half_gap_pnl = worst_segment.stats.pnl - worst_half.stats.pnl;
+    let quartile_gap_sharpe = worst_segment.stats.sharpe - worst_quartile.stats.sharpe;
+    let quartile_gap_pnl = worst_segment.stats.pnl - worst_quartile.stats.pnl;
+
+    Some(ContiguousSegmentRobustnessStats {
+        min_segment_bars,
+        segment_count: segments.len(),
+        worst_segment_label: worst_segment.label.clone(),
+        worst_segment_sharpe: worst_segment.stats.sharpe,
+        worst_segment_pnl: worst_segment.stats.pnl,
+        best_segment_label: best_segment.label.clone(),
+        best_segment_sharpe: best_segment.stats.sharpe,
+        best_segment_pnl: best_segment.stats.pnl,
+        sharpe_spread: best_segment.stats.sharpe - worst_segment.stats.sharpe,
+        pnl_spread: best_segment.stats.pnl - worst_segment.stats.pnl,
+        half_gap_sharpe,
+        half_gap_pnl,
+        quartile_gap_sharpe,
+        quartile_gap_pnl,
+        half_understates_worst_segment: half_gap_sharpe
+            < -DEFAULT_CONTIGUOUS_SEGMENT_SHARPE_UNDERSTATE_DELTA
+            || half_gap_pnl < -DEFAULT_CONTIGUOUS_SEGMENT_PNL_UNDERSTATE_DELTA,
+        quartile_understates_worst_segment: quartile_gap_sharpe
+            < -DEFAULT_CONTIGUOUS_SEGMENT_SHARPE_UNDERSTATE_DELTA
+            || quartile_gap_pnl < -DEFAULT_CONTIGUOUS_SEGMENT_PNL_UNDERSTATE_DELTA,
+        segments,
     })
 }
 
@@ -2543,12 +2899,25 @@ fn compute_checkpoint_robustness_stats_with_bundle(
     series: &CandidateSeries<'_>,
     bundle: &CandidateStepReturnBundle,
 ) -> Option<CheckpointRobustnessStats> {
-    compute_checkpoint_robustness_from_arrays(
+    let mut stats = compute_checkpoint_robustness_from_arrays(
         &bundle.step_returns,
         &bundle.active_flags,
         &bundle.trade_entries,
         series.start_t,
-    )
+    )?;
+    let vol_states =
+        rolling_volatility_tertiles(series.lr, series.start_t, DEFAULT_REGIME_SLICE_VOL_WINDOW);
+    stats.contiguous_segment_summary = compute_contiguous_segment_summary_from_arrays(
+        &bundle.step_returns,
+        &bundle.active_flags,
+        &bundle.trade_entries,
+        &bundle.spread_ratio,
+        &vol_states,
+        series.start_t,
+        &stats.half_slices,
+        &stats.quartile_slices,
+    );
+    Some(stats)
 }
 
 fn benchmark_step_return(lr: f64, benchmark: &SpaBenchmarkKind) -> f64 {
@@ -3631,6 +4000,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         "double_ma_validate_cscv_prep",
         &hard_gates,
         cscv_cfg.as_ref(),
+        req.spa.is_some(),
         candles.close.len(),
         |idx, p, rng| {
             if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
@@ -4190,6 +4560,13 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         cscv_pbo.as_ref(),
         spa.as_ref(),
     );
+    let validation_provenance = Some(build_validation_semantics_provenance(
+        &out,
+        req.cscv_pbo.is_some(),
+        cscv_pbo.as_ref(),
+        None,
+        Some("volatility_terciles_plus_trend_range"),
+    ));
     let (backend_used, backend_route, backend_fallback_reason) =
         if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
             (
@@ -4211,6 +4588,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         spa,
         cross_ticker: None,
         cscv_pbo,
+        validation_provenance,
         run_verdict,
         execution_profile: gpu_fixed_eval
             .as_ref()
@@ -4565,6 +4943,81 @@ mod tests {
     }
 
     #[test]
+    fn double_ma_validation_serializes_validation_provenance_contract() {
+        let candles = make_trending_candles(2048);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaValidationRequest {
+            data_id: "validation-provenance".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![DoubleMaValidationParams {
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_len: 10,
+                slow_len: 40,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+            }],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 7,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_double_ma_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("validation run");
+        let value = serde_json::to_value(&res).expect("serialize validation result");
+
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/score_channel")
+                .and_then(|entry| entry.as_str()),
+            Some("in_sample_only")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/probability_metric_source")
+                .and_then(|entry| entry.as_str()),
+            Some("candidate_sharpe_peer_distribution_psr_dsr")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/cross_summary_scope")
+                .and_then(|entry| entry.as_str()),
+            Some("not_requested")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/regime_summary_role")
+                .and_then(|entry| entry.as_str()),
+            Some("descriptive_only")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_provenance/approved_semantics")
+                .and_then(|entry| entry.as_str()),
+            Some("passed_and_min_track_record_length_satisfied")
+        );
+    }
+
+    #[test]
     fn underwater_duration_stats_match_synthetic_path() {
         let step_returns = vec![0.10, -0.05, -0.02, 0.08, -0.01];
         let stats = compute_underwater_duration_from_step_returns(&step_returns, 0)
@@ -4597,6 +5050,62 @@ mod tests {
         assert!((stats.positive_quartile_frac - 0.5).abs() <= 1e-12);
         assert_eq!(stats.best_quartile_omission.omitted_label, "q3");
         assert!(stats.omission_sharpe_spread >= 0.0);
+    }
+
+    #[test]
+    fn contiguous_segment_summary_catches_piecewise_drawdown_missed_by_fixed_slices() {
+        let n = 128usize;
+        let mut step_returns = vec![0.015; n];
+        let active_flags = vec![true; n];
+        let mut trade_entries = vec![false; n];
+        trade_entries[0] = true;
+        let mut spread_ratio = vec![0.01; n];
+        let mut vol_states = vec![0u8; n];
+
+        for idx in 48..64 {
+            step_returns[idx] = -0.20;
+            spread_ratio[idx] = 0.08;
+            vol_states[idx] = 2;
+        }
+        for state in vol_states.iter_mut().skip(64) {
+            *state = 1;
+        }
+
+        let checkpoint = compute_checkpoint_robustness_from_arrays(
+            &step_returns,
+            &active_flags,
+            &trade_entries,
+            0,
+        )
+        .expect("checkpoint robustness");
+        let summary = compute_contiguous_segment_summary_from_arrays(
+            &step_returns,
+            &active_flags,
+            &trade_entries,
+            &spread_ratio,
+            &vol_states,
+            0,
+            &checkpoint.half_slices,
+            &checkpoint.quartile_slices,
+        )
+        .expect("contiguous segment summary");
+
+        assert!(summary.segment_count >= 2);
+        assert!(summary.segment_count <= DEFAULT_CONTIGUOUS_SEGMENT_MAX_SEGMENTS);
+        assert!(summary.worst_segment_label.contains("high_vol"));
+        assert!(summary.worst_segment_label.contains("trend"));
+        assert!(summary.worst_segment_sharpe < checkpoint.worst_half_sharpe);
+        assert!(summary.worst_segment_sharpe < checkpoint.worst_quartile_sharpe);
+        assert!(summary.half_understates_worst_segment);
+        assert!(summary.quartile_understates_worst_segment);
+        assert!(summary.half_gap_sharpe < 0.0);
+        assert!(summary.quartile_gap_sharpe < 0.0);
+        assert!(summary
+            .segments
+            .iter()
+            .any(|segment| segment.start_bar <= 48
+                && segment.end_bar >= 64
+                && segment.stats.pnl < 0.0));
     }
 
     #[test]
@@ -4914,6 +5423,30 @@ mod tests {
             assert!(!checkpoint.best_quartile_omission.omitted_label.is_empty());
             assert!(!checkpoint.worst_quartile_omission.omitted_label.is_empty());
             assert!(checkpoint.omission_sharpe_spread.is_finite());
+            let contiguous = checkpoint
+                .contiguous_segment_summary
+                .as_ref()
+                .expect("checkpoint finalists should carry contiguous segment summary");
+            assert!(contiguous.segment_count >= 2);
+            assert!(contiguous.segment_count <= DEFAULT_CONTIGUOUS_SEGMENT_MAX_SEGMENTS);
+            assert!(contiguous.min_segment_bars >= 8);
+            assert!(!contiguous.worst_segment_label.is_empty());
+            assert!(!contiguous.best_segment_label.is_empty());
+            assert!(contiguous.worst_segment_sharpe.is_finite());
+            assert!(contiguous.worst_segment_pnl.is_finite());
+            assert!(contiguous.best_segment_sharpe.is_finite());
+            assert!(contiguous.best_segment_pnl.is_finite());
+            assert!(contiguous.sharpe_spread.is_finite());
+            assert!(contiguous.pnl_spread.is_finite());
+            assert!(contiguous.half_gap_sharpe.is_finite());
+            assert!(contiguous.half_gap_pnl.is_finite());
+            assert!(contiguous.quartile_gap_sharpe.is_finite());
+            assert!(contiguous.quartile_gap_pnl.is_finite());
+            let checkpoint_json = serde_json::to_value(checkpoint).expect("checkpoint json");
+            assert!(checkpoint_json
+                .pointer("/contiguous_segment_summary/worst_segment_label")
+                .and_then(|entry| entry.as_str())
+                .is_some());
         }
     }
 
@@ -5302,6 +5835,25 @@ mod tests {
                 .count(),
             DEFAULT_CHECKPOINT_ROBUSTNESS_FINALISTS
         );
+        for cand in res
+            .candidates
+            .iter()
+            .take(DEFAULT_CHECKPOINT_ROBUSTNESS_FINALISTS)
+        {
+            let contiguous = cand
+                .checkpoint_robustness
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.contiguous_segment_summary.as_ref())
+                .expect("checkpoint finalists should keep contiguous segment summary");
+            assert!(contiguous.segment_count >= 2);
+        }
+        for cand in res
+            .candidates
+            .iter()
+            .skip(DEFAULT_CHECKPOINT_ROBUSTNESS_FINALISTS)
+        {
+            assert!(cand.checkpoint_robustness.is_none());
+        }
         assert_eq!(
             res.candidates
                 .iter()

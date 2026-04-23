@@ -843,9 +843,19 @@ fn normalize_execute_request(
     Ok((req, symbol, qty))
 }
 
+fn delta_qty_is_hold(delta_qty: f64) -> bool {
+    delta_qty.abs() < 1e-6
+}
+
+fn should_attach_opening_bracket(current_position_qty: f64, target_position_qty: f64) -> bool {
+    current_position_qty.abs() < 1e-6 && target_position_qty.abs() > 1e-6
+}
+
 fn validate_live_runner_stream_preconditions(
     stream: Option<&crate::state::LiveCandleStreamInfo>,
     requested_symbol: &str,
+    mode: LiveExecutionMode,
+    dry_run: bool,
 ) -> Result<(), String> {
     let Some(stream) = stream.filter(|stream| stream.active) else {
         return Err(
@@ -858,6 +868,12 @@ fn validate_live_runner_stream_preconditions(
         return Err(format!(
             "Live candles are active for {live_symbol}, not {requested_symbol}."
         ));
+    }
+    if matches!(mode, LiveExecutionMode::Live) && !dry_run && stream.delayed {
+        return Err(
+            "Live Alpaca automation requires a real-time Polygon stream. Turn delayed data off before arming the broker."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -1443,6 +1459,70 @@ fn cancelable_orders_for_symbol(
     filter_symbol_orders_by_status(orders, symbol, is_broker_cancelable_order_status)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum OpenOrderDeltaGuard {
+    Proceed,
+    Reconciled {
+        projected_position_qty: f64,
+        warning: String,
+    },
+}
+
+fn remaining_open_order_qty(order: &LiveOrderSnapshot) -> Option<f64> {
+    let qty = order.qty?;
+    let filled_qty = order.filled_qty.unwrap_or(0.0);
+    if !qty.is_finite() || !filled_qty.is_finite() || qty < 0.0 || filled_qty < 0.0 {
+        return None;
+    }
+    Some((qty - filled_qty).max(0.0))
+}
+
+fn signed_remaining_open_order_qty(order: &LiveOrderSnapshot) -> Option<f64> {
+    let remaining_qty = remaining_open_order_qty(order)?;
+    match order.side.trim().to_ascii_lowercase().as_str() {
+        "buy" => Some(remaining_qty),
+        "sell" => Some(-remaining_qty),
+        _ => None,
+    }
+}
+
+fn guard_open_orders_before_fresh_delta(
+    symbol: &str,
+    current_position_qty: f64,
+    target_position_qty: f64,
+    open_orders: &[LiveOrderSnapshot],
+) -> Result<OpenOrderDeltaGuard, String> {
+    if open_orders.is_empty() {
+        return Ok(OpenOrderDeltaGuard::Proceed);
+    }
+
+    let mut pending_delta_qty = 0.0_f64;
+    for order in open_orders {
+        let remaining_qty = signed_remaining_open_order_qty(order).ok_or_else(|| {
+            format!(
+                "Open orders already exist for {symbol}. Cancel or reconcile them before submitting a new delta because at least one order has incomplete quantity metadata."
+            )
+        })?;
+        pending_delta_qty += remaining_qty;
+    }
+
+    let projected_position_qty = current_position_qty + pending_delta_qty;
+    if delta_qty_is_hold(target_position_qty - projected_position_qty) {
+        let plural = if open_orders.len() == 1 { "" } else { "s" };
+        return Ok(OpenOrderDeltaGuard::Reconciled {
+            projected_position_qty,
+            warning: format!(
+                "Reusing {} open order{plural} already working toward the target position for {symbol}; no new market delta submitted.",
+                open_orders.len()
+            ),
+        });
+    }
+
+    Err(format!(
+        "Open orders already exist for {symbol}. Cancel or reconcile them before submitting a new delta. current_position_qty={current_position_qty:.6}, target_position_qty={target_position_qty:.6}, projected_position_qty_with_open_orders={projected_position_qty:.6}."
+    ))
+}
+
 fn summarize_snapshot_orders(
     orders_raw: &[serde_json::Value],
     symbol: &str,
@@ -1610,6 +1690,22 @@ fn ensure_runner_inactive_for_broker_safety_action() -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_runner_inactive_for_manual_broker_execution(dry_run: bool) -> Result<(), String> {
+    if dry_run {
+        return Ok(());
+    }
+    let slot = live_execution_runner_slot()
+        .lock()
+        .map_err(|_| "failed to lock live execution runner state".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Err(format!(
+            "Stop the auto-runner for {} before manual broker execution.",
+            runtime.cfg.symbol
+        ));
+    }
+    Ok(())
+}
+
 fn emergency_halt_status_message(runner_stopped: bool, live_stopped: bool) -> String {
     match (runner_stopped, live_stopped) {
         (true, true) => {
@@ -1673,6 +1769,7 @@ fn execute_strategy_signal_blocking(
     let mut warnings: Vec<String> = Vec::new();
 
     let mut current_position_qty = 0.0_f64;
+    let mut open_orders: Vec<LiveOrderSnapshot> = Vec::new();
     if !req.dry_run {
         if req.alpaca_api_key.trim().is_empty() || req.alpaca_api_secret.trim().is_empty() {
             return Err(
@@ -1687,13 +1784,55 @@ fn execute_strategy_signal_blocking(
             req.alpaca_api_secret.trim(),
             &symbol,
         )?;
+        open_orders = fetch_alpaca_open_orders_for_symbol(
+            client,
+            req.mode,
+            req.alpaca_api_key.trim(),
+            req.alpaca_api_secret.trim(),
+            &symbol,
+        )
+        .map(|orders| open_orders_for_symbol(&orders, &symbol))?;
         if let Some(abort) = abort.as_ref() {
             abort.check()?;
         }
     }
 
+    match guard_open_orders_before_fresh_delta(
+        &symbol,
+        current_position_qty,
+        target_position_qty,
+        &open_orders,
+    )? {
+        OpenOrderDeltaGuard::Proceed => {}
+        OpenOrderDeltaGuard::Reconciled {
+            projected_position_qty,
+            warning,
+        } => {
+            warnings.push(warning);
+            return Ok(ExecuteStrategySignalResponse {
+                symbol,
+                mode: req.mode,
+                desired_position: decision.desired_position,
+                current_position_qty,
+                target_position_qty,
+                delta_qty: 0.0,
+                order_submitted: false,
+                order_id: None,
+                action: "reconcile_open_orders".to_string(),
+                last_bar_ts: decision.last_bar_ts,
+                last_close: Some(decision.last_close),
+                warnings: {
+                    warnings.push(format!(
+                        "Projected broker position after the open-order queue is {projected_position_qty:.6}."
+                    ));
+                    warnings
+                },
+            });
+        }
+    }
+
     let delta_qty = target_position_qty - current_position_qty;
-    if delta_qty.abs() < 1e-6 {
+    if delta_qty_is_hold(delta_qty) {
         return Ok(ExecuteStrategySignalResponse {
             symbol,
             mode: req.mode,
@@ -1731,7 +1870,7 @@ fn execute_strategy_signal_blocking(
         abort.check()?;
     }
     let client = alpaca_client()?;
-    let opening_new = current_position_qty.abs() < 1e-6 && target_position_qty.abs() > 1e-6;
+    let opening_new = should_attach_opening_bracket(current_position_qty, target_position_qty);
     let (payload, bracket_warnings) = if opening_new {
         alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)
     } else {
@@ -1785,6 +1924,7 @@ pub async fn execute_strategy_signal_once(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ExecuteStrategySignalResponse, String> {
+    ensure_runner_inactive_for_manual_broker_execution(req.dry_run)?;
     if !req.dry_run {
         let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
             &app.config().identifier,
@@ -1848,7 +1988,12 @@ pub async fn start_live_execution_runner(
     }
     let _ = state.get_candles(&data_id)?;
     let live_stream = state.live_candle_stream_info()?;
-    validate_live_runner_stream_preconditions(live_stream.as_ref(), &symbol)?;
+    validate_live_runner_stream_preconditions(
+        live_stream.as_ref(),
+        &symbol,
+        req.mode,
+        req.dry_run,
+    )?;
     let _ = finalize_active_live_session(&app, "superseded");
 
     let strategy_kind = strategy_kind_label(&req.strategy);
@@ -2838,6 +2983,86 @@ mod tests {
     }
 
     #[test]
+    fn guard_open_orders_before_fresh_delta_reconciles_target_already_in_flight() {
+        let open_orders = vec![LiveOrderSnapshot {
+            id: "ord_1".to_string(),
+            symbol: "AAPL".to_string(),
+            side: "buy".to_string(),
+            status: "new".to_string(),
+            order_type: "market".to_string(),
+            qty: Some(3.0),
+            filled_qty: Some(1.0),
+            filled_avg_price: None,
+            limit_price: None,
+            stop_price: None,
+            submitted_at: None,
+            filled_at: None,
+            updated_at: None,
+            canceled_at: None,
+        }];
+
+        let guard = guard_open_orders_before_fresh_delta("AAPL", 1.0, 3.0, &open_orders)
+            .expect("matching open order should reconcile instead of blocking");
+
+        assert_eq!(
+            guard,
+            OpenOrderDeltaGuard::Reconciled {
+                projected_position_qty: 3.0,
+                warning: "Reusing 1 open order already working toward the target position for AAPL; no new market delta submitted.".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn guard_open_orders_before_fresh_delta_blocks_conflicting_open_orders() {
+        let open_orders = vec![LiveOrderSnapshot {
+            id: "ord_1".to_string(),
+            symbol: "AAPL".to_string(),
+            side: "sell".to_string(),
+            status: "new".to_string(),
+            order_type: "market".to_string(),
+            qty: Some(1.0),
+            filled_qty: Some(0.0),
+            filled_avg_price: None,
+            limit_price: None,
+            stop_price: None,
+            submitted_at: None,
+            filled_at: None,
+            updated_at: None,
+            canceled_at: None,
+        }];
+
+        let err = guard_open_orders_before_fresh_delta("AAPL", 1.0, 2.0, &open_orders)
+            .expect_err("conflicting open order should block a fresh delta");
+        assert!(err.contains("Open orders already exist for AAPL."));
+        assert!(err.contains("projected_position_qty_with_open_orders=0.000000"));
+    }
+
+    #[test]
+    fn guard_open_orders_before_fresh_delta_blocks_when_qty_metadata_is_missing() {
+        let open_orders = vec![LiveOrderSnapshot {
+            id: "ord_1".to_string(),
+            symbol: "AAPL".to_string(),
+            side: "buy".to_string(),
+            status: "new".to_string(),
+            order_type: "market".to_string(),
+            qty: None,
+            filled_qty: Some(0.0),
+            filled_avg_price: None,
+            limit_price: None,
+            stop_price: None,
+            submitted_at: None,
+            filled_at: None,
+            updated_at: None,
+            canceled_at: None,
+        }];
+
+        let err = guard_open_orders_before_fresh_delta("AAPL", 0.0, 1.0, &open_orders)
+            .expect_err("missing broker qty metadata should block a fresh delta");
+        assert!(err.contains("incomplete quantity metadata"));
+    }
+
+    #[test]
     fn alpaca_orders_url_can_scope_open_queries_to_a_symbol() {
         let url = build_alpaca_orders_url(LiveExecutionMode::Paper, "open", 900, Some("AAPL"))
             .expect("orders url");
@@ -2985,6 +3210,29 @@ mod tests {
             .expect("inactive runner state should allow broker safety actions");
     }
 
+    #[test]
+    fn ensure_runner_inactive_for_manual_broker_execution_blocks_only_live_broker_runs() {
+        let _guard = runner_test_guard().lock().expect("runner test guard");
+        {
+            let mut slot = live_execution_runner_slot().lock().expect("runner slot");
+            *slot = Some(test_runner_runtime(77));
+        }
+
+        let err = ensure_runner_inactive_for_manual_broker_execution(false)
+            .expect_err("active runner should block live manual broker execution");
+        assert!(err.contains("Stop the auto-runner for AAPL before manual broker execution."));
+        ensure_runner_inactive_for_manual_broker_execution(true)
+            .expect("dry-run manual execution should remain allowed");
+
+        {
+            let mut slot = live_execution_runner_slot().lock().expect("runner slot");
+            *slot = None;
+        }
+
+        ensure_runner_inactive_for_manual_broker_execution(false)
+            .expect("inactive runner state should allow live manual broker execution");
+    }
+
     fn unique_test_app_identifier(suffix: &str) -> String {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3098,6 +3346,18 @@ mod tests {
             last_error: None,
         }
     }
+
+    fn test_runner_bar(time_open_unix_ms: i64, close: f64) -> LiveExecutionRunnerBar {
+        LiveExecutionRunnerBar {
+            symbol: "AAPL".to_string(),
+            time_open_unix_ms,
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: None,
+        }
+    }
     use serde_json::json;
 
     #[test]
@@ -3183,9 +3443,43 @@ mod tests {
     }
 
     #[test]
+    fn normalize_execute_request_quantizes_qty_to_1e4_boundaries() {
+        let (req, symbol, qty) = normalize_execute_request(test_execute_request(" aapl ", 0.00005))
+            .expect("half-tick quantity should round up to 1e-4");
+        assert_eq!(symbol, "AAPL");
+        assert_eq!(req.symbol, "AAPL");
+        assert_eq!(req.qty, 0.0001);
+        assert_eq!(qty, 0.0001);
+
+        let (_, _, qty) = normalize_execute_request(test_execute_request("AAPL", 0.000149))
+            .expect("sub-midpoint quantity should round down");
+        assert_eq!(qty, 0.0001);
+
+        let (_, _, qty) = normalize_execute_request(test_execute_request("AAPL", 0.00015))
+            .expect("midpoint quantity should round up");
+        assert_eq!(qty, 0.0002);
+    }
+
+    #[test]
+    fn delta_qty_hold_threshold_is_strictly_less_than_1e6() {
+        assert!(delta_qty_is_hold(0.0000005));
+        assert!(delta_qty_is_hold(-0.0000005));
+        assert!(!delta_qty_is_hold(0.000001));
+        assert!(!delta_qty_is_hold(-0.000001));
+    }
+
+    #[test]
+    fn opening_bracket_threshold_uses_current_lt_and_target_gt_1e6() {
+        assert!(should_attach_opening_bracket(0.0000009, 0.0000011));
+        assert!(!should_attach_opening_bracket(0.000001, 0.0000011));
+        assert!(!should_attach_opening_bracket(0.0000009, 0.000001));
+        assert!(!should_attach_opening_bracket(0.0, 0.0));
+    }
+
+    #[test]
     fn live_runner_stream_preconditions_require_active_stream() {
         assert_eq!(
-            validate_live_runner_stream_preconditions(None, "AAPL"),
+            validate_live_runner_stream_preconditions(None, "AAPL", LiveExecutionMode::Paper, true),
             Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
         );
         assert_eq!(
@@ -3198,6 +3492,8 @@ mod tests {
                     status: "closed".to_string(),
                 }),
                 "AAPL",
+                LiveExecutionMode::Paper,
+                true,
             ),
             Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
         );
@@ -3215,6 +3511,8 @@ mod tests {
                     status: "started".to_string(),
                 }),
                 "AAPL",
+                LiveExecutionMode::Paper,
+                true,
             ),
             Err("Live candles are active for TSLA, not AAPL.".to_string())
         );
@@ -3231,8 +3529,64 @@ mod tests {
                 status: "started".to_string(),
             }),
             "BRK.B",
+            LiveExecutionMode::Paper,
+            true,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn live_runner_stream_preconditions_reject_live_broker_on_delayed_stream() {
+        assert_eq!(
+            validate_live_runner_stream_preconditions(
+                Some(&crate::state::LiveCandleStreamInfo {
+                    market: "stocks".to_string(),
+                    symbol: "AAPL".to_string(),
+                    delayed: true,
+                    active: true,
+                    status: "started".to_string(),
+                }),
+                "AAPL",
+                LiveExecutionMode::Live,
+                false,
+            ),
+            Err(
+                "Live Alpaca automation requires a real-time Polygon stream. Turn delayed data off before arming the broker."
+                    .to_string()
+            )
+        );
+        assert!(
+            validate_live_runner_stream_preconditions(
+                Some(&crate::state::LiveCandleStreamInfo {
+                    market: "stocks".to_string(),
+                    symbol: "AAPL".to_string(),
+                    delayed: true,
+                    active: true,
+                    status: "started".to_string(),
+                }),
+                "AAPL",
+                LiveExecutionMode::Live,
+                true,
+            )
+            .is_ok(),
+            "dry-run runner should still be allowed on delayed data"
+        );
+        assert!(
+            validate_live_runner_stream_preconditions(
+                Some(&crate::state::LiveCandleStreamInfo {
+                    market: "stocks".to_string(),
+                    symbol: "AAPL".to_string(),
+                    delayed: false,
+                    active: true,
+                    status: "started".to_string(),
+                }),
+                "AAPL",
+                LiveExecutionMode::Live,
+                false,
+            )
+            .is_ok(),
+            "real-time stream should allow live Alpaca automation"
+        );
     }
 
     #[test]
@@ -3401,48 +3755,45 @@ mod tests {
     }
 
     #[test]
-    fn pending_bar_keeps_latest_timestamp() {
-        let mut pending = None;
+    fn pending_bar_coalesces_three_inflight_bars_to_latest_only() {
+        let mut runtime = test_runner_runtime(17);
+        runtime.inflight = true;
+
         assert!(update_pending_bar(
+            &mut runtime.pending_bar,
+            &test_runner_bar(1000, 1.0)
+        ));
+        assert!(update_pending_bar(
+            &mut runtime.pending_bar,
+            &test_runner_bar(2000, 2.0)
+        ));
+        assert!(update_pending_bar(
+            &mut runtime.pending_bar,
+            &test_runner_bar(3000, 3.0)
+        ));
+
+        let queued = runtime.pending_bar.take().expect("latest queued bar");
+        assert_eq!(queued.time_open_unix_ms, 3000);
+        assert_eq!(queued.close, 3.0);
+        assert!(runtime.pending_bar.is_none());
+    }
+
+    #[test]
+    fn pending_bar_rejects_stale_or_equal_timestamps() {
+        let mut pending = Some(test_runner_bar(1000, 1.0));
+
+        assert!(!update_pending_bar(
             &mut pending,
-            &LiveExecutionRunnerBar {
-                symbol: "AAPL".to_string(),
-                time_open_unix_ms: 1000,
-                open: 1.0,
-                high: 1.0,
-                low: 1.0,
-                close: 1.0,
-                volume: None,
-            }
+            &test_runner_bar(1000, 1.1)
         ));
         assert!(!update_pending_bar(
             &mut pending,
-            &LiveExecutionRunnerBar {
-                symbol: "AAPL".to_string(),
-                time_open_unix_ms: 900,
-                open: 0.9,
-                high: 0.9,
-                low: 0.9,
-                close: 0.9,
-                volume: None,
-            }
+            &test_runner_bar(999, 0.9)
         ));
-        assert!(update_pending_bar(
-            &mut pending,
-            &LiveExecutionRunnerBar {
-                symbol: "AAPL".to_string(),
-                time_open_unix_ms: 2000,
-                open: 2.0,
-                high: 2.0,
-                low: 2.0,
-                close: 2.0,
-                volume: None,
-            }
-        ));
-        assert_eq!(
-            pending.as_ref().map(|bar| bar.time_open_unix_ms),
-            Some(2000)
-        );
+
+        let queued = pending.expect("pending bar should remain unchanged");
+        assert_eq!(queued.time_open_unix_ms, 1000);
+        assert_eq!(queued.close, 1.0);
     }
 
     #[test]

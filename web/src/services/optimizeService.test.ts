@@ -904,6 +904,170 @@ describe("optimizeService", () => {
     );
   });
 
+  it("includes heuristic search semantics in the status line when present", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      statusLine: "",
+      progressMeta: "",
+      runDisabled: false,
+      canCancel: false,
+      validateDisabled: false,
+    };
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+          backend_used: "Gpu",
+          backend_route: "GpuKernel",
+          mode_used: "GpuVdps",
+          search_semantics: {
+            approx_mode: "heuristic_reduced_output",
+            workload_family: "double_ma_gpu_vdps",
+            contract_summary:
+              "Heuristic reduced-output mode; audit with best-score regret, top-k overlap, exact winner rank, holdout regret, and speedup versus exact before promotion.",
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_test.json", bytes: 128 };
+      }
+      if (command === "get_gpu_status") {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+          auto_device_name: "NVIDIA RTX 4090",
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+        };
+      }
+      return {};
+    });
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-search-semantics" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    const statusLine = String(optimize.statusLine || "");
+    expect(statusLine).toContain("search=heuristic_reduced_output");
+    expect(statusLine).toContain("audit=double_ma_gpu_vdps");
+  });
+
+  it("includes heuristic audit metrics in the status line when present", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      statusLine: "",
+      progressMeta: "",
+      runDisabled: false,
+      canCancel: false,
+      validateDisabled: false,
+    };
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+          backend_used: "Gpu",
+          backend_route: "GpuKernel",
+          mode_used: "GpuVdps",
+          search_semantics: {
+            approx_mode: "heuristic_reduced_output",
+            workload_family: "double_ma_gpu_vdps",
+            contract_summary:
+              "Heuristic reduced-output mode; audit with best-score regret, top-k overlap, exact winner rank, holdout regret, and speedup versus exact before promotion.",
+          },
+          vdps: {
+            quality_check_top_k_overlap: 0.8,
+            quality_check_best_score_regret: 0.125,
+            quality_check_exact_winner_rank: 2,
+            quality_check_holdout_regret: 0.05,
+            quality_check_speedup_vs_exact: 3.5,
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_test.json", bytes: 128 };
+      }
+      if (command === "get_gpu_status") {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+        };
+      }
+      return {};
+    });
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-heuristic-audit" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    const statusLine = String(optimize.statusLine || "");
+    expect(statusLine).toContain("audit_overlap=0.800");
+    expect(statusLine).toContain("audit_regret=0.125000");
+    expect(statusLine).toContain("audit_winner_rank=2");
+    expect(statusLine).toContain("audit_holdout_regret=0.050000");
+    expect(statusLine).toContain("audit_speedup=3.50x");
+  });
+
+  it("includes declared-domain exactness labels when present", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      statusLine: "",
+      progressMeta: "",
+      runDisabled: false,
+      canCancel: false,
+      validateDisabled: false,
+    };
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+          backend_used: "Cpu",
+          backend_route: "CompositeMo",
+          search_semantics: {
+            approx_mode: "exact_declared_repaired_domain",
+            workload_family: "composite_mo_exact_grid_explicit_candidates",
+            contract_summary:
+              "Exact on the repaired unique explicit-candidate domain under the constrained Pareto base ranker.",
+            declared_domain: "explicit_repaired_candidate_domain",
+            base_ranker: "constrained_pareto_maximize_both",
+            rerank_operator: "trade22_exactify_pareto_members_only",
+            heatmap_semantics: "sampled_bin_summary_only",
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_composite_mo.json", bytes: 128 };
+      }
+      if (command === "get_gpu_status") {
+        return {};
+      }
+      return {};
+    });
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-declared-domain" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    const statusLine = String(optimize.statusLine || "");
+    expect(statusLine).toContain("search=exact_declared_repaired_domain");
+    expect(statusLine).toContain("domain=explicit_repaired_candidate_domain");
+    expect(statusLine).toContain("ranker=constrained_pareto_maximize_both");
+    expect(statusLine).toContain("rerank=trade22_exactify_pareto_members_only");
+    expect(statusLine).toContain("heatmap=sampled_bin_summary_only");
+  });
+
   it("surfaces backend route metadata for CompositeTrend, RegimeHybrid, and BreakoutMomentum", async () => {
     const optimizeStore = useOptimizeStore(pinia);
     const cases = [

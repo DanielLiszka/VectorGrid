@@ -879,6 +879,19 @@ function summarizeBackendExecution(result: unknown): string {
   const backendUsed = normalizeText(row.backend_used);
   const route = normalizeText(row.backend_route);
   const fallbackReason = normalizeText(row.backend_fallback_reason);
+  const searchSemantics = asRecord(row.search_semantics);
+  const vdps = asRecord(row.vdps);
+  const approxMode = normalizeText(searchSemantics?.approx_mode);
+  const workloadFamily = normalizeText(searchSemantics?.workload_family);
+  const declaredDomain = normalizeText(searchSemantics?.declared_domain);
+  const baseRanker = normalizeText(searchSemantics?.base_ranker);
+  const rerankOperator = normalizeText(searchSemantics?.rerank_operator);
+  const heatmapSemantics = normalizeText(searchSemantics?.heatmap_semantics);
+  const vdpsTopKOverlap = Number(vdps?.quality_check_top_k_overlap);
+  const vdpsBestScoreRegret = Number(vdps?.quality_check_best_score_regret);
+  const vdpsExactWinnerRank = Number(vdps?.quality_check_exact_winner_rank);
+  const vdpsHoldoutRegret = Number(vdps?.quality_check_holdout_regret);
+  const vdpsSpeedupVsExact = Number(vdps?.quality_check_speedup_vs_exact);
   const indicatorPlan = asRecord(row.indicator_route_plan);
   const fastPlan = asRecord(indicatorPlan?.fast);
   const slowPlan = asRecord(indicatorPlan?.slow);
@@ -922,6 +935,29 @@ function summarizeBackendExecution(result: unknown): string {
     parts.push(
       `policy_cpu_route=${policyCpuRouted.join(", ")} (gpu_speedups.csv)`,
     );
+  }
+  if (approxMode) parts.push(`search=${approxMode}`);
+  if (declaredDomain) parts.push(`domain=${declaredDomain}`);
+  if (baseRanker) parts.push(`ranker=${baseRanker}`);
+  if (rerankOperator) parts.push(`rerank=${rerankOperator}`);
+  if (heatmapSemantics) parts.push(`heatmap=${heatmapSemantics}`);
+  if (approxMode === "heuristic_reduced_output" && workloadFamily) {
+    parts.push(`audit=${workloadFamily}`);
+  }
+  if (Number.isFinite(vdpsTopKOverlap)) {
+    parts.push(`audit_overlap=${vdpsTopKOverlap.toFixed(3)}`);
+  }
+  if (Number.isFinite(vdpsBestScoreRegret)) {
+    parts.push(`audit_regret=${vdpsBestScoreRegret.toFixed(6)}`);
+  }
+  if (Number.isFinite(vdpsExactWinnerRank) && vdpsExactWinnerRank > 0) {
+    parts.push(`audit_winner_rank=${Math.floor(vdpsExactWinnerRank)}`);
+  }
+  if (Number.isFinite(vdpsHoldoutRegret)) {
+    parts.push(`audit_holdout_regret=${vdpsHoldoutRegret.toFixed(6)}`);
+  }
+  if (Number.isFinite(vdpsSpeedupVsExact)) {
+    parts.push(`audit_speedup=${vdpsSpeedupVsExact.toFixed(2)}x`);
   }
   if (fallbackReason) parts.push(`fallback=${fallbackReason}`);
   return parts.join(" • ");
@@ -2631,6 +2667,7 @@ function buildOptimizationOutputPreview(value: unknown): string {
     backend_fallback_reason: row.backend_fallback_reason ?? null,
     indicator_route_plan: row.indicator_route_plan ?? null,
     mode_used: row.mode_used ?? null,
+    search_semantics: row.search_semantics ?? null,
   };
   const hasFocusedFields = Object.values(preview).some(
     (entry) => entry != null,

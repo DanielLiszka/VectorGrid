@@ -16940,6 +16940,37 @@ mod tests {
     }
 
     #[test]
+    fn shortlist_slice_omission_summary_requires_slice_local_scores_not_just_aggregate_score() {
+        let labels = super::shortlist_slice_labels(ShortlistSliceMode::Quartiles);
+        let evenly_split = [4.0, 4.0, 0.0, 0.0];
+        let concentrated = [8.0, 0.0, 0.0, 0.0];
+
+        let evenly_mean = evenly_split.iter().copied().sum::<f64>() / evenly_split.len() as f64;
+        let concentrated_mean =
+            concentrated.iter().copied().sum::<f64>() / concentrated.len() as f64;
+        assert!(approx_eq(evenly_mean, concentrated_mean, 1e-12));
+
+        let evenly_summary =
+            super::compute_shortlist_slice_omission_summary(&evenly_split, &labels)
+                .expect("evenly split omission summary");
+        let concentrated_summary =
+            super::compute_shortlist_slice_omission_summary(&concentrated, &labels)
+                .expect("concentrated omission summary");
+
+        assert_ne!(evenly_summary.best_label, concentrated_summary.best_label);
+        assert!(!approx_eq(
+            evenly_summary.worst_score,
+            concentrated_summary.worst_score,
+            1e-12
+        ));
+        assert!(!approx_eq(
+            evenly_summary.spread,
+            concentrated_summary.spread,
+            1e-12
+        ));
+    }
+
+    #[test]
     fn shortlist_slice_benchmark_relative_summary_matches_expected_scores() {
         let labels = super::shortlist_slice_labels(ShortlistSliceMode::Quartiles);
         let summary = compute_shortlist_slice_benchmark_relative_summary(
@@ -16966,6 +16997,52 @@ mod tests {
         assert!(approx_eq(
             summary.omission_excess_spread,
             0.023333333333333334,
+            1e-12
+        ));
+    }
+
+    #[test]
+    fn shortlist_slice_benchmark_relative_summary_requires_slice_local_excess_returns() {
+        let labels = super::shortlist_slice_labels(ShortlistSliceMode::Quartiles);
+        let distributed = [0.04, 0.04, -0.04, -0.04];
+        let concentrated = [
+            0.16,
+            -0.05333333333333334,
+            -0.05333333333333334,
+            -0.05333333333333334,
+        ];
+
+        let distributed_mean = distributed.iter().copied().sum::<f64>() / distributed.len() as f64;
+        let concentrated_mean =
+            concentrated.iter().copied().sum::<f64>() / concentrated.len() as f64;
+        assert!(approx_eq(distributed_mean, concentrated_mean, 1e-12));
+
+        let distributed_summary = compute_shortlist_slice_benchmark_relative_summary(
+            &distributed,
+            &labels,
+            &SpaBenchmarkKind::BuyAndHold,
+        )
+        .expect("distributed benchmark-relative summary");
+        let concentrated_summary = compute_shortlist_slice_benchmark_relative_summary(
+            &concentrated,
+            &labels,
+            &SpaBenchmarkKind::BuyAndHold,
+        )
+        .expect("concentrated benchmark-relative summary");
+
+        assert!(!approx_eq(
+            distributed_summary.beat_rate,
+            concentrated_summary.beat_rate,
+            1e-12
+        ));
+        assert!(!approx_eq(
+            distributed_summary.best_omission_excess_return,
+            concentrated_summary.best_omission_excess_return,
+            1e-12
+        ));
+        assert!(!approx_eq(
+            distributed_summary.worst_omission_excess_return,
+            concentrated_summary.worst_omission_excess_return,
             1e-12
         ));
     }

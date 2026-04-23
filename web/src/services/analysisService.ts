@@ -68,6 +68,8 @@ interface AnalysisStoreState {
   stabilityStatus?: unknown;
   stabilityMeta?: unknown;
   heatmapWrapVisible?: unknown;
+  heatmapMode?: unknown;
+  heatmapModeOptions?: unknown;
   heatmapColor?: unknown;
   heatmapColorOptions?: unknown;
   heatmapRange?: unknown;
@@ -142,6 +144,8 @@ interface HeatmapModel {
   slowMin: number;
   slowMax: number;
   values: Array<number | null>;
+  meanValues: Array<number | null> | null;
+  sampleCounts: Array<number | null> | null;
 }
 
 export interface AnalysisExecutionTopRowSnapshot {
@@ -259,15 +263,55 @@ interface HeatmapMarker {
   label: string;
 }
 
+interface HeatmapResolvedCell {
+  col: number;
+  drawRow: number;
+  logicalRow: number;
+  idx: number;
+}
+
+type HeatmapPalette =
+  | { kind: "diverging"; negative: string; zero: string; positive: string }
+  | { kind: "sequential"; low: string; high: string };
+
 interface HeatmapRenderState {
   signature: string;
   meta: string;
   statusLine: string;
   model: HeatmapModel;
+  displayMode: "objective" | "plateau";
+  displayValues: Array<number | null>;
+  displayLabel: string;
+  displayLegendNote: string;
   req: Record<string, unknown>;
   markers: HeatmapMarker[];
   range: { min: number; max: number; label: string };
-  palette: { negative: string; zero: string; positive: string };
+  palette: HeatmapPalette;
+  plateauDiagnostics: Array<HeatmapPlateauCellDiagnostics | null> | null;
+}
+
+interface HeatmapPlateauCellDiagnostics {
+  plateauScore: number;
+  plateauLabel: string;
+  supportiveNeighbors: number;
+  availableNeighbors: number;
+  sampleCount: number | null;
+  meanValue: number | null;
+  binAgreement: number | null;
+}
+
+interface DerivedPlateauSurface {
+  values: Array<number | null>;
+  diagnostics: Array<HeatmapPlateauCellDiagnostics | null>;
+  multiSampleCellCount: number;
+}
+
+interface ExactNeighborhoodRobustnessSummary {
+  plateauScore: number;
+  plateauLabel: string;
+  neighborCount: number;
+  radius: number;
+  step: number;
 }
 
 const DRILL_CURVES_CACHE_MAX = 96;
@@ -565,29 +609,6 @@ function shortlistNeighborhoodSummaryOf(req: Record<string, unknown>): string {
     text(req.shortlist_neighborhood_step ?? req.shortlistNeighborhoodStep) ||
     "1";
   return `${radius}x${step}`;
-}
-
-function objectiveScoreKey(objective: string, scoreMode = ""): string {
-  if (
-    scoreMode === "balanced_risk_adjusted_10" ||
-    scoreMode === "adversarial_envelope_10" ||
-    scoreMode === "support_shrunk_10" ||
-    scoreMode === "active_sortino_10" ||
-    scoreMode === "effective_sample_lcb_10" ||
-    scoreMode === "omega_vs_sharpe_10" ||
-    scoreMode === "robust_margin_10"
-  ) {
-    return "score";
-  }
-  const obj = text(objective || "Sharpe");
-  if (obj === "Pnl") return "pnl";
-  if (obj === "Sharpe") return "sharpe";
-  if (obj === "Sortino") return "sortino";
-  if (obj === "Calmar") return "calmar";
-  if (obj === "Omega") return "omega";
-  if (obj === "Volatility") return "volatility";
-  if (obj === "MaxDrawdown") return "max_dd";
-  return "sharpe";
 }
 
 function scoreClipSigned(value: number): number {
@@ -3050,6 +3071,25 @@ function readHeatmapModel(res: Record<string, unknown>): HeatmapModel | null {
   const slowMax = Math.max(0, Math.floor(num(heatmap.slow_max, 0)));
   const rawValues = Array.isArray(heatmap.values) ? heatmap.values : [];
   if (binsFast <= 0 || binsSlow <= 0 || !rawValues.length) return null;
+  const expectedLen = binsFast * binsSlow;
+  const readHeatmapVector = (
+    raw: unknown,
+    mapValue: (value: unknown) => number | null,
+  ): Array<number | null> | null => {
+    if (!Array.isArray(raw) || raw.length !== expectedLen) return null;
+    return raw.map(mapValue);
+  };
+  const meanValues = readHeatmapVector(heatmap.mean_values, (value) => {
+    if (value == null) return null;
+    const next = Number(value);
+    return Number.isFinite(next) ? next : null;
+  });
+  const sampleCounts = readHeatmapVector(heatmap.sample_counts, (value) => {
+    if (value == null) return null;
+    const next = Number(value);
+    if (!Number.isFinite(next)) return null;
+    return Math.max(0, Math.floor(next));
+  });
   return {
     binsFast,
     binsSlow,
@@ -3062,6 +3102,8 @@ function readHeatmapModel(res: Record<string, unknown>): HeatmapModel | null {
       const next = Number(value);
       return Number.isFinite(next) ? next : null;
     }),
+    meanValues,
+    sampleCounts,
   };
 }
 
@@ -3071,6 +3113,32 @@ function finiteHeatmapValues(model: HeatmapModel): number[] {
     if (typeof value === "number" && Number.isFinite(value)) out.push(value);
   }
   return out;
+}
+
+function finiteValues(values: Array<number | null>): number[] {
+  const out: number[] = [];
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) out.push(value);
+  }
+  return out;
+}
+
+function heatmapModeOf(store: AnalysisStoreState | null | undefined):
+  | "objective"
+  | "plateau" {
+  return text(store?.heatmapMode).toLowerCase() === "plateau"
+    ? "plateau"
+    : "objective";
+}
+
+function heatmapDisplayLabel(mode: "objective" | "plateau", req: Record<string, unknown>): string {
+  return mode === "plateau" ? "Derived plateau" : scoreLabelOf(req);
+}
+
+function heatmapLegendNote(mode: "objective" | "plateau"): string {
+  return mode === "plateau"
+    ? "Sequential plateau scale"
+    : "Zero-centered";
 }
 
 function quantile(sorted: number[], p: number): number {
@@ -3101,16 +3169,358 @@ function resolveHeatmapRange(values: number[]): {
   return { min: -maxAbs, max: maxAbs, label: "zero-centered" };
 }
 
-function heatmapPalette(): {
-  negative: string;
-  zero: string;
-  positive: string;
-} {
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function heatmapHigherIsBetter(req: Record<string, unknown>): boolean {
+  if (scoreModeOf(req)) return true;
+  const objective = objectiveOf(req);
+  return objective !== "Volatility" && objective !== "MaxDrawdown";
+}
+
+function heatmapValueAt(
+  model: HeatmapModel,
+  logicalRow: number,
+  col: number,
+): number | null {
+  if (
+    logicalRow < 0 ||
+    logicalRow >= model.binsSlow ||
+    col < 0 ||
+    col >= model.binsFast
+  ) {
+    return null;
+  }
+  const value = model.values[heatmapIndex(model, logicalRow, col)];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function heatmapMeanValueAt(
+  model: HeatmapModel,
+  logicalRow: number,
+  col: number,
+): number | null {
+  if (
+    logicalRow < 0 ||
+    logicalRow >= model.binsSlow ||
+    col < 0 ||
+    col >= model.binsFast ||
+    !model.meanValues
+  ) {
+    return null;
+  }
+  const value = model.meanValues[heatmapIndex(model, logicalRow, col)];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function heatmapSampleCountAt(
+  model: HeatmapModel,
+  logicalRow: number,
+  col: number,
+): number | null {
+  if (
+    logicalRow < 0 ||
+    logicalRow >= model.binsSlow ||
+    col < 0 ||
+    col >= model.binsFast ||
+    !model.sampleCounts
+  ) {
+    return null;
+  }
+  const value = model.sampleCounts[heatmapIndex(model, logicalRow, col)];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function heatmapNeighborOffsets(includeDiagonals = false): Array<[number, number]> {
+  const offsets: Array<[number, number]> = [
+    [0, -1],
+    [0, 1],
+    [-1, 0],
+    [1, 0],
+  ];
+  if (!includeDiagonals) return offsets;
+  offsets.push(
+    [-1, -1],
+    [-1, 1],
+    [1, -1],
+    [1, 1],
+  );
+  return offsets;
+}
+
+function heatmapNeighborValues(
+  model: HeatmapModel,
+  logicalRow: number,
+  col: number,
+  includeDiagonals = false,
+): number[] {
+  return heatmapNeighborOffsets(includeDiagonals)
+    .map(([rowOffset, colOffset]) =>
+      heatmapValueAt(model, logicalRow + rowOffset, col + colOffset),
+    )
+    .filter((value): value is number => typeof value === "number");
+}
+
+function readExactNeighborhoodRobustness(
+  res: Record<string, unknown>,
+): ExactNeighborhoodRobustnessSummary | null {
+  const shortlistDiagnostics = asRecord(res.shortlist_slice_diagnostics);
+  if (!Object.keys(shortlistDiagnostics).length) return null;
+  const neighborhoodRobustness = asRecord(
+    shortlistDiagnostics.neighborhood_robustness,
+  );
+  if (!Object.keys(neighborhoodRobustness).length) return null;
+  const plateauScore = Number(neighborhoodRobustness.plateau_score);
+  if (!Number.isFinite(plateauScore)) return null;
   return {
-    negative: "#b91c1c",
-    zero: "#2563eb",
-    positive: "#15803d",
+    plateauScore,
+    plateauLabel: text(neighborhoodRobustness.plateau_label) || "Plateau",
+    neighborCount: Math.max(
+      0,
+      Math.floor(num(neighborhoodRobustness.neighbor_count, 0)),
+    ),
+    radius: Math.max(0, Math.floor(num(neighborhoodRobustness.radius, 0))),
+    step: Math.max(0, Math.floor(num(neighborhoodRobustness.step, 0))),
   };
+}
+
+function labelDerivedPlateau(
+  score: number,
+  supportiveNeighbors: number,
+  availableNeighbors: number,
+): string {
+  const supportRatio =
+    availableNeighbors > 0 ? supportiveNeighbors / availableNeighbors : 0;
+  if (availableNeighbors >= 3 && supportRatio >= 0.7 && score >= 0.78)
+    return "Strong";
+  if (supportRatio >= 0.45 && score >= 0.58) return "Moderate";
+  if (score >= 0.38) return "Narrow";
+  return "Fragile";
+}
+
+function buildDerivedPlateauSurface(
+  req: Record<string, unknown>,
+  model: HeatmapModel,
+): DerivedPlateauSurface {
+  const out = model.values.map(() => null as number | null);
+  const diagnostics = model.values.map(
+    () => null as HeatmapPlateauCellDiagnostics | null,
+  );
+  const finite = finiteHeatmapValues(model);
+  if (!finite.length) {
+    return { values: out, diagnostics, multiSampleCellCount: 0 };
+  }
+  const higherIsBetter = heatmapHigherIsBetter(req);
+  const surfaceMin = Math.min(...finite);
+  const surfaceMax = Math.max(...finite);
+  const meritDenom = Math.max(1.0e-9, surfaceMax - surfaceMin);
+  let multiSampleCellCount = 0;
+
+  for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
+    for (let col = 0; col < model.binsFast; col += 1) {
+      const base = heatmapValueAt(model, logicalRow, col);
+      if (base == null) continue;
+      const idx = heatmapIndex(model, logicalRow, col);
+      const neighbors = heatmapNeighborValues(model, logicalRow, col, true);
+      if (!neighbors.length) {
+        out[idx] = 0;
+        diagnostics[idx] = {
+          plateauScore: 0,
+          plateauLabel: "Fragile",
+          supportiveNeighbors: 0,
+          availableNeighbors: 0,
+          sampleCount: heatmapSampleCountAt(model, logicalRow, col),
+          meanValue: heatmapMeanValueAt(model, logicalRow, col),
+          binAgreement: null,
+        };
+        continue;
+      }
+
+      const localValues = [base, ...neighbors];
+      const localSorted = [...localValues].sort((a, b) => a - b);
+      const localMedian = quantile(localSorted, 0.5);
+      const localMin = localSorted[0] ?? base;
+      const localMax = localSorted[localSorted.length - 1] ?? base;
+      const localSpan = Math.abs(localMax - localMin);
+      const scoreScale = Math.max(localSpan, meritDenom * 0.1, 1.0e-9);
+      const supportTolerance = Math.max(localSpan * 0.75, meritDenom * 0.06, 1.0e-9);
+      const merit =
+        meritDenom <= 1.0e-9
+          ? 1
+          : higherIsBetter
+            ? clamp01((base - surfaceMin) / meritDenom)
+            : clamp01((surfaceMax - base) / meritDenom);
+      const adverseMedianGap = higherIsBetter
+        ? Math.max(0, base - localMedian)
+        : Math.max(0, localMedian - base);
+      const peakDelta = higherIsBetter
+        ? Math.max(0, localMax - base)
+        : Math.max(0, base - localMin);
+      const medianStability = 1 / (1 + adverseMedianGap / scoreScale);
+      const peakStability = 1 / (1 + peakDelta / scoreScale);
+      const scoreStability = 0.6 * medianStability + 0.4 * peakStability;
+      const availableNeighbors = neighbors.length;
+      const supportWeights = neighbors.map((value) => {
+        const adverseDelta = higherIsBetter
+          ? Math.max(0, base - value)
+          : Math.max(0, value - base);
+        return 1 / (1 + adverseDelta / supportTolerance);
+      });
+      const supportiveNeighbors = supportWeights.filter((weight) => weight >= 0.5).length;
+      const supportStrength =
+        supportWeights.reduce((sum, value) => sum + value, 0) /
+        Math.max(1, supportWeights.length);
+      const roughnessRmsDelta = Math.sqrt(
+        neighbors.reduce((sum, value) => {
+          const delta = value - base;
+          return sum + delta * delta;
+        }, 0) / neighbors.length,
+      );
+      const roughnessStability = 1 / (1 + roughnessRmsDelta / scoreScale);
+
+      const curvatureTerms: number[] = [];
+      const left = heatmapValueAt(model, logicalRow, col - 1);
+      const right = heatmapValueAt(model, logicalRow, col + 1);
+      if (left != null && right != null) {
+        curvatureTerms.push(Math.abs(base - (left + right) / 2));
+      }
+      const up = heatmapValueAt(model, logicalRow - 1, col);
+      const down = heatmapValueAt(model, logicalRow + 1, col);
+      if (up != null && down != null) {
+        curvatureTerms.push(Math.abs(base - (up + down) / 2));
+      }
+      const curvaturePenalty = curvatureTerms.length
+        ? curvatureTerms.reduce((sum, value) => sum + value, 0) /
+          curvatureTerms.length
+        : scoreScale;
+      const curvatureStability = 1 / (1 + curvaturePenalty / scoreScale);
+      const sampleCount = heatmapSampleCountAt(model, logicalRow, col);
+      const meanValue = heatmapMeanValueAt(model, logicalRow, col);
+      if ((sampleCount ?? 0) > 1) multiSampleCellCount += 1;
+      const binAgreement =
+        sampleCount != null &&
+        sampleCount > 1 &&
+        meanValue != null &&
+        Number.isFinite(meanValue)
+          ? 1 / (1 + Math.abs(base - meanValue) / scoreScale)
+          : null;
+
+      const plateauScore = clamp01(
+        0.30 * merit +
+          0.16 * supportStrength +
+          0.18 * scoreStability +
+          0.14 * roughnessStability +
+          0.12 * curvatureStability +
+          0.10 * (binAgreement ?? 1),
+      );
+      out[idx] = plateauScore;
+      diagnostics[idx] = {
+        plateauScore,
+        plateauLabel: labelDerivedPlateau(
+          plateauScore,
+          supportiveNeighbors,
+          availableNeighbors,
+        ),
+        supportiveNeighbors,
+        availableNeighbors,
+        sampleCount,
+        meanValue,
+        binAgreement,
+      };
+    }
+  }
+
+  return { values: out, diagnostics, multiSampleCellCount };
+}
+
+function resolveHeatmapDisplay(
+  mode: "objective" | "plateau",
+  req: Record<string, unknown>,
+  model: HeatmapModel,
+): {
+  values: Array<number | null>;
+  range: { min: number; max: number; label: string };
+  palette: HeatmapPalette;
+  label: string;
+  legendNote: string;
+  plateauDiagnostics: Array<HeatmapPlateauCellDiagnostics | null> | null;
+  multiSampleCellCount: number;
+} {
+  if (mode === "plateau") {
+    const surface = buildDerivedPlateauSurface(req, model);
+    return {
+      values: surface.values,
+      range: { min: 0, max: 1, label: "derived plateau score" },
+      palette: heatmapPalette(mode),
+      label: heatmapDisplayLabel(mode, req),
+      legendNote: heatmapLegendNote(mode),
+      plateauDiagnostics: surface.diagnostics,
+      multiSampleCellCount: surface.multiSampleCellCount,
+    };
+  }
+
+  return {
+    values: model.values,
+    range: resolveHeatmapRange(finiteHeatmapValues(model)),
+    palette: heatmapPalette(mode),
+    label: heatmapDisplayLabel(mode, req),
+    legendNote: heatmapLegendNote(mode),
+    plateauDiagnostics: null,
+    multiSampleCellCount: 0,
+  };
+}
+
+function heatmapPalette(mode: "objective" | "plateau"): HeatmapPalette {
+  return mode === "plateau"
+    ? { kind: "sequential", low: "#2563eb", high: "#15803d" }
+    : {
+        kind: "diverging",
+        negative: "#b91c1c",
+        zero: "#2563eb",
+        positive: "#15803d",
+      };
+}
+
+function buildHeatmapMeta(
+  mode: "objective" | "plateau",
+  req: Record<string, unknown>,
+  model: HeatmapModel,
+  range: { min: number; max: number; label: string },
+  multiSampleCellCount = 0,
+): string {
+  if (mode === "plateau") {
+    const densityNote =
+      multiSampleCellCount > 0
+        ? ` • density-aware=${multiSampleCellCount} multi-sample cells`
+        : "";
+    return `Derived plateau heatmap • objective=${scoreLabelOf(req)} • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label} • supportive=8-neighbor agreement${densityNote}`;
+  }
+  return `${scoreLabelOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label}`;
+}
+
+function buildHeatmapStatusLine(
+  mode: "objective" | "plateau",
+  topK: number,
+  exactRobustness: ExactNeighborhoodRobustnessSummary | null,
+  multiSampleCellCount: number,
+): string {
+  const markerNote =
+    topK === 0
+      ? "Markers use the best candidate only."
+      : "Markers reflect the visible Top rows.";
+  if (mode === "plateau") {
+    if (exactRobustness) {
+      return `Heatmap ready. Plateau mode is UI-derived from the raw objective surface; exact winner robustness ${exactRobustness.plateauLabel} ${fmtDisplay(exactRobustness.plateauScore, 4)} over ${exactRobustness.neighborCount} neighbors (radius ${exactRobustness.radius}, step ${exactRobustness.step}). Click a populated cell to inspect a representative parameter pair for that heatmap region. ${markerNote}`;
+    }
+    if (multiSampleCellCount > 0) {
+      return `Heatmap ready. Plateau mode uses supportive 8-neighbor agreement, roughness, curvature, and max-vs-mean bin agreement; hover for plateau, raw objective, and bin details. Click a populated cell to inspect a representative parameter pair for that heatmap region. ${markerNote}`;
+    }
+    return `Heatmap ready. Plateau mode uses supportive 8-neighbor agreement, roughness, and curvature over the raw objective surface; hover for plateau and objective values. Click a populated cell to inspect a representative parameter pair for that heatmap region. ${markerNote}`;
+  }
+  return topK === 0
+    ? "Heatmap ready. This run disabled ranked Top rows (top_k=0), so markers use the best candidate only."
+    : "Heatmap ready. Hover for values and click a populated cell to inspect a representative parameter pair for that heatmap region.";
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -3136,14 +3546,27 @@ function rgbToCss(rgb: { r: number; g: number; b: number }, alpha = 1): string {
 
 function sampleHeatmapColor(
   value: number,
-  maxAbs: number,
-  palette: { negative: string; zero: string; positive: string },
+  minValue: number,
+  maxValue: number,
+  palette: HeatmapPalette,
 ): string {
-  const anchor = Math.max(1e-12, Math.abs(maxAbs));
+  if (palette.kind === "sequential") {
+    const low = hexToRgb(palette.low);
+    const high = hexToRgb(palette.high);
+    const denom = Math.max(1.0e-12, maxValue - minValue);
+    const ratio = clamp01((value - minValue) / denom);
+    return rgbToCss({
+      r: Math.round(low.r + (high.r - low.r) * ratio),
+      g: Math.round(low.g + (high.g - low.g) * ratio),
+      b: Math.round(low.b + (high.b - low.b) * ratio),
+    });
+  }
+
+  const anchor = Math.max(1.0e-12, Math.max(Math.abs(minValue), Math.abs(maxValue)));
   const zero = hexToRgb(palette.zero);
   if (value <= 0) {
     const neg = hexToRgb(palette.negative);
-    const ratio = Math.max(0, Math.min(1, Math.abs(value) / anchor));
+    const ratio = clamp01(Math.abs(value) / anchor);
     return rgbToCss({
       r: Math.round(zero.r + (neg.r - zero.r) * ratio),
       g: Math.round(zero.g + (neg.g - zero.g) * ratio),
@@ -3151,7 +3574,7 @@ function sampleHeatmapColor(
     });
   }
   const pos = hexToRgb(palette.positive);
-  const ratio = Math.max(0, Math.min(1, value / anchor));
+  const ratio = clamp01(value / anchor);
   return rgbToCss({
     r: Math.round(zero.r + (pos.r - zero.r) * ratio),
     g: Math.round(zero.g + (pos.g - zero.g) * ratio),
@@ -3205,7 +3628,7 @@ function heatmapLogicalRowForSlow(model: HeatmapModel, slow: number): number {
 function renderHeatmapLegend(
   min: number,
   max: number,
-  palette: { negative: string; zero: string; positive: string },
+  palette: HeatmapPalette,
 ): void {
   const legend = byIds<HTMLCanvasElement>(["heatmapLegendVue"]);
   if (!legend) return;
@@ -3214,9 +3637,14 @@ function renderHeatmapLegend(
   const width = legend.width;
   const height = legend.height;
   const gradient = ctx.createLinearGradient(0, 0, width, 0);
-  gradient.addColorStop(0, palette.negative);
-  gradient.addColorStop(0.5, palette.zero);
-  gradient.addColorStop(1, palette.positive);
+  if (palette.kind === "sequential") {
+    gradient.addColorStop(0, palette.low);
+    gradient.addColorStop(1, palette.high);
+  } else {
+    gradient.addColorStop(0, palette.negative);
+    gradient.addColorStop(0.5, palette.zero);
+    gradient.addColorStop(1, palette.positive);
+  }
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
@@ -3229,10 +3657,21 @@ function renderHeatmapLegend(
 }
 
 function heatmapMarkerRows(
+  store: AnalysisStoreState | null,
+  req: Record<string, unknown>,
   res: Record<string, unknown>,
   model: HeatmapModel,
 ): Array<{ col: number; drawRow: number; label: string }> {
-  const rows = collectTopRows(res, { allowBestFallback: true }).slice(0, 8);
+  const visibleRows = store
+    ? buildTopRowModelsForCurrentFilters(store, req, res).slice(0, 8)
+    : [];
+  const rows =
+    visibleRows.length > 0
+      ? visibleRows
+      : collectTopRows(res, { allowBestFallback: true }).slice(
+          0,
+          requestedTopK(req) === 0 ? 1 : 8,
+        );
   const out: Array<{ col: number; drawRow: number; label: string }> = [];
   for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i];
@@ -3245,7 +3684,7 @@ function heatmapMarkerRows(
     out.push({
       col,
       drawRow: model.binsSlow - 1 - logicalRow,
-      label: String(i + 1),
+      label: String(Math.max(1, Math.floor(num(row.rank, i + 1)))),
     });
   }
   return out;
@@ -3285,20 +3724,168 @@ function buildHeatmapCellParams(
   };
 }
 
+function resolveHeatmapCellFromPoint(
+  overlay: HTMLCanvasElement,
+  model: HeatmapModel,
+  clientX: number,
+  clientY: number,
+): HeatmapResolvedCell | null {
+  const rect = overlay.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const col = Math.max(
+    0,
+    Math.min(
+      model.binsFast - 1,
+      Math.floor(((clientX - rect.left) / rect.width) * model.binsFast),
+    ),
+  );
+  const drawRow = Math.max(
+    0,
+    Math.min(
+      model.binsSlow - 1,
+      Math.floor(((clientY - rect.top) / rect.height) * model.binsSlow),
+    ),
+  );
+  const logicalRow = model.binsSlow - 1 - drawRow;
+  return {
+    col,
+    drawRow,
+    logicalRow,
+    idx: heatmapIndex(model, logicalRow, col),
+  };
+}
+
+function runHeatmapCellDrilldown(
+  state: HeatmapRenderState,
+  cell: HeatmapResolvedCell,
+): void {
+  const value = state.model.values[cell.idx];
+  if (typeof value !== "number" || !Number.isFinite(value)) return;
+  const params = buildHeatmapCellParams(state.req, state.model, cell.col, cell.logicalRow);
+  const pinia = resolveRuntimePinia();
+  if (pinia) {
+    useWorkflowStore(pinia).selectResultsTab("drill");
+  }
+  void runVueDrillPipeline({ rank: 1, params, metrics: {} });
+}
+
+function bindHeatmapOverlayHandlers(
+  state: HeatmapRenderState,
+  overlay: HTMLCanvasElement,
+): void {
+  const tooltip = byIds<HTMLElement>(["heatmapTooltipVue"]);
+  overlay.onmouseleave = () => {
+    heatmapHoverCell = null;
+    hideHeatmapTooltip();
+    paintHeatmapOverlayFromState(state, overlay);
+  };
+
+  overlay.onmousemove = (event: MouseEvent) => {
+    const cell = resolveHeatmapCellFromPoint(
+      overlay,
+      state.model,
+      event.clientX,
+      event.clientY,
+    );
+    if (!cell || !tooltip) return;
+    const objectiveValue = state.model.values[cell.idx];
+    if (typeof objectiveValue !== "number" || !Number.isFinite(objectiveValue)) {
+      heatmapHoverCell = null;
+      hideHeatmapTooltip();
+      paintHeatmapOverlayFromState(state, overlay);
+      return;
+    }
+    const displayValue = state.displayValues[cell.idx];
+    heatmapHoverCell = { col: cell.col, row: cell.drawRow };
+    const rect = overlay.getBoundingClientRect();
+    const fast = fastForHeatmapCol(state.model, cell.col);
+    const slow = slowForHeatmapLogicalRow(state.model, cell.logicalRow);
+    tooltip.style.display = "block";
+    tooltip.style.left = `${Math.max(8, event.clientX - rect.left + 12)}px`;
+    tooltip.style.top = `${Math.max(8, event.clientY - rect.top + 12)}px`;
+    const fastLabel =
+      text(
+        Array.isArray(state.req.fast_ma_types)
+          ? state.req.fast_ma_types[0]
+          : state.req.fast_ma_type,
+      ).toUpperCase() || "FAST";
+    const slowLabel =
+      text(
+        Array.isArray(state.req.slow_ma_types)
+          ? state.req.slow_ma_types[0]
+          : state.req.slow_ma_type,
+      ).toUpperCase() || "SLOW";
+    const objectiveDisplay = fmtDisplay(objectiveValue, 4);
+    if (state.displayMode === "plateau") {
+      const plateauDetails = state.plateauDiagnostics?.[cell.idx] ?? null;
+      const plateauValue =
+        typeof displayValue === "number" && Number.isFinite(displayValue)
+          ? displayValue
+          : plateauDetails?.plateauScore ?? 0;
+      const plateauLabel =
+        plateauDetails?.plateauLabel ??
+        labelDerivedPlateau(
+          plateauValue,
+          plateauDetails?.supportiveNeighbors ?? 0,
+          plateauDetails?.availableNeighbors ?? 0,
+        );
+      const supportDisplay = `${plateauDetails?.supportiveNeighbors ?? 0}/${plateauDetails?.availableNeighbors ?? 0}`;
+      const meanDisplay =
+        plateauDetails?.meanValue != null &&
+        Number.isFinite(plateauDetails.meanValue)
+          ? ` · mean ${fmtDisplay(plateauDetails.meanValue, 4)}`
+          : "";
+      const sampleDisplay =
+        plateauDetails?.sampleCount != null &&
+        Number.isFinite(plateauDetails.sampleCount)
+          ? ` · samples ${Math.max(0, Math.floor(plateauDetails.sampleCount))}`
+          : "";
+      const agreementDisplay =
+        plateauDetails?.binAgreement != null &&
+        Number.isFinite(plateauDetails.binAgreement) &&
+        (plateauDetails.sampleCount ?? 0) > 1
+          ? ` · bin ${fmtDisplay(plateauDetails.binAgreement, 3)}`
+          : "";
+      tooltip.textContent = `${fastLabel} ${fast} · ${slowLabel} ${slow} · Plateau ${plateauLabel} ${fmtDisplay(plateauValue, 4)} · supportive ${supportDisplay}${sampleDisplay}${meanDisplay}${agreementDisplay} · ${scoreLabelOf(state.req)} ${objectiveDisplay}`;
+    } else {
+      const displayMetric =
+        typeof displayValue === "number" && Number.isFinite(displayValue)
+          ? fmtDisplay(displayValue, 4)
+          : objectiveDisplay;
+      tooltip.textContent = `${fastLabel} ${fast} · ${slowLabel} ${slow} · ${state.displayLabel} ${displayMetric}`;
+    }
+    paintHeatmapOverlayFromState(state, overlay);
+  };
+
+  overlay.onclick = (event: MouseEvent) => {
+    const cell = resolveHeatmapCellFromPoint(
+      overlay,
+      state.model,
+      event.clientX,
+      event.clientY,
+    );
+    if (!cell) return;
+    runHeatmapCellDrilldown(state, cell);
+  };
+}
+
 function heatmapBaseSignature(
   run: WorkflowRunState | null,
   req: Record<string, unknown>,
   res: Record<string, unknown>,
   model: HeatmapModel | null,
+  mode: "objective" | "plateau",
+  store: AnalysisStoreState | null,
 ): string {
   return stableStringify({
     run: workflowRunIdentity(run),
+    mode,
     objective: objectiveOf(req),
     score_mode: scoreModeOf(req),
     top_k: requestedTopK(req),
     heatmap_bins: requestedHeatmapBins(req),
     model,
-    markers: model ? heatmapMarkerRows(res, model) : [],
+    markers: model ? heatmapMarkerRows(store, req, res, model) : [],
   });
 }
 
@@ -3306,7 +3893,7 @@ function paintHeatmapBaseFromState(
   state: HeatmapRenderState,
   canvas: HTMLCanvasElement,
 ): void {
-  const { model, range, palette } = state;
+  const { model, displayValues, range, palette } = state;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const width = canvas.width;
@@ -3318,7 +3905,7 @@ function paintHeatmapBaseFromState(
   for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
     const drawRow = model.binsSlow - 1 - logicalRow;
     for (let col = 0; col < model.binsFast; col += 1) {
-      const value = model.values[heatmapIndex(model, logicalRow, col)];
+      const value = displayValues[heatmapIndex(model, logicalRow, col)];
       const x = col * cellW;
       const y = drawRow * cellH;
       if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -3328,7 +3915,8 @@ function paintHeatmapBaseFromState(
       }
       ctx.fillStyle = sampleHeatmapColor(
         value,
-        Math.max(Math.abs(range.min), Math.abs(range.max)),
+        range.min,
+        range.max,
         palette,
       );
       ctx.fillRect(x, y, cellW, cellH);
@@ -3395,7 +3983,9 @@ function renderHeatmapCanvas(
   req: Record<string, unknown>,
   res: Record<string, unknown>,
 ): boolean {
+  const mode = heatmapModeOf(store);
   const model = readHeatmapModel(res);
+  const exactRobustness = readExactNeighborhoodRobustness(res);
   const wrap = byIds<HTMLElement>(["heatmapWrapVue"]);
   const hint = byIds<HTMLElement>(["heatmapEmptyHintVue"]);
   const meta = byIds<HTMLElement>(["heatmapMetaVue"]);
@@ -3440,102 +4030,64 @@ function renderHeatmapCanvas(
     return true;
   }
 
-  const range = resolveHeatmapRange(finite);
-  const palette = heatmapPalette();
+  const display = resolveHeatmapDisplay(mode, req, model);
+  const displayFinite = finiteValues(display.values);
+  if (!displayFinite.length) {
+    heatmapRenderState = null;
+    wrap.style.display = "none";
+    hint.style.display = "block";
+    store.heatmapWrapVisible = false;
+    store.canHeatmapExportPng = false;
+    store.heatmapMeta =
+      mode === "plateau"
+        ? "Derived plateau heatmap could not be built from this surface."
+        : "Heatmap payload was returned, but it contained no populated cells.";
+    store.heatmapStatusLine = "Heatmap unavailable for this run.";
+    meta.textContent = text(store.heatmapMeta);
+    hideHeatmapTooltip();
+    return true;
+  }
+
   const state: HeatmapRenderState = {
-    signature: heatmapBaseSignature(readWorkflowRun(), req, res, model),
+    signature: heatmapBaseSignature(readWorkflowRun(), req, res, model, mode, store),
     meta: "",
     statusLine: "",
     model,
+    displayMode: mode,
+    displayValues: display.values,
+    displayLabel: display.label,
+    displayLegendNote: display.legendNote,
     req,
-    markers: heatmapMarkerRows(res, model),
-    range,
-    palette,
+    markers: heatmapMarkerRows(store, req, res, model),
+    range: display.range,
+    palette: display.palette,
+    plateauDiagnostics: display.plateauDiagnostics,
   };
 
   paintHeatmapBaseFromState(state, canvas);
   paintHeatmapOverlayFromState(state, overlay);
   canvas.dataset.renderSignature = state.signature;
   overlay.dataset.renderSignature = state.signature;
-
-  overlay.onmouseleave = () => {
-    heatmapHoverCell = null;
-    hideHeatmapTooltip();
-    paintHeatmapOverlayFromState(state, overlay);
-  };
-
-  overlay.onmousemove = (event: MouseEvent) => {
-    const rect = overlay.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const col = Math.max(
-      0,
-      Math.min(
-        model.binsFast - 1,
-        Math.floor(((event.clientX - rect.left) / rect.width) * model.binsFast),
-      ),
-    );
-    const drawRow = Math.max(
-      0,
-      Math.min(
-        model.binsSlow - 1,
-        Math.floor(((event.clientY - rect.top) / rect.height) * model.binsSlow),
-      ),
-    );
-    const logicalRow = model.binsSlow - 1 - drawRow;
-    const value = model.values[heatmapIndex(model, logicalRow, col)];
-    heatmapHoverCell = { col, row: drawRow };
-    const fast = fastForHeatmapCol(model, col);
-    const slow = slowForHeatmapLogicalRow(model, logicalRow);
-    tooltip.style.display = "block";
-    tooltip.style.left = `${Math.max(8, event.clientX - rect.left + 12)}px`;
-    tooltip.style.top = `${Math.max(8, event.clientY - rect.top + 12)}px`;
-    tooltip.textContent = `${text(Array.isArray(state.req.fast_ma_types) ? state.req.fast_ma_types[0] : state.req.fast_ma_type).toUpperCase() || "FAST"} ${fast} · ${text(Array.isArray(state.req.slow_ma_types) ? state.req.slow_ma_types[0] : state.req.slow_ma_type).toUpperCase() || "SLOW"} ${slow} · ${scoreLabelOf(state.req)} ${fmtDisplay(value, 4)}`;
-    paintHeatmapOverlayFromState(state, overlay);
-  };
-
-  overlay.onclick = (event: MouseEvent) => {
-    const rect = overlay.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const col = Math.max(
-      0,
-      Math.min(
-        model.binsFast - 1,
-        Math.floor(((event.clientX - rect.left) / rect.width) * model.binsFast),
-      ),
-    );
-    const drawRow = Math.max(
-      0,
-      Math.min(
-        model.binsSlow - 1,
-        Math.floor(((event.clientY - rect.top) / rect.height) * model.binsSlow),
-      ),
-    );
-    const logicalRow = model.binsSlow - 1 - drawRow;
-    const value = model.values[heatmapIndex(model, logicalRow, col)];
-    if (typeof value !== "number" || !Number.isFinite(value)) return;
-    const params = buildHeatmapCellParams(state.req, model, col, logicalRow);
-    const objective = objectiveOf(state.req);
-    const scoreMode = scoreModeOf(state.req);
-    const metrics: Record<string, unknown> = {
-      [objectiveScoreKey(objective, scoreMode)]: value,
-    };
-    const pinia = resolveRuntimePinia();
-    if (pinia) {
-      useWorkflowStore(pinia).selectResultsTab("drill");
-    }
-    void runVueDrillPipeline({ rank: 1, params, metrics });
-  };
+  bindHeatmapOverlayHandlers(state, overlay);
 
   wrap.style.display = "block";
   hint.style.display = "none";
-  renderHeatmapLegend(range.min, range.max, palette);
+  renderHeatmapLegend(state.range.min, state.range.max, state.palette);
   store.heatmapWrapVisible = true;
   store.canHeatmapExportPng = true;
-  store.heatmapMeta = `${scoreLabelOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax} • scale=${range.label}`;
-  store.heatmapStatusLine =
-    topK === 0
-      ? "Heatmap ready. This run disabled ranked Top rows (top_k=0), so markers use the best candidate only."
-      : "Heatmap ready. Hover for values and click a populated cell to drill down.";
+  store.heatmapMeta = buildHeatmapMeta(
+    mode,
+    req,
+    model,
+    state.range,
+    display.multiSampleCellCount,
+  );
+  store.heatmapStatusLine = buildHeatmapStatusLine(
+    mode,
+    topK,
+    exactRobustness,
+    display.multiSampleCellCount,
+  );
   state.meta = text(store.heatmapMeta);
   state.statusLine = text(store.heatmapStatusLine);
   heatmapRenderState = state;
@@ -3550,45 +4102,107 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
   const req = asRecord(run.req);
   const res = asRecord(run.res);
   if (!Object.keys(res).length) return false;
+  const mode = heatmapModeOf(store);
 
-  store.heatmapColor = "diverging_zero";
-  store.heatmapRange = "zero_centered";
-  store.heatmapShowTop = "true";
-  store.heatmapShowCrosshair = "true";
-  store.heatmapColorOptions = [
-    {
-      value: "diverging_zero",
-      label: "Diverging zero-centered",
-      disabled: false,
-    },
+  store.heatmapModeOptions = [
+    { value: "objective", label: "Objective score", disabled: false },
+    { value: "plateau", label: "Derived plateau", disabled: false },
   ];
-  store.heatmapRangeOptions = [
-    { value: "zero_centered", label: "Zero-centered", disabled: false },
-  ];
-  store.heatmapShowTopOptions = [
+  const modeOptions = Array.isArray(store.heatmapModeOptions)
+    ? (store.heatmapModeOptions as Array<{ value?: unknown }>)
+    : [];
+  if (!modeOptions.some((option) => text(option.value) === mode)) {
+    store.heatmapMode = "objective";
+  }
+  const colorOptions =
+    mode === "plateau"
+      ? [{ value: "derived_plateau", label: "Plateau sequential", disabled: false }]
+      : [
+          {
+            value: "diverging_zero",
+            label: "Diverging zero-centered",
+            disabled: false,
+          },
+        ];
+  const rangeOptions =
+    mode === "plateau"
+      ? [{ value: "plateau_score", label: "Plateau score (0-1)", disabled: false }]
+      : [{ value: "zero_centered", label: "Zero-centered", disabled: false }];
+  const showTopOptions = [
     { value: "true", label: "Show markers", disabled: false },
   ];
-  store.heatmapShowCrosshairOptions = [
+  const showCrosshairOptions = [
     { value: "true", label: "Show crosshair", disabled: false },
   ];
+  const coerceSelectValue = (
+    currentValue: unknown,
+    options: Array<{ value: string }>,
+    fallbackValue: string,
+  ): string =>
+    options.some((option) => text(option.value) === text(currentValue))
+      ? text(currentValue)
+      : fallbackValue;
+  store.heatmapColorOptions = colorOptions;
+  store.heatmapRangeOptions = rangeOptions;
+  store.heatmapShowTopOptions = showTopOptions;
+  store.heatmapShowCrosshairOptions = showCrosshairOptions;
+  store.heatmapColor = coerceSelectValue(
+    store.heatmapColor,
+    colorOptions,
+    colorOptions[0]?.value ?? "",
+  );
+  store.heatmapRange = coerceSelectValue(
+    store.heatmapRange,
+    rangeOptions,
+    rangeOptions[0]?.value ?? "",
+  );
+  store.heatmapShowTop = coerceSelectValue(
+    store.heatmapShowTop,
+    showTopOptions,
+    showTopOptions[0]?.value ?? "true",
+  );
+  store.heatmapShowCrosshair = coerceSelectValue(
+    store.heatmapShowCrosshair,
+    showCrosshairOptions,
+    showCrosshairOptions[0]?.value ?? "true",
+  );
 
   const requestedBins = requestedHeatmapBins(req);
   const model = readHeatmapModel(res);
+  const exactRobustness = readExactNeighborhoodRobustness(res);
   if (requestedBins <= 0) {
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
-    store.heatmapMeta = "Heatmap disabled for this run (heatmap_bins=0).";
+    store.heatmapMeta =
+      mode === "plateau"
+        ? "Derived plateau heatmap disabled for this run (heatmap_bins=0)."
+        : "Heatmap disabled for this run (heatmap_bins=0).";
     store.heatmapStatusLine =
       "Increase Advanced > Heatmap bins above 0, then rerun optimization to generate a heatmap.";
   } else if (model) {
+    const display = resolveHeatmapDisplay(mode, req, model);
     store.heatmapWrapVisible = true;
     store.canHeatmapExportPng = true;
-    store.heatmapMeta = `${scoreLabelOf(req)} heatmap • bins=${model.binsFast}x${model.binsSlow} • fast=${model.fastMin}-${model.fastMax} • slow=${model.slowMin}-${model.slowMax}`;
-    store.heatmapStatusLine = "Heatmap available.";
+    store.heatmapMeta = buildHeatmapMeta(
+      mode,
+      req,
+      model,
+      display.range,
+      display.multiSampleCellCount,
+    );
+    store.heatmapStatusLine = buildHeatmapStatusLine(
+      mode,
+      requestedTopK(req),
+      exactRobustness,
+      display.multiSampleCellCount,
+    );
   } else {
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
-    store.heatmapMeta = "Heatmap data unavailable for this run.";
+    store.heatmapMeta =
+      mode === "plateau"
+        ? "Derived plateau heatmap unavailable because no objective heatmap payload was returned."
+        : "Heatmap data unavailable for this run.";
     store.heatmapStatusLine = "No heatmap payload was returned for this run.";
   }
 
@@ -3605,7 +4219,14 @@ export function restoreHeatmapVisible(): boolean {
   const res = asRecord(run.res);
   if (!Object.keys(res).length) return false;
   const model = readHeatmapModel(res);
-  const nextSignature = heatmapBaseSignature(run, req, res, model);
+  const nextSignature = heatmapBaseSignature(
+    run,
+    req,
+    res,
+    model,
+    heatmapModeOf(store),
+    store,
+  );
   if (nextSignature !== heatmapRenderState.signature) return false;
 
   const wrap = byIds<HTMLElement>(["heatmapWrapVue"]);
@@ -3625,6 +4246,7 @@ export function restoreHeatmapVisible(): boolean {
   }
   paintHeatmapOverlayFromState(heatmapRenderState, overlay);
   overlay.dataset.renderSignature = heatmapRenderState.signature;
+  bindHeatmapOverlayHandlers(heatmapRenderState, overlay);
   renderHeatmapLegend(
     heatmapRenderState.range.min,
     heatmapRenderState.range.max,
@@ -5226,7 +5848,9 @@ export async function clearTopFilters(): Promise<void> {
   store.filterMinTrades = "";
   store.filterMinExposure = "";
   store.canClearTopFilters = false;
-  if (!refreshTopTableFromWorkflowRun()) markAnalysisVue(store);
+  const topRefreshed = refreshTopTableFromWorkflowRun();
+  const heatmapRefreshed = refreshHeatmapFromWorkflowRun();
+  if (!topRefreshed && !heatmapRefreshed) markAnalysisVue(store);
   setStatus(store, "Top filters cleared.");
 }
 
@@ -5251,7 +5875,9 @@ export async function sortTopTable(key: string): Promise<void> {
       { key: sortKey, label: sortKey, sort: nextDir, alignLeft: false },
     ];
   }
-  if (refreshTopTableFromWorkflowRun()) {
+  const topRefreshed = refreshTopTableFromWorkflowRun();
+  const heatmapRefreshed = refreshHeatmapFromWorkflowRun();
+  if (topRefreshed || heatmapRefreshed) {
     setStatus(store, `Sorted top rows by ${sortKey} (${nextDir}).`);
   }
 }

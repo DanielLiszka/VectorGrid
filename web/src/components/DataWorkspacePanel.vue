@@ -11,6 +11,7 @@ import { storeToRefs } from "pinia";
 import { useShellMount } from "../composables/useShellMount";
 import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import ContextHelpTip from "./ContextHelpTip.vue";
+import { AppButton, AppMetricStrip, AppPanel, AppStatusChip, AppToolbar } from "./ui";
 import { useDataStore } from "../stores/dataStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
@@ -141,6 +142,12 @@ const dataSummaryChips = computed(() => {
   if (fieldCount > 0) chips.push(`Fields: ${fieldCount}`);
   return chips;
 });
+const datasetMetricItems = computed(() => [
+  { key: "loaded_id", label: "Loaded ID", value: String(dataId.value || "—") },
+  { key: "rows", label: "Rows", value: String(dataLen.value || "—") },
+  { key: "dataset", label: "Dataset", value: String(datasetLabel.value || "—") },
+  { key: "range", label: "Range", value: String(datasetRange.value || "—") },
+]);
 
 watch(
   () =>
@@ -336,21 +343,16 @@ onBeforeUnmount(() => {
         </div>
       </header>
       <div class="panelSummaryChips" aria-label="Dataset summary">
-        <span
+        <AppStatusChip
           v-for="chip in dataSummaryChips"
           :key="`data_summary_${chip}`"
           class="panelSummaryChip mono"
-          >{{ chip }}</span
+          tone="muted"
+          >{{ chip }}</AppStatusChip
         >
       </div>
 
-      <section class="pane paneProminent">
-        <div class="panelSectionHeader">
-          <div>
-            <div class="panelEyebrow">Import</div>
-            <h3 class="panelPaneTitle">CSV input</h3>
-          </div>
-        </div>
+      <AppPanel eyebrow="Import" title="CSV input" variant="prominent">
         <label for="vueCsvPath">CSV path</label>
         <div class="inputWithActions">
           <input
@@ -366,33 +368,33 @@ onBeforeUnmount(() => {
             "
             @change="commitInputValue('csvPath', csvPathDraft)"
           />
-          <div class="actions">
-            <button type="button" :disabled="!canBrowseCsv" @click="browseCsv">
+          <AppToolbar aria-label="CSV data actions">
+            <AppButton size="sm" :disabled="!canBrowseCsv" @click="browseCsv">
               Browse
-            </button>
-            <button
-              type="button"
+            </AppButton>
+            <AppButton
+              size="sm"
               :disabled="!canPolygonOpen"
               @click="togglePolygonSection"
             >
               {{ polygonOpen ? "Hide Polygon" : "Polygon" }}
-            </button>
-            <button
-              type="button"
-              class="primary"
+            </AppButton>
+            <AppButton
+              variant="primary"
+              size="sm"
               :disabled="!canLoadCsv"
               @click="loadCsvFromDraft"
             >
               Load CSV
-            </button>
-            <button
-              type="button"
+            </AppButton>
+            <AppButton
+              size="sm"
               :disabled="!canClearData"
               @click="dataStore.clearData()"
             >
               Clear
-            </button>
-          </div>
+            </AppButton>
+          </AppToolbar>
         </div>
         <div class="recentWrap" v-if="recentCsvPaths.length">
           <div class="k">Recent</div>
@@ -408,27 +410,25 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-      </section>
+      </AppPanel>
 
-      <section class="pane" v-if="sampleCsvVisible && sampleCsvOptions.length">
-        <div class="panelSectionHeader">
-          <div>
-            <div class="panelEyebrow">Quick Start</div>
-            <h3 class="panelPaneTitle">Sample datasets</h3>
-          </div>
-        </div>
-        <div class="actions">
-          <button
+      <AppPanel
+        v-if="sampleCsvVisible && sampleCsvOptions.length"
+        eyebrow="Quick Start"
+        title="Sample datasets"
+      >
+        <AppToolbar aria-label="Sample dataset actions">
+          <AppButton
             v-for="(sample, index) in sampleCsvOptions"
             :key="`sample_${index}_${sample.label}`"
-            type="button"
+            size="sm"
             :disabled="sample.disabled"
             @click="loadSampleCsv(sample.path, index)"
           >
             {{ sample.label }}
-          </button>
-        </div>
-      </section>
+          </AppButton>
+        </AppToolbar>
+      </AppPanel>
 
       <section class="pane paneProminent" v-if="polygonOpen">
         <div class="panelSectionHeader">
@@ -714,23 +714,7 @@ onBeforeUnmount(() => {
             <h3 class="panelPaneTitle">Dataset context</h3>
           </div>
         </div>
-        <div class="stats">
-          <div>
-            <span class="k">Loaded ID</span
-            ><span class="v mono">{{ dataId }}</span>
-          </div>
-          <div>
-            <span class="k">Rows</span><span class="v mono">{{ dataLen }}</span>
-          </div>
-          <div>
-            <span class="k">Dataset</span
-            ><span class="v mono">{{ datasetLabel }}</span>
-          </div>
-          <div>
-            <span class="k">Range</span
-            ><span class="v mono">{{ datasetRange }}</span>
-          </div>
-        </div>
+        <AppMetricStrip :items="datasetMetricItems" aria-label="Dataset context metrics" />
       </section>
 
       <section class="pane">

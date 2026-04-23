@@ -1,21 +1,53 @@
 import { $, browser } from '@wdio/globals'
-import { desktopSmokeAppUrl } from './appPaths.js'
+import { desktopSmokeAppUrl, desktopSmokeDisablePreview, desktopSmokePackagedUrl } from './appPaths.js'
 import { commandPaletteSelectors, shellSelectors, taskCenterSelectors, type WorkspaceKey, workspaceTabSelector } from './selectors.js'
+
+async function waitForShellMarkerOrUrl(urlPrefix: string, timeout: number, timeoutMsg: string): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      const titlebarVisible = await (await $(shellSelectors.titlebar))
+        .isDisplayed()
+        .catch(() => false)
+      if (titlebarVisible) {
+        return true
+      }
+      const nextUrl = await browser.getUrl().catch(() => '')
+      return Boolean(nextUrl && nextUrl !== 'about:blank' && nextUrl.startsWith(urlPrefix))
+    },
+    {
+      timeout,
+      interval: 250,
+      timeoutMsg,
+    },
+  )
+}
 
 export async function waitForShellReady(timeout = 30000): Promise<void> {
   const currentUrl = await browser.getUrl().catch(() => '')
   if (!currentUrl || currentUrl === 'about:blank') {
-    await browser.url(desktopSmokeAppUrl)
-    await browser.waitUntil(
-      async () => {
-        const nextUrl = await browser.getUrl().catch(() => '')
-        return nextUrl.startsWith(desktopSmokeAppUrl)
-      },
-      {
-        timeout: 10_000,
-        timeoutMsg: `Desktop smoke never navigated away from the blank shell to ${desktopSmokeAppUrl}.`,
-      },
-    )
+    if (desktopSmokeDisablePreview) {
+      try {
+        await waitForShellMarkerOrUrl(
+          desktopSmokePackagedUrl,
+          Math.min(timeout, 4_000),
+          'Desktop smoke stayed on the blank WebDriver URL long enough to require packaged-shell bootstrap.',
+        )
+      } catch {
+        await browser.url(desktopSmokePackagedUrl)
+        await waitForShellMarkerOrUrl(
+          desktopSmokePackagedUrl,
+          Math.min(timeout, 12_000),
+          `Desktop smoke never attached to the packaged shell at ${desktopSmokePackagedUrl}.`,
+        )
+      }
+    } else {
+      await browser.url(desktopSmokeAppUrl)
+      await waitForShellMarkerOrUrl(
+        desktopSmokeAppUrl,
+        10_000,
+        `Desktop smoke never navigated away from the blank shell to ${desktopSmokeAppUrl}.`,
+      )
+    }
   }
 
   await (await $(shellSelectors.titlebar)).waitForDisplayed({ timeout })

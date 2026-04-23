@@ -296,6 +296,11 @@ pub struct MetaCandidateAggregate {
     pub representatives: Vec<Value>,
     /// Number of train-stage candidate rows absorbed into this group.
     pub samples: usize,
+    /// Conservative lower bound on distinct train-stage evidence units.
+    ///
+    /// This intentionally stays descriptive in this pass. Ranking and gating
+    /// continue to use the existing raw `samples` and `meta_score` behavior.
+    pub effective_samples_lower_bound: usize,
     /// Number of distinct train-stage datasets represented by `train_rows`.
     pub datasets_covered: usize,
     /// Train-stage dataset coverage ratio for this group.
@@ -307,7 +312,8 @@ pub struct MetaCandidateAggregate {
     pub robust_score_p10: f64,
     pub tail_gap: f64,
     pub max_dd_p90: f64,
-    pub cross_score_median: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cross_score_median: Option<f64>,
     pub psr_median: f64,
     pub dsr_median: f64,
     /// Train-stage ranking score before any optional holdout adjustment.
@@ -411,6 +417,33 @@ struct RepresentativeParam {
     canonical_sig: Option<String>,
 }
 
+fn has_clustered_train_row_disagreement(group: &MetaCandidateAggregate) -> bool {
+    if group.representatives.len() <= 1 || group.train_rows.len() < 2 {
+        return false;
+    }
+
+    let best = group
+        .train_rows
+        .iter()
+        .map(|row| row.robust_score)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let worst = group
+        .train_rows
+        .iter()
+        .map(|row| row.robust_score)
+        .fold(f64::INFINITY, f64::min);
+    let has_positive = group
+        .train_rows
+        .iter()
+        .any(|row| row.robust_score > 0.25 && row.pnl > 0.0 && row.sharpe > 0.0);
+    let has_negative = group
+        .train_rows
+        .iter()
+        .any(|row| row.robust_score < 0.35 && row.pnl < 0.0 && row.sharpe < 0.0);
+
+    has_positive && has_negative && (best - worst) > 0.50
+}
+
 fn compute_meta_group_evidence_flags(group: &MetaCandidateAggregate) -> Vec<String> {
     let mut flags: Vec<String> = Vec::new();
 
@@ -420,6 +453,15 @@ fn compute_meta_group_evidence_flags(group: &MetaCandidateAggregate) -> Vec<Stri
             GROUP_EVIDENCE_MIN_SAMPLES_WARN
         ));
     }
+    if group.effective_samples_lower_bound < GROUP_EVIDENCE_MIN_SAMPLES_WARN {
+        flags.push(format!(
+            "train_effective_samples_lt_{}",
+            GROUP_EVIDENCE_MIN_SAMPLES_WARN
+        ));
+    }
+    if group.effective_samples_lower_bound < group.samples {
+        flags.push("train_samples_overlap_adjusted".to_string());
+    }
     if group.pass_rate < GROUP_EVIDENCE_MIN_PASS_RATE_WARN {
         flags.push(format!(
             "train_pass_rate_lt_{:.2}",
@@ -428,6 +470,9 @@ fn compute_meta_group_evidence_flags(group: &MetaCandidateAggregate) -> Vec<Stri
     }
     if group.tail_gap > group.robust_score_p10.abs().max(0.25) {
         flags.push("train_tail_gap_wide".to_string());
+    }
+    if has_clustered_train_row_disagreement(group) {
+        flags.push("train_cluster_disagreement".to_string());
     }
 
     if let Some(holdout) = group.holdout.as_ref() {
@@ -468,6 +513,14 @@ fn compare_meta_candidate_aggregate_rank(
     b.meta_score
         .total_cmp(&a.meta_score)
         .then_with(|| a.key.cmp(&b.key))
+}
+
+fn summarize_cross_score_median(cross_scores: &mut Vec<f64>) -> Option<f64> {
+    if cross_scores.is_empty() {
+        None
+    } else {
+        Some(quantile_in_place(cross_scores, 0.50))
+    }
 }
 
 const GROUP_GATE_MIN_ROBUST_P10: f64 = 0.0;
@@ -598,10 +651,7 @@ pub fn meta_select_from_artifacts(
                 .and_then(|v| v.as_f64())
                 .or_else(|| cand.pointer("/in_sample/max_dd").and_then(|v| v.as_f64()))
                 .unwrap_or(0.0);
-            let cross_score = cand
-                .pointer("/cross_ticker/score")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
+            let cross_score = cand.pointer("/cross_ticker/score").and_then(|v| v.as_f64());
             let psr = cand.get("psr").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let dsr = cand.get("dsr").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let pnl = cand
@@ -655,7 +705,9 @@ pub fn meta_select_from_artifacts(
                 canonical_sig: cache_representative_signatures.then(|| canonical_json(params)),
             });
             entry.max_dds.push(max_dd);
-            entry.cross_scores.push(cross_score);
+            if let Some(cross_score) = cross_score {
+                entry.cross_scores.push(cross_score);
+            }
             entry.psrs.push(psr);
             entry.dsrs.push(dsr);
             entry.dataset_keys.insert(dataset_key.clone());
@@ -669,7 +721,7 @@ pub fn meta_select_from_artifacts(
                 max_dd: in_sample_dd,
                 trades,
                 exposure,
-                cross_score,
+                cross_score: cross_score.unwrap_or(0.0),
                 cross_pnl_positive_frac,
                 psr,
                 dsr,
@@ -718,10 +770,11 @@ pub fn meta_select_from_artifacts(
         let robust_score_median = quantile_in_place(&mut acc.robust_scores, 0.50);
         let robust_score_p10 = quantile_in_place(&mut acc.robust_scores, 0.10);
         let max_dd_p90 = quantile_in_place(&mut acc.max_dds, 0.90);
-        let cross_score_median = quantile_in_place(&mut acc.cross_scores, 0.50);
+        let cross_score_median = summarize_cross_score_median(&mut acc.cross_scores);
         let psr_median = quantile_in_place(&mut acc.psrs, 0.50);
         let dsr_median = quantile_in_place(&mut acc.dsrs, 0.50);
         let datasets_covered = acc.dataset_keys.len();
+        let effective_samples_lower_bound = datasets_covered;
 
         let pass_rate = if dataset_universe > 0 {
             (datasets_covered as f64) / (dataset_universe as f64)
@@ -745,7 +798,7 @@ pub fn meta_select_from_artifacts(
 
         let meta_score = req.weights.w_p10 * robust_score_p10
             + req.weights.w_median * robust_score_median
-            + req.weights.w_cross * cross_score_median
+            + req.weights.w_cross * cross_score_median.unwrap_or(0.0)
             + req.weights.w_pass_rate * pass_rate
             - req.weights.w_dd_p90 * max_dd_p90
             + req.weights.w_psr * psr_median
@@ -762,6 +815,7 @@ pub fn meta_select_from_artifacts(
             slow_ma_params: acc.slow_ma_params,
             representatives,
             samples,
+            effective_samples_lower_bound,
             datasets_covered,
             pass_rate,
             robust_score_median,
@@ -831,6 +885,15 @@ pub fn meta_select_from_artifacts(
     if groups_with_evidence_flags > 0 {
         warnings.push(format!(
             "Meta evidence warning: {groups_with_evidence_flags} group(s) have thin or noisy evidence."
+        ));
+    }
+    let groups_with_overlap_adjusted_samples = aggregates
+        .iter()
+        .filter(|group| group.effective_samples_lower_bound < group.samples)
+        .count();
+    if groups_with_overlap_adjusted_samples > 0 {
+        warnings.push(format!(
+            "Meta dependence warning: {groups_with_overlap_adjusted_samples} group(s) have dataset-level effective sample lower bounds below their raw sample counts."
         ));
     }
 
@@ -2050,6 +2113,79 @@ mod tests {
     }
 
     #[test]
+    fn meta_select_uses_dataset_coverage_as_effective_sample_lower_bound() {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 5,
+            "slow_len": 20,
+            "halftrend": {"amplitude": 2, "atr_period": 100, "channel_deviation": 2.0},
+            "macz": {},
+            "ott": {},
+            "strategy": {}
+        });
+        let artifacts: Vec<Value> = (0..5)
+            .map(|idx| {
+                json!({
+                    "kind": "vectorgrid_run_artifact",
+                    "ts": format!("2026-01-26T00:0{idx}:00Z"),
+                    "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+                    "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
+                    "validation": { "res": {
+                        "candidates": [
+                            {
+                                "params": params.clone(),
+                                "in_sample": { "pnl": 1.0 + idx as f64, "sharpe": 2.0, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                                "robust_score": 1.1 + (idx as f64 * 0.01),
+                                "robust_pareto": true
+                            }
+                        ]
+                    }}
+                })
+            })
+            .collect();
+
+        let req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: None,
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: true,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let res = meta_select_from_artifacts(&req, &artifacts, None);
+        assert_eq!(res.groups.len(), 1);
+        assert_eq!(res.groups[0].samples, 5);
+        assert_eq!(res.groups[0].effective_samples_lower_bound, 1);
+        assert!(res.groups[0]
+            .evidence_flags
+            .iter()
+            .any(|flag| flag == "train_effective_samples_lt_3"));
+        assert!(res.groups[0]
+            .evidence_flags
+            .iter()
+            .any(|flag| flag == "train_samples_overlap_adjusted"));
+        assert!(res
+            .warnings
+            .iter()
+            .any(|w| w.contains("dataset-level effective sample lower bounds")));
+    }
+
+    #[test]
     fn meta_select_keeps_legacy_validation_artifacts_compatible_without_run_verdict() {
         let params = json!({
             "fast_ma_type": "sma",
@@ -2193,6 +2329,152 @@ mod tests {
         assert_eq!(clustered.groups.len(), 1);
         assert_eq!(clustered.groups[0].samples, 2);
         assert!(clustered.groups[0].representatives.len() >= 2);
+    }
+
+    #[test]
+    fn clustered_grouping_surfaces_disagreement_as_evidence_only() {
+        let p1 = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 6,
+            "slow_len": 21,
+            "halftrend": {"amplitude": 2, "atr_period": 99, "channel_deviation": 2.10},
+            "macz": {},
+            "ott": {},
+            "strategy": {}
+        });
+        let p2 = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 9,
+            "slow_len": 24,
+            "halftrend": {"amplitude": 3, "atr_period": 97, "channel_deviation": 2.24},
+            "macz": {},
+            "ott": {},
+            "strategy": {}
+        });
+
+        let art1 = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-01-26T00:00:00Z",
+            "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+            "dataset_meta": { "label": "AAPL", "timeframe": "1m", "csv_path": "aapl.csv" },
+            "tags": ["u1"],
+            "validation": { "res": { "candidates": [
+                {
+                    "params": p1,
+                    "in_sample": { "pnl": 1.0, "sharpe": 1.8, "max_dd": 0.20, "trades": 10, "exposure": 0.5 },
+                    "robust_score": 1.1,
+                    "robust_pareto": true
+                }
+            ]}}
+        });
+
+        let art2 = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-01-26T00:01:00Z",
+            "run": { "req": { "strategy_kind": "CompositeMo" }, "res": {} },
+            "dataset_meta": { "label": "MSFT", "timeframe": "1m", "csv_path": "msft.csv" },
+            "tags": ["u1"],
+            "validation": { "res": { "candidates": [
+                {
+                    "params": p2,
+                    "in_sample": { "pnl": -0.6, "sharpe": -0.8, "max_dd": 0.10, "trades": 10, "exposure": 0.5 },
+                    "robust_score": 0.3,
+                    "robust_pareto": true
+                }
+            ]}}
+        });
+
+        let clustered_req = MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: Some("u1".to_string()),
+            holdout_tag: None,
+            eval_holdout: false,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 10,
+            min_samples: 1,
+            strict_shortlist: true,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Clustered,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 2,
+        };
+
+        let clustered = meta_select_from_artifacts(&clustered_req, &[art1, art2], None);
+
+        assert_eq!(clustered.groups.len(), 1);
+        assert_eq!(clustered.groups[0].samples, 2);
+        assert!(clustered.groups[0].representatives.len() >= 2);
+        assert!(clustered.groups[0]
+            .evidence_flags
+            .iter()
+            .any(|flag| flag == "train_cluster_disagreement"));
+    }
+
+    #[test]
+    fn meta_candidate_evidence_flags_serialize_only_when_present() {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": 6,
+            "slow_len": 21
+        });
+        let mut group = MetaCandidateAggregate {
+            params: params.clone(),
+            key: meta_group_key(&params, "close", &None, &None),
+            ma_source: "close".to_string(),
+            feature_context: None,
+            run_context: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            representatives: vec![params],
+            samples: 2,
+            effective_samples_lower_bound: 2,
+            datasets_covered: 2,
+            pass_rate: 1.0,
+            robust_score_median: 0.22,
+            robust_score_p10: 0.14,
+            tail_gap: 0.08,
+            max_dd_p90: 0.20,
+            cross_score_median: Some(0.05),
+            psr_median: 0.61,
+            dsr_median: 0.55,
+            meta_score: 0.18,
+            final_score: None,
+            holdout: None,
+            evidence_flags: vec!["train_cluster_disagreement".to_string()],
+            train_rows: Vec::new(),
+            holdout_rows: Vec::new(),
+        };
+
+        let populated_json = serde_json::to_value(&group).expect("serialize populated evidence");
+        assert_eq!(
+            populated_json
+                .pointer("/evidence_flags/0")
+                .and_then(|value| value.as_str()),
+            Some("train_cluster_disagreement")
+        );
+
+        group.evidence_flags.clear();
+        let empty_json = serde_json::to_value(&group).expect("serialize empty evidence");
+        assert!(empty_json.get("evidence_flags").is_none());
+    }
+
+    #[test]
+    fn summarize_cross_score_median_preserves_missing_distinct_from_zero() {
+        let mut missing = Vec::new();
+        let mut explicit_zero = vec![0.0];
+
+        assert_eq!(summarize_cross_score_median(&mut missing), None);
+        assert_eq!(summarize_cross_score_median(&mut explicit_zero), Some(0.0));
     }
 
     #[test]

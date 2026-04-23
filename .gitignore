@@ -34,14 +34,18 @@ __pycache__/
 *.pyc
 .venv/
 .venv-vectorbt-faceoff/
+.catboost-native-build-venv/
 __init__.py
 codex_tmp
 codex_tmp*/
 .codex_tmp/
+.codex_tmp_*
+.playwright-cli/
 
 # Local crash dumps / one-off profiling artifacts
 rustc-ice-*.txt
 codex_tmp*.svg
+tmp_*.png
 
 # Preserved local run / benchmark / profiling artifacts
 /output/

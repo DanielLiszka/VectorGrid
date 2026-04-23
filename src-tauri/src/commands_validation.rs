@@ -537,6 +537,15 @@ pub(crate) fn apply_cross_ticker_validation(
         res.cscv_pbo.as_ref(),
         res.spa.as_ref(),
     );
+    res.validation_provenance = Some(
+        ta_app_core::validation_pipeline::build_validation_semantics_provenance(
+            &res.candidates,
+            res.cscv_pbo.is_some(),
+            res.cscv_pbo.as_ref(),
+            res.cross_ticker.as_ref(),
+            Some("volatility_terciles_plus_trend_range"),
+        ),
+    );
     Ok(())
 }
 
@@ -799,6 +808,15 @@ fn apply_cross_ticker_validation_double_ma(
         &hard_gates,
         res.cscv_pbo.as_ref(),
         res.spa.as_ref(),
+    );
+    res.validation_provenance = Some(
+        ta_app_core::validation_pipeline::build_validation_semantics_provenance(
+            &res.candidates,
+            res.cscv_pbo.is_some(),
+            res.cscv_pbo.as_ref(),
+            res.cross_ticker.as_ref(),
+            Some("volatility_terciles_plus_trend_range"),
+        ),
     );
     Ok(())
 }

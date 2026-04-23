@@ -2825,6 +2825,8 @@ fn run_asr_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -3171,6 +3173,8 @@ fn run_asr_optimization_cpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -3653,6 +3657,8 @@ fn run_vcc_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -3926,6 +3932,8 @@ fn run_vcc_optimization_cpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -4556,6 +4564,8 @@ fn run_vemr_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -4852,6 +4862,8 @@ fn run_vemr_optimization_impl(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -6352,6 +6364,8 @@ fn run_rocb_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -6649,6 +6663,8 @@ fn run_rocb_optimization_impl(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -7074,6 +7090,8 @@ fn run_vcet_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -7366,6 +7384,8 @@ fn run_vcet_optimization_impl(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -7791,6 +7811,8 @@ fn run_mkcs_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -8241,6 +8263,8 @@ fn run_kqsr_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -8454,6 +8478,8 @@ fn run_kqsr_optimization_cpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -8907,6 +8933,8 @@ fn run_carm_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -9121,6 +9149,8 @@ fn run_carm_optimization_cpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -9619,6 +9649,8 @@ fn run_kvdf_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -9833,6 +9865,8 @@ fn run_kvdf_optimization_cpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -10322,6 +10356,8 @@ fn run_cdmc_optimization_gpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -10556,6 +10592,8 @@ fn run_cdmc_optimization_cpu(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -10865,6 +10903,8 @@ fn run_mkcs_optimization_impl(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -11570,6 +11610,8 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
         metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
+        shortlist_union_telemetry: None,
+        search_semantics: None,
     })
 }
 
@@ -15369,6 +15411,77 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn vemr_gpu_kernel_standalone_union_rerank_matches_helper_order() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let mut baseline_req = make_base_composite_req();
+        baseline_req.backend = Backend::GpuKernel { device_id: 0 };
+        baseline_req.vemr = Some(VemrStrategyParams::default());
+        baseline_req.fast_range = (5, 7, 1);
+        baseline_req.slow_range = (12, 16, 1);
+        baseline_req.top_k = Some(4);
+        baseline_req.include_all = Some(true);
+        baseline_req.heatmap_bins = Some(0);
+        baseline_req.extra_shortlist_objectives =
+            Some(vec![ObjectiveKind::Pnl, ObjectiveKind::Omega]);
+
+        let baseline = run_composite_cpu_optimization_blocking_with_candles(
+            baseline_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("vemr gpu-kernel baseline shortlist run");
+
+        let mut rerank_req = baseline_req;
+        rerank_req.shortlist_union_mode = Some(DoubleMaShortlistUnionMode::WeightedRank);
+        let reranked = run_composite_cpu_optimization_blocking_with_candles(
+            rerank_req, &candles, &cancel, None,
+        )
+        .expect("vemr gpu-kernel union rerank run");
+
+        let baseline_rows: Vec<(DoubleMaParams, Metrics)> = baseline
+            .top
+            .iter()
+            .map(|(params, metrics)| {
+                (
+                    DoubleMaParams {
+                        fast_len: params.fast_len,
+                        slow_len: params.slow_len,
+                        fast_ma_id: 0,
+                        slow_ma_id: 0,
+                    },
+                    metrics.clone(),
+                )
+            })
+            .collect();
+        let expected = standalone_rerank_shortlist_by_union_mode(
+            baseline_rows.as_slice(),
+            ObjectiveKind::Sharpe,
+            &[ObjectiveKind::Pnl, ObjectiveKind::Omega],
+            DoubleMaShortlistUnionMode::WeightedRank,
+        );
+        let expected_keys: Vec<(u16, u16)> = expected
+            .iter()
+            .take(reranked.top.len())
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let actual_keys: Vec<(u16, u16)> = reranked
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert_eq!(actual_keys, expected_keys);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn vemr_gpu_kernel_supports_standalone_confidence_rerank_without_include_all() {
         if !vector_ta::cuda::cuda_available() {
             return;
@@ -15399,6 +15512,158 @@ mod tests {
             res.top_scores.as_ref().map(|scores| scores.len()),
             Some(res.top.len())
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_gpu_kernel_standalone_confidence_rerank_matches_helper_order() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let mut baseline_req = make_base_composite_req();
+        baseline_req.backend = Backend::GpuKernel { device_id: 0 };
+        baseline_req.vemr = Some(VemrStrategyParams::default());
+        baseline_req.fast_range = (5, 7, 1);
+        baseline_req.slow_range = (12, 16, 1);
+        baseline_req.top_k = Some(4);
+        baseline_req.include_all = Some(false);
+        baseline_req.heatmap_bins = Some(0);
+
+        let baseline = run_composite_cpu_optimization_blocking_with_candles(
+            baseline_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("vemr gpu-kernel baseline confidence run");
+
+        let mut rerank_req = baseline_req.clone();
+        rerank_req.shortlist_confidence_mode = Some(DoubleMaShortlistConfidenceMode::Dsr);
+        let reranked = run_composite_cpu_optimization_blocking_with_candles(
+            rerank_req, &candles, &cancel, None,
+        )
+        .expect("vemr gpu-kernel confidence rerank run");
+
+        let strategy = strategy_cfg_for_optimization(baseline_req.strategy.clone());
+        let vemr_cfg = baseline_req.vemr.clone().unwrap_or_default();
+        let ma_source = baseline_req.ma_source.clone();
+        let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
+        let ma_prices = vector_ta::utilities::data_loader::source_type(&candles, &ma_source);
+        let prepared_cuda_inputs = prepared_cuda_inputs_for_source_hlc(&candles, &ma_source);
+        let fv_close = first_finite_idx(close).expect("close first valid");
+        let fv_ma = first_finite_idx(ma_prices).expect("ma first valid");
+        let n = candles.close.len();
+
+        let mut fast_cache: std::collections::HashMap<(u16, u16), crate::vemr::VemrFastSignals> =
+            std::collections::HashMap::new();
+        let mut risk_cache: std::collections::HashMap<u16, crate::vemr::VemrRiskSignals> =
+            std::collections::HashMap::new();
+
+        let baseline_rows: Vec<(DoubleMaParams, Metrics)> = baseline
+            .top
+            .iter()
+            .map(|(params, metrics)| {
+                (
+                    DoubleMaParams {
+                        fast_len: params.fast_len,
+                        slow_len: params.slow_len,
+                        fast_ma_id: 0,
+                        slow_ma_id: 0,
+                    },
+                    metrics.clone(),
+                )
+            })
+            .collect();
+        let sharpe_peers: Vec<f64> = baseline_rows
+            .iter()
+            .map(|(_, metrics)| metrics.sharpe)
+            .filter(|value| value.is_finite())
+            .collect();
+        let (peer_mean, peer_std) = crate::sharpe_stats::mean_std(&sharpe_peers);
+        let trials = sharpe_peers.len().max(1);
+
+        let mut expected_ranked: Vec<(DoubleMaParams, Metrics, f64)> =
+            Vec::with_capacity(baseline_rows.len());
+        for (params, metrics) in baseline_rows {
+            let periods = resolve_vemr_periods(&vemr_cfg, params.fast_len, params.slow_len);
+            let fast_key = (periods.z, periods.bb);
+            if !fast_cache.contains_key(&fast_key) {
+                let computed = compute_vemr_fast_signals(
+                    &candles,
+                    &ma_source,
+                    &baseline_req.backend,
+                    &vemr_cfg,
+                    periods.z,
+                    periods.bb,
+                    prepared_cuda_inputs.as_ref(),
+                )
+                .expect("VEMR fast signals");
+                fast_cache.insert(fast_key, computed);
+            }
+            if !risk_cache.contains_key(&periods.atr) {
+                let computed = compute_vemr_risk_signals(
+                    &candles,
+                    &ma_source,
+                    &baseline_req.backend,
+                    periods.atr,
+                    prepared_cuda_inputs.as_ref(),
+                )
+                .expect("VEMR risk signals");
+                risk_cache.insert(periods.atr, computed);
+            }
+            let fast_signals = fast_cache
+                .get(&fast_key)
+                .expect("VEMR fast signal cache miss");
+            let risk_signals = risk_cache
+                .get(&periods.atr)
+                .expect("VEMR risk signal cache miss");
+            let max_period = usize::from(periods.z.max(periods.bb).max(periods.atr)).max(1);
+            let start_t = compute_vemr_start_t(
+                fv_close,
+                fv_ma,
+                fast_signals.first_valid,
+                risk_signals.first_valid,
+                max_period,
+                strategy.trade_on_next_bar,
+            );
+            let obs = n.saturating_sub(start_t).max(2);
+            let confidence = standalone_shortlist_confidence_value_for_host(
+                &metrics,
+                DoubleMaShortlistConfidenceMode::Dsr,
+                obs,
+                peer_mean,
+                peer_std,
+                trials,
+            );
+            expected_ranked.push((params, metrics, confidence));
+        }
+
+        expected_ranked.sort_by(|a, b| {
+            b.2.total_cmp(&a.2)
+                .then_with(|| {
+                    let sa = objective_score(&a.1, ObjectiveKind::Sharpe);
+                    let sb = objective_score(&b.1, ObjectiveKind::Sharpe);
+                    sb.total_cmp(&sa)
+                })
+                .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+        });
+
+        let expected_keys: Vec<(u16, u16)> = expected_ranked
+            .iter()
+            .take(reranked.top.len())
+            .map(|(params, _, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let actual_keys: Vec<(u16, u16)> = reranked
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+
+        assert_eq!(actual_keys, expected_keys);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

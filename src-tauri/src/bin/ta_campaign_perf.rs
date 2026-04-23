@@ -141,7 +141,7 @@ struct ProgressEventArtifact {
     message: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct DatasetRouteArtifact {
     label: String,
     prepare_source: Option<String>,
@@ -149,6 +149,12 @@ struct DatasetRouteArtifact {
     vram_prefetch_outcome: Option<String>,
     vram_prefetch_note: Option<String>,
     vram_prefetch_wall_ms: Option<f64>,
+    vram_prefetch_policy: Option<String>,
+    vram_prefetch_attempted: Option<bool>,
+    vram_prefetch_success: Option<bool>,
+    vram_prefetch_failure_risk_event: Option<bool>,
+    vram_prefetch_stage_cost_vs_optimize_frac: Option<f64>,
+    vram_prefetch_stage_cost_vs_prepare_wait_frac: Option<f64>,
     optimize_wall_ms: Option<f64>,
     optimize_artifact_save_ms: Option<f64>,
     checkpoint_save_ms: Option<f64>,
@@ -198,7 +204,22 @@ struct RunSummary {
     mean_total_wall_ms: f64,
     mean_initial_dataset_pack_preload_ms: Option<f64>,
     mean_campaign_runtime_ms: f64,
+    prefetch_economics: PrefetchEconomicsSummary,
     measured_trials_detail: Vec<TrialArtifact>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+struct PrefetchEconomicsSummary {
+    mode_note: String,
+    attempted: usize,
+    staged: usize,
+    already_resident: usize,
+    warnings: usize,
+    fatals: usize,
+    successful: usize,
+    mean_wall_ms: Option<f64>,
+    mean_stage_cost_vs_optimize_frac: Option<f64>,
+    mean_stage_cost_vs_prepare_wait_frac: Option<f64>,
 }
 
 fn default_datasets() -> Vec<PathBuf> {
@@ -436,6 +457,30 @@ fn load_dataset_routes(
                     .diagnostics
                     .as_ref()
                     .and_then(|diag| diag.vram_prefetch_wall_ms),
+                vram_prefetch_policy: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_policy.clone()),
+                vram_prefetch_attempted: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_attempted),
+                vram_prefetch_success: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_success),
+                vram_prefetch_failure_risk_event: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_failure_risk_event),
+                vram_prefetch_stage_cost_vs_optimize_frac: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_stage_cost_vs_optimize_frac),
+                vram_prefetch_stage_cost_vs_prepare_wait_frac: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_stage_cost_vs_prepare_wait_frac),
                 optimize_wall_ms: item
                     .diagnostics
                     .as_ref()
@@ -507,6 +552,70 @@ fn measured_mean_option(
         }
     }
     (count > 0).then_some(total / count as f64)
+}
+
+fn mean_option_values(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
+    let mut total = 0.0;
+    let mut count = 0usize;
+    for value in values.flatten() {
+        total += value;
+        count += 1;
+    }
+    (count > 0).then_some(total / count as f64)
+}
+
+fn summarize_prefetch_economics(trials: &[TrialArtifact]) -> PrefetchEconomicsSummary {
+    let routes: Vec<&DatasetRouteArtifact> = trials
+        .iter()
+        .flat_map(|trial| trial.dataset_routes.iter())
+        .collect();
+    let attempted = routes
+        .iter()
+        .filter(|route| route.vram_prefetch_attempted == Some(true))
+        .count();
+    let staged = routes
+        .iter()
+        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("staged"))
+        .count();
+    let already_resident = routes
+        .iter()
+        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("already_resident"))
+        .count();
+    let warnings = routes
+        .iter()
+        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("warning"))
+        .count();
+    let fatals = routes
+        .iter()
+        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("fatal"))
+        .count();
+    let successful = routes
+        .iter()
+        .filter(|route| route.vram_prefetch_success == Some(true))
+        .count();
+
+    PrefetchEconomicsSummary {
+        mode_note:
+            "observational heuristic telemetry only; compare modes before promoting policy changes"
+                .to_string(),
+        attempted,
+        staged,
+        already_resident,
+        warnings,
+        fatals,
+        successful,
+        mean_wall_ms: mean_option_values(routes.iter().map(|route| route.vram_prefetch_wall_ms)),
+        mean_stage_cost_vs_optimize_frac: mean_option_values(
+            routes
+                .iter()
+                .map(|route| route.vram_prefetch_stage_cost_vs_optimize_frac),
+        ),
+        mean_stage_cost_vs_prepare_wait_frac: mean_option_values(
+            routes
+                .iter()
+                .map(|route| route.vram_prefetch_stage_cost_vs_prepare_wait_frac),
+        ),
+    }
 }
 
 fn main() -> Result<(), String> {
@@ -663,6 +772,7 @@ fn main() -> Result<(), String> {
         mean_campaign_runtime_ms: measured_mean(&measured, |trial| {
             trial.campaign_runtime_ms as f64
         }),
+        prefetch_economics: summarize_prefetch_economics(&measured),
         measured_trials_detail: measured,
     };
 
@@ -678,4 +788,105 @@ fn main() -> Result<(), String> {
         cli.output_json.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        summarize_prefetch_economics, DatasetRouteArtifact, PrefetchEconomicsSummary, TrialArtifact,
+    };
+
+    fn route(label: &str, outcome: Option<&str>, wall_ms: Option<f64>) -> DatasetRouteArtifact {
+        DatasetRouteArtifact {
+            label: label.to_string(),
+            prepare_source: None,
+            prepare_wait_ms: None,
+            vram_prefetch_outcome: outcome.map(str::to_string),
+            vram_prefetch_note: None,
+            vram_prefetch_wall_ms: wall_ms,
+            vram_prefetch_policy: Some("heuristic_observational".to_string()),
+            vram_prefetch_attempted: outcome.map(|_| true),
+            vram_prefetch_success: matches!(outcome, Some("staged" | "already_resident"))
+                .then_some(true)
+                .or_else(|| outcome.map(|_| false)),
+            vram_prefetch_failure_risk_event: matches!(outcome, Some("warning" | "fatal"))
+                .then_some(true)
+                .or_else(|| outcome.map(|_| false)),
+            vram_prefetch_stage_cost_vs_optimize_frac: wall_ms.map(|value| value / 10.0),
+            vram_prefetch_stage_cost_vs_prepare_wait_frac: wall_ms.map(|value| value / 20.0),
+            optimize_wall_ms: None,
+            optimize_artifact_save_ms: None,
+            checkpoint_save_ms: None,
+            optimize_backend_used: None,
+            optimize_backend_route: None,
+            optimize_fallback_reason: None,
+            validate_backend_used: None,
+            validate_backend_route: None,
+            validate_fallback_reason: None,
+        }
+    }
+
+    #[test]
+    fn summarize_prefetch_economics_aggregates_observational_route_metrics() {
+        let trials = vec![
+            TrialArtifact {
+                trial_index: 1,
+                warmup: false,
+                total_wall_ms: 10.0,
+                initial_dataset_pack_preload_ms: None,
+                campaign_runtime_ms: 10,
+                optimized: 1,
+                validated: 1,
+                skipped: 0,
+                failed: 0,
+                cancelled: false,
+                warning_count: 0,
+                warnings: Vec::new(),
+                dataset_routes: vec![
+                    route("AAPL", Some("staged"), Some(4.0)),
+                    route("MSFT", Some("warning"), Some(6.0)),
+                ],
+                progress_events: Vec::new(),
+            },
+            TrialArtifact {
+                trial_index: 2,
+                warmup: false,
+                total_wall_ms: 12.0,
+                initial_dataset_pack_preload_ms: None,
+                campaign_runtime_ms: 12,
+                optimized: 1,
+                validated: 1,
+                skipped: 0,
+                failed: 0,
+                cancelled: false,
+                warning_count: 0,
+                warnings: Vec::new(),
+                dataset_routes: vec![
+                    route("NVDA", Some("already_resident"), Some(2.0)),
+                    route("QQQ", Some("fatal"), Some(8.0)),
+                ],
+                progress_events: Vec::new(),
+            },
+        ];
+
+        let summary = summarize_prefetch_economics(&trials);
+
+        assert_eq!(
+            summary,
+            PrefetchEconomicsSummary {
+                mode_note:
+                    "observational heuristic telemetry only; compare modes before promoting policy changes"
+                        .to_string(),
+                attempted: 4,
+                staged: 1,
+                already_resident: 1,
+                warnings: 1,
+                fatals: 1,
+                successful: 2,
+                mean_wall_ms: Some(5.0),
+                mean_stage_cost_vs_optimize_frac: Some(0.5),
+                mean_stage_cost_vs_prepare_wait_frac: Some(0.25),
+            }
+        );
+    }
 }

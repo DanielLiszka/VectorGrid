@@ -435,6 +435,7 @@ fn plan_download_cache_strategy(
     cached_max_date: Option<NaiveDate>,
     cached_min_ts: i64,
     cached_max_ts: i64,
+    integrity_clean: bool,
     from_date: NaiveDate,
     to_date: NaiveDate,
 ) -> DownloadCachePlan {
@@ -444,12 +445,18 @@ fn plan_download_cache_strategy(
         (Some(min_d), Some(max_d)) => csv_exists && from_date >= min_d && to_date <= max_d,
         _ => false,
     };
-    if have_full_range && !same_day_tail_request {
+    if integrity_clean && have_full_range && !same_day_tail_request {
         return DownloadCachePlan::FullHit;
     }
 
     let can_append_only = match cached_min_date {
-        Some(min_d) => csv_exists && cached_min_ts > 0 && cached_max_ts > 0 && from_date >= min_d,
+        Some(min_d) => {
+            integrity_clean
+                && csv_exists
+                && cached_min_ts > 0
+                && cached_max_ts > 0
+                && from_date >= min_d
+        }
         None => false,
     };
     if can_append_only {
@@ -457,6 +464,19 @@ fn plan_download_cache_strategy(
     } else {
         DownloadCachePlan::FullRefresh
     }
+}
+
+fn integrity_is_clean(integrity: Option<&PolygonDatasetIntegrity>) -> bool {
+    matches!(
+        integrity,
+        Some(PolygonDatasetIntegrity {
+            parse_errors: 0,
+            duplicates: 0,
+            out_of_order: 0,
+            same_day_gaps_gt_2min: 0,
+            ..
+        })
+    )
 }
 
 fn integrity_after_download(
@@ -1169,6 +1189,11 @@ pub fn download_1m_to_cache(
         cached_max_date,
         min_ts,
         max_ts,
+        integrity_is_clean(
+            cached_meta
+                .as_ref()
+                .and_then(|meta| meta.integrity.as_ref()),
+        ),
         from_date,
         to_date,
     );
@@ -1537,6 +1562,7 @@ badline\n",
             Some(max_d),
             1,
             2,
+            true,
             NaiveDate::from_ymd_opt(2024, 1, 10).expect("from"),
             NaiveDate::from_ymd_opt(2024, 1, 20).expect("to"),
         );
@@ -1548,6 +1574,7 @@ badline\n",
             Some(max_d),
             1,
             2,
+            true,
             NaiveDate::from_ymd_opt(2024, 1, 1).expect("from"),
             NaiveDate::from_ymd_opt(2024, 2, 15).expect("to"),
         );
@@ -1559,14 +1586,45 @@ badline\n",
             Some(max_d),
             1,
             2,
+            true,
             NaiveDate::from_ymd_opt(2023, 12, 1).expect("from"),
             NaiveDate::from_ymd_opt(2024, 1, 20).expect("to"),
         );
         assert_eq!(full_refresh, DownloadCachePlan::FullRefresh);
 
         let same_day_tail =
-            plan_download_cache_strategy(true, Some(min_d), Some(max_d), 1, 2, max_d, max_d);
+            plan_download_cache_strategy(true, Some(min_d), Some(max_d), 1, 2, true, max_d, max_d);
         assert_eq!(same_day_tail, DownloadCachePlan::AppendOnly);
+    }
+
+    #[test]
+    fn plan_download_cache_strategy_requires_clean_integrity_for_hit_and_append_paths() {
+        let min_d = NaiveDate::from_ymd_opt(2024, 1, 1).expect("min date");
+        let max_d = NaiveDate::from_ymd_opt(2024, 1, 31).expect("max date");
+
+        let dirty_full_hit = plan_download_cache_strategy(
+            true,
+            Some(min_d),
+            Some(max_d),
+            1,
+            2,
+            false,
+            NaiveDate::from_ymd_opt(2024, 1, 10).expect("from"),
+            NaiveDate::from_ymd_opt(2024, 1, 20).expect("to"),
+        );
+        assert_eq!(dirty_full_hit, DownloadCachePlan::FullRefresh);
+
+        let dirty_append = plan_download_cache_strategy(
+            true,
+            Some(min_d),
+            Some(max_d),
+            1,
+            2,
+            false,
+            NaiveDate::from_ymd_opt(2024, 1, 1).expect("from"),
+            NaiveDate::from_ymd_opt(2024, 2, 15).expect("to"),
+        );
+        assert_eq!(dirty_append, DownloadCachePlan::FullRefresh);
     }
 
     #[test]
