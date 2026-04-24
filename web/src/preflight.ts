@@ -24,6 +24,7 @@ const THEME_VALUES = new Set<ThemePref>(['light', 'dark', 'system'])
 const HELP_MODE_VALUES = new Set<HelpMode>(['full', 'concise', 'off'])
 const DENSITY_MODE_VALUES = new Set<DensityMode>(['comfortable', 'standard', 'dense'])
 const UI_MODE_VALUES = new Set<UiMode>(['guided', 'advanced'])
+const DEFAULT_UI_MODE: UiMode = 'guided'
 const GUIDED_STEP_VALUES = new Set<GuidedStep>(['data', 'strategy', 'optimize', 'validate', 'trade'])
 const WORKFLOW_VALUES = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize', 'history', 'settings'])
 const WORKSPACE_VALUES = new Set(['workflow', 'library', 'aggregate', 'pro', 'live', 'settings'])
@@ -86,8 +87,8 @@ function applyDensityAndHelpPreflight(): void {
 function applyUiModePreflight(): void {
   const uiMode = readStorageString(UI_MODE_KEY).toLowerCase()
   const guidedStep = readStorageString(GUIDED_STEP_KEY).toLowerCase()
-  setRootDataAttr('uiMode', UI_MODE_VALUES.has(uiMode as UiMode) ? uiMode : '')
-  setRootDataAttr('guidedStep', GUIDED_STEP_VALUES.has(guidedStep as GuidedStep) ? guidedStep : '')
+  setRootDataAttr('uiMode', UI_MODE_VALUES.has(uiMode as UiMode) ? uiMode : DEFAULT_UI_MODE)
+  setRootDataAttr('guidedStep', GUIDED_STEP_VALUES.has(guidedStep as GuidedStep) ? guidedStep : 'data')
 }
 
 applyThemePreflight()

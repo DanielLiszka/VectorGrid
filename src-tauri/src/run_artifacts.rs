@@ -545,6 +545,8 @@ pub struct RunArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_native_backend_used: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_native_prediction_batch_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_native_fallback_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_score_contract_version: Option<u32>,
@@ -847,6 +849,8 @@ pub struct RunArtifactDetailResponse {
     pub ml_native_library_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_native_gpu_device_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_native_prediction_batch_size: Option<u32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ml_native_fallback_reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3034,6 +3038,10 @@ fn build_run_artifact_detail_response(
         ml_native_backend_used: ml_signal_provenance_text_value(artifact, "native_backend_used"),
         ml_native_library_path: ml_signal_provenance_text_value(artifact, "native_library_path"),
         ml_native_gpu_device_id: ml_signal_provenance_u32_value(artifact, "native_gpu_device_id"),
+        ml_native_prediction_batch_size: ml_signal_provenance_u32_value(
+            artifact,
+            "native_prediction_batch_size",
+        ),
         ml_native_fallback_reason: ml_signal_provenance_text_value(
             artifact,
             "native_fallback_reason",
@@ -3376,6 +3384,10 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         ml_threshold_policy: ml_signal_optional_text_value(v, "threshold_policy"),
         ml_producer_kind: ml_signal_optional_text_value(v, "producer_kind"),
         ml_native_backend_used: ml_signal_optional_provenance_text_value(v, "native_backend_used"),
+        ml_native_prediction_batch_size: ml_signal_provenance_u32_value(
+            v,
+            "native_prediction_batch_size",
+        ),
         ml_native_fallback_reason: ml_signal_optional_provenance_text_value(
             v,
             "native_fallback_reason",

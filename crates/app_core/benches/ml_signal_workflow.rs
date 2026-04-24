@@ -3,7 +3,9 @@ use csv::WriterBuilder;
 use std::fs;
 use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
-use ta_app_core::ml_signal::MlSignalInferenceBackendPreference;
+use ta_app_core::ml_signal::{
+    MlSignalInferenceBackendPreference, MlSignalNativeLibraryDiscoveryPolicy,
+};
 use ta_app_core::{
     build_ml_signal_score_cache_from_csv, run_ml_signal_policy_sweep_blocking_with_candles,
     run_ml_signal_validation_blocking_with_candles, IterativeSimConfig, MlSignalPolicyParams,
@@ -133,10 +135,15 @@ fn bench_ml_signal_workflow(c: &mut Criterion) {
                         threshold_policy: None,
                         producer_kind: None,
                         score_contract_version: None,
+                        score_scope: None,
+                        allow_non_walkforward_score_scope: false,
                         native_backend_preference:
                             MlSignalInferenceBackendPreference::ScoreCacheOnly,
                         native_library_path: None,
                         native_gpu_device_id: None,
+                        native_prediction_batch_size: None,
+                        native_library_discovery_policy:
+                            MlSignalNativeLibraryDiscoveryPolicy::Production,
                     },
                     &candles,
                     &cancel,
@@ -164,9 +171,13 @@ fn bench_ml_signal_workflow(c: &mut Criterion) {
             threshold_policy: None,
             producer_kind: None,
             score_contract_version: None,
+            score_scope: None,
+            allow_non_walkforward_score_scope: false,
             native_backend_preference: MlSignalInferenceBackendPreference::ScoreCacheOnly,
             native_library_path: None,
             native_gpu_device_id: None,
+            native_prediction_batch_size: None,
+            native_library_discovery_policy: MlSignalNativeLibraryDiscoveryPolicy::Production,
         },
         &candles,
         &cancel,

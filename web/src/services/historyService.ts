@@ -150,6 +150,25 @@ function applyMlSignalScoreCacheRequestFields(
     scoreSource === "native" && nativeGpuDeviceId != null
       ? String(Math.floor(nativeGpuDeviceId))
       : "";
+  const nativePredictionBatchSize = normalizeOptionalNumber(
+    req?.native_prediction_batch_size ?? req?.nativePredictionBatchSize,
+  );
+  optimizeStore.mlSignalNativePredictionBatchSize =
+    scoreSource === "native" && nativePredictionBatchSize != null
+      ? String(Math.max(1, Math.floor(nativePredictionBatchSize)))
+      : "";
+  optimizeStore.mlSignalNativeScoreScope =
+    scoreSource === "native"
+      ? normalizeText(req?.score_scope ?? req?.scoreScope) || "bundle_default"
+      : "bundle_default";
+  optimizeStore.mlSignalAllowNonWalkforwardScoreScope =
+    scoreSource === "native"
+      ? Boolean(
+          req?.allow_non_walkforward_score_scope ??
+            req?.allowNonWalkforwardScoreScope ??
+            false,
+        )
+      : false;
 }
 
 function updateAnalysisStatus(message: string): void {
@@ -345,6 +364,7 @@ interface RunArtifactSummaryResponse {
   ml_score_contract_summary?: unknown;
   ml_score_note?: unknown;
   ml_native_backend_used?: unknown;
+  ml_native_prediction_batch_size?: unknown;
   ml_native_fallback_reason?: unknown;
 }
 
@@ -687,12 +707,15 @@ function buildMlScoreNote(
 
 function buildMlNativeScoreNote(
   nativeBackendUsed: unknown,
+  nativePredictionBatchSize: unknown,
   nativeFallbackReason: unknown,
 ): string {
   const backendUsed = normalizeText(nativeBackendUsed);
+  const batchSize = normalizeOptionalNumber(nativePredictionBatchSize);
   const fallbackReason = normalizeText(nativeFallbackReason);
   const parts = [
     backendUsed ? `native backend ${backendUsed}` : "",
+    batchSize != null ? `batch ${Math.max(1, Math.floor(batchSize))}` : "",
     fallbackReason ? `fallback ${fallbackReason}` : "",
   ].filter((part) => part.length > 0);
   return parts.join(" • ");
@@ -1830,12 +1853,19 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
         const mlScoreSpace = canonicalMlScoreSpace(row.ml_score_space);
         const mlScoreScope = canonicalMlScoreScope(row.ml_score_scope);
         const mlNativeBackendUsed = normalizeText(row.ml_native_backend_used);
+        const mlNativePredictionBatchSize = normalizeOptionalNumber(
+          row.ml_native_prediction_batch_size,
+        );
         const mlNativeFallbackReason = normalizeText(
           row.ml_native_fallback_reason,
         );
         const mlScoreNote = [
           buildMlScoreNote(mlScoreSpace, mlScoreScope, row.ml_score_note),
-          buildMlNativeScoreNote(mlNativeBackendUsed, mlNativeFallbackReason),
+          buildMlNativeScoreNote(
+            mlNativeBackendUsed,
+            mlNativePredictionBatchSize,
+            mlNativeFallbackReason,
+          ),
         ]
           .filter((part) => part.length > 0)
           .join(" • ");
@@ -2132,12 +2162,19 @@ export async function loadSavedRunDetail(
     (detail as unknown as Record<string, unknown>).mlNativeGpuDeviceId ??
       (detail as unknown as Record<string, unknown>).ml_native_gpu_device_id,
   );
+  const mlNativePredictionBatchSize = normalizeOptionalNumber(
+    (detail as unknown as Record<string, unknown>)
+      .mlNativePredictionBatchSize ??
+      (detail as unknown as Record<string, unknown>)
+        .ml_native_prediction_batch_size,
+  );
   const mlNativeFallbackReason = normalizeText(
     (detail as unknown as Record<string, unknown>).mlNativeFallbackReason ??
       (detail as unknown as Record<string, unknown>).ml_native_fallback_reason,
   );
   const mlNativeScoreNote = buildMlNativeScoreNote(
     mlNativeBackendUsed,
+    mlNativePredictionBatchSize,
     mlNativeFallbackReason,
   );
   const combinedMlScoreNote = [mlScoreNote, mlNativeScoreNote]

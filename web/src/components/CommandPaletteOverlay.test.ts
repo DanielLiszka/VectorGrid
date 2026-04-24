@@ -11,6 +11,7 @@ import { useWorkflowStore } from '../stores/workflowStore'
 describe('CommandPaletteOverlay', () => {
   beforeEach(() => {
     localStorage.clear()
+    localStorage.setItem('vta_ui_mode_v1', 'advanced')
     document.body.innerHTML = ''
   })
 

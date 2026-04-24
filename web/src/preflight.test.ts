@@ -66,6 +66,13 @@ describe('preflight', () => {
     vi.unstubAllGlobals()
   })
 
+  it('defaults first-run users to guided mode before Vue mounts', async () => {
+    await importPreflightFor('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+
+    expect(document.documentElement.dataset.uiMode).toBe('guided')
+    expect(document.documentElement.dataset.guidedStep).toBe('data')
+  })
+
   it('applies root dataset attributes from persisted shell preferences', async () => {
     localStorage.setItem(THEME_PREF_KEY, 'system')
     localStorage.setItem(CONTROLS_COLLAPSED_KEY, '1')

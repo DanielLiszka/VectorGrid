@@ -37,6 +37,20 @@ fn make_synth_candles(len: usize) -> Candles {
     Candles::new(ts, open, high, low, close, vol)
 }
 
+fn criterion_filter_allows(group_name: &str) -> bool {
+    let filters: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|arg| arg != "--bench")
+        .filter(|arg| !arg.starts_with('-'))
+        .collect();
+    if filters.is_empty() {
+        return true;
+    }
+    filters
+        .iter()
+        .any(|filter| group_name.contains(filter) || filter.contains(group_name))
+}
+
 fn make_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -641,19 +655,18 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
                                  candles_len: usize,
                                  candidates: Vec<CompositeParams>| {
         let candidate_count = candidates.len();
+        let group_name =
+            format!("composite_validate/cpu/{name}/{candles_len}/{candidate_count}candidates");
+        if !criterion_filter_allows(&group_name) {
+            return;
+        }
         let candles = make_synth_candles(candles_len);
         let cancel = AtomicBool::new(false);
-        let mut group = c.benchmark_group(format!(
-            "composite_validate/cpu/{name}/{candles_len}/{}candidates",
-            candidate_count
-        ));
+        let mut group = c.benchmark_group(&group_name);
         group.measurement_time(Duration::from_secs(6));
         group.sample_size(10);
         print_bench_metadata(
-            &format!(
-                "composite_validate/cpu/{name}/{candles_len}/{}candidates",
-                candidate_count
-            ),
+            &group_name,
             &[
                 ("backend", "CpuOnly".to_string()),
                 ("candles_len", candles_len.to_string()),
@@ -784,138 +797,141 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
-    let candles = make_synth_candles(100_000);
-    let cancel = AtomicBool::new(false);
-    let candidates = make_asr_candidates(64);
+    let primary_group_name = "composite_validate/gpu_kernel/asr/100k/64candidates";
+    if criterion_filter_allows(primary_group_name) {
+        let candles = make_synth_candles(100_000);
+        let cancel = AtomicBool::new(false);
+        let candidates = make_asr_candidates(64);
 
-    let mut group = c.benchmark_group("composite_validate/gpu_kernel/asr/100k/64candidates");
-    group.measurement_time(Duration::from_secs(8));
-    group.sample_size(10);
-    print_bench_metadata(
-        "composite_validate/gpu_kernel/asr/100k/64candidates",
-        &[
-            ("backend", "GpuKernel".to_string()),
-            ("candles_len", candles.close.len().to_string()),
-            ("candidate_count", candidates.len().to_string()),
-            ("surfaces", "wf_cscv,in_sample_192candidates".to_string()),
-        ],
-    );
+        let mut group = c.benchmark_group(primary_group_name);
+        group.measurement_time(Duration::from_secs(8));
+        group.sample_size(10);
+        print_bench_metadata(
+            primary_group_name,
+            &[
+                ("backend", "GpuKernel".to_string()),
+                ("candles_len", candles.close.len().to_string()),
+                ("candidate_count", candidates.len().to_string()),
+                ("surfaces", "wf_cscv,in_sample_192candidates".to_string()),
+            ],
+        );
 
-    let base = CompositeValidationRequest {
-        data_id: "bench-gpu".to_string(),
-        backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
-        ma_source: "close".to_string(),
-        fast_ma_params: None,
-        slow_ma_params: None,
-        candidates: candidates.clone(),
-        walk_forward: Some(WalkForwardConfigOptional {
-            window_bars: 20_000,
-            step_bars: 20_000,
-        }),
-        reopt_walk_forward: None,
-        spa: None,
-        perturb: None,
-        trade_bootstrap: None,
-        cross_ticker: None,
-        cscv_pbo: Some(CscvPboConfig {
-            slices: 8,
-            max_combinations: 2_000,
-            threshold: 0.0,
-        }),
-        seed: 123,
-        max_candidates: candidates.len(),
-        validation_engine: ta_app_core::ValidationEngine::Vectorized,
-        iterative: ta_app_core::IterativeSimConfig::default(),
-        min_psr: None,
-        min_dsr: None,
-        min_cscv_oos_rank_frac: None,
-        min_cscv_oos_metric: None,
-        max_pbo: None,
-        validation_context: None,
-    };
+        let base = CompositeValidationRequest {
+            data_id: "bench-gpu".to_string(),
+            backend: ta_app_core::Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: candidates.clone(),
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 20_000,
+                step_bars: 20_000,
+            }),
+            reopt_walk_forward: None,
+            spa: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 8,
+                max_combinations: 2_000,
+                threshold: 0.0,
+            }),
+            seed: 123,
+            max_candidates: candidates.len(),
+            validation_engine: ta_app_core::ValidationEngine::Vectorized,
+            iterative: ta_app_core::IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
 
-    let route_probe = ta_app_core::run_composite_validation_blocking_with_candles(
-        base.clone(),
-        &candles,
-        &cancel,
-        None,
-    )
-    .expect("gpu validation route probe");
-    println!(
-        "benchmark route composite_validate/gpu_kernel/asr/100k/64candidates: backend_used={:?} backend_route={} fallback={}",
-        route_probe.backend_used,
-        route_probe.backend_route.as_deref().unwrap_or("<none>"),
-        route_probe
-            .backend_fallback_reason
-            .as_deref()
-            .unwrap_or("<none>")
-    );
-    assert!(
-        matches!(route_probe.backend_used, ta_app_core::BackendUsed::Gpu),
-        "expected GPU backend for ASR validation bench, got backend={:?}, route={:?}, fallback={:?}",
-        route_probe.backend_used,
-        route_probe.backend_route,
-        route_probe.backend_fallback_reason
-    );
-    assert!(
-        route_probe.backend_fallback_reason.is_none(),
-        "expected no fallback reason for ASR validation bench, got {:?}",
-        route_probe.backend_fallback_reason
-    );
-    assert_eq!(
-        route_probe.backend_route.as_deref(),
-        Some("GpuKernel"),
-        "expected exact GpuKernel route for ASR validation bench, got route={:?}",
-        route_probe.backend_route
-    );
+        let route_probe = ta_app_core::run_composite_validation_blocking_with_candles(
+            base.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("gpu validation route probe");
+        println!(
+            "benchmark route composite_validate/gpu_kernel/asr/100k/64candidates: backend_used={:?} backend_route={} fallback={}",
+            route_probe.backend_used,
+            route_probe.backend_route.as_deref().unwrap_or("<none>"),
+            route_probe
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("<none>")
+        );
+        assert!(
+            matches!(route_probe.backend_used, ta_app_core::BackendUsed::Gpu),
+            "expected GPU backend for ASR validation bench, got backend={:?}, route={:?}, fallback={:?}",
+            route_probe.backend_used,
+            route_probe.backend_route,
+            route_probe.backend_fallback_reason
+        );
+        assert!(
+            route_probe.backend_fallback_reason.is_none(),
+            "expected no fallback reason for ASR validation bench, got {:?}",
+            route_probe.backend_fallback_reason
+        );
+        assert_eq!(
+            route_probe.backend_route.as_deref(),
+            Some("GpuKernel"),
+            "expected exact GpuKernel route for ASR validation bench, got route={:?}",
+            route_probe.backend_route
+        );
 
-    group.bench_function("wf_cscv", |b| {
-        b.iter(|| {
-            let _ = ta_app_core::run_composite_validation_blocking_with_candles(
-                base.clone(),
-                &candles,
-                &cancel,
-                None,
-            )
-            .expect("gpu wf+cscv validate");
-        })
-    });
+        group.bench_function("wf_cscv", |b| {
+            b.iter(|| {
+                let _ = ta_app_core::run_composite_validation_blocking_with_candles(
+                    base.clone(),
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("gpu wf+cscv validate");
+            })
+        });
 
-    let mut vram_heavy = base.clone();
-    vram_heavy.candidates = make_asr_candidates(192);
-    vram_heavy.max_candidates = vram_heavy.candidates.len();
-    vram_heavy.walk_forward = None;
-    vram_heavy.cscv_pbo = None;
+        let mut vram_heavy = base.clone();
+        vram_heavy.candidates = make_asr_candidates(192);
+        vram_heavy.max_candidates = vram_heavy.candidates.len();
+        vram_heavy.walk_forward = None;
+        vram_heavy.cscv_pbo = None;
 
-    group.bench_function("in_sample_192candidates", |b| {
-        b.iter(|| {
-            let _ = ta_app_core::run_composite_validation_blocking_with_candles(
-                vram_heavy.clone(),
-                &candles,
-                &cancel,
-                None,
-            )
-            .expect("gpu in-sample validate");
-        })
-    });
+        group.bench_function("in_sample_192candidates", |b| {
+            b.iter(|| {
+                let _ = ta_app_core::run_composite_validation_blocking_with_candles(
+                    vram_heavy.clone(),
+                    &candles,
+                    &cancel,
+                    None,
+                )
+                .expect("gpu in-sample validate");
+            })
+        });
 
-    group.finish();
+        group.finish();
+    }
 
     let mut bench_profile = |name: &str, candles_len: usize, candidates: Vec<CompositeParams>| {
         let candidate_count = candidates.len();
+        let group_name = format!(
+            "composite_validate/gpu_kernel/{name}/{candles_len}/{candidate_count}candidates"
+        );
+        if !criterion_filter_allows(&group_name) {
+            return;
+        }
         let candles = make_synth_candles(candles_len);
         let cancel = AtomicBool::new(false);
-        let mut group = c.benchmark_group(format!(
-            "composite_validate/gpu_kernel/{name}/{candles_len}/{}candidates",
-            candidate_count
-        ));
+        let mut group = c.benchmark_group(&group_name);
         group.measurement_time(Duration::from_secs(6));
         group.sample_size(10);
         print_bench_metadata(
-            &format!(
-                "composite_validate/gpu_kernel/{name}/{candles_len}/{}candidates",
-                candidate_count
-            ),
+            &group_name,
             &[
                 ("backend", "GpuKernel".to_string()),
                 ("candles_len", candles_len.to_string()),

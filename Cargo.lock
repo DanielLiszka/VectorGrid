@@ -4835,6 +4835,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "ta_optimizer",
  "ta_strategies",
  "vector-ta",

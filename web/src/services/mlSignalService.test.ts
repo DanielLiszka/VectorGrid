@@ -557,6 +557,9 @@ describe("mlSignalService", () => {
     optimize.mlSignalNativeBackend = "native_cuda";
     optimize.mlSignalNativeLibraryPath = "C:\\catboost\\catboostmodel.dll";
     optimize.mlSignalNativeGpuDeviceId = "1";
+    optimize.mlSignalNativePredictionBatchSize = "512";
+    optimize.mlSignalNativeScoreScope = "walkforward_test";
+    optimize.mlSignalAllowNonWalkforwardScoreScope = true;
 
     invokeCommandMock.mockImplementation(async (command) => {
       if (command === "generate_ml_signal_score_cache") {
@@ -568,17 +571,35 @@ describe("mlSignalService", () => {
           native_backend_requested: "native_cuda",
           native_backend_used: "native_cpu",
           native_library_path: "C:\\catboost\\catboostmodel.dll",
+          native_library_sha256:
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          native_library_discovery_policy: "developer_debug",
           native_gpu_device_id: 1,
+          native_prediction_batch_size: 512,
           native_fallback_reason: "EnableGPUEvaluation unavailable",
           score_space: "Probability",
-          score_scope: "FullDataset",
+          score_scope: "WalkforwardTest",
+          score_scope_policy: "WalkforwardTestRequired",
+          raw_score_observations: 120,
+          effective_score_observations: 75,
+          bundle_manifest_sha256:
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+          model_long_sha256:
+            "1111111111111111111111111111111111111111111111111111111111111111",
+          model_short_sha256:
+            "2222222222222222222222222222222222222222222222222222222222222222",
           score_cache_provenance: {
             source_bundle_id: "bundle-a",
             producer_kind: "catboost_native_cpu",
             native_backend_requested: "native_cuda",
             native_backend_used: "native_cpu",
             native_library_path: "C:\\catboost\\catboostmodel.dll",
+            native_library_sha256:
+              "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            native_library_discovery_policy: "developer_debug",
+            score_scope_policy: "WalkforwardTestRequired",
             native_gpu_device_id: 1,
+            native_prediction_batch_size: 512,
             native_fallback_reason: "EnableGPUEvaluation unavailable",
           },
         };
@@ -602,6 +623,10 @@ describe("mlSignalService", () => {
           native_backend_preference: "native_cuda",
           native_library_path: "C:\\catboost\\catboostmodel.dll",
           native_gpu_device_id: 1,
+          native_prediction_batch_size: 512,
+          native_library_discovery_policy: "developer_debug",
+          score_scope: "walkforward_test",
+          allow_non_walkforward_score_scope: true,
         }),
       },
     );
@@ -617,9 +642,26 @@ describe("mlSignalService", () => {
       native_backend_requested: "native_cuda",
       native_backend_used: "native_cpu",
       native_library_path: "C:\\catboost\\catboostmodel.dll",
+      native_library_sha256:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      native_library_discovery_policy: "developer_debug",
+      score_scope_policy: "WalkforwardTestRequired",
       native_gpu_device_id: 1,
+      native_prediction_batch_size: 512,
       native_fallback_reason: "EnableGPUEvaluation unavailable",
     });
+    expect(
+      useWorkflowArtifactsStore(pinia).currentRun?.mlSignal
+        ?.nativePredictionBatchSize,
+    ).toBe(512);
+    expect(
+      useWorkflowArtifactsStore(pinia).currentRun?.mlSignal
+        ?.rawScoreObservations,
+    ).toBe(120);
+    expect(
+      useWorkflowArtifactsStore(pinia).currentRun?.mlSignal
+        ?.effectiveScoreObservations,
+    ).toBe(75);
   });
 
   it("defaults native score-cache generation to native_cpu when no backend is set", async () => {

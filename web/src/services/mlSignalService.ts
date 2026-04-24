@@ -96,6 +96,8 @@ interface MlSignalArtifactLike {
   sourceFeatureSchemaHash?: unknown;
   training_config?: unknown;
   trainingConfig?: unknown;
+  training_config_hash?: unknown;
+  trainingConfigHash?: unknown;
   training_windows_summary?: unknown;
   trainingWindowsSummary?: unknown;
   calibration?: unknown;
@@ -129,6 +131,16 @@ interface MlSignalArtifactLike {
   sourceBundleId?: unknown;
   source_bundle_manifest_hash?: unknown;
   sourceBundleManifestHash?: unknown;
+  bundle_manifest_sha256?: unknown;
+  bundleManifestSha256?: unknown;
+  model_long_sha256?: unknown;
+  modelLongSha256?: unknown;
+  model_short_sha256?: unknown;
+  modelShortSha256?: unknown;
+  feature_schema_sha256?: unknown;
+  featureSchemaSha256?: unknown;
+  export_manifest_sha256?: unknown;
+  exportManifestSha256?: unknown;
   threshold_policy?: unknown;
   thresholdPolicy?: unknown;
   producer_kind?: unknown;
@@ -139,8 +151,14 @@ interface MlSignalArtifactLike {
   nativeBackendUsed?: unknown;
   native_library_path?: unknown;
   nativeLibraryPath?: unknown;
+  native_library_sha256?: unknown;
+  nativeLibrarySha256?: unknown;
+  native_library_discovery_policy?: unknown;
+  nativeLibraryDiscoveryPolicy?: unknown;
   native_gpu_device_id?: unknown;
   nativeGpuDeviceId?: unknown;
+  native_prediction_batch_size?: unknown;
+  nativePredictionBatchSize?: unknown;
   native_fallback_reason?: unknown;
   nativeFallbackReason?: unknown;
   bundle_status?: unknown;
@@ -151,6 +169,12 @@ interface MlSignalArtifactLike {
   scoreSpace?: unknown;
   score_scope?: unknown;
   scoreScope?: unknown;
+  score_scope_policy?: unknown;
+  scoreScopePolicy?: unknown;
+  raw_score_observations?: unknown;
+  rawScoreObservations?: unknown;
+  effective_score_observations?: unknown;
+  effectiveScoreObservations?: unknown;
   matched_rows?: unknown;
   matchedRows?: unknown;
   skipped_rows?: unknown;
@@ -1177,6 +1201,17 @@ function buildMlSignalArtifactPayload(
         ),
       ],
       [
+        "native_prediction_batch_size",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_prediction_batch_size,
+          validationScoreSummary?.nativePredictionBatchSize,
+          runResRecord?.native_prediction_batch_size,
+          runResRecord?.nativePredictionBatchSize,
+          prior.native_prediction_batch_size,
+          prior.nativePredictionBatchSize,
+        ),
+      ],
+      [
         "native_fallback_reason",
         firstMeaningfulValue(
           validationScoreSummary?.native_fallback_reason,
@@ -1228,6 +1263,116 @@ function buildMlSignalArtifactPayload(
           runResRecord?.sourceBundleManifestHash,
           prior.source_bundle_manifest_hash,
           prior.sourceBundleManifestHash,
+        ),
+      ],
+      [
+        "bundle_manifest_sha256",
+        firstMeaningfulValue(
+          validationScoreSummary?.bundle_manifest_sha256,
+          validationScoreSummary?.bundleManifestSha256,
+          runResRecord?.bundle_manifest_sha256,
+          runResRecord?.bundleManifestSha256,
+          prior.bundle_manifest_sha256,
+          prior.bundleManifestSha256,
+        ),
+      ],
+      [
+        "model_long_sha256",
+        firstMeaningfulValue(
+          validationScoreSummary?.model_long_sha256,
+          validationScoreSummary?.modelLongSha256,
+          runResRecord?.model_long_sha256,
+          runResRecord?.modelLongSha256,
+          prior.model_long_sha256,
+          prior.modelLongSha256,
+        ),
+      ],
+      [
+        "model_short_sha256",
+        firstMeaningfulValue(
+          validationScoreSummary?.model_short_sha256,
+          validationScoreSummary?.modelShortSha256,
+          runResRecord?.model_short_sha256,
+          runResRecord?.modelShortSha256,
+          prior.model_short_sha256,
+          prior.modelShortSha256,
+        ),
+      ],
+      [
+        "feature_schema_sha256",
+        firstMeaningfulValue(
+          validationScoreSummary?.feature_schema_sha256,
+          validationScoreSummary?.featureSchemaSha256,
+          runResRecord?.feature_schema_sha256,
+          runResRecord?.featureSchemaSha256,
+          prior.feature_schema_sha256,
+          prior.featureSchemaSha256,
+        ),
+      ],
+      [
+        "export_manifest_sha256",
+        firstMeaningfulValue(
+          validationScoreSummary?.export_manifest_sha256,
+          validationScoreSummary?.exportManifestSha256,
+          runResRecord?.export_manifest_sha256,
+          runResRecord?.exportManifestSha256,
+          prior.export_manifest_sha256,
+          prior.exportManifestSha256,
+        ),
+      ],
+      [
+        "training_config_hash",
+        firstMeaningfulValue(
+          validationScoreSummary?.training_config_hash,
+          validationScoreSummary?.trainingConfigHash,
+          runResRecord?.training_config_hash,
+          runResRecord?.trainingConfigHash,
+          prior.training_config_hash,
+          prior.trainingConfigHash,
+        ),
+      ],
+      [
+        "native_library_sha256",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_library_sha256,
+          validationScoreSummary?.nativeLibrarySha256,
+          runResRecord?.native_library_sha256,
+          runResRecord?.nativeLibrarySha256,
+          prior.native_library_sha256,
+          prior.nativeLibrarySha256,
+        ),
+      ],
+      [
+        "native_library_discovery_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_library_discovery_policy,
+          validationScoreSummary?.nativeLibraryDiscoveryPolicy,
+          runResRecord?.native_library_discovery_policy,
+          runResRecord?.nativeLibraryDiscoveryPolicy,
+          prior.native_library_discovery_policy,
+          prior.nativeLibraryDiscoveryPolicy,
+        ),
+      ],
+      [
+        "native_prediction_batch_size",
+        firstMeaningfulValue(
+          validationScoreSummary?.native_prediction_batch_size,
+          validationScoreSummary?.nativePredictionBatchSize,
+          runResRecord?.native_prediction_batch_size,
+          runResRecord?.nativePredictionBatchSize,
+          prior.native_prediction_batch_size,
+          prior.nativePredictionBatchSize,
+        ),
+      ],
+      [
+        "score_scope_policy",
+        firstMeaningfulValue(
+          validationScoreSummary?.score_scope_policy,
+          validationScoreSummary?.scoreScopePolicy,
+          runResRecord?.score_scope_policy,
+          runResRecord?.scoreScopePolicy,
+          prior.score_scope_policy,
+          prior.scoreScopePolicy,
         ),
       ],
       [
@@ -1467,6 +1612,31 @@ function buildMlSignalArtifactPayload(
         prior.scoreScope ??
         "",
     ),
+    score_scope_policy: normalizeText(
+      validationScoreSummary?.score_scope_policy ??
+        validationScoreSummary?.scoreScopePolicy ??
+        runResRecord?.score_scope_policy ??
+        runResRecord?.scoreScopePolicy ??
+        prior.score_scope_policy ??
+        prior.scoreScopePolicy ??
+        "",
+    ),
+    raw_score_observations: parseOptionalInteger(
+      validationScoreSummary?.raw_score_observations ??
+        validationScoreSummary?.rawScoreObservations ??
+        runResRecord?.raw_score_observations ??
+        runResRecord?.rawScoreObservations ??
+        prior.raw_score_observations ??
+        prior.rawScoreObservations,
+    ),
+    effective_score_observations: parseOptionalInteger(
+      validationScoreSummary?.effective_score_observations ??
+        validationScoreSummary?.effectiveScoreObservations ??
+        runResRecord?.effective_score_observations ??
+        runResRecord?.effectiveScoreObservations ??
+        prior.effective_score_observations ??
+        prior.effectiveScoreObservations,
+    ),
     matched_rows: matchedRows,
     skipped_rows: skippedRows,
     bars_scored: barsScored,
@@ -1502,6 +1672,26 @@ function buildMlSignalArtifactPayload(
         prior.nativeLibraryPath,
       ),
     ),
+    native_library_sha256: normalizeText(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_library_sha256,
+        validationScoreSummary?.nativeLibrarySha256,
+        runResRecord?.native_library_sha256,
+        runResRecord?.nativeLibrarySha256,
+        prior.native_library_sha256,
+        prior.nativeLibrarySha256,
+      ),
+    ),
+    native_library_discovery_policy: normalizeText(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_library_discovery_policy,
+        validationScoreSummary?.nativeLibraryDiscoveryPolicy,
+        runResRecord?.native_library_discovery_policy,
+        runResRecord?.nativeLibraryDiscoveryPolicy,
+        prior.native_library_discovery_policy,
+        prior.nativeLibraryDiscoveryPolicy,
+      ),
+    ),
     native_gpu_device_id: parseOptionalInteger(
       firstMeaningfulValue(
         validationScoreSummary?.native_gpu_device_id,
@@ -1510,6 +1700,16 @@ function buildMlSignalArtifactPayload(
         runResRecord?.nativeGpuDeviceId,
         prior.native_gpu_device_id,
         prior.nativeGpuDeviceId,
+      ),
+    ),
+    native_prediction_batch_size: parseOptionalInteger(
+      firstMeaningfulValue(
+        validationScoreSummary?.native_prediction_batch_size,
+        validationScoreSummary?.nativePredictionBatchSize,
+        runResRecord?.native_prediction_batch_size,
+        runResRecord?.nativePredictionBatchSize,
+        prior.native_prediction_batch_size,
+        prior.nativePredictionBatchSize,
       ),
     ),
     native_fallback_reason: normalizeText(
@@ -1738,6 +1938,9 @@ function formatMlScoreCoverageMeta(
     summary.coverage_ratio ?? summary.coverageRatio,
   );
   const scoreScope = normalizeText(summary.score_scope ?? summary.scoreScope);
+  const scoreScopePolicy = normalizeText(
+    summary.score_scope_policy ?? summary.scoreScopePolicy,
+  );
   const scoreSpace = normalizeText(summary.score_space ?? summary.scoreSpace);
   const duplicates = parseOptionalInteger(
     summary.duplicate_timestamps ?? summary.duplicateTimestamps,
@@ -1746,6 +1949,7 @@ function formatMlScoreCoverageMeta(
     parts.push(`coverage ${(coverageRatio * 100).toFixed(1)}%`);
   }
   if (scoreScope) parts.push(`scope ${scoreScope}`);
+  if (scoreScopePolicy) parts.push(`policy ${scoreScopePolicy}`);
   if (scoreSpace) parts.push(`space ${scoreSpace}`);
   if (duplicates != null) parts.push(`duplicates ${duplicates}`);
   return parts.join(" • ");
@@ -1870,6 +2074,9 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
   if (!outputPath) throw new Error("Choose a score-cache output path first.");
 
   const currentArtifact = currentMlArtifactSnapshot();
+  const nativeScoreScope = normalizeText(
+    optimize.mlSignalNativeScoreScope || "bundle_default",
+  );
   const scoreContract = readOptionalRecord(
     currentArtifact?.scoreContract ?? currentArtifact?.score_contract,
   );
@@ -1927,6 +2134,13 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
         scoreContract?.scoreContractVersion,
       ),
     ),
+    score_scope:
+      nativeScoreSource && nativeScoreScope !== "bundle_default"
+        ? nativeScoreScope
+        : null,
+    allow_non_walkforward_score_scope: nativeScoreSource
+      ? Boolean(optimize.mlSignalAllowNonWalkforwardScoreScope)
+      : false,
     native_backend_preference: nativeScoreSource
       ? normalizeText(optimize.mlSignalNativeBackend || "native_cpu") ||
         "native_cpu"
@@ -1937,6 +2151,14 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
     native_gpu_device_id: nativeScoreSource
       ? parseOptionalInteger(optimize.mlSignalNativeGpuDeviceId)
       : null,
+    native_prediction_batch_size: nativeScoreSource
+      ? parseOptionalInteger(optimize.mlSignalNativePredictionBatchSize)
+      : null,
+    native_library_discovery_policy: nativeScoreSource
+      ? normalizeText(optimize.mlSignalNativeLibraryPath)
+        ? "developer_debug"
+        : "production"
+      : "production",
     strategy_kind: "MlSignal",
   };
   const runTs = new Date().toISOString();

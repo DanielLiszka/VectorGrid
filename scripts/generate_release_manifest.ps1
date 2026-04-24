@@ -5,7 +5,8 @@ param(
   [string]$BundleRoot = "",
   [string]$ReleaseBinaryPath = "",
   [string]$ProvenancePath = "",
-  [string]$Version = ""
+  [string]$Version = "",
+  [switch]$AllowMissingCatboostNative
 )
 
 $ErrorActionPreference = "Stop"
@@ -133,6 +134,10 @@ Set-Content -Path $hashPath -Encoding UTF8 -Value $hashLines
 
 $catboostPath = Join-Path $repoRoot "src-tauri\\resources\\native\\catboostmodel.dll"
 $kernelPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\double_crossover.prebuilt.ptx"
+$catboostExists = Test-Path -LiteralPath $catboostPath -PathType Leaf
+if (-not $AllowMissingCatboostNative -and -not $catboostExists) {
+  throw "Required packaged CatBoost native library is missing: $catboostPath. Use -AllowMissingCatboostNative only for non-shipping diagnostic manifests."
+}
 
 $manifest = [ordered]@{
   schema_version = 1
@@ -149,7 +154,7 @@ $manifest = [ordered]@{
   hash_file = $hashPath
   required_resources = [ordered]@{
     catboost_bundle_resource_path = $catboostPath
-    catboost_bundle_resource_exists = Test-Path $catboostPath
+    catboost_bundle_resource_exists = $catboostExists
     double_crossover_prebuilt_ptx_path = $kernelPtxPath
     double_crossover_prebuilt_ptx_exists = Test-Path $kernelPtxPath
   }

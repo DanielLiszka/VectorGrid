@@ -72,6 +72,44 @@ function Write-JsonUtf8 {
   $Value | ConvertTo-Json -Depth $Depth | Set-Content -Encoding UTF8 $Path
 }
 
+function Test-IsAdministrator {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-OptionsPerfProcesses() {
+  @(Get-Process | Where-Object {
+      $_.ProcessName -match '^(cargo|criterion|nsys|ncu|compute-sanitizer)$' -or
+      $_.ProcessName -like 'ta_options_expression*' -or
+      $_.ProcessName -like 'options_expression*'
+    } | Select-Object ProcessName, Id, CPU, StartTime)
+}
+
+function Wait-NoOptionsPerfProcesses(
+  [int]$TimeoutSeconds = 300,
+  [int]$PollMilliseconds = 500,
+  [string]$Context = ""
+) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ($true) {
+    $procs = @(Get-OptionsPerfProcesses)
+    if ($procs.Count -eq 0) {
+      return
+    }
+    if ((Get-Date) -ge $deadline) {
+      $summary = ($procs | ForEach-Object {
+          "{0}#{1}" -f $_.ProcessName, $_.Id
+        }) -join ", "
+      if ([string]::IsNullOrWhiteSpace($Context)) {
+        throw "Timed out waiting for options benchmark/profiler processes to drain: $summary"
+      }
+      throw "Timed out waiting for options benchmark/profiler processes to drain ${Context}: $summary"
+    }
+    Start-Sleep -Milliseconds $PollMilliseconds
+  }
+}
+
 function Get-CargoRuntimeDllPaths {
   param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
@@ -154,6 +192,12 @@ $previousPath = $env:PATH
 
 Push-Location $repoRoot
 try {
+  if (-not (Test-IsAdministrator)) {
+    Write-Warning "Compute Sanitizer may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
+  }
+
+  Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Compute Sanitizer run"
+
   $env:RUSTC_WRAPPER = ""
   Write-Host "Building ta_options_expression_feasibility with CUDA..."
   & cargo build -p ta_desktop_demo_app --release --bin ta_options_expression_feasibility --features "cuda,cuda-backtest-kernel"

@@ -626,10 +626,15 @@ mod tests {
             threshold_policy: None,
             producer_kind: None,
             score_contract_version: None,
+            score_scope: None,
+            allow_non_walkforward_score_scope: false,
             native_backend_preference:
                 ta_app_core::ml_signal::MlSignalInferenceBackendPreference::NativeCpu,
             native_library_path: None,
             native_gpu_device_id: None,
+            native_prediction_batch_size: None,
+            native_library_discovery_policy:
+                ta_app_core::ml_signal::MlSignalNativeLibraryDiscoveryPolicy::Production,
         }
     }
 

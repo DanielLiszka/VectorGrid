@@ -1,8 +1,24 @@
 import { expect, test } from '@playwright/test'
 import { shellSelectors } from '../desktop/support/selectors'
 import { gotoMockedShell } from './support/appHarness'
+import { dismissStartupOverlay, installMockedTauri } from './support/mockTauri'
 
 test.describe('browser guided mode ux', () => {
+  test('defaults first-run users into Guided Mode', async ({ context, page }) => {
+    await installMockedTauri(context, { holdStartupOverlay: true })
+
+    await page.goto('/', { waitUntil: 'networkidle' })
+    await dismissStartupOverlay(page)
+
+    await expect(page.locator(shellSelectors.titlebar)).toBeVisible()
+    await expect(page.locator('#guidedShellGrid')).toBeVisible()
+    await expect(page.locator('#uiModeBar [data-ui-mode="guided"]')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('#workspaceBar')).toHaveCount(0)
+    await expect(page.locator('#runFooterShell')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Optimize, validate, then dry-run.' })).toBeVisible()
+    await expect(page.locator('.guidedNextAction').getByRole('button', { name: 'Choose data' })).toBeVisible()
+  })
+
   test('keeps the first-run path focused while preserving the advanced handoff', async ({ context, page }) => {
     await gotoMockedShell(page, context)
 

@@ -199,8 +199,24 @@ describe('settings bootstrap service', () => {
     expect(removeItemMock).not.toHaveBeenCalled()
   })
 
+  it('preserves an explicit Advanced Mode preference across bootstrap', () => {
+    const values = {
+      vta_ui_mode_v1: 'advanced',
+    }
+    const { setItemMock, removeItemMock } = installStorage(values)
+
+    applySettingsBootstrapFromStorage()
+
+    const store = useSettingsStore(pinia)
+    expect(store.uiMode).toBe('advanced')
+    expect(dataset.uiMode).toBe('advanced')
+    expect(setItemMock).not.toHaveBeenCalled()
+    expect(removeItemMock).not.toHaveBeenCalled()
+  })
+
   it('does not dispatch when persisted state is empty', () => {
     applySettingsBootstrapFromStorage()
+    expect(useSettingsStore(pinia).uiMode).toBe('guided')
     expect(invokeCommandMock).not.toHaveBeenCalled()
   })
 

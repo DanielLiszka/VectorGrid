@@ -63,6 +63,38 @@ function Write-Section([string]$Label) {
   Write-Host "== $Label =="
 }
 
+function Get-OptionsPerfProcesses() {
+  @(Get-Process | Where-Object {
+      $_.ProcessName -match '^(cargo|criterion|nsys|ncu|compute-sanitizer)$' -or
+      $_.ProcessName -like 'ta_options_expression*' -or
+      $_.ProcessName -like 'options_expression*'
+    } | Select-Object ProcessName, Id, CPU, StartTime)
+}
+
+function Wait-NoOptionsPerfProcesses(
+  [int]$TimeoutSeconds = 300,
+  [int]$PollMilliseconds = 500,
+  [string]$Context = ""
+) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ($true) {
+    $procs = @(Get-OptionsPerfProcesses)
+    if ($procs.Count -eq 0) {
+      return
+    }
+    if ((Get-Date) -ge $deadline) {
+      $summary = ($procs | ForEach-Object {
+          "{0}#{1}" -f $_.ProcessName, $_.Id
+        }) -join ", "
+      if ([string]::IsNullOrWhiteSpace($Context)) {
+        throw "Timed out waiting for options benchmark/profiler processes to drain: $summary"
+      }
+      throw "Timed out waiting for options benchmark/profiler processes to drain ${Context}: $summary"
+    }
+    Start-Sleep -Milliseconds $PollMilliseconds
+  }
+}
+
 $repoRoot = Resolve-RepoRoot
 $resolvedAppLocalDataDir = Join-IfRelative -Path $AppLocalDataDir -Root $repoRoot
 $runsDir = Join-Path $resolvedAppLocalDataDir "runs"
@@ -157,6 +189,8 @@ if ($ListDatasets) {
 Write-Section "Phase 0.5 Command"
 Write-Host ("cargo " + ($cargoArgs -join " "))
 
+Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Phase 0.5 run"
+
 Push-Location $repoRoot
 $previousRustcWrapper = $env:RUSTC_WRAPPER
 $env:RUSTC_WRAPPER = ""
@@ -169,6 +203,8 @@ try {
   $env:RUSTC_WRAPPER = $previousRustcWrapper
   Pop-Location
 }
+
+Wait-NoOptionsPerfProcesses -TimeoutSeconds 300 -Context "after options Phase 0.5 run"
 
 if ($ListDatasets) {
   return

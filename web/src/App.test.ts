@@ -53,6 +53,8 @@ describe('App root shell', () => {
   it('mounts the root shell surfaces without the startup overlay', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setUiMode('advanced')
 
     mount(App, {
       global: {
@@ -70,6 +72,26 @@ describe('App root shell', () => {
     expect(document.querySelector('[data-stub="AppRuntimeBanner"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="TaskCenterOverlay"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="ActionStatusBar"]')).not.toBeNull()
+  })
+
+  it('defaults first-run users into the guided shell', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const wrapper = mount(App, {
+      global: {
+        plugins: [pinia],
+        stubs: APP_STUBS,
+      },
+      attachTo: document.body,
+    })
+    await flushApp()
+
+    expect(document.querySelector('[data-stub="GuidedWorkspacePanel"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="ActionStatusBar"]')).toBeNull()
+    expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).toBeNull()
+
+    wrapper.unmount()
   })
 
   it('keeps guided mode focused by hiding advanced workflow panels and the advanced footer', async () => {
@@ -99,6 +121,8 @@ describe('App root shell', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflowStore = useWorkflowStore(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setUiMode('advanced')
 
     const wrapper = mount(App, {
       global: {
@@ -127,6 +151,8 @@ describe('App root shell', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflowStore = useWorkflowStore(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setUiMode('advanced')
 
     mount(App, {
       global: {
@@ -153,6 +179,8 @@ describe('App root shell', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflowStore = useWorkflowStore(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setUiMode('advanced')
 
     mount(App, {
       global: {

@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "seed": 20260424,
+  "bundle": {
+    "schema_version": 1,
+    "bundle_schema_version": 2,
+    "notes": "Default reproducible CatBoost binary-pair bundle for VectorGrid MlSignal.",
+    "trained_by": "scripts/train_ml_signal_catboost.py",
+    "created_at_utc": null
+  },
+  "dataset": {
+    "data_id": null,
+    "timeframe": null,
+    "symbol_scope": "from_dataset"
+  },
+  "split_policy": {
+    "assignment": "csv_split_id_first_match",
+    "require_split_windows": true,
+    "require_train_rows": true,
+    "require_calibration_rows": true,
+    "require_test_rows": true,
+    "minimum_rows": {
+      "train": 1,
+      "calibration": 1,
+      "test": 1
+    }
+  },
+  "labels": {
+    "long": {
+      "label_column": "y_long",
+      "keep_column": "keep_long",
+      "use_keep_filter": true
+    },
+    "short": {
+      "label_column": "y_short",
+      "keep_column": "keep_short",
+      "use_keep_filter": true
+    }
+  },
+  "sample_weight": {
+    "enabled": true,
+    "column": "sample_weight"
+  },
+  "class_balance": {
+    "policy": "catboost_auto_class_weights_balanced",
+    "auto_class_weights": "Balanced"
+  },
+  "catboost": {
+    "params": {
+      "loss_function": "Logloss",
+      "eval_metric": "AUC",
+      "iterations": 1000,
+      "learning_rate": 0.03,
+      "depth": 6,
+      "l2_leaf_reg": 3.0,
+      "bootstrap_type": "No",
+      "random_strength": 0.0,
+      "thread_count": 1,
+      "allow_writing_files": false,
+      "verbose": false
+    },
+    "early_stopping_rounds": 80,
+    "use_best_model": true,
+    "long_params": {},
+    "short_params": {}
+  },
+  "calibration": {
+    "enabled": true,
+    "method": "sigmoid",
+    "source": "calibration_windows",
+    "required": true,
+    "sigmoid": {
+      "max_iter": 1000,
+      "solver": "lbfgs"
+    },
+    "isotonic": {
+      "out_of_bounds": "clip"
+    }
+  },
+  "metrics": {
+    "thresholds": [0.5, 0.55, 0.6],
+    "calibration_curve_bins": 10
+  },
+  "score_contract": {
+    "score_contract_version": 1,
+    "score_scope": "walkforward_test",
+    "score_scope_policy": "walkforward_test_required",
+    "walkforward_recommended_mode": "walkforward_test_required"
+  }
+}

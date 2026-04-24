@@ -51,6 +51,7 @@ describe('DesktopTitlebar', () => {
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
     localStorage.clear()
+    localStorage.setItem('vta_ui_mode_v1', 'advanced')
 
     minimizeMock.mockClear()
     toggleMaximizeMock.mockClear()

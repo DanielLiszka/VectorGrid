@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { CheckCircle2, Circle, CircleAlert, CircleDot, Play, ShieldCheck } from 'lucide-vue-next'
+import { ArrowRight, CheckCircle2, Circle, CircleAlert, CircleDot, Play, ShieldCheck } from 'lucide-vue-next'
 import { useShellMount } from '../composables/useShellMount'
 import { useGuidedWorkflowReadiness, type GuidedChecklistItem, type GuidedStatusTone } from '../composables/useGuidedWorkflowReadiness'
 import { useDataStore } from '../stores/dataStore'
@@ -98,6 +98,8 @@ type GuidedStepMeta = {
   subtitle: string
 }
 
+type GuidedPrimaryAction = 'data' | 'strategy' | 'optimize' | 'validate' | 'trade' | 'runner'
+
 const stepMeta: GuidedStepMeta[] = [
   { key: 'data', label: 'Data', subtitle: 'Load candles' },
   { key: 'strategy', label: 'Strategy', subtitle: 'Pick template' },
@@ -165,6 +167,58 @@ const validationPreviewText = computed(() => {
 })
 const guidedRunDisabled = computed(() => Boolean(runDisabled.value || !readiness.liveStrategySupported.value))
 const guidedCanStartRunner = computed(() => Boolean(dryRun.value && canStartRunner.value))
+const primaryGuidedAction = computed<{
+  kind: GuidedPrimaryAction
+  label: string
+  detail: string
+}>(() => {
+  if (!readiness.datasetReady.value) {
+    return {
+      kind: 'data',
+      label: 'Choose data',
+      detail: 'Start by loading CSV, sample, or Polygon candles.',
+    }
+  }
+  if (!readiness.liveStrategySupported.value) {
+    return {
+      kind: 'strategy',
+      label: 'Pick strategy',
+      detail: 'Use Double MA or Composite for the full guided path.',
+    }
+  }
+  if (!readiness.optimizationReady.value) {
+    return {
+      kind: 'optimize',
+      label: 'Run optimization',
+      detail: 'Generate candidate settings for the loaded dataset.',
+    }
+  }
+  if (!readiness.validationReady.value) {
+    return {
+      kind: 'validate',
+      label: 'Run validation',
+      detail: 'Check whether the selected candidate survives holdout review.',
+    }
+  }
+  if (!readiness.runnerReady.value) {
+    return {
+      kind: 'trade',
+      label: 'Review trade readiness',
+      detail: 'Confirm symbol, dry-run, credentials, and live candles.',
+    }
+  }
+  return {
+    kind: 'runner',
+    label: 'Start dry-run runner',
+    detail: 'Everything required for a dry-run runner is ready.',
+  }
+})
+const primaryGuidedActionDisabled = computed(() => {
+  if (primaryGuidedAction.value.kind === 'optimize') return guidedRunDisabled.value
+  if (primaryGuidedAction.value.kind === 'validate') return Boolean(validateDisabled.value)
+  if (primaryGuidedAction.value.kind === 'runner') return !guidedCanStartRunner.value
+  return false
+})
 
 const stepStatuses = computed<Record<GuidedStep, GuidedStatusTone>>(() => ({
   data: readiness.datasetReady.value ? 'done' : 'blocked',
@@ -217,6 +271,16 @@ function runValidation(): void {
   optimizeStore.runValidation()
 }
 
+function runPrimaryGuidedAction(): void {
+  const action = primaryGuidedAction.value.kind
+  if (action === 'data') selectStep('data')
+  else if (action === 'strategy') selectStep('strategy')
+  else if (action === 'optimize') runOptimization()
+  else if (action === 'validate') runValidation()
+  else if (action === 'trade') selectStep('trade')
+  else executionStore.startRunner()
+}
+
 function openAdvanced(area: 'data' | 'optimize' | 'validate' | 'aggregate' | 'live'): void {
   settingsStore.setUiMode('advanced')
   if (area === 'data') workflowStore.selectWorkspace('workflow', 'data')
@@ -247,6 +311,15 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
           </p>
         </div>
         <div class="guidedHeroActions">
+          <div class="guidedNextAction" aria-label="Recommended next action">
+            <span>Next</span>
+            <strong>{{ primaryGuidedAction.label }}</strong>
+            <small>{{ primaryGuidedAction.detail }}</small>
+            <button type="button" class="guidedPrimary" :disabled="primaryGuidedActionDisabled" @click="runPrimaryGuidedAction">
+              <ArrowRight :size="15" aria-hidden="true" />
+              {{ primaryGuidedAction.label }}
+            </button>
+          </div>
           <button type="button" class="guidedSecondary" @click="settingsStore.setUiMode('advanced')">
             Advanced Mode
           </button>
@@ -724,8 +797,35 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 }
 
 .guidedHeroActions {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  justify-items: end;
+  align-content: start;
+  gap: 0.65rem;
+  min-width: min(20rem, 42vw);
+}
+
+.guidedNextAction {
+  display: grid;
+  justify-items: end;
+  gap: 0.2rem;
+  text-align: right;
+}
+
+.guidedNextAction span {
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.guidedNextAction strong {
+  font-size: 1rem;
+}
+
+.guidedNextAction small {
+  max-width: 22rem;
+  color: var(--muted-strong);
+  line-height: 1.35;
 }
 
 .guidedEyebrow {
@@ -1071,6 +1171,13 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   .guidedHero,
   .guidedPaneHeader {
     flex-direction: column;
+  }
+
+  .guidedHeroActions,
+  .guidedNextAction {
+    justify-items: start;
+    text-align: left;
+    min-width: 0;
   }
 
   .guidedSteps,

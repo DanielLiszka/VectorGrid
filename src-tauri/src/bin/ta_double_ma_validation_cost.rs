@@ -222,6 +222,11 @@ struct CostReport {
     timing_boundary: &'static str,
     timing_boundary_note: &'static str,
     build_profile: &'static str,
+    cuda: CudaRuntimeSummary,
+    workflow_family: &'static str,
+    strategy_family: &'static str,
+    strategy_profile: String,
+    workload_id: String,
     csv_path: String,
     backend_requested: String,
     total_bars: usize,
@@ -237,18 +242,39 @@ struct OptimizationSummary {
     backend_used: String,
     backend_route: Option<String>,
     backend_fallback_reason: Option<String>,
+    route_diagnostics: Option<Vec<String>>,
+    residency: Option<ta_app_core::double_ma::GpuResidencySummary>,
     top_candidates: usize,
 }
 
 #[derive(Serialize)]
+struct CudaRuntimeSummary {
+    feature_enabled: bool,
+    runtime_available: bool,
+    preferred_device: Option<CudaDeviceSummary>,
+    probe_error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CudaDeviceSummary {
+    device_id: u32,
+    name: String,
+    total_memory_bytes: u64,
+}
+
+#[derive(Serialize)]
 struct ValidationCaseSummary {
+    workload_id: String,
     label: String,
     status: String,
     repeats: usize,
+    requested_backend: String,
+    module_mix: Vec<&'static str>,
     avg_wall_ms: u64,
     avg_main_validation_wall_ms: u64,
     avg_cross_ticker_wall_ms: u64,
     avg_reported_runtime_ms: u64,
+    timing_ms: ValidationTimingSummary,
     versus_optimization_ratio: f64,
     main_validation_ratio_vs_optimization: f64,
     cross_ticker_ratio_vs_optimization: f64,
@@ -270,6 +296,17 @@ struct ValidationCaseSummary {
     main_validation_wall_ms_per_candidate: Option<f64>,
     cross_ticker_wall_ms_per_dataset: Option<f64>,
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ValidationTimingSummary {
+    avg_total_wall: u64,
+    avg_main_validation_wall: u64,
+    avg_cross_ticker_wall: u64,
+    avg_reported_runtime: u64,
+    avg_cpu_tail: Option<u64>,
+    avg_aux_finalist_analytics: Option<u64>,
+    avg_gpu_result_materialization: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -439,6 +476,32 @@ fn validation_cases(include_cross: bool) -> Vec<ValidationCaseSpec> {
         });
     }
     cases
+}
+
+fn validation_case_module_mix(case: &ValidationCaseSpec) -> Vec<&'static str> {
+    let mut modules = vec!["in_sample"];
+    if case.walk_forward {
+        modules.push("walk_forward");
+    }
+    if case.reopt_walk_forward {
+        modules.push("reopt_walk_forward");
+    }
+    if case.cscv_pbo {
+        modules.push("cscv_pbo");
+    }
+    if case.spa {
+        modules.push("spa");
+    }
+    if case.perturb {
+        modules.push("perturbation");
+    }
+    if case.trade_bootstrap {
+        modules.push("trade_bootstrap");
+    }
+    if case.cross_ticker_preserved_stack {
+        modules.push("cross_ticker_preserved_finalists");
+    }
+    modules
 }
 
 fn to_backend(arg: BackendArg) -> Backend {
@@ -620,6 +683,39 @@ const fn build_profile() -> &'static str {
         "dev"
     } else {
         "release"
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_runtime_summary() -> CudaRuntimeSummary {
+    let runtime_available = vector_ta::cuda::cuda_available();
+    match ta_app_core::preferred_cuda_device() {
+        Ok(device) => CudaRuntimeSummary {
+            feature_enabled: true,
+            runtime_available,
+            preferred_device: device.map(|device| CudaDeviceSummary {
+                device_id: device.device_id,
+                name: device.name,
+                total_memory_bytes: device.total_memory_bytes,
+            }),
+            probe_error: None,
+        },
+        Err(err) => CudaRuntimeSummary {
+            feature_enabled: true,
+            runtime_available,
+            preferred_device: None,
+            probe_error: Some(err),
+        },
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn cuda_runtime_summary() -> CudaRuntimeSummary {
+    CudaRuntimeSummary {
+        feature_enabled: false,
+        runtime_available: false,
+        preferred_device: None,
+        probe_error: None,
     }
 }
 
@@ -1138,6 +1234,12 @@ fn main() -> Result<(), String> {
             .map(|count| avg_cross_wall_ms as f64 / count as f64);
 
         summaries.push(ValidationCaseSummary {
+            workload_id: format!(
+                "double_ma_validate_{}_{}bars_{}candidates",
+                case.label,
+                candles.close.len(),
+                candidates.len()
+            ),
             label: case.label.to_string(),
             status: if agg.last_error.is_some() {
                 "error".to_string()
@@ -1145,10 +1247,27 @@ fn main() -> Result<(), String> {
                 "ok".to_string()
             },
             repeats: agg.repeats,
+            requested_backend: requested_backend_label(&backend).to_string(),
+            module_mix: validation_case_module_mix(&case),
             avg_wall_ms,
             avg_main_validation_wall_ms: avg_main_wall_ms,
             avg_cross_ticker_wall_ms: avg_cross_wall_ms,
             avg_reported_runtime_ms,
+            timing_ms: ValidationTimingSummary {
+                avg_total_wall: avg_wall_ms,
+                avg_main_validation_wall: avg_main_wall_ms,
+                avg_cross_ticker_wall: avg_cross_wall_ms,
+                avg_reported_runtime: avg_reported_runtime_ms,
+                avg_cpu_tail: avg_u64(agg.total_cpu_tail_wall_ms, agg.cpu_tail_wall_ms_samples),
+                avg_aux_finalist_analytics: avg_u64(
+                    agg.total_aux_finalist_analytics_wall_ms,
+                    agg.aux_finalist_analytics_wall_ms_samples,
+                ),
+                avg_gpu_result_materialization: avg_u64(
+                    agg.total_gpu_result_materialization_wall_ms,
+                    agg.gpu_result_materialization_wall_ms_samples,
+                ),
+            },
             versus_optimization_ratio: total_ratio,
             main_validation_ratio_vs_optimization: main_ratio,
             cross_ticker_ratio_vs_optimization: cross_ratio,
@@ -1180,6 +1299,15 @@ fn main() -> Result<(), String> {
         timing_boundary_note:
             "wall-time comparison between optimization baseline and validation module stacks",
         build_profile: build_profile(),
+        cuda: cuda_runtime_summary(),
+        workflow_family: "conventional_double_ma_validation",
+        strategy_family: "double_ma",
+        strategy_profile: format!("{}/{}", cli.fast_ma, cli.slow_ma),
+        workload_id: format!(
+            "double_ma_validation_cost_{}bars_{}candidates",
+            candles.close.len(),
+            candidates.len()
+        ),
         csv_path: cli.csv.to_string_lossy().to_string(),
         backend_requested: requested_backend_label(&backend).to_string(),
         total_bars: candles.close.len(),
@@ -1189,6 +1317,8 @@ fn main() -> Result<(), String> {
             backend_used: opt_backend_used,
             backend_route: opt_res.backend_route,
             backend_fallback_reason: opt_res.backend_fallback_reason,
+            route_diagnostics: opt_res.route_diagnostics,
+            residency: opt_res.residency,
             top_candidates: candidates.len(),
         },
         validation_cases: summaries,
@@ -1211,11 +1341,135 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::ratio_against_optimization;
+    use super::{
+        ratio_against_optimization, validation_case_module_mix, CostReport, CudaRuntimeSummary,
+        ModuleFeasibilitySummary, OptimizationSummary, ValidationCaseSpec, ValidationCaseSummary,
+        ValidationTimingSummary,
+    };
+    use serde_json::json;
 
     #[test]
     fn ratio_against_optimization_handles_zero_baseline() {
         assert_eq!(ratio_against_optimization(25, 0), 0.0);
         assert!((ratio_against_optimization(25, 100) - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn validation_case_module_mix_names_active_modules() {
+        let spec = ValidationCaseSpec {
+            label: "validation_full_stack_plus_cross_ticker_preserved_stack",
+            walk_forward: true,
+            cscv_pbo: true,
+            spa: true,
+            reopt_walk_forward: true,
+            perturb: true,
+            trade_bootstrap: true,
+            cross_ticker_preserved_stack: true,
+        };
+
+        assert_eq!(
+            validation_case_module_mix(&spec),
+            vec![
+                "in_sample",
+                "walk_forward",
+                "reopt_walk_forward",
+                "cscv_pbo",
+                "spa",
+                "perturbation",
+                "trade_bootstrap",
+                "cross_ticker_preserved_finalists",
+            ]
+        );
+    }
+
+    #[test]
+    fn cost_report_serializes_gate_metadata_fields() {
+        let report = CostReport {
+            schema_version: 1,
+            timing_boundary: "validation-cost",
+            timing_boundary_note: "test",
+            build_profile: "test",
+            cuda: CudaRuntimeSummary {
+                feature_enabled: false,
+                runtime_available: false,
+                preferred_device: None,
+                probe_error: None,
+            },
+            workflow_family: "conventional_double_ma_validation",
+            strategy_family: "double_ma",
+            strategy_profile: "sma/sma".to_string(),
+            workload_id: "double_ma_validation_cost_10bars_1candidates".to_string(),
+            csv_path: "synthetic.csv".to_string(),
+            backend_requested: "GpuKernel".to_string(),
+            total_bars: 10,
+            optimization: OptimizationSummary {
+                wall_ms: 5,
+                runtime_ms: 4,
+                backend_used: "Gpu".to_string(),
+                backend_route: Some("GpuKernel".to_string()),
+                backend_fallback_reason: None,
+                route_diagnostics: Some(vec!["gpu_kernel.metrics_count=17".to_string()]),
+                residency: None,
+                top_candidates: 1,
+            },
+            validation_cases: vec![ValidationCaseSummary {
+                workload_id: "double_ma_validate_validation_base_10bars_1candidates".to_string(),
+                label: "validation_base".to_string(),
+                status: "ok".to_string(),
+                repeats: 1,
+                requested_backend: "GpuKernel".to_string(),
+                module_mix: vec!["in_sample"],
+                avg_wall_ms: 2,
+                avg_main_validation_wall_ms: 2,
+                avg_cross_ticker_wall_ms: 0,
+                avg_reported_runtime_ms: 1,
+                timing_ms: ValidationTimingSummary {
+                    avg_total_wall: 2,
+                    avg_main_validation_wall: 2,
+                    avg_cross_ticker_wall: 0,
+                    avg_reported_runtime: 1,
+                    avg_cpu_tail: Some(0),
+                    avg_aux_finalist_analytics: Some(0),
+                    avg_gpu_result_materialization: Some(1),
+                },
+                versus_optimization_ratio: 0.4,
+                main_validation_ratio_vs_optimization: 0.4,
+                cross_ticker_ratio_vs_optimization: 0.0,
+                cheapness_band: "comparable".to_string(),
+                main_validation_cheapness_band: "comparable".to_string(),
+                cross_ticker_cheapness_band: "cheap".to_string(),
+                backend_used: Some("Gpu".to_string()),
+                backend_route: Some("GpuKernel".to_string()),
+                backend_fallback_reason: None,
+                candidate_count: Some(1),
+                approved_count: Some(1),
+                rejected_count: Some(0),
+                run_verdict_approved_count: Some(1),
+                run_verdict_total_count: Some(1),
+                run_verdict_status: Some("approved".to_string()),
+                execution_profile: None,
+                wall_ms_per_candidate: Some(2.0),
+                wall_ms_per_approved_candidate: Some(2.0),
+                main_validation_wall_ms_per_candidate: Some(2.0),
+                cross_ticker_wall_ms_per_dataset: None,
+                error: None,
+            }],
+            module_feasibility: Vec::<ModuleFeasibilitySummary>::new(),
+        };
+
+        let value = serde_json::to_value(report).expect("serialize report");
+        assert_eq!(value["cuda"]["feature_enabled"], json!(false));
+        assert_eq!(
+            value["optimization"]["route_diagnostics"][0],
+            json!("gpu_kernel.metrics_count=17")
+        );
+        assert_eq!(
+            value["validation_cases"][0]["module_mix"][0],
+            json!("in_sample")
+        );
+        assert_eq!(
+            value["validation_cases"][0]["timing_ms"]["avg_gpu_result_materialization"],
+            json!(1)
+        );
     }
 }

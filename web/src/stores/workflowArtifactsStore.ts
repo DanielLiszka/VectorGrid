@@ -81,10 +81,16 @@ export interface WorkflowMlSignalArtifact {
   nativeBackendRequested: string;
   nativeBackendUsed: string;
   nativeLibraryPath: string;
+  nativeLibrarySha256: string;
+  nativeLibraryDiscoveryPolicy: string;
   nativeGpuDeviceId: number | null;
+  nativePredictionBatchSize: number | null;
   nativeFallbackReason: string;
   scoreSpace: string;
   scoreScope: string;
+  scoreScopePolicy: string;
+  rawScoreObservations: number | null;
+  effectiveScoreObservations: number | null;
   matchedRows: number | null;
   skippedRows: number | null;
   barsScored: number | null;
@@ -320,6 +326,18 @@ function normalizeMlSignalArtifact(
     sourceBundleManifestPath?: unknown;
     source_bundle_manifest_hash?: unknown;
     sourceBundleManifestHash?: unknown;
+    bundle_manifest_sha256?: unknown;
+    bundleManifestSha256?: unknown;
+    model_long_sha256?: unknown;
+    modelLongSha256?: unknown;
+    model_short_sha256?: unknown;
+    modelShortSha256?: unknown;
+    feature_schema_sha256?: unknown;
+    featureSchemaSha256?: unknown;
+    export_manifest_sha256?: unknown;
+    exportManifestSha256?: unknown;
+    training_config_hash?: unknown;
+    trainingConfigHash?: unknown;
     threshold_policy?: unknown;
     thresholdPolicy?: unknown;
     producer_kind?: unknown;
@@ -330,8 +348,14 @@ function normalizeMlSignalArtifact(
     nativeBackendUsed?: unknown;
     native_library_path?: unknown;
     nativeLibraryPath?: unknown;
+    native_library_sha256?: unknown;
+    nativeLibrarySha256?: unknown;
+    native_library_discovery_policy?: unknown;
+    nativeLibraryDiscoveryPolicy?: unknown;
     native_gpu_device_id?: unknown;
     nativeGpuDeviceId?: unknown;
+    native_prediction_batch_size?: unknown;
+    nativePredictionBatchSize?: unknown;
     native_fallback_reason?: unknown;
     nativeFallbackReason?: unknown;
     bundle_status?: unknown;
@@ -342,6 +366,12 @@ function normalizeMlSignalArtifact(
     scoreSpace?: unknown;
     score_scope?: unknown;
     scoreScope?: unknown;
+    score_scope_policy?: unknown;
+    scoreScopePolicy?: unknown;
+    raw_score_observations?: unknown;
+    rawScoreObservations?: unknown;
+    effective_score_observations?: unknown;
+    effectiveScoreObservations?: unknown;
     matched_rows?: unknown;
     matchedRows?: unknown;
     skipped_rows?: unknown;
@@ -458,6 +488,24 @@ function normalizeMlSignalArtifact(
         "source_bundle_manifest_hash",
         row.source_bundle_manifest_hash ?? row.sourceBundleManifestHash,
       ],
+      [
+        "bundle_manifest_sha256",
+        row.bundle_manifest_sha256 ?? row.bundleManifestSha256,
+      ],
+      ["model_long_sha256", row.model_long_sha256 ?? row.modelLongSha256],
+      ["model_short_sha256", row.model_short_sha256 ?? row.modelShortSha256],
+      [
+        "feature_schema_sha256",
+        row.feature_schema_sha256 ?? row.featureSchemaSha256,
+      ],
+      [
+        "export_manifest_sha256",
+        row.export_manifest_sha256 ?? row.exportManifestSha256,
+      ],
+      [
+        "training_config_hash",
+        row.training_config_hash ?? row.trainingConfigHash,
+      ],
       ["calibration_state", row.calibration_state ?? row.calibrationState],
       ["threshold_policy", row.threshold_policy ?? row.thresholdPolicy],
       ["producer_kind", row.producer_kind ?? row.producerKind],
@@ -468,8 +516,20 @@ function normalizeMlSignalArtifact(
       ["native_backend_used", row.native_backend_used ?? row.nativeBackendUsed],
       ["native_library_path", row.native_library_path ?? row.nativeLibraryPath],
       [
+        "native_library_sha256",
+        row.native_library_sha256 ?? row.nativeLibrarySha256,
+      ],
+      [
+        "native_library_discovery_policy",
+        row.native_library_discovery_policy ?? row.nativeLibraryDiscoveryPolicy,
+      ],
+      [
         "native_gpu_device_id",
         row.native_gpu_device_id ?? row.nativeGpuDeviceId,
+      ],
+      [
+        "native_prediction_batch_size",
+        row.native_prediction_batch_size ?? row.nativePredictionBatchSize,
       ],
       [
         "native_fallback_reason",
@@ -479,6 +539,7 @@ function normalizeMlSignalArtifact(
         "score_contract_version",
         row.score_contract_version ?? row.scoreContractVersion,
       ],
+      ["score_scope_policy", row.score_scope_policy ?? row.scoreScopePolicy],
     ]);
   const bundleStatus = normalizeOptionalRecord(
     row.bundle_status_details ??
@@ -556,11 +617,29 @@ function normalizeMlSignalArtifact(
         scoreCacheProvenance?.native_library_path ??
         scoreCacheProvenance?.nativeLibraryPath,
     ),
+    nativeLibrarySha256: normalizeText(
+      row.native_library_sha256 ??
+        row.nativeLibrarySha256 ??
+        scoreCacheProvenance?.native_library_sha256 ??
+        scoreCacheProvenance?.nativeLibrarySha256,
+    ),
+    nativeLibraryDiscoveryPolicy: normalizeText(
+      row.native_library_discovery_policy ??
+        row.nativeLibraryDiscoveryPolicy ??
+        scoreCacheProvenance?.native_library_discovery_policy ??
+        scoreCacheProvenance?.nativeLibraryDiscoveryPolicy,
+    ),
     nativeGpuDeviceId: normalizeOptionalNumber(
       row.native_gpu_device_id ??
         row.nativeGpuDeviceId ??
         scoreCacheProvenance?.native_gpu_device_id ??
         scoreCacheProvenance?.nativeGpuDeviceId,
+    ),
+    nativePredictionBatchSize: normalizeOptionalNumber(
+      row.native_prediction_batch_size ??
+        row.nativePredictionBatchSize ??
+        scoreCacheProvenance?.native_prediction_batch_size ??
+        scoreCacheProvenance?.nativePredictionBatchSize,
     ),
     nativeFallbackReason: normalizeText(
       row.native_fallback_reason ??
@@ -570,6 +649,18 @@ function normalizeMlSignalArtifact(
     ),
     scoreSpace: normalizeText(row.score_space ?? row.scoreSpace),
     scoreScope: normalizeText(row.score_scope ?? row.scoreScope),
+    scoreScopePolicy: normalizeText(
+      row.score_scope_policy ??
+        row.scoreScopePolicy ??
+        scoreCacheProvenance?.score_scope_policy ??
+        scoreCacheProvenance?.scoreScopePolicy,
+    ),
+    rawScoreObservations: normalizeOptionalNumber(
+      row.raw_score_observations ?? row.rawScoreObservations,
+    ),
+    effectiveScoreObservations: normalizeOptionalNumber(
+      row.effective_score_observations ?? row.effectiveScoreObservations,
+    ),
     matchedRows: normalizeOptionalNumber(row.matched_rows ?? row.matchedRows),
     skippedRows: normalizeOptionalNumber(row.skipped_rows ?? row.skippedRows),
     barsScored: normalizeOptionalNumber(row.bars_scored ?? row.barsScored),
@@ -603,8 +694,19 @@ function normalizeMlSignalArtifact(
     !out.scoreContractVersion &&
     !out.scoreCacheProvenance &&
     !out.bundleStatus &&
+    !out.nativeBackendRequested &&
+    !out.nativeBackendUsed &&
+    !out.nativeLibraryPath &&
+    !out.nativeLibrarySha256 &&
+    !out.nativeLibraryDiscoveryPolicy &&
+    out.nativeGpuDeviceId == null &&
+    out.nativePredictionBatchSize == null &&
+    !out.nativeFallbackReason &&
     !out.scoreSpace &&
     !out.scoreScope &&
+    !out.scoreScopePolicy &&
+    out.rawScoreObservations == null &&
+    out.effectiveScoreObservations == null &&
     out.matchedRows == null &&
     out.skippedRows == null &&
     out.barsScored == null &&

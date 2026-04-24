@@ -40,6 +40,9 @@ const {
   mlSignalNativeBackend,
   mlSignalNativeLibraryPath,
   mlSignalNativeGpuDeviceId,
+  mlSignalNativePredictionBatchSize,
+  mlSignalNativeScoreScope,
+  mlSignalAllowNonWalkforwardScoreScope,
   mlSignalModelStatus,
   mlSignalDatasetMeta,
   mlSignalScoreMeta,
@@ -508,6 +511,9 @@ const currentArtifactProvenanceSummary = computed(() => {
       : artifact.nativeBackendRequested
         ? `native req ${artifact.nativeBackendRequested}`
         : "",
+    artifact.nativeLibrarySha256
+      ? `lib ${formatHash(artifact.nativeLibrarySha256)}`
+      : "",
     firstText(bundleStatus?.state)
       ? `bundle ${firstText(bundleStatus?.state)}`
       : "",
@@ -658,6 +664,63 @@ const currentCacheLineageSummary = computed(() => {
         )}`
       : "",
     firstText(
+      scoreCacheProvenance?.bundle_manifest_sha256,
+      scoreCacheProvenance?.bundleManifestSha256,
+    )
+      ? `bundle sha ${formatHash(
+          firstText(
+            scoreCacheProvenance?.bundle_manifest_sha256,
+            scoreCacheProvenance?.bundleManifestSha256,
+          ),
+        )}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.model_long_sha256,
+      scoreCacheProvenance?.modelLongSha256,
+    )
+      ? `long ${formatHash(
+          firstText(
+            scoreCacheProvenance?.model_long_sha256,
+            scoreCacheProvenance?.modelLongSha256,
+          ),
+        )}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.model_short_sha256,
+      scoreCacheProvenance?.modelShortSha256,
+    )
+      ? `short ${formatHash(
+          firstText(
+            scoreCacheProvenance?.model_short_sha256,
+            scoreCacheProvenance?.modelShortSha256,
+          ),
+        )}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.native_library_sha256,
+      scoreCacheProvenance?.nativeLibrarySha256,
+      artifact?.nativeLibrarySha256,
+    )
+      ? `native lib ${formatHash(
+          firstText(
+            scoreCacheProvenance?.native_library_sha256,
+            scoreCacheProvenance?.nativeLibrarySha256,
+            artifact?.nativeLibrarySha256,
+          ),
+        )}`
+      : "",
+    firstText(
+      scoreCacheProvenance?.native_library_discovery_policy,
+      scoreCacheProvenance?.nativeLibraryDiscoveryPolicy,
+      artifact?.nativeLibraryDiscoveryPolicy,
+    )
+      ? `loader ${firstText(
+          scoreCacheProvenance?.native_library_discovery_policy,
+          scoreCacheProvenance?.nativeLibraryDiscoveryPolicy,
+          artifact?.nativeLibraryDiscoveryPolicy,
+        )}`
+      : "",
+    firstText(
       provenance?.source_export_manifest_hash,
       provenance?.sourceExportManifestHash,
     )
@@ -681,6 +744,9 @@ const currentCacheLineageSummary = computed(() => {
       : "",
     artifact?.nativeGpuDeviceId != null
       ? `gpu ${Math.max(0, Math.floor(Number(artifact.nativeGpuDeviceId)))}`
+      : "",
+    artifact?.nativePredictionBatchSize != null
+      ? `batch ${Math.max(1, Math.floor(Number(artifact.nativePredictionBatchSize)))}`
       : "",
     artifact?.nativeFallbackReason
       ? `fallback ${artifact.nativeFallbackReason}`
@@ -721,6 +787,23 @@ const currentScoreCoverageSummary = computed(() => {
   const parts = [
     String(artifact.scoreSpace || "").trim(),
     String(artifact.scoreScope || "").trim(),
+    String(artifact.scoreScopePolicy || "").trim()
+      ? `policy ${artifact.scoreScopePolicy}`
+      : "",
+    artifact.rawScoreObservations != null &&
+    Number.isFinite(Number(artifact.rawScoreObservations))
+      ? `raw ${Math.max(
+          0,
+          Math.floor(Number(artifact.rawScoreObservations)),
+        )}`
+      : "",
+    artifact.effectiveScoreObservations != null &&
+    Number.isFinite(Number(artifact.effectiveScoreObservations))
+      ? `effective ${Math.max(
+          0,
+          Math.floor(Number(artifact.effectiveScoreObservations)),
+        )}`
+      : "",
     Number.isFinite(Number(artifact.matchedRows))
       ? `matched ${Math.max(0, Math.floor(Number(artifact.matchedRows)))}`
       : "",
@@ -1396,6 +1479,41 @@ onMounted(() => {
         </div>
         <div class="gridTwo">
           <div>
+            <label for="mlSignalNativeScoreScope">Score scope</label>
+            <select
+              id="mlSignalNativeScoreScope"
+              :value="mlSignalNativeScoreScope"
+              @change="
+                optimizeStore.setInputField(
+                  'mlSignalNativeScoreScope',
+                  String(($event.target as HTMLSelectElement).value || ''),
+                )
+              "
+            >
+              <option value="bundle_default">Bundle policy default</option>
+              <option value="walkforward_test">Walk-forward test</option>
+              <option value="full_dataset">Full dataset</option>
+              <option value="calibration_slice">Calibration slice</option>
+              <option value="custom_partial">Custom partial</option>
+            </select>
+          </div>
+          <label class="inlineToggle" for="mlSignalAllowNonWalkforwardScoreScope">
+            <input
+              id="mlSignalAllowNonWalkforwardScoreScope"
+              type="checkbox"
+              :checked="mlSignalAllowNonWalkforwardScoreScope"
+              @change="
+                optimizeStore.setCheckboxField(
+                  'mlSignalAllowNonWalkforwardScoreScope',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
+            />
+            Allow non-walk-forward scope
+          </label>
+        </div>
+        <div class="gridTwo">
+          <div>
             <label for="mlSignalNativeLibraryPath">
               Native library override
             </label>
@@ -1425,6 +1543,25 @@ onMounted(() => {
               @input="
                 optimizeStore.setInputField(
                   'mlSignalNativeGpuDeviceId',
+                  String(($event.target as HTMLInputElement).value || ''),
+                )
+              "
+            />
+          </div>
+          <div>
+            <label for="mlSignalNativePredictionBatchSize">
+              Prediction batch size
+            </label>
+            <input
+              id="mlSignalNativePredictionBatchSize"
+              type="number"
+              min="1"
+              step="1"
+              :value="mlSignalNativePredictionBatchSize"
+              placeholder="Default"
+              @input="
+                optimizeStore.setInputField(
+                  'mlSignalNativePredictionBatchSize',
                   String(($event.target as HTMLInputElement).value || ''),
                 )
               "

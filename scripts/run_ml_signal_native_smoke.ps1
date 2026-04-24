@@ -27,6 +27,7 @@ param(
   [string]$DataId,
   [ValidateSet('auto', 'native_cuda', 'native_cpu', 'score_cache_only')]
   [string]$BackendPreference = 'native_cpu',
+  [int]$PredictionBatchSize = 0,
   [int]$GpuDeviceId = 0,
   [switch]$PassGpuDeviceId
 )
@@ -79,6 +80,9 @@ if ($PassGpuDeviceId -and $BackendPreference -notin @('auto', 'native_cuda')) {
 if ($BackendPreference -eq 'score_cache_only') {
   throw "BackendPreference 'score_cache_only' is incompatible with the native smoke harness. Use auto, native_cuda, or native_cpu."
 }
+if ($PredictionBatchSize -lt 0) {
+  throw "PredictionBatchSize must be 0 (default) or a positive integer."
+}
 
 $args = @(
   'run',
@@ -105,6 +109,9 @@ if ($DataId) {
 }
 if ($PassGpuDeviceId) {
   $args += @('--gpu-device-id', $GpuDeviceId.ToString())
+}
+if ($PredictionBatchSize -gt 0) {
+  $args += @('--prediction-batch-size', $PredictionBatchSize.ToString())
 }
 
 cargo @args

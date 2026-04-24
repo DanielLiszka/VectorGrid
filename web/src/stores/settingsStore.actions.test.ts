@@ -121,6 +121,23 @@ interface DocumentHarness {
   fields: Record<string, LegacyField>;
 }
 
+function installLocalStorageHarness(): void {
+  const values: Record<string, string> = {};
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) =>
+      Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null,
+    setItem: (key: string, value: string) => {
+      values[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete values[key];
+    },
+    clear: () => {
+      for (const key of Object.keys(values)) delete values[key];
+    },
+  });
+}
+
 function installDocumentHarness(): DocumentHarness {
   const dataset: Record<string, string> = {};
   const fields: Record<string, LegacyField> = {
@@ -196,6 +213,7 @@ describe("settings store actions", () => {
     vi.stubGlobal("navigator", {
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     });
+    installLocalStorageHarness();
     pinia = createPinia();
     setActivePinia(pinia);
     bindRuntimePinia(pinia);
@@ -219,6 +237,23 @@ describe("settings store actions", () => {
     harness = installDocumentHarness();
   });
 
+  it("defaults first-run users to guided mode but persists explicit advanced mode", () => {
+    const store = useSettingsStore();
+    expect(store.uiMode).toBe("guided");
+
+    store.setUiMode("advanced");
+
+    expect(store.uiMode).toBe("advanced");
+    expect(harness.dataset.uiMode).toBe("advanced");
+    expect(localStorage.getItem("vta_ui_mode_v1")).toBe("advanced");
+
+    store.setUiMode("guided");
+
+    expect(store.uiMode).toBe("guided");
+    expect(harness.dataset.uiMode).toBe("guided");
+    expect(localStorage.getItem("vta_ui_mode_v1")).toBeNull();
+  });
+
   it("applies settings field updates without legacy settings action dispatch", () => {
     const store = useSettingsStore();
     store.setInputField("settingsMarketDataDir", " C:/cache ");
@@ -226,6 +261,7 @@ describe("settings store actions", () => {
     store.setSelectField("settingsEffectSelect", "mica");
     store.setSelectField("settingsHelpMode", "off");
     store.setSelectField("settingsDensityMode", "dense");
+    store.setSelectField("settingsUiMode", "advanced");
     store.setSelectField("settingsUiMode", "guided");
     store.setSelectField("settingsGuidedStep", "trade");
     store.setSelectField("settingsDesktopNotifications", "important");

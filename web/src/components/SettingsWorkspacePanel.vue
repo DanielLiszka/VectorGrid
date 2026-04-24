@@ -134,7 +134,7 @@ const themeDraft = ref("system");
 const effectDraft = ref("none");
 const helpModeDraft = ref("full");
 const densityModeDraft = ref("standard");
-const uiModeDraft = ref("advanced");
+const uiModeDraft = ref("guided");
 const guidedStepDraft = ref("data");
 const desktopNotificationModeDraft = ref("off");
 const marketDataDirDraft = ref("");
@@ -193,7 +193,7 @@ const settingsSummaryChips = computed(() => [
   `Effect ${String(effectDraft.value || "none").trim() || "none"}`,
   `Help ${String(helpModeDraft.value || "full").trim() || "full"}`,
   `Density ${String(densityModeDraft.value || "standard").trim() || "standard"}`,
-  `UI ${String(uiModeDraft.value || "advanced").trim() || "advanced"}`,
+  `UI ${String(uiModeDraft.value || "guided").trim() || "guided"}`,
   `Desktop alerts ${String(desktopNotificationModeDraft.value || "off").trim() || "off"}`,
   workflowAdvanced.value ? "Advanced controls on" : "Advanced controls off",
   controlsCollapsed.value
@@ -592,7 +592,7 @@ watch(
       String(effect.value || "none").trim() || "none",
       String(helpMode.value || "full").trim() || "full",
       String(densityMode.value || "standard").trim() || "standard",
-      String(uiMode.value || "advanced").trim() || "advanced",
+      String(uiMode.value || "guided").trim() || "guided",
       String(guidedStep.value || "data").trim() || "data",
       String(desktopNotificationMode.value || "off").trim() || "off",
       String(marketDataDir.value || ""),
@@ -971,7 +971,7 @@ onBeforeUnmount(() => {
               :value="uiModeDraft"
               @change="
                 uiModeDraft = String(
-                  ($event.target as HTMLSelectElement).value || 'advanced',
+                  ($event.target as HTMLSelectElement).value || 'guided',
                 );
                 setSelectValue('settingsUiMode', uiModeDraft);
               "

@@ -37,6 +37,20 @@ fn make_synth_candles(len: usize) -> Candles {
     Candles::new(ts, open, high, low, close, vol)
 }
 
+fn criterion_filter_allows(group_name: &str) -> bool {
+    let filters: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|arg| arg != "--bench")
+        .filter(|arg| !arg.starts_with('-'))
+        .collect();
+    if filters.is_empty() {
+        return true;
+    }
+    filters
+        .iter()
+        .any(|filter| group_name.contains(filter) || filter.contains(group_name))
+}
+
 fn base_request(
     backend: Backend,
     gpu_execution: GpuExecutionPolicy,
@@ -138,6 +152,30 @@ fn bench_followup_case(
     let opt_req = base_request(backend.clone(), gpu_execution, true);
     let opt_res = run_double_ma_optimization_blocking_with_candles(opt_req, candles, cancel, None)
         .expect("follow-up route probe");
+    if matches!(backend, Backend::GpuKernel { .. }) {
+        assert_eq!(
+            opt_res.backend_route.as_deref(),
+            Some("GpuKernel"),
+            "GPU follow-up benchmark requires the seed optimization to stay on GpuKernel; fallback={:?}",
+            opt_res.backend_fallback_reason
+        );
+        assert!(
+            opt_res.backend_fallback_reason.is_none(),
+            "GPU follow-up benchmark observed optimization fallback: {:?}",
+            opt_res.backend_fallback_reason
+        );
+        let residency = opt_res
+            .residency
+            .as_ref()
+            .expect("GPU follow-up benchmark requires residency summary");
+        assert!(
+            residency.fully_gpu_resident
+                && !residency.cpu_staged_indicators
+                && !residency.cpu_fallback_used,
+            "GPU follow-up benchmark requires resident seed optimization, got {:?}",
+            residency
+        );
+    }
     let followup_cache_key = opt_res
         .followup_cache_key
         .clone()
@@ -201,17 +239,21 @@ fn bench_double_ma_followup_workflow(c: &mut Criterion) {
     let candles = make_synth_candles(50_000);
     let cancel = AtomicBool::new(false);
 
-    bench_followup_case(
-        c,
-        "cpu",
-        Backend::CpuOnly,
-        GpuExecutionPolicy::BestEffort,
-        &candles,
-        &cancel,
-    );
+    if criterion_filter_allows("double_ma_followup/cpu/50k") {
+        bench_followup_case(
+            c,
+            "cpu",
+            Backend::CpuOnly,
+            GpuExecutionPolicy::BestEffort,
+            &candles,
+            &cancel,
+        );
+    }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    if vector_ta::cuda::cuda_available() {
+    if vector_ta::cuda::cuda_available()
+        && criterion_filter_allows("double_ma_followup/gpu_kernel/50k")
+    {
         bench_followup_case(
             c,
             "gpu_kernel",

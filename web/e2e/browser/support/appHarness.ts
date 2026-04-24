@@ -3,6 +3,13 @@ import { commandPaletteSelectors, shellSelectors, taskCenterSelectors, workspace
 import { dismissStartupOverlay, installMockedTauri } from './mockTauri'
 
 export async function gotoMockedShell(page: Page, context: BrowserContext): Promise<void> {
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem('vta_ui_mode_v1', 'advanced')
+    } catch {
+      // Ignore storage failures in the browser harness.
+    }
+  })
   await installMockedTauri(context, { holdStartupOverlay: true })
   await page.goto('/', { waitUntil: 'networkidle' })
   await dismissStartupOverlay(page)
@@ -12,6 +19,9 @@ export async function gotoMockedShell(page: Page, context: BrowserContext): Prom
 export async function waitForShellReady(page: Page): Promise<void> {
   await expect(page.locator(shellSelectors.titlebar)).toBeVisible()
   await expect(page.locator(shellSelectors.shellHeader)).toBeVisible()
+  if (!(await page.locator(shellSelectors.workspaceBar).isVisible().catch(() => false))) {
+    await page.locator('#uiModeBar [data-ui-mode="advanced"]').click()
+  }
   await expect(page.locator(shellSelectors.workspaceBar)).toBeVisible()
   await expect(page.locator(shellSelectors.runFooter)).toBeVisible()
   await expect(page.locator(workspaceTabSelector('workflow'))).toHaveAttribute('aria-selected', 'true')

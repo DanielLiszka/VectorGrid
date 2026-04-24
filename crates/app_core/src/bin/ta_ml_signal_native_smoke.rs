@@ -4,7 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
-use ta_app_core::ml_signal::MlSignalInferenceBackendPreference;
+use ta_app_core::ml_signal::{
+    MlSignalInferenceBackendPreference, MlSignalNativeLibraryDiscoveryPolicy,
+};
 use ta_app_core::{
     build_ml_signal_score_cache_from_csv, read_candles_from_csv_compat, read_ml_signal_manifest,
     MlSignalScoreCacheBuildRequest,
@@ -36,6 +38,9 @@ struct Cli {
     gpu_device_id: Option<i32>,
 
     #[arg(long)]
+    prediction_batch_size: Option<usize>,
+
+    #[arg(long)]
     data_id: Option<String>,
 }
 
@@ -46,6 +51,8 @@ struct SmokeOutput {
     backend_preference: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_library_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prediction_batch_size: Option<usize>,
     result: ta_app_core::MlSignalScoreCacheBuildResult,
 }
 
@@ -145,9 +152,13 @@ fn main() -> Result<(), String> {
         threshold_policy: None,
         producer_kind: None,
         score_contract_version: None,
+        score_scope: None,
+        allow_non_walkforward_score_scope: true,
         native_backend_preference: backend_preference,
         native_library_path: native_library_path.clone(),
         native_gpu_device_id: cli.gpu_device_id,
+        native_prediction_batch_size: cli.prediction_batch_size,
+        native_library_discovery_policy: MlSignalNativeLibraryDiscoveryPolicy::DeveloperDebug,
     };
     let cancel = AtomicBool::new(false);
     let result = build_ml_signal_score_cache_from_csv(req, &candles, &cancel)?;
@@ -156,6 +167,7 @@ fn main() -> Result<(), String> {
         bundle_manifest: cli.bundle_manifest.to_string_lossy().to_string(),
         backend_preference: cli.backend_preference,
         native_library_path,
+        prediction_batch_size: cli.prediction_batch_size,
         result,
     };
     let rendered = serde_json::to_string_pretty(&output)

@@ -18,7 +18,7 @@ param(
   [switch]$RunFull,
   [switch]$InspectTop,
   [int]$LaunchCount = 20,
-  [string]$KernelName = "regex:^options_expression_score_split_f64$",
+  [string]$KernelName = "regex:^(options_expression_score_split_f64|options_expression_score_search_holdout_stress_f64)$",
   [bool]$UseKernelNameFilter = $true,
   [ValidateSet("application-only", "all")]
   [string]$TargetProcesses = "application-only",
@@ -73,6 +73,44 @@ function Write-JsonUtf8 {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
   }
   $Value | ConvertTo-Json -Depth $Depth | Set-Content -Encoding UTF8 $Path
+}
+
+function Test-IsAdministrator {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-OptionsPerfProcesses() {
+  @(Get-Process | Where-Object {
+      $_.ProcessName -match '^(cargo|criterion|nsys|ncu|compute-sanitizer)$' -or
+      $_.ProcessName -like 'ta_options_expression*' -or
+      $_.ProcessName -like 'options_expression*'
+    } | Select-Object ProcessName, Id, CPU, StartTime)
+}
+
+function Wait-NoOptionsPerfProcesses(
+  [int]$TimeoutSeconds = 300,
+  [int]$PollMilliseconds = 500,
+  [string]$Context = ""
+) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ($true) {
+    $procs = @(Get-OptionsPerfProcesses)
+    if ($procs.Count -eq 0) {
+      return
+    }
+    if ((Get-Date) -ge $deadline) {
+      $summary = ($procs | ForEach-Object {
+          "{0}#{1}" -f $_.ProcessName, $_.Id
+        }) -join ", "
+      if ([string]::IsNullOrWhiteSpace($Context)) {
+        throw "Timed out waiting for options benchmark/profiler processes to drain: $summary"
+      }
+      throw "Timed out waiting for options benchmark/profiler processes to drain ${Context}: $summary"
+    }
+    Start-Sleep -Milliseconds $PollMilliseconds
+  }
 }
 
 function Get-CargoRuntimeDllPaths {
@@ -162,6 +200,12 @@ $requestedNcuArgs = $null
 
 Push-Location $repoRoot
 try {
+  if (-not (Test-IsAdministrator)) {
+    Write-Warning "Nsight Compute may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
+  }
+
+  Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Nsight Compute profile"
+
   $env:RUSTC_WRAPPER = ""
   Write-Host "Building ta_options_expression_feasibility with CUDA + NVTX profiling..."
   & cargo build -p ta_desktop_demo_app --release --bin ta_options_expression_feasibility --features "cuda,cuda-backtest-kernel,nvtx-profiling"

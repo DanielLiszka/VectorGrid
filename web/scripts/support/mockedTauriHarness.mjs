@@ -5,6 +5,16 @@ const DEFAULT_COMMAND_RESULTS = {
   load_live_session_artifact_detail: null,
 }
 
+export async function seedAdvancedUiMode(context) {
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem('vta_ui_mode_v1', 'advanced')
+    } catch {
+      // ignore storage failures in mocked browser harnesses
+    }
+  })
+}
+
 export async function installMockedTauri(context, options = {}) {
   const holdStartupOverlay = options.holdStartupOverlay ?? false
   const emitTestEvents = options.emitTestEvents ?? false

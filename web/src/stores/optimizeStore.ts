@@ -312,6 +312,12 @@ function applyVueFieldUpdate(
     case "mlSignalNativeGpuDeviceId":
       state.mlSignalNativeGpuDeviceId = next;
       return true;
+    case "mlSignalNativePredictionBatchSize":
+      state.mlSignalNativePredictionBatchSize = next;
+      return true;
+    case "mlSignalNativeScoreScope":
+      state.mlSignalNativeScoreScope = next || "bundle_default";
+      return true;
     case "mlSignalModelStatus":
       state.mlSignalModelStatus = next;
       return true;
@@ -458,6 +464,9 @@ function applyVueCheckboxFieldUpdate(
     case "mlSignalExitOnOpposite":
       state.mlSignalExitOnOpposite = checked;
       return true;
+    case "mlSignalAllowNonWalkforwardScoreScope":
+      state.mlSignalAllowNonWalkforwardScoreScope = checked;
+      return true;
     default:
       return false;
   }
@@ -509,6 +518,9 @@ interface OptimizeState {
   mlSignalNativeBackend: string;
   mlSignalNativeLibraryPath: string;
   mlSignalNativeGpuDeviceId: string;
+  mlSignalNativePredictionBatchSize: string;
+  mlSignalNativeScoreScope: string;
+  mlSignalAllowNonWalkforwardScoreScope: boolean;
   mlSignalModelStatus: string;
   mlSignalDatasetMeta: string;
   mlSignalScoreMeta: string;
@@ -613,6 +625,9 @@ export const useOptimizeStore = defineStore("optimize", {
     mlSignalNativeBackend: "native_cpu",
     mlSignalNativeLibraryPath: "",
     mlSignalNativeGpuDeviceId: "",
+    mlSignalNativePredictionBatchSize: "",
+    mlSignalNativeScoreScope: "bundle_default",
+    mlSignalAllowNonWalkforwardScoreScope: false,
     mlSignalModelStatus: "Model bundle: —",
     mlSignalDatasetMeta: "Dataset export: —",
     mlSignalScoreMeta: "Score cache: —",
@@ -817,6 +832,21 @@ export const useOptimizeStore = defineStore("optimize", {
         snapshot.mlSignalNativeGpuDeviceId ??
           this.mlSignalNativeGpuDeviceId ??
           "",
+      );
+      this.mlSignalNativePredictionBatchSize = String(
+        snapshot.mlSignalNativePredictionBatchSize ??
+          this.mlSignalNativePredictionBatchSize ??
+          "",
+      );
+      this.mlSignalNativeScoreScope = String(
+        snapshot.mlSignalNativeScoreScope ??
+          this.mlSignalNativeScoreScope ??
+          "bundle_default",
+      );
+      this.mlSignalAllowNonWalkforwardScoreScope = Boolean(
+        snapshot.mlSignalAllowNonWalkforwardScoreScope ??
+          this.mlSignalAllowNonWalkforwardScoreScope ??
+          false,
       );
       this.mlSignalModelStatus =
         String(

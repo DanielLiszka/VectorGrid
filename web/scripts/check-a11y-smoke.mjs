@@ -8,6 +8,7 @@ import {
   dispatchClick,
   dismissStartupOverlayIfPresent,
   installMockedTauri,
+  seedAdvancedUiMode,
 } from './support/mockedTauriHarness.mjs'
 
 const ROOT = process.cwd()
@@ -77,6 +78,7 @@ async function main() {
   const server = await startServer()
   const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
+  await seedAdvancedUiMode(context)
   await installMockedTauri(context, { holdStartupOverlay: true })
 
   const page = await context.newPage()

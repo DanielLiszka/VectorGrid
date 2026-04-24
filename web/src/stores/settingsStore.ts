@@ -40,6 +40,7 @@ const THEME_KEYS = new Set(["light", "dark", "system"]);
 const HELP_MODE_KEYS = new Set(["full", "concise", "off"]);
 const DENSITY_MODE_KEYS = new Set(["comfortable", "standard", "dense"]);
 const UI_MODE_KEYS = new Set(["guided", "advanced"]);
+const DEFAULT_UI_MODE: UiMode = "guided";
 const GUIDED_STEP_KEYS = new Set([
   "data",
   "strategy",
@@ -208,7 +209,7 @@ function normalizeUiMode(value: unknown): UiMode {
     .trim()
     .toLowerCase();
   if (UI_MODE_KEYS.has(next)) return next as UiMode;
-  return "advanced";
+  return DEFAULT_UI_MODE;
 }
 
 function normalizeGuidedStep(value: unknown): GuidedStep {
@@ -288,7 +289,7 @@ function persistDensityMode(mode: DensityMode): void {
 
 function persistUiMode(mode: UiMode): void {
   const normalized = normalizeUiMode(mode);
-  if (normalized === "advanced") {
+  if (normalized === DEFAULT_UI_MODE) {
     removeStorageKey(UI_MODE_KEY);
     return;
   }

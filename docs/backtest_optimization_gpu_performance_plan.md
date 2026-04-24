@@ -1340,22 +1340,57 @@ Recommended first slice:
 
 This slice creates the evidence loop needed for all later CUDA performance work.
 
+Current implementation status:
+
+- [x] Extended `src-tauri/src/bin/ta_double_ma_validation_cost.rs` with workflow/workload identifiers, per-case requested backend, validation module mix, and grouped timing fields.
+- [x] Added `scripts/run_gpu_validation_perf_gate.ps1` with baseline/candidate modes, validation Criterion case registry, structured Double-MA validation probe, route/fallback checks, process-drain checks, and GPU identity compatibility checks.
+- [x] Added process-drain checks to `scripts/run_options_expression_gpu_promotion_gate.ps1` so options promotion evidence is not collected while another benchmark/profiler run is active.
+- [x] Captured a durable `scripts/baselines/gpu_validation_perf_baseline.json` from the target GPU machine.
+- [x] Ran the full validation Criterion baseline gate on the target GPU machine before making CUDA kernel or validation route changes.
+- [x] Investigated the MKCS composite GPU validation profile observed during an unfiltered bench run: `composite_validate/gpu_kernel/mkcs/100000/32candidates` fell back `GpuKernel->CpuOnly` with `an illegal memory access was encountered`. Isolated MKCS 100k/32 route probing passes when run alone; the unfiltered sequence still points to CUDA context/order contamination. Keep MKCS out of default validation perf authority until that CUDA lifetime issue is fixed.
+- [x] Extended the structured validation-cost probe with CUDA runtime availability, preferred device metadata, route diagnostics, optimization residency, CPU-tail/materialization timings where exposed, and serialization coverage.
+- [x] Added options-expression performance baseline/candidate comparison output, workload/GPU identity checks, small-latency absolute tolerance floors, and Nsight/Compute Sanitizer script hardening.
+- [x] Added a dedicated GPU follow-up perf gate and baseline for cold and cached `double_ma_followup/gpu_kernel/50k` cases.
+- [x] Ran repo-level workflow, CPU perf, and GPU perf candidate gates after the performance instrumentation changes.
+
+Latest evidence snapshot, captured on 2026-04-24:
+
+- Existing repo gates passed:
+  - `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`
+  - `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`
+  - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+- GPU validation baseline:
+  - `double_ma_gpu_validation_sparse`: 322.432555 ms mean
+  - `composite_gpu_validation_asr_wf_cscv`: 13268.60283 ms mean
+  - `composite_gpu_validation_vcet_wf_reopt_cscv_spa`: 1504.80707 ms mean
+  - structured Double-MA validation full stack: 153 ms, perturbation: 138 ms, optimization baseline: 116 ms
+- GPU follow-up gate:
+  - baseline cold/cached: 15.329874 ms / 15.610707 ms mean
+  - candidate cold/cached: 10.678546 ms / 11.837976 ms mean
+- Options-expression gate:
+  - baseline accelerated estimated preview: 14 ms, ranking: 2683 us, GPU ranking speedup: 2.8945x
+  - candidate accelerated estimated preview: 14 ms, ranking: 2824 us, GPU ranking speedup: 2.8991x
+- Existing GPU optimization gate:
+  - `gpu_sma_small`: 66.556038 ms mean
+  - `gpu_alma_large`: 69.671597 ms mean
+  - dynamic strategy ratio: 0.996094
+
 ## Implementation Checklist
 
 Use this checklist as the execution tracker. Keep checked items tied to landed code, refreshed evidence, or an explicit decision recorded in this document.
 
 ### Baseline And Evidence
 
-- [ ] Confirm no benchmark, profiler, Cargo bench, Nsight, or CUPTI process is already running before collecting performance evidence.
-- [ ] Run `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`.
-- [ ] Run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`.
-- [ ] Run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`.
-- [ ] Capture current `double_ma_validation_workflow` GPU Criterion estimates.
-- [ ] Capture current `composite_validation_workflow` GPU Criterion estimates.
-- [ ] Capture current `double_ma_followup_workflow` GPU Criterion estimates.
-- [ ] Record current Double-MA GPU validation route, fallback, residency, and CPU-tail telemetry.
+- [x] Confirm no benchmark, profiler, Cargo bench, Nsight, or CUPTI process is already running before collecting performance evidence.
+- [x] Run `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`.
+- [x] Run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`.
+- [x] Run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`.
+- [x] Capture current `double_ma_validation_workflow` GPU Criterion estimates.
+- [x] Capture current `composite_validation_workflow` GPU Criterion estimates.
+- [x] Capture current `double_ma_followup_workflow` GPU Criterion estimates.
+- [x] Record current Double-MA GPU validation route, fallback, residency, and CPU-tail telemetry.
 - [ ] Record current composite/advanced GPU validation route, fallback, residency, and CPU-tail telemetry.
-- [ ] Decide whether current validation-heavy timing warrants new baseline files before code changes.
+- [x] Decide whether current validation-heavy timing warrants new baseline files before code changes.
 
 ### Regression And Feature Preservation
 
@@ -1366,9 +1401,9 @@ Use this checklist as the execution tracker. Keep checked items tied to landed c
 - [ ] Add or identify legacy saved-run fixtures that must continue to load.
 - [ ] Add or identify legacy validation artifact fixtures that must continue to export reports.
 - [ ] Add or identify options-expression artifact fixtures that must continue to reopen and compare.
-- [ ] Verify CPU-only builds still work after CUDA-related changes.
-- [ ] Verify explicit CPU backend override paths still work.
-- [ ] Verify explicit GPU backend override paths still work where CUDA is available.
+- [x] Verify CPU-only builds still work after CUDA-related changes.
+- [x] Verify explicit CPU backend override paths still work.
+- [x] Verify explicit GPU backend override paths still work where CUDA is available.
 - [ ] Verify frontend request builders still expose all existing validation modules.
 - [ ] Verify backend commands still accept all existing validation module fields.
 - [ ] Verify named validation presets are additive and do not remove advanced manual configuration.
@@ -1379,33 +1414,33 @@ Use this checklist as the execution tracker. Keep checked items tied to landed c
 
 ### GPU Validation Perf Gate
 
-- [ ] Create `scripts/run_gpu_validation_perf_gate.ps1`.
-- [ ] Add `scripts/baselines/gpu_validation_perf_baseline.json`.
-- [ ] Add `output/benchmarks/gpu_validation_perf_summary.json` as the default output path.
-- [ ] Reuse process-drain checks from `scripts/run_gpu_perf_gate.ps1`.
-- [ ] Build validation benches with `--features cuda,cuda-backtest-kernel`.
-- [ ] Add `-Mode baseline` support.
-- [ ] Add `-Mode candidate` support.
-- [ ] Add custom single-case support for focused profiling.
-- [ ] Enforce GPU identity compatibility against baseline when available.
-- [ ] Enforce per-case regression thresholds.
-- [ ] Fail when a required Criterion estimates file is missing.
-- [ ] Fail when a required GPU case falls back to CPU unexpectedly.
-- [ ] Emit one structured summary containing all validation cases.
+- [x] Create `scripts/run_gpu_validation_perf_gate.ps1`.
+- [x] Add `scripts/baselines/gpu_validation_perf_baseline.json`.
+- [x] Add `output/benchmarks/gpu_validation_perf_summary.json` as the default output path.
+- [x] Reuse process-drain checks from `scripts/run_gpu_perf_gate.ps1`.
+- [x] Build validation benches with `--features cuda,cuda-backtest-kernel`.
+- [x] Add `-Mode baseline` support.
+- [x] Add `-Mode candidate` support.
+- [x] Add custom single-case support for focused profiling.
+- [x] Enforce GPU identity compatibility against baseline when available.
+- [x] Enforce per-case regression thresholds.
+- [x] Fail when a required Criterion estimates file is missing.
+- [x] Fail when a required GPU case falls back to CPU unexpectedly.
+- [x] Emit one structured summary containing all validation cases.
 
 ### Structured Validation Probe
 
-- [ ] Choose whether to extend `ta_double_ma_validation_cost.rs` or add a new app-core perf probe binary.
-- [ ] Emit schema version and build profile.
-- [ ] Emit GPU identity and CUDA feature/runtime availability.
-- [ ] Emit workload id, strategy/profile, candles length, and candidate count.
-- [ ] Emit requested backend, backend used, backend route, and fallback reason.
-- [ ] Emit route diagnostics and residency summary.
-- [ ] Emit validation module mix.
-- [ ] Emit total wall time.
-- [ ] Emit in-sample, walk-forward, reopt, CSCV, SPA, perturbation, trade-bootstrap, aux-analytics, materialization, and CPU-tail timings where available.
-- [ ] Add tests for summary serialization compatibility.
-- [ ] Wire the structured probe into `run_gpu_validation_perf_gate.ps1`.
+- [x] Choose whether to extend `ta_double_ma_validation_cost.rs` or add a new app-core perf probe binary.
+- [x] Emit schema version and build profile.
+- [x] Emit GPU identity and CUDA feature/runtime availability.
+- [x] Emit workload id, strategy/profile, candles length, and candidate count.
+- [x] Emit requested backend, backend used, backend route, and fallback reason.
+- [x] Emit route diagnostics and residency summary.
+- [x] Emit validation module mix.
+- [x] Emit total wall time.
+- [x] Emit in-sample, walk-forward, reopt, CSCV, SPA, perturbation, trade-bootstrap, aux-analytics, materialization, and CPU-tail timings where available.
+- [x] Add tests for summary serialization compatibility.
+- [x] Wire the structured probe into `run_gpu_validation_perf_gate.ps1`.
 
 ### Workflow Gate Expansion
 
@@ -1442,12 +1477,12 @@ Use this checklist as the execution tracker. Keep checked items tied to landed c
 
 - [ ] Persist optimization `residency` metadata in saved run artifacts.
 - [ ] Persist validation `execution_profile.cpu_tail_wall_ms` in validation artifacts.
-- [ ] Add gate assertions for `fully_gpu_resident == true` on exact resident `GpuKernel` workloads.
+- [x] Add gate assertions for `fully_gpu_resident == true` on exact resident `GpuKernel` workloads.
 - [ ] Add gate assertions for expected non-resident hybrid cases.
 - [ ] Add tests for `StrictGpuResident` rejecting CPU-staged routes.
 - [ ] Add diagnostics for CPU-staged indicator names and reasons.
 - [ ] Add explicit route notes for `GpuHybridKernel->GpuOnly` and `GpuHybridKernel->CpuOnly`.
-- [ ] Make unintended fallback a test and gate failure.
+- [x] Make unintended fallback a test and gate failure.
 
 ### CompositeTrend ADX-Off Validation Decision
 
@@ -1469,9 +1504,9 @@ Use this checklist as the execution tracker. Keep checked items tied to landed c
 - [ ] Split timing for SPA.
 - [ ] Split timing for perturbation.
 - [ ] Split timing for trade bootstrap.
-- [ ] Split timing for aux finalist analytics.
-- [ ] Split timing for result materialization.
-- [ ] Identify the top two validation cost centers from measured data.
+- [x] Split timing for aux finalist analytics.
+- [x] Split timing for result materialization.
+- [x] Identify the top two validation cost centers from measured data.
 - [ ] Reuse prepared MA/indicator buffers across validation modules where safe.
 - [ ] Reuse uploaded candle and derived-series buffers across candidates where safe.
 - [ ] Avoid duplicate MA-pair recompute during walk-forward and reopt where candidate grids overlap.
@@ -1524,11 +1559,11 @@ Use this checklist as the execution tracker. Keep checked items tied to landed c
 - [ ] Separate derived-series upload timing.
 - [ ] Separate kernel execution timing.
 - [ ] Separate result materialization timing.
-- [ ] Separate follow-up cache hit timing.
+- [x] Separate follow-up cache hit timing.
 - [ ] Add benchmark labels for default unbatched paths.
 - [ ] Add benchmark labels for memory-capped batched paths.
 - [ ] Ensure batching is selected only for memory pressure or measured speed wins.
-- [ ] Gate cached and cold `double_ma_followup/gpu_kernel/50k` cases.
+- [x] Gate cached and cold `double_ma_followup/gpu_kernel/50k` cases.
 - [ ] Add cache miss diagnostics.
 
 ### Frontend, Artifacts, And Reports
@@ -1554,20 +1589,20 @@ Use this checklist as the execution tracker. Keep checked items tied to landed c
 
 ### Expanded Options And Full Validation Scope
 
-- [ ] Add an options-expression performance baseline file.
-- [ ] Add options-expression performance summary output aligned with conventional perf summaries.
-- [ ] Preserve candidate-density and invalid-slot checks in the options GPU promotion gate.
-- [ ] Preserve structural-cache and summary-cache reuse checks in the options GPU promotion gate.
-- [ ] Preserve GPU speedup and backend preview wall-speed checks in the options GPU promotion gate.
-- [ ] Add timing for options parent artifact validation.
-- [ ] Add timing for options signal manifest projection/loading.
-- [ ] Add timing for options dataset manifest validation.
-- [ ] Add timing for options tuple compilation.
-- [ ] Add timing for options CPU reference scoring.
-- [ ] Add timing for options CUDA tensor scoring.
-- [ ] Add timing for options GPU ranking.
-- [ ] Add timing for options exactification.
-- [ ] Add timing for options sealed-finalist stage.
+- [x] Add an options-expression performance baseline file.
+- [x] Add options-expression performance summary output aligned with conventional perf summaries.
+- [x] Preserve candidate-density and invalid-slot checks in the options GPU promotion gate.
+- [x] Preserve structural-cache and summary-cache reuse checks in the options GPU promotion gate.
+- [x] Preserve GPU speedup and backend preview wall-speed checks in the options GPU promotion gate.
+- [x] Add timing for options parent artifact validation.
+- [x] Add timing for options signal manifest projection/loading.
+- [x] Add timing for options dataset manifest validation.
+- [x] Add timing for options tuple compilation.
+- [x] Add timing for options CPU reference scoring.
+- [x] Add timing for options CUDA tensor scoring.
+- [x] Add timing for options GPU ranking.
+- [x] Add timing for options exactification.
+- [x] Add timing for options sealed-finalist stage.
 - [ ] Add timing for options artifact persistence.
 - [ ] Add timing for options compare/reopen summary loading.
 - [ ] Add options backend fields for requested preference, recommended backend, backend used, fallback reason, GPU eligibility, and CPU/GPU comparison result.

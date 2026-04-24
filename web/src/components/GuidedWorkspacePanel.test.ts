@@ -71,6 +71,8 @@ describe('GuidedWorkspacePanel', () => {
     const text = document.body.textContent || ''
     expect(text).toContain('Optimize, validate, then dry-run.')
     expect(text).toContain('Advanced Mode keeps every research')
+    expect(text).toContain('Next')
+    expect(text).toContain('Review trade readiness')
     expect(text).toContain('Rank 1 · Sharpe 1.42')
     expect(text).toContain('AAPL sample · 15m')
     expect(text).toContain('Validation run')
@@ -78,6 +80,47 @@ describe('GuidedWorkspacePanel', () => {
     document.querySelector<HTMLButtonElement>('button.guidedSecondary')?.click()
     await nextTick()
     expect(settingsStore.uiMode).toBe('advanced')
+
+    wrapper.unmount()
+  })
+
+  it('promotes the next useful action from the current readiness state', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const dataStore = useDataStore(pinia)
+    const optimizeStore = useOptimizeStore(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    vi.spyOn(dataStore, 'hydrateStartupState').mockResolvedValue(undefined)
+    const runSpy = vi.spyOn(optimizeStore, 'runOptimization').mockImplementation(() => undefined)
+
+    settingsStore.setUiMode('guided')
+    dataStore.$patch({
+      dataId: 'dataset-1',
+      datasetLabel: 'AAPL sample',
+      dataTimeframe: '15m',
+    })
+    optimizeStore.$patch({
+      strategyKind: 'DoubleMa',
+      runDisabled: false,
+    })
+
+    const wrapper = mount(GuidedWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    })
+    await nextTick()
+    await nextTick()
+
+    const nextAction = document.querySelector<HTMLElement>('.guidedNextAction')
+    const nextButton = nextAction?.querySelector<HTMLButtonElement>('button')
+
+    expect(nextAction?.textContent || '').toContain('Run optimization')
+    expect(nextButton?.disabled).toBe(false)
+    nextButton?.click()
+    await nextTick()
+
+    expect(runSpy).toHaveBeenCalledTimes(1)
 
     wrapper.unmount()
   })

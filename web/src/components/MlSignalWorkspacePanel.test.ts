@@ -353,6 +353,9 @@ describe("MlSignalWorkspacePanel", () => {
     expect(wrapper.find("#mlSignalNativeBackend").exists()).toBe(true);
     expect(wrapper.find("#mlSignalNativeLibraryPath").exists()).toBe(true);
     expect(wrapper.find("#mlSignalNativeGpuDeviceId").exists()).toBe(false);
+    expect(wrapper.find("#mlSignalNativePredictionBatchSize").exists()).toBe(
+      true,
+    );
     expect(wrapper.text()).toContain("Native bundle inference");
     expect(wrapper.text()).toContain(
       "Bundle selection is required for native score-cache generation.",
@@ -526,6 +529,8 @@ describe("MlSignalWorkspacePanel", () => {
       "legacy experimental backend selection",
     );
     expect(wrapper.find("#mlSignalNativeGpuDeviceId").exists()).toBe(true);
+    await wrapper.get("#mlSignalNativePredictionBatchSize").setValue("4096");
+    expect(optimize.mlSignalNativePredictionBatchSize).toBe("4096");
   });
 
   it("summarizes split-plan, ticker-holdout, and export sidecars in the dataset export stage", () => {
