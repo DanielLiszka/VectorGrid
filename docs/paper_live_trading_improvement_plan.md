@@ -32,6 +32,37 @@ Landed on 2026-04-24:
 - Local paper snapshot, reset, cancel-open-orders, and flatten commands.
 - Frontend execution target control: `Dry-run`, `Local paper`, `Alpaca paper`,
   and `Alpaca live`.
+- Alpaca order submissions now include a stable VectorGrid `client_order_id` and
+  check Alpaca's client-order lookup endpoint before submitting a duplicate intent.
+- Alpaca broker-facing submits now persist a local, credential-free pending intent
+  record before the REST submit and update it to submitted, reused, or submit-error.
+- Alpaca broker-facing submits now run a short post-submit client-order reconciliation
+  pass and record broker-open, partial-fill, terminal, unknown, or error status on the
+  local intent record.
+- Alpaca reconciliation outcomes are also carried on execution responses and appended
+  to live-session evidence as `broker_reconciliation` events.
+- Alpaca broker-facing submits now block when another unresolved local intent exists
+  for the same symbol, refresh position after terminal post-submit reconciliation, and
+  fail closed for non-active/blocked accounts, closed live market clock, or missing
+  live source-run fingerprint.
+- Execution risk-policy settings now persist through app settings, have backend
+  get/set/reset/preview commands, and merge request-level overrides conservatively so
+  a per-request override can tighten but not loosen saved safety limits.
+- Dry-run runners now persist live-session evidence instead of running without an
+  audit artifact.
+- Added deterministic broker/feed mock harness primitives for fills, partial fills,
+  rejects, timeouts, cancel failures, duplicate bars, out-of-order bars, close, and
+  error events.
+- Added a code-backed execution strategy support matrix command for the current
+  `DoubleMa` and `CompositeCpu` execution adapters.
+- Live candle stream status now records the last feed message, status timestamp, and
+  last accepted bar timestamps; runner arming is blocked when no recent bar has been
+  accepted.
+- Frontend recovery, local paper reset, saved-session comparison, and order-status
+  controls now have targeted accessibility assertions, and the browser axe smoke path
+  includes the live execution workspace.
+- Added `scripts/run_execution_safety_gate.ps1` for targeted execution/paper-broker
+  verification without benchmarks or live credentials.
 - Targeted Rust and frontend execution tests for the shipped slice.
 
 ## Current State Summary
@@ -50,19 +81,21 @@ Current live execution is real but intentionally narrow:
   and local emergency halt.
 - Live-session evidence artifacts are persisted for broker-armed execution and redact
   sensitive payloads.
+- Local paper mode explicitly reports that bracket child-order simulation is not yet
+  supported when stop-loss or take-profit settings are present.
 
-Known issues and gaps:
+Remaining issues and gaps:
 
-- Backend quantity quantization currently has a failing unit test around midpoint
-  rounding at 1e-4 boundaries.
-- Dry-run is signal-only rather than a stateful paper-trading simulator.
-- Alpaca orders are submitted optimistically and require manual refresh for broker truth.
-- There is no `client_order_id` idempotency strategy.
-- There is no order/fill watcher for partial fills, terminal states, or timeout handling.
-- Risk limits are mostly operator-facing UI posture, not a backend policy engine.
-- There is no deterministic mock Alpaca/Polygon integration harness.
-- Live execution still reuses drilldown request shapes instead of strategy-local execution
-  adapters.
+- Dry-run remains signal-only; local paper is the stateful simulator path.
+- Local paper explicitly defers bracket child-order simulation; stop-loss/take-profit
+  inputs produce an unsupported warning instead of simulating child orders.
+- Alpaca orders now have idempotent intent tracking and a short post-submit
+  reconciliation pass, but ongoing broker truth still depends on manual refresh until a
+  longer-lived order/fill watcher is added.
+- Release readiness still requires a manual no-secrets sweep over generated artifacts
+  and logs on the release machine.
+- Packaged desktop release verification should still exercise close guard, emergency
+  halt, broker review refresh, and documented recovery steps.
 
 ## Guiding Principles
 
@@ -496,6 +529,7 @@ Suggested commands:
 - `set_execution_risk_policy`
 - `reset_execution_risk_policy`
 - `preview_execution_policy_decision`
+- `get_execution_strategy_support_matrix`
 
 The preview command lets the frontend show operator-facing blocked reasons before the
 actual submit path, but the submit path must evaluate the same policy again.
@@ -736,7 +770,7 @@ and documentation have landed.
 - [x] Add order, fill, and position models.
 - [x] Implement market-order fill model.
 - [x] Implement fee/slippage configuration.
-- [ ] Implement bracket-order simulation or explicitly defer it behind a clear unsupported status.
+- [x] Implement bracket-order simulation or explicitly defer it behind a clear unsupported status.
 - [x] Add paper broker snapshot command.
 - [x] Add paper broker reset command.
 - [x] Add local paper cancel/flatten safety commands.
@@ -744,88 +778,93 @@ and documentation have landed.
 - [x] Persist local paper session evidence through existing live-session artifacts.
 - [x] Add frontend mode copy distinguishing signal dry-run from local paper.
 - [x] Add tests for buy, sell, reset, persistence, and execution-target request shaping.
-- [ ] Add UI confirmation around paper broker reset before exposing reset prominently.
-- [ ] Add explicit local paper account panel.
+- [x] Add UI confirmation around paper broker reset before exposing reset prominently.
+- [x] Add explicit local paper account panel.
 
 ### Phase 2: Alpaca Reconciliation
 
-- [ ] Add stable `client_order_id` generation.
-- [ ] Persist pending submission intent before broker submit.
-- [ ] Query by client order id before retry submission.
-- [ ] Add order-status polling after submission.
-- [ ] Record partial-fill and terminal-state events.
-- [ ] Refresh position after terminal order states.
-- [ ] Block new broker submissions when prior order state is unresolved.
-- [ ] Add UI states for optimistic, broker-open, partial, filled, rejected, and unknown.
-- [ ] Add tests for retry without duplicate submission.
+- [x] Add stable `client_order_id` generation.
+- [x] Persist pending submission intent before broker submit.
+- [x] Query by client order id before broker submission and reuse existing matching orders.
+- [x] Add order-status polling after submission.
+- [x] Record partial-fill and terminal-state events.
+- [x] Refresh position after terminal order states.
+- [x] Block new broker submissions when prior order state is unresolved.
+- [x] Add UI states for optimistic, broker-open, partial, filled, rejected, and unknown.
+- [x] Add tests for client-order lookup URL and stable id generation.
+- [x] Add tests that local intent records omit Alpaca credentials and update status.
+- [x] Add tests for broker terminal status and intent lifecycle status mapping.
+- [x] Add mock-HTTP retry tests proving duplicate submission is avoided.
 
 ### Phase 3: Risk Policy
 
 - [x] Define execution risk-policy config skeleton.
-- [ ] Persist policy settings.
+- [x] Persist policy settings.
 - [x] Add policy evaluation module.
 - [x] Enforce explicit policy caps before broker submit.
-- [ ] Add policy preview command.
+- [x] Add policy preview command.
 - [x] Add policy block outcomes to execution responses and session events.
-- [ ] Add frontend risk-policy summary.
-- [ ] Add frontend blocked reasons from policy preview.
+- [x] Add frontend risk-policy summary.
+- [x] Add frontend blocked reasons from policy preview.
 - [x] Add tests for max notional, no-short, bracket-required, and invalid price policy blocks.
-- [ ] Add tests for stale broker snapshot, account status, open order conflict, live delayed feed, and validation-required live mode.
+- [x] Add tests for stale broker snapshot, account status, open order conflict, live delayed feed, and validation-required live mode.
 
 ### Phase 4: Feed And Runner Hardening
 
-- [ ] Track last feed message timestamp.
-- [ ] Track last accepted bar timestamp.
-- [ ] Add feed stale threshold.
-- [ ] Block runner arming on stale feed.
-- [ ] Add market-hours policy check.
-- [ ] Persist dry-run runner session evidence.
-- [ ] Persist local paper runner session evidence.
-- [ ] Add recovery states for interruption, policy block, order timeout, and broker unknown.
-- [ ] Add tests for duplicate, stale, out-of-order, and interrupted feed events.
+- [x] Track last feed message timestamp.
+- [x] Track last accepted bar timestamp.
+- [x] Add feed stale threshold.
+- [x] Block runner arming on stale feed.
+- [x] Add market-hours policy check.
+- [x] Persist dry-run runner session evidence.
+- [x] Persist local paper runner session evidence.
+- [x] Add recovery states for interruption, policy block, order timeout, and broker unknown.
+- [x] Add tests for stale/no-accepted-bar runner arming rejection.
+- [x] Add tests for duplicate, out-of-order, and interrupted feed events.
 
 ### Phase 5: Strategy-Local Adapters
 
-- [ ] Define strategy execution adapter shape.
-- [ ] Move DoubleMa execution intent construction behind adapter.
-- [ ] Move CompositeCpu execution intent construction behind adapter.
-- [ ] Add explicit unsupported-strategy response shape.
-- [ ] Add code-backed execution support matrix.
-- [ ] Add tests that unsupported strategies fail closed.
-- [ ] Document adapter ownership in `REPO_MAP.md`.
+- [x] Define strategy execution adapter shape.
+- [x] Move DoubleMa execution intent construction behind adapter.
+- [x] Move CompositeCpu execution intent construction behind adapter.
+- [x] Add explicit unsupported-strategy response shape.
+- [x] Add code-backed execution support matrix.
+- [x] Add tests that unsupported strategies fail closed.
+- [x] Document adapter ownership in `REPO_MAP.md`.
 
 ### Phase 6: Mock Harness
 
-- [ ] Add mock broker implementation.
-- [ ] Add mock feed implementation.
-- [ ] Add mock broker tests for fills, partial fills, rejects, timeouts, and cancel failures.
-- [ ] Add mock feed tests for normal, duplicate, out-of-order, close, and error events.
-- [ ] Add `scripts/run_execution_safety_gate.ps1`.
-- [ ] Add execution safety gate to `REPO_MAP.md`.
-- [ ] Ensure the gate runs without CUDA or real credentials.
+- [x] Add mock broker implementation.
+- [x] Add mock feed implementation.
+- [x] Add mock broker tests for fills, partial fills, rejects, timeouts, and cancel failures.
+- [x] Add mock feed tests for normal, duplicate, out-of-order, close, and error events.
+- [x] Add `scripts/run_execution_safety_gate.ps1`.
+- [x] Add execution safety gate to `REPO_MAP.md`.
+- [x] Ensure the gate runs without CUDA or real credentials.
 
 ### Phase 7: UX
 
 - [x] Rename/clarify execution modes in the UI.
-- [ ] Add time-limited live arming flow.
-- [ ] Add live arming expiration after feed/broker interruption.
-- [ ] Add risk-policy editor or read-only first slice.
-- [ ] Add recovery checklist UI.
-- [ ] Add local paper account panel.
-- [ ] Add saved execution-session comparison view.
-- [ ] Add accessibility tests for new controls and recovery states.
+- [x] Surface live-feed last accepted bar timing in status refresh hints.
+- [x] Add time-limited live arming flow.
+- [x] Add live arming expiration after feed/broker interruption.
+- [x] Add risk-policy editor or read-only first slice.
+- [x] Add recovery checklist UI.
+- [x] Add local paper account panel.
+- [x] Add saved execution-session comparison view.
+- [x] Add accessibility tests for new controls and recovery states.
 
 ### Phase 8: Release Readiness
 
-- [ ] Update `REPO_MAP.md`.
-- [ ] Update user-facing setup docs.
-- [ ] Update frontend testing docs.
-- [ ] Add release checklist entries for paper/live trading.
-- [ ] Verify no secrets persist in artifacts or logs.
-- [ ] Verify close guard still blocks active live runner shutdown.
+- [x] Update `REPO_MAP.md`.
+- [x] Update user-facing setup docs.
+- [x] Update frontend testing docs.
+- [x] Add release checklist entries for paper/live trading.
+- [ ] Release-manual: verify no secrets persist in generated artifacts or logs.
+- [x] Verify close guard still blocks active live runner shutdown in frontend coverage.
 - [x] Run frontend execution tests.
 - [x] Run targeted Rust execution tests.
-- [ ] Run execution safety gate.
+- [x] Run execution safety gate.
 
 ## Suggested Implementation Order
 

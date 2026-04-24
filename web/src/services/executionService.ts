@@ -38,6 +38,10 @@ interface ExecutionStoredCredentialStatusResponse {
 interface ExecutionRiskPayload {
   stop_loss_pct: number | null
   take_profit_pct: number | null
+  max_order_notional: number | null
+  max_position_notional: number | null
+  allow_short: boolean | null
+  require_bracket: boolean | null
 }
 
 export type ExecutionTarget = 'dry_run' | 'local_paper' | 'alpaca_paper' | 'alpaca_live'
@@ -50,6 +54,10 @@ interface ExecutionActionOptions {
   paramSource: string
   riskStopLossPct: string
   riskTakeProfitPct: string
+  riskMaxOrderNotional?: string
+  riskMaxPositionNotional?: string
+  riskAllowShort?: boolean | null
+  riskRequireBracket?: boolean | null
   manualFastLen: string
   manualSlowLen: string
   dryRun: boolean
@@ -93,8 +101,20 @@ interface ExecutionConnectionResponse {
   fetched_at_unix_ms?: unknown
 }
 
+export interface ExecutionRiskPolicy {
+  max_order_notional: number | null
+  max_position_notional: number | null
+  allow_short: boolean | null
+  require_bracket: boolean | null
+}
+
+interface ExecutionRiskPolicyResponse {
+  policy?: unknown
+}
+
 interface ExecutionSnapshotOrderResponse {
   id?: unknown
+  client_order_id?: unknown
   side?: unknown
   status?: unknown
   qty?: unknown
@@ -139,6 +159,10 @@ interface CancelLiveExecutionOpenOrdersResponse {
   cancelled_order_ids?: unknown
 }
 
+interface ResetLocalPaperBrokerResponse {
+  snapshot?: unknown
+}
+
 interface FlattenLiveExecutionPositionResponse {
   mode?: unknown
   symbol?: unknown
@@ -164,6 +188,11 @@ interface LiveCandleStreamInfoResponse {
   market?: unknown
   active?: unknown
   status?: unknown
+  last_message?: unknown
+  last_status_at_unix_ms?: unknown
+  last_accepted_bar_open_unix_ms?: unknown
+  last_accepted_bar_close_unix_ms?: unknown
+  last_accepted_bar_received_at_unix_ms?: unknown
 }
 
 interface LiveCandleStreamStatusResponse {
@@ -182,8 +211,10 @@ interface ExecuteSignalResponse {
   action?: unknown
   order_submitted?: unknown
   order_id?: unknown
+  client_order_id?: unknown
   delta_qty?: unknown
   last_bar_ts?: unknown
+  broker_reconciliation_events?: unknown
   warnings?: unknown
 }
 
@@ -265,6 +296,7 @@ export interface ExecutionPreviewMeta {
     | 'get_live_execution_snapshot'
     | 'get_local_paper_execution_snapshot'
     | 'execute_strategy_signal_once'
+    | 'preview_execution_policy_decision'
     | 'alpaca_clear_api_credentials'
   scopeLabel: string
   generatedAtUnixMs: number | null
@@ -346,6 +378,7 @@ export interface ExecutionActionResult {
   runnerLifecycleState?: ExecutionRunnerLifecycleState
   recoveryReviewRequired?: boolean
   brokerReviewRefreshRequired?: boolean
+  recoveryCause?: string
   prependOrderRows?: ExecutionOrderRow[]
   positionMeta?: string
   chartMeta?: string
@@ -448,6 +481,10 @@ export interface ParsedLiveStatus {
   hint: string
   status: string
   message: string
+  lastStatusAtUnixMs?: number | null
+  lastAcceptedBarOpenUnixMs?: number | null
+  lastAcceptedBarCloseUnixMs?: number | null
+  lastAcceptedBarReceivedAtUnixMs?: number | null
 }
 
 export interface ParsedRunnerEvent {
@@ -805,6 +842,25 @@ function parseRiskPct(raw: unknown, label: string): number | null {
     throw new Error(`${label} must be in (0, 1) or a percent in (0, 100).`)
   }
   return fraction
+}
+
+function parsePositiveOptionalNumber(raw: unknown, label: string): number | null {
+  const value = text(raw)
+  if (!value) return null
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be finite and > 0.`)
+  }
+  return parsed
+}
+
+function nullableBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
+function positiveNumberOrNull(value: unknown): number | null {
+  const parsed = toNumber(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
 function parseQty(raw: unknown): number {
@@ -1346,13 +1402,26 @@ function parseLiveStreamStatus(raw: unknown): ParsedLiveStatus {
   const symbol = canonicalSymbol(stream?.symbol)
   const delayed = !!stream?.delayed
   const status = text(stream?.status).toLowerCase() || (active ? 'active' : 'off')
+  const lastStatusAtUnixMs = fetchedAtUnixMs(stream?.last_status_at_unix_ms)
+  const lastAcceptedBarOpenUnixMs = fetchedAtUnixMs(stream?.last_accepted_bar_open_unix_ms)
+  const lastAcceptedBarCloseUnixMs = fetchedAtUnixMs(stream?.last_accepted_bar_close_unix_ms)
+  const lastAcceptedBarReceivedAtUnixMs = fetchedAtUnixMs(stream?.last_accepted_bar_received_at_unix_ms)
+  const message = normalizeLiveRuntimeMessage(status, stream?.last_message, symbol, delayed)
+  const baseHint = liveStatusHint(active, symbol, delayed, status, stream?.last_message)
+  const hint = active && lastAcceptedBarReceivedAtUnixMs != null
+    ? `${baseHint.replace(/\.$/, '')} · last bar received=${toUtcDateTime(lastAcceptedBarReceivedAtUnixMs)}.`
+    : baseHint
   return {
     active,
     symbol,
     delayed,
-    hint: liveStatusHint(active, symbol, delayed, status),
+    hint,
     status,
-    message: '',
+    message,
+    lastStatusAtUnixMs,
+    lastAcceptedBarOpenUnixMs,
+    lastAcceptedBarCloseUnixMs,
+    lastAcceptedBarReceivedAtUnixMs,
   }
 }
 
@@ -1688,6 +1757,19 @@ function brokerReviewRefreshFailureWarning(
   }
 }
 
+function brokerReconciliationRecoveryCause(raw: unknown): string {
+  if (!Array.isArray(raw)) return ''
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue
+    const status = text(entry.status)
+    const timedOut = !!entry.timed_out
+    if (timedOut) return `Order timeout: broker status ${text(entry.broker_order_status) || status || 'unknown'}.`
+    if (status === 'reconciliation_unknown' || status === 'broker_unknown') return 'Broker unknown: refresh broker review before re-arming.'
+    if (status === 'reconciliation_error') return 'Broker reconciliation error: refresh broker review before re-arming.'
+  }
+  return ''
+}
+
 async function resolveManualExecutionStrategy(
   options: ExecutionActionOptions,
 ): Promise<{ strategyKind: string; strategy: { kind: 'double_ma' | 'composite_cpu'; req: Record<string, unknown> }; source: string }> {
@@ -1757,6 +1839,10 @@ async function buildExecutionInvokePayload(
   const risk: ExecutionRiskPayload = {
     stop_loss_pct: parseRiskPct(options.riskStopLossPct, 'Risk override SL'),
     take_profit_pct: parseRiskPct(options.riskTakeProfitPct, 'Risk override TP'),
+    max_order_notional: parsePositiveOptionalNumber(options.riskMaxOrderNotional, 'Max order notional'),
+    max_position_notional: parsePositiveOptionalNumber(options.riskMaxPositionNotional, 'Max position notional'),
+    allow_short: nullableBoolean(options.riskAllowShort),
+    require_bracket: nullableBoolean(options.riskRequireBracket),
   }
   const sourceRun = latestExecutionSourceRunContext()
 
@@ -1827,6 +1913,71 @@ async function refreshLiveStatus(): Promise<ParsedLiveStatus> {
   return parseLiveStreamStatus(
     (await invokeCommand('polygon_live_candle_stream_status')) as LiveCandleStreamStatusResponse,
   )
+}
+
+function normalizeExecutionRiskPolicy(raw: unknown): ExecutionRiskPolicy {
+  const row = isRecord(raw) ? (raw as Record<string, unknown>) : {}
+  return {
+    max_order_notional: positiveNumberOrNull(row.max_order_notional),
+    max_position_notional: positiveNumberOrNull(row.max_position_notional),
+    allow_short: nullableBoolean(row.allow_short),
+    require_bracket: nullableBoolean(row.require_bracket),
+  }
+}
+
+function serializeExecutionRiskPolicy(policy: Partial<ExecutionRiskPolicy>): ExecutionRiskPolicy {
+  return {
+    max_order_notional: parsePositiveOptionalNumber(policy.max_order_notional, 'Max order notional'),
+    max_position_notional: parsePositiveOptionalNumber(policy.max_position_notional, 'Max position notional'),
+    allow_short: nullableBoolean(policy.allow_short),
+    require_bracket: nullableBoolean(policy.require_bracket),
+  }
+}
+
+export async function loadExecutionRiskPolicy(): Promise<ExecutionRiskPolicy> {
+  const resp = (await invokeCommand('get_execution_risk_policy')) as ExecutionRiskPolicyResponse
+  return normalizeExecutionRiskPolicy(resp?.policy)
+}
+
+export async function saveExecutionRiskPolicy(
+  policy: Partial<ExecutionRiskPolicy>,
+): Promise<ExecutionRiskPolicy> {
+  const resp = (await invokeCommand('set_execution_risk_policy', {
+    policy: serializeExecutionRiskPolicy(policy),
+  })) as ExecutionRiskPolicyResponse
+  return normalizeExecutionRiskPolicy(resp?.policy)
+}
+
+export async function resetExecutionRiskPolicy(): Promise<ExecutionRiskPolicy> {
+  const resp = (await invokeCommand('reset_execution_risk_policy')) as ExecutionRiskPolicyResponse
+  return normalizeExecutionRiskPolicy(resp?.policy)
+}
+
+export async function previewExecutionRiskPolicy(
+  options: ExecutionActionOptions,
+): Promise<ExecutionActionResult> {
+  const payload = await buildExecutionInvokePayload(options)
+  const resp = await invokeCommand('preview_execution_policy_decision', { req: payload.req })
+  const row = isRecord(resp) ? resp : {}
+  const decision = isRecord(row.decision) ? row.decision : {}
+  const allowed = !!decision.allowed
+  const code = text(decision.code) || (allowed ? 'allowed' : 'blocked')
+  const message = text(decision.message) || (allowed
+    ? 'Execution policy allowed the current signal.'
+    : 'Execution policy blocked the current signal.')
+  const warnings = Array.isArray(row.warnings)
+    ? row.warnings.map((warning) => text(warning)).filter((warning) => warning.length > 0)
+    : []
+  return {
+    statusLine: allowed ? 'Execution policy preview allowed.' : `Execution policy preview blocked: ${code}.`,
+    statusHint: `${message}${warnings.length > 0 ? ` ${warnings.join(' ')}` : ''}`.trim(),
+    outputPreview: safePrettyJson(resp),
+    outputPreviewMeta: buildPreviewMeta(
+      'preview_execution_policy_decision',
+      `policy preview ${canonicalSymbol(row.symbol) || '-'}`,
+      Date.now(),
+    ),
+  }
 }
 
 export async function testConnection(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
@@ -1985,6 +2136,34 @@ export async function stopRunner(): Promise<ExecutionActionResult> {
   }
 }
 
+export async function resetLocalPaperBroker(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
+  const symbol = canonicalSymbol(options.symbol)
+  const resp = (await invokeCommand('reset_local_paper_broker')) as ResetLocalPaperBrokerResponse
+  const snapshot = isRecord(resp?.snapshot) ? (resp.snapshot as ExecutionSnapshotResponse) : {}
+  const rows = buildOrderRows(snapshot.orders)
+  const reviewSnapshot = { ...snapshot, symbol: text(snapshot.symbol) || symbol || 'LOCAL_PAPER' }
+  const brokerReview = buildBrokerReview('paper', reviewSnapshot.symbol, reviewSnapshot, 'get_local_paper_execution_snapshot')
+  const result: ExecutionActionResult = {
+    statusLine: 'Local paper broker reset.',
+    statusHint: 'Local paper broker reset to its starting simulated account state.',
+    outputPreview: safePrettyJson(resp),
+    outputPreviewMeta: buildPreviewMeta(
+      'get_local_paper_execution_snapshot',
+      'local paper reset snapshot',
+      fetchedAtUnixMs(snapshot.fetched_at_unix_ms),
+    ),
+    orderRows: rows,
+    orderCount: rows.length,
+    positionMeta: positionMeta(brokerReview?.position),
+    chartMeta: chartMeta(brokerReview?.chart),
+    accountMeta: accountMeta(brokerReview?.account),
+    reviewMeta: reviewMeta(brokerReview),
+  }
+  if (brokerReview?.account) result.accountReview = brokerReview.account
+  if (brokerReview) result.brokerReview = brokerReview
+  return result
+}
+
 export async function cancelOpenOrders(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
   const target = reviewExecutionTarget(options)
   const mode = modeForExecutionTarget(target)
@@ -2124,7 +2303,11 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
   const submitted = !!resp?.order_submitted
   const orderId = text(resp?.order_id)
   const warningCount = Array.isArray(resp?.warnings) ? resp.warnings.length : 0
-  let statusHint = submitted
+  const policyBlockCode = action.startsWith('policy_blocked:') ? action.slice('policy_blocked:'.length) : ''
+  const recoveryCause = brokerReconciliationRecoveryCause(resp?.broker_reconciliation_events)
+  let statusHint = policyBlockCode
+    ? `Execution policy blocked order: ${policyBlockCode}.`
+    : submitted
     ? `Submitted ${action.toUpperCase()} order${orderId ? ` (id=${orderId})` : ''}.`
     : `Signal processed: action=${action}.`
   if (req.dry_run) statusHint += ' Dry-run only.'
@@ -2142,6 +2325,11 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
       `symbol-scoped ${canonicalSymbol(req.symbol) || '-'}`,
       Date.now(),
     ),
+  }
+  if (policyBlockCode) result.recoveryCause = `Policy block: ${policyBlockCode}.`
+  if (recoveryCause) {
+    result.recoveryCause = recoveryCause
+    result.recoveryReviewRequired = true
   }
 
   if (submitted && !req.dry_run) {

@@ -35,6 +35,11 @@ const {
   paramSource,
   riskStopLossPct,
   riskTakeProfitPct,
+  riskMaxOrderNotional,
+  riskMaxPositionNotional,
+  riskAllowShort,
+  riskRequireBracket,
+  riskPolicyStatusHint,
   manualFastLen,
   manualSlowLen,
   apiKey,
@@ -65,6 +70,7 @@ const {
   canTestConnection,
   canRunOnce,
   canRefreshOrders,
+  canResetLocalPaper,
   canCancelOpenOrders,
   canFlattenPosition,
   canEmergencyHalt,
@@ -94,6 +100,7 @@ const {
   startRunnerBlockedReasons,
   cancelOpenOrdersBlockedReasons,
   flattenPositionBlockedReasons,
+  resetLocalPaperBlockedReasons,
   emergencyHaltBlockedReasons,
   reconciliationAdvisories,
   statusLine,
@@ -112,6 +119,7 @@ type PendingExecutionAction =
   | 'runOnce'
   | 'startLive'
   | 'startRunner'
+  | 'resetLocalPaper'
   | 'cancelOpenOrders'
   | 'flattenPosition'
   | 'emergencyHalt'
@@ -142,6 +150,12 @@ interface ReviewDetailItem {
   value: string
 }
 
+interface RecoveryChecklistItem {
+  label: string
+  done: boolean
+  detail: string
+}
+
 interface SafetyMatrixItem {
   label: string
   does: string
@@ -153,6 +167,8 @@ const symbolDraft = ref('')
 const qtyDraft = ref('')
 const riskSlDraft = ref('')
 const riskTpDraft = ref('')
+const riskMaxOrderDraft = ref('')
+const riskMaxPositionDraft = ref('')
 const manualFastDraft = ref('')
 const manualSlowDraft = ref('')
 const apiKeyDraft = ref('')
@@ -161,6 +177,8 @@ const modeDraft = ref('paper')
 const targetDraft = ref('dry_run')
 const sourceDraft = ref('selected')
 const pendingAction = ref<PendingExecutionAction | null>(null)
+const pendingActionOpenedAtUnixMs = ref(0)
+const confirmationNowUnixMs = ref(Date.now())
 const execTvChartElementRef = ref<HTMLElement | null>(null)
 const chartSyncToken = ref(0)
 const chartSurface = ref<ExecutionChartSurfaceResult>({
@@ -178,6 +196,28 @@ const visible = computed(() => String(workspace.value || '').trim() === 'live')
 const currentTarget = computed(() => String(executionTarget.value || targetDraft.value || 'dry_run').trim() || 'dry_run')
 const liveModeArmed = computed(() => currentTarget.value === 'alpaca_live')
 const brokerArmed = computed(() => currentTarget.value !== 'dry_run')
+const LIVE_ARMING_CONFIRMATION_TTL_MS = 30_000
+let confirmationTimerId: number | null = null
+const confirmationExpiresAtUnixMs = computed(() => {
+  if (!pendingActionOpenedAtUnixMs.value) return 0
+  if (pendingAction.value === 'startRunner') return pendingActionOpenedAtUnixMs.value + LIVE_ARMING_CONFIRMATION_TTL_MS
+  if (pendingAction.value === 'runOnce' && currentTarget.value === 'alpaca_live') {
+    return pendingActionOpenedAtUnixMs.value + LIVE_ARMING_CONFIRMATION_TTL_MS
+  }
+  return 0
+})
+const confirmationExpired = computed(() => {
+  const expiresAt = confirmationExpiresAtUnixMs.value
+  return expiresAt > 0 && confirmationNowUnixMs.value >= expiresAt
+})
+const confirmationCountdownLabel = computed(() => {
+  const expiresAt = confirmationExpiresAtUnixMs.value
+  if (!expiresAt) return ''
+  const remaining = Math.max(0, Math.ceil((expiresAt - confirmationNowUnixMs.value) / 1000))
+  return confirmationExpired.value
+    ? 'Confirmation expired. Reopen this action after reviewing the current broker and feed state.'
+    : `Confirmation expires in ${remaining}s.`
+})
 const selectedSymbolLabel = computed(() => String(requestedSymbolLabel.value || 'No symbol').trim())
 const executionOrderColumns = computed<ExecutionOrderColumn[]>(() => [
   { label: 'Time (UTC)', alignLeft: true },
@@ -188,12 +228,22 @@ const executionOrderColumns = computed<ExecutionOrderColumn[]>(() => [
   { label: 'Avg Px', alignLeft: false },
   { label: 'Order ID', alignLeft: true },
 ])
+function orderStatusClass(status: string): string {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (!normalized || normalized === '—' || normalized === '-') return 'statusUnknown'
+  if (normalized === 'partially_filled') return 'statusPartial'
+  if (normalized === 'filled') return 'statusFilled'
+  if (['rejected', 'canceled', 'expired'].includes(normalized)) return 'statusRejected'
+  if (['new', 'accepted', 'pending_new', 'accepted_for_bidding', 'pending_replace', 'held', 'stopped', 'calculated', 'suspended', 'pending_cancel'].includes(normalized)) return 'statusOpen'
+  if (normalized.endsWith('*')) return 'statusOptimistic'
+  return 'statusUnknown'
+}
 const executionOrderTableRows = computed<ExecutionOrderTableRow[]>(() =>
   orderRows.value.map((row) => ({
     cells: [
       { text: row.cells[0] || '—', className: 'left mono', title: row.cells[0] || '' },
       { text: row.cells[1] || '—', className: 'left', title: row.cells[1] || '' },
-      { text: row.cells[2] || '—', className: 'left', title: row.cells[2] || '' },
+      { text: row.cells[2] || '—', className: `left orderStatusCell ${orderStatusClass(row.cells[2] || '')}`, title: row.cells[2] || '' },
       { text: row.cells[3] || '—', className: 'mono', title: row.cells[3] || '' },
       { text: row.cells[4] || '—', className: 'mono', title: row.cells[4] || '' },
       { text: row.cells[5] || '—', className: 'mono', title: row.cells[5] || '' },
@@ -323,6 +373,22 @@ const accountReviewDetails = computed<ReviewDetailItem[]>(() => {
   if (review.portfolioValue) items.push({ label: 'Portfolio', value: review.portfolioValue })
   return items
 })
+const localPaperAccountDetails = computed<ReviewDetailItem[]>(() => {
+  if (currentTarget.value !== 'local_paper') return []
+  const review = accountReview.value
+  const broker = brokerReview.value
+  const asOf = review.fetchedAtUnixMs ? formatUiTimeFromUnixMs(review.fetchedAtUnixMs) : 'Refresh local paper to load state'
+  return [
+    { label: 'Account', value: review.accountNumber || review.accountId || 'local-paper' },
+    { label: 'Status', value: review.status || 'simulated' },
+    { label: 'Cash', value: review.cash || '—' },
+    { label: 'Buying power', value: review.buyingPower || '—' },
+    { label: 'Portfolio', value: review.portfolioValue || '—' },
+    { label: 'Position', value: positionMeta.value },
+    { label: 'Orders', value: String(broker?.orders.totalCount ?? orderCount.value) },
+    { label: 'As of', value: asOf },
+  ]
+})
 const brokerReviewDetails = computed<ReviewDetailItem[]>(() => {
   const review = brokerReview.value
   const advisories = reconciliationAdvisories.value
@@ -368,6 +434,36 @@ const chartReviewDetails = computed<ReviewDetailItem[]>(() => {
     { label: 'Summary', value: chart.summary || chartMeta.value },
   ]
 })
+const recoveryChecklistItems = computed<RecoveryChecklistItem[]>(() => {
+  const chartState = effectiveChartSurface.value.state
+  return [
+    {
+      label: 'Symbol selected',
+      done: requestedSymbolLabel.value !== 'No symbol',
+      detail: requestedSymbolLabel.value,
+    },
+    {
+      label: 'Broker review refreshed',
+      done: !brokerReviewRefreshRequired.value && reconciliationState.value !== 'optimistic_local_pending',
+      detail: reconciliationLabel.value,
+    },
+    {
+      label: 'Chart context valid',
+      done: !['no_dataset', 'symbol_mismatch', 'load_error'].includes(chartState),
+      detail: chartMeta.value,
+    },
+    {
+      label: 'Runner stopped',
+      done: !execStore.runnerActive,
+      detail: runnerStateLabel.value,
+    },
+    {
+      label: 'Recovery cleared',
+      done: !execStore.recoveryReviewRequired,
+      detail: recoveryStatusLabel.value,
+    },
+  ]
+})
 const previewMetaText = computed(() => {
   const meta = outputPreviewMeta.value
   const generatedAt = meta.generatedAtUnixMs ? formatUiTimeFromUnixMs(meta.generatedAtUnixMs) : 'Unknown'
@@ -410,6 +506,25 @@ const savedSessionSnapshotLines = computed(() =>
     return `${when} · ${snapshot.sourceCommand || '-'} · ${snapshot.mode}/${snapshot.symbol || '-'} · position=${snapshot.positionState || '-'} qty=${snapshot.positionQty ?? '-'} · open_orders=${snapshot.openOrderCount} total_orders=${snapshot.orderCount}`
   }),
 )
+const savedSessionComparisonItems = computed<ReviewDetailItem[]>(() => {
+  const detail = savedSessionDetail.value
+  if (!detail) return [{ label: 'State', value: 'No saved session selected for comparison' }]
+  const lastSnapshot = detail.brokerSnapshots[detail.brokerSnapshots.length - 1]
+  const currentMode = currentTarget.value === 'alpaca_live' ? 'live' : 'paper'
+  const items: ReviewDetailItem[] = [
+    { label: 'Mode', value: detail.mode === currentMode ? `matches ${currentMode}` : `saved=${detail.mode} current=${currentMode}` },
+    { label: 'Symbol', value: detail.symbol === selectedSymbolLabel.value ? `matches ${detail.symbol}` : `saved=${detail.symbol || '—'} current=${selectedSymbolLabel.value}` },
+    { label: 'Dataset', value: detail.dataId === loadedDataId.value ? `matches ${detail.dataId}` : `saved=${detail.dataId || '—'} current=${loadedDataId.value || '—'}` },
+    { label: 'Current broker review', value: reconciliationLabel.value },
+  ]
+  if (lastSnapshot) {
+    items.push(
+      { label: 'Saved last position', value: `${lastSnapshot.positionState || '-'} qty=${lastSnapshot.positionQty ?? '-'}` },
+      { label: 'Saved open orders', value: String(lastSnapshot.openOrderCount) },
+    )
+  }
+  return items
+})
 const safetyModeLabel = computed(() => {
   if (currentTarget.value === 'dry_run') {
     return 'Dry-run is on. Manual execution and auto-runner actions stay in simulation until broker submission is armed.'
@@ -485,6 +600,7 @@ const safetyControlNotes = computed(() => {
   const notes = [
     ...cancelOpenOrdersBlockedReasons.value.map((reason) => `Cancel open orders: ${reason}`),
     ...flattenPositionBlockedReasons.value.map((reason) => `Flatten position: ${reason}`),
+    ...resetLocalPaperBlockedReasons.value.map((reason) => `Reset local paper: ${reason}`),
     ...emergencyHaltBlockedReasons.value.map((reason) => `Emergency halt: ${reason}`),
   ]
   if (notes.length > 0) return Array.from(new Set(notes))
@@ -500,6 +616,18 @@ function formatConfirmationContextLines(lines: Array<string | null | undefined>)
     .filter((line) => line.length > 0)
     .join('\n')
 }
+function startConfirmationTimer(): void {
+  confirmationNowUnixMs.value = Date.now()
+  if (confirmationTimerId != null) return
+  confirmationTimerId = window.setInterval(() => {
+    confirmationNowUnixMs.value = Date.now()
+  }, 1000)
+}
+function stopConfirmationTimer(): void {
+  if (confirmationTimerId == null) return
+  window.clearInterval(confirmationTimerId)
+  confirmationTimerId = null
+}
 const confirmationTitle = computed(() => {
   if (pendingAction.value === 'clearKeys') return 'Clear stored execution credentials?'
   if (pendingAction.value === 'runOnce') {
@@ -507,6 +635,7 @@ const confirmationTitle = computed(() => {
   }
   if (pendingAction.value === 'startLive') return 'Start live candle feed?'
   if (pendingAction.value === 'startRunner') return 'Start the auto-runner?'
+  if (pendingAction.value === 'resetLocalPaper') return 'Reset local paper broker?'
   if (pendingAction.value === 'cancelOpenOrders') return 'Cancel current-symbol open orders?'
   if (pendingAction.value === 'flattenPosition') return 'Flatten the current broker position?'
   if (pendingAction.value === 'emergencyHalt') return 'Emergency halt live automation?'
@@ -521,6 +650,7 @@ const confirmationBody = computed(() => {
       `${runOnceActionDetail.value} Review ${requestedSymbolLabel.value}, ${brokerModeLabel.value.toLowerCase()} mode, and ${keyStateLabel.value.toLowerCase()} credentials before continuing.`,
       `Submission: ${submissionModeLabel.value}.`,
       `Broker review: ${reconciliationLabel.value}.`,
+      confirmationCountdownLabel.value,
       ...reconciliationAdvisories.value.map((note) => `Advisory: ${note}`),
     ])
   }
@@ -537,7 +667,16 @@ const confirmationBody = computed(() => {
       `Feed: ${feedStateLabel.value}.`,
       `Recovery: ${recoveryStatusLabel.value}.`,
       `Broker review: ${reconciliationLabel.value}.`,
+      confirmationCountdownLabel.value,
       ...reconciliationAdvisories.value.map((note) => `Advisory: ${note}`),
+    ])
+  }
+  if (pendingAction.value === 'resetLocalPaper') {
+    return formatConfirmationContextLines([
+      'This resets the local simulated paper account, orders, fills, and positions. It does not touch Alpaca paper or live broker state.',
+      `Current local paper review: ${accountMeta.value}.`,
+      `Broker review: ${reconciliationLabel.value}.`,
+      ...resetLocalPaperBlockedReasons.value.map((note) => `Advisory: ${note}`),
     ])
   }
   if (pendingAction.value === 'cancelOpenOrders') {
@@ -569,6 +708,7 @@ const confirmationConfirmLabel = computed(() => {
   if (pendingAction.value === 'runOnce') return runOnceActionLabel.value
   if (pendingAction.value === 'startLive') return 'Start live feed'
   if (pendingAction.value === 'startRunner') return 'Start runner'
+  if (pendingAction.value === 'resetLocalPaper') return 'Reset local paper'
   if (pendingAction.value === 'cancelOpenOrders') return 'Cancel open orders'
   if (pendingAction.value === 'flattenPosition') return 'Flatten position'
   if (pendingAction.value === 'emergencyHalt') return 'Emergency halt'
@@ -576,9 +716,10 @@ const confirmationConfirmLabel = computed(() => {
 })
 const canConfirmPendingAction = computed(() => {
   if (pendingAction.value === 'clearKeys') return !!canClearKeys.value
-  if (pendingAction.value === 'runOnce') return !!canRunOnce.value
+  if (pendingAction.value === 'runOnce') return !!canRunOnce.value && !confirmationExpired.value
   if (pendingAction.value === 'startLive') return !!canStartLive.value
-  if (pendingAction.value === 'startRunner') return !!canStartRunner.value
+  if (pendingAction.value === 'startRunner') return !!canStartRunner.value && !confirmationExpired.value
+  if (pendingAction.value === 'resetLocalPaper') return !!canResetLocalPaper.value
   if (pendingAction.value === 'cancelOpenOrders') return !!canCancelOpenOrders.value
   if (pendingAction.value === 'flattenPosition') return !!canFlattenPosition.value
   if (pendingAction.value === 'emergencyHalt') return !!canEmergencyHalt.value
@@ -647,6 +788,8 @@ watch(
     String(qty.value || ''),
     String(riskStopLossPct.value || ''),
     String(riskTakeProfitPct.value || ''),
+    String(riskMaxOrderNotional.value || ''),
+    String(riskMaxPositionNotional.value || ''),
     String(manualFastLen.value || ''),
     String(manualSlowLen.value || ''),
     String(apiKey.value || ''),
@@ -660,6 +803,8 @@ watch(
     nextQty,
     nextRiskStopLossPct,
     nextRiskTakeProfitPct,
+    nextRiskMaxOrderNotional,
+    nextRiskMaxPositionNotional,
     nextManualFastLen,
     nextManualSlowLen,
     nextApiKey,
@@ -672,6 +817,8 @@ watch(
     if (qtyDraft.value !== nextQty) qtyDraft.value = nextQty
     if (riskSlDraft.value !== nextRiskStopLossPct) riskSlDraft.value = nextRiskStopLossPct
     if (riskTpDraft.value !== nextRiskTakeProfitPct) riskTpDraft.value = nextRiskTakeProfitPct
+    if (riskMaxOrderDraft.value !== nextRiskMaxOrderNotional) riskMaxOrderDraft.value = nextRiskMaxOrderNotional
+    if (riskMaxPositionDraft.value !== nextRiskMaxPositionNotional) riskMaxPositionDraft.value = nextRiskMaxPositionNotional
     if (manualFastDraft.value !== nextManualFastLen) manualFastDraft.value = nextManualFastLen
     if (manualSlowDraft.value !== nextManualSlowLen) manualSlowDraft.value = nextManualSlowLen
     if (apiKeyDraft.value !== nextApiKey) apiKeyDraft.value = nextApiKey
@@ -720,6 +867,16 @@ function runOnceAction(): void {
   execStore.runOnce()
 }
 
+function previewRiskPolicyAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.previewRiskPolicy()
+}
+
+function saveRiskPolicyAction(): void {
+  flushQueuedInputValuesNow()
+  void execStore.saveRiskPolicy()
+}
+
 function queueRunOnceAction(): void {
   flushQueuedInputValuesNow()
   if (currentTarget.value === 'dry_run') {
@@ -727,11 +884,18 @@ function queueRunOnceAction(): void {
     return
   }
   pendingAction.value = 'runOnce'
+  pendingActionOpenedAtUnixMs.value = Date.now()
+  startConfirmationTimer()
 }
 
 function refreshOrdersAction(): void {
   flushQueuedInputValuesNow()
   execStore.refreshOrders()
+}
+
+function resetLocalPaperAction(): void {
+  flushQueuedInputValuesNow()
+  execStore.resetLocalPaper()
 }
 
 function cancelOpenOrdersAction(): void {
@@ -772,16 +936,23 @@ function stopRunnerAction(): void {
 function queueConfirmation(action: PendingExecutionAction): void {
   flushQueuedInputValuesNow()
   pendingAction.value = action
+  pendingActionOpenedAtUnixMs.value = Date.now()
+  startConfirmationTimer()
 }
 
 function cancelPendingAction(): void {
   pendingAction.value = null
+  pendingActionOpenedAtUnixMs.value = 0
+  stopConfirmationTimer()
 }
 
 function confirmPendingAction(): void {
   const nextAction = pendingAction.value
   if (!nextAction) return
+  if (confirmationExpired.value) return
   pendingAction.value = null
+  pendingActionOpenedAtUnixMs.value = 0
+  stopConfirmationTimer()
   if (nextAction === 'clearKeys') {
     clearKeysAction()
     return
@@ -796,6 +967,10 @@ function confirmPendingAction(): void {
   }
   if (nextAction === 'startRunner') {
     startRunnerAction()
+    return
+  }
+  if (nextAction === 'resetLocalPaper') {
+    resetLocalPaperAction()
     return
   }
   if (nextAction === 'cancelOpenOrders') {
@@ -870,16 +1045,19 @@ async function syncExecutionChartSurface(): Promise<void> {
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow()
   pendingAction.value = null
+  pendingActionOpenedAtUnixMs.value = 0
+  stopConfirmationTimer()
   chartSyncToken.value += 1
   disposeExecutionChart()
 })
 
 onMounted(() => {
   void execStore.hydrateStoredCredentialStatus().catch(() => {})
+  void execStore.loadRiskPolicy().catch(() => {})
 })
 
 watch(visible, (isVisible) => {
-  if (!isVisible) pendingAction.value = null
+  if (!isVisible) cancelPendingAction()
 })
 
 watch(
@@ -1034,6 +1212,53 @@ watch(
             />
           </div>
           <div>
+            <label for="vueExecRiskMaxOrder">Max order notional</label>
+            <input
+              id="vueExecRiskMaxOrder"
+              type="number"
+              min="0"
+              step="1"
+              :value="riskMaxOrderDraft"
+              @input="riskMaxOrderDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execRiskMaxOrderNotional', riskMaxOrderDraft)"
+              @change="commitInputValue('execRiskMaxOrderNotional', riskMaxOrderDraft)"
+            />
+          </div>
+          <div>
+            <label for="vueExecRiskMaxPosition">Max position notional</label>
+            <input
+              id="vueExecRiskMaxPosition"
+              type="number"
+              min="0"
+              step="1"
+              :value="riskMaxPositionDraft"
+              @input="riskMaxPositionDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('execRiskMaxPositionNotional', riskMaxPositionDraft)"
+              @change="commitInputValue('execRiskMaxPositionNotional', riskMaxPositionDraft)"
+            />
+          </div>
+          <div class="inlineCheck">
+            <input
+              id="vueExecRiskAllowShort"
+              type="checkbox"
+              :checked="riskAllowShort"
+              @change="setCheckboxValue('execRiskAllowShort', ($event.target as HTMLInputElement).checked)"
+            />
+            <label for="vueExecRiskAllowShort">Allow short exposure</label>
+          </div>
+          <div class="inlineCheck">
+            <input
+              id="vueExecRiskRequireBracket"
+              type="checkbox"
+              :checked="riskRequireBracket"
+              @change="setCheckboxValue('execRiskRequireBracket', ($event.target as HTMLInputElement).checked)"
+            />
+            <label for="vueExecRiskRequireBracket">Require brackets</label>
+          </div>
+          <div class="policyControls">
+            <button type="button" @click="previewRiskPolicyAction">Preview policy</button>
+            <button type="button" @click="saveRiskPolicyAction">Save policy</button>
+          </div>
+          <div class="policyStatus">{{ riskPolicyStatusHint }}</div>
+          <div>
             <label for="vueExecManualFast">Manual fast len</label>
             <input
               id="vueExecManualFast"
@@ -1106,8 +1331,18 @@ watch(
             <div class="actions">
               <button type="button" :disabled="!canTestConnection" @click="testConnectionAction">Test account</button>
               <button type="button" :disabled="!canRefreshOrders" @click="refreshOrdersAction">Refresh orders</button>
+              <button type="button" class="danger-btn" :disabled="!canResetLocalPaper" @click="queueConfirmation('resetLocalPaper')">Reset local paper</button>
             </div>
             <div class="actionHelp panelMuted">{{ accountReviewNote }}</div>
+            <div v-if="localPaperAccountDetails.length > 0" class="localPaperAccountPanel" aria-label="Local paper account">
+              <div class="reviewDetailTitle">Local paper account</div>
+              <dl class="reviewDetailList">
+                <template v-for="item in localPaperAccountDetails" :key="`local_paper_account_${item.label}`">
+                  <dt>{{ item.label }}</dt>
+                  <dd class="mono">{{ item.value }}</dd>
+                </template>
+              </dl>
+            </div>
           </section>
 
           <section class="actionGroup">
@@ -1196,6 +1431,20 @@ watch(
           </div>
           <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">
             {{ liveStatusHint }} · {{ runnerStatusHint }} · {{ statusHint }}
+          </div>
+          <div class="recoveryChecklist" aria-label="Recovery checklist">
+            <div
+              v-for="item in recoveryChecklistItems"
+              :key="`recovery_check_${item.label}`"
+              class="recoveryChecklistItem"
+              :class="{ done: item.done, pending: !item.done }"
+            >
+              <span class="recoveryChecklistMark" aria-hidden="true">{{ item.done ? 'OK' : '!' }}</span>
+              <span>
+                <strong>{{ item.label }}</strong>
+                <span class="panelMuted">{{ item.detail }}</span>
+              </span>
+            </div>
           </div>
           <div class="reviewDetailGrid" aria-label="Structured execution review details">
             <div class="reviewDetailCard">
@@ -1326,6 +1575,15 @@ watch(
             <div class="reviewDetailTitle">Saved session detail</div>
             <dl class="reviewDetailList">
               <template v-for="item in savedSessionDetailItems" :key="`saved_session_${item.label}`">
+                <dt>{{ item.label }}</dt>
+                <dd class="mono">{{ item.value }}</dd>
+              </template>
+            </dl>
+          </div>
+          <div class="reviewDetailCard">
+            <div class="reviewDetailTitle">Current comparison</div>
+            <dl class="reviewDetailList">
+              <template v-for="item in savedSessionComparisonItems" :key="`saved_session_compare_${item.label}`">
                 <dt>{{ item.label }}</dt>
                 <dd class="mono">{{ item.value }}</dd>
               </template>
@@ -1515,6 +1773,32 @@ watch(
   gap: 0.85rem;
 }
 
+.inlineCheck {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
+  min-height: 2.15rem;
+}
+
+.policyControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.45rem;
+}
+
+.policyControls button {
+  padding: 0.42rem 0.6rem;
+  font-size: 0.76rem;
+}
+
+.policyStatus {
+  align-self: end;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .credentialStateCard {
   margin-top: 0.7rem;
   border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
@@ -1597,6 +1881,14 @@ watch(
   font-size: 0.78rem;
 }
 
+.localPaperAccountPanel {
+  margin-top: 0.62rem;
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface) 95%, var(--panel));
+  padding: 0.58rem 0.62rem;
+}
+
 .preflightBlock {
   margin-top: 0.58rem;
   display: grid;
@@ -1636,6 +1928,52 @@ watch(
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.55rem;
+}
+
+.recoveryChecklist {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.42rem;
+}
+
+.recoveryChecklistItem {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.38rem;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.42rem 0.48rem;
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
+.recoveryChecklistItem strong,
+.recoveryChecklistItem span {
+  display: block;
+  min-width: 0;
+}
+
+.recoveryChecklistItem.done {
+  border-color: color-mix(in oklab, var(--success) 38%, var(--border));
+}
+
+.recoveryChecklistItem.pending {
+  border-color: color-mix(in oklab, var(--warning) 44%, var(--border));
+}
+
+.recoveryChecklistMark {
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.recoveryChecklistItem.done .recoveryChecklistMark {
+  color: var(--success);
+}
+
+.recoveryChecklistItem.pending .recoveryChecklistMark {
+  color: var(--warning);
 }
 
 .reviewDetailCard {
@@ -1752,6 +2090,31 @@ watch(
   text-align: left;
 }
 
+.orderStatusCell {
+  font-weight: 700;
+}
+
+.statusOptimistic,
+.statusOpen {
+  color: var(--warning);
+}
+
+.statusPartial {
+  color: var(--accent);
+}
+
+.statusFilled {
+  color: var(--success);
+}
+
+.statusRejected {
+  color: var(--danger);
+}
+
+.statusUnknown {
+  color: var(--muted);
+}
+
 .execOrdersTableVue tbody tr.spacerRow {
   pointer-events: none;
 }
@@ -1783,6 +2146,10 @@ watch(
   .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .recoveryChecklist {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -1803,6 +2170,10 @@ watch(
   }
 
   .statusGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .recoveryChecklist {
     grid-template-columns: 1fr;
   }
 

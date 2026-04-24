@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ExecutionPolicyLimits {
     pub max_order_notional: Option<f64>,
@@ -19,7 +21,7 @@ pub struct ExecutionPolicyInput {
     pub limits: ExecutionPolicyLimits,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionPolicyDecision {
     pub allowed: bool,
     pub code: String,

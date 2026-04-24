@@ -7,13 +7,17 @@ import {
   emergencyHalt as emergencyHaltAction,
   flattenPosition as flattenPositionAction,
   getStoredExecutionCredentialStatus,
+  loadExecutionRiskPolicy as loadExecutionRiskPolicyAction,
   listSavedLiveSessions as listSavedLiveSessionsAction,
   loadSavedLiveSessionDetail as loadSavedLiveSessionDetailAction,
   migrateLegacyStoredExecutionKeysToSecureStorage,
   normalizeExecutionOperatorError,
   optimisticOrderRowFromExecution,
+  previewExecutionRiskPolicy as previewExecutionRiskPolicyAction,
   refreshOrders as refreshOrdersAction,
   refreshStatuses as refreshStatusesAction,
+  resetLocalPaperBroker as resetLocalPaperBrokerAction,
+  saveExecutionRiskPolicy as saveExecutionRiskPolicyAction,
   runOnce as runOnceAction,
   startLive as startLiveAction,
   startRunner as startRunnerAction,
@@ -30,6 +34,7 @@ import {
   type ExecutionLiveLifecycleState,
   type ExecutionPositionReview,
   type ExecutionPreviewMeta,
+  type ExecutionRiskPolicy,
   type ExecutionRunnerLifecycleState,
   type ExecutionSavedSessionDetail,
   type ExecutionSavedSessionSummary,
@@ -65,6 +70,12 @@ function applyVueTextFieldUpdate(state: ExecutionState, field: string, value: st
     case 'execRiskTakeProfitPct':
       state.riskTakeProfitPct = next
       return true
+    case 'execRiskMaxOrderNotional':
+      state.riskMaxOrderNotional = next
+      return true
+    case 'execRiskMaxPositionNotional':
+      state.riskMaxPositionNotional = next
+      return true
     case 'execManualFastLen':
       state.manualFastLen = next
       return true
@@ -97,6 +108,12 @@ function applyVueCheckboxFieldUpdate(state: ExecutionState, field: string, check
     case 'execLiveUseDelayed':
       state.liveUseDelayed = next
       return true
+    case 'execRiskAllowShort':
+      state.riskAllowShort = next
+      return true
+    case 'execRiskRequireBracket':
+      state.riskRequireBracket = next
+      return true
     default:
       return false
   }
@@ -109,9 +126,13 @@ export interface ExecutionOrderRow {
 type ExecutionPendingKey =
   | 'refreshSavedSessions'
   | 'refreshStatuses'
+  | 'loadRiskPolicy'
+  | 'saveRiskPolicy'
+  | 'previewRiskPolicy'
   | 'testConnection'
   | 'runOnce'
   | 'refreshOrders'
+  | 'resetLocalPaper'
   | 'cancelOpenOrders'
   | 'flattenPosition'
   | 'emergencyHalt'
@@ -124,9 +145,13 @@ type ExecutionPendingKey =
 interface ExecutionPendingState {
   refreshSavedSessions: boolean
   refreshStatuses: boolean
+  loadRiskPolicy: boolean
+  saveRiskPolicy: boolean
+  previewRiskPolicy: boolean
   testConnection: boolean
   runOnce: boolean
   refreshOrders: boolean
+  resetLocalPaper: boolean
   cancelOpenOrders: boolean
   flattenPosition: boolean
   emergencyHalt: boolean
@@ -141,9 +166,13 @@ function createPendingState(): ExecutionPendingState {
   return {
     refreshSavedSessions: false,
     refreshStatuses: false,
+    loadRiskPolicy: false,
+    saveRiskPolicy: false,
+    previewRiskPolicy: false,
     testConnection: false,
     runOnce: false,
     refreshOrders: false,
+    resetLocalPaper: false,
     cancelOpenOrders: false,
     flattenPosition: false,
     emergencyHalt: false,
@@ -313,6 +342,38 @@ function accountMetaFromReview(review: ExecutionAccountReview): string {
     review.portfolioValue ? `portfolio=${review.portfolioValue}` : '',
   ].filter((part) => part.length > 0)
   return parts.join(' · ')
+}
+
+function applyExecutionRiskPolicy(state: ExecutionState, policy: ExecutionRiskPolicy): void {
+  state.riskMaxOrderNotional = policy.max_order_notional != null ? String(policy.max_order_notional) : ''
+  state.riskMaxPositionNotional = policy.max_position_notional != null ? String(policy.max_position_notional) : ''
+  state.riskAllowShort = policy.allow_short ?? true
+  state.riskRequireBracket = policy.require_bracket ?? false
+  state.riskPolicyStatusHint = [
+    'Risk policy:',
+    state.riskMaxOrderNotional ? `max order=${state.riskMaxOrderNotional}` : 'max order=unset',
+    state.riskMaxPositionNotional ? `max position=${state.riskMaxPositionNotional}` : 'max position=unset',
+    `short=${state.riskAllowShort ? 'allowed' : 'blocked'}`,
+    `bracket=${state.riskRequireBracket ? 'required' : 'optional'}`,
+  ].join(' ')
+}
+
+function currentExecutionRiskPolicy(state: ExecutionState): ExecutionRiskPolicy {
+  const parse = (value: string, label: string): number | null => {
+    const trimmed = String(value || '').trim()
+    if (!trimmed) return null
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error(`${label} must be a positive number.`)
+    }
+    return parsed
+  }
+  return {
+    max_order_notional: parse(state.riskMaxOrderNotional, 'Max order notional'),
+    max_position_notional: parse(state.riskMaxPositionNotional, 'Max position notional'),
+    allow_short: state.riskAllowShort,
+    require_bracket: state.riskRequireBracket,
+  }
 }
 
 function positionMetaFromReview(review: ExecutionPositionReview): string {
@@ -521,6 +582,7 @@ function recoveryBlockedReason(state: ExecutionState): string | null {
 }
 
 function recoveryStatusLabel(state: ExecutionState): string {
+  if (state.recoveryCause) return state.recoveryCause
   if (state.recoveryReviewRequired) {
     return recoveryBlockedReason(state) || 'Broker review refresh required before re-arm.'
   }
@@ -979,6 +1041,15 @@ function flattenPositionBlockedReasons(state: ExecutionState): string[] {
   return dedupeReasons(reasons)
 }
 
+function resetLocalPaperBlockedReasons(state: ExecutionState): string[] {
+  const reasons: string[] = []
+  const busy = primaryBusyReason(state)
+  if (busy) reasons.push(busy)
+  if (!targetIsLocalPaper(state)) reasons.push('Select Local paper before resetting the simulated account.')
+  if (state.runnerActive) reasons.push('Stop the auto-runner before resetting local paper state.')
+  return dedupeReasons(reasons)
+}
+
 function emergencyHaltBlockedReasons(state: ExecutionState): string[] {
   const reasons: string[] = []
   const busy = primaryBusyReason(state)
@@ -1004,6 +1075,7 @@ function setAvailability(state: ExecutionState): void {
     state.pending.testConnection ||
     state.pending.runOnce ||
     state.pending.refreshOrders ||
+    state.pending.resetLocalPaper ||
     state.pending.cancelOpenOrders ||
     state.pending.flattenPosition ||
     state.pending.emergencyHalt ||
@@ -1017,6 +1089,7 @@ function setAvailability(state: ExecutionState): void {
   state.canTestConnection = !primaryBusy && effectiveCredentials
   state.canRunOnce = !primaryBusy && requestedSymbolReady && qtyReady && (!needsCredentials || effectiveCredentials)
   state.canRefreshOrders = !primaryBusy && requestedSymbolReady && reviewReady
+  state.canResetLocalPaper = !primaryBusy && localPaperTarget && !state.runnerActive
   state.canCancelOpenOrders = !primaryBusy && requestedSymbolReady && reviewReady && !state.runnerActive
   state.canFlattenPosition = !primaryBusy && requestedSymbolReady && reviewReady && !state.runnerActive
   state.canEmergencyHalt = !primaryBusy && (state.liveActive || state.runnerActive)
@@ -1062,9 +1135,13 @@ function applyActionResult(state: ExecutionState, result: ExecutionActionResult)
     state.brokerReview = result.brokerReview
     state.recoveryReviewRequired = false
     state.brokerReviewRefreshRequired = false
+    state.recoveryCause = ''
   }
   if (typeof result.recoveryReviewRequired === 'boolean') {
     state.recoveryReviewRequired = result.recoveryReviewRequired
+  }
+  if (typeof result.recoveryCause === 'string') {
+    state.recoveryCause = result.recoveryCause.trim()
   }
   if (typeof result.brokerReviewRefreshRequired === 'boolean') {
     state.brokerReviewRefreshRequired = result.brokerReviewRefreshRequired
@@ -1123,6 +1200,11 @@ interface ExecutionState {
   paramSource: string
   riskStopLossPct: string
   riskTakeProfitPct: string
+  riskMaxOrderNotional: string
+  riskMaxPositionNotional: string
+  riskAllowShort: boolean
+  riskRequireBracket: boolean
+  riskPolicyStatusHint: string
   manualFastLen: string
   manualSlowLen: string
   apiKey: string
@@ -1143,6 +1225,7 @@ interface ExecutionState {
   liveLifecycleState: ExecutionLiveLifecycleState
   runnerLifecycleState: ExecutionRunnerLifecycleState
   recoveryReviewRequired: boolean
+  recoveryCause: string
   brokerReviewRefreshRequired: boolean
   liveStatusHint: string
   runnerStatusHint: string
@@ -1174,6 +1257,7 @@ interface ExecutionState {
   canTestConnection: boolean
   canRunOnce: boolean
   canRefreshOrders: boolean
+  canResetLocalPaper: boolean
   canCancelOpenOrders: boolean
   canFlattenPosition: boolean
   canEmergencyHalt: boolean
@@ -1197,6 +1281,11 @@ export const useExecutionStore = defineStore('execution', {
       paramSource: 'selected',
       riskStopLossPct: '',
       riskTakeProfitPct: '',
+      riskMaxOrderNotional: '',
+      riskMaxPositionNotional: '',
+      riskAllowShort: true,
+      riskRequireBracket: false,
+      riskPolicyStatusHint: 'Risk policy: not loaded.',
       manualFastLen: '',
       manualSlowLen: '',
       apiKey: '',
@@ -1217,6 +1306,7 @@ export const useExecutionStore = defineStore('execution', {
       liveLifecycleState: 'off',
       runnerLifecycleState: 'off',
       recoveryReviewRequired: false,
+      recoveryCause: '',
       brokerReviewRefreshRequired: false,
       liveStatusHint: 'Live candles: off',
       runnerStatusHint: 'Auto-runner: off',
@@ -1248,6 +1338,7 @@ export const useExecutionStore = defineStore('execution', {
       canTestConnection: true,
       canRunOnce: true,
       canRefreshOrders: true,
+      canResetLocalPaper: false,
       canCancelOpenOrders: false,
       canFlattenPosition: false,
       canEmergencyHalt: false,
@@ -1311,6 +1402,7 @@ export const useExecutionStore = defineStore('execution', {
     startRunnerBlockedReasons: (state): string[] => startRunnerBlockedReasons(state),
     cancelOpenOrdersBlockedReasons: (state): string[] => cancelOpenOrdersBlockedReasons(state),
     flattenPositionBlockedReasons: (state): string[] => flattenPositionBlockedReasons(state),
+    resetLocalPaperBlockedReasons: (state): string[] => resetLocalPaperBlockedReasons(state),
     emergencyHaltBlockedReasons: (state): string[] => emergencyHaltBlockedReasons(state),
     reconciliationAdvisories: (state): string[] => reconciliationAdvisories(state),
   },
@@ -1328,6 +1420,10 @@ export const useExecutionStore = defineStore('execution', {
       this.paramSource = String(snapshot.paramSource ?? this.paramSource ?? 'selected').trim() || 'selected'
       this.riskStopLossPct = String(snapshot.riskStopLossPct ?? this.riskStopLossPct ?? '').trim()
       this.riskTakeProfitPct = String(snapshot.riskTakeProfitPct ?? this.riskTakeProfitPct ?? '').trim()
+      this.riskMaxOrderNotional = String(snapshot.riskMaxOrderNotional ?? this.riskMaxOrderNotional ?? '').trim()
+      this.riskMaxPositionNotional = String(snapshot.riskMaxPositionNotional ?? this.riskMaxPositionNotional ?? '').trim()
+      this.riskAllowShort = Boolean(snapshot.riskAllowShort ?? this.riskAllowShort)
+      this.riskRequireBracket = Boolean(snapshot.riskRequireBracket ?? this.riskRequireBracket)
       this.manualFastLen = String(snapshot.manualFastLen ?? this.manualFastLen ?? '').trim()
       this.manualSlowLen = String(snapshot.manualSlowLen ?? this.manualSlowLen ?? '').trim()
       this.dryRun = Boolean(snapshot.dryRun ?? this.dryRun)
@@ -1337,6 +1433,7 @@ export const useExecutionStore = defineStore('execution', {
       this.liveLifecycleState = String((snapshot as Partial<ExecutionState>).liveLifecycleState ?? this.liveLifecycleState ?? 'off').trim() as ExecutionLiveLifecycleState || 'off'
       this.runnerLifecycleState = String((snapshot as Partial<ExecutionState>).runnerLifecycleState ?? this.runnerLifecycleState ?? 'off').trim() as ExecutionRunnerLifecycleState || 'off'
       this.recoveryReviewRequired = Boolean((snapshot as Partial<ExecutionState>).recoveryReviewRequired ?? false)
+      this.recoveryCause = String((snapshot as Partial<ExecutionState>).recoveryCause ?? '').trim()
       this.brokerReviewRefreshRequired = Boolean((snapshot as Partial<ExecutionState>).brokerReviewRefreshRequired ?? false)
       this.liveStatusHint = String(snapshot.liveStatusHint ?? this.liveStatusHint ?? 'Live candles: off').trim() || 'Live candles: off'
       this.runnerStatusHint = String(snapshot.runnerStatusHint ?? this.runnerStatusHint ?? 'Auto-runner: off').trim() || 'Auto-runner: off'
@@ -1386,6 +1483,7 @@ export const useExecutionStore = defineStore('execution', {
         if (key === 'execSymbol') {
           this.brokerReview = null
           this.recoveryReviewRequired = false
+          this.recoveryCause = ''
           this.brokerReviewRefreshRequired = false
           this.reconciliationState = 'disabled'
           this.reconciliationFetchedAtUnixMs = null
@@ -1412,7 +1510,8 @@ export const useExecutionStore = defineStore('execution', {
           this.accountReview = defaultAccountReview(String(this.mode || 'paper').trim() === 'live' ? 'live' : 'paper')
           this.brokerReview = null
           this.outputPreviewMeta = defaultPreviewMeta()
-          this.recoveryReviewRequired = false
+         this.recoveryReviewRequired = false
+          this.recoveryCause = ''
           this.brokerReviewRefreshRequired = false
           this.reconciliationState = hasRequestedSymbol(this) ? 'unknown' : 'disabled'
           this.reconciliationFetchedAtUnixMs = null
@@ -1453,6 +1552,10 @@ export const useExecutionStore = defineStore('execution', {
         paramSource: this.paramSource,
         riskStopLossPct: this.riskStopLossPct,
         riskTakeProfitPct: this.riskTakeProfitPct,
+        riskMaxOrderNotional: this.riskMaxOrderNotional,
+        riskMaxPositionNotional: this.riskMaxPositionNotional,
+        riskAllowShort: this.riskAllowShort,
+        riskRequireBracket: this.riskRequireBracket,
         manualFastLen: this.manualFastLen,
         manualSlowLen: this.manualSlowLen,
         dryRun: this.dryRun,
@@ -1654,8 +1757,14 @@ export const useExecutionStore = defineStore('execution', {
           this.recoveryReviewRequired = true
           changed = true
         }
+        const nextCause = `Feed interruption: ${event.message || event.status}. Refresh broker review before re-arming.`
+        if (this.recoveryCause !== nextCause) {
+          this.recoveryCause = nextCause
+          changed = true
+        }
       } else if (event.status === 'stopped' && this.recoveryReviewRequired) {
         this.recoveryReviewRequired = false
+        this.recoveryCause = ''
         changed = true
       }
       if (!changed) return
@@ -1693,6 +1802,14 @@ export const useExecutionStore = defineStore('execution', {
       }
       if (event.execution) {
         const optimisticRow = optimisticOrderRowFromExecution(event.execution)
+        const action = String((event.execution as { action?: unknown }).action ?? '')
+        if (action.startsWith('policy_blocked:')) {
+          const nextCause = `Policy block: ${action.slice('policy_blocked:'.length)}.`
+          if (this.recoveryCause !== nextCause) {
+            this.recoveryCause = nextCause
+            changed = true
+          }
+        }
         if (optimisticRow) {
           changed = prependOptimisticOrderRows(this, [optimisticRow]) || changed
           if (!targetIsDryRun(this) && !this.brokerReviewRefreshRequired) {
@@ -1728,6 +1845,45 @@ export const useExecutionStore = defineStore('execution', {
       } finally {
         this.finishAction('refreshStatuses')
       }
+    },
+
+    async loadRiskPolicy(): Promise<void> {
+      if (this.pending.loadRiskPolicy) return
+      this.beginAction('loadRiskPolicy', 'Loading execution risk policy...')
+      try {
+        const policy = await loadExecutionRiskPolicyAction()
+        applyExecutionRiskPolicy(this, policy)
+        this.statusLine = 'Execution risk policy loaded.'
+        this.statusHint = this.riskPolicyStatusHint
+      } catch (error) {
+        this.failAction('Risk policy load failed', error)
+      } finally {
+        this.finishAction('loadRiskPolicy')
+      }
+    },
+
+    async saveRiskPolicy(): Promise<void> {
+      if (this.pending.saveRiskPolicy) return
+      this.beginAction('saveRiskPolicy', 'Saving execution risk policy...')
+      try {
+        const policy = await saveExecutionRiskPolicyAction(currentExecutionRiskPolicy(this))
+        applyExecutionRiskPolicy(this, policy)
+        this.statusLine = 'Execution risk policy saved.'
+        this.statusHint = this.riskPolicyStatusHint
+      } catch (error) {
+        this.failAction('Risk policy save failed', error)
+      } finally {
+        this.finishAction('saveRiskPolicy')
+      }
+    },
+
+    previewRiskPolicy(): void {
+      if (this.pending.previewRiskPolicy) return
+      this.beginAction('previewRiskPolicy', 'Previewing execution risk policy...')
+      void previewExecutionRiskPolicyAction(this.buildActionOptions())
+        .then((result) => this.applyActionResult(result))
+        .catch((error) => this.failAction('Risk policy preview failed', error))
+        .finally(() => this.finishAction('previewRiskPolicy'))
     },
 
     testConnection(): void {
@@ -1771,6 +1927,15 @@ export const useExecutionStore = defineStore('execution', {
         })
         .catch((error) => this.failAction('Order refresh failed', error))
         .finally(() => this.finishAction('refreshOrders'))
+    },
+
+    resetLocalPaper(): void {
+      if (!this.canResetLocalPaper) return
+      this.beginAction('resetLocalPaper', 'Resetting local paper broker...')
+      void resetLocalPaperBrokerAction(this.buildActionOptions())
+        .then((result) => this.applyActionResult(result))
+        .catch((error) => this.failAction('Local paper reset failed', error))
+        .finally(() => this.finishAction('resetLocalPaper'))
     },
 
     cancelOpenOrders(): void {

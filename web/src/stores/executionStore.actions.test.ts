@@ -8,6 +8,7 @@ import {
   flattenPosition,
   getStoredExecutionCredentialStatus,
   listSavedLiveSessions,
+  loadExecutionRiskPolicy,
   loadSavedLiveSessionDetail,
   type ExecutionActionResult,
   type ExecutionRuntimeEventHandlers,
@@ -15,7 +16,9 @@ import {
   normalizeExecutionOperatorError,
   refreshOrders,
   refreshStatuses,
+  resetLocalPaperBroker,
   runOnce,
+  saveExecutionRiskPolicy,
   startLive,
   startRunner,
   stopLive,
@@ -23,6 +26,7 @@ import {
   subscribeExecutionRuntimeEvents,
   testConnection,
   optimisticOrderRowFromExecution,
+  previewExecutionRiskPolicy,
 } from '../services/executionService'
 import { useExecutionStore } from './executionStore'
 
@@ -44,6 +48,12 @@ vi.mock('../services/executionService', () => ({
     message: '',
   })),
   listSavedLiveSessions: vi.fn(async () => []),
+  loadExecutionRiskPolicy: vi.fn(async () => ({
+    max_order_notional: null,
+    max_position_notional: null,
+    allow_short: null,
+    require_bracket: null,
+  })),
   loadSavedLiveSessionDetail: vi.fn(async () => null),
   migrateLegacyStoredExecutionKeysToSecureStorage: vi.fn(async () => ({
     rememberAvailable: true,
@@ -63,7 +73,9 @@ vi.mock('../services/executionService', () => ({
   }),
   refreshOrders: vi.fn(async () => ({ statusLine: 'Loaded 0 orders.' })),
   refreshStatuses: vi.fn(async () => ({ statusLine: 'Execution status refreshed.' })),
+  resetLocalPaperBroker: vi.fn(async () => ({ statusLine: 'Local paper broker reset.' })),
   runOnce: vi.fn(async () => ({ statusLine: 'Signal processed.' })),
+  saveExecutionRiskPolicy: vi.fn(async (policy) => policy),
   startLive: vi.fn(async () => ({ statusLine: 'Live candles started.', liveActive: true, liveSymbol: 'AAPL', liveDelayed: true })),
   startRunner: vi.fn(async () => ({ statusLine: 'Auto-runner started.', runnerActive: true })),
   stopLive: vi.fn(async () => ({ statusLine: 'Live candles stopped.', liveActive: false })),
@@ -75,6 +87,7 @@ vi.mock('../services/executionService', () => ({
     }
   }),
   testConnection: vi.fn(async () => ({ statusLine: 'Connection OK.' })),
+  previewExecutionRiskPolicy: vi.fn(async () => ({ statusLine: 'Policy preview allowed.', statusHint: 'Policy preview allowed.' })),
 }))
 
 const cancelOpenOrdersMock = vi.mocked(cancelOpenOrders)
@@ -84,19 +97,23 @@ const emergencyHaltMock = vi.mocked(emergencyHalt)
 const flattenPositionMock = vi.mocked(flattenPosition)
 const getStoredExecutionCredentialStatusMock = vi.mocked(getStoredExecutionCredentialStatus)
 const listSavedLiveSessionsMock = vi.mocked(listSavedLiveSessions)
+const loadExecutionRiskPolicyMock = vi.mocked(loadExecutionRiskPolicy)
 const loadSavedLiveSessionDetailMock = vi.mocked(loadSavedLiveSessionDetail)
 const migrateLegacyStoredExecutionKeysToSecureStorageMock = vi.mocked(migrateLegacyStoredExecutionKeysToSecureStorage)
 const normalizeExecutionOperatorErrorMock = vi.mocked(normalizeExecutionOperatorError)
 const optimisticOrderRowFromExecutionMock = vi.mocked(optimisticOrderRowFromExecution)
 const runOnceMock = vi.mocked(runOnce)
+const saveExecutionRiskPolicyMock = vi.mocked(saveExecutionRiskPolicy)
 const refreshOrdersMock = vi.mocked(refreshOrders)
 const refreshStatusesMock = vi.mocked(refreshStatuses)
+const resetLocalPaperBrokerMock = vi.mocked(resetLocalPaperBroker)
 const startLiveMock = vi.mocked(startLive)
 const stopLiveMock = vi.mocked(stopLive)
 const startRunnerMock = vi.mocked(startRunner)
 const stopRunnerMock = vi.mocked(stopRunner)
 const clearKeysMock = vi.mocked(clearKeys)
 const subscribeExecutionRuntimeEventsMock = vi.mocked(subscribeExecutionRuntimeEvents)
+const previewExecutionRiskPolicyMock = vi.mocked(previewExecutionRiskPolicy)
 
 async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 6; index += 1) {
@@ -151,6 +168,13 @@ describe('execution store actions', () => {
       message: '',
     })
     migrateLegacyStoredExecutionKeysToSecureStorageMock.mockClear()
+    loadExecutionRiskPolicyMock.mockClear()
+    loadExecutionRiskPolicyMock.mockResolvedValue({
+      max_order_notional: null,
+      max_position_notional: null,
+      allow_short: null,
+      require_bracket: null,
+    })
     listSavedLiveSessionsMock.mockResolvedValue([])
     loadSavedLiveSessionDetailMock.mockResolvedValue(null as never)
     migrateLegacyStoredExecutionKeysToSecureStorageMock.mockResolvedValue({
@@ -173,10 +197,19 @@ describe('execution store actions', () => {
     })
     runOnceMock.mockClear()
     runOnceMock.mockResolvedValue({ statusLine: 'Signal processed.' })
+    saveExecutionRiskPolicyMock.mockClear()
+    saveExecutionRiskPolicyMock.mockImplementation(async (policy) => ({
+      max_order_notional: policy.max_order_notional ?? null,
+      max_position_notional: policy.max_position_notional ?? null,
+      allow_short: policy.allow_short ?? null,
+      require_bracket: policy.require_bracket ?? null,
+    }))
     refreshOrdersMock.mockClear()
     refreshOrdersMock.mockResolvedValue({ statusLine: 'Loaded 0 orders.' })
     refreshStatusesMock.mockClear()
     refreshStatusesMock.mockResolvedValue({ statusLine: 'Execution status refreshed.' })
+    resetLocalPaperBrokerMock.mockClear()
+    resetLocalPaperBrokerMock.mockResolvedValue({ statusLine: 'Local paper broker reset.' })
     startLiveMock.mockClear()
     startLiveMock.mockResolvedValue({ statusLine: 'Live candles started.', liveActive: true, liveSymbol: 'AAPL', liveDelayed: true })
     stopLiveMock.mockClear()
@@ -194,6 +227,8 @@ describe('execution store actions', () => {
         runtimeEventHandlers = null
       }
     })
+    previewExecutionRiskPolicyMock.mockClear()
+    previewExecutionRiskPolicyMock.mockResolvedValue({ statusLine: 'Policy preview allowed.', statusHint: 'Policy preview allowed.' })
   })
 
   it('updates Vue execution state without legacy DOM mirroring', () => {
@@ -299,6 +334,80 @@ describe('execution store actions', () => {
     expect(stopRunnerMock).toHaveBeenCalled()
     expect(refreshStatusesMock).toHaveBeenCalled()
     expect(clearKeysMock).toHaveBeenCalled()
+  })
+
+  it('loads, saves, and previews execution risk policy through the execution service', async () => {
+    const store = useExecutionStore()
+    loadExecutionRiskPolicyMock.mockResolvedValueOnce({
+      max_order_notional: 500,
+      max_position_notional: 1500,
+      allow_short: false,
+      require_bracket: true,
+    })
+
+    await store.loadRiskPolicy()
+
+    expect(store.riskMaxOrderNotional).toBe('500')
+    expect(store.riskMaxPositionNotional).toBe('1500')
+    expect(store.riskAllowShort).toBe(false)
+    expect(store.riskRequireBracket).toBe(true)
+    expect(store.riskPolicyStatusHint).toContain('max order=500')
+
+    store.setInputField('execRiskMaxOrderNotional', '750')
+    store.setInputField('execRiskMaxPositionNotional', '1750')
+    store.setCheckboxField('execRiskAllowShort', true)
+    store.setCheckboxField('execRiskRequireBracket', false)
+
+    await store.saveRiskPolicy()
+
+    expect(saveExecutionRiskPolicyMock).toHaveBeenCalledWith({
+      max_order_notional: 750,
+      max_position_notional: 1750,
+      allow_short: true,
+      require_bracket: false,
+    })
+    expect(store.statusLine).toBe('Execution risk policy saved.')
+
+    store.setInputField('execSymbol', 'AAPL')
+    store.previewRiskPolicy()
+    await waitForStoreToSettle(store)
+
+    expect(previewExecutionRiskPolicyMock).toHaveBeenCalledWith(expect.objectContaining({
+      symbol: 'AAPL',
+      riskMaxOrderNotional: '750',
+      riskMaxPositionNotional: '1750',
+      riskAllowShort: true,
+      riskRequireBracket: false,
+    }))
+    expect(store.statusLine).toBe('Policy preview allowed.')
+  })
+
+  it('confirms local paper reset through the execution service only in local-paper mode', async () => {
+    const store = useExecutionStore()
+
+    expect(store.canResetLocalPaper).toBe(false)
+    store.setInputField('execExecutionTarget', 'local_paper')
+    expect(store.canResetLocalPaper).toBe(true)
+
+    store.resetLocalPaper()
+    await waitForStoreToSettle(store)
+
+    expect(resetLocalPaperBrokerMock).toHaveBeenCalledWith(expect.objectContaining({
+      executionTarget: 'local_paper',
+    }))
+    expect(store.statusLine).toBe('Local paper broker reset.')
+  })
+
+  it('does not save invalid risk-policy notional text as an unset cap', async () => {
+    const store = useExecutionStore()
+
+    store.setInputField('execRiskMaxOrderNotional', '-25')
+
+    await store.saveRiskPolicy()
+
+    expect(saveExecutionRiskPolicyMock).not.toHaveBeenCalled()
+    expect(store.statusLine).toBe('Risk policy save failed: Error: Max order notional must be a positive number.')
+    expect(store.statusHint).toBe('Risk policy save failed: Error: Max order notional must be a positive number.')
   })
 
   it('keeps stop and status actions available while another action is pending', async () => {
@@ -914,7 +1023,7 @@ describe('execution store actions', () => {
     expect(store.startRunnerBlockedReasons).toContain(
       'Refresh broker review after the last live interruption before re-arming the auto-runner.',
     )
-    expect(store.recoveryStatusLabel).toContain('Refresh broker review after the last live interruption')
+    expect(store.recoveryStatusLabel).toContain('Feed interruption:')
 
     store.applyActionResult({
       statusLine: 'Loaded 0 recent orders for AAPL.',

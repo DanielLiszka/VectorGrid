@@ -20,6 +20,8 @@ npm run test:desktop:smoke
 - `npm run parity` checks frontend/backend command-surface drift.
 - `npm run parity:outputs` is structural JSON/XLSX report-artifact parity plus semantic JSON parity for the configured representative headless report outputs.
 - `npm run parity:outputs:refresh` regenerates the representative headless report outputs, refreshes the checked-in report baselines, and updates the sample baseline manifest.
+- Execution workspace changes should also run the repo-root targeted gate:
+  `powershell -ExecutionPolicy Bypass -File ../scripts/run_execution_safety_gate.ps1`.
 
 ## Runtime notes
 

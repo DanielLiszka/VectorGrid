@@ -79,7 +79,26 @@ async function main() {
   const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   await seedAdvancedUiMode(context)
-  await installMockedTauri(context, { holdStartupOverlay: true })
+  await installMockedTauri(context, {
+    holdStartupOverlay: true,
+    commandResults: {
+      alpaca_get_credential_status: {
+        remember_available: true,
+        has_api_key: false,
+        has_api_secret: false,
+        has_credentials: false,
+        state: 'missing',
+        storage_backend: 'keyring',
+        message: '',
+      },
+      get_execution_risk_policy: {
+        max_order_notional: null,
+        max_position_notional: null,
+        allow_short: true,
+        require_bracket: false,
+      },
+    },
+  })
 
   const page = await context.newPage()
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' })
@@ -89,6 +108,13 @@ async function main() {
   }
 
   await scan(page, 'workflow shell')
+
+  await dispatchClick(page, '#workspaceBar button[data-workspace="live"]')
+  await page.waitForSelector('[aria-label="Execution runtime status"]', { timeout: 15000 })
+  await page.selectOption('#vueExecTarget', 'local_paper')
+  await page.fill('#vueExecSymbol', 'AAPL')
+  await page.waitForTimeout(200)
+  await scan(page, 'execution workspace')
 
   await dispatchClick(page, '#workspaceBar button[data-workspace="settings"]')
   await page.waitForTimeout(200)

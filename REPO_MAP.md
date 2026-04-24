@@ -407,6 +407,10 @@ Open in this order:
 - `src-tauri/src/commands_execution.rs`
 - `src-tauri/src/state.rs`
 
+Use the lightweight safety gate before handoff for execution/broker-contract changes that do not need benchmarks or real credentials:
+
+- `powershell -File scripts/run_execution_safety_gate.ps1`
+
 ### If the task is drilldown, local stability, or follow-up analysis
 
 Open in this order:
@@ -1599,6 +1603,11 @@ Important current-state notes:
 - broker integration is Alpaca over REST
 - `dry_run=true` requires no broker credentials; non-dry-run requires Alpaca credentials
 - Alpaca commands can now resolve credentials from secure backend storage when typed request credentials are omitted
+- local paper execution persists app-local broker state and reports a clear unsupported warning when stop-loss/take-profit inputs would require bracket child-order simulation
+- execution risk-policy settings persist in app settings; request-level risk overrides can tighten but not loosen saved max-notional, shorting, or bracket requirements
+- Alpaca submissions persist credential-free intent records, use stable `client_order_id` lookup before submit, and append post-submit broker reconciliation events to live-session evidence
+- execution strategy support is code-backed by `StrategyExecutionAdapter` in `src-tauri/src/commands_execution.rs`; currently supported live execution adapters are `DoubleMa` and `CompositeCpu`, surfaced through `get_execution_strategy_support_matrix`
+- deterministic execution test harness primitives live in `src-tauri/src/execution_mocks.rs` for broker fills/partials/rejects/timeouts/cancel failures and feed duplicate/out-of-order/close/error events
 - the runner emits `live_execution_runner_event` status messages as bars are processed
 - runner cancellation remains intentionally silent on the event bus; the shipped runner event vocabulary is `started`, `stopped`, `triggered`, `queued_latest`, `signal_processed`, `order_submitted`, and `error`
 - execution targets the delta between desired and current position; bracket orders are only attached when both stop-loss and take-profit are present
@@ -1636,6 +1645,7 @@ Verification in this repo is layered:
 | broad backend confidence              | `cargo test --workspace`, `cargo test -p ta_app_core`                                                                                                        |
 | frontend confidence                   | `npm --prefix web run test`, `npm --prefix web run typecheck`, `npm --prefix web run lint`, `npm --prefix web run parity`, `npm --prefix web run a11y:smoke` |
 | artifact/report shape                 | `npm --prefix web run parity:outputs`                                                                                                                        |
+| live execution / paper broker safety  | `powershell -File scripts/run_execution_safety_gate.ps1`                                                                                                      |
 | workflow regression                   | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`                                                                                             |
 | CPU perf-sensitive backend change     | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`                                                                                             |
 | GPU/CUDA path                         | `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`                                                                                             |
@@ -1653,6 +1663,8 @@ Authoritative gates:
 
 Specialized/manual gates:
 
+- `scripts/run_execution_safety_gate.ps1`
+  - lightweight execution and paper-broker safety gate; runs targeted Rust execution, paper-broker, risk-policy, live-stream state tests plus frontend execution tests and command contract check without benchmarks or live credentials
 - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
   - specialized ALMA contract-row gate, not the default PR perf authority
 

@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::path::Path;
 
 use serde::Serialize;
+use std::time::{SystemTime, UNIX_EPOCH};
 use vector_ta::utilities::data_loader::Candles;
 
 use crate::data_cache;
@@ -151,6 +152,63 @@ pub struct LiveCandleStreamInfo {
     pub delayed: bool,
     pub active: bool,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status_at_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accepted_bar_open_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accepted_bar_close_unix_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accepted_bar_received_at_unix_ms: Option<i64>,
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn live_stream_info(
+    market: String,
+    symbol: String,
+    delayed: bool,
+    active: bool,
+    status: impl Into<String>,
+) -> LiveCandleStreamInfo {
+    LiveCandleStreamInfo {
+        market,
+        symbol,
+        delayed,
+        active,
+        status: status.into(),
+        last_message: None,
+        last_status_at_unix_ms: None,
+        last_accepted_bar_open_unix_ms: None,
+        last_accepted_bar_close_unix_ms: None,
+        last_accepted_bar_received_at_unix_ms: None,
+    }
+}
+
+fn live_stream_info_with_prior_diagnostics(
+    market: String,
+    symbol: String,
+    delayed: bool,
+    active: bool,
+    status: impl Into<String>,
+    prior: Option<&LiveCandleStreamInfo>,
+) -> LiveCandleStreamInfo {
+    let mut info = live_stream_info(market, symbol, delayed, active, status);
+    if let Some(prior) = prior {
+        info.last_message = prior.last_message.clone();
+        info.last_status_at_unix_ms = prior.last_status_at_unix_ms;
+        info.last_accepted_bar_open_unix_ms = prior.last_accepted_bar_open_unix_ms;
+        info.last_accepted_bar_close_unix_ms = prior.last_accepted_bar_close_unix_ms;
+        info.last_accepted_bar_received_at_unix_ms = prior.last_accepted_bar_received_at_unix_ms;
+    }
+    info
 }
 
 impl Default for AppState {
@@ -677,24 +735,26 @@ impl AppState {
             Err(_) => return Err(("failed to lock live stream state".to_string(), task)),
         };
         let prior = slot.take().map(|prev| {
-            let info = LiveCandleStreamInfo {
-                market: prev.market,
-                symbol: prev.symbol,
-                delayed: prev.delayed,
-                active: !prev.handle.inner().is_finished(),
-                status: "started".to_string(),
-            };
+            let info = live_stream_info(
+                prev.market,
+                prev.symbol,
+                prev.delayed,
+                !prev.handle.inner().is_finished(),
+                "started",
+            );
             prev.handle.abort();
             info
         });
         *slot = Some(task);
         if let Ok(mut status) = self.live_candle_stream_status.lock() {
-            *status = slot.as_ref().map(|active| LiveCandleStreamInfo {
-                market: active.market.clone(),
-                symbol: active.symbol.clone(),
-                delayed: active.delayed,
-                active: true,
-                status: "started".to_string(),
+            *status = slot.as_ref().map(|active| {
+                live_stream_info(
+                    active.market.clone(),
+                    active.symbol.clone(),
+                    active.delayed,
+                    true,
+                    "started",
+                )
             });
         }
         Ok(prior)
@@ -705,26 +765,36 @@ impl AppState {
             .live_candle_stream
             .lock()
             .map_err(|_| "failed to lock live stream state".to_string())?;
+        let prior_status = self
+            .live_candle_stream_status
+            .lock()
+            .ok()
+            .and_then(|status| status.clone());
         let prior = slot.take().map(|prev| {
-            let info = LiveCandleStreamInfo {
-                market: prev.market,
-                symbol: prev.symbol,
-                delayed: prev.delayed,
-                active: !prev.handle.inner().is_finished(),
-                status: "stopped".to_string(),
-            };
+            let info = live_stream_info_with_prior_diagnostics(
+                prev.market,
+                prev.symbol,
+                prev.delayed,
+                !prev.handle.inner().is_finished(),
+                "stopped",
+                prior_status.as_ref(),
+            );
             prev.handle.abort();
             info
         });
         if let Some(info) = prior.as_ref() {
             if let Ok(mut status) = self.live_candle_stream_status.lock() {
-                *status = Some(LiveCandleStreamInfo {
-                    market: info.market.clone(),
-                    symbol: info.symbol.clone(),
-                    delayed: info.delayed,
-                    active: false,
-                    status: "stopped".to_string(),
-                });
+                let mut stopped = live_stream_info_with_prior_diagnostics(
+                    info.market.clone(),
+                    info.symbol.clone(),
+                    info.delayed,
+                    false,
+                    "stopped",
+                    prior_status.as_ref(),
+                );
+                stopped.last_message = Some("live candle stream stopped".to_string());
+                stopped.last_status_at_unix_ms = Some(now_unix_ms());
+                *status = Some(stopped);
             }
         }
         Ok(prior)
@@ -741,14 +811,23 @@ impl AppState {
         {
             let finished = slot.take();
             if let Some(task) = finished {
+                let prior_status = self
+                    .live_candle_stream_status
+                    .lock()
+                    .ok()
+                    .and_then(|status| status.clone());
                 if let Ok(mut status) = self.live_candle_stream_status.lock() {
-                    *status = Some(LiveCandleStreamInfo {
-                        market: task.market,
-                        symbol: task.symbol,
-                        delayed: task.delayed,
-                        active: false,
-                        status: "closed".to_string(),
-                    });
+                    let mut closed = live_stream_info_with_prior_diagnostics(
+                        task.market,
+                        task.symbol,
+                        task.delayed,
+                        false,
+                        "closed",
+                        prior_status.as_ref(),
+                    );
+                    closed.last_message = Some("live candle stream closed".to_string());
+                    closed.last_status_at_unix_ms = Some(now_unix_ms());
+                    *status = Some(closed);
                 }
             }
         }
@@ -756,27 +835,23 @@ impl AppState {
             if let Ok(status) = self.live_candle_stream_status.lock() {
                 if let Some(last) = status.as_ref() {
                     if last.symbol == task.symbol && last.market == task.market {
-                        return Ok(Some(LiveCandleStreamInfo {
-                            market: last.market.clone(),
-                            symbol: last.symbol.clone(),
-                            delayed: task.delayed,
-                            active: true,
-                            status: if last.status.trim().is_empty() {
-                                "active".to_string()
-                            } else {
-                                last.status.clone()
-                            },
-                        }));
+                        let mut info = last.clone();
+                        info.delayed = task.delayed;
+                        info.active = true;
+                        if info.status.trim().is_empty() {
+                            info.status = "active".to_string();
+                        }
+                        return Ok(Some(info));
                     }
                 }
             }
-            return Ok(Some(LiveCandleStreamInfo {
-                market: task.market.clone(),
-                symbol: task.symbol.clone(),
-                delayed: task.delayed,
-                active: true,
-                status: "active".to_string(),
-            }));
+            return Ok(Some(live_stream_info(
+                task.market.clone(),
+                task.symbol.clone(),
+                task.delayed,
+                true,
+                "active",
+            )));
         }
         let status = self
             .live_candle_stream_status
@@ -791,6 +866,8 @@ impl AppState {
         symbol: &str,
         delayed: bool,
         status: &str,
+        message: &str,
+        at_unix_ms: i64,
     ) -> Result<(), String> {
         let normalized = status.trim().to_ascii_lowercase();
         let active = matches!(
@@ -801,13 +878,57 @@ impl AppState {
             .live_candle_stream_status
             .lock()
             .map_err(|_| "failed to lock live stream status".to_string())?;
-        *slot = Some(LiveCandleStreamInfo {
-            market: market.trim().to_string(),
-            symbol: symbol.trim().to_string(),
+        let prior = slot.as_ref().cloned();
+        let mut next = live_stream_info_with_prior_diagnostics(
+            market.trim().to_string(),
+            symbol.trim().to_string(),
             delayed,
             active,
-            status: normalized,
-        });
+            normalized,
+            prior.as_ref(),
+        );
+        let message = message.trim();
+        next.last_message = if message.is_empty() {
+            None
+        } else {
+            Some(message.to_string())
+        };
+        next.last_status_at_unix_ms = Some(at_unix_ms.max(0));
+        *slot = Some(next);
+        Ok(())
+    }
+
+    pub fn record_live_candle_stream_accepted_bar(
+        &self,
+        market: &str,
+        symbol: &str,
+        delayed: bool,
+        time_open_unix_ms: i64,
+        time_close_unix_ms: i64,
+        received_at_unix_ms: i64,
+    ) -> Result<(), String> {
+        let mut slot = self
+            .live_candle_stream_status
+            .lock()
+            .map_err(|_| "failed to lock live stream status".to_string())?;
+        let prior = slot.as_ref().cloned();
+        let status = prior
+            .as_ref()
+            .map(|info| info.status.trim().to_string())
+            .filter(|status| !status.is_empty())
+            .unwrap_or_else(|| "active".to_string());
+        let mut next = live_stream_info_with_prior_diagnostics(
+            market.trim().to_string(),
+            symbol.trim().to_string(),
+            delayed,
+            true,
+            status,
+            prior.as_ref(),
+        );
+        next.last_accepted_bar_open_unix_ms = Some(time_open_unix_ms);
+        next.last_accepted_bar_close_unix_ms = Some(time_close_unix_ms);
+        next.last_accepted_bar_received_at_unix_ms = Some(received_at_unix_ms.max(0));
+        *slot = Some(next);
         Ok(())
     }
 
@@ -2117,6 +2238,32 @@ mod state_live_stream_tests {
         assert!(active.active);
         assert_eq!(active.status, "started");
 
+        state
+            .record_live_candle_stream_status(
+                "stocks",
+                "AAPL",
+                true,
+                "subscribed",
+                "subscribed to minute aggregates",
+                100,
+            )
+            .expect("record live stream status");
+        state
+            .record_live_candle_stream_accepted_bar("stocks", "AAPL", true, 1_000, 1_999, 2_100)
+            .expect("record accepted live bar");
+        let active = state
+            .live_candle_stream_info()
+            .expect("live stream info after bar")
+            .expect("active stream with diagnostics");
+        assert_eq!(
+            active.last_message.as_deref(),
+            Some("subscribed to minute aggregates")
+        );
+        assert_eq!(active.last_status_at_unix_ms, Some(100));
+        assert_eq!(active.last_accepted_bar_open_unix_ms, Some(1_000));
+        assert_eq!(active.last_accepted_bar_close_unix_ms, Some(1_999));
+        assert_eq!(active.last_accepted_bar_received_at_unix_ms, Some(2_100));
+
         let replaced = match state.replace_live_candle_stream(make_live_stream_task("MSFT", false))
         {
             Ok(Some(replaced)) => replaced,
@@ -2134,7 +2281,11 @@ mod state_live_stream_tests {
         assert!(!active.delayed);
         assert!(active.active);
         assert_eq!(active.status, "started");
+        assert_eq!(active.last_accepted_bar_received_at_unix_ms, None);
 
+        state
+            .record_live_candle_stream_accepted_bar("stocks", "MSFT", false, 2_000, 2_999, 3_100)
+            .expect("record replacement accepted live bar");
         let stopped = state
             .stop_live_candle_stream()
             .expect("stop live stream")
@@ -2148,6 +2299,11 @@ mod state_live_stream_tests {
         assert_eq!(status.symbol, "MSFT");
         assert!(!status.active);
         assert_eq!(status.status, "stopped");
+        assert_eq!(
+            status.last_message.as_deref(),
+            Some("live candle stream stopped")
+        );
+        assert_eq!(status.last_accepted_bar_received_at_unix_ms, Some(3_100));
     }
 
     #[test]

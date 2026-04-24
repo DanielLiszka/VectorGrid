@@ -922,6 +922,109 @@ describe('ExecutionWorkspacePanel', () => {
     expect(text).toContain('Advisory')
   })
 
+  it('keeps recovery, local paper, and saved-session controls accessible', async () => {
+    const { pinia, workflowStore, executionStore } = primeExecutionPanelStores()
+    workflowStore.selectWorkspace('live')
+    executionStore.setInputField('execSymbol', 'AAPL')
+    executionStore.setInputField('execExecutionTarget', 'local_paper')
+    executionStore.recoveryReviewRequired = true
+    executionStore.recoveryCause = 'Policy block: max_order_notional.'
+    executionStore.accountReview = {
+      state: 'broker_confirmed',
+      mode: 'paper',
+      sourceCommand: 'get_local_paper_execution_snapshot',
+      fetchedAtUnixMs: 1_900_000_000_000,
+      accountId: 'local-paper',
+      accountNumber: 'local-paper',
+      status: 'simulated',
+      currency: 'USD',
+      buyingPower: '100000.00',
+      cash: '100000.00',
+      portfolioValue: '100000.00',
+    }
+    executionStore.orderRows = [
+      {
+        cells: ['2026-04-12 15:40:00', 'buy', 'submitted*', '2', '0', '-', 'local_order_1'],
+      },
+    ]
+    executionStore.orderCount = 1
+    executionStore.savedSessions = [
+      {
+        ts: '2026-04-12T15:40:00Z',
+        path: 'C:/runs/vectorgrid_live_session_latest.json',
+        sessionId: 'sess_latest',
+        mode: 'paper',
+        symbol: 'AAPL',
+        strategyKind: 'DoubleMa',
+        dataId: 'data_aapl',
+        dryRun: false,
+        paramSource: 'selected',
+        sessionState: 'completed',
+        createdAtUnixMs: 1_900_000_000_000,
+        finalizedAtUnixMs: 1_900_000_000_500,
+        eventCount: 2,
+        brokerSnapshotCount: 1,
+      },
+    ]
+    executionStore.selectedSavedSessionPath = 'C:/runs/vectorgrid_live_session_latest.json'
+    executionStore.savedSessionStatusHint = 'Loaded 1 saved live session artifact.'
+    executionStore.savedSessionDetail = {
+      ts: '2026-04-12T15:40:00Z',
+      artifactPath: 'C:/runs/vectorgrid_live_session_latest.json',
+      sessionId: 'sess_latest',
+      sessionState: 'completed',
+      mode: 'paper',
+      symbol: 'AAPL',
+      qty: 2,
+      dryRun: false,
+      strategyKind: 'DoubleMa',
+      dataId: 'data_aapl',
+      paramSource: 'selected',
+      createdAtUnixMs: 1_900_000_000_000,
+      finalizedAtUnixMs: 1_900_000_000_500,
+      sourceRunArtifactPath: 'C:/runs/vectorgrid_run_2026-04-12.json',
+      sourceRunConfigFingerprint: 'cfg1-fnv1a64-live',
+      sourceRunRouteSummary: 'requested=GpuOnly -> resolved=GpuKernel',
+      eventCount: 2,
+      brokerSnapshotCount: 1,
+      events: [],
+      brokerSnapshots: [],
+    }
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    expect(document.querySelector('[aria-label="Execution runtime status"]')).toBeTruthy()
+    expect(document.querySelector('[aria-label="Recovery checklist"]')).toBeTruthy()
+    expect(document.querySelector('[aria-label="Local paper account"]')).toBeTruthy()
+    expect(document.querySelector('[aria-label="Saved live session evidence selection"]')).toBeTruthy()
+    expect(document.querySelector('table caption')?.textContent || '').toContain('Broker order activity for the current execution symbol')
+    expect(document.querySelectorAll('[role="status"][aria-live="polite"]').length).toBeGreaterThan(0)
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Policy block: max_order_notional.')
+    expect(text).toContain('Recovery cleared')
+    expect(text).toContain('Current comparison')
+    expect(text).toContain('local-paper')
+
+    const resetButton = findButton('Reset local paper')
+    expect(resetButton).toBeTruthy()
+    expect(resetButton?.disabled).toBe(false)
+    resetButton?.click()
+    await nextTick()
+
+    const dialog = document.querySelector('[role="alertdialog"]')
+    expect(dialog).toBeTruthy()
+    expect(dialog?.getAttribute('aria-modal')).toBe('true')
+    expect(dialog?.getAttribute('aria-labelledby')).toBe('execution_confirmation_title')
+    expect(dialog?.getAttribute('aria-describedby')).toBe('execution_confirmation_body')
+    expect(document.body.textContent || '').toContain('Reset local paper broker?')
+  })
+
   it('renders saved session evidence as a read-only review surface', async () => {
     const { pinia, workflowStore, executionStore } = primeExecutionPanelStores()
     workflowStore.selectWorkspace('live')

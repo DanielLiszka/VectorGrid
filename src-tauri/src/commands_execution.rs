@@ -2,9 +2,10 @@ use crate::broker_paper::{
     self, PaperBrokerMarketOrder, PaperBrokerOrder, PaperBrokerPosition, PaperOrderSide,
 };
 use crate::execution_policy::{
-    evaluate_execution_policy, ExecutionPolicyInput, ExecutionPolicyLimits,
+    evaluate_execution_policy, ExecutionPolicyDecision, ExecutionPolicyInput, ExecutionPolicyLimits,
 };
 use crate::execution_quantity::normalize_execution_quantity;
+use crate::settings::{self, ExecutionRiskPolicySettings};
 use crate::state::AppState;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -194,8 +196,43 @@ pub struct ResetLocalPaperBrokerResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutionRiskPolicyResponse {
+    pub policy: ExecutionRiskPolicySettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreviewExecutionPolicyDecisionResponse {
+    pub symbol: String,
+    pub mode: LiveExecutionMode,
+    pub execution_target: ExecutionBrokerTarget,
+    pub desired_position: i32,
+    pub current_position_qty: f64,
+    pub target_position_qty: f64,
+    pub delta_qty: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_bar_ts: Option<i64>,
+    pub last_close: f64,
+    pub opening_new_position: bool,
+    pub policy: ExecutionRiskPolicySettings,
+    pub decision: ExecutionPolicyDecision,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutionStrategySupportRow {
+    pub strategy_kind: String,
+    pub supported: bool,
+    pub adapter: String,
+    pub support_level: String,
+    pub notes: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LiveOrderSnapshot {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
     pub symbol: String,
     pub side: String,
     pub status: String,
@@ -312,6 +349,28 @@ pub struct EmergencyHaltLiveExecutionResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BrokerReconciliationEvent {
+    pub provenance: String,
+    pub status: String,
+    pub message: String,
+    pub at_unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker_order_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filled_qty: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filled_avg_price: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refreshed_position_qty: Option<f64>,
+    pub terminal: bool,
+    pub timed_out: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecuteStrategySignalResponse {
     pub symbol: String,
     pub mode: LiveExecutionMode,
@@ -322,11 +381,15 @@ pub struct ExecuteStrategySignalResponse {
     pub order_submitted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_bar_ts: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_close: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broker_reconciliation_events: Vec<BrokerReconciliationEvent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -336,6 +399,9 @@ const RUNNER_CANCELLED_ERR: &str = "__live_execution_runner_cancelled__";
 const ALPACA_CONNECT_TIMEOUT_MS: u64 = 3_000;
 const ALPACA_REQUEST_TIMEOUT_MS: u64 = 12_000;
 const ALPACA_IDLE_POOL_TIMEOUT_SECS: u64 = 90;
+const ALPACA_ORDER_RECONCILE_POLL_ATTEMPTS: usize = 3;
+const ALPACA_ORDER_RECONCILE_POLL_DELAY_MS: u64 = 250;
+const LIVE_RUNNER_FEED_STALE_AFTER_MS: i64 = 180_000;
 const ALPACA_KEYRING_API_KEY_USERNAME: &str = "alpaca_execution_api_key";
 const ALPACA_KEYRING_API_SECRET_USERNAME: &str = "alpaca_execution_api_secret";
 
@@ -511,17 +577,155 @@ fn apply_risk_override(
     }
 }
 
-fn execution_policy_limits_from_risk(risk: &LiveRiskOverride) -> ExecutionPolicyLimits {
-    ExecutionPolicyLimits {
-        max_order_notional: risk.max_order_notional,
-        max_position_notional: risk.max_position_notional,
-        allow_short: risk.allow_short,
-        require_bracket: risk.require_bracket,
+fn merge_execution_risk_policy(
+    persisted: &ExecutionRiskPolicySettings,
+    risk: &LiveRiskOverride,
+) -> Result<ExecutionRiskPolicySettings, String> {
+    fn request_cap(value: Option<f64>, field_name: &str) -> Result<Option<f64>, String> {
+        if value.is_some_and(|v| !v.is_finite() || v <= 0.0) {
+            return Err(format!(
+                "risk.{field_name} must be a finite positive number."
+            ));
+        }
+        Ok(value)
     }
+    fn tightest_cap(
+        persisted: Option<f64>,
+        request: Option<f64>,
+        field_name: &str,
+    ) -> Result<Option<f64>, String> {
+        let request = request_cap(request, field_name)?;
+        Ok(match (persisted, request) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        })
+    }
+
+    Ok(ExecutionRiskPolicySettings {
+        max_order_notional: tightest_cap(
+            persisted.max_order_notional,
+            risk.max_order_notional,
+            "max_order_notional",
+        )?,
+        max_position_notional: tightest_cap(
+            persisted.max_position_notional,
+            risk.max_position_notional,
+            "max_position_notional",
+        )?,
+        allow_short: match (persisted.allow_short, risk.allow_short) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            (Some(true), None) => Some(true),
+            (None, Some(true)) => Some(true),
+            (None, None) => None,
+        },
+        require_bracket: match (persisted.require_bracket, risk.require_bracket) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            (Some(false), None) => Some(false),
+            (None, Some(false)) => Some(false),
+            (None, None) => None,
+        },
+    })
+}
+
+fn execution_policy_limits_from_settings(
+    policy: &ExecutionRiskPolicySettings,
+) -> ExecutionPolicyLimits {
+    ExecutionPolicyLimits {
+        max_order_notional: policy.max_order_notional,
+        max_position_notional: policy.max_position_notional,
+        allow_short: policy.allow_short,
+        require_bracket: policy.require_bracket,
+    }
+}
+
+fn load_execution_risk_policy_for_base(
+    app_local_data_dir: Option<&Path>,
+) -> Result<ExecutionRiskPolicySettings, String> {
+    if let Some(base) = app_local_data_dir {
+        settings::configured_execution_risk_policy_settings(base)
+    } else {
+        Ok(ExecutionRiskPolicySettings::default())
+    }
+}
+
+fn merged_execution_risk_policy_for_request(
+    app_local_data_dir: Option<&Path>,
+    risk: &LiveRiskOverride,
+) -> Result<ExecutionRiskPolicySettings, String> {
+    let persisted = load_execution_risk_policy_for_base(app_local_data_dir)?;
+    merge_execution_risk_policy(&persisted, risk)
 }
 
 fn finite_last(xs: &[f64]) -> Option<f64> {
     xs.iter().rev().copied().find(|v| v.is_finite() && *v > 0.0)
+}
+
+enum StrategyExecutionAdapter<'a> {
+    DoubleMa(&'a ta_app_core::DoubleMaDrilldownRequest),
+    CompositeCpu(&'a ta_app_core::CompositeCpuDrilldownRequest),
+}
+
+impl<'a> StrategyExecutionAdapter<'a> {
+    fn from_spec(spec: &'a LiveStrategySpec) -> Self {
+        match spec {
+            LiveStrategySpec::DoubleMa { req } => Self::DoubleMa(req),
+            LiveStrategySpec::CompositeCpu { req } => Self::CompositeCpu(req),
+        }
+    }
+
+    fn kind_label(&self) -> &'static str {
+        match self {
+            Self::DoubleMa(_) => "DoubleMa",
+            Self::CompositeCpu(_) => "CompositeCpu",
+        }
+    }
+
+    fn signal_decision(
+        &self,
+        candles: &vector_ta::utilities::data_loader::Candles,
+        risk: &LiveRiskOverride,
+    ) -> Result<SignalDecision, String> {
+        match self {
+            Self::DoubleMa(req) => {
+                let mut dd = (*req).clone();
+                apply_risk_override(&mut dd.strategy, risk);
+                let curves = ta_app_core::compute_double_ma_drilldown_blocking_with_candles(
+                    dd.clone(),
+                    candles,
+                )?;
+                let desired_position = open_position_from_trades(&curves.trades);
+                let last_close = finite_last(&candles.close)
+                    .ok_or_else(|| "missing finite close".to_string())?;
+                Ok(SignalDecision {
+                    desired_position,
+                    cfg: dd.strategy,
+                    last_bar_ts: candles.timestamp.last().copied(),
+                    last_close,
+                })
+            }
+            Self::CompositeCpu(req) => {
+                let mut dd = (*req).clone();
+                apply_risk_override(&mut dd.strategy, risk);
+                let curves = ta_app_core::compute_composite_cpu_drilldown_blocking_with_candles(
+                    dd.clone(),
+                    candles,
+                )?;
+                let desired_position = open_position_from_trades(&curves.curves.trades);
+                let last_close = finite_last(&candles.close)
+                    .ok_or_else(|| "missing finite close".to_string())?;
+                Ok(SignalDecision {
+                    desired_position,
+                    cfg: dd.strategy,
+                    last_bar_ts: candles.timestamp.last().copied(),
+                    last_close,
+                })
+            }
+        }
+    }
 }
 
 fn signal_decision_from_request(
@@ -529,42 +733,7 @@ fn signal_decision_from_request(
     candles: &vector_ta::utilities::data_loader::Candles,
     risk: &LiveRiskOverride,
 ) -> Result<SignalDecision, String> {
-    match req {
-        LiveStrategySpec::DoubleMa { req } => {
-            let mut dd = req.clone();
-            apply_risk_override(&mut dd.strategy, risk);
-            let curves = ta_app_core::compute_double_ma_drilldown_blocking_with_candles(
-                dd.clone(),
-                candles,
-            )?;
-            let desired_position = open_position_from_trades(&curves.trades);
-            let last_close =
-                finite_last(&candles.close).ok_or_else(|| "missing finite close".to_string())?;
-            Ok(SignalDecision {
-                desired_position,
-                cfg: dd.strategy,
-                last_bar_ts: candles.timestamp.last().copied(),
-                last_close,
-            })
-        }
-        LiveStrategySpec::CompositeCpu { req } => {
-            let mut dd = req.clone();
-            apply_risk_override(&mut dd.strategy, risk);
-            let curves = ta_app_core::compute_composite_cpu_drilldown_blocking_with_candles(
-                dd.clone(),
-                candles,
-            )?;
-            let desired_position = open_position_from_trades(&curves.curves.trades);
-            let last_close =
-                finite_last(&candles.close).ok_or_else(|| "missing finite close".to_string())?;
-            Ok(SignalDecision {
-                desired_position,
-                cfg: dd.strategy,
-                last_bar_ts: candles.timestamp.last().copied(),
-                last_close,
-            })
-        }
-    }
+    StrategyExecutionAdapter::from_spec(req).signal_decision(candles, risk)
 }
 
 fn strategy_data_id(spec: &LiveStrategySpec) -> &str {
@@ -612,6 +781,51 @@ fn normalize_execution_target_flags(
     target
 }
 
+fn execution_target_label(target: ExecutionBrokerTarget) -> &'static str {
+    match target {
+        ExecutionBrokerTarget::DryRun => "dry_run",
+        ExecutionBrokerTarget::LocalPaper => "local_paper",
+        ExecutionBrokerTarget::AlpacaPaper => "alpaca_paper",
+        ExecutionBrokerTarget::AlpacaLive => "alpaca_live",
+    }
+}
+
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn alpaca_client_order_id(
+    req: &ExecuteStrategySignalRequest,
+    symbol: &str,
+    decision: &SignalDecision,
+    target_position_qty: f64,
+    delta_qty: f64,
+) -> String {
+    let payload = serde_json::json!({
+        "symbol": symbol,
+        "mode": match req.mode {
+            LiveExecutionMode::Paper => "paper",
+            LiveExecutionMode::Live => "live",
+        },
+        "execution_target": execution_target_label(execution_target_for_request(req)),
+        "strategy_kind": strategy_kind_label(&req.strategy),
+        "data_id": strategy_data_id(&req.strategy),
+        "param_source": req.param_source.trim(),
+        "source_run_config_fingerprint": req.source_run_config_fingerprint.trim(),
+        "last_bar_ts": decision.last_bar_ts,
+        "desired_position": decision.desired_position,
+        "target_position_qty": format!("{target_position_qty:.4}"),
+        "delta_qty": format!("{delta_qty:.4}"),
+    });
+    let text = serde_json::to_string(&payload).unwrap_or_default();
+    format!("vg-{}", fnv1a64_hex(text.as_bytes()))
+}
+
 fn now_unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -646,18 +860,32 @@ fn active_live_session_path() -> Option<String> {
     slot.as_ref().map(|runtime| runtime.path.clone())
 }
 
-fn clear_active_live_session() {
-    if let Ok(mut slot) = live_session_audit_slot().lock() {
-        *slot = None;
-    }
+fn strategy_kind_label(spec: &LiveStrategySpec) -> String {
+    StrategyExecutionAdapter::from_spec(spec)
+        .kind_label()
+        .to_string()
 }
 
-fn strategy_kind_label(spec: &LiveStrategySpec) -> String {
-    match spec {
-        LiveStrategySpec::DoubleMa { .. } => "DoubleMa",
-        LiveStrategySpec::CompositeCpu { .. } => "CompositeCpu",
-    }
-    .to_string()
+fn execution_strategy_support_matrix() -> Vec<ExecutionStrategySupportRow> {
+    vec![
+        ExecutionStrategySupportRow {
+            strategy_kind: "DoubleMa".to_string(),
+            supported: true,
+            adapter: "double_ma_execution_adapter".to_string(),
+            support_level: "signal_and_delta".to_string(),
+            notes: "Uses Double-MA drilldown candles and params to derive latest desired position."
+                .to_string(),
+        },
+        ExecutionStrategySupportRow {
+            strategy_kind: "CompositeCpu".to_string(),
+            supported: true,
+            adapter: "composite_cpu_execution_adapter".to_string(),
+            support_level: "signal_and_delta".to_string(),
+            notes:
+                "Uses CompositeCpu drilldown candles and params to derive latest desired position."
+                    .to_string(),
+        },
+    ]
 }
 
 fn runner_config_view(cfg: &LiveExecutionRunnerInternalCfg) -> LiveExecutionRunnerConfig {
@@ -740,12 +968,34 @@ fn emit_live_execution_runner_event(
         "bar_open_unix_ms": payload.bar_open_unix_ms,
         "action": payload.execution.as_ref().map(|row| row.action.clone()).unwrap_or_default(),
         "order_id": payload.execution.as_ref().and_then(|row| row.order_id.clone()).unwrap_or_default(),
+        "client_order_id": payload.execution.as_ref().and_then(|row| row.client_order_id.clone()).unwrap_or_default(),
         "delta_qty": payload.execution.as_ref().map(|row| row.delta_qty),
         "order_submitted": payload.execution.as_ref().map(|row| row.order_submitted),
         "warnings": payload.execution.as_ref().map(|row| row.warnings.clone()).unwrap_or_default(),
     });
+    let (reconciliation_symbol, reconciliation_action, reconciliation_events) = payload
+        .execution
+        .as_ref()
+        .map(|row| {
+            (
+                payload.symbol.clone(),
+                row.action.clone(),
+                row.broker_reconciliation_events.clone(),
+            )
+        })
+        .unwrap_or_else(|| ("".to_string(), "".to_string(), Vec::new()));
     let _ = app.emit(LIVE_EXECUTION_RUNNER_EVENT, payload);
     let _ = record_live_session_event(app, event_value);
+    for event in reconciliation_events {
+        let _ = record_live_session_event(
+            app,
+            broker_reconciliation_event_value(
+                &reconciliation_symbol,
+                &reconciliation_action,
+                &event,
+            ),
+        );
+    }
 }
 
 fn live_session_id(symbol: &str) -> String {
@@ -772,12 +1022,7 @@ fn build_live_session_seed(
             LiveExecutionMode::Paper => "paper",
             LiveExecutionMode::Live => "live",
         },
-        "execution_target": match execution_target_for_request(req) {
-            ExecutionBrokerTarget::DryRun => "dry_run",
-            ExecutionBrokerTarget::LocalPaper => "local_paper",
-            ExecutionBrokerTarget::AlpacaPaper => "alpaca_paper",
-            ExecutionBrokerTarget::AlpacaLive => "alpaca_live",
-        },
+        "execution_target": execution_target_label(execution_target_for_request(req)),
         "symbol": symbol,
         "qty": qty,
         "dry_run": req.dry_run,
@@ -795,6 +1040,28 @@ fn record_live_session_event(app: &tauri::AppHandle, event: Value) -> Result<(),
         return Ok(());
     };
     super::run_artifacts::append_live_session_event_blocking(path, event, app.clone())
+}
+
+fn broker_reconciliation_event_value(
+    symbol: &str,
+    action: &str,
+    event: &BrokerReconciliationEvent,
+) -> Value {
+    let mut value = serde_json::to_value(event).unwrap_or_else(|_| {
+        serde_json::json!({
+            "provenance": "broker_reconciliation",
+            "status": "serialization_error",
+            "message": "failed to serialize broker reconciliation event",
+            "at_unix_ms": now_unix_ms(),
+            "terminal": false,
+            "timed_out": false,
+        })
+    });
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("symbol".to_string(), serde_json::json!(symbol));
+        obj.insert("action".to_string(), serde_json::json!(action));
+    }
+    value
 }
 
 fn record_live_session_broker_snapshot(
@@ -883,11 +1150,12 @@ fn capture_manual_execution_live_session(
             "message": format!("manual execution requested for {symbol}"),
             "symbol": symbol,
             "at_unix_ms": now_unix_ms(),
-            "action": response.action,
-            "order_id": response.order_id,
+            "action": response.action.clone(),
+            "order_id": response.order_id.clone(),
+            "client_order_id": response.client_order_id.clone(),
             "delta_qty": response.delta_qty,
             "order_submitted": response.order_submitted,
-            "warnings": response.warnings,
+            "warnings": response.warnings.clone(),
         }),
         app.clone(),
     )?;
@@ -910,14 +1178,22 @@ fn capture_manual_execution_live_session(
             },
             "symbol": symbol,
             "at_unix_ms": now_unix_ms(),
-            "action": response.action,
-            "order_id": response.order_id,
+            "action": response.action.clone(),
+            "order_id": response.order_id.clone(),
+            "client_order_id": response.client_order_id.clone(),
             "delta_qty": response.delta_qty,
             "order_submitted": response.order_submitted,
-            "warnings": response.warnings,
+            "warnings": response.warnings.clone(),
         }),
         app.clone(),
     )?;
+    for event in &response.broker_reconciliation_events {
+        super::run_artifacts::append_live_session_event_blocking(
+            saved.path.clone(),
+            broker_reconciliation_event_value(symbol, &response.action, event),
+            app.clone(),
+        )?;
+    }
     super::run_artifacts::finalize_live_session_artifact_blocking(
         saved.path,
         "completed".to_string(),
@@ -962,6 +1238,7 @@ fn validate_live_runner_stream_preconditions(
     stream: Option<&crate::state::LiveCandleStreamInfo>,
     requested_symbol: &str,
     execution_target: ExecutionBrokerTarget,
+    now_unix_ms: i64,
 ) -> Result<(), String> {
     let Some(stream) = stream.filter(|stream| stream.active) else {
         return Err(
@@ -980,6 +1257,24 @@ fn validate_live_runner_stream_preconditions(
             "Live Alpaca automation requires a real-time Polygon stream. Turn delayed data off before arming the broker."
                 .to_string(),
         );
+    }
+    let Some(received_at_unix_ms) = stream.last_accepted_bar_received_at_unix_ms else {
+        return Err(
+            "Live candles are active but no accepted bar has been received yet. Wait for the next Polygon minute bar before arming the auto-runner."
+                .to_string(),
+        );
+    };
+    if received_at_unix_ms <= 0 {
+        return Err(
+            "Live candles are active but their last accepted bar timestamp is invalid. Restart live candles before arming the auto-runner."
+                .to_string(),
+        );
+    }
+    let age_ms = now_unix_ms.saturating_sub(received_at_unix_ms);
+    if now_unix_ms > received_at_unix_ms && age_ms > LIVE_RUNNER_FEED_STALE_AFTER_MS {
+        return Err(format!(
+            "Live candle feed is stale: last accepted bar was {age_ms} ms ago. Wait for a fresh Polygon bar or restart live candles before arming the auto-runner."
+        ));
     }
     Ok(())
 }
@@ -1262,6 +1557,10 @@ fn fetch_alpaca_position_qty(
     f64::from_str(qty_s).map_err(|e| format!("invalid Alpaca qty '{qty_s}': {e}"))
 }
 
+fn build_alpaca_clock_url(mode: LiveExecutionMode) -> String {
+    format!("{}/v2/clock", base_url(mode))
+}
+
 fn fetch_alpaca_account(
     client: &Client,
     mode: LiveExecutionMode,
@@ -1284,6 +1583,100 @@ fn fetch_alpaca_account(
         .map_err(|e| format!("failed to decode Alpaca account response: {e}"))
 }
 
+fn fetch_alpaca_clock(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<serde_json::Value, String> {
+    let headers = build_alpaca_headers(api_key, api_secret)?;
+    let resp = client
+        .get(build_alpaca_clock_url(mode))
+        .headers(headers)
+        .send()
+        .map_err(|e| format!("failed to fetch Alpaca market clock: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(format!(
+            "Alpaca market clock request failed ({status}): {body}"
+        ));
+    }
+    resp.json()
+        .map_err(|e| format!("failed to decode Alpaca market clock response: {e}"))
+}
+
+fn validate_alpaca_account_tradeable(account: &serde_json::Value) -> Result<(), String> {
+    let status = json_field_as_string(account, "status")
+        .unwrap_or_else(|| "unknown".to_string())
+        .to_ascii_uppercase();
+    if status != "ACTIVE" {
+        return Err(format!(
+            "Alpaca account status is {status}; broker submission requires ACTIVE."
+        ));
+    }
+    if json_field_as_bool(account, "trading_blocked").unwrap_or(false) {
+        return Err("Alpaca account is trading_blocked; broker submission is blocked.".to_string());
+    }
+    if json_field_as_bool(account, "account_blocked").unwrap_or(false) {
+        return Err("Alpaca account is account_blocked; broker submission is blocked.".to_string());
+    }
+    Ok(())
+}
+
+fn validate_alpaca_market_clock_open(clock: &serde_json::Value) -> Result<(), String> {
+    if json_field_as_bool(clock, "is_open").unwrap_or(false) {
+        Ok(())
+    } else {
+        let next_open = json_field_as_string(clock, "next_open")
+            .map(|value| format!(" next_open={value}"))
+            .unwrap_or_default();
+        Err(format!(
+            "Alpaca market clock is closed; live broker submission requires an open regular session.{next_open}"
+        ))
+    }
+}
+
+fn validate_live_execution_source_context(
+    req: &ExecuteStrategySignalRequest,
+    execution_target: ExecutionBrokerTarget,
+) -> Result<(), String> {
+    if matches!(execution_target, ExecutionBrokerTarget::AlpacaLive)
+        && req.source_run_config_fingerprint.trim().is_empty()
+    {
+        return Err(
+            "Alpaca live execution requires a validation/source-run config fingerprint before broker submission."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_alpaca_live_broker_preflight(
+    client: &Client,
+    req: &ExecuteStrategySignalRequest,
+    execution_target: ExecutionBrokerTarget,
+) -> Result<(), String> {
+    if !execution_target.is_alpaca() {
+        return Ok(());
+    }
+    validate_alpaca_account_tradeable(&fetch_alpaca_account(
+        client,
+        req.mode,
+        req.alpaca_api_key.trim(),
+        req.alpaca_api_secret.trim(),
+    )?)?;
+    if matches!(execution_target, ExecutionBrokerTarget::AlpacaLive) {
+        validate_alpaca_market_clock_open(&fetch_alpaca_clock(
+            client,
+            req.mode,
+            req.alpaca_api_key.trim(),
+            req.alpaca_api_secret.trim(),
+        )?)?;
+    }
+    Ok(())
+}
+
 fn json_field_as_string(v: &serde_json::Value, field: &str) -> Option<String> {
     match v.get(field) {
         Some(serde_json::Value::String(s)) => {
@@ -1296,6 +1689,19 @@ fn json_field_as_string(v: &serde_json::Value, field: &str) -> Option<String> {
         }
         Some(serde_json::Value::Number(n)) => Some(n.to_string()),
         Some(serde_json::Value::Bool(b)) => Some(if *b { "true" } else { "false" }.to_string()),
+        _ => None,
+    }
+}
+
+fn json_field_as_bool(v: &serde_json::Value, field: &str) -> Option<bool> {
+    match v.get(field) {
+        Some(serde_json::Value::Bool(b)) => Some(*b),
+        Some(serde_json::Value::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        },
+        Some(serde_json::Value::Number(n)) => n.as_i64().map(|v| v != 0),
         _ => None,
     }
 }
@@ -1397,6 +1803,50 @@ fn fetch_alpaca_orders_with_filters(
         .as_array()
         .ok_or_else(|| "Alpaca orders response must be an array".to_string())?;
     Ok(arr.clone())
+}
+
+fn build_alpaca_order_by_client_id_url(
+    mode: LiveExecutionMode,
+    client_order_id: &str,
+) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(&format!("{}/v2/orders:by_client_order_id", base_url(mode)))
+        .map_err(|e| format!("failed to build Alpaca client-order lookup url: {e}"))?;
+    url.query_pairs_mut()
+        .append_pair("client_order_id", client_order_id.trim());
+    Ok(url)
+}
+
+fn fetch_alpaca_order_by_client_order_id(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+    client_order_id: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let client_order_id = client_order_id.trim();
+    if client_order_id.is_empty() {
+        return Ok(None);
+    }
+    let headers = build_alpaca_headers(api_key, api_secret)?;
+    let url = build_alpaca_order_by_client_id_url(mode, client_order_id)?;
+    let resp = client
+        .get(url)
+        .headers(headers)
+        .send()
+        .map_err(|e| format!("failed to fetch Alpaca order by client_order_id: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(format!(
+            "Alpaca client-order lookup failed ({status}): {body}"
+        ));
+    }
+    resp.json()
+        .map(Some)
+        .map_err(|e| format!("failed to decode Alpaca client-order response: {e}"))
 }
 
 fn fetch_alpaca_open_orders_for_symbol(
@@ -1501,6 +1951,7 @@ fn normalize_order_snapshot(v: &serde_json::Value) -> Option<LiveOrderSnapshot> 
     let order_type = json_field_as_string(v, "type").unwrap_or_else(|| "unknown".to_string());
     Some(LiveOrderSnapshot {
         id,
+        client_order_id: json_field_as_string(v, "client_order_id"),
         symbol,
         side,
         status,
@@ -1536,6 +1987,107 @@ fn is_broker_open_order_status(status: &str) -> bool {
             status.trim().to_ascii_lowercase().as_str(),
             "pending_cancel" | "held" | "stopped" | "suspended"
         )
+}
+
+fn is_broker_terminal_order_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "filled" | "canceled" | "expired" | "rejected" | "replaced"
+    )
+}
+
+fn alpaca_intent_status_for_order_snapshot(order: &LiveOrderSnapshot) -> String {
+    match order.status.trim().to_ascii_lowercase().as_str() {
+        "filled" => "filled".to_string(),
+        "canceled" => "terminal_canceled".to_string(),
+        "expired" => "terminal_expired".to_string(),
+        "rejected" => "terminal_rejected".to_string(),
+        "replaced" => "terminal_replaced".to_string(),
+        "partially_filled" => "partial_fill".to_string(),
+        status if is_broker_open_order_status(status) => "broker_open".to_string(),
+        status if status.is_empty() => "broker_unknown".to_string(),
+        status => format!("broker_{status}"),
+    }
+}
+
+fn broker_reconciliation_event_from_snapshot(
+    order: &LiveOrderSnapshot,
+    terminal: bool,
+    timed_out: bool,
+) -> BrokerReconciliationEvent {
+    let status = alpaca_intent_status_for_order_snapshot(order);
+    let message = if terminal {
+        format!(
+            "Alpaca order reconciled to terminal status {}.",
+            order.status
+        )
+    } else if timed_out {
+        format!(
+            "Alpaca order is still {} after post-submit reconciliation.",
+            order.status
+        )
+    } else {
+        format!("Alpaca order reconciled to status {}.", order.status)
+    };
+    BrokerReconciliationEvent {
+        provenance: "broker_reconciliation".to_string(),
+        status,
+        message,
+        at_unix_ms: now_unix_ms(),
+        order_id: Some(order.id.clone()),
+        client_order_id: order.client_order_id.clone(),
+        broker_order_status: Some(order.status.clone()),
+        filled_qty: order.filled_qty,
+        filled_avg_price: order.filled_avg_price,
+        refreshed_position_qty: None,
+        terminal,
+        timed_out,
+    }
+}
+
+fn broker_reconciliation_event(
+    status: &str,
+    message: impl Into<String>,
+    order_id: Option<String>,
+    client_order_id: Option<String>,
+) -> BrokerReconciliationEvent {
+    BrokerReconciliationEvent {
+        provenance: "broker_reconciliation".to_string(),
+        status: status.to_string(),
+        message: message.into(),
+        at_unix_ms: now_unix_ms(),
+        order_id,
+        client_order_id,
+        broker_order_status: None,
+        filled_qty: None,
+        filled_avg_price: None,
+        refreshed_position_qty: None,
+        terminal: false,
+        timed_out: false,
+    }
+}
+
+fn broker_position_refreshed_event(
+    order_id: Option<String>,
+    client_order_id: Option<String>,
+    refreshed_position_qty: f64,
+) -> BrokerReconciliationEvent {
+    BrokerReconciliationEvent {
+        provenance: "broker_reconciliation".to_string(),
+        status: "position_refreshed_after_terminal".to_string(),
+        message: format!(
+            "Broker position refreshed after terminal order state: qty={refreshed_position_qty:.6}."
+        ),
+        at_unix_ms: now_unix_ms(),
+        order_id,
+        client_order_id,
+        broker_order_status: None,
+        filled_qty: None,
+        filled_avg_price: None,
+        refreshed_position_qty: Some(refreshed_position_qty),
+        terminal: true,
+        timed_out: false,
+    }
 }
 
 fn filter_symbol_orders_by_status<F>(
@@ -1791,6 +2343,7 @@ fn paper_order_timestamp(value: i64) -> Option<String> {
 fn paper_order_snapshot(order: &PaperBrokerOrder) -> LiveOrderSnapshot {
     LiveOrderSnapshot {
         id: order.id.clone(),
+        client_order_id: order.client_order_id.clone(),
         symbol: order.symbol.clone(),
         side: order.side.as_str().to_string(),
         status: order.status.clone(),
@@ -1915,13 +2468,316 @@ fn emergency_halt_status_message(runner_stopped: bool, live_stopped: bool) -> St
     }
 }
 
+#[derive(Clone, Debug)]
+struct AlpacaOrderSubmitOutcome {
+    order_id: String,
+    client_order_id: String,
+    reused_existing: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AlpacaOrderReconcileOutcome {
+    snapshot: Option<LiveOrderSnapshot>,
+    terminal: bool,
+    timed_out: bool,
+}
+
+const ALPACA_ORDER_INTENT_RECORD_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AlpacaOrderIntentRecord {
+    version: u32,
+    client_order_id: String,
+    status: String,
+    mode: LiveExecutionMode,
+    execution_target: ExecutionBrokerTarget,
+    symbol: String,
+    side: String,
+    qty: Option<f64>,
+    current_position_qty: f64,
+    target_position_qty: f64,
+    delta_qty: f64,
+    desired_position: i32,
+    last_bar_ts: Option<i64>,
+    last_close: f64,
+    strategy_kind: String,
+    data_id: String,
+    param_source: String,
+    source_run_artifact_path: String,
+    source_run_config_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_run_route_provenance: Option<Value>,
+    order_payload: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    broker_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    attempt_count: u32,
+    created_at_unix_ms: i64,
+    updated_at_unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    submitted_at_unix_ms: Option<i64>,
+}
+
+fn alpaca_intents_dir(app_local_data_dir: &Path) -> PathBuf {
+    app_local_data_dir.join("execution").join("alpaca_intents")
+}
+
+fn safe_client_order_file_stem(client_order_id: &str) -> String {
+    let stem: String = client_order_id
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if stem.is_empty() {
+        "unknown_client_order_id".to_string()
+    } else {
+        stem
+    }
+}
+
+fn alpaca_intent_record_path(app_local_data_dir: &Path, client_order_id: &str) -> PathBuf {
+    alpaca_intents_dir(app_local_data_dir).join(format!(
+        "{}.json",
+        safe_client_order_file_stem(client_order_id)
+    ))
+}
+
+fn read_alpaca_order_intent_record(
+    app_local_data_dir: &Path,
+    client_order_id: &str,
+) -> Result<Option<AlpacaOrderIntentRecord>, String> {
+    let path = alpaca_intent_record_path(app_local_data_dir, client_order_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path)
+        .map_err(|e| format!("failed to read Alpaca order intent {}: {e}", path.display()))?;
+    serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+        format!(
+            "failed to decode Alpaca order intent {}: {e}",
+            path.display()
+        )
+    })
+}
+
+fn read_all_alpaca_order_intent_records(
+    app_local_data_dir: &Path,
+) -> Result<Vec<AlpacaOrderIntentRecord>, String> {
+    let dir = alpaca_intents_dir(app_local_data_dir);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut records = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| {
+        format!(
+            "failed to read Alpaca order intent directory {}: {e}",
+            dir.display()
+        )
+    })? {
+        let path = entry
+            .map_err(|e| format!("failed to read Alpaca order intent entry: {e}"))?
+            .path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = fs::read(&path)
+            .map_err(|e| format!("failed to read Alpaca order intent {}: {e}", path.display()))?;
+        records.push(serde_json::from_slice(&bytes).map_err(|e| {
+            format!(
+                "failed to decode Alpaca order intent {}: {e}",
+                path.display()
+            )
+        })?);
+    }
+    Ok(records)
+}
+
+fn write_alpaca_order_intent_record(
+    app_local_data_dir: &Path,
+    record: &AlpacaOrderIntentRecord,
+) -> Result<PathBuf, String> {
+    let path = alpaca_intent_record_path(app_local_data_dir, &record.client_order_id);
+    let Some(parent) = path.parent() else {
+        return Err("failed to resolve Alpaca order intent directory".to_string());
+    };
+    fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "failed to create Alpaca order intent directory {}: {e}",
+            parent.display()
+        )
+    })?;
+    let bytes = serde_json::to_vec_pretty(record)
+        .map_err(|e| format!("failed to encode Alpaca order intent: {e}"))?;
+    fs::write(&path, bytes).map_err(|e| {
+        format!(
+            "failed to persist Alpaca order intent {}: {e}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn build_pending_alpaca_order_intent(
+    req: &ExecuteStrategySignalRequest,
+    symbol: &str,
+    decision: &SignalDecision,
+    current_position_qty: f64,
+    target_position_qty: f64,
+    delta_qty: f64,
+    client_order_id: &str,
+    order_payload: &Value,
+    now_unix_ms: i64,
+) -> AlpacaOrderIntentRecord {
+    AlpacaOrderIntentRecord {
+        version: ALPACA_ORDER_INTENT_RECORD_VERSION,
+        client_order_id: client_order_id.to_string(),
+        status: "pending_submit".to_string(),
+        mode: req.mode,
+        execution_target: execution_target_for_request(req),
+        symbol: symbol.to_string(),
+        side: json_field_as_string(order_payload, "side").unwrap_or_default(),
+        qty: json_field_as_f64(order_payload, "qty"),
+        current_position_qty,
+        target_position_qty,
+        delta_qty,
+        desired_position: decision.desired_position,
+        last_bar_ts: decision.last_bar_ts,
+        last_close: decision.last_close,
+        strategy_kind: strategy_kind_label(&req.strategy),
+        data_id: strategy_data_id(&req.strategy).to_string(),
+        param_source: req.param_source.trim().to_string(),
+        source_run_artifact_path: req.source_run_artifact_path.trim().to_string(),
+        source_run_config_fingerprint: req.source_run_config_fingerprint.trim().to_string(),
+        source_run_route_provenance: req.source_run_route_provenance.clone(),
+        order_payload: order_payload.clone(),
+        broker_order_id: None,
+        error: None,
+        attempt_count: 1,
+        created_at_unix_ms: now_unix_ms,
+        updated_at_unix_ms: now_unix_ms,
+        submitted_at_unix_ms: None,
+    }
+}
+
+fn persist_pending_alpaca_order_intent(
+    app_local_data_dir: &Path,
+    mut record: AlpacaOrderIntentRecord,
+) -> Result<AlpacaOrderIntentRecord, String> {
+    if let Some(existing) =
+        read_alpaca_order_intent_record(app_local_data_dir, &record.client_order_id)?
+    {
+        record.created_at_unix_ms = existing.created_at_unix_ms;
+        record.attempt_count = existing.attempt_count.saturating_add(1);
+    }
+    write_alpaca_order_intent_record(app_local_data_dir, &record)?;
+    Ok(record)
+}
+
+fn update_alpaca_order_intent_status(
+    app_local_data_dir: &Path,
+    client_order_id: &str,
+    status: &str,
+    broker_order_id: Option<String>,
+    error: Option<String>,
+    now_unix_ms: i64,
+) -> Result<AlpacaOrderIntentRecord, String> {
+    let mut record = read_alpaca_order_intent_record(app_local_data_dir, client_order_id)?
+        .ok_or_else(|| {
+            format!("missing Alpaca order intent for client_order_id={client_order_id}")
+        })?;
+    record.status = status.to_string();
+    record.updated_at_unix_ms = now_unix_ms;
+    record.broker_order_id = broker_order_id;
+    record.error = error;
+    if matches!(status, "submitted" | "reused_existing") {
+        record.submitted_at_unix_ms = Some(now_unix_ms);
+    }
+    write_alpaca_order_intent_record(app_local_data_dir, &record)?;
+    Ok(record)
+}
+
+fn unresolved_alpaca_intent_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "pending_submit"
+            | "submitted"
+            | "reused_existing"
+            | "broker_open"
+            | "partial_fill"
+            | "reconciliation_unknown"
+            | "reconciliation_error"
+    )
+}
+
+fn block_unresolved_alpaca_intents_before_submit(
+    app_local_data_dir: &Path,
+    symbol: &str,
+    current_client_order_id: &str,
+) -> Result<(), String> {
+    let conflicts: Vec<_> = read_all_alpaca_order_intent_records(app_local_data_dir)?
+        .into_iter()
+        .filter(|record| symbol_matches(&record.symbol, symbol))
+        .filter(|record| record.client_order_id != current_client_order_id)
+        .filter(|record| unresolved_alpaca_intent_status(&record.status))
+        .collect();
+    if let Some(conflict) = conflicts
+        .iter()
+        .max_by_key(|record| record.updated_at_unix_ms)
+    {
+        return Err(format!(
+            "Unresolved Alpaca intent exists for {symbol}: client_order_id={} status={}. Refresh broker review or resolve the prior order before submitting another broker delta.",
+            conflict.client_order_id, conflict.status
+        ));
+    }
+    Ok(())
+}
+
+fn alpaca_order_submit_outcome_from_value(
+    value: &serde_json::Value,
+    expected_client_order_id: &str,
+    reused_existing: bool,
+) -> Result<AlpacaOrderSubmitOutcome, String> {
+    let order_id = json_field_as_string(value, "id")
+        .ok_or_else(|| "Alpaca order response missing id".to_string())?;
+    let client_order_id = json_field_as_string(value, "client_order_id")
+        .unwrap_or_else(|| expected_client_order_id.to_string());
+    Ok(AlpacaOrderSubmitOutcome {
+        order_id,
+        client_order_id,
+        reused_existing,
+    })
+}
+
+fn existing_alpaca_order_submit_outcome(
+    value: &serde_json::Value,
+    expected_symbol: &str,
+    expected_client_order_id: &str,
+) -> Result<AlpacaOrderSubmitOutcome, String> {
+    let snapshot = normalize_order_snapshot(value)
+        .ok_or_else(|| "Alpaca client-order lookup returned an incomplete order".to_string())?;
+    if !symbol_matches(&snapshot.symbol, expected_symbol) {
+        return Err(format!(
+            "Alpaca client_order_id collision: expected symbol {expected_symbol}, found {}.",
+            snapshot.symbol
+        ));
+    }
+    alpaca_order_submit_outcome_from_value(value, expected_client_order_id, true)
+}
+
 fn submit_alpaca_order(
     client: &Client,
     mode: LiveExecutionMode,
     api_key: &str,
     api_secret: &str,
     payload: &serde_json::Value,
-) -> Result<String, String> {
+) -> Result<serde_json::Value, String> {
     let headers = build_alpaca_headers(api_key, api_secret)?;
     let url = format!("{}/v2/orders", base_url(mode));
     let resp = client
@@ -1935,14 +2791,169 @@ fn submit_alpaca_order(
         let body = resp.text().unwrap_or_default();
         return Err(format!("Alpaca order failed ({status}): {body}"));
     }
-    let v: serde_json::Value = resp
-        .json()
-        .map_err(|e| format!("failed to decode Alpaca order response: {e}"))?;
-    let id = v
-        .get("id")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| "Alpaca order response missing id".to_string())?;
-    Ok(id.to_string())
+    resp.json()
+        .map_err(|e| format!("failed to decode Alpaca order response: {e}"))
+}
+
+fn submit_or_reuse_alpaca_order(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+    symbol: &str,
+    payload: &serde_json::Value,
+    client_order_id: &str,
+) -> Result<AlpacaOrderSubmitOutcome, String> {
+    submit_or_reuse_alpaca_order_with_ops(
+        symbol,
+        client_order_id,
+        || {
+            fetch_alpaca_order_by_client_order_id(
+                client,
+                mode,
+                api_key,
+                api_secret,
+                client_order_id,
+            )
+        },
+        || submit_alpaca_order(client, mode, api_key, api_secret, payload),
+    )
+}
+
+fn submit_or_reuse_alpaca_order_with_ops<L, S>(
+    symbol: &str,
+    client_order_id: &str,
+    mut lookup_by_client_order_id: L,
+    mut submit_order: S,
+) -> Result<AlpacaOrderSubmitOutcome, String>
+where
+    L: FnMut() -> Result<Option<serde_json::Value>, String>,
+    S: FnMut() -> Result<serde_json::Value, String>,
+{
+    if let Some(existing) = lookup_by_client_order_id()? {
+        return existing_alpaca_order_submit_outcome(&existing, symbol, client_order_id);
+    }
+
+    match submit_order() {
+        Ok(value) => alpaca_order_submit_outcome_from_value(&value, client_order_id, false),
+        Err(submit_error) => match lookup_by_client_order_id() {
+            Ok(Some(existing)) => {
+                existing_alpaca_order_submit_outcome(&existing, symbol, client_order_id)
+            }
+            Ok(None) => Err(submit_error),
+            Err(lookup_error) => Err(format!(
+                "{submit_error}. Follow-up client_order_id lookup also failed: {lookup_error}"
+            )),
+        },
+    }
+}
+
+fn reconcile_alpaca_order_after_submit(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+    client_order_id: &str,
+    max_attempts: usize,
+    poll_delay: Duration,
+) -> Result<AlpacaOrderReconcileOutcome, String> {
+    let attempts = max_attempts.max(1);
+    let mut last_snapshot: Option<LiveOrderSnapshot> = None;
+    for attempt in 0..attempts {
+        if attempt > 0 && !poll_delay.is_zero() {
+            std::thread::sleep(poll_delay);
+        }
+        let Some(value) = fetch_alpaca_order_by_client_order_id(
+            client,
+            mode,
+            api_key,
+            api_secret,
+            client_order_id,
+        )?
+        else {
+            continue;
+        };
+        let snapshot = normalize_order_snapshot(&value).ok_or_else(|| {
+            "Alpaca client-order reconciliation returned an incomplete order".to_string()
+        })?;
+        let terminal = is_broker_terminal_order_status(&snapshot.status);
+        last_snapshot = Some(snapshot);
+        if terminal {
+            return Ok(AlpacaOrderReconcileOutcome {
+                snapshot: last_snapshot,
+                terminal: true,
+                timed_out: false,
+            });
+        }
+    }
+
+    let timed_out = last_snapshot
+        .as_ref()
+        .map(|snapshot| !is_broker_terminal_order_status(&snapshot.status))
+        .unwrap_or(true);
+    Ok(AlpacaOrderReconcileOutcome {
+        snapshot: last_snapshot,
+        terminal: false,
+        timed_out,
+    })
+}
+
+fn preview_execution_policy_decision_blocking(
+    req: ExecuteStrategySignalRequest,
+    symbol: String,
+    qty: f64,
+    candles: Arc<Candles>,
+    app_local_data_dir: PathBuf,
+) -> Result<PreviewExecutionPolicyDecisionResponse, String> {
+    let execution_target = execution_target_for_request(&req);
+    validate_live_execution_source_context(&req, execution_target)?;
+    let decision = signal_decision_from_request(&req.strategy, candles.as_ref(), &req.risk)?;
+    let target_position_qty = (decision.desired_position as f64) * qty;
+    let mut warnings = Vec::new();
+    let current_position_qty = if matches!(execution_target, ExecutionBrokerTarget::LocalPaper) {
+        let doc = broker_paper::load_or_default(&app_local_data_dir, now_unix_ms())?;
+        doc.positions.get(&symbol).map(|p| p.qty).unwrap_or(0.0)
+    } else {
+        if execution_target.is_alpaca() {
+            warnings.push(
+                "Policy preview does not fetch Alpaca position or open-order state; submit still rechecks broker state before any order."
+                    .to_string(),
+            );
+        }
+        0.0
+    };
+    let delta_qty = target_position_qty - current_position_qty;
+    let opening_new = should_attach_opening_bracket(current_position_qty, target_position_qty);
+    let effective_policy =
+        merged_execution_risk_policy_for_request(Some(&app_local_data_dir), &req.risk)?;
+    let policy_decision = evaluate_execution_policy(ExecutionPolicyInput {
+        qty,
+        current_position_qty,
+        target_position_qty,
+        delta_qty,
+        last_close: decision.last_close,
+        opening_new_position: opening_new,
+        stop_loss_pct: decision.cfg.stop_loss_pct(),
+        take_profit_pct: decision.cfg.take_profit_pct(),
+        limits: execution_policy_limits_from_settings(&effective_policy),
+    });
+    warnings.extend(policy_decision.warnings.clone());
+
+    Ok(PreviewExecutionPolicyDecisionResponse {
+        symbol,
+        mode: req.mode,
+        execution_target,
+        desired_position: decision.desired_position,
+        current_position_qty,
+        target_position_qty,
+        delta_qty,
+        last_bar_ts: decision.last_bar_ts,
+        last_close: decision.last_close,
+        opening_new_position: opening_new,
+        policy: effective_policy,
+        decision: policy_decision,
+        warnings,
+    })
 }
 
 fn execute_strategy_signal_blocking(
@@ -1979,6 +2990,7 @@ fn execute_strategy_signal_blocking(
             );
         }
         let client = alpaca_client()?;
+        validate_alpaca_live_broker_preflight(client, &req, execution_target)?;
         current_position_qty = fetch_alpaca_position_qty(
             client,
             req.mode,
@@ -2020,9 +3032,11 @@ fn execute_strategy_signal_blocking(
                 delta_qty: 0.0,
                 order_submitted: false,
                 order_id: None,
+                client_order_id: None,
                 action: "reconcile_open_orders".to_string(),
                 last_bar_ts: decision.last_bar_ts,
                 last_close: Some(decision.last_close),
+                broker_reconciliation_events: Vec::new(),
                 warnings: {
                     warnings.push(format!(
                         "Projected broker position after the open-order queue is {projected_position_qty:.6}."
@@ -2044,14 +3058,18 @@ fn execute_strategy_signal_blocking(
             delta_qty: 0.0,
             order_submitted: false,
             order_id: None,
+            client_order_id: None,
             action: "hold".to_string(),
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
+            broker_reconciliation_events: Vec::new(),
             warnings,
         });
     }
 
     let opening_new = should_attach_opening_bracket(current_position_qty, target_position_qty);
+    let effective_policy =
+        merged_execution_risk_policy_for_request(app_local_data_dir.as_deref(), &req.risk)?;
     let policy = evaluate_execution_policy(ExecutionPolicyInput {
         qty,
         current_position_qty,
@@ -2061,7 +3079,7 @@ fn execute_strategy_signal_blocking(
         opening_new_position: opening_new,
         stop_loss_pct: decision.cfg.stop_loss_pct(),
         take_profit_pct: decision.cfg.take_profit_pct(),
-        limits: execution_policy_limits_from_risk(&req.risk),
+        limits: execution_policy_limits_from_settings(&effective_policy),
     });
     if !policy.allowed {
         warnings.push(format!(
@@ -2077,9 +3095,11 @@ fn execute_strategy_signal_blocking(
             delta_qty,
             order_submitted: false,
             order_id: None,
+            client_order_id: None,
             action: format!("policy_blocked:{}", policy.code),
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
+            broker_reconciliation_events: Vec::new(),
             warnings,
         });
     }
@@ -2095,9 +3115,11 @@ fn execute_strategy_signal_blocking(
             delta_qty,
             order_submitted: false,
             order_id: None,
+            client_order_id: None,
             action: "dry_run_signal_only".to_string(),
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
+            broker_reconciliation_events: Vec::new(),
             warnings,
         });
     }
@@ -2110,6 +3132,14 @@ fn execute_strategy_signal_blocking(
             "app local data directory is required for local paper execution".to_string()
         })?;
         let side = paper_order_side_for_delta(delta_qty);
+        if opening_new
+            && (decision.cfg.stop_loss_pct().is_some() || decision.cfg.take_profit_pct().is_some())
+        {
+            warnings.push(
+                "Local paper broker does not simulate bracket child orders yet; stop-loss/take-profit settings were not attached."
+                    .to_string(),
+            );
+        }
         let execution = broker_paper::submit_market_order(
             base,
             PaperBrokerMarketOrder {
@@ -2136,9 +3166,11 @@ fn execute_strategy_signal_blocking(
             delta_qty,
             order_submitted: true,
             order_id: Some(execution.order.id),
+            client_order_id: None,
             action: side.as_str().to_string(),
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
+            broker_reconciliation_events: Vec::new(),
             warnings,
         });
     }
@@ -2147,7 +3179,7 @@ fn execute_strategy_signal_blocking(
         abort.check()?;
     }
     let client = alpaca_client()?;
-    let (payload, bracket_warnings) = if opening_new {
+    let (mut payload, bracket_warnings) = if opening_new {
         alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)
     } else {
         (
@@ -2162,17 +3194,196 @@ fn execute_strategy_signal_blocking(
         )
     };
     warnings.extend(bracket_warnings);
+    let client_order_id =
+        alpaca_client_order_id(&req, &symbol, &decision, target_position_qty, delta_qty);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "client_order_id".to_string(),
+            serde_json::json!(client_order_id.clone()),
+        );
+    }
+    let intent_base = app_local_data_dir.as_deref().ok_or_else(|| {
+        "app local data directory is required for Alpaca execution intent tracking".to_string()
+    })?;
+    block_unresolved_alpaca_intents_before_submit(intent_base, &symbol, &client_order_id)?;
+    let pending_intent = persist_pending_alpaca_order_intent(
+        intent_base,
+        build_pending_alpaca_order_intent(
+            &req,
+            &symbol,
+            &decision,
+            current_position_qty,
+            target_position_qty,
+            delta_qty,
+            &client_order_id,
+            &payload,
+            now_unix_ms(),
+        ),
+    )?;
+    if pending_intent.attempt_count > 1 {
+        warnings.push(format!(
+            "Reusing pending Alpaca intent client_order_id={} from a prior attempt before broker submit.",
+            pending_intent.client_order_id
+        ));
+    }
     if let Some(abort) = abort.as_ref() {
         abort.check()?;
     }
 
-    let order_id = submit_alpaca_order(
+    let submitted_order = match submit_or_reuse_alpaca_order(
         client,
         req.mode,
         req.alpaca_api_key.trim(),
         req.alpaca_api_secret.trim(),
+        &symbol,
         &payload,
-    )?;
+        &client_order_id,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if let Err(update_error) = update_alpaca_order_intent_status(
+                intent_base,
+                &client_order_id,
+                "submit_error",
+                None,
+                Some(error.clone()),
+                now_unix_ms(),
+            ) {
+                return Err(format!(
+                    "{error}. Also failed to persist Alpaca intent submit_error: {update_error}"
+                ));
+            }
+            return Err(error);
+        }
+    };
+    let submitted_status = if submitted_order.reused_existing {
+        "reused_existing"
+    } else {
+        "submitted"
+    };
+    if let Err(update_error) = update_alpaca_order_intent_status(
+        intent_base,
+        &client_order_id,
+        submitted_status,
+        Some(submitted_order.order_id.clone()),
+        None,
+        now_unix_ms(),
+    ) {
+        warnings.push(format!(
+            "Alpaca order was accepted, but intent status update failed: {update_error}"
+        ));
+    }
+    let mut broker_reconciliation_events = Vec::new();
+    match reconcile_alpaca_order_after_submit(
+        client,
+        req.mode,
+        req.alpaca_api_key.trim(),
+        req.alpaca_api_secret.trim(),
+        &client_order_id,
+        ALPACA_ORDER_RECONCILE_POLL_ATTEMPTS,
+        Duration::from_millis(ALPACA_ORDER_RECONCILE_POLL_DELAY_MS),
+    ) {
+        Ok(outcome) => {
+            if let Some(snapshot) = outcome.snapshot.as_ref() {
+                let intent_status = alpaca_intent_status_for_order_snapshot(snapshot);
+                if let Err(update_error) = update_alpaca_order_intent_status(
+                    intent_base,
+                    &client_order_id,
+                    &intent_status,
+                    Some(snapshot.id.clone()),
+                    None,
+                    now_unix_ms(),
+                ) {
+                    warnings.push(format!(
+                        "Alpaca order was reconciled as {}, but intent status update failed: {update_error}",
+                        snapshot.status
+                    ));
+                }
+                if outcome.terminal {
+                    warnings.push(format!(
+                        "Alpaca order reconciled to terminal status {}.",
+                        snapshot.status
+                    ));
+                } else if outcome.timed_out {
+                    warnings.push(format!(
+                        "Alpaca order is still {} after post-submit reconciliation; refresh broker review before another broker action.",
+                        snapshot.status
+                    ));
+                }
+                broker_reconciliation_events.push(broker_reconciliation_event_from_snapshot(
+                    snapshot,
+                    outcome.terminal,
+                    outcome.timed_out,
+                ));
+                if outcome.terminal {
+                    match fetch_alpaca_position_qty(
+                        client,
+                        req.mode,
+                        req.alpaca_api_key.trim(),
+                        req.alpaca_api_secret.trim(),
+                        &symbol,
+                    ) {
+                        Ok(refreshed_qty) => {
+                            broker_reconciliation_events.push(broker_position_refreshed_event(
+                                Some(snapshot.id.clone()),
+                                snapshot.client_order_id.clone(),
+                                refreshed_qty,
+                            ));
+                        }
+                        Err(error) => warnings.push(format!(
+                            "Alpaca order reached terminal status, but position refresh failed: {error}"
+                        )),
+                    }
+                }
+            } else {
+                let _ = update_alpaca_order_intent_status(
+                    intent_base,
+                    &client_order_id,
+                    "reconciliation_unknown",
+                    Some(submitted_order.order_id.clone()),
+                    None,
+                    now_unix_ms(),
+                );
+                warnings.push(
+                    "Alpaca order was accepted, but post-submit reconciliation did not return broker state; refresh broker review before another broker action."
+                        .to_string(),
+                );
+                broker_reconciliation_events.push(broker_reconciliation_event(
+                    "reconciliation_unknown",
+                    "Alpaca order was accepted, but post-submit reconciliation did not return broker state.",
+                    Some(submitted_order.order_id.clone()),
+                    Some(submitted_order.client_order_id.clone()),
+                ));
+            }
+        }
+        Err(error) => {
+            let _ = update_alpaca_order_intent_status(
+                intent_base,
+                &client_order_id,
+                "reconciliation_error",
+                Some(submitted_order.order_id.clone()),
+                Some(error.clone()),
+                now_unix_ms(),
+            );
+            warnings.push(format!(
+                "Alpaca order was accepted, but post-submit reconciliation failed: {error}"
+            ));
+            broker_reconciliation_events.push(broker_reconciliation_event(
+                "reconciliation_error",
+                format!(
+                    "Alpaca order was accepted, but post-submit reconciliation failed: {error}"
+                ),
+                Some(submitted_order.order_id.clone()),
+                Some(submitted_order.client_order_id.clone()),
+            ));
+        }
+    }
+    if submitted_order.reused_existing {
+        warnings.push(format!(
+            "Reused existing Alpaca order for client_order_id={}.",
+            submitted_order.client_order_id
+        ));
+    }
 
     Ok(ExecuteStrategySignalResponse {
         symbol,
@@ -2182,7 +3393,8 @@ fn execute_strategy_signal_blocking(
         target_position_qty,
         delta_qty,
         order_submitted: true,
-        order_id: Some(order_id),
+        order_id: Some(submitted_order.order_id),
+        client_order_id: Some(submitted_order.client_order_id),
         action: if delta_qty > 0.0 {
             "buy".to_string()
         } else {
@@ -2190,6 +3402,7 @@ fn execute_strategy_signal_blocking(
         },
         last_bar_ts: decision.last_bar_ts,
         last_close: Some(decision.last_close),
+        broker_reconciliation_events,
         warnings,
     })
 }
@@ -2261,13 +3474,19 @@ pub async fn start_live_execution_runner(
         req.alpaca_api_secret = api_secret;
     }
     let (req, symbol, qty) = normalize_execute_request(req)?;
+    validate_live_execution_source_context(&req, execution_target)?;
     let data_id = strategy_data_id(&req.strategy).trim().to_string();
     if data_id.is_empty() {
         return Err("strategy data_id is required".to_string());
     }
     let _ = state.get_candles(&data_id)?;
     let live_stream = state.live_candle_stream_info()?;
-    validate_live_runner_stream_preconditions(live_stream.as_ref(), &symbol, execution_target)?;
+    validate_live_runner_stream_preconditions(
+        live_stream.as_ref(),
+        &symbol,
+        execution_target,
+        now_unix_ms(),
+    )?;
     let _ = finalize_active_live_session(&app, "superseded");
 
     let strategy_kind = strategy_kind_label(&req.strategy);
@@ -2309,27 +3528,23 @@ pub async fn start_live_execution_runner(
         *slot = Some(runtime);
     }
 
-    if !req.dry_run {
-        let saved = match super::run_artifacts::create_live_session_artifact_blocking(
-            build_live_session_seed(&req, &symbol, qty, &strategy_kind, &data_id),
-            app.clone(),
-        ) {
-            Ok(saved) => saved,
-            Err(error) => {
-                rollback_runner_start(generation);
-                return Err(error);
-            }
-        };
-        let mut session_slot = live_session_audit_slot()
-            .lock()
-            .map_err(|_| "failed to lock live session audit state".to_string())?;
-        *session_slot = Some(LiveSessionAuditRuntime {
-            path: saved.path,
-            symbol: symbol.clone(),
-        });
-    } else {
-        clear_active_live_session();
-    }
+    let saved = match super::run_artifacts::create_live_session_artifact_blocking(
+        build_live_session_seed(&req, &symbol, qty, &strategy_kind, &data_id),
+        app.clone(),
+    ) {
+        Ok(saved) => saved,
+        Err(error) => {
+            rollback_runner_start(generation);
+            return Err(error);
+        }
+    };
+    let mut session_slot = live_session_audit_slot()
+        .lock()
+        .map_err(|_| "failed to lock live session audit state".to_string())?;
+    *session_slot = Some(LiveSessionAuditRuntime {
+        path: saved.path,
+        symbol: symbol.clone(),
+    });
 
     emit_live_execution_runner_event(
         &app,
@@ -2671,6 +3886,59 @@ pub fn alpaca_clear_api_credentials(app: tauri::AppHandle) -> AlpacaCredentialSt
 }
 
 #[tauri::command]
+pub fn get_execution_risk_policy(
+    app: tauri::AppHandle,
+) -> Result<ExecutionRiskPolicyResponse, String> {
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let policy = settings::configured_execution_risk_policy_settings(&app_local_data_dir)?;
+    Ok(ExecutionRiskPolicyResponse { policy })
+}
+
+#[tauri::command]
+pub fn set_execution_risk_policy(
+    policy: ExecutionRiskPolicySettings,
+    app: tauri::AppHandle,
+) -> Result<ExecutionRiskPolicyResponse, String> {
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let settings = settings::set_execution_risk_policy_settings(&app_local_data_dir, &policy)?;
+    Ok(ExecutionRiskPolicyResponse {
+        policy: settings.execution_risk_policy,
+    })
+}
+
+#[tauri::command]
+pub fn reset_execution_risk_policy(
+    app: tauri::AppHandle,
+) -> Result<ExecutionRiskPolicyResponse, String> {
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let settings = settings::set_execution_risk_policy_settings(
+        &app_local_data_dir,
+        &ExecutionRiskPolicySettings::default(),
+    )?;
+    Ok(ExecutionRiskPolicyResponse {
+        policy: settings.execution_risk_policy,
+    })
+}
+
+#[tauri::command]
+pub async fn preview_execution_policy_decision(
+    mut req: ExecuteStrategySignalRequest,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<PreviewExecutionPolicyDecisionResponse, String> {
+    normalize_execution_target_flags(&mut req);
+    let (req, symbol, qty) = normalize_execute_request(req)?;
+    let data_id = strategy_data_id(&req.strategy).to_string();
+    let candles = state.get_candles(&data_id)?;
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_execution_policy_decision_blocking(req, symbol, qty, candles, app_local_data_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn get_local_paper_execution_snapshot(
     req: GetLocalPaperExecutionSnapshotRequest,
     app: tauri::AppHandle,
@@ -2683,6 +3951,11 @@ pub async fn get_local_paper_execution_snapshot(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn get_execution_strategy_support_matrix() -> Vec<ExecutionStrategySupportRow> {
+    execution_strategy_support_matrix()
 }
 
 #[tauri::command]
@@ -3108,7 +4381,9 @@ pub async fn flatten_live_execution_position(
             };
             let (action, payload) = flatten_position_order_payload(&symbol, position.qty)
                 .ok_or_else(|| "position qty is invalid for flattening".to_string())?;
-            let order_id = submit_alpaca_order(client, mode, &api_key, &api_secret, &payload)?;
+            let order = submit_alpaca_order(client, mode, &api_key, &api_secret, &payload)?;
+            let order_id = json_field_as_string(&order, "id")
+                .ok_or_else(|| "Alpaca order response missing id".to_string())?;
             Ok(FlattenLiveExecutionPositionResponse {
                 mode,
                 symbol,
@@ -3352,6 +4627,116 @@ mod tests {
     }
 
     #[test]
+    fn broker_terminal_status_matches_alpaca_terminal_lifecycle() {
+        for status in ["filled", "canceled", "expired", "rejected", "replaced"] {
+            assert!(
+                is_broker_terminal_order_status(status),
+                "expected terminal status {status}"
+            );
+        }
+        for status in ["new", "accepted", "partially_filled", "pending_cancel"] {
+            assert!(
+                !is_broker_terminal_order_status(status),
+                "expected non-terminal status {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn alpaca_intent_status_tracks_reconciled_order_lifecycle() {
+        let mut order = LiveOrderSnapshot {
+            id: "ord_1".to_string(),
+            client_order_id: Some("vg-1".to_string()),
+            symbol: "AAPL".to_string(),
+            side: "buy".to_string(),
+            status: "new".to_string(),
+            order_type: "market".to_string(),
+            qty: Some(1.0),
+            filled_qty: Some(0.0),
+            filled_avg_price: None,
+            limit_price: None,
+            stop_price: None,
+            submitted_at: None,
+            filled_at: None,
+            updated_at: None,
+            canceled_at: None,
+        };
+
+        assert_eq!(
+            alpaca_intent_status_for_order_snapshot(&order),
+            "broker_open"
+        );
+        order.status = "partially_filled".to_string();
+        assert_eq!(
+            alpaca_intent_status_for_order_snapshot(&order),
+            "partial_fill"
+        );
+        order.status = "filled".to_string();
+        assert_eq!(alpaca_intent_status_for_order_snapshot(&order), "filled");
+        order.status = "rejected".to_string();
+        assert_eq!(
+            alpaca_intent_status_for_order_snapshot(&order),
+            "terminal_rejected"
+        );
+    }
+
+    #[test]
+    fn broker_reconciliation_event_captures_partial_and_terminal_order_state() {
+        let mut order = LiveOrderSnapshot {
+            id: "ord_1".to_string(),
+            client_order_id: Some("vg-1".to_string()),
+            symbol: "AAPL".to_string(),
+            side: "buy".to_string(),
+            status: "partially_filled".to_string(),
+            order_type: "market".to_string(),
+            qty: Some(2.0),
+            filled_qty: Some(1.0),
+            filled_avg_price: Some(101.25),
+            limit_price: None,
+            stop_price: None,
+            submitted_at: None,
+            filled_at: None,
+            updated_at: None,
+            canceled_at: None,
+        };
+
+        let partial = broker_reconciliation_event_from_snapshot(&order, false, true);
+        assert_eq!(partial.provenance, "broker_reconciliation");
+        assert_eq!(partial.status, "partial_fill");
+        assert_eq!(
+            partial.broker_order_status.as_deref(),
+            Some("partially_filled")
+        );
+        assert_eq!(partial.filled_qty, Some(1.0));
+        assert!(partial.timed_out);
+        assert!(!partial.terminal);
+
+        order.status = "filled".to_string();
+        order.filled_qty = Some(2.0);
+        let filled = broker_reconciliation_event_from_snapshot(&order, true, false);
+        assert_eq!(filled.status, "filled");
+        assert!(filled.terminal);
+        assert!(!filled.timed_out);
+        assert_eq!(filled.refreshed_position_qty, None);
+
+        let refreshed = broker_position_refreshed_event(
+            Some("ord_1".to_string()),
+            Some("vg-1".to_string()),
+            2.0,
+        );
+        assert_eq!(refreshed.status, "position_refreshed_after_terminal");
+        assert_eq!(refreshed.refreshed_position_qty, Some(2.0));
+
+        let value = broker_reconciliation_event_value("AAPL", "buy", &filled);
+        assert_eq!(value.get("symbol").and_then(Value::as_str), Some("AAPL"));
+        assert_eq!(value.get("action").and_then(Value::as_str), Some("buy"));
+        assert_eq!(
+            value.get("provenance").and_then(Value::as_str),
+            Some("broker_reconciliation")
+        );
+    }
+
+    #[test]
     fn open_orders_for_symbol_filters_to_open_current_symbol_rows() {
         let orders = vec![
             json!({ "id": "ord_1", "symbol": "AAPL", "status": "new", "side": "buy", "type": "market" }),
@@ -3382,6 +4767,7 @@ mod tests {
     fn guard_open_orders_before_fresh_delta_reconciles_target_already_in_flight() {
         let open_orders = vec![LiveOrderSnapshot {
             id: "ord_1".to_string(),
+            client_order_id: None,
             symbol: "AAPL".to_string(),
             side: "buy".to_string(),
             status: "new".to_string(),
@@ -3413,6 +4799,7 @@ mod tests {
     fn guard_open_orders_before_fresh_delta_blocks_conflicting_open_orders() {
         let open_orders = vec![LiveOrderSnapshot {
             id: "ord_1".to_string(),
+            client_order_id: None,
             symbol: "AAPL".to_string(),
             side: "sell".to_string(),
             status: "new".to_string(),
@@ -3438,6 +4825,7 @@ mod tests {
     fn guard_open_orders_before_fresh_delta_blocks_when_qty_metadata_is_missing() {
         let open_orders = vec![LiveOrderSnapshot {
             id: "ord_1".to_string(),
+            client_order_id: None,
             symbol: "AAPL".to_string(),
             side: "buy".to_string(),
             status: "new".to_string(),
@@ -3467,6 +4855,167 @@ mod tests {
     }
 
     #[test]
+    fn alpaca_client_order_lookup_url_uses_query_parameter() {
+        let url = build_alpaca_order_by_client_id_url(LiveExecutionMode::Paper, "vg-abc123")
+            .expect("client-order lookup url");
+
+        assert_eq!(
+            url.as_str(),
+            "https://paper-api.alpaca.markets/v2/orders:by_client_order_id?client_order_id=vg-abc123"
+        );
+    }
+
+    #[test]
+    fn alpaca_client_order_id_is_stable_for_same_execution_intent() {
+        let mut req = test_execute_request("AAPL", 1.0);
+        req.dry_run = false;
+        req.execution_target = Some(ExecutionBrokerTarget::AlpacaPaper);
+        req.source_run_config_fingerprint = "cfg1-fnv1a64-demo".to_string();
+        let decision = SignalDecision {
+            desired_position: 1,
+            cfg: StrategyConfig::default(),
+            last_bar_ts: Some(1_700_000_000_000),
+            last_close: 100.0,
+        };
+
+        let first = alpaca_client_order_id(&req, "AAPL", &decision, 1.0, 1.0);
+        let second = alpaca_client_order_id(&req, "AAPL", &decision, 1.0, 1.0);
+        let changed_delta = alpaca_client_order_id(&req, "AAPL", &decision, 1.0, 0.5);
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("vg-"));
+        assert_ne!(first, changed_delta);
+        assert!(first.len() <= 48);
+    }
+
+    #[test]
+    fn alpaca_order_intent_is_persisted_without_credentials_and_can_update_status() {
+        let mut req = test_execute_request("AAPL", 1.0);
+        req.dry_run = false;
+        req.execution_target = Some(ExecutionBrokerTarget::AlpacaPaper);
+        req.alpaca_api_key = "key_should_not_be_written".to_string();
+        req.alpaca_api_secret = "secret_should_not_be_written".to_string();
+        req.source_run_config_fingerprint = "cfg1".to_string();
+        let decision = SignalDecision {
+            desired_position: 1,
+            cfg: StrategyConfig::default(),
+            last_bar_ts: Some(1_700_000_000_000),
+            last_close: 100.0,
+        };
+        let payload = json!({
+            "symbol": "AAPL",
+            "qty": "1.000000",
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day",
+            "client_order_id": "vg-test-intent"
+        });
+        let base = unique_test_dir("alpaca-intent");
+        fs::create_dir_all(&base).expect("create temp intent dir");
+
+        let pending = persist_pending_alpaca_order_intent(
+            &base,
+            build_pending_alpaca_order_intent(
+                &req,
+                "AAPL",
+                &decision,
+                0.0,
+                1.0,
+                1.0,
+                "vg-test-intent",
+                &payload,
+                100,
+            ),
+        )
+        .expect("persist pending intent");
+
+        assert_eq!(pending.status, "pending_submit");
+        assert_eq!(pending.attempt_count, 1);
+        let path = alpaca_intent_record_path(&base, "vg-test-intent");
+        let raw = fs::read_to_string(&path).expect("read persisted intent");
+        assert!(raw.contains("\"client_order_id\": \"vg-test-intent\""));
+        assert!(!raw.contains("key_should_not_be_written"));
+        assert!(!raw.contains("secret_should_not_be_written"));
+
+        let updated = update_alpaca_order_intent_status(
+            &base,
+            "vg-test-intent",
+            "submitted",
+            Some("ord_123".to_string()),
+            None,
+            200,
+        )
+        .expect("update intent status");
+
+        assert_eq!(updated.status, "submitted");
+        assert_eq!(updated.broker_order_id.as_deref(), Some("ord_123"));
+        assert_eq!(updated.submitted_at_unix_ms, Some(200));
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn alpaca_order_intent_attempt_count_increments_for_retry() {
+        let mut req = test_execute_request("AAPL", 1.0);
+        req.dry_run = false;
+        req.execution_target = Some(ExecutionBrokerTarget::AlpacaPaper);
+        let decision = SignalDecision {
+            desired_position: 1,
+            cfg: StrategyConfig::default(),
+            last_bar_ts: Some(1_700_000_000_000),
+            last_close: 100.0,
+        };
+        let payload = json!({
+            "symbol": "AAPL",
+            "qty": "1.000000",
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day",
+            "client_order_id": "vg-retry-intent"
+        });
+        let base = unique_test_dir("alpaca-intent-retry");
+        fs::create_dir_all(&base).expect("create temp intent dir");
+
+        let first = persist_pending_alpaca_order_intent(
+            &base,
+            build_pending_alpaca_order_intent(
+                &req,
+                "AAPL",
+                &decision,
+                0.0,
+                1.0,
+                1.0,
+                "vg-retry-intent",
+                &payload,
+                100,
+            ),
+        )
+        .expect("persist first intent");
+        let retry = persist_pending_alpaca_order_intent(
+            &base,
+            build_pending_alpaca_order_intent(
+                &req,
+                "AAPL",
+                &decision,
+                0.0,
+                1.0,
+                1.0,
+                "vg-retry-intent",
+                &payload,
+                150,
+            ),
+        )
+        .expect("persist retry intent");
+
+        assert_eq!(first.attempt_count, 1);
+        assert_eq!(retry.attempt_count, 2);
+        assert_eq!(retry.created_at_unix_ms, 100);
+        assert_eq!(retry.updated_at_unix_ms, 150);
+
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
     fn summarize_snapshot_orders_counts_full_filtered_open_set_before_truncation() {
         let orders = vec![
             json!({ "id": "ord_1", "symbol": "AAPL", "status": "new", "side": "buy", "type": "market" }),
@@ -3492,9 +5041,11 @@ mod tests {
             delta_qty: 1.0,
             order_submitted: true,
             order_id: Some("ord_123".to_string()),
+            client_order_id: None,
             action: "buy".to_string(),
             last_bar_ts: None,
             last_close: Some(123.0),
+            broker_reconciliation_events: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -3637,6 +5188,14 @@ mod tests {
         format!("dev.vectoralpha.vectorgrid.test.{suffix}.{nanos}")
     }
 
+    fn unique_test_dir(suffix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("vectorgrid-{suffix}-{nanos}"))
+    }
+
     #[test]
     fn resolve_alpaca_credentials_reads_stored_pair_by_default() {
         let app_identifier = unique_test_app_identifier("resolve-default");
@@ -3717,6 +5276,204 @@ mod tests {
         }
     }
 
+    #[test]
+    fn alpaca_account_tradeable_validation_blocks_non_active_or_blocked_accounts() {
+        validate_alpaca_account_tradeable(&json!({
+            "status": "ACTIVE",
+            "trading_blocked": false,
+            "account_blocked": false
+        }))
+        .expect("active unblocked account should pass");
+
+        let err = validate_alpaca_account_tradeable(&json!({ "status": "ACCOUNT_UPDATED" }))
+            .expect_err("non-active account should block");
+        assert!(err.contains("requires ACTIVE"));
+
+        let err = validate_alpaca_account_tradeable(&json!({
+            "status": "ACTIVE",
+            "trading_blocked": true
+        }))
+        .expect_err("trading_blocked account should block");
+        assert!(err.contains("trading_blocked"));
+    }
+
+    #[test]
+    fn alpaca_market_clock_validation_requires_open_session() {
+        validate_alpaca_market_clock_open(&json!({ "is_open": true }))
+            .expect("open market clock should pass");
+
+        let err = validate_alpaca_market_clock_open(&json!({
+            "is_open": false,
+            "next_open": "2026-04-24T13:30:00Z"
+        }))
+        .expect_err("closed market clock should block live broker submission");
+        assert!(err.contains("market clock is closed"));
+        assert!(err.contains("next_open=2026-04-24T13:30:00Z"));
+        assert_eq!(
+            build_alpaca_clock_url(LiveExecutionMode::Paper),
+            "https://paper-api.alpaca.markets/v2/clock"
+        );
+    }
+
+    #[test]
+    fn live_execution_source_context_requires_fingerprint_for_alpaca_live() {
+        let mut req = test_execute_request("AAPL", 1.0);
+        req.dry_run = false;
+        req.execution_target = Some(ExecutionBrokerTarget::AlpacaLive);
+
+        let err = validate_live_execution_source_context(&req, ExecutionBrokerTarget::AlpacaLive)
+            .expect_err("Alpaca live should require source fingerprint");
+        assert!(err.contains("source-run config fingerprint"));
+
+        req.source_run_config_fingerprint = "cfg1-fnv1a64-live".to_string();
+        validate_live_execution_source_context(&req, ExecutionBrokerTarget::AlpacaLive)
+            .expect("fingerprinted live source should pass");
+        req.source_run_config_fingerprint.clear();
+        validate_live_execution_source_context(&req, ExecutionBrokerTarget::AlpacaPaper)
+            .expect("paper target should not require live validation fingerprint");
+    }
+
+    #[test]
+    fn execution_strategy_support_matrix_is_code_backed_and_fail_closed() {
+        let matrix = execution_strategy_support_matrix();
+        let supported: Vec<_> = matrix
+            .iter()
+            .filter(|row| row.supported)
+            .map(|row| row.strategy_kind.as_str())
+            .collect();
+        assert_eq!(supported, vec!["DoubleMa", "CompositeCpu"]);
+        assert!(matrix.iter().all(|row| !row.adapter.trim().is_empty()));
+        assert!(matrix
+            .iter()
+            .all(|row| row.support_level == "signal_and_delta"));
+    }
+
+    #[test]
+    fn unresolved_alpaca_intent_blocks_new_client_order_for_same_symbol() {
+        let base = unique_test_dir("unresolved-intents");
+        fs::create_dir_all(&base).expect("create temp intent dir");
+        let mut req = test_execute_request("AAPL", 1.0);
+        req.dry_run = false;
+        req.execution_target = Some(ExecutionBrokerTarget::AlpacaPaper);
+        let decision = SignalDecision {
+            desired_position: 1,
+            cfg: StrategyConfig::default(),
+            last_bar_ts: Some(1_700_000_000_000),
+            last_close: 100.0,
+        };
+        let payload = json!({
+            "symbol": "AAPL",
+            "qty": "1.000000",
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day",
+            "client_order_id": "vg-existing"
+        });
+        persist_pending_alpaca_order_intent(
+            &base,
+            build_pending_alpaca_order_intent(
+                &req,
+                "AAPL",
+                &decision,
+                0.0,
+                1.0,
+                1.0,
+                "vg-existing",
+                &payload,
+                1_700_000_000_001,
+            ),
+        )
+        .expect("persist unresolved intent");
+
+        block_unresolved_alpaca_intents_before_submit(&base, "AAPL", "vg-existing")
+            .expect("retrying same client order id remains allowed for idempotent lookup");
+
+        let err = block_unresolved_alpaca_intents_before_submit(&base, "AAPL", "vg-new")
+            .expect_err("different client order should be blocked while intent is unresolved");
+        assert!(err.contains("Unresolved Alpaca intent exists"));
+        assert!(err.contains("vg-existing"));
+
+        update_alpaca_order_intent_status(
+            &base,
+            "vg-existing",
+            "filled",
+            Some("ord_1".to_string()),
+            None,
+            1_700_000_000_002,
+        )
+        .expect("mark terminal");
+        block_unresolved_alpaca_intents_before_submit(&base, "AAPL", "vg-new")
+            .expect("terminal prior intent should not block new client order");
+    }
+
+    #[test]
+    fn submit_or_reuse_alpaca_order_avoids_duplicate_submit_when_lookup_finds_existing_order() {
+        let mut lookup_count = 0usize;
+        let mut submit_count = 0usize;
+
+        let outcome = submit_or_reuse_alpaca_order_with_ops(
+            "AAPL",
+            "vg-existing",
+            || {
+                lookup_count += 1;
+                Ok(Some(json!({
+                    "id": "ord_existing",
+                    "client_order_id": "vg-existing",
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "status": "new",
+                    "type": "market"
+                })))
+            },
+            || {
+                submit_count += 1;
+                Ok(json!({ "id": "ord_duplicate", "client_order_id": "vg-existing" }))
+            },
+        )
+        .expect("existing order should be reused");
+
+        assert_eq!(lookup_count, 1);
+        assert_eq!(submit_count, 0);
+        assert!(outcome.reused_existing);
+        assert_eq!(outcome.order_id, "ord_existing");
+    }
+
+    #[test]
+    fn submit_or_reuse_alpaca_order_rechecks_after_submit_error_before_failing() {
+        let mut lookup_count = 0usize;
+        let mut submit_count = 0usize;
+
+        let outcome = submit_or_reuse_alpaca_order_with_ops(
+            "AAPL",
+            "vg-after-error",
+            || {
+                lookup_count += 1;
+                if lookup_count == 1 {
+                    Ok(None)
+                } else {
+                    Ok(Some(json!({
+                        "id": "ord_after_error",
+                        "client_order_id": "vg-after-error",
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "status": "accepted",
+                        "type": "market"
+                    })))
+                }
+            },
+            || {
+                submit_count += 1;
+                Err("network dropped after submit".to_string())
+            },
+        )
+        .expect("follow-up lookup should recover accepted order");
+
+        assert_eq!(lookup_count, 2);
+        assert_eq!(submit_count, 1);
+        assert!(outcome.reused_existing);
+        assert_eq!(outcome.order_id, "ord_after_error");
+    }
+
     fn test_runner_runtime(generation: u64) -> LiveExecutionRunnerRuntime {
         let req = test_execute_request("AAPL", 1.0);
         LiveExecutionRunnerRuntime {
@@ -3792,6 +5549,71 @@ mod tests {
         apply_risk_override(&mut cfg, &risk);
         assert_eq!(cfg.stop_loss_pct, None);
         assert_eq!(cfg.take_profit_pct, Some(0.95));
+    }
+
+    #[test]
+    fn execution_risk_policy_merge_lets_request_overrides_tighten_persisted_policy() {
+        let persisted = ExecutionRiskPolicySettings {
+            max_order_notional: Some(1_000.0),
+            max_position_notional: Some(2_000.0),
+            allow_short: Some(true),
+            require_bracket: Some(false),
+        };
+        let risk = LiveRiskOverride {
+            max_order_notional: Some(500.0),
+            max_position_notional: None,
+            allow_short: Some(false),
+            require_bracket: Some(true),
+            ..LiveRiskOverride::default()
+        };
+
+        let merged = merge_execution_risk_policy(&persisted, &risk).unwrap();
+
+        assert_eq!(merged.max_order_notional, Some(500.0));
+        assert_eq!(merged.max_position_notional, Some(2_000.0));
+        assert_eq!(merged.allow_short, Some(false));
+        assert_eq!(merged.require_bracket, Some(true));
+        assert_eq!(
+            execution_policy_limits_from_settings(&merged).max_order_notional,
+            Some(500.0)
+        );
+    }
+
+    #[test]
+    fn execution_risk_policy_merge_prevents_request_overrides_from_loosening_saved_policy() {
+        let persisted = ExecutionRiskPolicySettings {
+            max_order_notional: Some(1_000.0),
+            max_position_notional: Some(2_000.0),
+            allow_short: Some(false),
+            require_bracket: Some(true),
+        };
+        let risk = LiveRiskOverride {
+            max_order_notional: Some(5_000.0),
+            max_position_notional: Some(10_000.0),
+            allow_short: Some(true),
+            require_bracket: Some(false),
+            ..LiveRiskOverride::default()
+        };
+
+        let merged = merge_execution_risk_policy(&persisted, &risk).unwrap();
+
+        assert_eq!(merged.max_order_notional, Some(1_000.0));
+        assert_eq!(merged.max_position_notional, Some(2_000.0));
+        assert_eq!(merged.allow_short, Some(false));
+        assert_eq!(merged.require_bracket, Some(true));
+    }
+
+    #[test]
+    fn execution_risk_policy_merge_rejects_invalid_request_caps() {
+        let persisted = ExecutionRiskPolicySettings::default();
+        let risk = LiveRiskOverride {
+            max_order_notional: Some(0.0),
+            ..LiveRiskOverride::default()
+        };
+
+        let err = merge_execution_risk_policy(&persisted, &risk).unwrap_err();
+
+        assert!(err.contains("risk.max_order_notional"));
     }
 
     #[test]
@@ -3875,23 +5697,50 @@ mod tests {
         assert!(!should_attach_opening_bracket(0.0, 0.0));
     }
 
+    fn test_live_stream_info(
+        symbol: &str,
+        delayed: bool,
+        active: bool,
+        status: &str,
+        last_received_at_unix_ms: Option<i64>,
+    ) -> crate::state::LiveCandleStreamInfo {
+        crate::state::LiveCandleStreamInfo {
+            market: "stocks".to_string(),
+            symbol: symbol.to_string(),
+            delayed,
+            active,
+            status: status.to_string(),
+            last_message: Some(status.to_string()),
+            last_status_at_unix_ms: Some(900_000),
+            last_accepted_bar_open_unix_ms: last_received_at_unix_ms.map(|_| 800_000),
+            last_accepted_bar_close_unix_ms: last_received_at_unix_ms.map(|_| 859_999),
+            last_accepted_bar_received_at_unix_ms: last_received_at_unix_ms,
+        }
+    }
+
     #[test]
     fn live_runner_stream_preconditions_require_active_stream() {
         assert_eq!(
-            validate_live_runner_stream_preconditions(None, "AAPL", ExecutionBrokerTarget::DryRun),
+            validate_live_runner_stream_preconditions(
+                None,
+                "AAPL",
+                ExecutionBrokerTarget::DryRun,
+                1_000_000
+            ),
             Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
         );
         assert_eq!(
             validate_live_runner_stream_preconditions(
-                Some(&crate::state::LiveCandleStreamInfo {
-                    market: "stocks".to_string(),
-                    symbol: "AAPL".to_string(),
-                    delayed: true,
-                    active: false,
-                    status: "closed".to_string(),
-                }),
+                Some(&test_live_stream_info(
+                    "AAPL",
+                    true,
+                    false,
+                    "closed",
+                    Some(950_000)
+                )),
                 "AAPL",
                 ExecutionBrokerTarget::DryRun,
+                1_000_000,
             ),
             Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
         );
@@ -3901,15 +5750,16 @@ mod tests {
     fn live_runner_stream_preconditions_require_matching_symbol() {
         assert_eq!(
             validate_live_runner_stream_preconditions(
-                Some(&crate::state::LiveCandleStreamInfo {
-                    market: "stocks".to_string(),
-                    symbol: "TSLA".to_string(),
-                    delayed: true,
-                    active: true,
-                    status: "started".to_string(),
-                }),
+                Some(&test_live_stream_info(
+                    "TSLA",
+                    true,
+                    true,
+                    "started",
+                    Some(950_000)
+                )),
                 "AAPL",
                 ExecutionBrokerTarget::DryRun,
+                1_000_000,
             ),
             Err("Live candles are active for TSLA, not AAPL.".to_string())
         );
@@ -3918,15 +5768,16 @@ mod tests {
     #[test]
     fn live_runner_stream_preconditions_accept_canonical_symbol_match() {
         assert!(validate_live_runner_stream_preconditions(
-            Some(&crate::state::LiveCandleStreamInfo {
-                market: "stocks".to_string(),
-                symbol: " brk.b ".to_string(),
-                delayed: true,
-                active: true,
-                status: "started".to_string(),
-            }),
+            Some(&test_live_stream_info(
+                " brk.b ",
+                true,
+                true,
+                "started",
+                Some(950_000)
+            )),
             "BRK.B",
             ExecutionBrokerTarget::DryRun,
+            1_000_000,
         )
         .is_ok());
     }
@@ -3935,15 +5786,16 @@ mod tests {
     fn live_runner_stream_preconditions_reject_live_broker_on_delayed_stream() {
         assert_eq!(
             validate_live_runner_stream_preconditions(
-                Some(&crate::state::LiveCandleStreamInfo {
-                    market: "stocks".to_string(),
-                    symbol: "AAPL".to_string(),
-                    delayed: true,
-                    active: true,
-                    status: "started".to_string(),
-                }),
+                Some(&test_live_stream_info(
+                    "AAPL",
+                    true,
+                    true,
+                    "started",
+                    Some(950_000)
+                )),
                 "AAPL",
                 ExecutionBrokerTarget::AlpacaLive,
+                1_000_000,
             ),
             Err(
                 "Live Alpaca automation requires a real-time Polygon stream. Turn delayed data off before arming the broker."
@@ -3952,33 +5804,83 @@ mod tests {
         );
         assert!(
             validate_live_runner_stream_preconditions(
-                Some(&crate::state::LiveCandleStreamInfo {
-                    market: "stocks".to_string(),
-                    symbol: "AAPL".to_string(),
-                    delayed: true,
-                    active: true,
-                    status: "started".to_string(),
-                }),
+                Some(&test_live_stream_info(
+                    "AAPL",
+                    true,
+                    true,
+                    "started",
+                    Some(950_000)
+                )),
                 "AAPL",
                 ExecutionBrokerTarget::DryRun,
+                1_000_000,
             )
             .is_ok(),
             "dry-run runner should still be allowed on delayed data"
         );
         assert!(
             validate_live_runner_stream_preconditions(
-                Some(&crate::state::LiveCandleStreamInfo {
-                    market: "stocks".to_string(),
-                    symbol: "AAPL".to_string(),
-                    delayed: false,
-                    active: true,
-                    status: "started".to_string(),
-                }),
+                Some(&test_live_stream_info(
+                    "AAPL",
+                    false,
+                    true,
+                    "started",
+                    Some(950_000)
+                )),
                 "AAPL",
                 ExecutionBrokerTarget::AlpacaLive,
+                1_000_000,
             )
             .is_ok(),
             "real-time stream should allow live Alpaca automation"
+        );
+    }
+
+    #[test]
+    fn live_runner_stream_preconditions_require_recent_accepted_bar() {
+        assert_eq!(
+            validate_live_runner_stream_preconditions(
+                Some(&test_live_stream_info("AAPL", false, true, "started", None)),
+                "AAPL",
+                ExecutionBrokerTarget::DryRun,
+                1_000_000,
+            ),
+            Err(
+                "Live candles are active but no accepted bar has been received yet. Wait for the next Polygon minute bar before arming the auto-runner."
+                    .to_string()
+            )
+        );
+
+        let stale = validate_live_runner_stream_preconditions(
+            Some(&test_live_stream_info(
+                "AAPL",
+                false,
+                true,
+                "started",
+                Some(700_000),
+            )),
+            "AAPL",
+            ExecutionBrokerTarget::DryRun,
+            1_000_000,
+        )
+        .expect_err("stale feed should block runner arming");
+        assert!(stale.contains("Live candle feed is stale"));
+
+        assert!(
+            validate_live_runner_stream_preconditions(
+                Some(&test_live_stream_info(
+                    "AAPL",
+                    true,
+                    true,
+                    "started",
+                    Some(950_000)
+                )),
+                "AAPL",
+                ExecutionBrokerTarget::DryRun,
+                1_000_000,
+            )
+            .is_ok(),
+            "received-time freshness should allow delayed dry-run streams with old bar opens"
         );
     }
 
@@ -3998,6 +5900,7 @@ mod tests {
     fn normalize_order_snapshot_reduces_broker_payload_to_review_fields() {
         let snapshot = normalize_order_snapshot(&json!({
             "id": "ord_123",
+            "client_order_id": "vg-abc123",
             "symbol": "aapl",
             "side": "buy",
             "status": "filled",
@@ -4012,6 +5915,7 @@ mod tests {
         .expect("snapshot should normalize");
 
         assert_eq!(snapshot.id, "ord_123");
+        assert_eq!(snapshot.client_order_id.as_deref(), Some("vg-abc123"));
         assert_eq!(snapshot.symbol, "aapl");
         assert_eq!(snapshot.side, "buy");
         assert_eq!(snapshot.status, "filled");

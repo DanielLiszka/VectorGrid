@@ -1,6 +1,7 @@
 pub mod broker_paper;
 pub mod commands;
 pub mod data_cache;
+pub mod execution_mocks;
 pub mod execution_policy;
 pub mod execution_quantity;
 pub mod ma_registry;
@@ -135,11 +136,16 @@ pub fn run_tauri() {
             live_execution_runner_status,
             get_live_execution_snapshot,
             get_local_paper_execution_snapshot,
+            get_execution_strategy_support_matrix,
             reset_local_paper_broker,
             test_alpaca_connection,
             alpaca_get_credential_status,
             alpaca_set_api_credentials,
             alpaca_clear_api_credentials,
+            get_execution_risk_policy,
+            set_execution_risk_policy,
+            reset_execution_risk_policy,
+            preview_execution_policy_decision,
             pick_csv_file,
             pick_save_csv,
             pick_folder,

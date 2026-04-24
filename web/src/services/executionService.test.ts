@@ -16,14 +16,18 @@ import {
   flattenPosition,
   getStoredExecutionCredentialStatus,
   listSavedLiveSessions,
+  loadExecutionRiskPolicy,
   loadPersistedExecutionKeys,
   loadSavedLiveSessionDetail,
   migrateLegacyStoredExecutionKeysToSecureStorage,
   normalizeExecutionOperatorError,
   parseRunnerEvent,
   parsePolygonLiveStatusEvent,
+  previewExecutionRiskPolicy,
   refreshOrders,
   refreshStatuses,
+  resetLocalPaperBroker,
+  saveExecutionRiskPolicy,
   runOnce,
   startRunner,
   storeExecutionCredentialsSecurely,
@@ -96,6 +100,10 @@ function baseOptions() {
     paramSource: 'selected',
     riskStopLossPct: '',
     riskTakeProfitPct: '',
+    riskMaxOrderNotional: '',
+    riskMaxPositionNotional: '',
+    riskAllowShort: true,
+    riskRequireBracket: false,
     manualFastLen: '',
     manualSlowLen: '',
     dryRun: true,
@@ -672,6 +680,39 @@ describe('executionService', () => {
     ).rejects.toThrow('Execution symbol is required')
   })
 
+  it('resets the local paper broker and returns the reset snapshot review', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'reset_local_paper_broker') {
+        return {
+          snapshot: {
+            symbol: '',
+            account_number: 'local-paper',
+            account_status: 'simulated',
+            cash: '100000.00',
+            buying_power: '100000.00',
+            portfolio_value: '100000.00',
+            orders: [],
+            fetched_at_unix_ms: 1_744_297_700_000,
+          },
+        }
+      }
+      return {}
+    })
+
+    const result = await resetLocalPaperBroker({
+      ...baseOptions(),
+      executionTarget: 'local_paper',
+    })
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('reset_local_paper_broker')
+    expect(result.statusLine).toBe('Local paper broker reset.')
+    expect(result.accountReview).toEqual(expect.objectContaining({
+      accountNumber: 'local-paper',
+      status: 'simulated',
+    }))
+    expect(result.orderCount).toBe(0)
+  })
+
   it('maps broker refresh into confirmed flat review state and chart metadata', async () => {
     const freshNow = Date.now()
     invokeCommandMock.mockImplementation(async (command: string) => {
@@ -738,7 +779,17 @@ describe('executionService', () => {
       if (command === 'polygon_live_candle_stream_status') {
         return {
           active: true,
-          stream: { symbol: ' brk.b ', delayed: true, market: 'stocks', status: 'started' },
+          stream: {
+            symbol: ' brk.b ',
+            delayed: true,
+            market: 'stocks',
+            status: 'started',
+            last_message: 'started live candle stream task',
+            last_status_at_unix_ms: 1_700_000_000_000,
+            last_accepted_bar_open_unix_ms: 1_700_000_060_000,
+            last_accepted_bar_close_unix_ms: 1_700_000_119_999,
+            last_accepted_bar_received_at_unix_ms: 1_700_000_120_500,
+          },
         }
       }
       return {}
@@ -752,6 +803,7 @@ describe('executionService', () => {
     expect(result.liveLifecycleState).toBe('started')
     expect(result.liveStatusHint).toContain('BRK.B')
     expect(result.liveStatusHint).toContain('[delayed]')
+    expect(result.liveStatusHint).toContain('last bar received=2023-11-14 22:15:20')
   })
 
   it('keeps Polygon live-status parsing aligned with the current backend event vocabulary', () => {
@@ -1076,6 +1128,82 @@ describe('executionService', () => {
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
     expect((call?.[1] as { req?: { qty?: number } })?.req?.qty).toBe(0.0002)
+  })
+
+  it('passes execution risk policy fields through runOnce request payloads', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'execute_strategy_signal_once') {
+        return {
+          action: 'hold',
+          order_submitted: false,
+          warnings: [],
+        }
+      }
+      return {}
+    })
+
+    await runOnce({
+      ...baseOptions(),
+      riskMaxOrderNotional: '500',
+      riskMaxPositionNotional: '1000.50',
+      riskAllowShort: false,
+      riskRequireBracket: true,
+    })
+
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
+    expect(call?.[1]).toEqual({
+      req: expect.objectContaining({
+        risk: expect.objectContaining({
+          max_order_notional: 500,
+          max_position_notional: 1000.5,
+          allow_short: false,
+          require_bracket: true,
+        }),
+      }),
+    })
+  })
+
+  it('loads, saves, and previews execution risk policy through backend commands', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'get_execution_risk_policy') {
+        return { policy: { max_order_notional: 250, allow_short: false } }
+      }
+      if (command === 'set_execution_risk_policy') {
+        return { policy: { max_order_notional: 500, require_bracket: true } }
+      }
+      if (command === 'preview_execution_policy_decision') {
+        return {
+          symbol: 'AAPL',
+          decision: {
+            allowed: false,
+            code: 'max_order_notional_exceeded',
+            message: 'Order notional exceeds policy cap.',
+          },
+          warnings: ['Policy preview does not fetch Alpaca position.'],
+        }
+      }
+      return {}
+    })
+
+    await expect(loadExecutionRiskPolicy()).resolves.toEqual({
+      max_order_notional: 250,
+      max_position_notional: null,
+      allow_short: false,
+      require_bracket: null,
+    })
+    await expect(saveExecutionRiskPolicy({ max_order_notional: 500, require_bracket: true })).resolves.toEqual({
+      max_order_notional: 500,
+      max_position_notional: null,
+      allow_short: null,
+      require_bracket: true,
+    })
+    const preview = await previewExecutionRiskPolicy(baseOptions())
+
+    expect(preview.statusLine).toBe('Execution policy preview blocked: max_order_notional_exceeded.')
+    expect(preview.statusHint).toContain('Order notional exceeds policy cap.')
+    expect(invokeCommandMock).toHaveBeenCalledWith('preview_execution_policy_decision', {
+      req: expect.objectContaining({ symbol: 'AAPL' }),
+    })
   })
 
   it('keeps submitted runOnce success visible when secure credential persistence fails afterward', async () => {

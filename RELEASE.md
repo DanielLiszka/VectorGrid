@@ -96,6 +96,8 @@ Before publishing a public release or prerelease:
 4. confirm release assets use the normalized naming convention below
 5. draft release notes using the minimum section set below
 6. keep benchmark evidence linked as supporting material rather than as the release note body
+7. for builds exposing paper/live trading, run `scripts/run_execution_safety_gate.ps1` without live credentials and verify no execution artifacts or logs contain broker secrets
+8. for builds exposing live automation, verify close guards, emergency halt, broker review refresh, and documented manual recovery steps before release
 
 ### Local release-doctor command
 

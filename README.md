@@ -78,6 +78,7 @@ Local preserved benchmark, profiling, and report artifacts now belong under `out
 - CPU fallback support throughout the product.
 - Warm in-memory and VRAM-resident execution paths designed for repeated optimization and validation runs on the same dataset.
 - Desktop UI for data loading, optimization, shortlist review, heatmaps, validation, history, and export/report workflows.
+- Execution workspace for signal dry-runs, local paper simulation, and broker-armed Alpaca paper/live workflows. Treat this as operator tooling, not financial advice; live broker use requires explicit credentials, current broker review, and user responsibility for all orders submitted.
 
 ## Current GPU Coverage
 
@@ -189,6 +190,12 @@ powershell -ExecutionPolicy Bypass -File scripts/run_workspace_tests_stable.ps1
 ```
 
 The wrapper forces serialized Cargo jobs (`-j 1`) and clears Rust compiler wrappers for the run, which matches the existing repo hardening posture for Windows linker/pagefile-sensitive workspace test passes.
+
+For paper/live trading changes that do not need benchmarks or real credentials, use the targeted execution safety gate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_execution_safety_gate.ps1
+```
 
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 

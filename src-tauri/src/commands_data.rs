@@ -877,16 +877,19 @@ fn emit_polygon_live_status(
     status: &str,
     message: impl Into<String>,
 ) {
+    let at_unix_ms = now_unix_ms();
+    let message = message.into();
     let state = app.state::<AppState>();
-    let _ = state.record_live_candle_stream_status(market, symbol, delayed, status);
+    let _ = state
+        .record_live_candle_stream_status(market, symbol, delayed, status, &message, at_unix_ms);
     let payload = PolygonLiveStatusEvent {
         status: status.to_string(),
-        message: message.into(),
+        message,
         market: market.to_string(),
         symbol: symbol.to_string(),
         delayed,
         channel: channel.to_string(),
-        at_unix_ms: now_unix_ms(),
+        at_unix_ms,
     };
     let _ = app.emit(POLYGON_LIVE_STATUS_EVENT, payload);
 }
@@ -980,6 +983,15 @@ fn handle_polygon_ws_text(
             continue;
         }
         if let Some(bar) = normalize_polygon_live_bar(item, market, symbol, delayed, channel) {
+            let state = app.state::<AppState>();
+            let _ = state.record_live_candle_stream_accepted_bar(
+                market,
+                &bar.symbol,
+                delayed,
+                bar.time_open_unix_ms,
+                bar.time_close_unix_ms,
+                now_unix_ms(),
+            );
             let _ = app.emit(POLYGON_LIVE_BAR_EVENT, bar.clone());
             super::commands_execution::on_live_execution_bar(
                 app,
