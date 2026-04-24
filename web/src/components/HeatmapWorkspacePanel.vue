@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useShellMount } from '../composables/useShellMount'
-import { refreshHeatmapFromWorkflowRun, restoreHeatmapVisible } from '../services/analysisService'
+import {
+  refreshHeatmapFromWorkflowRun,
+  registerHeatmapCanvasController,
+  runHeatmapRepresentativeDrilldown,
+  restoreHeatmapVisible,
+} from '../services/analysisService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import type { HeatmapCellParams } from '../visualizations/heatmapCanvasModel'
+import HeatmapCanvas from './visualizations/HeatmapCanvas.vue'
+import VisualizationToolbar from './visualizations/VisualizationToolbar.vue'
 
 interface OptionItem {
   value: string
@@ -20,6 +28,7 @@ const {
   heatmapModeOptions,
   heatmapMeta,
   canHeatmapExportPng,
+  heatmapCanvasModel,
   heatmapStatusLine,
   updatedAtUnixMs,
 } = storeToRefs(analysisStore)
@@ -27,6 +36,7 @@ const { resultsTab } = storeToRefs(workflowStore)
 
 const { mountReady } = useShellMount('#heatmapVueShellMount')
 const modeDraft = ref('objective')
+const heatmapCanvasRef = ref<InstanceType<typeof HeatmapCanvas> | null>(null)
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'heatmap')
 
@@ -88,6 +98,24 @@ function setHeatmapMode(nextMode: string): void {
 function reviewTopResults(): void {
   workflowStore.selectResultsTab('top')
 }
+
+function registerCanvasController(): void {
+  registerHeatmapCanvasController({
+    exportPng: (fileName: string) => heatmapCanvasRef.value?.exportPng(fileName) ?? false,
+  })
+}
+
+function requestHeatmapDrilldown(params: HeatmapCellParams): void {
+  runHeatmapRepresentativeDrilldown(params)
+}
+
+onMounted(() => {
+  void nextTick(registerCanvasController)
+})
+
+onBeforeUnmount(() => {
+  registerHeatmapCanvasController(null)
+})
 </script>
 
 <template>
@@ -99,76 +127,43 @@ function reviewTopResults(): void {
       </header>
 
       <section class="pane">
-        <div class="heatmapControls">
-          <div>
-            <label for="vueHeatmapMode">Display mode</label>
-            <select
-              id="vueHeatmapMode"
-              :value="modeDraft"
-              @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'objective'); setHeatmapMode(modeDraft)"
-            >
-              <option
-                v-for="option in modeOptions"
-                :key="`heatmap_mode_${option.value}_${option.label}`"
-                :value="option.value"
-                :disabled="option.disabled"
+        <VisualizationToolbar label="Heatmap display controls">
+          <div class="heatmapControls">
+            <div>
+              <label for="vueHeatmapMode">Display mode</label>
+              <select
+                id="vueHeatmapMode"
+                :value="modeDraft"
+                @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'objective'); setHeatmapMode(modeDraft)"
               >
-                {{ option.label }}
-              </option>
-            </select>
+                <option
+                  v-for="option in modeOptions"
+                  :key="`heatmap_mode_${option.value}_${option.label}`"
+                  :value="option.value"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
           </div>
-        </div>
+          <template #actions>
+            <button type="button" :disabled="!canHeatmapExportPng" @click="analysisStore.heatmapExportPng()">Export PNG</button>
+          </template>
+        </VisualizationToolbar>
         <div class="metaLine mono" role="status" aria-live="polite">{{ heatmapMeta }}</div>
         <div class="metaLine mono">{{ scaleNote }}</div>
-        <div class="actions">
-          <button type="button" :disabled="!canHeatmapExportPng" @click="analysisStore.heatmapExportPng()">Export PNG</button>
-        </div>
       </section>
 
       <section class="pane">
-        <h3 class="panelPaneTitle">Heatmap Chart</h3>
-        <div id="heatmapEmptyHintVue" class="panelStatus" role="status" aria-live="polite">Run an optimization with Heatmap bins > 0 to generate a heatmap.</div>
-        <div class="chartAssist">
-          <div id="heatmapKeyboardHint" class="panelMuted">
-            Use the Top results table to open an exact retained candidate, or click a populated heatmap cell to inspect a representative parameter pair for that region.
-          </div>
-          <div class="actions" style="margin-top: 0;">
-            <button type="button" @click="reviewTopResults">Review Top results</button>
-          </div>
-        </div>
-        <div class="panelAdvisory">
-          Heatmaps require a scored optimization run with Heatmap bins above 0. If the renderer stays empty, verify those settings before rerunning.
-        </div>
-        <div id="heatmapWrapVue" style="margin-top: 0.75rem; display: none;">
-          <div class="panelStatus" style="margin-bottom: 0.5rem;" id="heatmapMetaVue" role="status" aria-live="polite">-</div>
-          <div
-            class="heatmapCanvasStack chartSurface"
-            id="heatmapCanvasStackVue"
-            :aria-label="chartAriaLabel"
-            aria-describedby="heatmapKeyboardHint"
-          >
-            <canvas id="heatmapCanvasVue" width="512" height="512" aria-hidden="true"></canvas>
-            <canvas id="heatmapOverlayVue" width="512" height="512" aria-hidden="true"></canvas>
-            <div id="heatmapTooltipVue" class="heatmapTooltip" style="display: none;"></div>
-          </div>
-          <div class="row" style="margin-top: 0.75rem;">
-            <div>
-              <label>Legend</label>
-              <canvas id="heatmapLegendVue" class="heatmapLegendCanvas" width="512" height="18" aria-hidden="true"></canvas>
-              <div class="heatmapLegendLabels">
-                <span id="heatmapLegendMinVue" class="mono">-</span>
-                <span id="heatmapLegendMidVue" class="mono">-</span>
-                <span id="heatmapLegendMaxVue" class="mono">-</span>
-              </div>
-            </div>
-            <div>
-              <label>&nbsp;</label>
-              <div class="panelMuted" style="margin-top: 0.5rem;">
-                Select a Top result for exact retained candidates, or click a populated cell for a representative heatmap-region drilldown. Markers and crosshair stay on for both paths.
-              </div>
-            </div>
-          </div>
-        </div>
+        <HeatmapCanvas
+          ref="heatmapCanvasRef"
+          :ariaLabel="chartAriaLabel"
+          :render-model="heatmapCanvasModel"
+          :selected-summary="heatmapStatusLine"
+          @review-top-results="reviewTopResults"
+          @request-drilldown="requestHeatmapDrilldown"
+        />
       </section>
 
       <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ heatmapStatusLine }}</div>

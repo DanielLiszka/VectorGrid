@@ -17,6 +17,7 @@ import {
   refreshParetoFromWorkflowRun,
   refreshTopTableFromWorkflowRun,
   rerenderDrill,
+  runHeatmapRepresentativeDrilldown,
   selectTopRow,
   setBaseline,
   sortTopTable,
@@ -24,6 +25,7 @@ import {
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+import { heatmapTooltipText } from "../visualizations/heatmapCanvasModel";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => ({
@@ -447,7 +449,7 @@ describe("analysis service", () => {
     expect(store.topTableRows[1]?.selected).toBe(true);
   });
 
-  it("builds drill trade markers from drilldown trades and syncs trade focus to the drill table", async () => {
+  it("builds drill trade markers from drilldown trades and publishes drill chart/table models", async () => {
     mountDrillDom();
     const drillCurves = {
       equity: { start_t: 1, end_t: 4, bins: 2, minmax: [1, 1.02, 1.01, 1.05] },
@@ -545,19 +547,18 @@ describe("analysis service", () => {
       }
       return undefined as never;
     });
+    const store = useAnalysisStore(pinia);
 
     await selectTopRow(0);
 
-    expect(document.querySelectorAll("#tradeTableBodyVue tr[data-trade-idx]").length).toBe(2);
-    expect(__analysisTestUtils.selectDrillTradeByIndex(1)).toBe(true);
-
-    const selectedRow = document.querySelector<HTMLTableRowElement>(
-      '#tradeTableBodyVue tr[data-trade-idx="1"]',
-    );
-    expect(selectedRow?.classList.contains("selected")).toBe(true);
+    expect(store.drillChartModel?.trades).toHaveLength(2);
+    expect(store.drillTradeTableModel?.rows).toHaveLength(2);
+    expect(store.drillTradeTableModel?.rows[0]?.selected).toBe(false);
+    expect(__analysisTestUtils.selectDrillTradeByIndex(1)).toBe(false);
     const selectedMarkers = __analysisTestUtils.buildDrillTradeMarkers(
       drillCurves,
       drillBars,
+      1,
     );
     expect(selectedMarkers.find((marker) => marker.id === "trade-1-entry")?.size).toBe(1.4);
   });
@@ -1236,15 +1237,12 @@ describe("analysis service", () => {
     expect(heatmapCanvasFillRectCalls).toBe(basePaintCalls);
   });
 
-  it("rebinds hover and click handlers when the heatmap DOM is remounted", async () => {
+  it("publishes a component-owned heatmap model when the heatmap DOM is remounted", () => {
     mountHeatmapDom();
-    const workflowStore = useWorkflowStore(pinia);
-    workflowStore.selectWorkflow("analyze", { persist: false });
+    const store = useAnalysisStore(pinia);
     seedWorkflowRun({
       req: {
         strategy_kind: "DoubleMa",
-        data_id: "dataset-1",
-        ma_source: "close",
         objective: "Sharpe",
         top_k: 20,
         heatmap_bins: 2,
@@ -1274,87 +1272,23 @@ describe("analysis service", () => {
         },
       },
     });
-    invokeCommandMock.mockImplementation(async (command: unknown) => {
-      if (command === "compute_double_ma_drilldown") {
-        return {
-          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
-          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
-          trades: [],
-          trade_stats: null,
-          indicator_bars: [],
-        } as never;
-      }
-      if (command === "compute_double_ma_local_stability") {
-        return {
-          base: {
-            fast_len: 5,
-            slow_len: 20,
-            fast_ma_type: "ema",
-            slow_ma_type: "ema",
-          },
-          objective: "Sharpe",
-          radius: 1,
-          step: 1,
-          start_t: 1,
-          points: [],
-          summary: { base: 0, min: 0, median: 0, max: 0 },
-        } as never;
-      }
-      if (command === "get_price_bars") {
-        return [] as never;
-      }
-      return undefined as never;
-    });
 
     expect(refreshAnalysisFromWorkflowRun()).toBe(true);
     mountHeatmapDom();
-    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
-    const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
-    expect(overlay).not.toBeNull();
-    expect(tooltip).not.toBeNull();
-    Object.defineProperty(overlay!, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({
-        left: 0,
-        top: 0,
-        width: 512,
-        height: 512,
-        right: 512,
-        bottom: 512,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }),
-    });
-
     expect(restoreHeatmapVisible()).toBe(true);
-    expect(typeof overlay!.onmousemove).toBe("function");
-    expect(typeof overlay!.onclick).toBe("function");
-
-    overlay!.onmousemove?.(
-      new MouseEvent("mousemove", { clientX: 128, clientY: 128 }) as unknown as PointerEvent,
-    );
-
-    expect(String(tooltip?.style.display || "")).toBe("block");
-    expect(String(tooltip?.textContent || "")).toContain("Sharpe");
-
-    overlay!.onclick?.(
-      new MouseEvent("click", { clientX: 128, clientY: 384 }) as unknown as PointerEvent,
-    );
-
-    expect(workflowStore.resultsTab).toBe("drill");
-    await vi.waitFor(() => {
-      expect(invokeCommandMock).toHaveBeenCalledWith(
-        "compute_double_ma_drilldown",
-        expect.objectContaining({
-          req: expect.objectContaining({
-            params: expect.objectContaining({
-              fast_len: 5,
-              slow_len: 20,
-            }),
-          }),
-        }),
-      );
+    expect(store.heatmapCanvasModel).toMatchObject({
+      displayLabel: "Sharpe",
+      request: {
+        fastMaType: "ema",
+        slowMaType: "ema",
+      },
+      markers: [
+        {
+          col: 0,
+          drawRow: 1,
+          label: "1",
+        },
+      ],
     });
   });
 
@@ -1406,28 +1340,13 @@ describe("analysis service", () => {
       });
 
       expect(refreshHeatmapFromWorkflowRun()).toBe(true);
-      const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
-      const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
-      expect(overlay).not.toBeNull();
-      expect(tooltip).not.toBeNull();
-      Object.defineProperty(overlay!, "getBoundingClientRect", {
-        configurable: true,
-        value: () => ({
-          left: 0,
-          top: 0,
-          width: 512,
-          height: 512,
-          right: 512,
-          bottom: 512,
-          x: 0,
-          y: 0,
-          toJSON: () => ({}),
-        }),
-      });
-      overlay!.onmousemove?.(
-        new MouseEvent("mousemove", { clientX: 256, clientY: 256 }),
-      );
-      return String(tooltip?.textContent || "");
+      expect(store.heatmapCanvasModel).toBeTruthy();
+      return heatmapTooltipText(store.heatmapCanvasModel!, {
+        col: 1,
+        drawRow: 1,
+        logicalRow: 1,
+        idx: 4,
+      }) ?? "";
     };
 
     const centeredTooltip = readPlateauTooltip(
@@ -1537,39 +1456,21 @@ describe("analysis service", () => {
       "representative parameter pair",
     );
 
-    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
-    const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
-    const legendMin = document.querySelector<HTMLElement>("#heatmapLegendMinVue");
-    const legendMax = document.querySelector<HTMLElement>("#heatmapLegendMaxVue");
-    expect(overlay).not.toBeNull();
-    expect(tooltip).not.toBeNull();
-    Object.defineProperty(overlay!, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({
-        left: 0,
-        top: 0,
-        width: 512,
-        height: 512,
-        right: 512,
-        bottom: 512,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }),
-    });
-
-    overlay!.onmousemove?.(
-      new MouseEvent("mousemove", { clientX: 256, clientY: 256 }),
-    );
-
-    expect(String(tooltip?.textContent || "")).toContain("Plateau");
-    expect(String(tooltip?.textContent || "")).toContain("Sharpe");
-    expect(String(tooltip?.textContent || "")).toContain("supportive ");
-    expect(String(tooltip?.textContent || "")).toContain("samples 4");
-    expect(String(tooltip?.textContent || "")).toContain("mean 0.74");
-    expect(String(tooltip?.textContent || "")).toContain("bin ");
-    expect(String(legendMin?.textContent || "")).toBe("0");
-    expect(String(legendMax?.textContent || "")).toBe("1");
+    expect(store.heatmapCanvasModel).toBeTruthy();
+    const tooltip = heatmapTooltipText(store.heatmapCanvasModel!, {
+      col: 1,
+      drawRow: 1,
+      logicalRow: 1,
+      idx: 4,
+    }) ?? "";
+    expect(tooltip).toContain("Plateau");
+    expect(tooltip).toContain("Sharpe");
+    expect(tooltip).toContain("supportive ");
+    expect(tooltip).toContain("samples 4");
+    expect(tooltip).toContain("mean 0.74");
+    expect(tooltip).toContain("bin ");
+    expect(store.heatmapCanvasModel?.range.min).toBe(0);
+    expect(store.heatmapCanvasModel?.range.max).toBe(1);
   });
 
   it("clears the heatmap tooltip when the pointer moves from a populated cell onto an empty cell", () => {
@@ -1598,77 +1499,24 @@ describe("analysis service", () => {
     });
 
     expect(refreshAnalysisFromWorkflowRun()).toBe(true);
-    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
-    const tooltip = document.querySelector<HTMLElement>("#heatmapTooltipVue");
-    expect(overlay).not.toBeNull();
-    expect(tooltip).not.toBeNull();
-    Object.defineProperty(overlay!, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({
-        left: 0,
-        top: 0,
-        width: 512,
-        height: 512,
-        right: 512,
-        bottom: 512,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }),
-    });
-
-    overlay!.onmousemove?.(
-      new MouseEvent("mousemove", { clientX: 128, clientY: 384 }),
-    );
-
-    expect(String(tooltip?.style.display || "")).toBe("block");
-    expect(String(tooltip?.textContent || "")).toContain("Sharpe");
-
-    overlay!.onmousemove?.(
-      new MouseEvent("mousemove", { clientX: 384, clientY: 384 }),
-    );
-
     expect(store.heatmapWrapVisible).toBe(true);
-    expect(String(tooltip?.style.display || "")).toBe("none");
-    expect(String(tooltip?.textContent || "")).not.toContain("Sharpe -");
+    expect(store.heatmapCanvasModel).toBeTruthy();
+    expect(heatmapTooltipText(store.heatmapCanvasModel!, {
+      col: 0,
+      drawRow: 1,
+      logicalRow: 0,
+      idx: 0,
+    })).toContain("Sharpe");
+    expect(heatmapTooltipText(store.heatmapCanvasModel!, {
+      col: 1,
+      drawRow: 1,
+      logicalRow: 0,
+      idx: 1,
+    })).toBeNull();
   });
 
   it("keeps heatmap markers aligned with the visible filtered shortlist", () => {
     mountHeatmapDom();
-    const overlayMarkers: Array<{ label: string; cx: number; cy: number }> = [];
-    let lastArcCenter: { cx: number; cy: number } | null = null;
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
-      function (this: HTMLCanvasElement) {
-        const id = this.id;
-        return ({
-          clearRect: () => undefined,
-          fillRect: () => undefined,
-          strokeRect: () => undefined,
-          beginPath: () => undefined,
-          arc: (cx: number, cy: number) => {
-            if (id === "heatmapOverlayVue") lastArcCenter = { cx, cy };
-          },
-          fill: () => undefined,
-          stroke: () => undefined,
-          fillText: (value: string) => {
-            if (id === "heatmapOverlayVue" && lastArcCenter) {
-              overlayMarkers.push({
-                label: String(value),
-                cx: lastArcCenter.cx,
-                cy: lastArcCenter.cy,
-              });
-            }
-          },
-          moveTo: () => undefined,
-          lineTo: () => undefined,
-          save: () => undefined,
-          restore: () => undefined,
-          translate: () => undefined,
-          rotate: () => undefined,
-          createLinearGradient: () => ({ addColorStop: () => undefined }),
-        }) as never;
-      },
-    );
     const store = useAnalysisStore(pinia);
     seedWorkflowRun({
       req: {
@@ -1728,44 +1576,16 @@ describe("analysis service", () => {
     store.filterMinSharpe = "0.75";
     expect(refreshHeatmapFromWorkflowRun()).toBe(true);
 
-    const marker2 = overlayMarkers.find((marker) => marker.label === "2");
-    const marker3 = overlayMarkers.find((marker) => marker.label === "3");
-    expect(marker2).toBeTruthy();
-    expect(marker3).toBeTruthy();
-    expect(overlayMarkers.some((marker) => marker.label === "1")).toBe(false);
-    expect(marker2?.cx).toBeCloseTo(256, 0);
-    expect(marker2?.cy).toBeCloseTo(256, 0);
-    expect(marker3?.cx).toBeCloseTo(426.6667, 0);
-    expect(marker3?.cy).toBeCloseTo(85.3333, 0);
+    const markers = store.heatmapCanvasModel?.markers ?? [];
+    const marker2 = markers.find((marker) => marker.label === "2");
+    const marker3 = markers.find((marker) => marker.label === "3");
+    expect(marker2).toMatchObject({ col: 1, drawRow: 1 });
+    expect(marker3).toMatchObject({ col: 2, drawRow: 0 });
+    expect(markers.some((marker) => marker.label === "1")).toBe(false);
   });
 
   it("keeps the best-candidate marker available when top_k is disabled", () => {
     mountHeatmapDom();
-    const overlayLabels: string[] = [];
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
-      function (this: HTMLCanvasElement) {
-        const id = this.id;
-        return ({
-          clearRect: () => undefined,
-          fillRect: () => undefined,
-          strokeRect: () => undefined,
-          beginPath: () => undefined,
-          arc: () => undefined,
-          fill: () => undefined,
-          stroke: () => undefined,
-          fillText: (value: string) => {
-            if (id === "heatmapOverlayVue") overlayLabels.push(String(value));
-          },
-          moveTo: () => undefined,
-          lineTo: () => undefined,
-          save: () => undefined,
-          restore: () => undefined,
-          translate: () => undefined,
-          rotate: () => undefined,
-          createLinearGradient: () => ({ addColorStop: () => undefined }),
-        }) as never;
-      },
-    );
     const store = useAnalysisStore(pinia);
     seedWorkflowRun({
       req: {
@@ -1804,7 +1624,7 @@ describe("analysis service", () => {
 
     expect(refreshHeatmapFromWorkflowRun()).toBe(true);
     expect(store.heatmapStatusLine).toContain("markers use the best candidate only.");
-    expect(overlayLabels).toContain("1");
+    expect(store.heatmapCanvasModel?.markers.map((marker) => marker.label)).toContain("1");
   });
 
   it("omits synthetic heatmap metrics from representative-bin drill headers", async () => {
@@ -1872,26 +1692,14 @@ describe("analysis service", () => {
     });
 
     expect(refreshHeatmapFromWorkflowRun()).toBe(true);
-    const overlay = document.querySelector<HTMLCanvasElement>("#heatmapOverlayVue");
-    expect(overlay).not.toBeNull();
-    Object.defineProperty(overlay!, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({
-        left: 0,
-        top: 0,
-        width: 512,
-        height: 512,
-        right: 512,
-        bottom: 512,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }),
+    runHeatmapRepresentativeDrilldown({
+      fast_len: 7,
+      fast_ma_type: "ema",
+      slow_len: 25,
+      slow_ma_type: "ema",
+      fast_ma_params: null,
+      slow_ma_params: null,
     });
-
-    overlay!.onclick?.(
-      new MouseEvent("click", { clientX: 256, clientY: 256 }) as unknown as PointerEvent,
-    );
 
     expect(workflowStore.resultsTab).toBe("drill");
     await vi.waitFor(() => {
@@ -2013,12 +1821,7 @@ describe("analysis service", () => {
     );
   });
 
-  it("renders pareto scatter into the Vue canvas host when mounted", () => {
-    document.body.innerHTML = `
-      <div id="paretoWrapVue" style="display:none"></div>
-      <div id="paretoMetaVue">-</div>
-      <canvas id="paretoCanvasVue" width="1024" height="240"></canvas>
-    `;
+  it("publishes a model-backed Pareto scatter for the Vue canvas host", () => {
     seedWorkflowRun({
       req: { strategy_kind: "DoubleMa", objective: "Sharpe", top_k: 20 },
       res: {
@@ -2051,10 +1854,9 @@ describe("analysis service", () => {
     expect(ok).toBe(true);
     expect(store.paretoWrapVisible).toBe(true);
     expect(String(store.paretoMeta || "")).toContain("2 points");
-    expect(
-      (document.querySelector("#paretoWrapVue") as HTMLElement | null)?.style
-        .display,
-    ).toBe("block");
+    expect(store.paretoModel?.status).toBe("ready");
+    expect(store.paretoModel?.points).toHaveLength(2);
+    expect(store.paretoModel?.points[0]?.summary).toContain("#1");
   });
 
   it("surfaces derived diagnostics when a DoubleMa score mode is active", () => {

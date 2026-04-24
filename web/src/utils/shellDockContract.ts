@@ -30,9 +30,10 @@ export function isHistoryDockVisible(state: ShellDockState): boolean {
 
 export function isOptimizeDockVisible(state: ShellDockState): boolean {
   const workspace = normalize(state.workspace)
+  const workflow = normalize(state.workflow)
   const controlsTab = normalize(state.controlsTab)
   const mode = normalize(state.mode)
-  return workspace === 'workflow' && controlsTab === 'opt' && mode !== 'ml-signal'
+  return workspace === 'workflow' && workflow === 'optimize' && controlsTab === 'opt' && mode !== 'ml-signal'
 }
 
 export function isValidationDockVisible(state: ShellDockState): boolean {

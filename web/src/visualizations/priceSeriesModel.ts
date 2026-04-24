@@ -1,0 +1,152 @@
+export interface PriceBar {
+  time: number
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
+export interface IndexedPriceBar extends PriceBar {
+  volume: number
+  fromIndex: number
+  toIndex: number
+}
+
+export interface MovingAverageIndicatorBar {
+  time: number
+  fast: number | null
+  slow: number | null
+}
+
+export interface CompositeIndicatorBar {
+  time: number
+  halftrend: number | null
+  macz: number | null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function toNumber(value: unknown, fallback = Number.NaN): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+export function normalizeChartTimeSec(raw: unknown): number {
+  const value = toNumber(raw)
+  if (!Number.isFinite(value)) return Number.NaN
+  const abs = Math.abs(value)
+  if (abs >= 1e17) return Math.floor(value / 1e9)
+  if (abs >= 1e14) return Math.floor(value / 1e6)
+  if (abs >= 1e11) return Math.floor(value / 1e3)
+  return Math.floor(value)
+}
+
+function normalizePriceBarBase(row: Record<string, unknown>): PriceBar | null {
+  const time = normalizeChartTimeSec(row.time ?? row.timestamp ?? row.ts ?? row.t)
+  const open = toNumber(row.open ?? row.o)
+  const highRaw = toNumber(row.high ?? row.h)
+  const lowRaw = toNumber(row.low ?? row.l)
+  const close = toNumber(row.close ?? row.c)
+  if (
+    !Number.isFinite(time) ||
+    !Number.isFinite(open) ||
+    !Number.isFinite(highRaw) ||
+    !Number.isFinite(lowRaw) ||
+    !Number.isFinite(close)
+  ) {
+    return null
+  }
+  return {
+    time,
+    open,
+    high: Math.max(highRaw, open, close),
+    low: Math.min(lowRaw, open, close),
+    close,
+  }
+}
+
+function dedupeSortedBars<T extends PriceBar>(bars: T[]): T[] {
+  if (bars.length <= 1) return bars
+  bars.sort((a, b) => a.time - b.time)
+  const deduped: T[] = []
+  for (const row of bars) {
+    const last = deduped[deduped.length - 1]
+    if (last && row.time === last.time) deduped[deduped.length - 1] = row
+    else deduped.push(row)
+  }
+  return deduped
+}
+
+export function normalizePriceBars(raw: unknown): PriceBar[] {
+  const rows = Array.isArray(raw) ? raw : []
+  const out: PriceBar[] = []
+  for (const rowRaw of rows) {
+    if (!isRecord(rowRaw)) continue
+    const bar = normalizePriceBarBase(rowRaw)
+    if (bar) out.push(bar)
+  }
+  return dedupeSortedBars(out)
+}
+
+export function normalizeIndexedPriceBars(raw: unknown): IndexedPriceBar[] {
+  const rows = Array.isArray(raw) ? raw : []
+  const out: IndexedPriceBar[] = []
+  for (const rowRaw of rows) {
+    if (!isRecord(rowRaw)) continue
+    const bar = normalizePriceBarBase(rowRaw)
+    if (!bar) continue
+    const fromIndex = Math.max(
+      0,
+      Math.floor(toNumber(rowRaw.from_index ?? rowRaw.fromIndex ?? rowRaw.from, 0)),
+    )
+    const toIndex = Math.max(
+      fromIndex,
+      Math.floor(toNumber(rowRaw.to_index ?? rowRaw.toIndex ?? rowRaw.to, fromIndex)),
+    )
+    out.push({
+      ...bar,
+      volume: toNumber(rowRaw.volume ?? rowRaw.v, 0),
+      fromIndex,
+      toIndex,
+    })
+  }
+  return dedupeSortedBars(out)
+}
+
+export function normalizeMovingAverageIndicatorBars(raw: unknown): MovingAverageIndicatorBar[] {
+  const rows = Array.isArray(raw) ? raw : []
+  const out: MovingAverageIndicatorBar[] = []
+  for (const rowRaw of rows) {
+    if (!isRecord(rowRaw)) continue
+    const time = normalizeChartTimeSec(rowRaw.time ?? rowRaw.timestamp ?? rowRaw.ts ?? rowRaw.t)
+    if (!Number.isFinite(time)) continue
+    const fastRaw = toNumber(rowRaw.fast)
+    const slowRaw = toNumber(rowRaw.slow)
+    const fast = Number.isFinite(fastRaw) ? fastRaw : null
+    const slow = Number.isFinite(slowRaw) ? slowRaw : null
+    if (fast == null && slow == null) continue
+    out.push({ time, fast, slow })
+  }
+  out.sort((a, b) => a.time - b.time)
+  return out
+}
+
+export function normalizeCompositeIndicatorBars(raw: unknown): CompositeIndicatorBar[] {
+  const rows = Array.isArray(raw) ? raw : []
+  const out: CompositeIndicatorBar[] = []
+  for (const rowRaw of rows) {
+    if (!isRecord(rowRaw)) continue
+    const time = normalizeChartTimeSec(rowRaw.time ?? rowRaw.timestamp ?? rowRaw.ts ?? rowRaw.t)
+    if (!Number.isFinite(time)) continue
+    const halftrendRaw = toNumber(rowRaw.halftrend)
+    const maczRaw = toNumber(rowRaw.macz_hist ?? rowRaw.macz)
+    const halftrend = Number.isFinite(halftrendRaw) ? halftrendRaw : null
+    const macz = Number.isFinite(maczRaw) ? maczRaw : null
+    if (halftrend == null && macz == null) continue
+    out.push({ time, halftrend, macz })
+  }
+  out.sort((a, b) => a.time - b.time)
+  return out
+}

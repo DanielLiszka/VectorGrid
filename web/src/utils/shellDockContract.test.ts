@@ -19,8 +19,9 @@ describe('shellDockContract', () => {
   })
 
   it('limits optimize and validation docks to conventional workflow postures', () => {
-    expect(isOptimizeDockVisible({ mode: 'conventional', workspace: 'workflow', controlsTab: 'opt' })).toBe(true)
-    expect(isOptimizeDockVisible({ mode: 'ml-signal', workspace: 'workflow', controlsTab: 'opt' })).toBe(false)
+    expect(isOptimizeDockVisible({ mode: 'conventional', workspace: 'workflow', workflow: 'optimize', controlsTab: 'opt' })).toBe(true)
+    expect(isOptimizeDockVisible({ mode: 'conventional', workspace: 'workflow', workflow: 'analyze', controlsTab: 'opt' })).toBe(false)
+    expect(isOptimizeDockVisible({ mode: 'ml-signal', workspace: 'workflow', workflow: 'optimize', controlsTab: 'opt' })).toBe(false)
     expect(isValidationDockVisible({ mode: 'conventional', workspace: 'workflow', resultsTab: 'validate' })).toBe(true)
     expect(isValidationDockVisible({ mode: 'ml-signal', workspace: 'workflow', resultsTab: 'validate' })).toBe(false)
   })

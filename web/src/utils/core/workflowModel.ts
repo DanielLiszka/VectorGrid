@@ -155,10 +155,10 @@ export const ML_SIGNAL_PRIMARY_ACTIONS: Record<WorkflowStep, MlSignalPrimaryActi
 }
 
 export const WORKSPACE_SUBTITLES = {
-  workflow: 'Guided pipeline for data -> optimize -> validate -> summary -> finalizer.',
+  workflow: 'Research pipeline for data, optimization, validation, analysis, and finalization.',
   library: 'Browse, compare, and rerun saved optimization artifacts.',
-  aggregate: 'Aggregate many runs into robust shortlist recommendations.',
-  pro: 'Advanced controls and debug output.',
+  aggregate: 'Combine many runs into robust shortlist recommendations.',
+  pro: 'Diagnostics and advanced debug output.',
   live: 'Narrow live broker surface: single symbol, Alpaca broker, Polygon stocks feed, and one active runner/stream.',
   settings: 'Application preferences and storage configuration.',
 } as const

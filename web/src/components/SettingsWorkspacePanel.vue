@@ -54,6 +54,7 @@ import {
   windowEffectLabel,
 } from "../utils/windowEffects";
 import AppVisualIcon from "./AppVisualIcon.vue";
+import AppMetricStrip, { type AppMetricItem } from "./ui/AppMetricStrip.vue";
 import VectorAlphaLogo from "./VectorAlphaLogo.vue";
 
 type DesktopLogFilter = "all" | "attention" | "errors";
@@ -314,6 +315,36 @@ const perspectiveSearchSummary = computed(() => {
     return `${matchCount} ${label} for “${query}”. Current selection stays visible while filtered. ${localHelp}`;
   }
   return `${matchCount} ${label} for “${query}”. ${localHelp}`;
+});
+const densityPreviewItems = computed<AppMetricItem[]>(() => {
+  const density = String(densityModeDraft.value || "standard").trim() || "standard";
+  const scanMode =
+    density === "dense"
+      ? "Maximum rows"
+      : density === "comfortable"
+        ? "More breathing room"
+        : "Balanced scan";
+  return [
+    {
+      key: "density",
+      label: "Density",
+      value: density,
+      tone: density === "dense" ? "accent" : "neutral",
+      trend: density === "dense" ? "compact" : "",
+    },
+    {
+      key: "table_scan",
+      label: "Table scan",
+      value: scanMode,
+      title: "Preview of how the selected density affects dense table review.",
+    },
+    {
+      key: "advanced",
+      label: "Advanced controls",
+      value: workflowAdvanced.value ? "Shown first" : "Progressive",
+      tone: workflowAdvanced.value ? "warning" : "success",
+    },
+  ];
 });
 const diagnosticsSummaryChips = computed(() => [
   `Runtime ${runtimePhaseLabel.value}`,
@@ -941,6 +972,13 @@ onBeforeUnmount(() => {
               Apply a consistent row, chip, and spacing density across the shell
               instead of relying on per-panel compaction.
             </div>
+            <div class="densityPreview">
+              <div class="panelEyebrow">Density preview</div>
+              <AppMetricStrip
+                :items="densityPreviewItems"
+                aria-label="Density preview"
+              />
+            </div>
           </div>
           <div class="rowSingle">
             <label for="vueSettingsDesktopNotifications"
@@ -1418,14 +1456,14 @@ onBeforeUnmount(() => {
               :disabled="!canGotoLibrary"
               @click="settingsStore.gotoLibrary()"
             >
-              Go to Run Library
+              Go to Library
             </button>
             <button
               type="button"
               :disabled="!canGotoAggregate"
               @click="settingsStore.gotoAggregate()"
             >
-              Go to Aggregate Analysis
+              Go to Aggregate
             </button>
           </div>
         </section>
@@ -1922,6 +1960,12 @@ onBeforeUnmount(() => {
   margin-top: 0.7rem;
   display: grid;
   gap: 0.35rem;
+}
+
+.densityPreview {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
 }
 
 .retentionRow {

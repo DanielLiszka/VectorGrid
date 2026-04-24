@@ -11,6 +11,7 @@ withDefaults(
     emptyTitle?: string
     emptyBody?: string
     keyboardHint?: string
+    viewport?: boolean
   }>(),
   {
     summary: '',
@@ -20,6 +21,7 @@ withDefaults(
     emptyTitle: '',
     emptyBody: '',
     keyboardHint: '',
+    viewport: true,
   },
 )
 </script>
@@ -50,7 +52,11 @@ withDefaults(
         <slot name="emptyActions" />
       </template>
     </AppEmptyState>
-    <div v-else class="appDataTableViewport" tabindex="0">
+    <div
+      v-else
+      :class="viewport ? 'appDataTableViewport' : 'appDataTableContent'"
+      :tabindex="viewport ? 0 : undefined"
+    >
       <slot />
     </div>
 
@@ -120,6 +126,11 @@ withDefaults(
   border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
   border-radius: 10px;
   background: color-mix(in oklab, var(--panel) 96%, var(--surface));
+}
+
+.appDataTableContent {
+  min-width: 0;
+  min-height: 0;
 }
 
 .appDataTableEmpty {

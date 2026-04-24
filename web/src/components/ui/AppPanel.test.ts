@@ -10,6 +10,7 @@ describe('AppPanel', () => {
         eyebrow: 'Import',
         title: 'CSV input',
         variant: 'prominent',
+        headingId: 'csv-input-heading',
       },
       slots: { default: '<p>Body</p>' },
     })
@@ -19,5 +20,7 @@ describe('AppPanel', () => {
     expect(wrapper.text()).toContain('Import')
     expect(wrapper.text()).toContain('CSV input')
     expect(wrapper.text()).toContain('Body')
+    expect(wrapper.attributes('aria-labelledby')).toBe('csv-input-heading')
+    expect(wrapper.get('h3').attributes('id')).toBe('csv-input-heading')
   })
 })

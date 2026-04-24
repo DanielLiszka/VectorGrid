@@ -5,6 +5,9 @@ import { useHistoryStore } from './historyStore'
 import { useOptimizeStore } from './optimizeStore'
 import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowStore } from './workflowStore'
+import type { ParetoRenderModel } from '../visualizations/paretoModel'
+import type { HeatmapCanvasRenderModel } from '../visualizations/heatmapCanvasModel'
+import type { DrillChartModel, DrillTradeTableModel } from '../visualizations/drillChartModel'
 
 let analysisServicePromise: Promise<typeof import('../services/analysisService')> | null = null
 let metaServicePromise: Promise<typeof import('../services/metaService')> | null = null
@@ -127,10 +130,13 @@ interface AnalysisState {
   paretoXOptions: { value: string; label: string; disabled: boolean }[]
   paretoYOptions: { value: string; label: string; disabled: boolean }[]
   paretoWrapVisible: boolean
+  paretoModel: ParetoRenderModel | null
   paretoTruthNote: string
   paretoRepresentativeSummary: string
   paretoConfidenceNote: string
   drillWrapVisible: boolean
+  drillChartModel: DrillChartModel | null
+  drillTradeTableModel: DrillTradeTableModel | null
   stabilityWrapVisible: boolean
   tradeStatsWrapVisible: boolean
   heatmapWrapVisible: boolean
@@ -145,6 +151,7 @@ interface AnalysisState {
   heatmapShowCrosshair: string
   heatmapShowCrosshairOptions: { value: string; label: string; disabled: boolean }[]
   canHeatmapExportPng: boolean
+  heatmapCanvasModel: HeatmapCanvasRenderModel | null
   metaStrategyKind: string
   metaStrategyOptions: { value: string; label: string; disabled: boolean }[]
   metaTimeframe: string
@@ -536,10 +543,13 @@ export const useAnalysisStore = defineStore('analysis', {
     paretoXOptions: [],
     paretoYOptions: [],
     paretoWrapVisible: false,
+    paretoModel: null,
     paretoTruthNote: 'Pareto points show tradeoffs, not proof of robustness.',
     paretoRepresentativeSummary: '—',
     paretoConfidenceNote: 'Validation is still required before trusting a frontier candidate.',
     drillWrapVisible: false,
+    drillChartModel: null,
+    drillTradeTableModel: null,
     stabilityWrapVisible: false,
     tradeStatsWrapVisible: false,
     heatmapWrapVisible: false,
@@ -554,6 +564,7 @@ export const useAnalysisStore = defineStore('analysis', {
     heatmapShowCrosshair: 'true',
     heatmapShowCrosshairOptions: [],
     canHeatmapExportPng: false,
+    heatmapCanvasModel: null,
     metaStrategyKind: 'CompositeMo',
     metaStrategyOptions: [],
     metaTimeframe: '',
@@ -730,6 +741,16 @@ export const useAnalysisStore = defineStore('analysis', {
       this.paretoRepresentativeSummary = String(snapshot.paretoRepresentativeSummary ?? this.paretoRepresentativeSummary ?? '—').trim() || '—'
       this.paretoConfidenceNote = String(snapshot.paretoConfidenceNote ?? this.paretoConfidenceNote ?? 'Validation is still required before trusting a frontier candidate.').trim() || 'Validation is still required before trusting a frontier candidate.'
       this.drillWrapVisible = Boolean(snapshot.drillWrapVisible ?? this.drillWrapVisible)
+      if ('drillChartModel' in snapshot) {
+        this.drillChartModel = (snapshot.drillChartModel && typeof snapshot.drillChartModel === 'object')
+          ? markRaw(snapshot.drillChartModel as DrillChartModel)
+          : null
+      }
+      if ('drillTradeTableModel' in snapshot) {
+        this.drillTradeTableModel = (snapshot.drillTradeTableModel && typeof snapshot.drillTradeTableModel === 'object')
+          ? markRaw(snapshot.drillTradeTableModel as DrillTradeTableModel)
+          : null
+      }
       this.stabilityWrapVisible = Boolean(snapshot.stabilityWrapVisible ?? this.stabilityWrapVisible)
       this.tradeStatsWrapVisible = Boolean(snapshot.tradeStatsWrapVisible ?? this.tradeStatsWrapVisible)
       this.heatmapWrapVisible = Boolean(snapshot.heatmapWrapVisible ?? this.heatmapWrapVisible)
@@ -861,12 +882,20 @@ export const useAnalysisStore = defineStore('analysis', {
       this.topFilterMeta = String(snapshot.topFilterMeta ?? this.topFilterMeta ?? '-').trim() || '-'
       this.topSelectionGuardrail = String(snapshot.topSelectionGuardrail ?? this.topSelectionGuardrail ?? '—').trim() || '—'
       this.paretoMeta = String(snapshot.paretoMeta ?? this.paretoMeta ?? '-').trim() || '-'
+      this.paretoModel = (snapshot.paretoModel && typeof snapshot.paretoModel === 'object')
+        ? (snapshot.paretoModel as ParetoRenderModel)
+        : this.paretoModel
       this.drillMeta = String(snapshot.drillMeta ?? this.drillMeta ?? '-').trim() || '-'
       this.drillStatus = String(snapshot.drillStatus ?? this.drillStatus ?? 'Click a Top row to view curves.').trim() || 'Click a Top row to view curves.'
       this.stabilityStatus = String(snapshot.stabilityStatus ?? this.stabilityStatus ?? '-').trim() || '-'
       this.stabilityMeta = String(snapshot.stabilityMeta ?? this.stabilityMeta ?? '-').trim() || '-'
       this.heatmapMeta = String(snapshot.heatmapMeta ?? this.heatmapMeta ?? '-').trim() || '-'
       this.heatmapStatusLine = String(snapshot.heatmapStatusLine ?? this.heatmapStatusLine ?? 'Heatmap unavailable.').trim() || 'Heatmap unavailable.'
+      if ('heatmapCanvasModel' in snapshot) {
+        this.heatmapCanvasModel = (snapshot.heatmapCanvasModel && typeof snapshot.heatmapCanvasModel === 'object')
+          ? markRaw(snapshot.heatmapCanvasModel as HeatmapCanvasRenderModel)
+          : null
+      }
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
@@ -969,6 +998,10 @@ export const useAnalysisStore = defineStore('analysis', {
 
     heatmapExportPng(): void {
       queueAnalysisServiceCall((service) => service.heatmapExportPng())
+    },
+
+    selectParetoPoint(rowId: string): void {
+      queueAnalysisServiceCall((service) => service.drillParetoPoint(String(rowId || '').trim()))
     },
 
     overviewEmptyPrimary(): void {

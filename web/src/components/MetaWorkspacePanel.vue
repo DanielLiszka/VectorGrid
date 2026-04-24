@@ -22,6 +22,7 @@ import AppVisualIcon from "./AppVisualIcon.vue";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
 import ContextHelpTip from "./ContextHelpTip.vue";
 import ContextActionMenu from "./ContextActionMenu.vue";
+import AppDataTableShell from "./ui/AppDataTableShell.vue";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { META_RESULTS_TABLE_STATE_KEY } from "../utils/core/storageKeys";
@@ -357,6 +358,12 @@ const metaSummaryChips = computed(() => {
 const columnVisibilitySummary = computed(
   () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
 );
+const metaTableShellSummary = computed(() => {
+  const rowCount = renderedRows.value.length;
+  const meta = String(metaMeta.value || "").trim();
+  const base = `${rowCount} row${rowCount === 1 ? "" : "s"} · ${columnVisibilitySummary.value}`;
+  return meta ? `${base} · ${meta}` : base;
+});
 const columnVisibilityHint = computed(() => {
   if (hiddenColumnCount.value > 0) {
     return `${hiddenColumnCount.value} hidden columns. Restore defaults to recover the full meta review table.`;
@@ -3164,110 +3171,121 @@ onBeforeUnmount(() => {
           <div class="metaLine mono" role="status" aria-live="polite">
             {{ metaMeta }}
           </div>
-          <details v-if="renderedColumns.length > 0" class="columnDetails">
-            <summary class="columnDetailsSummary">
-              <span>Visible columns</span>
-              <span class="mono panelNumeric">{{
-                columnVisibilitySummary
-              }}</span>
-            </summary>
-            <div class="columnDetailsBody">
-              <div class="panelMuted">{{ columnVisibilityHint }}</div>
-              <div
-                class="columnToggleGrid"
-                role="group"
-                aria-label="Visible meta result columns"
-              >
-                <label
-                  v-for="column in columnOptions"
-                  :key="column.key"
-                  class="columnToggle"
-                  :class="{
-                    disabled: !canHideColumn(column.key) && column.visible,
-                  }"
-                  :for="metaColumnToggleId(column.key)"
-                >
-                  <input
-                    :id="metaColumnToggleId(column.key)"
-                    type="checkbox"
-                    :checked="column.visible"
-                    :disabled="!canHideColumn(column.key) && column.visible"
-                    @change="toggleColumnVisibility(column.key)"
-                  />
-                  <span>{{ column.label }}</span>
-                </label>
-              </div>
-              <div class="actions columnDetailsActions">
-                <button
-                  type="button"
-                  :disabled="!canRestoreDefaults"
-                  @click="restoreDefaultColumns()"
-                >
-                  Restore defaults
-                </button>
-              </div>
-            </div>
-          </details>
-          <div
-            ref="tableScrollElementRef"
-            class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
-            tabindex="0"
-            aria-label="Meta analysis results table"
+          <AppDataTableShell
+            title="Meta selection rows"
+            :summary="metaTableShellSummary"
+            :row-count="renderedRows.length"
+            :viewport="false"
+            aria-label="Meta analysis results table shell"
+            keyboard-hint="Meta rows are virtualized; spacer rows are hidden from assistive technology."
           >
-            <table class="metaTableVue">
-              <caption class="srOnly">
-                Meta analysis selection results grouped by the configured
-                strategy, holdout, and clustering rules.
-              </caption>
-              <thead>
-                <tr v-for="headerGroup in headerGroups" :key="headerGroup.id">
-                  <th
-                    v-for="header in headerGroup.headers"
-                    :key="header.id"
-                    :class="{ left: headerMeta(header).alignLeft }"
-                    scope="col"
+            <template #controls>
+              <details v-if="renderedColumns.length > 0" class="columnDetails">
+                <summary class="columnDetailsSummary">
+                  <span>Visible columns</span>
+                  <span class="mono panelNumeric">{{
+                    columnVisibilitySummary
+                  }}</span>
+                </summary>
+                <div class="columnDetailsBody">
+                  <div class="panelMuted">{{ columnVisibilityHint }}</div>
+                  <div
+                    class="columnToggleGrid"
+                    role="group"
+                    aria-label="Visible meta result columns"
                   >
-                    {{ headerMeta(header).columnLabel }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-if="virtualTopSpacerPx > 0"
-                  class="spacerRow"
-                  aria-hidden="true"
-                >
-                  <td
-                    :colspan="Math.max(1, visibleLeafColumns.length)"
-                    :style="{ height: `${virtualTopSpacerPx}px` }"
-                  ></td>
-                </tr>
-                <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
-                  <template
-                    v-for="cell in virtualRow.row.getVisibleCells()"
-                    :key="cell.id"
+                    <label
+                      v-for="column in columnOptions"
+                      :key="column.key"
+                      class="columnToggle"
+                      :class="{
+                        disabled: !canHideColumn(column.key) && column.visible,
+                      }"
+                      :for="metaColumnToggleId(column.key)"
+                    >
+                      <input
+                        :id="metaColumnToggleId(column.key)"
+                        type="checkbox"
+                        :checked="column.visible"
+                        :disabled="!canHideColumn(column.key) && column.visible"
+                        @change="toggleColumnVisibility(column.key)"
+                      />
+                      <span>{{ column.label }}</span>
+                    </label>
+                  </div>
+                  <div class="actions columnDetailsActions">
+                    <button
+                      type="button"
+                      :disabled="!canRestoreDefaults"
+                      @click="restoreDefaultColumns()"
+                    >
+                      Restore defaults
+                    </button>
+                  </div>
+                </div>
+              </details>
+            </template>
+            <div
+              ref="tableScrollElementRef"
+              class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
+              tabindex="0"
+              aria-label="Meta analysis results table"
+            >
+              <table class="metaTableVue">
+                <caption class="srOnly">
+                  Meta analysis selection results grouped by the configured
+                  strategy, holdout, and clustering rules.
+                </caption>
+                <thead>
+                  <tr v-for="headerGroup in headerGroups" :key="headerGroup.id">
+                    <th
+                      v-for="header in headerGroup.headers"
+                      :key="header.id"
+                      :class="{ left: headerMeta(header).alignLeft }"
+                      scope="col"
+                    >
+                      {{ headerMeta(header).columnLabel }}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-if="virtualTopSpacerPx > 0"
+                    class="spacerRow"
+                    aria-hidden="true"
                   >
                     <td
-                      :class="metaCellPayload(cell).className"
-                      :title="metaCellPayload(cell).title || undefined"
+                      :colspan="Math.max(1, visibleLeafColumns.length)"
+                      :style="{ height: `${virtualTopSpacerPx}px` }"
+                    ></td>
+                  </tr>
+                  <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
+                    <template
+                      v-for="cell in virtualRow.row.getVisibleCells()"
+                      :key="cell.id"
                     >
-                      {{ metaCellPayload(cell).text }}
-                    </td>
-                  </template>
-                </tr>
-                <tr
-                  v-if="virtualBottomSpacerPx > 0"
-                  class="spacerRow"
-                  aria-hidden="true"
-                >
-                  <td
-                    :colspan="Math.max(1, visibleLeafColumns.length)"
-                    :style="{ height: `${virtualBottomSpacerPx}px` }"
-                  ></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+                      <td
+                        :class="metaCellPayload(cell).className"
+                        :title="metaCellPayload(cell).title || undefined"
+                      >
+                        {{ metaCellPayload(cell).text }}
+                      </td>
+                    </template>
+                  </tr>
+                  <tr
+                    v-if="virtualBottomSpacerPx > 0"
+                    class="spacerRow"
+                    aria-hidden="true"
+                  >
+                    <td
+                      :colspan="Math.max(1, visibleLeafColumns.length)"
+                      :style="{ height: `${virtualBottomSpacerPx}px` }"
+                    ></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </AppDataTableShell>
           <details class="panelDetails">
             <summary>Meta output preview</summary>
             <div class="panelDetailsBody">

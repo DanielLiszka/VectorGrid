@@ -44,4 +44,20 @@ describe('AppDataTableShell', () => {
     expect(wrapper.get('.appEmptyState').text()).toContain('No validation results')
     expect(wrapper.get('.emptyActions button').text()).toBe('Run validation')
   })
+
+  it('can delegate viewport framing to a specialized virtual table', () => {
+    const wrapper = mount(AppDataTableShell, {
+      props: {
+        title: 'Validation rows',
+        rowCount: 4,
+        viewport: false,
+      },
+      slots: {
+        default: '<div class="customVirtualViewport">Rows</div>',
+      },
+    })
+
+    expect(wrapper.find('.appDataTableViewport').exists()).toBe(false)
+    expect(wrapper.get('.appDataTableContent .customVirtualViewport').text()).toBe('Rows')
+  })
 })

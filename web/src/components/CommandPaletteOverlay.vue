@@ -192,7 +192,7 @@ const commands = computed<PaletteCommand[]>(() => {
     {
       id: 'go_workspace_library',
       group: 'navigation',
-      name: 'Go to Run Library',
+      name: 'Go to Library',
       desc: 'Switch to saved run library workspace.',
       keys: [],
       keywords: ['navigate', 'library', 'history'],
@@ -204,7 +204,7 @@ const commands = computed<PaletteCommand[]>(() => {
     {
       id: 'go_workspace_aggregate',
       group: 'navigation',
-      name: 'Go to Aggregate Analysis',
+      name: 'Go to Aggregate',
       desc: 'Switch to aggregate/meta analysis workspace.',
       keys: [],
       keywords: ['navigate', 'aggregate', 'meta'],
@@ -216,7 +216,7 @@ const commands = computed<PaletteCommand[]>(() => {
     {
       id: 'go_workspace_pro',
       group: 'navigation',
-      name: 'Go to Pro Tools',
+      name: 'Go to Diagnostics',
       desc: 'Switch to pro/debug workspace.',
       keys: [],
       keywords: ['navigate', 'pro', 'debug'],

@@ -21,6 +21,8 @@ import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import ConfirmationDialog from './ConfirmationDialog.vue'
 import ContextHelpTip from './ContextHelpTip.vue'
+import AppDataTableShell from './ui/AppDataTableShell.vue'
+import PriceChartPanel from './visualizations/PriceChartPanel.vue'
 
 const dataStore = useDataStore()
 const execStore = useExecutionStore()
@@ -288,6 +290,10 @@ const reconciliationLabel = computed(() => {
     default:
       return 'Broker review unavailable.'
   }
+})
+const executionOrderTableShellSummary = computed(() => {
+  const rowCount = executionOrderTableRows.value.length
+  return `${rowCount} order${rowCount === 1 ? '' : 's'} · ${reconciliationLabel.value}`
 })
 const accountReviewDetails = computed<ReviewDetailItem[]>(() => {
   const review = accountReview.value
@@ -790,6 +796,13 @@ function confirmPendingAction(): void {
   }
 }
 
+function setExecutionChartHost(element: HTMLElement | null): void {
+  const previous = execTvChartElementRef.value
+  execTvChartElementRef.value = element
+  if (!element || previous === element || !visible.value) return
+  void syncExecutionChartSurface()
+}
+
 async function syncExecutionChartSurface(): Promise<void> {
   const token = chartSyncToken.value + 1
   chartSyncToken.value = token
@@ -1209,64 +1222,74 @@ watch(
         <section class="executionSubsection" aria-label="Execution chart context">
           <div class="executionSubsectionLabel panelMetricKey">Chart context</div>
           <div class="chartBlock">
-            <div class="panelMuted">Execution chart (loaded dataset + broker orders)</div>
-            <div class="panelAdvisory">
-              If this chart remains blank, confirm the current dataset matches the selected symbol and refresh broker review before relying on marker overlays.
-            </div>
-            <div class="tvChartFrame">
-              <div ref="execTvChartElementRef" id="execTvChartVue" class="tvChartHost" role="img" aria-label="Execution chart"></div>
-            </div>
-            <div id="execTvChartMetaVue" class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ chartSurfaceMeta }}</div>
+            <PriceChartPanel
+              chart-id="execTvChartVue"
+              meta-id="execTvChartMetaVue"
+              title="Execution chart (loaded dataset + broker orders)"
+              :meta-text="chartSurfaceMeta"
+              advisory="If this chart remains blank, confirm the current dataset matches the selected symbol and refresh broker review before relying on marker overlays."
+              frame-aria-label="Execution chart for the loaded dataset with broker order markers."
+              host-aria-label="Execution chart"
+              @host-ready="setExecutionChartHost"
+            />
           </div>
         </section>
 
         <section class="executionSubsection" aria-label="Broker order activity">
           <div class="executionSubsectionLabel panelMetricKey">Broker orders</div>
-          <div
-            ref="orderTableScrollElementRef"
-            class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
-            tabindex="0"
-            aria-label="Broker order activity table"
+          <AppDataTableShell
+            title="Broker order activity"
+            :summary="executionOrderTableShellSummary"
+            :row-count="executionOrderTableRows.length"
+            :viewport="false"
+            aria-label="Broker order activity table shell"
+            empty-title="No broker orders for current symbol."
+            empty-body="Refresh broker review after selecting a symbol to populate broker-confirmed order activity."
+            keyboard-hint="Broker order rows are virtualized; spacer rows are hidden from assistive technology."
           >
-            <table class="execOrdersTableVue">
-              <caption class="srOnly">
-                Broker order activity for the current execution symbol, including side, status, filled quantity, average price, and order identifiers.
-              </caption>
-              <thead>
-                <tr v-for="headerGroup in orderHeaderGroups" :key="headerGroup.id">
-                  <th
-                    v-for="header in headerGroup.headers"
-                    :key="header.id"
-                    :class="{ left: headerMeta(header).alignLeft }"
-                    scope="col"
-                  >
-                    {{ headerMeta(header).columnLabel }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="!virtualOrderRows.length">
-                  <td class="left panelMuted" colspan="7">No broker orders for current symbol.</td>
-                </tr>
-                <tr v-if="orderTableTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                  <td colspan="7" :style="{ height: `${orderTableTopSpacerPx}px` }"></td>
-                </tr>
-                <tr v-for="virtualRow in virtualOrderRows" :key="virtualRow.row.id">
-                  <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
-                    <td
-                      :class="executionOrderCellPayload(cell).className"
-                      :title="executionOrderCellPayload(cell).title || undefined"
+            <div
+              ref="orderTableScrollElementRef"
+              class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
+              tabindex="0"
+              aria-label="Broker order activity table"
+            >
+              <table class="execOrdersTableVue">
+                <caption class="srOnly">
+                  Broker order activity for the current execution symbol, including side, status, filled quantity, average price, and order identifiers.
+                </caption>
+                <thead>
+                  <tr v-for="headerGroup in orderHeaderGroups" :key="headerGroup.id">
+                    <th
+                      v-for="header in headerGroup.headers"
+                      :key="header.id"
+                      :class="{ left: headerMeta(header).alignLeft }"
+                      scope="col"
                     >
-                      {{ executionOrderCellPayload(cell).text }}
-                    </td>
-                  </template>
-                </tr>
-                <tr v-if="orderTableBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                  <td colspan="7" :style="{ height: `${orderTableBottomSpacerPx}px` }"></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+                      {{ headerMeta(header).columnLabel }}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-if="orderTableTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                    <td colspan="7" :style="{ height: `${orderTableTopSpacerPx}px` }"></td>
+                  </tr>
+                  <tr v-for="virtualRow in virtualOrderRows" :key="virtualRow.row.id">
+                    <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
+                      <td
+                        :class="executionOrderCellPayload(cell).className"
+                        :title="executionOrderCellPayload(cell).title || undefined"
+                      >
+                        {{ executionOrderCellPayload(cell).text }}
+                      </td>
+                    </template>
+                  </tr>
+                  <tr v-if="orderTableBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                    <td colspan="7" :style="{ height: `${orderTableBottomSpacerPx}px` }"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </AppDataTableShell>
         </section>
 
         <section class="executionSubsection" aria-label="Saved live session evidence">

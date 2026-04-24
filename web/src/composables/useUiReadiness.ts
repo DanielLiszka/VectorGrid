@@ -7,6 +7,21 @@ import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 
 export type UiReadinessStage = 'no_data' | 'data_loaded_no_run' | 'results_available_no_selection' | 'ready'
+export type UiReadinessSurface =
+  | 'overview'
+  | 'top'
+  | 'pareto'
+  | 'validation'
+  | 'history'
+  | 'meta'
+
+export interface UiReadinessDecision {
+  stage: UiReadinessStage
+  title: string
+  body: string
+  primaryActionLabel: string
+  blockedReason: string
+}
 
 const PLACEHOLDER_VALUES = new Set(['', '-', '—'])
 
@@ -17,6 +32,72 @@ function hasMeaningfulText(value: unknown): boolean {
 
 function hasArrayValues<T>(value: T[] | readonly T[] | undefined | null): boolean {
   return Array.isArray(value) && value.length > 0
+}
+
+function surfaceLabel(surface: UiReadinessSurface): string {
+  if (surface === 'top') return 'Top results'
+  if (surface === 'pareto') return 'Pareto'
+  if (surface === 'validation') return 'Validation'
+  if (surface === 'history') return 'Library'
+  if (surface === 'meta') return 'Aggregate'
+  return 'Overview'
+}
+
+export function describeUiReadinessStage(
+  surface: UiReadinessSurface,
+  stage: UiReadinessStage,
+): UiReadinessDecision {
+  const label = surfaceLabel(surface)
+  if (stage === 'ready') {
+    return {
+      stage,
+      title: `${label} ready.`,
+      body: `The ${label.toLowerCase()} surface can use the current workflow state.`,
+      primaryActionLabel: surface === 'validation' ? 'Review validation' : 'Review results',
+      blockedReason: '',
+    }
+  }
+  if (stage === 'no_data') {
+    return {
+      stage,
+      title: surface === 'pareto'
+        ? 'Load data before opening the Pareto view.'
+        : `Load data before opening ${label}.`,
+      body: surface === 'pareto'
+        ? 'The Pareto frontier appears after a dataset is loaded and scored.'
+        : `${label} becomes useful after a dataset is loaded into the research workflow.`,
+      primaryActionLabel: 'Load data',
+      blockedReason: 'A dataset is required first.',
+    }
+  }
+  if (stage === 'data_loaded_no_run') {
+    return {
+      stage,
+      title: surface === 'validation'
+        ? 'Run optimization before validation.'
+        : surface === 'pareto'
+          ? 'Run an optimization to generate Pareto points.'
+        : `Run an optimization to generate ${label}.`,
+      body: surface === 'validation'
+        ? 'Validation needs an optimization shortlist or selected candidate before it can run.'
+        : surface === 'pareto'
+          ? 'This view compares tradeoffs between competing candidates once optimization results are available.'
+        : `${label} appears after the loaded dataset has scored optimization results.`,
+      primaryActionLabel: 'Run optimization',
+      blockedReason: 'Optimization results are required first.',
+    }
+  }
+  return {
+    stage,
+    title: surface === 'history' ? 'Select a saved run.' : 'Select or review a candidate.',
+    body: surface === 'history'
+      ? 'Choose a saved run from the library to enable restore, compare, and report actions.'
+      : `${label} needs a selected result context before this action is available.`,
+    primaryActionLabel: surface === 'history' ? 'Select run' : 'Review Top results',
+    blockedReason: surface === 'history'
+      ? 'No saved run is selected.'
+      : 'A candidate review context is required first.',
+  }
 }
 
 export function useUiReadiness() {
@@ -122,5 +203,6 @@ export function useUiReadiness() {
     historyStage,
     metaStage,
     metaCompareStage,
+    describeStage: describeUiReadinessStage,
   }
 }

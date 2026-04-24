@@ -23,6 +23,7 @@ import {
 } from '../utils/appSvgAssets'
 import { compareActionIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import AppDataTableShell from './ui/AppDataTableShell.vue'
 
 interface TopColumn {
   key: string
@@ -159,6 +160,10 @@ const topSummaryChips = computed(() => {
 const columnVisibilitySummary = computed(
   () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
 )
+const topTableShellSummary = computed(() => {
+  const rowCount = renderedRows.value.length
+  return `${rowCount} row${rowCount === 1 ? '' : 's'} · ${columnVisibilitySummary.value}`
+})
 const columnVisibilityHint = computed(() => {
   if (hiddenColumnCount.value > 0) {
     return `${hiddenColumnCount.value} hidden columns. Restore defaults to return to the full shortlist layout.`
@@ -595,119 +600,130 @@ onBeforeUnmount(() => {
           <div v-if="topStage === 'ready' && hasTopSelectionGuardrail" class="panelMuted mono panelNumeric">{{ topSelectionGuardrail }}</div>
         </div>
 
-        <div
+        <AppDataTableShell
           v-else
-          ref="tableScrollElementRef"
-          class="tableWrap virtualTableViewport overflowShadowY overflowShadowX surfaceWorking"
-          tabindex="0"
-          aria-label="Top optimization results table"
-          aria-describedby="topSelectionStatus"
+          title="Ranked candidate rows"
+          :summary="topTableShellSummary"
+          :row-count="renderedRows.length"
+          :viewport="false"
+          aria-label="Top optimization results table shell"
+          keyboard-hint="Use arrow keys to move between rows, Enter to open Drilldown, and P to pin a candidate."
         >
-          <table class="topTableVue" role="grid" aria-describedby="topSelectionStatus">
-            <caption class="srOnly">Top optimization results ranked by the selected table sort order.</caption>
-            <thead role="rowgroup">
-              <tr v-for="headerGroup in headerGroups" :key="headerGroup.id" role="row">
-                <th
-                  v-for="header in headerGroup.headers"
-                  :key="header.id"
-                  :class="{ left: headerMeta(header).alignLeft }"
-                  :aria-sort="sortStateToAria(headerMeta(header).sort)"
-                  scope="col"
-                  role="columnheader"
-                >
-                  <button
-                    v-if="!header.isPlaceholder"
-                    type="button"
-                    class="headerButton"
-                    :class="{ left: headerMeta(header).alignLeft }"
-                    @click="clickTopHeader(headerMeta(header).columnKey)"
+          <template #controls>
+            <details v-if="renderedColumns.length > 0" class="columnDetails">
+              <summary class="columnDetailsSummary">
+                <span>Visible columns</span>
+                <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+              </summary>
+              <div class="columnDetailsBody">
+                <div class="panelMuted">{{ columnVisibilityHint }}</div>
+                <div class="columnToggleGrid" role="group" aria-label="Visible top result columns">
+                  <label
+                    v-for="column in columnOptions"
+                    :key="column.key"
+                    class="columnToggle"
+                    :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                    :for="topColumnToggleId(column.key)"
                   >
-                    <span>{{ headerMeta(header).columnLabel }}</span>
-                    <span v-if="headerMeta(header).sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
-                    <span v-else-if="headerMeta(header).sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
+                    <input
+                      :id="topColumnToggleId(column.key)"
+                      type="checkbox"
+                      :checked="column.visible"
+                      :disabled="!canHideColumn(column.key) && column.visible"
+                      @change="toggleColumnVisibility(column.key)"
+                    />
+                    <span>{{ column.label }}</span>
+                  </label>
+                </div>
+                <div class="actions columnDetailsActions">
+                  <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                    Restore defaults
                   </button>
-                </th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
-              </tr>
-              <tr
-                v-for="virtualRow in virtualRows"
-                :key="virtualRow.row.id"
-                :class="{ selected: virtualRow.row.original.selected }"
-                data-top-row="1"
-                role="row"
-                :aria-selected="virtualRow.row.original.selected"
-                tabindex="0"
-                @click="clickTopRow(virtualRow.row.index)"
-                @keydown="onTopRowKeydown(virtualRow.row.index, $event)"
-              >
-                <template v-for="(cell, visibleCellIndex) in virtualRow.row.getVisibleCells()" :key="cell.id">
-                  <td
-                    :class="[
-                      topCellPayload(cell).className,
-                      { leadVisibleColumn: cell.column.id === leadVisibleColumnKey },
-                    ]"
-                    :data-column-key="String((cell.column.columnDef.meta as MatrixColumnMeta)?.columnKey || '')"
-                    :title="topCellPayload(cell).title || undefined"
-                    role="gridcell"
+                </div>
+              </div>
+            </details>
+          </template>
+          <div
+            ref="tableScrollElementRef"
+            class="tableWrap virtualTableViewport overflowShadowY overflowShadowX surfaceWorking"
+            tabindex="0"
+            aria-label="Top optimization results table"
+            aria-describedby="topSelectionStatus"
+          >
+            <table class="topTableVue" role="grid" aria-describedby="topSelectionStatus">
+              <caption class="srOnly">Top optimization results ranked by the selected table sort order.</caption>
+              <thead role="rowgroup">
+                <tr v-for="headerGroup in headerGroups" :key="headerGroup.id" role="row">
+                  <th
+                    v-for="header in headerGroup.headers"
+                    :key="header.id"
+                    :class="{ left: headerMeta(header).alignLeft }"
+                    :aria-sort="sortStateToAria(headerMeta(header).sort)"
+                    scope="col"
+                    role="columnheader"
                   >
-                    <div class="topCellContent">
-                      <span>{{ topCellPayload(cell).text }}</span>
-                      <button
-                        v-if="visibleCellIndex === 0"
-                        type="button"
-                        class="pinCellBtn"
-                        :aria-label="`${pinCellLabel(virtualRow.row.original.rowId)} candidate ${virtualRow.row.index + 1}`"
-                        :disabled="rowPinned(virtualRow.row.original.rowId)"
-                        @click.stop="pinTopRow(virtualRow.row.index)"
-                      >
-                        {{ pinCellLabel(virtualRow.row.original.rowId) }}
-                      </button>
-                    </div>
-                  </td>
-                </template>
-              </tr>
-              <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <details v-if="topStage === 'ready' && renderedColumns.length > 0" class="columnDetails">
-          <summary class="columnDetailsSummary">
-            <span>Visible columns</span>
-            <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
-          </summary>
-          <div class="columnDetailsBody">
-            <div class="panelMuted">{{ columnVisibilityHint }}</div>
-            <div class="columnToggleGrid" role="group" aria-label="Visible top result columns">
-              <label
-                v-for="column in columnOptions"
-                :key="column.key"
-                class="columnToggle"
-                :class="{ disabled: !canHideColumn(column.key) && column.visible }"
-                :for="topColumnToggleId(column.key)"
-              >
-                <input
-                  :id="topColumnToggleId(column.key)"
-                  type="checkbox"
-                  :checked="column.visible"
-                  :disabled="!canHideColumn(column.key) && column.visible"
-                  @change="toggleColumnVisibility(column.key)"
-                />
-                <span>{{ column.label }}</span>
-              </label>
-            </div>
-            <div class="actions columnDetailsActions">
-              <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
-                Restore defaults
-              </button>
-            </div>
+                    <button
+                      v-if="!header.isPlaceholder"
+                      type="button"
+                      class="headerButton"
+                      :class="{ left: headerMeta(header).alignLeft }"
+                      @click="clickTopHeader(headerMeta(header).columnKey)"
+                    >
+                      <span>{{ headerMeta(header).columnLabel }}</span>
+                      <span v-if="headerMeta(header).sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
+                      <span v-else-if="headerMeta(header).sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                  <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
+                </tr>
+                <tr
+                  v-for="virtualRow in virtualRows"
+                  :key="virtualRow.row.id"
+                  :class="{ selected: virtualRow.row.original.selected }"
+                  data-top-row="1"
+                  role="row"
+                  :aria-selected="virtualRow.row.original.selected"
+                  tabindex="0"
+                  @click="clickTopRow(virtualRow.row.index)"
+                  @keydown="onTopRowKeydown(virtualRow.row.index, $event)"
+                >
+                  <template v-for="(cell, visibleCellIndex) in virtualRow.row.getVisibleCells()" :key="cell.id">
+                    <td
+                      :class="[
+                        topCellPayload(cell).className,
+                        { leadVisibleColumn: cell.column.id === leadVisibleColumnKey },
+                      ]"
+                      :data-column-key="String((cell.column.columnDef.meta as MatrixColumnMeta)?.columnKey || '')"
+                      :title="topCellPayload(cell).title || undefined"
+                      role="gridcell"
+                    >
+                      <div class="topCellContent">
+                        <span>{{ topCellPayload(cell).text }}</span>
+                        <button
+                          v-if="visibleCellIndex === 0"
+                          type="button"
+                          class="pinCellBtn"
+                          :aria-label="`${pinCellLabel(virtualRow.row.original.rowId)} candidate ${virtualRow.row.index + 1}`"
+                          :disabled="rowPinned(virtualRow.row.original.rowId)"
+                          @click.stop="pinTopRow(virtualRow.row.index)"
+                        >
+                          {{ pinCellLabel(virtualRow.row.original.rowId) }}
+                        </button>
+                      </div>
+                    </td>
+                  </template>
+                </tr>
+                <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                  <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-        </details>
+        </AppDataTableShell>
         <section v-if="pinnedTopCandidates.length > 0" class="compareTray surfaceSunken">
           <div class="panelSectionHeader">
             <div class="panelHeadCopy">

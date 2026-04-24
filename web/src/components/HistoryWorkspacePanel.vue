@@ -23,6 +23,7 @@ import { formatUiBinaryBytes } from "../utils/uiFormat";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
 import OptionsExpressionPanel from "./OptionsExpressionPanel.vue";
+import AppDataTableShell from "./ui/AppDataTableShell.vue";
 
 const historyStore = useHistoryStore();
 const workflowStore = useWorkflowStore();
@@ -182,6 +183,10 @@ const savedRunsSearchSummary = computed(() => {
   if (!query) return `${total} saved runs available. ${localHelp}`;
   const label = visibleCount === 1 ? "match" : "matches";
   return `${visibleCount} ${label} for “${query}”. ${localHelp}`;
+});
+const sessionRunListSummary = computed(() => {
+  const count = visibleSessionRuns.value.length;
+  return `${count} run${count === 1 ? "" : "s"} captured in this session`;
 });
 
 function basename(value: string): string {
@@ -471,7 +476,7 @@ onBeforeUnmount(() => {
           aria-hidden="true"
           draggable="false"
         />
-        <div class="emptyTitle">Run Library is empty.</div>
+        <div class="emptyTitle">Library is empty.</div>
         <div class="emptyBody">
           Save or rerun an optimization to build a library of artifacts you can
           inspect here.
@@ -509,39 +514,43 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div class="sectionMeta panelMuted mono panelNumeric">
-            {{ visibleSessionRuns.length }} runs captured in this session
-          </div>
-          <ul
-            v-if="visibleSessionRuns.length"
-            class="runList overflowShadowY surfaceWorking"
-            aria-label="Session history runs"
+          <AppDataTableShell
+            title="Session run artifacts"
+            :summary="sessionRunListSummary"
+            :row-count="visibleSessionRuns.length"
+            :viewport="false"
+            aria-label="Session history runs shell"
+            empty-title="No session runs have been captured yet."
+            empty-body="Run or apply an optimization to populate this session recall list."
+            keyboard-hint="Use arrow keys, Home, and End to move through session run artifacts."
           >
-            <li
-              v-for="entry in visibleSessionRuns"
-              :key="`session_run_${entry.ts}`"
-              class="runListItem"
+            <ul
+              class="runList overflowShadowY surfaceWorking"
+              aria-label="Session history runs"
             >
-              <button
-                type="button"
-                class="runListButton"
-                :class="{ active: sessionValue === entry.ts }"
-                :aria-pressed="sessionValue === entry.ts"
-                @click="onSessionSelect(entry.ts)"
-                @keydown="onRunListKeydown"
+              <li
+                v-for="entry in visibleSessionRuns"
+                :key="`session_run_${entry.ts}`"
+                class="runListItem"
               >
-                <div class="runListPrimary">
-                  <span class="mono">{{ entry.ts }}</span>
-                </div>
-                <div class="runListSecondary panelMuted">
-                  {{ sessionRunMeta(entry) }}
-                </div>
-              </button>
-            </li>
-          </ul>
-          <div v-else class="listEmpty panelMuted">
-            No session runs have been captured yet.
-          </div>
+                <button
+                  type="button"
+                  class="runListButton"
+                  :class="{ active: sessionValue === entry.ts }"
+                  :aria-pressed="sessionValue === entry.ts"
+                  @click="onSessionSelect(entry.ts)"
+                  @keydown="onRunListKeydown"
+                >
+                  <div class="runListPrimary">
+                    <span class="mono">{{ entry.ts }}</span>
+                  </div>
+                  <div class="runListSecondary panelMuted">
+                    {{ sessionRunMeta(entry) }}
+                  </div>
+                </button>
+              </li>
+            </ul>
+          </AppDataTableShell>
 
           <div class="actions">
             <button
@@ -640,112 +649,119 @@ onBeforeUnmount(() => {
           <div class="panelMuted searchScopeMeta">
             {{ savedRunsSearchSummary }}
           </div>
-          <ul
-            v-if="visibleSavedRuns.length"
-            ref="savedRunsScrollElementRef"
-            class="runList savedRunList overflowShadowY surfaceWorking"
-            :class="{ historyVirtualListViewport: true }"
-            aria-label="Saved run artifacts"
+          <AppDataTableShell
+            title="Saved run artifacts"
+            :summary="savedRunsSearchSummary"
+            :row-count="visibleSavedRuns.length"
+            :viewport="false"
+            aria-label="Saved run artifacts shell"
+            empty-title="No saved runs match the current filters."
+            empty-body="Broaden the saved-run search, clear tag filters, or refresh the run library."
+            keyboard-hint="Use arrow keys, Home, and End to move through saved run artifacts."
           >
-            <li
-              v-if="savedRunsTopSpacerPx > 0"
-              class="runListSpacer"
-              aria-hidden="true"
-              :style="{ height: `${savedRunsTopSpacerPx}px` }"
-            ></li>
-            <li
-              v-for="virtualRow in virtualSavedRunRows"
-              :key="`saved_run_${virtualRow.row.path}`"
-              class="runListItem"
+            <ul
+              ref="savedRunsScrollElementRef"
+              class="runList savedRunList overflowShadowY surfaceWorking"
+              :class="{ historyVirtualListViewport: true }"
+              aria-label="Saved run artifacts"
             >
-              <button
-                type="button"
-                class="runListButton"
-                data-saved-run="1"
-                :class="{ active: savedValue === virtualRow.row.path }"
-                :aria-pressed="savedValue === virtualRow.row.path"
-                :aria-posinset="virtualRow.index + 1"
-                :aria-setsize="visibleSavedRuns.length"
-                @click="onSavedSelect(virtualRow.row.path)"
-                @keydown="onRunListKeydown"
+              <li
+                v-if="savedRunsTopSpacerPx > 0"
+                class="runListSpacer"
+                aria-hidden="true"
+                :style="{ height: `${savedRunsTopSpacerPx}px` }"
+              ></li>
+              <li
+                v-for="virtualRow in virtualSavedRunRows"
+                :key="`saved_run_${virtualRow.row.path}`"
+                class="runListItem"
               >
-                <div class="runListPrimary">
-                  <span class="mono">{{
-                    virtualRow.row.ts ||
-                    basename(virtualRow.row.path) ||
-                    "Saved run"
-                  }}</span>
-                  <span class="pill">{{
-                    virtualRow.row.strategyKind || "Unknown"
-                  }}</span>
-                </div>
-                <div class="runListSecondary panelMuted">
-                  {{
-                    basename(virtualRow.row.csvPath) || "Dataset unavailable"
-                  }}
-                  <span v-if="formatBytesCompact(virtualRow.row.bytes)">
-                    · {{ formatBytesCompact(virtualRow.row.bytes) }}
-                  </span>
-                </div>
-                <div class="pillRow">
-                  <span
-                    class="pill"
-                    :class="{ good: virtualRow.row.hasValidation }"
-                  >
+                <button
+                  type="button"
+                  class="runListButton"
+                  data-saved-run="1"
+                  :class="{ active: savedValue === virtualRow.row.path }"
+                  :aria-pressed="savedValue === virtualRow.row.path"
+                  :aria-posinset="virtualRow.index + 1"
+                  :aria-setsize="visibleSavedRuns.length"
+                  @click="onSavedSelect(virtualRow.row.path)"
+                  @keydown="onRunListKeydown"
+                >
+                  <div class="runListPrimary">
+                    <span class="mono">{{
+                      virtualRow.row.ts ||
+                      basename(virtualRow.row.path) ||
+                      "Saved run"
+                    }}</span>
+                    <span class="pill">{{
+                      virtualRow.row.strategyKind || "Unknown"
+                    }}</span>
+                  </div>
+                  <div class="runListSecondary panelMuted">
                     {{
-                      virtualRow.row.hasValidation
-                        ? "validation"
-                        : "no validation"
+                      basename(virtualRow.row.csvPath) || "Dataset unavailable"
                     }}
-                  </span>
-                  <span
-                    class="pill"
-                    :class="{ good: hasSavedRunReport(virtualRow.row) }"
-                  >
-                    {{
-                      hasSavedRunReport(virtualRow.row) ? "xlsx" : "artifact only"
-                    }}
-                  </span>
-                  <span
-                    v-if="
-                      virtualRow.row.strategyKind === 'MlSignal' &&
-                      savedRunMlScoreContract(virtualRow.row)
-                    "
-                    class="pill subtle"
-                    :title="
-                      savedRunMlScoreNote(virtualRow.row) ||
-                      savedRunMlScoreContract(virtualRow.row)
-                    "
-                  >
-                    {{ savedRunMlScoreContract(virtualRow.row) }}
-                  </span>
-                  <span
-                    v-if="savedRunRouteSummary(virtualRow.row)"
-                    class="pill subtle routePill"
-                    :title="savedRunRouteSummary(virtualRow.row)"
-                  >
-                    {{ savedRunRouteSummary(virtualRow.row) }}
-                  </span>
-                  <span
-                    v-for="tag in virtualRow.row.tags.slice(0, 3)"
-                    :key="`saved_tag_${virtualRow.row.path}_${tag}`"
-                    class="pill subtle"
-                  >
-                    {{ tag }}
-                  </span>
-                </div>
-              </button>
-            </li>
-            <li
-              v-if="savedRunsBottomSpacerPx > 0"
-              class="runListSpacer"
-              aria-hidden="true"
-              :style="{ height: `${savedRunsBottomSpacerPx}px` }"
-            ></li>
-          </ul>
-          <div v-else class="listEmpty panelMuted">
-            No saved runs match the current filters.
-          </div>
+                    <span v-if="formatBytesCompact(virtualRow.row.bytes)">
+                      · {{ formatBytesCompact(virtualRow.row.bytes) }}
+                    </span>
+                  </div>
+                  <div class="pillRow">
+                    <span
+                      class="pill"
+                      :class="{ good: virtualRow.row.hasValidation }"
+                    >
+                      {{
+                        virtualRow.row.hasValidation
+                          ? "validation"
+                          : "no validation"
+                      }}
+                    </span>
+                    <span
+                      class="pill"
+                      :class="{ good: hasSavedRunReport(virtualRow.row) }"
+                    >
+                      {{
+                        hasSavedRunReport(virtualRow.row) ? "xlsx" : "artifact only"
+                      }}
+                    </span>
+                    <span
+                      v-if="
+                        virtualRow.row.strategyKind === 'MlSignal' &&
+                        savedRunMlScoreContract(virtualRow.row)
+                      "
+                      class="pill subtle"
+                      :title="
+                        savedRunMlScoreNote(virtualRow.row) ||
+                        savedRunMlScoreContract(virtualRow.row)
+                      "
+                    >
+                      {{ savedRunMlScoreContract(virtualRow.row) }}
+                    </span>
+                    <span
+                      v-if="savedRunRouteSummary(virtualRow.row)"
+                      class="pill subtle routePill"
+                      :title="savedRunRouteSummary(virtualRow.row)"
+                    >
+                      {{ savedRunRouteSummary(virtualRow.row) }}
+                    </span>
+                    <span
+                      v-for="tag in virtualRow.row.tags.slice(0, 3)"
+                      :key="`saved_tag_${virtualRow.row.path}_${tag}`"
+                      class="pill subtle"
+                    >
+                      {{ tag }}
+                    </span>
+                  </div>
+                </button>
+              </li>
+              <li
+                v-if="savedRunsBottomSpacerPx > 0"
+                class="runListSpacer"
+                aria-hidden="true"
+                :style="{ height: `${savedRunsBottomSpacerPx}px` }"
+              ></li>
+            </ul>
+          </AppDataTableShell>
 
           <div class="actions">
             <button

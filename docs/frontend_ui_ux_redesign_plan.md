@@ -12,6 +12,36 @@ This plan covers the full frontend surface:
 - Canvas heatmap and Pareto rendering.
 - Accessibility, responsive layout, performance, and test coverage.
 
+## Implementation Status
+
+Last updated: 2026-04-24.
+
+Completed in the current frontend redesign slice:
+
+- [x] Added local UI primitives and migrated major review surfaces to shared shells where practical.
+- [x] Added visualization model/runtime modules for chart theme, price-series normalization, heatmap modeling, and Pareto modeling.
+- [x] Added component-owned visualization hosts: `HeatmapCanvas`, `HeatmapLegend`, `ParetoScatter`, `PriceChartPanel`, `VisualizationToolbar`, and `ChartEmptyState`.
+- [x] Moved Pareto rendering into `ParetoScatter` with keyboard navigation and selected-point summary.
+- [x] Moved heatmap paint, hover/pointer handling, representative-drilldown params, legend rendering, and PNG export into `HeatmapCanvas`; the service now publishes a pure `heatmapCanvasModel` and delegates legacy export calls through the component controller.
+- [x] Moved drilldown and execution price-chart hosts into `PriceChartPanel`; execution consumes the host directly and drill now owns its Vue chart runtime through `useDrillPriceChartRuntime`.
+- [x] Extracted drill chart series, marker, and trade-table modeling into `visualizations/drillChartModel.ts`; the analysis store now publishes `drillChartModel`, while `DrillWorkspacePanel` owns trade selection, table selection, marker selection, and shortcut-controller delegation.
+- [x] Standardized dense review surfaces with `AppDataTableShell` or delegated shell framing: Top results, Validation, History, Execution orders, and Meta selection.
+- [x] Added action-oriented empty/readiness copy and density preview coverage in touched panels.
+- [x] Narrowed the optimize context dock so it does not cover Analyze/Pareto/Heatmap surfaces.
+- [x] Updated shell information architecture labels to Research, Library, Aggregate, and Diagnostics across titlebar, workspace tabs, command palette, settings shortcuts, and desktop smoke expectations.
+- [x] Made the titlebar primary action stage-aware so conventional Validate routes to validation while ML Signal keeps the ML optimization action.
+- [x] Expanded the run context bar with dataset/timeframe, strategy/objective, selected candidate, backend, and overflow status signals.
+- [x] Added heatmap keyboard cell traversal, Enter/Space representative drilldown, and persistent selected-cell summary in `HeatmapCanvas`.
+- [x] Refreshed UI baseline screenshots under `scripts/baselines/ui_capture`.
+
+Completed larger follow-ups:
+
+- [x] Finish moving the drill Lightweight Charts runtime and trade-selection mutation path fully out of `analysisService.ts`.
+- [x] Add deeper keyboard selection and persistent selected-cell summary for heatmap cells.
+- [x] Refresh UI baselines after the broad visual shell pass.
+
+No open frontend-redesign checklist items remain in this document. Future UI work should be tracked as a new plan or a new dated slice.
+
 ## Current Frontend Inventory
 
 Primary shell composition lives in:

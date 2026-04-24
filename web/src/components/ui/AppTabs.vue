@@ -3,6 +3,7 @@ interface AppTabItem {
   key: string
   label: string
   disabled?: boolean
+  panelId?: string
 }
 
 const props = withDefaults(
@@ -30,10 +31,11 @@ function selectTab(key: string): void {
 function moveFocus(event: KeyboardEvent): void {
   const enabled = props.items.filter((item) => !item.disabled)
   if (!enabled.length) return
-  const currentIndex = Math.max(0, enabled.findIndex((item) => item.key === props.modelValue))
+  const currentIndex = enabled.findIndex((item) => item.key === props.modelValue)
+  const baseIndex = currentIndex >= 0 ? currentIndex : 0
   let nextIndex = currentIndex
-  if (event.key === 'ArrowRight') nextIndex = Math.min(enabled.length - 1, currentIndex + 1)
-  else if (event.key === 'ArrowLeft') nextIndex = Math.max(0, currentIndex - 1)
+  if (event.key === 'ArrowRight') nextIndex = (baseIndex + 1) % enabled.length
+  else if (event.key === 'ArrowLeft') nextIndex = (baseIndex - 1 + enabled.length) % enabled.length
   else if (event.key === 'Home') nextIndex = 0
   else if (event.key === 'End') nextIndex = enabled.length - 1
   else return
@@ -60,6 +62,7 @@ function moveFocus(event: KeyboardEvent): void {
       :class="{ active: modelValue === item.key }"
       role="tab"
       :aria-selected="modelValue === item.key"
+      :aria-controls="item.panelId || undefined"
       :tabindex="modelValue === item.key ? 0 : -1"
       :disabled="item.disabled"
       @click="selectTab(item.key)"

@@ -4,6 +4,7 @@ export interface AppMetricItem {
   label: string
   value: string
   tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent'
+  trend?: string
   title?: string
 }
 
@@ -28,7 +29,10 @@ withDefaults(
       :class="item.tone ? `appMetricItem-${item.tone}` : undefined"
     >
       <dt class="appMetricLabel">{{ item.label }}</dt>
-      <dd class="appMetricValue mono" :title="item.title || item.value">{{ item.value || '—' }}</dd>
+      <dd class="appMetricValue mono" :title="item.title || item.value">
+        <span class="appMetricPrimaryValue">{{ item.value || '—' }}</span>
+        <span v-if="item.trend" class="appMetricTrend">{{ item.trend }}</span>
+      </dd>
     </div>
   </dl>
 </template>
@@ -60,11 +64,30 @@ withDefaults(
 .appMetricValue {
   margin: 0.12rem 0 0;
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  overflow: hidden;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.appMetricPrimaryValue,
+.appMetricTrend {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.78rem;
-  color: var(--text);
+}
+
+.appMetricPrimaryValue {
+  flex: 1 1 auto;
+}
+
+.appMetricTrend {
+  flex: 0 1 auto;
+  color: var(--muted);
+  font-size: 0.72rem;
 }
 
 .appMetricItem-success {

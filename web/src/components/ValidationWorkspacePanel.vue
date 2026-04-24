@@ -12,6 +12,7 @@ import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import ContextHelpTip from './ContextHelpTip.vue'
+import AppDataTableShell from './ui/AppDataTableShell.vue'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import {
@@ -222,6 +223,9 @@ const validationSummaryChips = computed(() => {
 })
 const columnVisibilitySummary = computed(
   () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
+)
+const validationTableShellSummary = computed(
+  () => `${tableRowCount.value} rows · ${columnVisibilitySummary.value}`,
 )
 const columnVisibilityHint = computed(() => {
   if (hiddenColumnCount.value > 0) {
@@ -1102,80 +1106,91 @@ onBeforeUnmount(() => {
             <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
           </div>
         </div>
-        <details v-if="renderedColumns.length > 0" class="columnDetails">
-          <summary class="columnDetailsSummary">
-            <span>Visible columns</span>
-            <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
-          </summary>
-          <div class="columnDetailsBody">
-            <div class="panelMuted">{{ columnVisibilityHint }}</div>
-            <div class="columnToggleGrid" role="group" aria-label="Visible validation result columns">
-              <label
-                v-for="column in columnOptions"
-                :key="column.key"
-                class="columnToggle"
-                :class="{ disabled: !canHideColumn(column.key) && column.visible }"
-                :for="validationColumnToggleId(column.key)"
-              >
-                <input
-                  :id="validationColumnToggleId(column.key)"
-                  type="checkbox"
-                  :checked="column.visible"
-                  :disabled="!canHideColumn(column.key) && column.visible"
-                  @change="toggleColumnVisibility(column.key)"
-                />
-                <span>{{ column.label }}</span>
-              </label>
-            </div>
-            <div class="actions columnDetailsActions">
-              <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
-                Restore defaults
-              </button>
-            </div>
-          </div>
-        </details>
-        <div
-          ref="tableScrollElementRef"
-          class="tableWrap virtualTableViewport overflowShadowY overflowShadowX surfaceWorking"
-          tabindex="0"
-          aria-label="Validation results table"
+        <AppDataTableShell
+          title="Validation rows"
+          :summary="validationTableShellSummary"
+          :row-count="Number(tableRowCount || 0)"
+          :viewport="false"
+          aria-label="Validation results table shell"
+          keyboard-hint="Validation rows are virtualized; spacer rows are hidden from assistive technology."
         >
-          <table class="validationTableVue">
-            <caption class="srOnly">
-              Validation metrics for the current shortlist, including route, category, and cross-ticker results.
-            </caption>
-            <thead>
-              <tr v-for="headerGroup in headerGroups" :key="headerGroup.id">
-                <th
-                  v-for="header in headerGroup.headers"
-                  :key="header.id"
-                  :class="{ left: headerMeta(header).alignLeft }"
-                  scope="col"
-                >
-                  {{ headerMeta(header).columnLabel }}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
-              </tr>
-              <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
-                <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
-                  <td
-                    :class="validationCellPayload(cell).className"
-                    :title="validationCellPayload(cell).title || undefined"
+          <template #controls>
+            <details v-if="renderedColumns.length > 0" class="columnDetails">
+              <summary class="columnDetailsSummary">
+                <span>Visible columns</span>
+                <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+              </summary>
+              <div class="columnDetailsBody">
+                <div class="panelMuted">{{ columnVisibilityHint }}</div>
+                <div class="columnToggleGrid" role="group" aria-label="Visible validation result columns">
+                  <label
+                    v-for="column in columnOptions"
+                    :key="column.key"
+                    class="columnToggle"
+                    :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                    :for="validationColumnToggleId(column.key)"
                   >
-                    {{ validationCellPayload(cell).text }}
-                  </td>
-                </template>
-              </tr>
-              <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                    <input
+                      :id="validationColumnToggleId(column.key)"
+                      type="checkbox"
+                      :checked="column.visible"
+                      :disabled="!canHideColumn(column.key) && column.visible"
+                      @change="toggleColumnVisibility(column.key)"
+                    />
+                    <span>{{ column.label }}</span>
+                  </label>
+                </div>
+                <div class="actions columnDetailsActions">
+                  <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                    Restore defaults
+                  </button>
+                </div>
+              </div>
+            </details>
+          </template>
+          <div
+            ref="tableScrollElementRef"
+            class="tableWrap virtualTableViewport overflowShadowY overflowShadowX surfaceWorking"
+            tabindex="0"
+            aria-label="Validation results table"
+          >
+            <table class="validationTableVue">
+              <caption class="srOnly">
+                Validation metrics for the current shortlist, including route, category, and cross-ticker results.
+              </caption>
+              <thead>
+                <tr v-for="headerGroup in headerGroups" :key="headerGroup.id">
+                  <th
+                    v-for="header in headerGroup.headers"
+                    :key="header.id"
+                    :class="{ left: headerMeta(header).alignLeft }"
+                    scope="col"
+                  >
+                    {{ headerMeta(header).columnLabel }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                  <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
+                </tr>
+                <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
+                  <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
+                    <td
+                      :class="validationCellPayload(cell).className"
+                      :title="validationCellPayload(cell).title || undefined"
+                    >
+                      {{ validationCellPayload(cell).text }}
+                    </td>
+                  </template>
+                </tr>
+                <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
+                  <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </AppDataTableShell>
       </section>
 
       <section v-if="showValidationResults" class="pane">

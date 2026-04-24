@@ -91,7 +91,7 @@ describe('VueWorkspaceShell', () => {
 
     const text = document.body.textContent || ''
     expect(text).toContain('Workspace')
-    expect(text).toContain('Run Library')
+    expect(text).toContain('Library')
     expect(text).toContain('Mode')
     expect(text).toContain('ML Signal')
     expect(text).not.toContain('WorkflowML Signal')
@@ -234,7 +234,7 @@ describe('VueWorkspaceShell', () => {
     expect(workflowButton?.getAttribute('aria-selected')).toBe('true')
     expect(document.activeElement).toBe(workflowButton)
     expect(shellMainPanel?.getAttribute('aria-labelledby')).toBe('workflow_step_tab_data')
-    expect(document.querySelector('#shellSelectionStatus')?.textContent).toContain('Workspace Workflow.')
+    expect(document.querySelector('#shellSelectionStatus')?.textContent).toContain('Workspace Research.')
 
     workflowButton?.focus()
     workflowButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))

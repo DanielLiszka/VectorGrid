@@ -7,6 +7,9 @@ import { refreshParetoFromWorkflowRun } from '../services/analysisService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import ChartEmptyState from './visualizations/ChartEmptyState.vue'
+import ParetoScatter from './visualizations/ParetoScatter.vue'
+import type { ParetoRenderPoint } from '../visualizations/paretoModel'
 
 interface OptionItem {
   value: string
@@ -16,12 +19,13 @@ interface OptionItem {
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
-const { paretoStage } = useUiReadiness()
+const { paretoStage, describeStage } = useUiReadiness()
 const {
   paretoX,
   paretoY,
   paretoXOptions,
   paretoYOptions,
+  paretoModel,
   paretoMeta,
   paretoTruthNote,
   paretoRepresentativeSummary,
@@ -37,6 +41,7 @@ const xDraft = ref('max_dd')
 const yDraft = ref('pnl')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'pareto')
+const paretoReadiness = computed(() => describeStage('pareto', paretoStage.value))
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
@@ -80,6 +85,10 @@ watch(visible, async (nextVisible) => {
 
 function reviewTopResults(): void {
   workflowStore.selectResultsTab('top')
+}
+
+function selectParetoPoint(point: ParetoRenderPoint): void {
+  analysisStore.selectParetoPoint(point.rowId)
 }
 </script>
 
@@ -137,19 +146,14 @@ function reviewTopResults(): void {
 
       <section class="pane">
         <h3 class="panelPaneTitle">Pareto Chart</h3>
-        <div v-if="paretoStage !== 'ready'" class="emptyState">
-          <div class="emptyTitle">
-            {{ paretoStage === 'no_data' ? 'Load data before opening the Pareto view.' : 'Run an optimization to generate Pareto points.' }}
-          </div>
-          <div class="emptyBody">
-            {{
-              paretoStage === 'no_data'
-                ? 'The Pareto frontier appears after a dataset is loaded and scored.'
-                : 'This view compares tradeoffs between competing candidates once optimization results are available.'
-            }}
-          </div>
-          <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
-        </div>
+        <ChartEmptyState
+          v-if="paretoStage !== 'ready'"
+          :title="paretoReadiness.title"
+          :body="paretoReadiness.body"
+          :status="String(statusLine || '')"
+          action-label="Review Top results"
+          @action="reviewTopResults"
+        />
         <div class="chartAssist">
           <div id="paretoKeyboardHint" class="panelMuted">
             Use the Top results table as the keyboard-friendly way to move between candidates, or click frontier points if you want direct chart drilldown.
@@ -161,18 +165,11 @@ function reviewTopResults(): void {
         <div class="panelAdvisory">
           If the frontier stays blank after a run, confirm that optimization returned more than one ranked candidate and that the current X/Y metrics are still available for this result set.
         </div>
-        <div v-if="paretoStage === 'ready'" id="paretoWrapVue" style="margin-top: 0.75rem; display: none;">
-          <div class="panelStatus" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="paretoMetaVue" role="status" aria-live="polite">-</div>
-          <div
-            class="chartSurface"
-            aria-label="Pareto frontier chart comparing the selected X and Y metrics. Use the Top results tab for a non-pointer way to move between candidates."
-            aria-describedby="paretoKeyboardHint"
-          >
-            <canvas id="paretoCanvasVue" class="chart" width="1024" height="240" role="img" aria-label="Pareto frontier chart"></canvas>
-          </div>
-          <div class="panelMuted" style="margin-top: 0.5rem;">Select a Top result or click a point to drill down that parameter pair.</div>
-          <div class="panelMuted" style="margin-top: 0.35rem;">Frontier membership visualizes tradeoffs; validation still decides whether a candidate is acceptable.</div>
-        </div>
+        <ParetoScatter
+          v-if="paretoStage === 'ready'"
+          :model="paretoModel"
+          @select-point="selectParetoPoint"
+        />
       </section>
 
       <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
@@ -228,12 +225,6 @@ function reviewTopResults(): void {
   margin-top: 0.75rem;
   display: grid;
   gap: 0.35rem;
-}
-
-.chartSurface:focus-visible {
-  outline: 2px solid var(--focus-border);
-  outline-offset: 2px;
-  box-shadow: var(--focus-ring);
 }
 
 .mono {

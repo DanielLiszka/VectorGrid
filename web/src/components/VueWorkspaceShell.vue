@@ -6,6 +6,7 @@ import AppVisualIcon from './AppVisualIcon.vue'
 import RunContextBar from './RunContextBar.vue'
 import { TASK_CENTER_PANEL_ID, openTaskCenter as requestTaskCenterOpen, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
+import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -14,6 +15,7 @@ import { shellModeLabel, workflowStepLabelForMode } from '../utils/core/workflow
 import { shellPostureIcon, shellPostureLabel } from '../utils/appSvgAssets'
 
 const workflowStore = useWorkflowStore()
+const analysisStore = useAnalysisStore()
 const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
 const settingsStore = useSettingsStore()
@@ -25,15 +27,16 @@ const viewportWidth = ref(1440)
 const dividerDrag = ref<{ pointerId: number; startClientX: number; startFraction: number } | null>(null)
 
 const { controlsTab, mode, resultsTab, splitFraction, workspace, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
-const { dataId, dataLen, datasetLabel, datasetRange } = storeToRefs(dataStore)
-const { backend, progressMeta, runReadinessHint, strategyKind } = storeToRefs(optimizeStore)
+const { dataId, dataLen, dataTimeframe, datasetLabel, datasetRange } = storeToRefs(dataStore)
+const { selectedTopTitle } = storeToRefs(analysisStore)
+const { backend, objective, progressMeta, runReadinessHint, strategyKind } = storeToRefs(optimizeStore)
 const { controlsCollapsed } = storeToRefs(settingsStore)
 
 const workspaceItems = [
-  { key: 'workflow', label: 'Workflow' },
-  { key: 'library', label: 'Run Library' },
-  { key: 'aggregate', label: 'Aggregate Analysis' },
-  { key: 'pro', label: 'Pro Tools' },
+  { key: 'workflow', label: 'Research' },
+  { key: 'library', label: 'Library' },
+  { key: 'aggregate', label: 'Aggregate' },
+  { key: 'pro', label: 'Diagnostics' },
   { key: 'live', label: 'Live' },
   { key: 'settings', label: 'Settings' },
 ] as const
@@ -109,7 +112,7 @@ const settingsWorkspaceActive = computed(() => currentWorkspace.value === 'setti
 const liveWorkspaceActive = computed(() => currentWorkspace.value === 'live')
 const standardWorkspaceActive = computed(() => !settingsWorkspaceActive.value && !liveWorkspaceActive.value)
 const currentModeLabel = computed(() => shellModeLabel(currentMode.value))
-const currentWorkspaceLabel = computed(() => workspaceItems.find((item) => item.key === currentWorkspace.value)?.label || 'Workflow')
+const currentWorkspaceLabel = computed(() => workspaceItems.find((item) => item.key === currentWorkspace.value)?.label || 'Research')
 const currentWorkflowStepLabel = computed(
   () => workflowStepItems.value.find((item) => item.key === currentWorkflowStep.value)?.label || `1 ${workflowStepLabelForMode('data', currentMode.value)}`,
 )
@@ -211,9 +214,12 @@ const allContextItems = computed<ContextItem[]>(() => {
   const range = String(datasetRange.value || '').trim()
   const rows = String(dataLen.value || '').trim()
   const strategy = String(strategyKind.value || '').trim()
+  const objectiveLabel = String(objective.value || '').trim()
   const backendLabel = String(backend.value || '').trim()
+  const timeframe = String(dataTimeframe.value || '').trim()
   const status = String(progressMeta.value || '').trim() || String(runReadinessHint.value || '').trim()
   const loaded = String(dataId.value || '').trim()
+  const candidate = String(selectedTopTitle.value || '').trim()
   const modeContextItems = currentWorkspace.value !== 'workflow'
     ? [
         {
@@ -247,8 +253,8 @@ const allContextItems = computed<ContextItem[]>(() => {
       : [
           {
             key: 'Strategy',
-            value: strategy || '—',
-            current: strategy.length > 0,
+            value: [strategy, objectiveLabel].filter((part) => part.length > 0 && part !== '—').join(' · ') || '—',
+            current: strategy.length > 0 || objectiveLabel.length > 0,
             defaultVisible: true,
           },
           {
@@ -271,7 +277,9 @@ const allContextItems = computed<ContextItem[]>(() => {
   return [
     {
       key: 'Dataset',
-      value: dataset && dataset !== '—' ? dataset : 'No dataset',
+      value: dataset && dataset !== '—'
+        ? `${dataset}${timeframe && timeframe !== '—' ? ` · ${timeframe}` : ''}`
+        : 'No dataset',
       current: !dataset || dataset === '—',
       defaultVisible: true,
     },
@@ -279,6 +287,12 @@ const allContextItems = computed<ContextItem[]>(() => {
     { key: 'Rows', value: rows && rows !== '—' ? rows : '—', current: false, defaultVisible: false },
     ...modeContextItems,
     ...liveSupportItems,
+    {
+      key: 'Candidate',
+      value: candidate && candidate !== '—' && candidate !== 'No ranked candidate selected.' ? candidate : 'No candidate',
+      current: candidate.length > 0 && candidate !== '—' && candidate !== 'No ranked candidate selected.',
+      defaultVisible: currentWorkspace.value === 'workflow' && currentMode.value === 'conventional' && currentWorkflowStep.value !== 'data',
+    },
     { key: 'Status', value: status || 'Ready.', current: statusCardCurrent.value, defaultVisible: true },
     { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—', current: false, defaultVisible: false },
   ]

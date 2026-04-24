@@ -1,5 +1,11 @@
 import { invokeCommand } from '../tauri/invoke'
 import { formatUtcDateTimeFromUnixMs } from '../utils/uiFormat'
+import {
+  applyLightweightChartSize,
+  createCandlestickRuntime,
+  type LightweightChartModule,
+} from '../visualizations/lightweightChartRuntime'
+import { normalizePriceBars, type PriceBar } from '../visualizations/priceSeriesModel'
 import type { ExecutionOrderRow } from './executionService'
 
 export type ExecutionChartSurfaceState =
@@ -34,13 +40,7 @@ export interface ExecutionChartSurfaceResult {
   markerCount: number
 }
 
-interface ExecutionPriceBar {
-  time: number
-  open: number
-  high: number
-  low: number
-  close: number
-}
+type ExecutionPriceBar = PriceBar
 
 interface ExecutionMarkerRow {
   id: string
@@ -48,12 +48,6 @@ interface ExecutionMarkerRow {
   side: string
   status: string
   label: string
-}
-
-interface LightweightChartModule {
-  createChart?: (host: HTMLElement, options: Record<string, unknown>) => any
-  CandlestickSeries?: unknown
-  createSeriesMarkers?: (series: any, markers?: unknown[]) => { setMarkers?: (markers: unknown[]) => void } | null
 }
 
 const PRICE_BARS_CACHE_MAX = 8
@@ -86,15 +80,6 @@ function canonicalSymbol(raw: unknown): string {
     .trim()
     .replace(/\s+/g, '')
     .toUpperCase()
-}
-
-function toNumber(value: unknown): number {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : Number.NaN
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
 function basename(raw: string): string {
@@ -251,51 +236,6 @@ export function summarizeExecutionChartSurface(
   }
 }
 
-function normalizeChartTimeSec(raw: unknown): number {
-  const value = toNumber(raw)
-  if (!Number.isFinite(value)) return Number.NaN
-  const abs = Math.abs(value)
-  if (abs >= 1e17) return Math.floor(value / 1e9)
-  if (abs >= 1e14) return Math.floor(value / 1e6)
-  if (abs >= 1e11) return Math.floor(value / 1e3)
-  return Math.floor(value)
-}
-
-function normalizeExecutionPriceBars(raw: unknown): ExecutionPriceBar[] {
-  const rows = Array.isArray(raw) ? raw : []
-  const out: ExecutionPriceBar[] = []
-  for (const rowRaw of rows) {
-    const row = isRecord(rowRaw) ? rowRaw : null
-    if (!row) continue
-    const time = normalizeChartTimeSec(row.time ?? row.timestamp ?? row.ts ?? row.t)
-    const open = toNumber(row.open ?? row.o)
-    const highRaw = toNumber(row.high ?? row.h)
-    const lowRaw = toNumber(row.low ?? row.l)
-    const close = toNumber(row.close ?? row.c)
-    if (!Number.isFinite(time) || !Number.isFinite(open) || !Number.isFinite(highRaw) || !Number.isFinite(lowRaw) || !Number.isFinite(close)) {
-      continue
-    }
-    out.push({
-      time,
-      open,
-      high: Math.max(highRaw, open, close),
-      low: Math.min(lowRaw, open, close),
-      close,
-    })
-  }
-  out.sort((a, b) => a.time - b.time)
-  const deduped: ExecutionPriceBar[] = []
-  for (const row of out) {
-    const last = deduped[deduped.length - 1]
-    if (last && last.time === row.time) {
-      deduped[deduped.length - 1] = row
-    } else {
-      deduped.push(row)
-    }
-  }
-  return deduped
-}
-
 async function cacheGetOrLoad<T>(
   cache: Map<string, T>,
   pending: Map<string, Promise<T>>,
@@ -348,7 +288,7 @@ async function fetchExecutionPriceBars(dataId: string): Promise<ExecutionPriceBa
           throw firstError
         }
       }
-      return normalizeExecutionPriceBars(raw)
+      return normalizePriceBars(raw)
     },
     PRICE_BARS_CACHE_MAX,
   )
@@ -449,75 +389,11 @@ async function ensureExecutionChart(host: HTMLElement): Promise<boolean> {
   if (chartRuntime.chart && chartRuntime.host !== host) disposeExecutionChart()
   const chartModule = await loadChartModule()
   if (!chartModule?.createChart) return false
-  const width = Math.max(240, Math.floor(host.clientWidth || 820))
-  const height = Math.max(220, Math.floor(host.clientHeight || 360))
-  let chart: any = null
-  try {
-    chart = chartModule.createChart(host, {
-      width,
-      height,
-      layout: {
-        textColor: 'rgba(203, 213, 225, 0.92)',
-        background: { type: 'solid', color: 'rgba(2, 6, 23, 0)' },
-      },
-      grid: {
-        vertLines: { color: 'rgba(51, 65, 85, 0.35)' },
-        horzLines: { color: 'rgba(51, 65, 85, 0.35)' },
-      },
-      rightPriceScale: { borderColor: 'rgba(100, 116, 139, 0.45)' },
-      timeScale: {
-        borderColor: 'rgba(100, 116, 139, 0.45)',
-        fixLeftEdge: false,
-        fixRightEdge: false,
-      },
-      crosshair: {
-        vertLine: { color: 'rgba(148, 163, 184, 0.45)' },
-        horzLine: { color: 'rgba(148, 163, 184, 0.45)' },
-      },
-    })
-  } catch {
-    return false
-  }
-  const chartAny = chart as any
-  let candleSeries: any = null
-  if (typeof chartAny.addSeries === 'function' && chartModule.CandlestickSeries) {
-    try {
-      candleSeries = chartAny.addSeries(chartModule.CandlestickSeries, {
-        upColor: 'rgba(22, 163, 74, 0.9)',
-        downColor: 'rgba(225, 29, 72, 0.9)',
-        wickUpColor: 'rgba(22, 163, 74, 0.9)',
-        wickDownColor: 'rgba(225, 29, 72, 0.9)',
-        borderVisible: true,
-        borderUpColor: 'rgba(22, 163, 74, 1)',
-        borderDownColor: 'rgba(225, 29, 72, 1)',
-      })
-    } catch {
-      candleSeries = null
-    }
-  }
-  if (!candleSeries && typeof chartAny.addCandlestickSeries === 'function') {
-    try {
-      candleSeries = chartAny.addCandlestickSeries({
-        upColor: 'rgba(22, 163, 74, 0.9)',
-        downColor: 'rgba(225, 29, 72, 0.9)',
-        wickUpColor: 'rgba(22, 163, 74, 0.9)',
-        wickDownColor: 'rgba(225, 29, 72, 0.9)',
-        borderVisible: true,
-        borderUpColor: 'rgba(22, 163, 74, 1)',
-        borderDownColor: 'rgba(225, 29, 72, 1)',
-      })
-    } catch {
-      candleSeries = null
-    }
-  }
-  if (!candleSeries) {
-    if (typeof chartAny.remove === 'function') chartAny.remove()
-    return false
-  }
-  const markerApi =
-    chartModule.createSeriesMarkers && candleSeries
-      ? chartModule.createSeriesMarkers(candleSeries, [])
-      : null
+  const runtime = createCandlestickRuntime(host, chartModule)
+  if (!runtime) return false
+  const chartAny = runtime.chart
+  const candleSeries = runtime.candleSeries
+  const markerApi = runtime.markerApi
 
   chartRuntime.host = host
   chartRuntime.chart = chartAny
@@ -528,10 +404,8 @@ async function ensureExecutionChart(host: HTMLElement): Promise<boolean> {
       const entry = entries[0]
       const chartRef = chartRuntime.chart
       if (!entry || !chartRef || typeof chartRef.applyOptions !== 'function') return
-      const width = Math.max(240, Math.floor(entry.contentRect.width))
-      const height = Math.max(220, Math.floor(entry.contentRect.height))
       try {
-        chartRef.applyOptions({ width, height })
+        applyLightweightChartSize(chartRef, entry.contentRect.width, entry.contentRect.height)
       } catch {
         // chart already disposed
       }
@@ -600,4 +474,3 @@ export async function syncExecutionChart(
   }
   return summary
 }
-

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { useUiReadiness } from './useUiReadiness'
+import { describeUiReadinessStage, useUiReadiness } from './useUiReadiness'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useHistoryStore } from '../stores/historyStore'
@@ -69,5 +69,21 @@ describe('useUiReadiness', () => {
     expect(readiness.metaCompareStage.value).toBe('ready')
 
     workflowArtifactsStore.clearArtifacts()
+  })
+
+  it('describes blocked next actions with canonical copy', () => {
+    expect(describeUiReadinessStage('pareto', 'no_data')).toMatchObject({
+      title: 'Load data before opening the Pareto view.',
+      primaryActionLabel: 'Load data',
+      blockedReason: 'A dataset is required first.',
+    })
+    expect(describeUiReadinessStage('validation', 'data_loaded_no_run')).toMatchObject({
+      title: 'Run optimization before validation.',
+      primaryActionLabel: 'Run optimization',
+    })
+    expect(describeUiReadinessStage('history', 'results_available_no_selection')).toMatchObject({
+      title: 'Select a saved run.',
+      primaryActionLabel: 'Select run',
+    })
   })
 })

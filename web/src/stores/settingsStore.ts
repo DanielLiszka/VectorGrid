@@ -401,7 +401,7 @@ const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
   },
   {
     id: "builtin_run_library",
-    name: "Run Library",
+    name: "Library",
     builtIn: true,
     snapshot: {
       mode: "conventional",

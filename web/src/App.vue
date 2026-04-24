@@ -60,6 +60,7 @@ const optimizeDockActive = computed(() =>
   isOptimizeDockVisible({
     mode: mode.value,
     workspace: workspace.value,
+    workflow: workflow.value,
     controlsTab: controlsTab.value,
   }),
 )

@@ -10,6 +10,8 @@ import { refreshHeatmapFromWorkflowRun, restoreHeatmapVisible } from '../service
 
 vi.mock('../services/analysisService', () => ({
   refreshHeatmapFromWorkflowRun: vi.fn(),
+  registerHeatmapCanvasController: vi.fn(),
+  runHeatmapRepresentativeDrilldown: vi.fn(),
   restoreHeatmapVisible: vi.fn(() => false),
 }))
 

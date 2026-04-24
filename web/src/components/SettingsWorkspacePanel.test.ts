@@ -315,6 +315,8 @@ describe("SettingsWorkspacePanel", () => {
     const text = document.body.textContent || "";
     expect(text).toContain("Saved perspectives");
     expect(text).toContain("Density");
+    expect(text).toContain("Density preview");
+    expect(text).toContain("Table scan");
     expect(text).toContain("Top Results Triage");
     expect(text).toContain("Save current to selected");
   });
@@ -382,6 +384,7 @@ describe("SettingsWorkspacePanel", () => {
     expect(document.body.textContent || "").toContain("Appearance");
     expect(document.body.textContent || "").toContain("Window effect");
     expect(document.body.textContent || "").toContain("Help and guidance");
+    expect(document.body.textContent || "").toContain("Maximum rows");
   });
 
   it("renders market-data root controls and current storage hint text", async () => {
@@ -729,7 +732,7 @@ describe("SettingsWorkspacePanel", () => {
         "#vueSettingsPerspectiveSelect option",
       ),
     ).map((option) => String(option.textContent || "").trim());
-    expect(optionText.some((label) => label.includes("Run Library"))).toBe(
+    expect(optionText.some((label) => label.includes("Library"))).toBe(
       true,
     );
     expect(document.body.textContent || "").toContain(

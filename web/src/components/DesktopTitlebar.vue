@@ -44,13 +44,14 @@ const unlisteners: Array<() => void> = []
 
 const workspaceLabel = computed(() => {
   const normalizedWorkspace = normalizeWorkspaceTab(workspace.value)
-  if (normalizedWorkspace === 'library') return 'Run Library'
-  if (normalizedWorkspace === 'aggregate') return 'Aggregate Analysis'
-  if (normalizedWorkspace === 'pro') return 'Pro Tools'
+  if (normalizedWorkspace === 'library') return 'Library'
+  if (normalizedWorkspace === 'aggregate') return 'Aggregate'
+  if (normalizedWorkspace === 'pro') return 'Diagnostics'
   if (normalizedWorkspace === 'live') return 'Live'
   if (normalizedWorkspace === 'settings') return 'Settings'
-  return 'Workflow'
+  return 'Research'
 })
+const showWorkflowStepLabel = computed(() => normalizeWorkspaceTab(workspace.value) === 'workflow')
 
 const workflowStepLabel = computed(() => {
   const normalizedStep = normalizeWorkflowStep(workflowStep.value) || 'data'
@@ -69,6 +70,7 @@ const subtitle = computed(() => {
 const mlSignalPrimaryAction = computed(() =>
   mlSignalPrimaryActionForStep(workflowStep.value),
 )
+const validateStepActive = computed(() => normalizeWorkflowStep(workflowStep.value) === 'validate')
 const mlSignalPrimaryActionDisabled = computed(() => {
   if (canCancel.value) return false
   const dataLoaded = String(dataStore.dataId || '').trim().length > 0
@@ -99,6 +101,7 @@ const actionLabel = computed(() => {
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.label
   }
+  if (validateStepActive.value) return 'Run validation'
   return 'Run optimization'
 })
 const actionShortLabel = computed(() => {
@@ -106,6 +109,7 @@ const actionShortLabel = computed(() => {
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.shortLabel
   }
+  if (validateStepActive.value) return 'Validate'
   return 'Run'
 })
 const actionDisabled = computed(() => {
@@ -113,6 +117,7 @@ const actionDisabled = computed(() => {
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryActionDisabled.value
   }
+  if (validateStepActive.value) return !!validateDisabled.value
   return !!runDisabled.value
 })
 const guardedActiveTasks = computed<TrackedTask[]>(() => {
@@ -169,6 +174,14 @@ function openSettings(): void {
 function triggerPrimaryAction(): void {
   if (canCancel.value) {
     commandActionStore.cancelOptimization()
+    return
+  }
+  if (shellModeLabel(mode.value) === 'ML Signal') {
+    if (!actionDisabled.value) commandActionStore.runOptimization()
+    return
+  }
+  if (validateStepActive.value && !validateDisabled.value) {
+    commandActionStore.validateOptimization()
     return
   }
   if (!runDisabled.value) commandActionStore.runOptimization()
@@ -263,7 +276,7 @@ onBeforeUnmount(() => {
       <div class="titlebarBrandRow">
         <VectorAlphaLogo class="titlebarLogoMark" decorative :size="20" />
         <div class="titlebarBrand">VectorGrid</div>
-        <div class="titlebarWorkspace">{{ workspaceLabel }}<span v-if="workspaceLabel === 'Workflow'"> · {{ workflowStepLabel }}</span></div>
+        <div class="titlebarWorkspace">{{ workspaceLabel }}<span v-if="showWorkflowStepLabel"> · {{ workflowStepLabel }}</span></div>
       </div>
       <div class="titlebarSubtitle">{{ subtitle }}</div>
     </div>

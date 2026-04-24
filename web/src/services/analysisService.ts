@@ -1,6 +1,5 @@
 import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { markRaw } from "vue";
-import { useLightweightChart } from "../composables/useLightweightChart";
 import { useDataStore } from "../stores/dataStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore";
@@ -11,6 +10,38 @@ import {
   parseRouteProvenance,
   type RunComparisonTarget,
 } from "../utils/core/runArtifactReview";
+import {
+  buildParetoAxisOptions,
+  buildParetoViewModel,
+  paretoAxisValue as modelParetoAxisValue,
+  toParetoRenderModel,
+  type ParetoRenderModel,
+} from "../visualizations/paretoModel";
+import {
+  finiteHeatmapValues,
+  finiteValues,
+  heatmapColForFast,
+  heatmapHigherIsBetter as modelHeatmapHigherIsBetter,
+  heatmapLogicalRowForSlow,
+  heatmapModeFromValue,
+  readHeatmapModel,
+  resolveHeatmapDisplayModel,
+  type HeatmapMode,
+  type HeatmapModel,
+} from "../visualizations/heatmapModel";
+import type {
+  HeatmapCanvasRenderModel,
+  HeatmapCanvasRequestModel,
+  HeatmapCellParams,
+} from "../visualizations/heatmapCanvasModel";
+import { normalizeIndexedPriceBars } from "../visualizations/priceSeriesModel";
+import {
+  buildDrillChartModel,
+  buildDrillTradeMarkers as buildDrillTradeMarkersForModel,
+  buildDrillTradeTableModel,
+  mapTradeIndexToChartTime as modelMapTradeIndexToChartTime,
+  type DrillChartPriceBar,
+} from "../visualizations/drillChartModel";
 
 type TopColumn = {
   key?: unknown;
@@ -48,6 +79,7 @@ interface AnalysisStoreState {
   paretoXOptions?: unknown;
   paretoYOptions?: unknown;
   paretoWrapVisible?: unknown;
+  paretoModel?: unknown;
   paretoRows?: unknown;
   paretoMeta?: unknown;
   paretoTruthNote?: unknown;
@@ -63,8 +95,13 @@ interface AnalysisStoreState {
   topRows?: unknown;
   topFilterMeta?: unknown;
   topStaleCues?: unknown;
+  drillWrapVisible?: unknown;
+  drillChartModel?: unknown;
+  drillTradeTableModel?: unknown;
   drillMeta?: unknown;
   drillStatus?: unknown;
+  tradeStatsWrapVisible?: unknown;
+  stabilityWrapVisible?: unknown;
   stabilityStatus?: unknown;
   stabilityMeta?: unknown;
   heatmapWrapVisible?: unknown;
@@ -79,6 +116,7 @@ interface AnalysisStoreState {
   heatmapShowCrosshair?: unknown;
   heatmapShowCrosshairOptions?: unknown;
   canHeatmapExportPng?: unknown;
+  heatmapCanvasModel?: unknown;
   heatmapMeta?: unknown;
   heatmapStatus?: unknown;
   heatmapStatusLine?: unknown;
@@ -136,18 +174,6 @@ interface TopRowModel {
   mo?: { maximize_value?: number; minimize_value?: number; violation?: number };
 }
 
-interface HeatmapModel {
-  binsFast: number;
-  binsSlow: number;
-  fastMin: number;
-  fastMax: number;
-  slowMin: number;
-  slowMax: number;
-  values: Array<number | null>;
-  meanValues: Array<number | null> | null;
-  sampleCounts: Array<number | null> | null;
-}
-
 export interface AnalysisExecutionTopRowSnapshot {
   params: Record<string, unknown>;
   metrics: Record<string, unknown>;
@@ -183,16 +209,7 @@ interface BaselineRun {
   res: Record<string, unknown>;
 }
 
-interface DrillPriceBar {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  fromIndex: number;
-  toIndex: number;
-}
+type DrillPriceBar = DrillChartPriceBar;
 
 interface DrillInvocation {
   runReq: Record<string, unknown>;
@@ -206,34 +223,6 @@ interface StabilityInvocation {
     | "compute_double_ma_local_stability"
     | "compute_composite_cpu_local_stability";
   request: Record<string, unknown>;
-}
-
-interface DrillTvChartContext {
-  chart: any;
-  candle: any;
-  fast: any;
-  slow: any;
-  halftrend: any;
-  macz: any;
-  markerApi: any;
-}
-
-interface DrillTvRenderPayload {
-  seq: number;
-  ctx: DrillTvChartContext;
-  candleData: Array<{
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-  }>;
-  fastData: Array<{ time: number; value: number }>;
-  slowData: Array<{ time: number; value: number }>;
-  halftrendData: Array<{ time: number; value: number }>;
-  maczData: Array<{ time: number; value: number; color?: string }>;
-  trades: number;
-  markerCount: number;
 }
 
 interface CacheLoadResult<T> {
@@ -257,53 +246,15 @@ interface DrillRenderState {
   stabilityStatus: string;
 }
 
-interface HeatmapMarker {
-  col: number;
-  drawRow: number;
-  label: string;
+export interface HeatmapCanvasController {
+  exportPng: (fileName: string) => boolean;
 }
 
-interface HeatmapResolvedCell {
-  col: number;
-  drawRow: number;
-  logicalRow: number;
-  idx: number;
-}
-
-type HeatmapPalette =
-  | { kind: "diverging"; negative: string; zero: string; positive: string }
-  | { kind: "sequential"; low: string; high: string };
-
-interface HeatmapRenderState {
-  signature: string;
-  meta: string;
-  statusLine: string;
-  model: HeatmapModel;
-  displayMode: "objective" | "plateau";
-  displayValues: Array<number | null>;
-  displayLabel: string;
-  displayLegendNote: string;
-  req: Record<string, unknown>;
-  markers: HeatmapMarker[];
-  range: { min: number; max: number; label: string };
-  palette: HeatmapPalette;
-  plateauDiagnostics: Array<HeatmapPlateauCellDiagnostics | null> | null;
-}
-
-interface HeatmapPlateauCellDiagnostics {
-  plateauScore: number;
-  plateauLabel: string;
-  supportiveNeighbors: number;
-  availableNeighbors: number;
-  sampleCount: number | null;
-  meanValue: number | null;
-  binAgreement: number | null;
-}
-
-interface DerivedPlateauSurface {
-  values: Array<number | null>;
-  diagnostics: Array<HeatmapPlateauCellDiagnostics | null>;
-  multiSampleCellCount: number;
+export interface DrillChartController {
+  clearTradeSelection: () => boolean;
+  selectPrevTrade: () => string | null;
+  selectNextTrade: () => string | null;
+  selectTradeByIndex: (tradeIdx: unknown) => boolean;
 }
 
 interface ExactNeighborhoodRobustnessSummary {
@@ -321,10 +272,10 @@ const DRILL_PRICE_BARS_CACHE_MAX = 24;
 
 let compareSeq = 0;
 let drillSeq = 0;
-let drillSelectedTradeIdx = -1;
-let drillTradesRangeStart = 0;
 let topRowsModelCache: TopRowModel[] = [];
 let topRowsAllModelCache: TopRowModel[] = [];
+let registeredDrillChartController: DrillChartController | null = null;
+let registeredHeatmapCanvasController: HeatmapCanvasController | null = null;
 const baselineArtifactCache = new Map<string, BaselineRun | null>();
 const drillCurvesCache = new Map<string, unknown>();
 const stabilityCache = new Map<string, unknown>();
@@ -333,22 +284,8 @@ const baselineArtifactPending = new Map<string, Promise<BaselineRun | null>>();
 const drillCurvesPending = new Map<string, Promise<unknown>>();
 const stabilityPending = new Map<string, Promise<unknown>>();
 const drillPriceBarsPending = new Map<string, Promise<DrillPriceBar[]>>();
-let drillTvModulePromise: Promise<any> | null = null;
-const drillTvRuntime = useLightweightChart<any>();
-let drillTvCandleSeries: any = null;
-let drillTvFastSeries: any = null;
-let drillTvSlowSeries: any = null;
-let drillTvHalftrendSeries: any = null;
-let drillTvMaczSeries: any = null;
-let drillTvMarkerApi: any = null;
-let drillTvClickHandler: ((param: unknown) => void) | null = null;
-let drillTvRenderFrame = 0;
-let drillTvPendingPayload: DrillTvRenderPayload | null = null;
-let drillTvMarkerCurves: unknown | null = null;
-let drillTvMarkerBars: DrillPriceBar[] | null = null;
-let heatmapHoverCell: { col: number; row: number } | null = null;
 let drillRenderState: DrillRenderState | null = null;
-let heatmapRenderState: HeatmapRenderState | null = null;
+let heatmapRenderState: HeatmapCanvasRenderModel | null = null;
 let lastAnalysisRunIdentity = "";
 
 function text(v: unknown): string {
@@ -2195,6 +2132,23 @@ function captureDrillRenderState(
   };
 }
 
+function publishDrillChartModels(
+  store: AnalysisStoreState | null,
+  curves: unknown,
+  bars: DrillPriceBar[] | null,
+): void {
+  if (!store) return;
+  const chartModel = buildDrillChartModel(curves, bars);
+  const tradeTableModel = buildDrillTradeTableModel({
+    chartModel,
+    selectedTradeIdx: -1,
+    rangeStart: 0,
+    maxRows: 200,
+  });
+  store.drillChartModel = markRaw(chartModel);
+  store.drillTradeTableModel = markRaw(tradeTableModel);
+}
+
 async function runVueDrillPipeline(
   row: TopRowModel,
 ): Promise<boolean> {
@@ -2238,10 +2192,8 @@ async function runVueDrillPipeline(
       }
     }
     if (seq !== drillSeq) return true;
-    const rendered = renderDrillDomFallback(curves, params, metrics, row, bars);
-    if (rendered) {
-      void renderDrillTvChartDom(curves, bars, seq).catch(() => {});
-    }
+    publishDrillChartModels(store, curves, bars);
+    renderDrillDomFallback(curves, params, metrics, row);
     if (seq !== drillSeq) return true;
 
     let drillMeta = "-";
@@ -2811,23 +2763,7 @@ function paretoAxisOptionsFor(
   req: Record<string, unknown>,
   res: Record<string, unknown>,
 ): Array<{ value: string; label: string; disabled: boolean }> {
-  const base = [
-    { value: "pnl", label: "PnL", disabled: false },
-    { value: "sharpe", label: "Sharpe", disabled: false },
-    { value: "max_dd", label: "Max DD", disabled: false },
-    { value: "trades", label: "Trades", disabled: false },
-    { value: "exposure", label: "Exposure", disabled: false },
-    { value: "score", label: "Score", disabled: false },
-  ];
-  if (isMo(req, res)) {
-    return [
-      ...base,
-      { value: "maximize_value", label: "Max objective", disabled: false },
-      { value: "minimize_value", label: "Min objective", disabled: false },
-      { value: "violation", label: "Violation", disabled: false },
-    ];
-  }
-  return base;
+  return buildParetoAxisOptions(isMo(req, res));
 }
 
 function paretoAxisValue(
@@ -2837,19 +2773,17 @@ function paretoAxisValue(
   keyRaw: unknown,
 ): number {
   const key = text(keyRaw || "pnl") || "pnl";
-  if (key === "maximize_value") return num(row.mo?.maximize_value, Number.NaN);
-  if (key === "minimize_value") return num(row.mo?.minimize_value, Number.NaN);
-  if (key === "violation") return num(row.mo?.violation, Number.NaN);
-  if (key === "score") {
-    return scoreOf(
-      row.metrics || {},
-      objectiveOf(req),
-      scoreModeOf(req),
-      row.params || {},
-      scoreObservationContextOf(res),
-    );
-  }
-  return num((row.metrics || {})[key], Number.NaN);
+  const scoreValue =
+    key === "score"
+      ? scoreOf(
+          row.metrics || {},
+          objectiveOf(req),
+          scoreModeOf(req),
+          row.params || {},
+          scoreObservationContextOf(res),
+        )
+      : Number.NaN;
+  return modelParetoAxisValue(row, key, scoreValue);
 }
 
 function selectedParetoRowModel(store: AnalysisStoreState): TopRowModel | null {
@@ -2858,185 +2792,42 @@ function selectedParetoRowModel(store: AnalysisStoreState): TopRowModel | null {
   return resolveTopRowModelAtIndex(store, selectedIndex);
 }
 
-function buildParetoRepresentativeSummary(
+function buildParetoRenderModelForRun(
   store: AnalysisStoreState,
-  points: Array<{ row: TopRowModel; x: number; y: number }>,
-): string {
-  if (!points.length) return "—";
-  const xExtreme = points.reduce((best, point) =>
-    point.x < best.x ? point : best,
-  );
-  const yExtreme = points.reduce((best, point) =>
-    point.y > best.y ? point : best,
-  );
-  const parts: string[] = [
-    `x-extreme #${xExtreme.row.rank}`,
-    `y-extreme #${yExtreme.row.rank}`,
-  ];
+  req: Record<string, unknown>,
+  res: Record<string, unknown>,
+): ParetoRenderModel {
+  const rows = collectTopRows(res, { allowBestFallback: true }).slice(0, 512);
+  const xKey = text(store.paretoX || "max_dd") || "max_dd";
+  const yKey = text(store.paretoY || "pnl") || "pnl";
   const selected = selectedParetoRowModel(store);
-  if (selected) {
-    const selectedPoint =
-      points.find((point) => topRowIdFor(point.row) === topRowIdFor(selected)) ||
-      null;
-    parts.push(
-      selectedPoint
-        ? `selected #${selected.rank}`
-        : `selected off-frontier #${selected.rank}`,
-    );
-  }
-  return parts.join(" • ");
+  const model = buildParetoViewModel({
+    rows,
+    xKey,
+    yKey,
+    axisValueFor: (row, key) => paretoAxisValue(row, req, res, key),
+    rowIdFor: (row) => topRowIdFor(row),
+    rankFor: (row) => row.rank,
+    selectedRowId: selected ? topRowIdFor(selected) : null,
+    selectedRank: selected?.rank ?? null,
+    hasValidationResult: hasValidationResult(),
+    formatValue: fmtDisplay,
+  });
+  return toParetoRenderModel(model);
 }
 
-function buildParetoConfidenceNote(): string {
-  if (!hasValidationResult()) {
-    return "Validation has not run. Frontier membership alone does not approve a candidate.";
-  }
-  return "Validation adds admission evidence, but robust_pareto and cross_ticker_pareto are still filters rather than approval by themselves.";
-}
-
-function renderParetoCanvas(
+function updateParetoModel(
   store: AnalysisStoreState,
   req: Record<string, unknown>,
   res: Record<string, unknown>,
 ): boolean {
-  const wrap = byIds<HTMLElement>(["paretoWrapVue"]);
-  const metaEl = byIds<HTMLElement>(["paretoMetaVue"]);
-  const canvas = byIds<HTMLCanvasElement>(["paretoCanvasVue"]);
-  if (!wrap || !metaEl || !canvas) return false;
-
-  const rows = collectTopRows(res, { allowBestFallback: true }).slice(0, 512);
-  const xKey = text(store.paretoX || "max_dd") || "max_dd";
-  const yKey = text(store.paretoY || "pnl") || "pnl";
-  const points = rows
-    .map((row, index) => ({
-      index,
-      row,
-      x: paretoAxisValue(row, req, res, xKey),
-      y: paretoAxisValue(row, req, res, yKey),
-    }))
-    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-
-  if (!points.length) {
-    wrap.style.display = "none";
-    store.paretoWrapVisible = false;
-    store.paretoMeta = "Pareto scatter unavailable for this run.";
-    store.paretoTruthNote =
-      "Pareto points show non-dominated tradeoffs under the selected axes, not proof of robustness.";
-    store.paretoRepresentativeSummary = "—";
-    store.paretoConfidenceNote = buildParetoConfidenceNote();
-    metaEl.textContent = text(store.paretoMeta);
-    return true;
-  }
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return false;
-  const width = canvas.width;
-  const height = canvas.height;
-  const padding = { left: 56, right: 18, top: 18, bottom: 34 };
-  const plotWidth = Math.max(1, width - padding.left - padding.right);
-  const plotHeight = Math.max(1, height - padding.top - padding.bottom);
-  const xs = points.map((point) => point.x);
-  const ys = points.map((point) => point.y);
-  let xMin = Math.min(...xs);
-  let xMax = Math.max(...xs);
-  let yMin = Math.min(...ys);
-  let yMax = Math.max(...ys);
-  if (xMin === xMax) {
-    xMin -= 1;
-    xMax += 1;
-  }
-  if (yMin === yMax) {
-    yMin -= 1;
-    yMax += 1;
-  }
-
-  const xPad = (xMax - xMin) * 0.08;
-  const yPad = (yMax - yMin) * 0.08;
-  xMin -= xPad;
-  xMax += xPad;
-  yMin -= yPad;
-  yMax += yPad;
-
-  const toX = (value: number): number =>
-    padding.left + ((value - xMin) / Math.max(1e-12, xMax - xMin)) * plotWidth;
-  const toY = (value: number): number =>
-    padding.top +
-    (plotHeight - ((value - yMin) / Math.max(1e-12, yMax - yMin)) * plotHeight);
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(248, 250, 252, 0.02)";
-  ctx.fillRect(padding.left, padding.top, plotWidth, plotHeight);
-  ctx.strokeStyle = "rgba(118, 140, 166, 0.32)";
-  ctx.lineWidth = 1;
-  ctx.strokeRect(padding.left, padding.top, plotWidth, plotHeight);
-
-  ctx.font = "11px ui-monospace, monospace";
-  ctx.fillStyle = "rgba(118, 140, 166, 0.92)";
-  ctx.fillText(xKey, width - padding.right - 48, height - 8);
-  ctx.save();
-  ctx.translate(13, padding.top + plotHeight / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillText(yKey, 0, 0);
-  ctx.restore();
-  ctx.fillText(fmtDisplay(xMin, 3), padding.left, height - 8);
-  ctx.fillText(fmtDisplay(xMax, 3), width - padding.right - 42, height - 8);
-  ctx.fillText(fmtDisplay(yMax, 3), 8, padding.top + 4);
-  ctx.fillText(fmtDisplay(yMin, 3), 8, padding.top + plotHeight);
-
-  const frontier = [...points].sort((left, right) => left.x - right.x);
-  ctx.strokeStyle = "rgba(82, 164, 255, 0.55)";
-  ctx.lineWidth = 1.25;
-  ctx.beginPath();
-  frontier.forEach((point, index) => {
-    const x = toX(point.x);
-    const y = toY(point.y);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  const clickable: Array<{ x: number; y: number; row: TopRowModel }> = [];
-  for (const point of points) {
-    const x = toX(point.x);
-    const y = toY(point.y);
-    clickable.push({ x, y, row: point.row });
-    ctx.fillStyle = "rgba(56, 189, 248, 0.88)";
-    ctx.beginPath();
-    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  canvas.onclick = (event: MouseEvent) => {
-    const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const px = ((event.clientX - rect.left) / rect.width) * width;
-    const py = ((event.clientY - rect.top) / rect.height) * height;
-    let best: { row: TopRowModel; dist: number } | null = null;
-    for (const point of clickable) {
-      const dx = point.x - px;
-      const dy = point.y - py;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (!best || dist < best.dist) best = { row: point.row, dist };
-    }
-    if (!best || best.dist > 18) return;
-    const pinia = resolveRuntimePinia();
-    if (pinia) {
-      useWorkflowStore(pinia).selectResultsTab("drill");
-    }
-    void runVueDrillPipeline(best.row);
-  };
-
-  wrap.style.display = "block";
-  store.paretoWrapVisible = true;
-  store.paretoTruthNote =
-    "Pareto points are non-dominated under the selected axes. They visualize tradeoffs, not validation approval.";
-  store.paretoRepresentativeSummary = buildParetoRepresentativeSummary(
-    store,
-    points,
-  );
-  store.paretoConfidenceNote = buildParetoConfidenceNote();
-  store.paretoMeta = `${points.length} points • x=${xKey} (${fmtDisplay(xMin, 3)} to ${fmtDisplay(xMax, 3)}) • y=${yKey} (${fmtDisplay(yMin, 3)} to ${fmtDisplay(yMax, 3)})`;
-  metaEl.textContent = text(store.paretoMeta);
+  const model = buildParetoRenderModelForRun(store, req, res);
+  store.paretoModel = markRaw(model);
+  store.paretoWrapVisible = model.status === "ready";
+  store.paretoTruthNote = model.truthNote;
+  store.paretoRepresentativeSummary = model.representativeSummary;
+  store.paretoConfidenceNote = model.confidenceNote;
+  store.paretoMeta = model.meta;
   return true;
 }
 
@@ -3055,211 +2846,32 @@ export function refreshParetoFromWorkflowRun(): boolean {
     store.paretoX = isMo(req, res) ? "maximize_value" : "max_dd";
   if (!validKeys.has(text(store.paretoY)))
     store.paretoY = isMo(req, res) ? "minimize_value" : "pnl";
-  const ok = renderParetoCanvas(store, req, res);
+  const ok = updateParetoModel(store, req, res);
   markAnalysisVue(store);
   return ok;
 }
 
-function readHeatmapModel(res: Record<string, unknown>): HeatmapModel | null {
-  const heatmap = asRecord(res.heatmap);
-  if (!Object.keys(heatmap).length) return null;
-  const binsFast = Math.max(0, Math.floor(num(heatmap.bins_fast, 0)));
-  const binsSlow = Math.max(0, Math.floor(num(heatmap.bins_slow, 0)));
-  const fastMin = Math.max(0, Math.floor(num(heatmap.fast_min, 0)));
-  const fastMax = Math.max(0, Math.floor(num(heatmap.fast_max, 0)));
-  const slowMin = Math.max(0, Math.floor(num(heatmap.slow_min, 0)));
-  const slowMax = Math.max(0, Math.floor(num(heatmap.slow_max, 0)));
-  const rawValues = Array.isArray(heatmap.values) ? heatmap.values : [];
-  if (binsFast <= 0 || binsSlow <= 0 || !rawValues.length) return null;
-  const expectedLen = binsFast * binsSlow;
-  const readHeatmapVector = (
-    raw: unknown,
-    mapValue: (value: unknown) => number | null,
-  ): Array<number | null> | null => {
-    if (!Array.isArray(raw) || raw.length !== expectedLen) return null;
-    return raw.map(mapValue);
-  };
-  const meanValues = readHeatmapVector(heatmap.mean_values, (value) => {
-    if (value == null) return null;
-    const next = Number(value);
-    return Number.isFinite(next) ? next : null;
-  });
-  const sampleCounts = readHeatmapVector(heatmap.sample_counts, (value) => {
-    if (value == null) return null;
-    const next = Number(value);
-    if (!Number.isFinite(next)) return null;
-    return Math.max(0, Math.floor(next));
-  });
-  return {
-    binsFast,
-    binsSlow,
-    fastMin,
-    fastMax,
-    slowMin,
-    slowMax,
-    values: rawValues.map((value) => {
-      if (value == null) return null;
-      const next = Number(value);
-      return Number.isFinite(next) ? next : null;
-    }),
-    meanValues,
-    sampleCounts,
-  };
-}
-
-function finiteHeatmapValues(model: HeatmapModel): number[] {
-  const out: number[] = [];
-  for (const value of model.values) {
-    if (typeof value === "number" && Number.isFinite(value)) out.push(value);
+export async function drillParetoPoint(rowIdRaw: unknown): Promise<boolean> {
+  const rowId = text(rowIdRaw);
+  if (!rowId) return false;
+  const run = readWorkflowRun();
+  if (!run) return false;
+  const res = asRecord(run.res);
+  if (!Object.keys(res).length) return false;
+  const rows = collectTopRows(res, { allowBestFallback: true }).slice(0, 512);
+  const row = rows.find((candidate) => topRowIdFor(candidate) === rowId) ?? null;
+  if (!row) return false;
+  const pinia = resolveRuntimePinia();
+  if (pinia) {
+    useWorkflowStore(pinia).selectResultsTab("drill");
   }
-  return out;
-}
-
-function finiteValues(values: Array<number | null>): number[] {
-  const out: number[] = [];
-  for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value)) out.push(value);
-  }
-  return out;
+  await runVueDrillPipeline(row);
+  return true;
 }
 
 function heatmapModeOf(store: AnalysisStoreState | null | undefined):
-  | "objective"
-  | "plateau" {
-  return text(store?.heatmapMode).toLowerCase() === "plateau"
-    ? "plateau"
-    : "objective";
-}
-
-function heatmapDisplayLabel(mode: "objective" | "plateau", req: Record<string, unknown>): string {
-  return mode === "plateau" ? "Derived plateau" : scoreLabelOf(req);
-}
-
-function heatmapLegendNote(mode: "objective" | "plateau"): string {
-  return mode === "plateau"
-    ? "Sequential plateau scale"
-    : "Zero-centered";
-}
-
-function quantile(sorted: number[], p: number): number {
-  if (!sorted.length) return 0;
-  const clamped = Math.max(0, Math.min(1, p));
-  const pos = (sorted.length - 1) * clamped;
-  const base = Math.floor(pos);
-  const frac = pos - base;
-  const left = sorted[base] ?? sorted[0] ?? 0;
-  const right = sorted[Math.min(sorted.length - 1, base + 1)] ?? left;
-  return left + (right - left) * frac;
-}
-
-function resolveHeatmapRange(values: number[]): {
-  min: number;
-  max: number;
-  label: string;
-} {
-  if (!values.length) return { min: -1, max: 1, label: "zero-centered" };
-  const magnitudes = values
-    .map((value) => Math.abs(value))
-    .sort((a, b) => a - b);
-  const maxAbs = Math.max(
-    1e-12,
-    quantile(magnitudes, 0.98),
-    magnitudes[magnitudes.length - 1] ?? 1,
-  );
-  return { min: -maxAbs, max: maxAbs, label: "zero-centered" };
-}
-
-function clamp01(value: number): number {
-  return Math.max(0, Math.min(1, value));
-}
-
-function heatmapHigherIsBetter(req: Record<string, unknown>): boolean {
-  if (scoreModeOf(req)) return true;
-  const objective = objectiveOf(req);
-  return objective !== "Volatility" && objective !== "MaxDrawdown";
-}
-
-function heatmapValueAt(
-  model: HeatmapModel,
-  logicalRow: number,
-  col: number,
-): number | null {
-  if (
-    logicalRow < 0 ||
-    logicalRow >= model.binsSlow ||
-    col < 0 ||
-    col >= model.binsFast
-  ) {
-    return null;
-  }
-  const value = model.values[heatmapIndex(model, logicalRow, col)];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function heatmapMeanValueAt(
-  model: HeatmapModel,
-  logicalRow: number,
-  col: number,
-): number | null {
-  if (
-    logicalRow < 0 ||
-    logicalRow >= model.binsSlow ||
-    col < 0 ||
-    col >= model.binsFast ||
-    !model.meanValues
-  ) {
-    return null;
-  }
-  const value = model.meanValues[heatmapIndex(model, logicalRow, col)];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function heatmapSampleCountAt(
-  model: HeatmapModel,
-  logicalRow: number,
-  col: number,
-): number | null {
-  if (
-    logicalRow < 0 ||
-    logicalRow >= model.binsSlow ||
-    col < 0 ||
-    col >= model.binsFast ||
-    !model.sampleCounts
-  ) {
-    return null;
-  }
-  const value = model.sampleCounts[heatmapIndex(model, logicalRow, col)];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function heatmapNeighborOffsets(includeDiagonals = false): Array<[number, number]> {
-  const offsets: Array<[number, number]> = [
-    [0, -1],
-    [0, 1],
-    [-1, 0],
-    [1, 0],
-  ];
-  if (!includeDiagonals) return offsets;
-  offsets.push(
-    [-1, -1],
-    [-1, 1],
-    [1, -1],
-    [1, 1],
-  );
-  return offsets;
-}
-
-function heatmapNeighborValues(
-  model: HeatmapModel,
-  logicalRow: number,
-  col: number,
-  includeDiagonals = false,
-): number[] {
-  return heatmapNeighborOffsets(includeDiagonals)
-    .map(([rowOffset, colOffset]) =>
-      heatmapValueAt(model, logicalRow + rowOffset, col + colOffset),
-    )
-    .filter((value): value is number => typeof value === "number");
+  HeatmapMode {
+  return heatmapModeFromValue(store?.heatmapMode);
 }
 
 function readExactNeighborhoodRobustness(
@@ -3285,201 +2897,17 @@ function readExactNeighborhoodRobustness(
   };
 }
 
-function labelDerivedPlateau(
-  score: number,
-  supportiveNeighbors: number,
-  availableNeighbors: number,
-): string {
-  const supportRatio =
-    availableNeighbors > 0 ? supportiveNeighbors / availableNeighbors : 0;
-  if (availableNeighbors >= 3 && supportRatio >= 0.7 && score >= 0.78)
-    return "Strong";
-  if (supportRatio >= 0.45 && score >= 0.58) return "Moderate";
-  if (score >= 0.38) return "Narrow";
-  return "Fragile";
-}
-
-function buildDerivedPlateauSurface(
-  req: Record<string, unknown>,
-  model: HeatmapModel,
-): DerivedPlateauSurface {
-  const out = model.values.map(() => null as number | null);
-  const diagnostics = model.values.map(
-    () => null as HeatmapPlateauCellDiagnostics | null,
-  );
-  const finite = finiteHeatmapValues(model);
-  if (!finite.length) {
-    return { values: out, diagnostics, multiSampleCellCount: 0 };
-  }
-  const higherIsBetter = heatmapHigherIsBetter(req);
-  const surfaceMin = Math.min(...finite);
-  const surfaceMax = Math.max(...finite);
-  const meritDenom = Math.max(1.0e-9, surfaceMax - surfaceMin);
-  let multiSampleCellCount = 0;
-
-  for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
-    for (let col = 0; col < model.binsFast; col += 1) {
-      const base = heatmapValueAt(model, logicalRow, col);
-      if (base == null) continue;
-      const idx = heatmapIndex(model, logicalRow, col);
-      const neighbors = heatmapNeighborValues(model, logicalRow, col, true);
-      if (!neighbors.length) {
-        out[idx] = 0;
-        diagnostics[idx] = {
-          plateauScore: 0,
-          plateauLabel: "Fragile",
-          supportiveNeighbors: 0,
-          availableNeighbors: 0,
-          sampleCount: heatmapSampleCountAt(model, logicalRow, col),
-          meanValue: heatmapMeanValueAt(model, logicalRow, col),
-          binAgreement: null,
-        };
-        continue;
-      }
-
-      const localValues = [base, ...neighbors];
-      const localSorted = [...localValues].sort((a, b) => a - b);
-      const localMedian = quantile(localSorted, 0.5);
-      const localMin = localSorted[0] ?? base;
-      const localMax = localSorted[localSorted.length - 1] ?? base;
-      const localSpan = Math.abs(localMax - localMin);
-      const scoreScale = Math.max(localSpan, meritDenom * 0.1, 1.0e-9);
-      const supportTolerance = Math.max(localSpan * 0.75, meritDenom * 0.06, 1.0e-9);
-      const merit =
-        meritDenom <= 1.0e-9
-          ? 1
-          : higherIsBetter
-            ? clamp01((base - surfaceMin) / meritDenom)
-            : clamp01((surfaceMax - base) / meritDenom);
-      const adverseMedianGap = higherIsBetter
-        ? Math.max(0, base - localMedian)
-        : Math.max(0, localMedian - base);
-      const peakDelta = higherIsBetter
-        ? Math.max(0, localMax - base)
-        : Math.max(0, base - localMin);
-      const medianStability = 1 / (1 + adverseMedianGap / scoreScale);
-      const peakStability = 1 / (1 + peakDelta / scoreScale);
-      const scoreStability = 0.6 * medianStability + 0.4 * peakStability;
-      const availableNeighbors = neighbors.length;
-      const supportWeights = neighbors.map((value) => {
-        const adverseDelta = higherIsBetter
-          ? Math.max(0, base - value)
-          : Math.max(0, value - base);
-        return 1 / (1 + adverseDelta / supportTolerance);
-      });
-      const supportiveNeighbors = supportWeights.filter((weight) => weight >= 0.5).length;
-      const supportStrength =
-        supportWeights.reduce((sum, value) => sum + value, 0) /
-        Math.max(1, supportWeights.length);
-      const roughnessRmsDelta = Math.sqrt(
-        neighbors.reduce((sum, value) => {
-          const delta = value - base;
-          return sum + delta * delta;
-        }, 0) / neighbors.length,
-      );
-      const roughnessStability = 1 / (1 + roughnessRmsDelta / scoreScale);
-
-      const curvatureTerms: number[] = [];
-      const left = heatmapValueAt(model, logicalRow, col - 1);
-      const right = heatmapValueAt(model, logicalRow, col + 1);
-      if (left != null && right != null) {
-        curvatureTerms.push(Math.abs(base - (left + right) / 2));
-      }
-      const up = heatmapValueAt(model, logicalRow - 1, col);
-      const down = heatmapValueAt(model, logicalRow + 1, col);
-      if (up != null && down != null) {
-        curvatureTerms.push(Math.abs(base - (up + down) / 2));
-      }
-      const curvaturePenalty = curvatureTerms.length
-        ? curvatureTerms.reduce((sum, value) => sum + value, 0) /
-          curvatureTerms.length
-        : scoreScale;
-      const curvatureStability = 1 / (1 + curvaturePenalty / scoreScale);
-      const sampleCount = heatmapSampleCountAt(model, logicalRow, col);
-      const meanValue = heatmapMeanValueAt(model, logicalRow, col);
-      if ((sampleCount ?? 0) > 1) multiSampleCellCount += 1;
-      const binAgreement =
-        sampleCount != null &&
-        sampleCount > 1 &&
-        meanValue != null &&
-        Number.isFinite(meanValue)
-          ? 1 / (1 + Math.abs(base - meanValue) / scoreScale)
-          : null;
-
-      const plateauScore = clamp01(
-        0.30 * merit +
-          0.16 * supportStrength +
-          0.18 * scoreStability +
-          0.14 * roughnessStability +
-          0.12 * curvatureStability +
-          0.10 * (binAgreement ?? 1),
-      );
-      out[idx] = plateauScore;
-      diagnostics[idx] = {
-        plateauScore,
-        plateauLabel: labelDerivedPlateau(
-          plateauScore,
-          supportiveNeighbors,
-          availableNeighbors,
-        ),
-        supportiveNeighbors,
-        availableNeighbors,
-        sampleCount,
-        meanValue,
-        binAgreement,
-      };
-    }
-  }
-
-  return { values: out, diagnostics, multiSampleCellCount };
-}
-
 function resolveHeatmapDisplay(
   mode: "objective" | "plateau",
   req: Record<string, unknown>,
   model: HeatmapModel,
-): {
-  values: Array<number | null>;
-  range: { min: number; max: number; label: string };
-  palette: HeatmapPalette;
-  label: string;
-  legendNote: string;
-  plateauDiagnostics: Array<HeatmapPlateauCellDiagnostics | null> | null;
-  multiSampleCellCount: number;
-} {
-  if (mode === "plateau") {
-    const surface = buildDerivedPlateauSurface(req, model);
-    return {
-      values: surface.values,
-      range: { min: 0, max: 1, label: "derived plateau score" },
-      palette: heatmapPalette(mode),
-      label: heatmapDisplayLabel(mode, req),
-      legendNote: heatmapLegendNote(mode),
-      plateauDiagnostics: surface.diagnostics,
-      multiSampleCellCount: surface.multiSampleCellCount,
-    };
-  }
-
-  return {
-    values: model.values,
-    range: resolveHeatmapRange(finiteHeatmapValues(model)),
-    palette: heatmapPalette(mode),
-    label: heatmapDisplayLabel(mode, req),
-    legendNote: heatmapLegendNote(mode),
-    plateauDiagnostics: null,
-    multiSampleCellCount: 0,
-  };
-}
-
-function heatmapPalette(mode: "objective" | "plateau"): HeatmapPalette {
-  return mode === "plateau"
-    ? { kind: "sequential", low: "#2563eb", high: "#15803d" }
-    : {
-        kind: "diverging",
-        negative: "#b91c1c",
-        zero: "#2563eb",
-        positive: "#15803d",
-      };
+): ReturnType<typeof resolveHeatmapDisplayModel> {
+  return resolveHeatmapDisplayModel({
+    mode,
+    objectiveLabel: scoreLabelOf(req),
+    model,
+    higherIsBetter: modelHeatmapHigherIsBetter(objectiveOf(req), !!scoreModeOf(req)),
+  });
 }
 
 function buildHeatmapMeta(
@@ -3523,139 +2951,6 @@ function buildHeatmapStatusLine(
     : "Heatmap ready. Hover for values and click a populated cell to inspect a representative parameter pair for that heatmap region.";
 }
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const normalized = hex.replace("#", "").trim();
-  const chunk =
-    normalized.length === 3
-      ? normalized
-          .split("")
-          .map((value) => `${value}${value}`)
-          .join("")
-      : normalized.padStart(6, "0").slice(0, 6);
-  const numValue = Number.parseInt(chunk, 16);
-  return {
-    r: (numValue >> 16) & 0xff,
-    g: (numValue >> 8) & 0xff,
-    b: numValue & 0xff,
-  };
-}
-
-function rgbToCss(rgb: { r: number; g: number; b: number }, alpha = 1): string {
-  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${Math.max(0, Math.min(1, alpha))})`;
-}
-
-function sampleHeatmapColor(
-  value: number,
-  minValue: number,
-  maxValue: number,
-  palette: HeatmapPalette,
-): string {
-  if (palette.kind === "sequential") {
-    const low = hexToRgb(palette.low);
-    const high = hexToRgb(palette.high);
-    const denom = Math.max(1.0e-12, maxValue - minValue);
-    const ratio = clamp01((value - minValue) / denom);
-    return rgbToCss({
-      r: Math.round(low.r + (high.r - low.r) * ratio),
-      g: Math.round(low.g + (high.g - low.g) * ratio),
-      b: Math.round(low.b + (high.b - low.b) * ratio),
-    });
-  }
-
-  const anchor = Math.max(1.0e-12, Math.max(Math.abs(minValue), Math.abs(maxValue)));
-  const zero = hexToRgb(palette.zero);
-  if (value <= 0) {
-    const neg = hexToRgb(palette.negative);
-    const ratio = clamp01(Math.abs(value) / anchor);
-    return rgbToCss({
-      r: Math.round(zero.r + (neg.r - zero.r) * ratio),
-      g: Math.round(zero.g + (neg.g - zero.g) * ratio),
-      b: Math.round(zero.b + (neg.b - zero.b) * ratio),
-    });
-  }
-  const pos = hexToRgb(palette.positive);
-  const ratio = clamp01(value / anchor);
-  return rgbToCss({
-    r: Math.round(zero.r + (pos.r - zero.r) * ratio),
-    g: Math.round(zero.g + (pos.g - zero.g) * ratio),
-    b: Math.round(zero.b + (pos.b - zero.b) * ratio),
-  });
-}
-
-function heatmapIndex(
-  model: HeatmapModel,
-  logicalRow: number,
-  col: number,
-): number {
-  return logicalRow * model.binsFast + col;
-}
-
-function fastForHeatmapCol(model: HeatmapModel, col: number): number {
-  if (model.binsFast <= 1) return model.fastMin;
-  const ratio = col / Math.max(1, model.binsFast - 1);
-  return Math.round(model.fastMin + (model.fastMax - model.fastMin) * ratio);
-}
-
-function slowForHeatmapLogicalRow(
-  model: HeatmapModel,
-  logicalRow: number,
-): number {
-  if (model.binsSlow <= 1) return model.slowMin;
-  const ratio = logicalRow / Math.max(1, model.binsSlow - 1);
-  return Math.round(model.slowMin + (model.slowMax - model.slowMin) * ratio);
-}
-
-function heatmapColForFast(model: HeatmapModel, fast: number): number {
-  if (model.binsFast <= 1 || model.fastMax <= model.fastMin) return 0;
-  const ratio =
-    (fast - model.fastMin) / Math.max(1, model.fastMax - model.fastMin);
-  return Math.max(
-    0,
-    Math.min(model.binsFast - 1, Math.round(ratio * (model.binsFast - 1))),
-  );
-}
-
-function heatmapLogicalRowForSlow(model: HeatmapModel, slow: number): number {
-  if (model.binsSlow <= 1 || model.slowMax <= model.slowMin) return 0;
-  const ratio =
-    (slow - model.slowMin) / Math.max(1, model.slowMax - model.slowMin);
-  return Math.max(
-    0,
-    Math.min(model.binsSlow - 1, Math.round(ratio * (model.binsSlow - 1))),
-  );
-}
-
-function renderHeatmapLegend(
-  min: number,
-  max: number,
-  palette: HeatmapPalette,
-): void {
-  const legend = byIds<HTMLCanvasElement>(["heatmapLegendVue"]);
-  if (!legend) return;
-  const ctx = legend.getContext("2d");
-  if (!ctx) return;
-  const width = legend.width;
-  const height = legend.height;
-  const gradient = ctx.createLinearGradient(0, 0, width, 0);
-  if (palette.kind === "sequential") {
-    gradient.addColorStop(0, palette.low);
-    gradient.addColorStop(1, palette.high);
-  } else {
-    gradient.addColorStop(0, palette.negative);
-    gradient.addColorStop(0.5, palette.zero);
-    gradient.addColorStop(1, palette.positive);
-  }
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, height);
-  const minLabel = byIds<HTMLElement>(["heatmapLegendMinVue"]);
-  const midLabel = byIds<HTMLElement>(["heatmapLegendMidVue"]);
-  const maxLabel = byIds<HTMLElement>(["heatmapLegendMaxVue"]);
-  if (minLabel) minLabel.textContent = fmtDisplay(min, 4);
-  if (midLabel) midLabel.textContent = fmtDisplay((min + max) / 2, 4);
-  if (maxLabel) maxLabel.textContent = fmtDisplay(max, 4);
-}
-
 function heatmapMarkerRows(
   store: AnalysisStoreState | null,
   req: Record<string, unknown>,
@@ -3690,185 +2985,6 @@ function heatmapMarkerRows(
   return out;
 }
 
-function hideHeatmapTooltip(): void {
-  const tooltip = byIds<HTMLElement>(["heatmapTooltipVue"]);
-  if (tooltip) tooltip.style.display = "none";
-}
-
-function buildHeatmapCellParams(
-  req: Record<string, unknown>,
-  model: HeatmapModel,
-  col: number,
-  logicalRow: number,
-): Record<string, unknown> {
-  const fast = fastForHeatmapCol(model, col);
-  const slowBase = slowForHeatmapLogicalRow(model, logicalRow);
-  const slow = Math.max(slowBase, fast + 1);
-  return {
-    fast_len: fast,
-    fast_ma_type:
-      text(
-        Array.isArray(req.fast_ma_types)
-          ? req.fast_ma_types[0]
-          : req.fast_ma_type,
-      ) || "?",
-    slow_len: slow,
-    slow_ma_type:
-      text(
-        Array.isArray(req.slow_ma_types)
-          ? req.slow_ma_types[0]
-          : req.slow_ma_type,
-      ) || "?",
-    fast_ma_params: req.fast_ma_params ?? req.fastMaParams ?? null,
-    slow_ma_params: req.slow_ma_params ?? req.slowMaParams ?? null,
-  };
-}
-
-function resolveHeatmapCellFromPoint(
-  overlay: HTMLCanvasElement,
-  model: HeatmapModel,
-  clientX: number,
-  clientY: number,
-): HeatmapResolvedCell | null {
-  const rect = overlay.getBoundingClientRect();
-  if (!rect.width || !rect.height) return null;
-  const col = Math.max(
-    0,
-    Math.min(
-      model.binsFast - 1,
-      Math.floor(((clientX - rect.left) / rect.width) * model.binsFast),
-    ),
-  );
-  const drawRow = Math.max(
-    0,
-    Math.min(
-      model.binsSlow - 1,
-      Math.floor(((clientY - rect.top) / rect.height) * model.binsSlow),
-    ),
-  );
-  const logicalRow = model.binsSlow - 1 - drawRow;
-  return {
-    col,
-    drawRow,
-    logicalRow,
-    idx: heatmapIndex(model, logicalRow, col),
-  };
-}
-
-function runHeatmapCellDrilldown(
-  state: HeatmapRenderState,
-  cell: HeatmapResolvedCell,
-): void {
-  const value = state.model.values[cell.idx];
-  if (typeof value !== "number" || !Number.isFinite(value)) return;
-  const params = buildHeatmapCellParams(state.req, state.model, cell.col, cell.logicalRow);
-  const pinia = resolveRuntimePinia();
-  if (pinia) {
-    useWorkflowStore(pinia).selectResultsTab("drill");
-  }
-  void runVueDrillPipeline({ rank: 1, params, metrics: {} });
-}
-
-function bindHeatmapOverlayHandlers(
-  state: HeatmapRenderState,
-  overlay: HTMLCanvasElement,
-): void {
-  const tooltip = byIds<HTMLElement>(["heatmapTooltipVue"]);
-  overlay.onmouseleave = () => {
-    heatmapHoverCell = null;
-    hideHeatmapTooltip();
-    paintHeatmapOverlayFromState(state, overlay);
-  };
-
-  overlay.onmousemove = (event: MouseEvent) => {
-    const cell = resolveHeatmapCellFromPoint(
-      overlay,
-      state.model,
-      event.clientX,
-      event.clientY,
-    );
-    if (!cell || !tooltip) return;
-    const objectiveValue = state.model.values[cell.idx];
-    if (typeof objectiveValue !== "number" || !Number.isFinite(objectiveValue)) {
-      heatmapHoverCell = null;
-      hideHeatmapTooltip();
-      paintHeatmapOverlayFromState(state, overlay);
-      return;
-    }
-    const displayValue = state.displayValues[cell.idx];
-    heatmapHoverCell = { col: cell.col, row: cell.drawRow };
-    const rect = overlay.getBoundingClientRect();
-    const fast = fastForHeatmapCol(state.model, cell.col);
-    const slow = slowForHeatmapLogicalRow(state.model, cell.logicalRow);
-    tooltip.style.display = "block";
-    tooltip.style.left = `${Math.max(8, event.clientX - rect.left + 12)}px`;
-    tooltip.style.top = `${Math.max(8, event.clientY - rect.top + 12)}px`;
-    const fastLabel =
-      text(
-        Array.isArray(state.req.fast_ma_types)
-          ? state.req.fast_ma_types[0]
-          : state.req.fast_ma_type,
-      ).toUpperCase() || "FAST";
-    const slowLabel =
-      text(
-        Array.isArray(state.req.slow_ma_types)
-          ? state.req.slow_ma_types[0]
-          : state.req.slow_ma_type,
-      ).toUpperCase() || "SLOW";
-    const objectiveDisplay = fmtDisplay(objectiveValue, 4);
-    if (state.displayMode === "plateau") {
-      const plateauDetails = state.plateauDiagnostics?.[cell.idx] ?? null;
-      const plateauValue =
-        typeof displayValue === "number" && Number.isFinite(displayValue)
-          ? displayValue
-          : plateauDetails?.plateauScore ?? 0;
-      const plateauLabel =
-        plateauDetails?.plateauLabel ??
-        labelDerivedPlateau(
-          plateauValue,
-          plateauDetails?.supportiveNeighbors ?? 0,
-          plateauDetails?.availableNeighbors ?? 0,
-        );
-      const supportDisplay = `${plateauDetails?.supportiveNeighbors ?? 0}/${plateauDetails?.availableNeighbors ?? 0}`;
-      const meanDisplay =
-        plateauDetails?.meanValue != null &&
-        Number.isFinite(plateauDetails.meanValue)
-          ? ` · mean ${fmtDisplay(plateauDetails.meanValue, 4)}`
-          : "";
-      const sampleDisplay =
-        plateauDetails?.sampleCount != null &&
-        Number.isFinite(plateauDetails.sampleCount)
-          ? ` · samples ${Math.max(0, Math.floor(plateauDetails.sampleCount))}`
-          : "";
-      const agreementDisplay =
-        plateauDetails?.binAgreement != null &&
-        Number.isFinite(plateauDetails.binAgreement) &&
-        (plateauDetails.sampleCount ?? 0) > 1
-          ? ` · bin ${fmtDisplay(plateauDetails.binAgreement, 3)}`
-          : "";
-      tooltip.textContent = `${fastLabel} ${fast} · ${slowLabel} ${slow} · Plateau ${plateauLabel} ${fmtDisplay(plateauValue, 4)} · supportive ${supportDisplay}${sampleDisplay}${meanDisplay}${agreementDisplay} · ${scoreLabelOf(state.req)} ${objectiveDisplay}`;
-    } else {
-      const displayMetric =
-        typeof displayValue === "number" && Number.isFinite(displayValue)
-          ? fmtDisplay(displayValue, 4)
-          : objectiveDisplay;
-      tooltip.textContent = `${fastLabel} ${fast} · ${slowLabel} ${slow} · ${state.displayLabel} ${displayMetric}`;
-    }
-    paintHeatmapOverlayFromState(state, overlay);
-  };
-
-  overlay.onclick = (event: MouseEvent) => {
-    const cell = resolveHeatmapCellFromPoint(
-      overlay,
-      state.model,
-      event.clientX,
-      event.clientY,
-    );
-    if (!cell) return;
-    runHeatmapCellDrilldown(state, cell);
-  };
-}
-
 function heatmapBaseSignature(
   run: WorkflowRunState | null,
   req: Record<string, unknown>,
@@ -3889,96 +3005,27 @@ function heatmapBaseSignature(
   });
 }
 
-function paintHeatmapBaseFromState(
-  state: HeatmapRenderState,
-  canvas: HTMLCanvasElement,
-): void {
-  const { model, displayValues, range, palette } = state;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  const width = canvas.width;
-  const height = canvas.height;
-  const cellW = width / Math.max(1, model.binsFast);
-  const cellH = height / Math.max(1, model.binsSlow);
-
-  ctx.clearRect(0, 0, width, height);
-  for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
-    const drawRow = model.binsSlow - 1 - logicalRow;
-    for (let col = 0; col < model.binsFast; col += 1) {
-      const value = displayValues[heatmapIndex(model, logicalRow, col)];
-      const x = col * cellW;
-      const y = drawRow * cellH;
-      if (typeof value !== "number" || !Number.isFinite(value)) {
-        ctx.fillStyle = "rgba(82, 96, 118, 0.12)";
-        ctx.fillRect(x, y, cellW, cellH);
-        continue;
-      }
-      ctx.fillStyle = sampleHeatmapColor(
-        value,
-        range.min,
-        range.max,
-        palette,
-      );
-      ctx.fillRect(x, y, cellW, cellH);
-    }
-  }
+function buildHeatmapCanvasRequest(req: Record<string, unknown>): HeatmapCanvasRequestModel {
+  return {
+    fastMaType:
+      text(
+        Array.isArray(req.fast_ma_types)
+          ? req.fast_ma_types[0]
+          : req.fast_ma_type,
+      ) || "?",
+    slowMaType:
+      text(
+        Array.isArray(req.slow_ma_types)
+          ? req.slow_ma_types[0]
+          : req.slow_ma_type,
+      ) || "?",
+    fastMaParams: req.fast_ma_params ?? req.fastMaParams ?? null,
+    slowMaParams: req.slow_ma_params ?? req.slowMaParams ?? null,
+    scoreLabel: scoreLabelOf(req),
+  };
 }
 
-function paintHeatmapOverlayFromState(
-  state: HeatmapRenderState,
-  overlay: HTMLCanvasElement,
-): void {
-  const { model, markers } = state;
-  const overlayCtx = overlay.getContext("2d");
-  if (!overlayCtx) return;
-  const width = overlay.width;
-  const height = overlay.height;
-  const cellW = width / Math.max(1, model.binsFast);
-  const cellH = height / Math.max(1, model.binsSlow);
-
-  overlayCtx.clearRect(0, 0, width, height);
-  for (const marker of markers) {
-    const cx = (marker.col + 0.5) * cellW;
-    const cy = (marker.drawRow + 0.5) * cellH;
-    overlayCtx.fillStyle = "rgba(248, 250, 252, 0.95)";
-    overlayCtx.beginPath();
-    overlayCtx.arc(
-      cx,
-      cy,
-      Math.max(3, Math.min(cellW, cellH) * 0.18),
-      0,
-      Math.PI * 2,
-    );
-    overlayCtx.fill();
-    overlayCtx.strokeStyle = "rgba(15, 23, 42, 0.95)";
-    overlayCtx.lineWidth = 1;
-    overlayCtx.stroke();
-    overlayCtx.fillStyle = "rgba(15, 23, 42, 0.95)";
-    overlayCtx.font = "11px ui-monospace, monospace";
-    overlayCtx.fillText(marker.label, cx + 5, cy - 5);
-  }
-
-  if (!heatmapHoverCell) return;
-  const hoverX = heatmapHoverCell.col * cellW;
-  const hoverY = heatmapHoverCell.row * cellH;
-  overlayCtx.strokeStyle = "rgba(248, 250, 252, 0.95)";
-  overlayCtx.lineWidth = 1.5;
-  overlayCtx.strokeRect(
-    hoverX + 0.5,
-    hoverY + 0.5,
-    Math.max(0, cellW - 1),
-    Math.max(0, cellH - 1),
-  );
-  overlayCtx.beginPath();
-  overlayCtx.moveTo(hoverX + cellW / 2, 0);
-  overlayCtx.lineTo(hoverX + cellW / 2, height);
-  overlayCtx.moveTo(0, hoverY + cellH / 2);
-  overlayCtx.lineTo(width, hoverY + cellH / 2);
-  overlayCtx.strokeStyle = "rgba(248, 250, 252, 0.28)";
-  overlayCtx.stroke();
-}
-
-function renderHeatmapCanvas(
+function setHeatmapCanvasModel(
   store: AnalysisStoreState,
   req: Record<string, unknown>,
   res: Record<string, unknown>,
@@ -3986,22 +3033,14 @@ function renderHeatmapCanvas(
   const mode = heatmapModeOf(store);
   const model = readHeatmapModel(res);
   const exactRobustness = readExactNeighborhoodRobustness(res);
-  const wrap = byIds<HTMLElement>(["heatmapWrapVue"]);
-  const hint = byIds<HTMLElement>(["heatmapEmptyHintVue"]);
-  const meta = byIds<HTMLElement>(["heatmapMetaVue"]);
-  const canvas = byIds<HTMLCanvasElement>(["heatmapCanvasVue"]);
-  const overlay = byIds<HTMLCanvasElement>(["heatmapOverlayVue"]);
-  const tooltip = byIds<HTMLElement>(["heatmapTooltipVue"]);
-  if (!wrap || !hint || !meta || !canvas || !overlay || !tooltip) return false;
 
   const topK = requestedTopK(req);
   const heatmapBins = requestedHeatmapBins(req);
   if (!model) {
     heatmapRenderState = null;
-    wrap.style.display = "none";
-    hint.style.display = "block";
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
+    store.heatmapCanvasModel = null;
     store.heatmapStatusLine =
       heatmapBins <= 0
         ? "Heatmap disabled for this run. Increase Advanced > Heatmap bins above 0, then rerun optimization."
@@ -4010,23 +3049,18 @@ function renderHeatmapCanvas(
       heatmapBins <= 0
         ? "Heatmap disabled for this run (heatmap_bins=0)."
         : "Heatmap data unavailable for this run.";
-    if (meta) meta.textContent = text(store.heatmapMeta);
-    hideHeatmapTooltip();
     return true;
   }
 
   const finite = finiteHeatmapValues(model);
   if (!finite.length) {
     heatmapRenderState = null;
-    wrap.style.display = "none";
-    hint.style.display = "block";
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
+    store.heatmapCanvasModel = null;
     store.heatmapMeta =
       "Heatmap payload was returned, but it contained no populated cells.";
     store.heatmapStatusLine = "Heatmap unavailable for this run.";
-    meta.textContent = text(store.heatmapMeta);
-    hideHeatmapTooltip();
     return true;
   }
 
@@ -4034,64 +3068,52 @@ function renderHeatmapCanvas(
   const displayFinite = finiteValues(display.values);
   if (!displayFinite.length) {
     heatmapRenderState = null;
-    wrap.style.display = "none";
-    hint.style.display = "block";
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
+    store.heatmapCanvasModel = null;
     store.heatmapMeta =
       mode === "plateau"
         ? "Derived plateau heatmap could not be built from this surface."
         : "Heatmap payload was returned, but it contained no populated cells.";
     store.heatmapStatusLine = "Heatmap unavailable for this run.";
-    meta.textContent = text(store.heatmapMeta);
-    hideHeatmapTooltip();
     return true;
   }
 
-  const state: HeatmapRenderState = {
+  const meta = buildHeatmapMeta(
+    mode,
+    req,
+    model,
+    display.range,
+    display.multiSampleCellCount,
+  );
+  const statusLine = buildHeatmapStatusLine(
+    mode,
+    topK,
+    exactRobustness,
+    display.multiSampleCellCount,
+  );
+  const state: HeatmapCanvasRenderModel = {
     signature: heatmapBaseSignature(readWorkflowRun(), req, res, model, mode, store),
-    meta: "",
-    statusLine: "",
+    meta,
+    statusLine,
     model,
     displayMode: mode,
     displayValues: display.values,
     displayLabel: display.label,
     displayLegendNote: display.legendNote,
-    req,
+    request: buildHeatmapCanvasRequest(req),
     markers: heatmapMarkerRows(store, req, res, model),
     range: display.range,
     palette: display.palette,
     plateauDiagnostics: display.plateauDiagnostics,
   };
 
-  paintHeatmapBaseFromState(state, canvas);
-  paintHeatmapOverlayFromState(state, overlay);
-  canvas.dataset.renderSignature = state.signature;
-  overlay.dataset.renderSignature = state.signature;
-  bindHeatmapOverlayHandlers(state, overlay);
-
-  wrap.style.display = "block";
-  hint.style.display = "none";
-  renderHeatmapLegend(state.range.min, state.range.max, state.palette);
   store.heatmapWrapVisible = true;
   store.canHeatmapExportPng = true;
-  store.heatmapMeta = buildHeatmapMeta(
-    mode,
-    req,
-    model,
-    state.range,
-    display.multiSampleCellCount,
-  );
-  store.heatmapStatusLine = buildHeatmapStatusLine(
-    mode,
-    topK,
-    exactRobustness,
-    display.multiSampleCellCount,
-  );
-  state.meta = text(store.heatmapMeta);
-  state.statusLine = text(store.heatmapStatusLine);
+  store.heatmapMeta = meta;
+  store.heatmapStatusLine = statusLine;
+  store.heatmapCanvasModel = markRaw(state);
   heatmapRenderState = state;
-  meta.textContent = text(store.heatmapMeta);
   return true;
 }
 
@@ -4206,7 +3228,7 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
     store.heatmapStatusLine = "No heatmap payload was returned for this run.";
   }
 
-  const ok = renderHeatmapCanvas(store, req, res);
+  const ok = setHeatmapCanvasModel(store, req, res);
   markAnalysisVue(store);
   return ok;
 }
@@ -4229,34 +3251,11 @@ export function restoreHeatmapVisible(): boolean {
   );
   if (nextSignature !== heatmapRenderState.signature) return false;
 
-  const wrap = byIds<HTMLElement>(["heatmapWrapVue"]);
-  const hint = byIds<HTMLElement>(["heatmapEmptyHintVue"]);
-  const meta = byIds<HTMLElement>(["heatmapMetaVue"]);
-  const canvas = byIds<HTMLCanvasElement>(["heatmapCanvasVue"]);
-  const overlay = byIds<HTMLCanvasElement>(["heatmapOverlayVue"]);
-  if (!wrap || !hint || !meta || !canvas || !overlay) return false;
-
-  wrap.style.display = "block";
-  hint.style.display = "none";
-  heatmapHoverCell = null;
-  hideHeatmapTooltip();
-  if (text(canvas.dataset.renderSignature) !== heatmapRenderState.signature) {
-    paintHeatmapBaseFromState(heatmapRenderState, canvas);
-    canvas.dataset.renderSignature = heatmapRenderState.signature;
-  }
-  paintHeatmapOverlayFromState(heatmapRenderState, overlay);
-  overlay.dataset.renderSignature = heatmapRenderState.signature;
-  bindHeatmapOverlayHandlers(heatmapRenderState, overlay);
-  renderHeatmapLegend(
-    heatmapRenderState.range.min,
-    heatmapRenderState.range.max,
-    heatmapRenderState.palette,
-  );
   store.heatmapWrapVisible = true;
   store.canHeatmapExportPng = true;
+  store.heatmapCanvasModel = markRaw(heatmapRenderState);
   store.heatmapMeta = heatmapRenderState.meta;
   store.heatmapStatusLine = heatmapRenderState.statusLine;
-  meta.textContent = heatmapRenderState.meta;
   markAnalysisVue(store);
   return true;
 }
@@ -4299,15 +3298,31 @@ export function invalidateAnalysisExecutionCaches(): void {
   drillPriceBarsPending.clear();
   drillRenderState = null;
   heatmapRenderState = null;
-  heatmapHoverCell = null;
   topRowsModelCache = [];
   topRowsAllModelCache = [];
-  drillSelectedTradeIdx = -1;
-  drillTradesRangeStart = 0;
   drillSeq = (drillSeq + 1) >>> 0;
-  drillTvModulePromise = null;
-  disposeDrillTvChartDom();
-  hideHeatmapTooltip();
+  const store = readAnalysisStore();
+  if (store) {
+    store.drillChartModel = null;
+    store.drillTradeTableModel = null;
+  }
+  registeredDrillChartController?.clearTradeSelection();
+}
+
+export function registerDrillChartController(controller: DrillChartController | null): void {
+  registeredDrillChartController = controller;
+}
+
+export function registerHeatmapCanvasController(controller: HeatmapCanvasController | null): void {
+  registeredHeatmapCanvasController = controller;
+}
+
+export function runHeatmapRepresentativeDrilldown(params: HeatmapCellParams): void {
+  const pinia = resolveRuntimePinia();
+  if (pinia) {
+    useWorkflowStore(pinia).selectResultsTab("drill");
+  }
+  void runVueDrillPipeline({ rank: 1, params, metrics: {} });
 }
 
 async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
@@ -4575,106 +3590,12 @@ function byIds<T extends HTMLElement>(ids: readonly string[]): T | null {
   return null;
 }
 
-function isShown(node: HTMLElement | null): boolean {
-  if (!node) return false;
-  if (node.hidden) return false;
-  if (typeof getComputedStyle !== "function") return true;
-  return getComputedStyle(node).display !== "none";
-}
-
 function drillWrap(): HTMLElement | null {
   return byIds<HTMLElement>(["drillWrapVue", "drillWrap"]);
 }
 
-function drillTradeTableBody(): HTMLElement | null {
-  return byIds<HTMLElement>(["tradeTableBodyVue", "tradeTableBody"]);
-}
-
-function drillRows(): HTMLTableRowElement[] {
-  const body = drillTradeTableBody();
-  if (!body) return [];
-  return Array.from(
-    body.querySelectorAll<HTMLTableRowElement>("tr[data-trade-idx]"),
-  );
-}
-
-function clickRow(row: HTMLTableRowElement): boolean {
-  if (!row) return false;
-  if (typeof row.click === "function") {
-    row.click();
-    return true;
-  }
-  if (typeof MouseEvent === "function") {
-    row.dispatchEvent(
-      new MouseEvent("click", { bubbles: true, cancelable: true }),
-    );
-    return true;
-  }
-  return false;
-}
-
-function navigateDrillTradeDom(isNext: boolean): string | null {
-  if (!isShown(drillWrap())) return null;
-  const rows = drillRows();
-  if (!rows.length) return null;
-  let index = rows.findIndex((row) => row.classList.contains("selected"));
-  if (index < 0) index = rows.length - 1;
-  const targetIndex = isNext
-    ? Math.min(rows.length - 1, index + 1)
-    : Math.max(0, index - 1);
-  const target = rows[targetIndex];
-  if (!target) return null;
-  if (!clickRow(target)) return null;
-  const selectedAfter = rows.some((row) => row.classList.contains("selected"));
-  if (!selectedAfter) {
-    for (const row of rows) row.classList.remove("selected");
-    target.classList.add("selected");
-  }
-  return text(target.cells?.[0]?.textContent) || String(targetIndex + 1);
-}
-
-function clearDrillTradeSelectionDom(): boolean {
-  if (!isShown(drillWrap())) return false;
-  const body = drillTradeTableBody();
-  if (!body) return false;
-  const selectedRows = Array.from(
-    body.querySelectorAll<HTMLTableRowElement>("tr.selected"),
-  );
-  drillSelectedTradeIdx = -1;
-  if (!selectedRows.length) return false;
-  for (const row of selectedRows) row.classList.remove("selected");
-  const legend = byIds<HTMLElement>(["drillTvLegendVue", "drillTvLegend"]);
-  if (legend && /^selected trade #/i.test(text(legend.textContent))) {
-    legend.textContent = "Hover chart to inspect OHLC and indicators.";
-  }
-  return true;
-}
-
-function syncDrillTvTradeMarkers(): void {
-  if (!drillTvMarkerApi || typeof drillTvMarkerApi.setMarkers !== "function") {
-    return;
-  }
-  const markers = buildDrillTradeMarkers(drillTvMarkerCurves, drillTvMarkerBars);
-  try {
-    drillTvMarkerApi.setMarkers(markers);
-  } catch {}
-}
-
 function selectDrillTradeByIndex(tradeIdxRaw: unknown): boolean {
-  const body = drillTradeTableBody();
-  if (!body) return false;
-  const tradeIdx = Math.floor(num(tradeIdxRaw, NaN));
-  if (!Number.isFinite(tradeIdx) || tradeIdx < 0) return false;
-  const row = body.querySelector<HTMLTableRowElement>(
-    `tr[data-trade-idx="${tradeIdx}"]`,
-  );
-  if (!row) return false;
-  const rows = body.querySelectorAll<HTMLTableRowElement>("tr.selected");
-  for (const rowEl of rows) rowEl.classList.remove("selected");
-  row.classList.add("selected");
-  drillSelectedTradeIdx = tradeIdx;
-  syncDrillTvTradeMarkers();
-  return true;
+  return registeredDrillChartController?.selectTradeByIndex(tradeIdxRaw) ?? false;
 }
 
 function renderStabilityFilterChecklist(
@@ -4748,6 +3669,7 @@ function renderStabilityDom(
     return false;
 
   wrap.style.display = "block";
+  if (store) store.stabilityWrapVisible = true;
   const points = Array.isArray(result.points)
     ? result.points.map((p) => asRecord(p))
     : [];
@@ -4872,525 +3794,6 @@ function drawMinMaxChartDom(
   }
 }
 
-function normalizeChartTimeSec(raw: unknown): number {
-  const t = num(raw, NaN);
-  if (!Number.isFinite(t)) return NaN;
-  const abs = Math.abs(t);
-  if (abs >= 1e17) return Math.floor(t / 1e9);
-  if (abs >= 1e14) return Math.floor(t / 1e6);
-  if (abs >= 1e11) return Math.floor(t / 1e3);
-  return Math.floor(t);
-}
-
-async function loadDrillTvModule(): Promise<any | null> {
-  if (!drillTvModulePromise) {
-    drillTvModulePromise = import("lightweight-charts")
-      .then((m) => m as any)
-      .catch(() => null);
-  }
-  return drillTvModulePromise;
-}
-
-function disposeDrillTvChartDom(): void {
-  cancelDrillTvRenderFrame();
-  const chartRef = drillTvRuntime.chartRef.value;
-  if (
-    chartRef &&
-    drillTvClickHandler &&
-    typeof (chartRef as { unsubscribeClick?: (handler: (param: unknown) => void) => void }).unsubscribeClick ===
-      "function"
-  ) {
-    try {
-      (
-        chartRef as {
-          unsubscribeClick: (handler: (param: unknown) => void) => void;
-        }
-      ).unsubscribeClick(drillTvClickHandler);
-    } catch {}
-  }
-  drillTvClickHandler = null;
-  drillTvRuntime.dispose((chart) => {
-    if (!chart || typeof chart.remove !== "function") return;
-    chart.remove();
-  });
-  drillTvCandleSeries = null;
-  drillTvFastSeries = null;
-  drillTvSlowSeries = null;
-  drillTvHalftrendSeries = null;
-  drillTvMaczSeries = null;
-  drillTvMarkerApi = null;
-  drillTvMarkerCurves = null;
-  drillTvMarkerBars = null;
-}
-
-function cancelDrillTvRenderFrame(): void {
-  if (
-    drillTvRenderFrame &&
-    typeof window !== "undefined" &&
-    typeof window.cancelAnimationFrame === "function"
-  ) {
-    window.cancelAnimationFrame(drillTvRenderFrame);
-  }
-  drillTvRenderFrame = 0;
-  drillTvPendingPayload = null;
-}
-
-function setSeriesData(series: any, data: unknown[]): boolean {
-  if (!series || typeof series.setData !== "function") return true;
-  try {
-    series.setData(data);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function clearSeries(series: any): void {
-  setSeriesData(series, []);
-}
-
-function flushDrillTvRenderFrame(): void {
-  drillTvRenderFrame = 0;
-  const payload = drillTvPendingPayload;
-  drillTvPendingPayload = null;
-  if (!payload) return;
-  if (payload.seq !== drillSeq) return;
-  const { ctx } = payload;
-  if (!setSeriesData(ctx.candle, payload.candleData)) {
-    clearDrillTvChartDom("Unable to render drill chart.");
-    return;
-  }
-  setSeriesData(ctx.fast, payload.fastData);
-  setSeriesData(ctx.slow, payload.slowData);
-  setSeriesData(ctx.halftrend, payload.halftrendData);
-  setSeriesData(ctx.macz, payload.maczData);
-  if (ctx.markerApi && typeof ctx.markerApi.setMarkers === "function") {
-    try {
-      ctx.markerApi.setMarkers(buildDrillTradeMarkers(drillTvMarkerCurves, drillTvMarkerBars));
-    } catch {}
-  }
-
-  try {
-    const ts = ctx.chart.timeScale && ctx.chart.timeScale();
-    if (ts && typeof ts.fitContent === "function") ts.fitContent();
-  } catch {}
-
-  const meta = byIds<HTMLElement>(["drillTvChartMetaVue", "drillTvChartMeta"]);
-  if (meta) {
-    meta.textContent = `candles=${payload.candleData.length} fast=${payload.fastData.length} slow=${payload.slowData.length} trades=${payload.trades} markers=${payload.markerCount}`;
-  }
-}
-
-function scheduleDrillTvRenderFrame(payload: DrillTvRenderPayload): void {
-  drillTvPendingPayload = payload;
-  if (drillTvRenderFrame) return;
-  if (
-    typeof window === "undefined" ||
-    typeof window.requestAnimationFrame !== "function"
-  ) {
-    flushDrillTvRenderFrame();
-    return;
-  }
-  drillTvRenderFrame = window.requestAnimationFrame(() => {
-    flushDrillTvRenderFrame();
-  });
-}
-
-function clearDrillTvChartDom(
-  msg = "Hover for OHLC/MA values; click a marker to focus a trade.",
-): void {
-  cancelDrillTvRenderFrame();
-  const meta = byIds<HTMLElement>(["drillTvChartMetaVue", "drillTvChartMeta"]);
-  if (meta) meta.textContent = msg;
-  clearSeries(drillTvCandleSeries);
-  clearSeries(drillTvFastSeries);
-  clearSeries(drillTvSlowSeries);
-  clearSeries(drillTvHalftrendSeries);
-  clearSeries(drillTvMaczSeries);
-  if (drillTvMarkerApi && typeof drillTvMarkerApi.setMarkers === "function") {
-    try {
-      drillTvMarkerApi.setMarkers([]);
-    } catch {}
-  }
-  drillTvMarkerCurves = null;
-  drillTvMarkerBars = null;
-}
-
-async function ensureDrillTvChartDom(): Promise<DrillTvChartContext | null> {
-  const host = byIds<HTMLElement>(["drillTvChartVue", "drillTvChart"]);
-  if (!host) return null;
-  const existingChart = drillTvRuntime.chartRef.value;
-  const existingHost = drillTvRuntime.hostRef.value;
-  if (existingChart && existingHost && existingHost !== host) {
-    disposeDrillTvChartDom();
-  }
-  if (drillTvRuntime.chartRef.value && drillTvCandleSeries) {
-    return {
-      chart: drillTvRuntime.chartRef.value,
-      candle: drillTvCandleSeries,
-      fast: drillTvFastSeries,
-      slow: drillTvSlowSeries,
-      halftrend: drillTvHalftrendSeries,
-      macz: drillTvMaczSeries,
-      markerApi: drillTvMarkerApi,
-    };
-  }
-  const chartModule = await loadDrillTvModule();
-  if (!chartModule || typeof chartModule.createChart !== "function")
-    return null;
-  const width = Math.max(240, Math.floor(host.clientWidth || 820));
-  const height = Math.max(220, Math.floor(host.clientHeight || 360));
-  let chart: any;
-  try {
-    chart = chartModule.createChart(host, {
-      width,
-      height,
-      layout: {
-        textColor: "rgba(203, 213, 225, 0.92)",
-        background: { type: "solid", color: "rgba(2, 6, 23, 0)" },
-      },
-      grid: {
-        vertLines: { color: "rgba(51, 65, 85, 0.35)" },
-        horzLines: { color: "rgba(51, 65, 85, 0.35)" },
-      },
-      rightPriceScale: {
-        borderColor: "rgba(100, 116, 139, 0.45)",
-      },
-      timeScale: {
-        borderColor: "rgba(100, 116, 139, 0.45)",
-        fixLeftEdge: false,
-        fixRightEdge: false,
-      },
-      crosshair: {
-        vertLine: { color: "rgba(148, 163, 184, 0.45)" },
-        horzLine: { color: "rgba(148, 163, 184, 0.45)" },
-      },
-    });
-  } catch {
-    return null;
-  }
-  const chartAny = chart as any;
-  const candleOpts = {
-    upColor: "rgba(22, 163, 74, 0.9)",
-    downColor: "rgba(225, 29, 72, 0.9)",
-    wickUpColor: "rgba(22, 163, 74, 0.9)",
-    wickDownColor: "rgba(225, 29, 72, 0.9)",
-    borderVisible: true,
-    borderUpColor: "rgba(22, 163, 74, 1)",
-    borderDownColor: "rgba(225, 29, 72, 1)",
-  };
-  let candle = null;
-  if (
-    typeof chartAny.addSeries === "function" &&
-    chartModule.CandlestickSeries
-  ) {
-    try {
-      candle = chartAny.addSeries(chartModule.CandlestickSeries, candleOpts);
-    } catch {
-      candle = null;
-    }
-  }
-  if (!candle && typeof chartAny.addCandlestickSeries === "function") {
-    try {
-      candle = chartAny.addCandlestickSeries(candleOpts);
-    } catch {
-      candle = null;
-    }
-  }
-  if (!candle) {
-    if (typeof chartAny.remove === "function") chartAny.remove();
-    return null;
-  }
-  const markerApi =
-    typeof chartModule.createSeriesMarkers === "function" && candle
-      ? chartModule.createSeriesMarkers(candle, [])
-      : null;
-
-  const fastOpts = {
-    color: "rgba(14, 165, 233, 0.95)",
-    lineWidth: 2,
-    crosshairMarkerVisible: false,
-    lastValueVisible: false,
-    priceLineVisible: false,
-  };
-  const slowOpts = {
-    color: "rgba(245, 158, 11, 0.95)",
-    lineWidth: 2,
-    crosshairMarkerVisible: false,
-    lastValueVisible: false,
-    priceLineVisible: false,
-  };
-  const halftrendOpts = {
-    color: "rgba(125, 211, 252, 0.95)",
-    lineWidth: 1,
-    crosshairMarkerVisible: false,
-    lastValueVisible: false,
-    priceLineVisible: false,
-    lineStyle: 2,
-  };
-  const maczOpts = {
-    color: "rgba(148, 163, 184, 0.6)",
-    priceLineVisible: false,
-    lastValueVisible: false,
-    base: 0,
-  };
-
-  let fast = null;
-  let slow = null;
-  let halftrend = null;
-  let macz = null;
-  if (typeof chartAny.addSeries === "function" && chartModule.LineSeries) {
-    try {
-      fast = chartAny.addSeries(chartModule.LineSeries, fastOpts);
-      slow = chartAny.addSeries(chartModule.LineSeries, slowOpts);
-      halftrend = chartAny.addSeries(chartModule.LineSeries, halftrendOpts);
-    } catch {
-      fast = null;
-      slow = null;
-      halftrend = null;
-    }
-  }
-  if ((!fast || !slow) && typeof chartAny.addLineSeries === "function") {
-    try {
-      fast = fast || chartAny.addLineSeries(fastOpts);
-      slow = slow || chartAny.addLineSeries(slowOpts);
-      halftrend = halftrend || chartAny.addLineSeries(halftrendOpts);
-    } catch {
-      // optional series in older APIs
-    }
-  }
-  if (typeof chartAny.addSeries === "function" && chartModule.HistogramSeries) {
-    try {
-      macz = chartAny.addSeries(chartModule.HistogramSeries, maczOpts);
-    } catch {
-      macz = null;
-    }
-  }
-
-  drillTvCandleSeries = markRawEntity(candle);
-  drillTvFastSeries = markRawEntity(fast);
-  drillTvSlowSeries = markRawEntity(slow);
-  drillTvHalftrendSeries = markRawEntity(halftrend);
-  drillTvMaczSeries = markRawEntity(macz);
-  drillTvMarkerApi = markRawEntity(markerApi);
-  drillTvRuntime.setHost(host);
-  drillTvRuntime.setChart(chartAny);
-  if (typeof chartAny.subscribeClick === "function") {
-    drillTvClickHandler = (param: unknown) => {
-      const markerId = text(
-        asRecord(param).hoveredObjectId ?? asRecord(param).hoveredMarkerId,
-      );
-      const match = /^trade-(\d+)(?:-(?:entry|exit))?$/u.exec(markerId);
-      if (!match) return;
-      selectDrillTradeByIndex(Number(match[1]));
-    };
-    try {
-      chartAny.subscribeClick(drillTvClickHandler);
-    } catch {}
-  }
-  drillTvRuntime.observeHostResize((rect) => {
-    const chartRef = drillTvRuntime.chartRef.value;
-    if (!chartRef || typeof chartRef.applyOptions !== "function") return;
-    if (!rect.width || !rect.height) return;
-    try {
-      chartRef.applyOptions({
-        width: Math.max(240, Math.floor(rect.width)),
-        height: Math.max(220, Math.floor(rect.height)),
-      });
-    } catch {}
-  });
-
-  return {
-    chart: drillTvRuntime.chartRef.value,
-    candle: drillTvCandleSeries,
-    fast: drillTvFastSeries,
-    slow: drillTvSlowSeries,
-    halftrend: drillTvHalftrendSeries,
-    macz: drillTvMaczSeries,
-    markerApi: drillTvMarkerApi,
-  };
-}
-
-function normalizeIndicatorBarsForChart(
-  raw: unknown,
-): Array<{ time: number; fast: number | null; slow: number | null }> {
-  const rows = Array.isArray(raw) ? raw : [];
-  const out: Array<{ time: number; fast: number | null; slow: number | null }> =
-    [];
-  for (const rowRaw of rows) {
-    const row = asRecord(rowRaw);
-    const time = normalizeChartTimeSec(
-      row.time ?? row.timestamp ?? row.ts ?? row.t,
-    );
-    if (!Number.isFinite(time)) continue;
-    const fastRaw = num(row.fast, NaN);
-    const slowRaw = num(row.slow, NaN);
-    const fast = Number.isFinite(fastRaw) ? fastRaw : null;
-    const slow = Number.isFinite(slowRaw) ? slowRaw : null;
-    if (fast == null && slow == null) continue;
-    out.push({ time, fast, slow });
-  }
-  out.sort((a, b) => a.time - b.time);
-  return out;
-}
-
-function normalizeCompositeIndicatorBarsForChart(
-  raw: unknown,
-): Array<{ time: number; halftrend: number | null; macz: number | null }> {
-  const rows = Array.isArray(raw) ? raw : [];
-  const out: Array<{
-    time: number;
-    halftrend: number | null;
-    macz: number | null;
-  }> = [];
-  for (const rowRaw of rows) {
-    const row = asRecord(rowRaw);
-    const time = normalizeChartTimeSec(
-      row.time ?? row.timestamp ?? row.ts ?? row.t,
-    );
-    if (!Number.isFinite(time)) continue;
-    const halftrendRaw = num(row.halftrend, NaN);
-    const maczRaw = num(row.macz_hist ?? row.macz, NaN);
-    const halftrend = Number.isFinite(halftrendRaw) ? halftrendRaw : null;
-    const macz = Number.isFinite(maczRaw) ? maczRaw : null;
-    if (halftrend == null && macz == null) continue;
-    out.push({ time, halftrend, macz });
-  }
-  out.sort((a, b) => a.time - b.time);
-  return out;
-}
-
-async function renderDrillTvChartDom(
-  curvesRaw: unknown,
-  barsRaw: DrillPriceBar[] | null,
-  seq: number,
-): Promise<void> {
-  if (seq !== drillSeq) return;
-  const bars = Array.isArray(barsRaw)
-    ? barsRaw.filter(
-        (b) =>
-          Number.isFinite(b.time) &&
-          Number.isFinite(b.open) &&
-          Number.isFinite(b.high) &&
-          Number.isFinite(b.low) &&
-          Number.isFinite(b.close),
-      )
-    : [];
-  if (!bars.length) {
-    clearDrillTvChartDom("No valid OHLC bars available for chart rendering.");
-    return;
-  }
-  drillTvMarkerCurves = curvesRaw;
-  drillTvMarkerBars = bars;
-  const ctx = await ensureDrillTvChartDom();
-  if (!ctx || seq !== drillSeq) return;
-  const candleData = bars.map((b) => ({
-    time: b.time,
-    open: b.open,
-    high: b.high,
-    low: b.low,
-    close: b.close,
-  }));
-  if (!candleData.length) {
-    clearDrillTvChartDom("No candle points generated from loaded bars.");
-    return;
-  }
-
-  const curves = asRecord(curvesRaw);
-  const indicatorBars = normalizeIndicatorBarsForChart(curves.indicator_bars);
-  const fastData: Array<{ time: number; value: number }> = [];
-  const slowData: Array<{ time: number; value: number }> = [];
-  for (const row of indicatorBars) {
-    if (Number.isFinite(row.fast ?? NaN))
-      fastData.push({ time: row.time, value: Number(row.fast) });
-    if (Number.isFinite(row.slow ?? NaN))
-      slowData.push({ time: row.time, value: Number(row.slow) });
-  }
-
-  const compositeBars = normalizeCompositeIndicatorBarsForChart(
-    curves.composite_indicator_bars,
-  );
-  const halftrendData: Array<{ time: number; value: number }> = [];
-  const maczData: Array<{ time: number; value: number; color?: string }> = [];
-  for (const row of compositeBars) {
-    if (Number.isFinite(row.halftrend ?? NaN)) {
-      halftrendData.push({ time: row.time, value: Number(row.halftrend) });
-    }
-    if (Number.isFinite(row.macz ?? NaN)) {
-      const value = Number(row.macz);
-      maczData.push({
-        time: row.time,
-        value,
-        color:
-          value >= 0 ? "rgba(34, 197, 94, 0.75)" : "rgba(244, 63, 94, 0.75)",
-      });
-    }
-  }
-  scheduleDrillTvRenderFrame({
-    seq,
-    ctx,
-    candleData,
-    fastData,
-    slowData,
-    halftrendData,
-    maczData,
-    trades: Array.isArray(curves.trades) ? curves.trades.length : 0,
-    markerCount: buildDrillTradeMarkers(curves, bars).length,
-  });
-}
-
-function normalizeDrillPriceBars(raw: unknown): DrillPriceBar[] {
-  const rows = Array.isArray(raw) ? raw : [];
-  const out: DrillPriceBar[] = [];
-  for (const rowRaw of rows) {
-    const row = asRecord(rowRaw);
-    const time = normalizeChartTimeSec(
-      row.time ?? row.timestamp ?? row.ts ?? row.t,
-    );
-    if (!Number.isFinite(time)) continue;
-    const open = num(row.open ?? row.o, NaN);
-    const highRaw = num(row.high ?? row.h, NaN);
-    const lowRaw = num(row.low ?? row.l, NaN);
-    const close = num(row.close ?? row.c, NaN);
-    if (
-      !Number.isFinite(open) ||
-      !Number.isFinite(highRaw) ||
-      !Number.isFinite(lowRaw) ||
-      !Number.isFinite(close)
-    )
-      continue;
-    const high = Math.max(highRaw, open, close);
-    const low = Math.min(lowRaw, open, close);
-    const fromIndex = Math.max(
-      0,
-      Math.floor(num(row.from_index ?? row.fromIndex ?? row.from, 0)),
-    );
-    const toIndex = Math.max(
-      fromIndex,
-      Math.floor(num(row.to_index ?? row.toIndex ?? row.to, fromIndex)),
-    );
-    out.push({
-      time,
-      open,
-      high,
-      low,
-      close,
-      volume: num(row.volume ?? row.v, 0),
-      fromIndex,
-      toIndex,
-    });
-  }
-  if (out.length <= 1) return out;
-  out.sort((a, b) => a.time - b.time);
-  const deduped: DrillPriceBar[] = [];
-  for (const row of out) {
-    const last = deduped[deduped.length - 1];
-    if (last && row.time === last.time) deduped[deduped.length - 1] = row;
-    else deduped.push(row);
-  }
-  return deduped;
-}
-
 async function fetchDrillPriceBars(dataId: string): Promise<DrillPriceBar[]> {
   const id = text(dataId);
   if (!id) return [];
@@ -5415,7 +3818,7 @@ async function fetchDrillPriceBars(dataId: string): Promise<DrillPriceBar[]> {
           throw firstError;
         }
       }
-      return normalizeDrillPriceBars(raw);
+      return normalizeIndexedPriceBars(raw);
     },
     DRILL_PRICE_BARS_CACHE_MAX,
   );
@@ -5426,306 +3829,19 @@ function mapTradeIndexToChartTime(
   indexRaw: unknown,
   barsRaw: DrillPriceBar[] | null | undefined,
 ): number | null {
-  const bars = Array.isArray(barsRaw) ? barsRaw : [];
-  if (!bars.length) return null;
-  const x = Math.max(0, Math.floor(num(indexRaw, 0)));
-  let monotonic = true;
-  let prevFrom = Number.NEGATIVE_INFINITY;
-  for (const bar of bars) {
-    if (bar.fromIndex < prevFrom || bar.toIndex < bar.fromIndex) {
-      monotonic = false;
-      break;
-    }
-    prevFrom = bar.fromIndex;
-  }
-  if (!monotonic) {
-    let bestTime = bars[0]?.time ?? null;
-    let bestDist = Number.POSITIVE_INFINITY;
-    for (const bar of bars) {
-      if (x >= bar.fromIndex && x <= bar.toIndex) return bar.time;
-      const d = x < bar.fromIndex ? bar.fromIndex - x : x - bar.toIndex;
-      if (d < bestDist) {
-        bestDist = d;
-        bestTime = bar.time;
-      }
-    }
-    return bestTime;
-  }
-
-  let lo = 0;
-  let hi = bars.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const bar = bars[mid];
-    if (!bar) break;
-    if (x < bar.fromIndex) hi = mid - 1;
-    else if (x > bar.toIndex) lo = mid + 1;
-    else return bar.time;
-  }
-  if (hi < 0) return bars[0]?.time ?? null;
-  if (lo >= bars.length) return bars[bars.length - 1]?.time ?? null;
-  const left = bars[hi];
-  const right = bars[lo];
-  if (!left || !right) return null;
-  return Math.abs(x - left.toIndex) <= Math.abs(right.fromIndex - x)
-    ? left.time
-    : right.time;
+  return modelMapTradeIndexToChartTime(indexRaw, barsRaw);
 }
 
 function buildDrillTradeMarkers(
   curvesRaw: unknown,
   barsRaw: DrillPriceBar[] | null | undefined,
+  selectedTradeIdxRaw: unknown = -1,
 ): Array<Record<string, unknown>> {
-  const curves = asRecord(curvesRaw);
-  const trades = Array.isArray(curves.trades)
-    ? curves.trades.map((trade) => asRecord(trade))
-    : [];
-  if (!trades.length) return [];
-  const markers: Array<Record<string, unknown>> = [];
-  for (let tradeIdx = 0; tradeIdx < trades.length; tradeIdx += 1) {
-    const trade = trades[tradeIdx] || {};
-    const direction = num(trade.direction, 0);
-    const isLong = direction > 0;
-    const isShort = direction < 0;
-    if (!isLong && !isShort) continue;
-    const selected = tradeIdx === drillSelectedTradeIdx;
-    const entryTime = mapTradeIndexToChartTime(trade.entry_t, barsRaw);
-    if (Number.isFinite(entryTime ?? Number.NaN)) {
-      markers.push({
-        id: `trade-${tradeIdx}-entry`,
-        time: entryTime,
-        position: isLong ? "belowBar" : "aboveBar",
-        shape: isLong ? "arrowUp" : "arrowDown",
-        color: selected
-          ? isLong
-            ? "rgba(34, 197, 94, 1)"
-            : "rgba(248, 113, 113, 1)"
-          : isLong
-            ? "rgba(22, 163, 74, 0.95)"
-            : "rgba(225, 29, 72, 0.95)",
-        size: selected ? 1.4 : 1,
-        text: `${isLong ? "L" : "S"}${tradeIdx + 1}`,
-      });
-    }
-
-    const open = !!trade.open;
-    const exitT = num(trade.exit_t, NaN);
-    const exitTime =
-      !open && Number.isFinite(exitT)
-        ? mapTradeIndexToChartTime(exitT, barsRaw)
-        : null;
-    if (Number.isFinite(exitTime ?? Number.NaN)) {
-      markers.push({
-        id: `trade-${tradeIdx}-exit`,
-        time: exitTime,
-        position: "inBar",
-        shape: "circle",
-        color: selected
-          ? "rgba(250, 204, 21, 0.98)"
-          : "rgba(148, 163, 184, 0.9)",
-        size: selected ? 1.2 : 0.8,
-      });
-    }
-  }
-  return markers;
-}
-
-function formatUtcTimeFromSec(secRaw: unknown): string {
-  const sec = num(secRaw, NaN);
-  if (!Number.isFinite(sec)) return "-";
-  const d = new Date(sec * 1000);
-  const pad = (n: number): string =>
-    String(Math.max(0, Math.floor(n))).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} UTC`;
-}
-
-function formatUtcTimeShortFromSec(secRaw: unknown): string {
-  const sec = num(secRaw, NaN);
-  if (!Number.isFinite(sec)) return "-";
-  const d = new Date(sec * 1000);
-  const pad = (n: number): string =>
-    String(Math.max(0, Math.floor(n))).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-}
-
-function computeTradeTableStart(
-  totalRaw: unknown,
-  selectedRaw: unknown,
-  maxRowsRaw: unknown,
-): number {
-  const total = Math.max(0, Math.floor(num(totalRaw, 0)));
-  const maxRows = Math.max(1, Math.floor(num(maxRowsRaw, 200)));
-  if (!Number.isFinite(total) || total <= maxRows) return 0;
-  const maxStart = Math.max(0, total - maxRows);
-  const selected = Math.floor(num(selectedRaw, NaN));
-  if (Number.isFinite(selected) && selected >= 0 && selected < total) {
-    const half = Math.floor(maxRows / 2);
-    return Math.max(0, Math.min(maxStart, selected - half));
-  }
-  return maxStart;
-}
-
-function renderTradesDom(
-  curvesRaw: unknown,
-  barsRaw: DrillPriceBar[] | null,
-): boolean {
-  const wrap = byIds<HTMLElement>(["tradeStatsWrapVue", "tradeStatsWrap"]);
-  const statsEl = byIds<HTMLElement>(["tradeStatsVue", "tradeStats"]);
-  const body = byIds<HTMLElement>(["tradeTableBodyVue", "tradeTableBody"]);
-  if (!wrap || !statsEl || !body) return false;
-  const curves = asRecord(curvesRaw);
-  const trades = Array.isArray(curves.trades)
-    ? curves.trades.map((t) => asRecord(t))
-    : [];
-  const stats = asRecord(curves.trade_stats);
-
-  if (!trades.length && !Object.keys(stats).length) {
-    wrap.style.display = "none";
-    statsEl.textContent = "-";
-    body.innerHTML = "";
-    return true;
-  }
-  wrap.style.display = "block";
-  const maxRows = 200;
-  const total = trades.length;
-  let start = Math.max(0, Math.floor(drillTradesRangeStart));
-  if (total <= maxRows) {
-    start = 0;
-  } else {
-    const maxStart = Math.max(0, total - maxRows);
-    start = Math.max(0, Math.min(maxStart, start));
-    if (drillSelectedTradeIdx >= 0 && drillSelectedTradeIdx < total) {
-      const endExcl = start + maxRows;
-      if (drillSelectedTradeIdx < start || drillSelectedTradeIdx >= endExcl) {
-        start = computeTradeTableStart(total, drillSelectedTradeIdx, maxRows);
-      }
-    } else if (start === 0) {
-      start = maxStart;
-    }
-  }
-  drillTradesRangeStart = start;
-
-  if (Object.keys(stats).length) {
-    const closed = Math.floor(num(stats.closed_trades, 0));
-    const open = Math.floor(num(stats.open_trades, 0));
-    const wins = Math.floor(num(stats.wins, 0));
-    const losses = Math.floor(num(stats.losses, 0));
-    const winRate = num(stats.win_rate, NaN);
-    const avgWin = num(stats.avg_win, NaN);
-    const avgLoss = num(stats.avg_loss, NaN);
-    const pf = num(stats.profit_factor, NaN);
-    const exp = num(stats.expectancy, NaN);
-    const pfStr = Number.isFinite(pf)
-      ? pf === Infinity
-        ? "inf"
-        : pf.toFixed(3)
-      : "-";
-    const wrStr = Number.isFinite(winRate)
-      ? `${(winRate * 100).toFixed(1)}%`
-      : "-";
-    const avgWinStr = Number.isFinite(avgWin)
-      ? `${(avgWin * 100).toFixed(2)}%`
-      : "-";
-    const avgLossStr = Number.isFinite(avgLoss)
-      ? `${(avgLoss * 100).toFixed(2)}%`
-      : "-";
-    const expStr = Number.isFinite(exp) ? `${(exp * 100).toFixed(2)}%` : "-";
-    statsEl.textContent = `closed=${closed} open=${open} wins=${wins} losses=${losses} win_rate=${wrStr} avg_win=${avgWinStr} avg_loss=${avgLossStr} pf=${pfStr} expectancy=${expStr}`;
-  } else {
-    statsEl.textContent = `trades=${trades.length}`;
-  }
-
-  const shown = total
-    ? trades.slice(start, Math.min(total, start + maxRows))
-    : [];
-  if (total) {
-    statsEl.textContent = `${statsEl.textContent} | view=${start + 1}..${start + shown.length}/${total}`;
-  }
-
-  body.innerHTML = "";
-  for (let i = 0; i < shown.length; i += 1) {
-    const trade = shown[i] || {};
-    const tradeIdx = start + i;
-    const idxLabel = tradeIdx + 1;
-    const dirVal = num(trade.direction, 0);
-    const dir = dirVal > 0 ? "Long" : dirVal < 0 ? "Short" : "Flat";
-    const entry = Math.floor(num(trade.entry_t, 0));
-    const bars = Math.floor(num(trade.bars, 0));
-    const pnl = num(trade.pnl, NaN);
-    const open = !!trade.open;
-    const exitRaw = num(trade.exit_t, NaN);
-    const exit =
-      open && (!Number.isFinite(exitRaw) || exitRaw <= 0) ? NaN : exitRaw;
-
-    const tr = document.createElement("tr");
-    tr.dataset.tradeIdx = String(tradeIdx);
-    if (tradeIdx === drillSelectedTradeIdx) tr.classList.add("selected");
-    const entryTime = mapTradeIndexToChartTime(entry, barsRaw);
-    const exitTime = Number.isFinite(exit)
-      ? mapTradeIndexToChartTime(exit, barsRaw)
-      : null;
-    const cells = [
-      { text: String(idxLabel), cls: "left mono", title: "" },
-      { text: dir, cls: "left mono", title: "" },
-      {
-        text: String(entry),
-        cls: "left mono",
-        title: Number.isFinite(entryTime ?? NaN)
-          ? formatUtcTimeFromSec(entryTime)
-          : "",
-      },
-      {
-        text: Number.isFinite(entryTime ?? NaN)
-          ? formatUtcTimeShortFromSec(entryTime)
-          : "-",
-        cls: "left mono",
-        title: Number.isFinite(entryTime ?? NaN)
-          ? formatUtcTimeFromSec(entryTime)
-          : "",
-      },
-      {
-        text: Number.isFinite(exit) ? String(Math.floor(exit)) : "-",
-        cls: "left mono",
-        title: Number.isFinite(exitTime ?? NaN)
-          ? formatUtcTimeFromSec(exitTime)
-          : "",
-      },
-      {
-        text: Number.isFinite(exitTime ?? NaN)
-          ? formatUtcTimeShortFromSec(exitTime)
-          : "-",
-        cls: "left mono",
-        title: Number.isFinite(exitTime ?? NaN)
-          ? formatUtcTimeFromSec(exitTime)
-          : "",
-      },
-      { text: String(bars), cls: "mono", title: "" },
-      {
-        text: Number.isFinite(pnl) ? `${(pnl * 100).toFixed(2)}%` : "-",
-        cls: "mono",
-        title: "",
-      },
-      { text: open ? "open" : "closed", cls: "left mono", title: "" },
-    ];
-    for (const cell of cells) {
-      const td = document.createElement("td");
-      td.className = cell.cls;
-      td.textContent = cell.text;
-      if (cell.title) td.title = cell.title;
-      tr.appendChild(td);
-    }
-    tr.addEventListener("click", () => {
-      if (!selectDrillTradeByIndex(tradeIdx)) {
-        const rows = body.querySelectorAll("tr.selected");
-        for (const rowEl of rows) rowEl.classList.remove("selected");
-        tr.classList.add("selected");
-        drillSelectedTradeIdx = tradeIdx;
-      }
-    });
-    body.appendChild(tr);
-  }
-
-  return true;
+  const selectedTradeIdx = Math.floor(num(selectedTradeIdxRaw, -1));
+  return buildDrillTradeMarkersForModel(
+    buildDrillChartModel(curvesRaw, barsRaw),
+    Number.isFinite(selectedTradeIdx) ? selectedTradeIdx : -1,
+  ).map((marker) => ({ ...marker }));
 }
 
 function renderDrillDomFallback(
@@ -5733,7 +3849,6 @@ function renderDrillDomFallback(
   paramsRaw: Record<string, unknown>,
   metricsRaw: Record<string, unknown>,
   row: TopRowModel,
-  bars: DrillPriceBar[] | null,
 ): boolean {
   const wrap = drillWrap();
   const hint = byIds<HTMLElement>(["drillEmptyHintVue", "drillEmptyHint"]);
@@ -5754,12 +3869,25 @@ function renderDrillDomFallback(
   const bins = Math.floor(num(eq.bins, 0));
   if (bins <= 0) {
     wrap.style.display = "none";
+    const store = readAnalysisStore();
+    if (store) {
+      store.drillWrapVisible = false;
+      store.tradeStatsWrapVisible = false;
+      store.drillChartModel = null;
+      store.drillTradeTableModel = null;
+    }
     if (hint) hint.style.display = "block";
-    clearDrillTvChartDom();
     return true;
   }
 
   wrap.style.display = "block";
+  const store = readAnalysisStore();
+  if (store) {
+    store.drillWrapVisible = true;
+    store.tradeStatsWrapVisible = Boolean(
+      asRecord(store.drillTradeTableModel).visible,
+    );
+  }
   if (hint) hint.style.display = "none";
   if (meta) {
     const metricPart = formatDrillMetricsSummary(metricsRaw);
@@ -5785,7 +3913,6 @@ function renderDrillDomFallback(
     baseline: 0.0,
     height: 160,
   });
-  renderTradesDom(curves, bars);
   return true;
 }
 
@@ -5805,20 +3932,14 @@ function restoreDrillViewFromCache(
   }
 
   drillSeq = (drillSeq + 1) >>> 0;
-  const seq = drillSeq;
+  publishDrillChartModels(store, drillRenderState.curves, drillRenderState.bars);
   const rendered = renderDrillDomFallback(
     drillRenderState.curves,
     drillRenderState.params,
     drillRenderState.metrics,
     drillRenderState.row,
-    drillRenderState.bars,
   );
   if (!rendered) return false;
-  void renderDrillTvChartDom(
-    drillRenderState.curves,
-    drillRenderState.bars,
-    seq,
-  ).catch(() => {});
   applyDrillCompletionState(
     store,
     drillRenderState.drillMeta,
@@ -6249,40 +4370,12 @@ export async function clearBaseline(): Promise<void> {
 }
 
 export async function heatmapExportPng(): Promise<void> {
-  if (typeof document !== "undefined") {
-    const base = byIds<HTMLCanvasElement>([
-      "heatmapCanvasVue",
-      "heatmapCanvas",
-    ]);
-    const overlay = byIds<HTMLCanvasElement>([
-      "heatmapOverlayVue",
-      "heatmapOverlay",
-    ]);
-    if (base && overlay && base.width > 0 && base.height > 0) {
-      const tmp = document.createElement("canvas");
-      tmp.width = base.width;
-      tmp.height = base.height;
-      const ctx = tmp.getContext("2d");
-      if (ctx) {
-        ctx.drawImage(base, 0, 0);
-        ctx.drawImage(overlay, 0, 0);
-        const run = readWorkflowRun();
-        const req = asRecord(run?.req);
-        const file = `heatmap_${String(req.objective || "heatmap").toLowerCase()}_${sanitizeTs(run?.ts)}.png`;
-        const url = tmp.toDataURL("image/png");
-        if (typeof document !== "undefined") {
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = file;
-          a.style.display = "none";
-          document.body?.appendChild(a);
-          a.click();
-          a.remove();
-          setStatus(readAnalysisStore(), "Exported heatmap PNG.");
-          return;
-        }
-      }
-    }
+  const run = readWorkflowRun();
+  const req = asRecord(run?.req);
+  const file = `heatmap_${String(req.objective || "heatmap").toLowerCase()}_${sanitizeTs(run?.ts)}.png`;
+  if (registeredHeatmapCanvasController?.exportPng(file)) {
+    setStatus(readAnalysisStore(), "Exported heatmap PNG.");
+    return;
   }
   setStatus(readAnalysisStore(), "Failed to export heatmap PNG.");
 }
@@ -6308,8 +4401,7 @@ export async function drillClearTradeSelection(): Promise<void> {
   if (pinia && useDataStore(pinia).polygonOpen) {
     return;
   }
-  if (clearDrillTradeSelectionDom()) {
-    syncDrillTvTradeMarkers();
+  if (registeredDrillChartController?.clearTradeSelection()) {
     setStatus(readAnalysisStore(), "Cleared trade selection.");
     return;
   }
@@ -6317,7 +4409,7 @@ export async function drillClearTradeSelection(): Promise<void> {
 }
 
 export async function drillPrevTrade(): Promise<void> {
-  const selected = navigateDrillTradeDom(false);
+  const selected = registeredDrillChartController?.selectPrevTrade() ?? null;
   if (selected) {
     setStatus(readAnalysisStore(), `Selected trade ${selected}.`);
     return;
@@ -6326,7 +4418,7 @@ export async function drillPrevTrade(): Promise<void> {
 }
 
 export async function drillNextTrade(): Promise<void> {
-  const selected = navigateDrillTradeDom(true);
+  const selected = registeredDrillChartController?.selectNextTrade() ?? null;
   if (selected) {
     setStatus(readAnalysisStore(), `Selected trade ${selected}.`);
     return;

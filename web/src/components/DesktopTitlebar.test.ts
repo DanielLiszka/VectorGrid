@@ -72,7 +72,7 @@ describe('DesktopTitlebar', () => {
     const wrapper = mount(DesktopTitlebar)
 
     expect(wrapper.text()).toContain('VectorGrid')
-    expect(wrapper.text()).toContain('Workflow · Strategy Setup')
+    expect(wrapper.text()).toContain('Research · Strategy Setup')
     expect(wrapper.text()).not.toContain('Dataset')
     expect(wrapper.findAll('.titlebarTool')).toHaveLength(3)
   })
@@ -84,7 +84,7 @@ describe('DesktopTitlebar', () => {
 
     const wrapper = mount(DesktopTitlebar)
 
-    expect(wrapper.text()).toContain('Workflow · Policy Validation')
+    expect(wrapper.text()).toContain('Research · Policy Validation')
     expect(wrapper.get('.titlebarPrimary').attributes('aria-label')).toBe('Run ML validation')
     expect(wrapper.get('.titlebarPrimary').text()).toContain('Validate')
   })
@@ -136,6 +136,26 @@ describe('DesktopTitlebar', () => {
     expect(openPaletteSpy).toHaveBeenCalledTimes(1)
     expect(settingsSpy).toHaveBeenCalledWith('settings')
     expect(runSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes the conventional primary action to validation on the Validate step', async () => {
+    const commandActionStore = useCommandActionStore()
+    const optimizeStore = useOptimizeStore()
+    const workflowStore = useWorkflowStore()
+    workflowStore.selectWorkflowStep('validate', { persist: false })
+    optimizeStore.$patch({ validateDisabled: false, runDisabled: false })
+    const validateSpy = vi.spyOn(commandActionStore, 'validateOptimization')
+    const runSpy = vi.spyOn(commandActionStore, 'runOptimization')
+
+    const wrapper = mount(DesktopTitlebar)
+    const primary = wrapper.get('.titlebarPrimary')
+
+    expect(primary.attributes('aria-label')).toBe('Run validation')
+    expect(primary.text()).toContain('Validate')
+    await primary.trigger('click')
+
+    expect(validateSpy).toHaveBeenCalledTimes(1)
+    expect(runSpy).not.toHaveBeenCalled()
   })
 
   it('uses native window controls when available', async () => {
