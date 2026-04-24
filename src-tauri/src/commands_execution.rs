@@ -1,3 +1,10 @@
+use crate::broker_paper::{
+    self, PaperBrokerMarketOrder, PaperBrokerOrder, PaperBrokerPosition, PaperOrderSide,
+};
+use crate::execution_policy::{
+    evaluate_execution_policy, ExecutionPolicyInput, ExecutionPolicyLimits,
+};
+use crate::execution_quantity::normalize_execution_quantity;
 use crate::state::AppState;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -5,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,12 +28,42 @@ pub enum LiveExecutionMode {
     Live,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionBrokerTarget {
+    DryRun,
+    LocalPaper,
+    AlpacaPaper,
+    AlpacaLive,
+}
+
+impl ExecutionBrokerTarget {
+    fn is_alpaca(self) -> bool {
+        matches!(
+            self,
+            ExecutionBrokerTarget::AlpacaPaper | ExecutionBrokerTarget::AlpacaLive
+        )
+    }
+
+    fn is_broker_armed(self) -> bool {
+        !matches!(self, ExecutionBrokerTarget::DryRun)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct LiveRiskOverride {
     #[serde(default)]
     pub stop_loss_pct: Option<f64>,
     #[serde(default)]
     pub take_profit_pct: Option<f64>,
+    #[serde(default)]
+    pub max_order_notional: Option<f64>,
+    #[serde(default)]
+    pub max_position_notional: Option<f64>,
+    #[serde(default)]
+    pub allow_short: Option<bool>,
+    #[serde(default)]
+    pub require_bracket: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -46,6 +84,8 @@ pub struct ExecuteStrategySignalRequest {
     pub mode: LiveExecutionMode,
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub execution_target: Option<ExecutionBrokerTarget>,
     #[serde(default)]
     pub risk: LiveRiskOverride,
     #[serde(default)]
@@ -138,6 +178,19 @@ pub struct GetLiveExecutionSnapshotRequest {
     pub include_orders: Option<bool>,
     #[serde(default)]
     pub include_position: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GetLocalPaperExecutionSnapshotRequest {
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ResetLocalPaperBrokerResponse {
+    pub snapshot: GetLiveExecutionSnapshotResponse,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -292,6 +345,7 @@ pub struct LiveExecutionRunnerConfig {
     pub qty: f64,
     pub mode: LiveExecutionMode,
     pub dry_run: bool,
+    pub execution_target: ExecutionBrokerTarget,
     pub data_id: String,
     pub strategy_kind: String,
 }
@@ -373,6 +427,7 @@ struct LiveExecutionRunnerInternalCfg {
     qty: f64,
     data_id: String,
     strategy_kind: String,
+    app_local_data_dir: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -456,6 +511,15 @@ fn apply_risk_override(
     }
 }
 
+fn execution_policy_limits_from_risk(risk: &LiveRiskOverride) -> ExecutionPolicyLimits {
+    ExecutionPolicyLimits {
+        max_order_notional: risk.max_order_notional,
+        max_position_notional: risk.max_position_notional,
+        allow_short: risk.allow_short,
+        require_bracket: risk.require_bracket,
+    }
+}
+
 fn finite_last(xs: &[f64]) -> Option<f64> {
     xs.iter().rev().copied().find(|v| v.is_finite() && *v > 0.0)
 }
@@ -508,6 +572,44 @@ fn strategy_data_id(spec: &LiveStrategySpec) -> &str {
         LiveStrategySpec::DoubleMa { req } => &req.data_id,
         LiveStrategySpec::CompositeCpu { req } => &req.data_id,
     }
+}
+
+fn execution_target_for_request(req: &ExecuteStrategySignalRequest) -> ExecutionBrokerTarget {
+    req.execution_target.unwrap_or_else(|| {
+        if req.dry_run {
+            ExecutionBrokerTarget::DryRun
+        } else {
+            match req.mode {
+                LiveExecutionMode::Paper => ExecutionBrokerTarget::AlpacaPaper,
+                LiveExecutionMode::Live => ExecutionBrokerTarget::AlpacaLive,
+            }
+        }
+    })
+}
+
+fn normalize_execution_target_flags(
+    req: &mut ExecuteStrategySignalRequest,
+) -> ExecutionBrokerTarget {
+    let target = execution_target_for_request(req);
+    match target {
+        ExecutionBrokerTarget::DryRun => {
+            req.dry_run = true;
+        }
+        ExecutionBrokerTarget::LocalPaper => {
+            req.dry_run = false;
+            req.mode = LiveExecutionMode::Paper;
+        }
+        ExecutionBrokerTarget::AlpacaPaper => {
+            req.dry_run = false;
+            req.mode = LiveExecutionMode::Paper;
+        }
+        ExecutionBrokerTarget::AlpacaLive => {
+            req.dry_run = false;
+            req.mode = LiveExecutionMode::Live;
+        }
+    }
+    req.execution_target = Some(target);
+    target
 }
 
 fn now_unix_ms() -> i64 {
@@ -564,6 +666,7 @@ fn runner_config_view(cfg: &LiveExecutionRunnerInternalCfg) -> LiveExecutionRunn
         qty: cfg.qty,
         mode: cfg.req.mode,
         dry_run: cfg.req.dry_run,
+        execution_target: execution_target_for_request(&cfg.req),
         data_id: cfg.data_id.clone(),
         strategy_kind: cfg.strategy_kind.clone(),
     }
@@ -668,6 +771,12 @@ fn build_live_session_seed(
         "mode": match req.mode {
             LiveExecutionMode::Paper => "paper",
             LiveExecutionMode::Live => "live",
+        },
+        "execution_target": match execution_target_for_request(req) {
+            ExecutionBrokerTarget::DryRun => "dry_run",
+            ExecutionBrokerTarget::LocalPaper => "local_paper",
+            ExecutionBrokerTarget::AlpacaPaper => "alpaca_paper",
+            ExecutionBrokerTarget::AlpacaLive => "alpaca_live",
         },
         "symbol": symbol,
         "qty": qty,
@@ -827,6 +936,7 @@ pub(crate) fn canonical_symbol_key(raw: &str) -> String {
 fn normalize_execute_request(
     mut req: ExecuteStrategySignalRequest,
 ) -> Result<(ExecuteStrategySignalRequest, String, f64), String> {
+    normalize_execution_target_flags(&mut req);
     let symbol = canonical_symbol_key(&req.symbol);
     if symbol.is_empty() {
         return Err("symbol is required".to_string());
@@ -834,10 +944,7 @@ fn normalize_execute_request(
     if !req.qty.is_finite() || req.qty <= 0.0 {
         return Err("qty must be finite and > 0".to_string());
     }
-    let qty = (req.qty * 10_000.0).round() / 10_000.0;
-    if qty <= 0.0 {
-        return Err("qty is too small after normalization".to_string());
-    }
+    let qty = normalize_execution_quantity(req.qty)?;
     req.symbol = symbol.clone();
     req.qty = qty;
     Ok((req, symbol, qty))
@@ -854,8 +961,7 @@ fn should_attach_opening_bracket(current_position_qty: f64, target_position_qty:
 fn validate_live_runner_stream_preconditions(
     stream: Option<&crate::state::LiveCandleStreamInfo>,
     requested_symbol: &str,
-    mode: LiveExecutionMode,
-    dry_run: bool,
+    execution_target: ExecutionBrokerTarget,
 ) -> Result<(), String> {
     let Some(stream) = stream.filter(|stream| stream.active) else {
         return Err(
@@ -869,7 +975,7 @@ fn validate_live_runner_stream_preconditions(
             "Live candles are active for {live_symbol}, not {requested_symbol}."
         ));
     }
-    if matches!(mode, LiveExecutionMode::Live) && !dry_run && stream.delayed {
+    if matches!(execution_target, ExecutionBrokerTarget::AlpacaLive) && stream.delayed {
         return Err(
             "Live Alpaca automation requires a real-time Polygon stream. Turn delayed data off before arming the broker."
                 .to_string(),
@@ -1668,6 +1774,94 @@ fn alpaca_order_payload(
     (payload, warnings)
 }
 
+fn paper_order_side_for_delta(delta_qty: f64) -> PaperOrderSide {
+    if delta_qty > 0.0 {
+        PaperOrderSide::Buy
+    } else {
+        PaperOrderSide::Sell
+    }
+}
+
+fn paper_order_timestamp(value: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value)
+        .map(|ts| ts.to_rfc3339())
+        .or_else(|| Some(value.to_string()))
+}
+
+fn paper_order_snapshot(order: &PaperBrokerOrder) -> LiveOrderSnapshot {
+    LiveOrderSnapshot {
+        id: order.id.clone(),
+        symbol: order.symbol.clone(),
+        side: order.side.as_str().to_string(),
+        status: order.status.clone(),
+        order_type: order.order_type.clone(),
+        qty: Some(order.qty),
+        filled_qty: Some(order.filled_qty),
+        filled_avg_price: Some(order.avg_fill_price),
+        limit_price: None,
+        stop_price: None,
+        submitted_at: paper_order_timestamp(order.submitted_at_unix_ms),
+        filled_at: paper_order_timestamp(order.filled_at_unix_ms),
+        updated_at: paper_order_timestamp(order.filled_at_unix_ms),
+        canceled_at: None,
+    }
+}
+
+fn paper_position_snapshot(position: &PaperBrokerPosition) -> LivePositionSnapshot {
+    LivePositionSnapshot {
+        symbol: position.symbol.clone(),
+        qty: position.qty,
+        side: Some(if position.qty >= 0.0 { "long" } else { "short" }.to_string()),
+        avg_entry_price: Some(position.avg_entry_price),
+        current_price: Some(position.market_price),
+        market_value: Some(position.market_value),
+        unrealized_pl: Some(position.unrealized_pnl),
+        unrealized_plpc: if position.avg_entry_price.abs() > f64::EPSILON {
+            Some(position.unrealized_pnl / (position.avg_entry_price * position.qty.abs()))
+        } else {
+            None
+        },
+    }
+}
+
+fn local_paper_snapshot_blocking(
+    app_local_data_dir: &Path,
+    symbol: &str,
+    limit: u32,
+    now_unix_ms: i64,
+) -> Result<GetLiveExecutionSnapshotResponse, String> {
+    let symbol = canonical_symbol_key(symbol);
+    let doc = broker_paper::load_or_default(app_local_data_dir, now_unix_ms)?;
+    let position = if symbol.is_empty() {
+        None
+    } else {
+        doc.positions.get(&symbol).map(paper_position_snapshot)
+    };
+    let mut orders: Vec<LiveOrderSnapshot> = doc
+        .orders
+        .iter()
+        .rev()
+        .filter(|order| symbol.is_empty() || symbol_matches(&order.symbol, &symbol))
+        .take(limit as usize)
+        .map(paper_order_snapshot)
+        .collect();
+    orders.reverse();
+    Ok(GetLiveExecutionSnapshotResponse {
+        mode: LiveExecutionMode::Paper,
+        symbol,
+        account_id: Some(doc.account.account_id),
+        account_number: Some("local-paper".to_string()),
+        account_status: Some("simulated".to_string()),
+        currency: Some(doc.account.currency),
+        buying_power: Some(format!("{:.2}", doc.account.buying_power)),
+        cash: Some(format!("{:.2}", doc.account.cash)),
+        portfolio_value: Some(format!("{:.2}", doc.account.portfolio_value)),
+        fetched_at_unix_ms: doc.account.updated_at_unix_ms,
+        position,
+        orders,
+    })
+}
+
 fn normalize_execution_safety_symbol(raw: &str) -> Result<String, String> {
     let symbol = canonical_symbol_key(raw);
     if symbol.is_empty() {
@@ -1757,10 +1951,12 @@ fn execute_strategy_signal_blocking(
     qty: f64,
     candles: Arc<Candles>,
     abort: Option<RunnerAbortHandle>,
+    app_local_data_dir: Option<PathBuf>,
 ) -> Result<ExecuteStrategySignalResponse, String> {
     if let Some(abort) = abort.as_ref() {
         abort.check()?;
     }
+    let execution_target = execution_target_for_request(&req);
     let decision = signal_decision_from_request(&req.strategy, candles.as_ref(), &req.risk)?;
     if let Some(abort) = abort.as_ref() {
         abort.check()?;
@@ -1770,7 +1966,13 @@ fn execute_strategy_signal_blocking(
 
     let mut current_position_qty = 0.0_f64;
     let mut open_orders: Vec<LiveOrderSnapshot> = Vec::new();
-    if !req.dry_run {
+    if matches!(execution_target, ExecutionBrokerTarget::LocalPaper) {
+        let base = app_local_data_dir.as_deref().ok_or_else(|| {
+            "app local data directory is required for local paper execution".to_string()
+        })?;
+        let doc = broker_paper::load_or_default(base, now_unix_ms())?;
+        current_position_qty = doc.positions.get(&symbol).map(|p| p.qty).unwrap_or(0.0);
+    } else if execution_target.is_alpaca() {
         if req.alpaca_api_key.trim().is_empty() || req.alpaca_api_secret.trim().is_empty() {
             return Err(
                 "alpaca_api_key and alpaca_api_secret are required unless dry_run=true".to_string(),
@@ -1849,7 +2051,41 @@ fn execute_strategy_signal_blocking(
         });
     }
 
-    if req.dry_run {
+    let opening_new = should_attach_opening_bracket(current_position_qty, target_position_qty);
+    let policy = evaluate_execution_policy(ExecutionPolicyInput {
+        qty,
+        current_position_qty,
+        target_position_qty,
+        delta_qty,
+        last_close: decision.last_close,
+        opening_new_position: opening_new,
+        stop_loss_pct: decision.cfg.stop_loss_pct(),
+        take_profit_pct: decision.cfg.take_profit_pct(),
+        limits: execution_policy_limits_from_risk(&req.risk),
+    });
+    if !policy.allowed {
+        warnings.push(format!(
+            "Execution policy blocked order: {}",
+            policy.message
+        ));
+        return Ok(ExecuteStrategySignalResponse {
+            symbol,
+            mode: req.mode,
+            desired_position: decision.desired_position,
+            current_position_qty,
+            target_position_qty,
+            delta_qty,
+            order_submitted: false,
+            order_id: None,
+            action: format!("policy_blocked:{}", policy.code),
+            last_bar_ts: decision.last_bar_ts,
+            last_close: Some(decision.last_close),
+            warnings,
+        });
+    }
+    warnings.extend(policy.warnings);
+
+    if matches!(execution_target, ExecutionBrokerTarget::DryRun) {
         return Ok(ExecuteStrategySignalResponse {
             symbol,
             mode: req.mode,
@@ -1866,11 +2102,51 @@ fn execute_strategy_signal_blocking(
         });
     }
 
+    if matches!(execution_target, ExecutionBrokerTarget::LocalPaper) {
+        if let Some(abort) = abort.as_ref() {
+            abort.check()?;
+        }
+        let base = app_local_data_dir.as_deref().ok_or_else(|| {
+            "app local data directory is required for local paper execution".to_string()
+        })?;
+        let side = paper_order_side_for_delta(delta_qty);
+        let execution = broker_paper::submit_market_order(
+            base,
+            PaperBrokerMarketOrder {
+                symbol: symbol.clone(),
+                side,
+                qty: delta_qty.abs(),
+                price: decision.last_close,
+                at_unix_ms: now_unix_ms(),
+                fee_bps: 0.0,
+                slippage_bps: 0.0,
+                client_order_id: None,
+            },
+        )?;
+        warnings.push(
+            "Local paper fill used the latest strategy close as the simulated market price."
+                .to_string(),
+        );
+        return Ok(ExecuteStrategySignalResponse {
+            symbol,
+            mode: req.mode,
+            desired_position: decision.desired_position,
+            current_position_qty,
+            target_position_qty,
+            delta_qty,
+            order_submitted: true,
+            order_id: Some(execution.order.id),
+            action: side.as_str().to_string(),
+            last_bar_ts: decision.last_bar_ts,
+            last_close: Some(decision.last_close),
+            warnings,
+        });
+    }
+
     if let Some(abort) = abort.as_ref() {
         abort.check()?;
     }
     let client = alpaca_client()?;
-    let opening_new = should_attach_opening_bracket(current_position_qty, target_position_qty);
     let (payload, bracket_warnings) = if opening_new {
         alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)
     } else {
@@ -1924,8 +2200,9 @@ pub async fn execute_strategy_signal_once(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ExecuteStrategySignalResponse, String> {
-    ensure_runner_inactive_for_manual_broker_execution(req.dry_run)?;
-    if !req.dry_run {
+    let execution_target = normalize_execution_target_flags(&mut req);
+    ensure_runner_inactive_for_manual_broker_execution(!execution_target.is_broker_armed())?;
+    if execution_target.is_alpaca() {
         let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
             &app.config().identifier,
             &req.alpaca_api_key,
@@ -1941,10 +2218,11 @@ pub async fn execute_strategy_signal_once(
     let data_id = strategy_data_id(&req.strategy).to_string();
     let strategy_kind = strategy_kind_label(&req.strategy);
     let candles = state.get_candles(&data_id)?;
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let req_for_session = req.clone();
     let symbol_for_session = symbol.clone();
     let response = tauri::async_runtime::spawn_blocking(move || {
-        execute_strategy_signal_blocking(req, symbol, qty, candles, None)
+        execute_strategy_signal_blocking(req, symbol, qty, candles, None, Some(app_local_data_dir))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -1969,7 +2247,8 @@ pub async fn start_live_execution_runner(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<LiveExecutionRunnerStatus, String> {
-    if !req.dry_run {
+    let execution_target = normalize_execution_target_flags(&mut req);
+    if execution_target.is_alpaca() {
         let (api_key, api_secret) = resolve_alpaca_credentials_for_app(
             &app.config().identifier,
             &req.alpaca_api_key,
@@ -1988,22 +2267,19 @@ pub async fn start_live_execution_runner(
     }
     let _ = state.get_candles(&data_id)?;
     let live_stream = state.live_candle_stream_info()?;
-    validate_live_runner_stream_preconditions(
-        live_stream.as_ref(),
-        &symbol,
-        req.mode,
-        req.dry_run,
-    )?;
+    validate_live_runner_stream_preconditions(live_stream.as_ref(), &symbol, execution_target)?;
     let _ = finalize_active_live_session(&app, "superseded");
 
     let strategy_kind = strategy_kind_label(&req.strategy);
     let generation = LIVE_EXECUTION_RUNNER_GEN.fetch_add(1, Ordering::SeqCst);
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let cfg = LiveExecutionRunnerInternalCfg {
         req: req.clone(),
         symbol: symbol.clone(),
         qty,
         data_id: data_id.clone(),
         strategy_kind: strategy_kind.clone(),
+        app_local_data_dir,
     };
     let runtime = LiveExecutionRunnerRuntime {
         generation,
@@ -2280,9 +2556,17 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
         let req = cfg.req.clone();
         let symbol = cfg.symbol.clone();
         let qty = cfg.qty;
+        let app_local_data_dir = cfg.app_local_data_dir.clone();
         let abort_for_blocking = abort.clone();
         let exec_result = tauri::async_runtime::spawn_blocking(move || {
-            execute_strategy_signal_blocking(req, symbol, qty, candles, Some(abort_for_blocking))
+            execute_strategy_signal_blocking(
+                req,
+                symbol,
+                qty,
+                candles,
+                Some(abort_for_blocking),
+                Some(app_local_data_dir),
+            )
         })
         .await
         .map_err(|e| e.to_string())
@@ -2384,6 +2668,118 @@ pub fn alpaca_set_api_credentials(
 #[tauri::command]
 pub fn alpaca_clear_api_credentials(app: tauri::AppHandle) -> AlpacaCredentialStorageStatus {
     clear_alpaca_api_credentials_for_app(&app.config().identifier)
+}
+
+#[tauri::command]
+pub async fn get_local_paper_execution_snapshot(
+    req: GetLocalPaperExecutionSnapshotRequest,
+    app: tauri::AppHandle,
+) -> Result<GetLiveExecutionSnapshotResponse, String> {
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let symbol = canonical_symbol_key(&req.symbol);
+    let limit = req.limit.unwrap_or(200).clamp(1, 500);
+    tauri::async_runtime::spawn_blocking(move || {
+        local_paper_snapshot_blocking(&app_local_data_dir, &symbol, limit, now_unix_ms())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn reset_local_paper_broker(
+    app: tauri::AppHandle,
+) -> Result<ResetLocalPaperBrokerResponse, String> {
+    ensure_runner_inactive_for_broker_safety_action()?;
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        broker_paper::reset(&app_local_data_dir, now_unix_ms())?;
+        local_paper_snapshot_blocking(&app_local_data_dir, "", 200, now_unix_ms())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(ResetLocalPaperBrokerResponse { snapshot })
+}
+
+#[tauri::command]
+pub async fn cancel_local_paper_open_orders(
+    req: LiveExecutionSafetyActionRequest,
+    app: tauri::AppHandle,
+) -> Result<CancelLiveExecutionOpenOrdersResponse, String> {
+    ensure_runner_inactive_for_broker_safety_action()?;
+    let symbol = normalize_execution_safety_symbol(&req.symbol)?;
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<CancelLiveExecutionOpenOrdersResponse, String> {
+            let _ = broker_paper::load_or_default(&app_local_data_dir, now_unix_ms())?;
+            Ok(CancelLiveExecutionOpenOrdersResponse {
+                mode: LiveExecutionMode::Paper,
+                symbol,
+                open_order_count_before: 0,
+                cancelled_count: 0,
+                cancelled_order_ids: Vec::new(),
+            })
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn flatten_local_paper_position(
+    req: LiveExecutionSafetyActionRequest,
+    app: tauri::AppHandle,
+) -> Result<FlattenLiveExecutionPositionResponse, String> {
+    ensure_runner_inactive_for_broker_safety_action()?;
+    let symbol = normalize_execution_safety_symbol(&req.symbol)?;
+    let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<FlattenLiveExecutionPositionResponse, String> {
+            let doc = broker_paper::load_or_default(&app_local_data_dir, now_unix_ms())?;
+            let Some(position) = doc.positions.get(&symbol).cloned() else {
+                return Ok(FlattenLiveExecutionPositionResponse {
+                    mode: LiveExecutionMode::Paper,
+                    symbol,
+                    position_found: false,
+                    open_order_count_before: 0,
+                    order_submitted: false,
+                    order_id: None,
+                    action: "flat".to_string(),
+                    qty: None,
+                });
+            };
+            let qty = position.qty.abs();
+            let side = if position.qty > 0.0 {
+                PaperOrderSide::Sell
+            } else {
+                PaperOrderSide::Buy
+            };
+            let execution = broker_paper::submit_market_order(
+                &app_local_data_dir,
+                PaperBrokerMarketOrder {
+                    symbol: symbol.clone(),
+                    side,
+                    qty,
+                    price: position.market_price.max(0.01),
+                    at_unix_ms: now_unix_ms(),
+                    fee_bps: 0.0,
+                    slippage_bps: 0.0,
+                    client_order_id: None,
+                },
+            )?;
+            Ok(FlattenLiveExecutionPositionResponse {
+                mode: LiveExecutionMode::Paper,
+                symbol,
+                position_found: true,
+                open_order_count_before: 0,
+                order_submitted: true,
+                order_id: Some(execution.order.id),
+                action: side.as_str().to_string(),
+                qty: Some(qty),
+            })
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -3289,6 +3685,7 @@ mod tests {
             qty,
             mode: LiveExecutionMode::Paper,
             dry_run: true,
+            execution_target: None,
             risk: LiveRiskOverride::default(),
             alpaca_api_key: String::new(),
             alpaca_api_secret: String::new(),
@@ -3332,6 +3729,7 @@ mod tests {
                 qty: 1.0,
                 data_id: "data_1".to_string(),
                 strategy_kind: "DoubleMa".to_string(),
+                app_local_data_dir: std::env::temp_dir(),
             },
             inflight: false,
             started_at_unix_ms: 0,
@@ -3389,6 +3787,7 @@ mod tests {
         let risk = LiveRiskOverride {
             stop_loss_pct: Some(-1.0),
             take_profit_pct: Some(1.5),
+            ..LiveRiskOverride::default()
         };
         apply_risk_override(&mut cfg, &risk);
         assert_eq!(cfg.stop_loss_pct, None);
@@ -3479,7 +3878,7 @@ mod tests {
     #[test]
     fn live_runner_stream_preconditions_require_active_stream() {
         assert_eq!(
-            validate_live_runner_stream_preconditions(None, "AAPL", LiveExecutionMode::Paper, true),
+            validate_live_runner_stream_preconditions(None, "AAPL", ExecutionBrokerTarget::DryRun),
             Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
         );
         assert_eq!(
@@ -3492,8 +3891,7 @@ mod tests {
                     status: "closed".to_string(),
                 }),
                 "AAPL",
-                LiveExecutionMode::Paper,
-                true,
+                ExecutionBrokerTarget::DryRun,
             ),
             Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
         );
@@ -3511,8 +3909,7 @@ mod tests {
                     status: "started".to_string(),
                 }),
                 "AAPL",
-                LiveExecutionMode::Paper,
-                true,
+                ExecutionBrokerTarget::DryRun,
             ),
             Err("Live candles are active for TSLA, not AAPL.".to_string())
         );
@@ -3529,8 +3926,7 @@ mod tests {
                 status: "started".to_string(),
             }),
             "BRK.B",
-            LiveExecutionMode::Paper,
-            true,
+            ExecutionBrokerTarget::DryRun,
         )
         .is_ok());
     }
@@ -3547,8 +3943,7 @@ mod tests {
                     status: "started".to_string(),
                 }),
                 "AAPL",
-                LiveExecutionMode::Live,
-                false,
+                ExecutionBrokerTarget::AlpacaLive,
             ),
             Err(
                 "Live Alpaca automation requires a real-time Polygon stream. Turn delayed data off before arming the broker."
@@ -3565,8 +3960,7 @@ mod tests {
                     status: "started".to_string(),
                 }),
                 "AAPL",
-                LiveExecutionMode::Live,
-                true,
+                ExecutionBrokerTarget::DryRun,
             )
             .is_ok(),
             "dry-run runner should still be allowed on delayed data"
@@ -3581,8 +3975,7 @@ mod tests {
                     status: "started".to_string(),
                 }),
                 "AAPL",
-                LiveExecutionMode::Live,
-                false,
+                ExecutionBrokerTarget::AlpacaLive,
             )
             .is_ok(),
             "real-time stream should allow live Alpaca automation"

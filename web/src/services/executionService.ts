@@ -40,8 +40,11 @@ interface ExecutionRiskPayload {
   take_profit_pct: number | null
 }
 
+export type ExecutionTarget = 'dry_run' | 'local_paper' | 'alpaca_paper' | 'alpaca_live'
+
 interface ExecutionActionOptions {
   mode: string
+  executionTarget?: string
   symbol: string
   qty: string | number
   paramSource: string
@@ -76,6 +79,7 @@ interface ExecutionRunnerConfigResponse {
   symbol?: unknown
   mode?: unknown
   dry_run?: unknown
+  execution_target?: unknown
 }
 
 interface ExecutionConnectionResponse {
@@ -259,6 +263,7 @@ export interface ExecutionPreviewMeta {
     | 'none'
     | 'test_alpaca_connection'
     | 'get_live_execution_snapshot'
+    | 'get_local_paper_execution_snapshot'
     | 'execute_strategy_signal_once'
     | 'alpaca_clear_api_credentials'
   scopeLabel: string
@@ -268,7 +273,7 @@ export interface ExecutionPreviewMeta {
 export interface ExecutionAccountReview {
   state: 'not_verified' | 'broker_confirmed' | 'unavailable'
   mode: 'paper' | 'live'
-  sourceCommand: 'none' | 'test_alpaca_connection' | 'get_live_execution_snapshot'
+  sourceCommand: 'none' | 'test_alpaca_connection' | 'get_live_execution_snapshot' | 'get_local_paper_execution_snapshot'
   fetchedAtUnixMs: number | null
   accountId: string
   accountNumber: string
@@ -294,7 +299,7 @@ export interface ExecutionPositionReview {
 export interface ExecutionOrderReview {
   state: 'disabled' | 'broker_confirmed'
   scope: 'symbol_scoped' | 'all_symbols'
-  sourceCommand: 'none' | 'get_live_execution_snapshot'
+  sourceCommand: 'none' | 'get_live_execution_snapshot' | 'get_local_paper_execution_snapshot'
   fetchedAtUnixMs: number | null
   totalCount: number
   openCount: number
@@ -316,12 +321,12 @@ export interface ExecutionChartReview {
   datasetLabel: string
   datasetSymbol: string
   orderCount: number
-  sourceCommand: 'none' | 'get_live_execution_snapshot'
+  sourceCommand: 'none' | 'get_live_execution_snapshot' | 'get_local_paper_execution_snapshot'
   fetchedAtUnixMs: number | null
 }
 
 export interface ExecutionBrokerReview {
-  sourceCommand: 'get_live_execution_snapshot'
+  sourceCommand: 'get_live_execution_snapshot' | 'get_local_paper_execution_snapshot'
   mode: 'paper' | 'live'
   symbol: string
   fetchedAtUnixMs: number | null
@@ -743,6 +748,44 @@ function modeValue(raw: unknown): 'paper' | 'live' {
   return text(raw).toLowerCase() === 'live' ? 'live' : 'paper'
 }
 
+export function executionTargetValue(
+  raw: unknown,
+  modeRaw: unknown = 'paper',
+  dryRunRaw: unknown = true,
+): ExecutionTarget {
+  const normalized = text(raw).toLowerCase()
+  if (normalized === 'local_paper' || normalized === 'local-paper') return 'local_paper'
+  if (normalized === 'alpaca_paper' || normalized === 'alpaca-paper') return 'alpaca_paper'
+  if (normalized === 'alpaca_live' || normalized === 'alpaca-live') return 'alpaca_live'
+  if (normalized === 'dry_run' || normalized === 'dry-run' || normalized === 'simulation') return 'dry_run'
+  if (dryRunRaw) return 'dry_run'
+  return modeValue(modeRaw) === 'live' ? 'alpaca_live' : 'alpaca_paper'
+}
+
+function modeForExecutionTarget(target: ExecutionTarget): 'paper' | 'live' {
+  return target === 'alpaca_live' ? 'live' : 'paper'
+}
+
+function isDryRunTarget(target: ExecutionTarget): boolean {
+  return target === 'dry_run'
+}
+
+function isAlpacaExecutionTarget(target: ExecutionTarget): boolean {
+  return target === 'alpaca_paper' || target === 'alpaca_live'
+}
+
+function brokerTargetForMode(modeRaw: unknown): ExecutionTarget {
+  return modeValue(modeRaw) === 'live' ? 'alpaca_live' : 'alpaca_paper'
+}
+
+function reviewExecutionTarget(options: ExecutionActionOptions): ExecutionTarget {
+  const explicit = text(options.executionTarget)
+  if (explicit === 'local_paper' || explicit === 'local-paper') return 'local_paper'
+  if (explicit === 'alpaca_paper' || explicit === 'alpaca-paper') return 'alpaca_paper'
+  if (explicit === 'alpaca_live' || explicit === 'alpaca-live') return 'alpaca_live'
+  return brokerTargetForMode(options.mode)
+}
+
 function sourceValue(raw: unknown): 'selected' | 'best' | 'manual' {
   const normalized = text(raw).toLowerCase()
   if (normalized === 'best') return 'best'
@@ -765,15 +808,29 @@ function parseRiskPct(raw: unknown, label: string): number | null {
 }
 
 function parseQty(raw: unknown): number {
+  const rawText = text(raw)
   const value = Number(raw)
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error('Execution quantity must be finite and > 0.')
   }
-  const rounded = Math.round(value * 10_000) / 10_000
+  const rounded = decimalRoundQuantity(rawText, value)
   if (!Number.isFinite(rounded) || rounded <= 0) {
     throw new Error('Execution quantity is too small.')
   }
   return rounded
+}
+
+function decimalRoundQuantity(rawText: string, fallbackValue: number): number {
+  const decimalText = /^[+-]?(?:\d+|\d*\.\d+)$/.test(rawText)
+    ? rawText
+    : fallbackValue.toFixed(12)
+  const unsigned = decimalText.trim().replace(/^[+-]/, '')
+  const [integerRaw = '0', fractionalRaw = ''] = unsigned.split('.', 2)
+  const integerUnits = Number.parseInt(integerRaw || '0', 10) * 10_000
+  const padded = `${fractionalRaw}00000`
+  const fractionalUnits = Number.parseInt(padded.slice(0, 4) || '0', 10)
+  const roundDigit = Number.parseInt(padded.slice(4, 5) || '0', 10)
+  return (integerUnits + fractionalUnits + (roundDigit >= 5 ? 1 : 0)) / 10_000
 }
 
 function requireSymbol(raw: unknown): string {
@@ -1158,6 +1215,7 @@ function buildBrokerReview(
   mode: 'paper' | 'live',
   symbolRaw: unknown,
   raw: unknown,
+  sourceCommand: ExecutionBrokerReview['sourceCommand'] = 'get_live_execution_snapshot',
 ): ExecutionBrokerReview | null {
   const resp = isRecord(raw) ? (raw as ExecutionSnapshotResponse) : null
   const symbol = canonicalSymbol(resp?.symbol ?? symbolRaw)
@@ -1165,7 +1223,7 @@ function buildBrokerReview(
   const fetchedAt = fetchedAtUnixMs(resp.fetched_at_unix_ms)
   const ordersCount = Array.isArray(resp.orders) ? resp.orders.length : 0
   return {
-    sourceCommand: 'get_live_execution_snapshot',
+    sourceCommand,
     mode,
     symbol,
     fetchedAtUnixMs: fetchedAt,
@@ -1182,19 +1240,19 @@ function buildBrokerReview(
         portfolio_value: resp.portfolio_value,
         fetched_at_unix_ms: resp.fetched_at_unix_ms,
       },
-      'get_live_execution_snapshot',
+      sourceCommand,
       resp.fetched_at_unix_ms,
     ),
     position: buildPositionReview(resp.position, symbol),
     orders: {
       state: 'broker_confirmed',
       scope: 'symbol_scoped',
-      sourceCommand: 'get_live_execution_snapshot',
+      sourceCommand,
       fetchedAtUnixMs: fetchedAt,
       totalCount: ordersCount,
       openCount: openOrderCount(resp.orders),
     },
-    chart: buildChartReview(symbol, ordersCount, fetchedAt, 'get_live_execution_snapshot'),
+    chart: buildChartReview(symbol, ordersCount, fetchedAt, sourceCommand),
   }
 }
 
@@ -1572,6 +1630,14 @@ function applyTypedExecutionCredentialOverride(
   req: Record<string, unknown>,
   options: ExecutionActionOptions,
 ): { req: Record<string, unknown>; typedOverride: { apiKey: string; apiSecret: string } | null } {
+  const target = req.execution_target
+    ? executionTargetValue(req.execution_target, req.mode ?? options.mode, req.dry_run ?? options.dryRun)
+    : req.dry_run == null && req.mode != null
+      ? brokerTargetForMode(req.mode)
+      : executionTargetValue(options.executionTarget, req.mode ?? options.mode, req.dry_run ?? options.dryRun)
+  if (!isAlpacaExecutionTarget(target)) {
+    return { req, typedOverride: null }
+  }
   const typedOverride = resolveTypedExecutionCredentialOverride(options)
   if (typedOverride) {
     req.alpaca_api_key = typedOverride.apiKey
@@ -1683,8 +1749,9 @@ async function buildExecutionInvokePayload(
     strategyKind: string
     source: string
   }> {
-  const mode = modeValue(options.mode)
-  const dry_run = !!options.dryRun
+  const executionTarget = executionTargetValue(options.executionTarget, options.mode, options.dryRun)
+  const mode = modeForExecutionTarget(executionTarget)
+  const dry_run = isDryRunTarget(executionTarget)
   const qty = parseQty(options.qty)
   const symbol = requireSymbol(options.symbol)
   const risk: ExecutionRiskPayload = {
@@ -1702,6 +1769,7 @@ async function buildExecutionInvokePayload(
         qty,
         mode,
         dry_run,
+        execution_target: executionTarget,
         risk,
         param_source: manual.source,
         source_run_artifact_path: sourceRun.artifactPath,
@@ -1732,6 +1800,7 @@ async function buildExecutionInvokePayload(
         qty,
         mode,
         dry_run,
+        execution_target: executionTarget,
         risk,
         param_source: row.source,
         source_run_artifact_path: sourceRun.artifactPath,
@@ -1790,30 +1859,34 @@ export async function testConnection(options: ExecutionActionOptions): Promise<E
 }
 
 export async function refreshOrders(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
-  const mode = modeValue(options.mode)
+  const target = reviewExecutionTarget(options)
+  const mode = modeForExecutionTarget(target)
   const symbol = requireSymbol(options.symbol)
-  const { req, typedOverride } = applyTypedExecutionCredentialOverride(
-    {
-      mode,
-      symbol,
-      limit: 200,
-      include_account: true,
-      include_orders: true,
-      include_position: true,
-    },
-    options,
-  )
-  const resp = (await invokeCommand('get_live_execution_snapshot', {
-    req,
-  })) as ExecutionSnapshotResponse
-  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
-    options,
-    typedOverride,
-    'Broker review still loaded successfully.',
-  )
+  const sourceCommand = target === 'local_paper'
+    ? 'get_local_paper_execution_snapshot'
+    : 'get_live_execution_snapshot'
+  const baseReq: Record<string, unknown> = target === 'local_paper'
+    ? { symbol, limit: 200 }
+    : {
+        mode,
+        symbol,
+        limit: 200,
+        include_account: true,
+        include_orders: true,
+        include_position: true,
+      }
+  const { req, typedOverride } = applyTypedExecutionCredentialOverride(baseReq, options)
+  const resp = (await invokeCommand(sourceCommand, { req })) as ExecutionSnapshotResponse
+  const persistWarning = target === 'local_paper'
+    ? null
+    : await persistRememberedExecutionTypedOverrideWarning(
+        options,
+        typedOverride,
+        'Broker review still loaded successfully.',
+      )
   const rows = buildOrderRows(resp?.orders)
   const count = rows.length
-  const brokerReview = buildBrokerReview(mode, resp?.symbol || symbol, resp)
+  const brokerReview = buildBrokerReview(mode, resp?.symbol || symbol, resp, sourceCommand)
   const scopeLabel = symbol
     ? `recent order${count === 1 ? '' : 's'} for ${symbol}`
     : `order${count === 1 ? '' : 's'} for all symbols`
@@ -1822,7 +1895,7 @@ export async function refreshOrders(options: ExecutionActionOptions): Promise<Ex
     statusHint: `Loaded ${count} ${scopeLabel}.`,
     outputPreview: safePrettyJson(resp),
     outputPreviewMeta: buildPreviewMeta(
-      'get_live_execution_snapshot',
+      sourceCommand,
       `symbol-scoped ${canonicalSymbol(resp?.symbol || symbol) || symbol}`,
       fetchedAtUnixMs(resp?.fetched_at_unix_ms),
     ),
@@ -1913,10 +1986,12 @@ export async function stopRunner(): Promise<ExecutionActionResult> {
 }
 
 export async function cancelOpenOrders(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
-  const mode = modeValue(options.mode)
+  const target = reviewExecutionTarget(options)
+  const mode = modeForExecutionTarget(target)
   const symbol = requireSymbol(options.symbol)
+  const command = target === 'local_paper' ? 'cancel_local_paper_open_orders' : 'cancel_live_execution_open_orders'
   const { req, typedOverride } = applyTypedExecutionCredentialOverride({ mode, symbol }, options)
-  const resp = (await invokeCommand('cancel_live_execution_open_orders', {
+  const resp = (await invokeCommand(command, {
     req,
   })) as CancelLiveExecutionOpenOrdersResponse
   const cancelledCount = positiveInt(resp?.cancelled_count)
@@ -1928,11 +2003,13 @@ export async function cancelOpenOrders(options: ExecutionActionOptions): Promise
     ? `${statusLine} Broker review refreshed from ${openOrderCountBefore} previously open order${openOrderCountBefore === 1 ? '' : 's'}.`
     : `${statusLine} Broker review refreshed.`
   const warnings: ExecutionFollowupWarning[] = []
-  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
-    options,
-    typedOverride,
-    `${statusLine} Broker-side order cancellation still succeeded.`,
-  )
+  const persistWarning = target === 'local_paper'
+    ? null
+    : await persistRememberedExecutionTypedOverrideWarning(
+        options,
+        typedOverride,
+        `${statusLine} Broker-side order cancellation still succeeded.`,
+      )
   if (persistWarning) warnings.push(persistWarning)
   try {
     const refreshed = await refreshOrders({ ...options, mode, symbol })
@@ -1956,10 +2033,12 @@ export async function cancelOpenOrders(options: ExecutionActionOptions): Promise
 }
 
 export async function flattenPosition(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
-  const mode = modeValue(options.mode)
+  const target = reviewExecutionTarget(options)
+  const mode = modeForExecutionTarget(target)
   const symbol = requireSymbol(options.symbol)
+  const command = target === 'local_paper' ? 'flatten_local_paper_position' : 'flatten_live_execution_position'
   const { req, typedOverride } = applyTypedExecutionCredentialOverride({ mode, symbol }, options)
-  const resp = (await invokeCommand('flatten_live_execution_position', {
+  const resp = (await invokeCommand(command, {
     req,
   })) as FlattenLiveExecutionPositionResponse
   const submitted = !!resp?.order_submitted
@@ -1972,11 +2051,13 @@ export async function flattenPosition(options: ExecutionActionOptions): Promise<
       ? `Submitted ${action || 'FLATTEN'} flatten order${orderId ? ` (id=${orderId})` : ''} for ${symbol}.`
       : `Flatten request for ${symbol} did not submit a broker order.`
   const warnings: ExecutionFollowupWarning[] = []
-  const persistWarning = await persistRememberedExecutionTypedOverrideWarning(
-    options,
-    typedOverride,
-    `${statusLine} Broker-side flatten handling still succeeded.`,
-  )
+  const persistWarning = target === 'local_paper'
+    ? null
+    : await persistRememberedExecutionTypedOverrideWarning(
+        options,
+        typedOverride,
+        `${statusLine} Broker-side flatten handling still succeeded.`,
+      )
   if (persistWarning) warnings.push(persistWarning)
   try {
     const refreshed = await refreshOrders({ ...options, mode, symbol })

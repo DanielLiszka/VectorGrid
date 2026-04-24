@@ -1057,6 +1057,27 @@ describe('executionService', () => {
     expect(result.brokerReviewRefreshRequired).toBe(true)
   })
 
+  it('rounds execution quantities at decimal 1e-4 boundaries before invoking the backend', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'execute_strategy_signal_once') {
+        return {
+          action: 'hold',
+          order_submitted: false,
+          warnings: [],
+        }
+      }
+      return {}
+    })
+
+    await runOnce({
+      ...baseOptions(),
+      qty: '0.00015',
+    })
+
+    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
+    expect((call?.[1] as { req?: { qty?: number } })?.req?.qty).toBe(0.0002)
+  })
+
   it('keeps submitted runOnce success visible when secure credential persistence fails afterward', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === 'execute_strategy_signal_once') {

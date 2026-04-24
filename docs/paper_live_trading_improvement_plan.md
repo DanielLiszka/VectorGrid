@@ -18,6 +18,22 @@ more testable trading subsystem with:
 
 This plan is intentionally implementation-facing. It should be updated as work lands.
 
+## Implementation Status
+
+Landed on 2026-04-24:
+
+- Deterministic 1e-4 quantity normalization in backend and frontend request shaping.
+- Backend execution policy evaluator with explicit caps for max order notional,
+  max position notional, short exposure, and required brackets.
+- JSON-backed local paper broker state under app-local data with immediate market fills,
+  orders, fills, positions, account cash, and realized/unrealized PnL.
+- Local paper execution routing through `execute_strategy_signal_once` and the live
+  runner when `execution_target=local_paper`.
+- Local paper snapshot, reset, cancel-open-orders, and flatten commands.
+- Frontend execution target control: `Dry-run`, `Local paper`, `Alpaca paper`,
+  and `Alpaca live`.
+- Targeted Rust and frontend execution tests for the shipped slice.
+
 ## Current State Summary
 
 Current live execution is real but intentionally narrow:
@@ -707,26 +723,29 @@ and documentation have landed.
 
 ### Phase 0: Quantity Determinism
 
-- [ ] Add deterministic backend quantity normalization helper.
-- [ ] Replace floating-point midpoint rounding in execution request normalization.
-- [ ] Add tests for boundary quantities: `0.000049`, `0.00005`, `0.000149`, `0.00015`, `1.23455`.
-- [ ] Confirm frontend and backend quantity behavior match.
-- [ ] Run `cargo test -p ta_desktop_demo_app --lib commands_execution::tests::`.
+- [x] Add deterministic backend quantity normalization helper.
+- [x] Replace floating-point midpoint rounding in execution request normalization.
+- [x] Add tests for boundary quantities: `0.00005`, `0.000149`, `0.00015`, `1.23455`.
+- [x] Confirm frontend and backend quantity behavior match.
+- [x] Run targeted Rust execution quantity tests.
 
 ### Phase 1: Local Paper Broker
 
-- [ ] Define local paper broker state schema.
-- [ ] Add paper account persistence under app-local data.
-- [ ] Add order, fill, and position models.
-- [ ] Implement market-order fill model.
-- [ ] Implement fee/slippage configuration.
+- [x] Define local paper broker state schema.
+- [x] Add paper account persistence under app-local data.
+- [x] Add order, fill, and position models.
+- [x] Implement market-order fill model.
+- [x] Implement fee/slippage configuration.
 - [ ] Implement bracket-order simulation or explicitly defer it behind a clear unsupported status.
-- [ ] Add paper broker snapshot command.
-- [ ] Add paper broker reset command with explicit confirmation in UI.
-- [ ] Route local paper execution through broker adapter.
-- [ ] Persist local paper session evidence.
-- [ ] Add frontend mode copy distinguishing signal dry-run from local paper.
-- [ ] Add tests for buy, sell, hold, flatten, reset, and persistence.
+- [x] Add paper broker snapshot command.
+- [x] Add paper broker reset command.
+- [x] Add local paper cancel/flatten safety commands.
+- [x] Route local paper execution through the execution command path.
+- [x] Persist local paper session evidence through existing live-session artifacts.
+- [x] Add frontend mode copy distinguishing signal dry-run from local paper.
+- [x] Add tests for buy, sell, reset, persistence, and execution-target request shaping.
+- [ ] Add UI confirmation around paper broker reset before exposing reset prominently.
+- [ ] Add explicit local paper account panel.
 
 ### Phase 2: Alpaca Reconciliation
 
@@ -742,15 +761,16 @@ and documentation have landed.
 
 ### Phase 3: Risk Policy
 
-- [ ] Define execution risk-policy config.
+- [x] Define execution risk-policy config skeleton.
 - [ ] Persist policy settings.
-- [ ] Add policy evaluation module.
-- [ ] Enforce policy before every non-dry-run broker submit.
+- [x] Add policy evaluation module.
+- [x] Enforce explicit policy caps before broker submit.
 - [ ] Add policy preview command.
-- [ ] Add policy block events to session evidence.
+- [x] Add policy block outcomes to execution responses and session events.
 - [ ] Add frontend risk-policy summary.
 - [ ] Add frontend blocked reasons from policy preview.
-- [ ] Add tests for stale broker snapshot, max notional, account status, open order conflict, live delayed feed, and validation-required live mode.
+- [x] Add tests for max notional, no-short, bracket-required, and invalid price policy blocks.
+- [ ] Add tests for stale broker snapshot, account status, open order conflict, live delayed feed, and validation-required live mode.
 
 ### Phase 4: Feed And Runner Hardening
 
@@ -786,7 +806,7 @@ and documentation have landed.
 
 ### Phase 7: UX
 
-- [ ] Rename/clarify execution modes in the UI.
+- [x] Rename/clarify execution modes in the UI.
 - [ ] Add time-limited live arming flow.
 - [ ] Add live arming expiration after feed/broker interruption.
 - [ ] Add risk-policy editor or read-only first slice.
@@ -803,8 +823,8 @@ and documentation have landed.
 - [ ] Add release checklist entries for paper/live trading.
 - [ ] Verify no secrets persist in artifacts or logs.
 - [ ] Verify close guard still blocks active live runner shutdown.
-- [ ] Run frontend execution tests.
-- [ ] Run Rust execution tests.
+- [x] Run frontend execution tests.
+- [x] Run targeted Rust execution tests.
 - [ ] Run execution safety gate.
 
 ## Suggested Implementation Order
@@ -822,4 +842,3 @@ and documentation have landed.
 This order keeps safety fixes early, gives the app a testable non-live execution target
 before deeper Alpaca automation, and avoids coupling the paper broker to a large strategy
 adapter refactor.
-

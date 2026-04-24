@@ -29,6 +29,7 @@ const execStore = useExecutionStore()
 const workflowStore = useWorkflowStore()
 const {
   mode,
+  executionTarget,
   symbol,
   qty,
   paramSource,
@@ -38,7 +39,6 @@ const {
   manualSlowLen,
   apiKey,
   apiSecret,
-  dryRun,
   rememberKeys,
   storedRememberAvailable,
   liveUseDelayed,
@@ -158,6 +158,7 @@ const manualSlowDraft = ref('')
 const apiKeyDraft = ref('')
 const apiSecretDraft = ref('')
 const modeDraft = ref('paper')
+const targetDraft = ref('dry_run')
 const sourceDraft = ref('selected')
 const pendingAction = ref<PendingExecutionAction | null>(null)
 const execTvChartElementRef = ref<HTMLElement | null>(null)
@@ -174,7 +175,9 @@ const chartSurface = ref<ExecutionChartSurfaceResult>({
 })
 
 const visible = computed(() => String(workspace.value || '').trim() === 'live')
-const liveModeArmed = computed(() => String(mode.value || modeDraft.value || 'paper').trim() === 'live')
+const currentTarget = computed(() => String(executionTarget.value || targetDraft.value || 'dry_run').trim() || 'dry_run')
+const liveModeArmed = computed(() => currentTarget.value === 'alpaca_live')
+const brokerArmed = computed(() => currentTarget.value !== 'dry_run')
 const selectedSymbolLabel = computed(() => String(requestedSymbolLabel.value || 'No symbol').trim())
 const executionOrderColumns = computed<ExecutionOrderColumn[]>(() => [
   { label: 'Time (UTC)', alignLeft: true },
@@ -206,7 +209,12 @@ const {
   topSpacerPx: orderTableTopSpacerPx,
   bottomSpacerPx: orderTableBottomSpacerPx,
 } = useVirtualTableRows(executionOrderRowModelRows, { rowHeightPx: 30, overscan: 8 })
-const modeBadgeLabel = computed(() => liveModeArmed.value ? 'Live broker' : 'Paper broker')
+const modeBadgeLabel = computed(() => {
+  if (currentTarget.value === 'alpaca_live') return 'Alpaca live'
+  if (currentTarget.value === 'alpaca_paper') return 'Alpaca paper'
+  if (currentTarget.value === 'local_paper') return 'Local paper'
+  return 'Dry-run'
+})
 const feedPostureTone = computed<ExecutionPostureItem['tone']>(() => {
   if (liveLifecycleLabel.value === 'Error') return 'danger'
   if (liveLifecycleLabel.value === 'Disconnected') return 'warn'
@@ -220,12 +228,12 @@ const runnerPostureTone = computed<ExecutionPostureItem['tone']>(() => {
     runnerStateLabel.value === 'Review required' ||
     runnerStateLabel.value === 'Stopped · review required'
   ) return 'warn'
-  if (runnerStateLabel.value === 'Active') return dryRun.value ? 'info' : 'warn'
+  if (runnerStateLabel.value === 'Active') return brokerArmed.value ? 'warn' : 'info'
   if (
     runnerStateLabel.value === 'Triggered' ||
     runnerStateLabel.value === 'Queued latest' ||
     runnerStateLabel.value === 'Order submitted'
-  ) return dryRun.value ? 'info' : 'warn'
+  ) return brokerArmed.value ? 'warn' : 'info'
   if (runnerStateLabel.value === 'Signal processed') return 'info'
   return 'neutral'
 })
@@ -238,7 +246,7 @@ const executionPostureItems = computed<ExecutionPostureItem[]>(() => [
   {
     label: 'Submission',
     value: submissionModeLabel.value,
-    tone: dryRun.value ? 'info' : 'danger',
+    tone: brokerArmed.value ? 'danger' : 'info',
   },
   {
     label: 'Feed',
@@ -403,13 +411,15 @@ const savedSessionSnapshotLines = computed(() =>
   }),
 )
 const safetyModeLabel = computed(() => {
-  if (dryRun.value) {
+  if (currentTarget.value === 'dry_run') {
     return 'Dry-run is on. Manual execution and auto-runner actions stay in simulation until broker submission is armed.'
   }
-  const nextMode = String(mode.value || modeDraft.value || 'paper').trim() || 'paper'
-  return nextMode === 'live'
+  if (currentTarget.value === 'local_paper') {
+    return 'Local paper is armed. Manual execution and auto-runner actions fill a simulated local account without broker credentials.'
+  }
+  return currentTarget.value === 'alpaca_live'
     ? 'Broker submission is armed in live mode. Review symbol, key state, and confirmation prompts before sending any live order.'
-    : 'Broker submission is armed in paper mode. Manual execution and auto-runner actions can place paper orders once confirmed.'
+    : 'Broker submission is armed in Alpaca paper mode. Manual execution and auto-runner actions can place paper orders once confirmed.'
 })
 const accountReviewNote = computed(() => {
   if (refreshOrdersBlockedReasons.value.length > 0) {
@@ -432,9 +442,11 @@ const liveAutomationNotes = computed(() => {
   if (notes.length > 0) return Array.from(new Set(notes))
   return [
     `Feed: Ready to start for ${requestedSymbolLabel.value}.`,
-    dryRun.value
+    currentTarget.value === 'dry_run'
       ? 'Runner: Ready to start in dry-run mode once live candles are active for the selected symbol.'
-      : 'Runner: Ready to start broker-armed once confirmed.',
+      : currentTarget.value === 'local_paper'
+        ? 'Runner: Ready to start with local paper fills once confirmed.'
+        : 'Runner: Ready to start broker-armed once confirmed.',
   ]
 })
 const safetyMatrixItems = computed<SafetyMatrixItem[]>(() => [
@@ -491,7 +503,7 @@ function formatConfirmationContextLines(lines: Array<string | null | undefined>)
 const confirmationTitle = computed(() => {
   if (pendingAction.value === 'clearKeys') return 'Clear stored execution credentials?'
   if (pendingAction.value === 'runOnce') {
-    return dryRun.value ? 'Run one dry-run execution?' : `Confirm ${runOnceActionLabel.value.toLowerCase()}?`
+    return currentTarget.value === 'dry_run' ? 'Run one dry-run execution?' : `Confirm ${runOnceActionLabel.value.toLowerCase()}?`
   }
   if (pendingAction.value === 'startLive') return 'Start live candle feed?'
   if (pendingAction.value === 'startRunner') return 'Start the auto-runner?'
@@ -640,6 +652,7 @@ watch(
     String(apiKey.value || ''),
     String(apiSecret.value || ''),
     String(mode.value || 'paper'),
+    String(executionTarget.value || 'dry_run'),
     String(paramSource.value || 'selected'),
   ] as const,
   ([
@@ -652,6 +665,7 @@ watch(
     nextApiKey,
     nextApiSecret,
     nextMode,
+    nextTarget,
     nextParamSource,
   ]) => {
     if (symbolDraft.value !== nextSymbol) symbolDraft.value = nextSymbol
@@ -663,6 +677,7 @@ watch(
     if (apiKeyDraft.value !== nextApiKey) apiKeyDraft.value = nextApiKey
     if (apiSecretDraft.value !== nextApiSecret) apiSecretDraft.value = nextApiSecret
     if (modeDraft.value !== nextMode) modeDraft.value = nextMode
+    if (targetDraft.value !== nextTarget) targetDraft.value = nextTarget
     if (sourceDraft.value !== nextParamSource) sourceDraft.value = nextParamSource
   },
   { immediate: true },
@@ -707,7 +722,7 @@ function runOnceAction(): void {
 
 function queueRunOnceAction(): void {
   flushQueuedInputValuesNow()
-  if (dryRun.value) {
+  if (currentTarget.value === 'dry_run') {
     runOnceAction()
     return
   }
@@ -933,10 +948,12 @@ watch(
 
         <div class="grid">
           <div>
-            <label for="vueExecMode">Broker mode</label>
-            <select id="vueExecMode" :value="modeDraft" @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'paper'); setSelectValue('execMode', modeDraft)">
-              <option value="paper">paper</option>
-              <option value="live">live</option>
+            <label for="vueExecTarget">Execution target</label>
+            <select id="vueExecTarget" :value="targetDraft" @change="targetDraft = String(($event.target as HTMLSelectElement).value || 'dry_run'); setSelectValue('execExecutionTarget', targetDraft)">
+              <option value="dry_run">Dry-run</option>
+              <option value="local_paper">Local paper</option>
+              <option value="alpaca_paper">Alpaca paper</option>
+              <option value="alpaca_live">Alpaca live</option>
             </select>
           </div>
           <div>
@@ -1043,14 +1060,6 @@ watch(
         </div>
 
         <div class="checks">
-          <label>
-            <input
-              type="checkbox"
-              :checked="dryRun"
-              @change="setCheckboxValue('execDryRun', ($event.target as HTMLInputElement).checked)"
-            />
-            Dry-run
-          </label>
           <label>
             <input
               type="checkbox"

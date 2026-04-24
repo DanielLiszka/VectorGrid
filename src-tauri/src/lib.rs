@@ -1,5 +1,8 @@
+pub mod broker_paper;
 pub mod commands;
 pub mod data_cache;
+pub mod execution_policy;
+pub mod execution_quantity;
 pub mod ma_registry;
 pub mod polygon;
 pub mod release_readiness;
@@ -123,12 +126,16 @@ pub fn run_tauri() {
             load_options_dataset_manifest,
             execute_strategy_signal_once,
             cancel_live_execution_open_orders,
+            cancel_local_paper_open_orders,
             flatten_live_execution_position,
+            flatten_local_paper_position,
             emergency_halt_live_execution,
             start_live_execution_runner,
             stop_live_execution_runner,
             live_execution_runner_status,
             get_live_execution_snapshot,
+            get_local_paper_execution_snapshot,
+            reset_local_paper_broker,
             test_alpaca_connection,
             alpaca_get_credential_status,
             alpaca_set_api_credentials,

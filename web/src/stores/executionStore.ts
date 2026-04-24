@@ -34,6 +34,7 @@ import {
   type ExecutionSavedSessionDetail,
   type ExecutionSavedSessionSummary,
   type ExecutionStoredCredentialStatus,
+  type ExecutionTarget,
 } from '../services/executionService'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
@@ -44,6 +45,10 @@ function applyVueTextFieldUpdate(state: ExecutionState, field: string, value: st
   switch (key) {
     case 'execMode':
       state.mode = next || 'paper'
+      state.executionTarget = legacyExecutionTarget(state.mode, state.dryRun)
+      return true
+    case 'execExecutionTarget':
+      applyExecutionTarget(state, next)
       return true
     case 'execSymbol':
       state.symbol = next
@@ -84,6 +89,7 @@ function applyVueCheckboxFieldUpdate(state: ExecutionState, field: string, check
   switch (key) {
     case 'execDryRun':
       state.dryRun = next
+      state.executionTarget = legacyExecutionTarget(state.mode, state.dryRun)
       return true
     case 'execRememberKeys':
       state.rememberKeys = next
@@ -717,6 +723,55 @@ function hasValidQty(state: ExecutionState): boolean {
   return Number.isFinite(qty) && qty > 0
 }
 
+function currentExecutionTarget(state: Pick<ExecutionState, 'executionTarget' | 'mode' | 'dryRun'>): ExecutionTarget {
+  return normalizeExecutionTarget(state.executionTarget, state.mode, state.dryRun)
+}
+
+function normalizeExecutionTarget(raw: unknown, modeRaw: unknown = 'paper', dryRunRaw: unknown = true): ExecutionTarget {
+  const normalized = String(raw ?? '').trim().toLowerCase()
+  if (normalized === 'local_paper' || normalized === 'local-paper') return 'local_paper'
+  if (normalized === 'alpaca_paper' || normalized === 'alpaca-paper') return 'alpaca_paper'
+  if (normalized === 'alpaca_live' || normalized === 'alpaca-live') return 'alpaca_live'
+  if ((normalized === 'dry_run' || normalized === 'dry-run' || normalized === 'simulation') && dryRunRaw) return 'dry_run'
+  if (dryRunRaw) return 'dry_run'
+  return String(modeRaw ?? '').trim().toLowerCase() === 'live' ? 'alpaca_live' : 'alpaca_paper'
+}
+
+function targetNeedsCredentials(state: Pick<ExecutionState, 'executionTarget' | 'mode' | 'dryRun'>): boolean {
+  const target = currentExecutionTarget(state)
+  return target === 'alpaca_paper' || target === 'alpaca_live'
+}
+
+function targetIsDryRun(state: Pick<ExecutionState, 'executionTarget' | 'mode' | 'dryRun'>): boolean {
+  return currentExecutionTarget(state) === 'dry_run'
+}
+
+function targetIsLocalPaper(state: Pick<ExecutionState, 'executionTarget' | 'mode' | 'dryRun'>): boolean {
+  return currentExecutionTarget(state) === 'local_paper'
+}
+
+function targetLabel(target: ExecutionTarget): string {
+  if (target === 'local_paper') return 'Local paper'
+  if (target === 'alpaca_paper') return 'Paper'
+  if (target === 'alpaca_live') return 'Live'
+  return 'Dry-run'
+}
+
+function applyExecutionTarget(state: ExecutionState, rawTarget: unknown): void {
+  const target = normalizeExecutionTarget(rawTarget, state.mode, state.dryRun)
+  state.executionTarget = target
+  if (target === 'dry_run') {
+    state.dryRun = true
+  } else {
+    state.dryRun = false
+    state.mode = target === 'alpaca_live' ? 'live' : 'paper'
+  }
+}
+
+function legacyExecutionTarget(mode: unknown, dryRun: unknown): ExecutionTarget {
+  return normalizeExecutionTarget('', mode, !!dryRun)
+}
+
 function hasEffectiveCredentials(state: ExecutionState): boolean {
   const current = currentCredentialPresence(state)
   if (current.any) return current.both
@@ -845,7 +900,7 @@ function runOnceBlockedReasons(state: ExecutionState): string[] {
   if (busy) reasons.push(busy)
   if (!hasRequestedSymbol(state)) reasons.push('Enter a symbol before manual execution.')
   if (!hasValidQty(state)) reasons.push('Enter a quantity greater than zero before manual execution.')
-  if (!state.dryRun && !hasEffectiveCredentials(state)) {
+  if (targetNeedsCredentials(state) && !hasEffectiveCredentials(state)) {
     reasons.push('API key + secret are required for broker-armed execution.')
   }
   return dedupeReasons(reasons)
@@ -856,7 +911,7 @@ function refreshOrdersBlockedReasons(state: ExecutionState): string[] {
   const busy = primaryBusyReason(state)
   if (busy) reasons.push(busy)
   if (!hasRequestedSymbol(state)) reasons.push('Enter a symbol before broker order review.')
-  if (!hasEffectiveCredentials(state)) {
+  if (!targetIsLocalPaper(state) && !hasEffectiveCredentials(state)) {
     reasons.push('API key + secret are required for broker-backed order review.')
   }
   return dedupeReasons(reasons)
@@ -890,7 +945,7 @@ function startRunnerBlockedReasons(state: ExecutionState): string[] {
     reasons.push(`Live candles are active for ${liveSymbol}, not ${requestedSymbol}.`)
   }
   if (state.runnerActive) reasons.push('The auto-runner is already active.')
-  if (!state.dryRun && !hasEffectiveCredentials(state)) {
+  if (targetNeedsCredentials(state) && !hasEffectiveCredentials(state)) {
     reasons.push('API key + secret are required for broker-armed auto-runner start.')
   }
   return dedupeReasons(reasons)
@@ -901,7 +956,7 @@ function cancelOpenOrdersBlockedReasons(state: ExecutionState): string[] {
   const busy = primaryBusyReason(state)
   if (busy) reasons.push(busy)
   if (!hasRequestedSymbol(state)) reasons.push('Enter a symbol before cancelling open broker orders.')
-  if (!hasEffectiveCredentials(state)) {
+  if (!targetIsLocalPaper(state) && !hasEffectiveCredentials(state)) {
     reasons.push('API key + secret are required for broker-backed safety controls.')
   }
   if (state.runnerActive) {
@@ -915,7 +970,7 @@ function flattenPositionBlockedReasons(state: ExecutionState): string[] {
   const busy = primaryBusyReason(state)
   if (busy) reasons.push(busy)
   if (!hasRequestedSymbol(state)) reasons.push('Enter a symbol before flattening the broker position.')
-  if (!hasEffectiveCredentials(state)) {
+  if (!targetIsLocalPaper(state) && !hasEffectiveCredentials(state)) {
     reasons.push('API key + secret are required for broker-backed safety controls.')
   }
   if (state.runnerActive) {
@@ -956,11 +1011,14 @@ function setAvailability(state: ExecutionState): void {
     state.pending.startRunner ||
     state.pending.clearKeys
 
+  const needsCredentials = targetNeedsCredentials(state)
+  const localPaperTarget = targetIsLocalPaper(state)
+  const reviewReady = localPaperTarget || effectiveCredentials
   state.canTestConnection = !primaryBusy && effectiveCredentials
-  state.canRunOnce = !primaryBusy && requestedSymbolReady && qtyReady && (state.dryRun || effectiveCredentials)
-  state.canRefreshOrders = !primaryBusy && requestedSymbolReady && effectiveCredentials
-  state.canCancelOpenOrders = !primaryBusy && requestedSymbolReady && effectiveCredentials && !state.runnerActive
-  state.canFlattenPosition = !primaryBusy && requestedSymbolReady && effectiveCredentials && !state.runnerActive
+  state.canRunOnce = !primaryBusy && requestedSymbolReady && qtyReady && (!needsCredentials || effectiveCredentials)
+  state.canRefreshOrders = !primaryBusy && requestedSymbolReady && reviewReady
+  state.canCancelOpenOrders = !primaryBusy && requestedSymbolReady && reviewReady && !state.runnerActive
+  state.canFlattenPosition = !primaryBusy && requestedSymbolReady && reviewReady && !state.runnerActive
   state.canEmergencyHalt = !primaryBusy && (state.liveActive || state.runnerActive)
   state.canStartLive = !primaryBusy && !state.liveActive && !state.pending.stopLive && requestedSymbolReady
   state.canStopLive = state.liveActive && !state.pending.stopLive
@@ -973,7 +1031,7 @@ function setAvailability(state: ExecutionState): void {
     state.liveActive &&
     liveMatchesRequested &&
     requestedSymbolReady &&
-    (state.dryRun || effectiveCredentials)
+    (!needsCredentials || effectiveCredentials)
   state.canStopRunner = state.runnerActive && !state.pending.stopRunner
   state.canClearKeys = !primaryBusy && (currentCredentials.any || storedCredentials.any)
 }
@@ -1059,6 +1117,7 @@ function applyActionResult(state: ExecutionState, result: ExecutionActionResult)
 
 interface ExecutionState {
   mode: string
+  executionTarget: ExecutionTarget
   symbol: string
   qty: string
   paramSource: string
@@ -1132,6 +1191,7 @@ export const useExecutionStore = defineStore('execution', {
   state: (): ExecutionState => {
     const initialState: ExecutionState = {
       mode: 'paper',
+      executionTarget: 'dry_run',
       symbol: '',
       qty: '1',
       paramSource: 'selected',
@@ -1205,10 +1265,12 @@ export const useExecutionStore = defineStore('execution', {
   },
 
   getters: {
-    brokerModeLabel: (state): string => (String(state.mode || 'paper').trim() === 'live' ? 'Live' : 'Paper'),
+    brokerModeLabel: (state): string => targetLabel(currentExecutionTarget(state)),
     submissionModeLabel: (state): string => {
-      if (state.dryRun) return 'Simulation'
-      return String(state.mode || 'paper').trim() === 'live' ? 'Live order' : 'Paper order'
+      const target = currentExecutionTarget(state)
+      if (target === 'dry_run') return 'Simulation'
+      if (target === 'local_paper') return 'Local paper fill'
+      return target === 'alpaca_live' ? 'Live order' : 'Paper order'
     },
     feedStateLabel: (state): string => liveStateSummaryLabel(state),
     runnerStateLabel: (state): string => runnerStateSummaryLabel(state),
@@ -1226,17 +1288,23 @@ export const useExecutionStore = defineStore('execution', {
     recoveryStatusLabel: (state): string => recoveryStatusLabel(state),
     refreshOrdersBlockedReasons: (state): string[] => refreshOrdersBlockedReasons(state),
     runOnceActionLabel: (state): string => {
-      if (state.dryRun) return 'Simulate once'
-      return String(state.mode || 'paper').trim() === 'live' ? 'Submit live order once' : 'Submit paper order once'
+      const target = currentExecutionTarget(state)
+      if (target === 'dry_run') return 'Simulate once'
+      if (target === 'local_paper') return 'Fill local paper once'
+      return target === 'alpaca_live' ? 'Submit live order once' : 'Submit paper order once'
     },
     runOnceActionDetail: (state): string => {
       const symbol = canonicalSymbol(state.symbol) || 'the selected symbol'
-      if (state.dryRun) {
+      const target = currentExecutionTarget(state)
+      if (target === 'dry_run') {
         return `Runs the current strategy against ${symbol} without sending a broker order.`
       }
-      return String(state.mode || 'paper').trim() === 'live'
+      if (target === 'local_paper') {
+        return `Fills a local simulated paper order for ${symbol} without Alpaca credentials.`
+      }
+      return target === 'alpaca_live'
         ? `Can submit a live broker order for ${symbol}.`
-        : `Can submit a paper broker order for ${symbol}.`
+        : `Can submit an Alpaca paper broker order for ${symbol}.`
     },
     runOnceBlockedReasons: (state): string[] => runOnceBlockedReasons(state),
     startLiveBlockedReasons: (state): string[] => startLiveBlockedReasons(state),
@@ -1250,6 +1318,11 @@ export const useExecutionStore = defineStore('execution', {
   actions: {
     applyLegacySnapshot(snapshot: Partial<ExecutionState>): void {
       this.mode = String(snapshot.mode ?? this.mode ?? 'paper').trim() || 'paper'
+      this.executionTarget = normalizeExecutionTarget(
+        (snapshot as Partial<ExecutionState>).executionTarget,
+        this.mode,
+        snapshot.dryRun ?? this.dryRun,
+      )
       this.symbol = String(snapshot.symbol ?? this.symbol ?? '').trim()
       this.qty = String(snapshot.qty ?? this.qty ?? '1').trim() || '1'
       this.paramSource = String(snapshot.paramSource ?? this.paramSource ?? 'selected').trim() || 'selected'
@@ -1258,6 +1331,7 @@ export const useExecutionStore = defineStore('execution', {
       this.manualFastLen = String(snapshot.manualFastLen ?? this.manualFastLen ?? '').trim()
       this.manualSlowLen = String(snapshot.manualSlowLen ?? this.manualSlowLen ?? '').trim()
       this.dryRun = Boolean(snapshot.dryRun ?? this.dryRun)
+      applyExecutionTarget(this, this.executionTarget)
       this.rememberKeys = Boolean(snapshot.rememberKeys ?? this.rememberKeys)
       this.liveUseDelayed = Boolean(snapshot.liveUseDelayed ?? this.liveUseDelayed)
       this.liveLifecycleState = String((snapshot as Partial<ExecutionState>).liveLifecycleState ?? this.liveLifecycleState ?? 'off').trim() as ExecutionLiveLifecycleState || 'off'
@@ -1334,7 +1408,7 @@ export const useExecutionStore = defineStore('execution', {
       const key = String(field || '').trim()
       const next = String(value || '')
       if (applyVueTextFieldUpdate(this, key, next)) {
-        if (key === 'execMode') {
+        if (key === 'execMode' || key === 'execExecutionTarget') {
           this.accountReview = defaultAccountReview(String(this.mode || 'paper').trim() === 'live' ? 'live' : 'paper')
           this.brokerReview = null
           this.outputPreviewMeta = defaultPreviewMeta()
@@ -1373,6 +1447,7 @@ export const useExecutionStore = defineStore('execution', {
     buildActionOptions() {
       return {
         mode: this.mode,
+        executionTarget: currentExecutionTarget(this),
         symbol: this.symbol,
         qty: this.qty,
         paramSource: this.paramSource,
@@ -1574,7 +1649,7 @@ export const useExecutionStore = defineStore('execution', {
           changed = true
         }
       }
-      if ((event.status === 'closed' || event.status === 'error') && !this.dryRun) {
+      if ((event.status === 'closed' || event.status === 'error') && !targetIsDryRun(this)) {
         if (!this.recoveryReviewRequired) {
           this.recoveryReviewRequired = true
           changed = true
@@ -1620,14 +1695,14 @@ export const useExecutionStore = defineStore('execution', {
         const optimisticRow = optimisticOrderRowFromExecution(event.execution)
         if (optimisticRow) {
           changed = prependOptimisticOrderRows(this, [optimisticRow]) || changed
-          if (!this.dryRun && !this.brokerReviewRefreshRequired) {
+          if (!targetIsDryRun(this) && !this.brokerReviewRefreshRequired) {
             this.brokerReviewRefreshRequired = true
             changed = true
           }
         }
       }
       if (
-        !this.dryRun &&
+        !targetIsDryRun(this) &&
         (event.status === 'stopped' || event.status === 'cancelled') &&
         (this.liveLifecycleState === 'closed' || this.liveLifecycleState === 'error') &&
         !this.recoveryReviewRequired
