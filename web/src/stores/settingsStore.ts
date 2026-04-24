@@ -3,8 +3,10 @@ import {
   CONTROLS_COLLAPSED_KEY,
   DESKTOP_NOTIFICATION_MODE_KEY,
   DENSITY_MODE_KEY,
+  GUIDED_STEP_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
+  UI_MODE_KEY,
   WINDOW_EFFECT_KEY,
   WORKSTATION_PERSPECTIVES_KEY,
   WORKFLOW_ADVANCED_KEY,
@@ -37,6 +39,14 @@ import {
 const THEME_KEYS = new Set(["light", "dark", "system"]);
 const HELP_MODE_KEYS = new Set(["full", "concise", "off"]);
 const DENSITY_MODE_KEYS = new Set(["comfortable", "standard", "dense"]);
+const UI_MODE_KEYS = new Set(["guided", "advanced"]);
+const GUIDED_STEP_KEYS = new Set([
+  "data",
+  "strategy",
+  "optimize",
+  "validate",
+  "trade",
+]);
 const DESKTOP_NOTIFICATION_MODE_KEYS = new Set([
   "off",
   "failures",
@@ -45,6 +55,8 @@ const DESKTOP_NOTIFICATION_MODE_KEYS = new Set([
 
 export type HelpMode = "full" | "concise" | "off";
 export type DensityMode = "comfortable" | "standard" | "dense";
+export type UiMode = "guided" | "advanced";
+export type GuidedStep = "data" | "strategy" | "optimize" | "validate" | "trade";
 export type DesktopNotificationMode = "off" | "failures" | "important";
 
 export interface WorkstationPerspectiveSnapshot {
@@ -191,6 +203,22 @@ function normalizeDensityMode(value: unknown): DensityMode {
   return "standard";
 }
 
+function normalizeUiMode(value: unknown): UiMode {
+  const next = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (UI_MODE_KEYS.has(next)) return next as UiMode;
+  return "advanced";
+}
+
+function normalizeGuidedStep(value: unknown): GuidedStep {
+  const next = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (GUIDED_STEP_KEYS.has(next)) return next as GuidedStep;
+  return "data";
+}
+
 function normalizeDesktopNotificationMode(
   value: unknown,
 ): DesktopNotificationMode {
@@ -258,6 +286,24 @@ function persistDensityMode(mode: DensityMode): void {
   writeStorageString(DENSITY_MODE_KEY, mode);
 }
 
+function persistUiMode(mode: UiMode): void {
+  const normalized = normalizeUiMode(mode);
+  if (normalized === "advanced") {
+    removeStorageKey(UI_MODE_KEY);
+    return;
+  }
+  writeStorageString(UI_MODE_KEY, normalized);
+}
+
+function persistGuidedStep(step: GuidedStep): void {
+  const normalized = normalizeGuidedStep(step);
+  if (normalized === "data") {
+    removeStorageKey(GUIDED_STEP_KEY);
+    return;
+  }
+  writeStorageString(GUIDED_STEP_KEY, normalized);
+}
+
 function persistDesktopNotificationMode(mode: DesktopNotificationMode): void {
   if (mode === "off") {
     removeStorageKey(DESKTOP_NOTIFICATION_MODE_KEY);
@@ -288,6 +334,24 @@ function applyDensityModeLocally(
   const normalized = normalizeDensityMode(mode);
   setRootDataAttr("density", normalized);
   if (shouldPersistLocally(options)) persistDensityMode(normalized);
+}
+
+function applyUiModeLocally(
+  mode: UiMode,
+  options?: LocalApplyOptions,
+): void {
+  const normalized = normalizeUiMode(mode);
+  setRootDataAttr("uiMode", normalized);
+  if (shouldPersistLocally(options)) persistUiMode(normalized);
+}
+
+function applyGuidedStepLocally(
+  step: GuidedStep,
+  options?: LocalApplyOptions,
+): void {
+  const normalized = normalizeGuidedStep(step);
+  setRootDataAttr("guidedStep", normalized);
+  if (shouldPersistLocally(options)) persistGuidedStep(normalized);
 }
 
 function applyThemeLocally(pref: string, options?: LocalApplyOptions): void {
@@ -486,6 +550,8 @@ interface SettingsState {
   effect: string;
   helpMode: HelpMode;
   densityMode: DensityMode;
+  uiMode: UiMode;
+  guidedStep: GuidedStep;
   desktopNotificationMode: DesktopNotificationMode;
   workflowAdvanced: boolean;
   controlsCollapsed: boolean;
@@ -520,6 +586,8 @@ export interface SettingsBootstrapSnapshot {
   effect?: string;
   helpMode?: string;
   densityMode?: string;
+  uiMode?: string;
+  guidedStep?: string;
   desktopNotificationMode?: string;
   workflowAdvanced?: boolean | null;
   controlsCollapsed?: boolean | null;
@@ -531,6 +599,8 @@ export const useSettingsStore = defineStore("settings", {
     effect: "none",
     helpMode: "full",
     densityMode: normalizeDensityMode(readStorageString(DENSITY_MODE_KEY, "")),
+    uiMode: normalizeUiMode(readStorageString(UI_MODE_KEY, "")),
+    guidedStep: normalizeGuidedStep(readStorageString(GUIDED_STEP_KEY, "")),
     desktopNotificationMode: normalizeDesktopNotificationMode(
       readStorageString(DESKTOP_NOTIFICATION_MODE_KEY, ""),
     ),
@@ -578,6 +648,10 @@ export const useSettingsStore = defineStore("settings", {
       );
       this.densityMode = normalizeDensityMode(
         snapshot.densityMode ?? this.densityMode ?? "standard",
+      );
+      this.uiMode = normalizeUiMode(snapshot.uiMode ?? this.uiMode);
+      this.guidedStep = normalizeGuidedStep(
+        snapshot.guidedStep ?? this.guidedStep,
       );
       this.desktopNotificationMode = normalizeDesktopNotificationMode(
         snapshot.desktopNotificationMode ??
@@ -662,6 +736,8 @@ export const useSettingsStore = defineStore("settings", {
         String(snapshot.statusLine ?? this.statusLine ?? "Ready.").trim() ||
         "Ready.";
       applyDensityModeLocally(this.densityMode);
+      applyUiModeLocally(this.uiMode);
+      applyGuidedStepLocally(this.guidedStep);
       this.source = "vue";
       this.updatedAtUnixMs = Date.now();
     },
@@ -694,6 +770,20 @@ export const useSettingsStore = defineStore("settings", {
         const normalized = normalizeDensityMode(snapshot.densityMode);
         this.densityMode = normalized;
         applyDensityModeLocally(normalized, { persist: false });
+        changed = true;
+      }
+
+      if (snapshot.uiMode) {
+        const normalized = normalizeUiMode(snapshot.uiMode);
+        this.uiMode = normalized;
+        applyUiModeLocally(normalized, { persist: false });
+        changed = true;
+      }
+
+      if (snapshot.guidedStep) {
+        const normalized = normalizeGuidedStep(snapshot.guidedStep);
+        this.guidedStep = normalized;
+        applyGuidedStepLocally(normalized, { persist: false });
         changed = true;
       }
 
@@ -759,6 +849,18 @@ export const useSettingsStore = defineStore("settings", {
         if (this.densityMode === normalized) return;
         this.densityMode = normalized;
         applyDensityModeLocally(normalized);
+        this.markVueUpdate();
+      } else if (key === "settingsUiMode") {
+        const normalized = normalizeUiMode(next);
+        if (this.uiMode === normalized) return;
+        this.uiMode = normalized;
+        applyUiModeLocally(normalized);
+        this.markVueUpdate();
+      } else if (key === "settingsGuidedStep") {
+        const normalized = normalizeGuidedStep(next);
+        if (this.guidedStep === normalized) return;
+        this.guidedStep = normalized;
+        applyGuidedStepLocally(normalized);
         this.markVueUpdate();
       } else if (key === "settingsDesktopNotifications") {
         const normalized = normalizeDesktopNotificationMode(next);
@@ -903,6 +1005,26 @@ export const useSettingsStore = defineStore("settings", {
         this.artifactRetentionSaving = false;
         this.markVueUpdate();
       }
+    },
+
+    setUiMode(mode: UiMode): void {
+      const normalized = normalizeUiMode(mode);
+      if (this.uiMode === normalized) return;
+      this.uiMode = normalized;
+      applyUiModeLocally(normalized);
+      this.statusLine =
+        normalized === "guided"
+          ? "Switched to Guided Mode."
+          : "Switched to Advanced Mode.";
+      this.markVueUpdate();
+    },
+
+    setGuidedStep(step: GuidedStep): void {
+      const normalized = normalizeGuidedStep(step);
+      if (this.guidedStep === normalized) return;
+      this.guidedStep = normalized;
+      applyGuidedStepLocally(normalized);
+      this.markVueUpdate();
     },
 
     selectPerspective(id: string): void {

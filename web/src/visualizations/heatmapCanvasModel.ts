@@ -69,6 +69,30 @@ function canvasContext2d(canvas: HTMLCanvasElement | null): CanvasRenderingConte
   }
 }
 
+function canvasPixelRatio(canvas: HTMLCanvasElement): number {
+  const ratio = Number(canvas.dataset.pixelRatio || 1)
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : 1
+}
+
+function logicalCanvasSize(canvas: HTMLCanvasElement): { width: number; height: number; ratio: number } {
+  const ratio = canvasPixelRatio(canvas)
+  return {
+    width: canvas.width / ratio,
+    height: canvas.height / ratio,
+    ratio,
+  }
+}
+
+function prepareLogicalCanvasContext(
+  canvas: HTMLCanvasElement,
+): { ctx: CanvasRenderingContext2D; width: number; height: number } | null {
+  const ctx = canvasContext2d(canvas)
+  if (!ctx) return null
+  const { width, height, ratio } = logicalCanvasSize(canvas)
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
+  return { ctx, width, height }
+}
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
@@ -185,6 +209,7 @@ export function paintHeatmapLegend(
 export function clearHeatmapCanvas(canvas: HTMLCanvasElement | null): void {
   const ctx = canvasContext2d(canvas)
   if (!ctx || !canvas) return
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 }
 
@@ -193,10 +218,9 @@ export function paintHeatmapBase(
   canvas: HTMLCanvasElement,
 ): void {
   const { model, displayValues, range, palette } = renderModel
-  const ctx = canvasContext2d(canvas)
-  if (!ctx) return
-  const width = canvas.width
-  const height = canvas.height
+  const prepared = prepareLogicalCanvasContext(canvas)
+  if (!prepared) return
+  const { ctx, width, height } = prepared
   const cellW = width / Math.max(1, model.binsFast)
   const cellH = height / Math.max(1, model.binsSlow)
 
@@ -224,10 +248,9 @@ export function paintHeatmapOverlay(
   hoverCell: HeatmapHoverCell | null,
 ): void {
   const { model, markers } = renderModel
-  const overlayCtx = canvasContext2d(overlay)
-  if (!overlayCtx) return
-  const width = overlay.width
-  const height = overlay.height
+  const prepared = prepareLogicalCanvasContext(overlay)
+  if (!prepared) return
+  const { ctx: overlayCtx, width, height } = prepared
   const cellW = width / Math.max(1, model.binsFast)
   const cellH = height / Math.max(1, model.binsSlow)
 

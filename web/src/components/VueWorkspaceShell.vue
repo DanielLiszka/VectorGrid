@@ -30,7 +30,7 @@ const { controlsTab, mode, resultsTab, splitFraction, workspace, workflowStep, w
 const { dataId, dataLen, dataTimeframe, datasetLabel, datasetRange } = storeToRefs(dataStore)
 const { selectedTopTitle } = storeToRefs(analysisStore)
 const { backend, objective, progressMeta, runReadinessHint, strategyKind } = storeToRefs(optimizeStore)
-const { controlsCollapsed } = storeToRefs(settingsStore)
+const { controlsCollapsed, uiMode } = storeToRefs(settingsStore)
 
 const workspaceItems = [
   { key: 'workflow', label: 'Research' },
@@ -44,6 +44,11 @@ const workspaceItems = [
 const modeItems = [
   { key: 'conventional', label: 'Conventional' },
   { key: 'ml-signal', label: 'ML Signal' },
+] as const
+
+const uiModeItems = [
+  { key: 'guided', label: 'Guided' },
+  { key: 'advanced', label: 'Advanced' },
 ] as const
 
 const controlsItems = {
@@ -84,6 +89,10 @@ function modeTabId(key: string): string {
   return `mode_tab_${key}`
 }
 
+function uiModeTabId(key: string): string {
+  return `ui_mode_tab_${key}`
+}
+
 function workflowStepTabId(key: string): string {
   return `workflow_step_tab_${key}`
 }
@@ -99,6 +108,8 @@ function resultTabId(key: string): string {
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
 const currentMode = computed(() => String(mode.value || '').trim() || 'conventional')
+const currentUiMode = computed(() => String(uiMode.value || '').trim() === 'guided' ? 'guided' : 'advanced')
+const guidedModeActive = computed(() => currentUiMode.value === 'guided')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const currentWorkflowStep = computed(() => String(workflowStep.value || '').trim() || 'data')
 const workflowStepItems = computed(() => [
@@ -108,9 +119,9 @@ const workflowStepItems = computed(() => [
   { key: 'analyze', label: `4 ${workflowStepLabelForMode('analyze', currentMode.value)}` },
   { key: 'finalize', label: `5 ${workflowStepLabelForMode('finalize', currentMode.value)}` },
 ])
-const settingsWorkspaceActive = computed(() => currentWorkspace.value === 'settings')
-const liveWorkspaceActive = computed(() => currentWorkspace.value === 'live')
-const standardWorkspaceActive = computed(() => !settingsWorkspaceActive.value && !liveWorkspaceActive.value)
+const settingsWorkspaceActive = computed(() => !guidedModeActive.value && currentWorkspace.value === 'settings')
+const liveWorkspaceActive = computed(() => !guidedModeActive.value && currentWorkspace.value === 'live')
+const standardWorkspaceActive = computed(() => !guidedModeActive.value && !settingsWorkspaceActive.value && !liveWorkspaceActive.value)
 const currentModeLabel = computed(() => shellModeLabel(currentMode.value))
 const currentWorkspaceLabel = computed(() => workspaceItems.find((item) => item.key === currentWorkspace.value)?.label || 'Research')
 const currentWorkflowStepLabel = computed(
@@ -123,11 +134,16 @@ const currentResultsLabel = computed(
   () => visibleResultsItems.value.find((item) => item.key === activeResultsTab.value)?.label || 'No result panel',
 )
 const selectedShellTabId = computed(() =>
-  currentWorkspace.value === 'workflow'
+  guidedModeActive.value
+    ? uiModeTabId('guided')
+    : currentWorkspace.value === 'workflow'
     ? workflowStepTabId(currentWorkflowStep.value)
     : workspaceTabId(currentWorkspace.value),
 )
 const shellSelectionAnnouncement = computed(() => {
+  if (guidedModeActive.value) {
+    return 'Workspace Guided Mode. Conventional optimization, validation, and paper/live readiness.'
+  }
   const parts = [`Workspace ${currentWorkspaceLabel.value}.`]
   if (currentWorkspace.value === 'workflow') {
     parts.push(`Mode ${currentModeLabel.value}.`)
@@ -138,12 +154,20 @@ const shellSelectionAnnouncement = computed(() => {
   return parts.join(' ')
 })
 const shellSubtitle = computed(() => {
+  if (guidedModeActive.value) return 'Guided path: optimize, validate, then prepare paper/live trading.'
   const text = String(workflowSubtitle.value || '').trim()
   return text || '—'
 })
 const shellPostureVisual = computed(() => shellPostureIcon(currentWorkspace.value, currentWorkflowStep.value))
 const shellPostureText = computed(() => shellPostureLabel(currentWorkspace.value, currentWorkflowStep.value))
 const layoutKey = computed(() => `${currentMode.value}:${currentWorkspace.value}:${currentWorkflowStep.value}`)
+
+function guidedStrategyLabel(value: string): string {
+  const key = String(value || '').trim()
+  if (key === 'DoubleMa') return 'Double moving average'
+  if (key === 'CompositeCpu') return 'Composite trend'
+  return key || 'Double moving average'
+}
 
 const visibleControlsItems = computed(() => {
   if (currentWorkspace.value === 'workflow') {
@@ -298,8 +322,44 @@ const allContextItems = computed<ContextItem[]>(() => {
   ]
 })
 const contextItems = computed(() => allContextItems.value.filter((item) => item.defaultVisible))
-const secondaryContextItems = computed(() => allContextItems.value.filter((item) => !item.defaultVisible))
-const secondaryContextSummary = computed(() => secondaryContextItems.value.map((item) => item.key).join(' · '))
+const guidedContextItems = computed<ContextItem[]>(() => {
+  const dataset = String(datasetLabel.value || '').trim()
+  const range = String(datasetRange.value || '').trim()
+  const strategy = guidedStrategyLabel(strategyKind.value)
+  const objectiveLabel = String(objective.value || '').trim()
+  const status = String(progressMeta.value || '').trim() || String(runReadinessHint.value || '').trim()
+  return [
+    {
+      key: 'Data',
+      value: dataset && dataset !== '—'
+        ? `${dataset}${range && range !== '—' ? ` · ${range}` : ''}`
+        : 'Load data first',
+      current: !dataset || dataset === '—',
+      defaultVisible: true,
+    },
+    {
+      key: 'Strategy',
+      value: [strategy, objectiveLabel && objectiveLabel !== '—' ? objectiveLabel : 'Sharpe'].join(' · '),
+      current: true,
+      defaultVisible: true,
+    },
+    {
+      key: 'Progress',
+      value: status || 'Ready to start with data.',
+      current: statusCardCurrent.value,
+      defaultVisible: true,
+    },
+  ]
+})
+const primaryContextItems = computed(() =>
+  guidedModeActive.value ? guidedContextItems.value : contextItems.value,
+)
+const secondaryContextItems = computed(() =>
+  guidedModeActive.value ? [] : allContextItems.value.filter((item) => !item.defaultVisible),
+)
+const secondaryContextSummary = computed(() =>
+  guidedModeActive.value ? '' : secondaryContextItems.value.map((item) => item.key).join(' · '),
+)
 const taskCenterLauncherStatus = computed(() => {
   if (activeTaskCount.value > 0) return `${activeTaskCount.value} active`
   return centerStatusLabel.value
@@ -336,6 +396,11 @@ function selectWorkspace(key: string): void {
 function selectMode(key: string): void {
   if (currentMode.value === key) return
   workflowStore.selectMode(key)
+}
+
+function selectUiMode(key: string): void {
+  if (currentUiMode.value === key) return
+  settingsStore.setUiMode(key === 'guided' ? 'guided' : 'advanced')
 }
 
 function openTaskCenter(): void {
@@ -377,10 +442,11 @@ function visibleItemKeys(items: readonly TabKeyItem[]): string[] {
 function resolveFocusedNavigationKey(event: KeyboardEvent): string | null {
   const target =
     event.target instanceof Element
-      ? (event.target.closest('[data-mode], [data-workspace], [data-workflow-step], [data-tab]') as HTMLElement | null)
+      ? (event.target.closest('[data-ui-mode], [data-mode], [data-workspace], [data-workflow-step], [data-tab]') as HTMLElement | null)
       : null
   if (!target) return null
   const focusedKey =
+    String(target.dataset.uiMode || '').trim() ||
     String(target.dataset.mode || '').trim() ||
     String(target.dataset.workspace || '').trim() ||
     String(target.dataset.workflowStep || '').trim() ||
@@ -428,6 +494,10 @@ function onWorkspaceKeydown(event: KeyboardEvent): void {
 
 function onModeKeydown(event: KeyboardEvent): void {
   moveTabFocus(event, modeItems, currentMode.value, selectMode, (key) => `#modeBar [data-mode="${key}"]`)
+}
+
+function onUiModeKeydown(event: KeyboardEvent): void {
+  moveTabFocus(event, uiModeItems, currentUiMode.value, selectUiMode, (key) => `#uiModeBar [data-ui-mode="${key}"]`)
 }
 
 function onWorkflowStepKeydown(event: KeyboardEvent): void {
@@ -555,7 +625,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="brandMeta">
           <div class="subtitle mono">{{ shellSubtitle }}</div>
-          <div class="shellPostureChip" :aria-label="shellPostureText">
+          <div v-if="!guidedModeActive" class="shellPostureChip" :aria-label="shellPostureText">
             <AppVisualIcon :icon="shellPostureVisual" class="shellPostureIcon" />
             <span>{{ shellPostureText }}</span>
           </div>
@@ -564,6 +634,33 @@ onBeforeUnmount(() => {
 
       <div class="workspaceBarRow">
         <nav
+          id="uiModeBar"
+          class="tabsRow uiModeBar"
+          aria-label="UI mode"
+          role="tablist"
+          aria-orientation="horizontal"
+          @keydown="onUiModeKeydown"
+        >
+          <button
+            v-for="item in uiModeItems"
+            :key="`ui_mode_${item.key}`"
+            :id="uiModeTabId(item.key)"
+            type="button"
+            class="tabBtn modeBtn"
+            :data-ui-mode="item.key"
+            :class="{ active: currentUiMode === item.key }"
+            role="tab"
+            :aria-selected="currentUiMode === item.key"
+            :aria-controls="shellMainPanelId"
+            :tabindex="currentUiMode === item.key ? 0 : -1"
+            @click="selectUiMode(item.key)"
+          >
+            {{ item.label }}
+          </button>
+        </nav>
+
+        <nav
+          v-if="!guidedModeActive"
           id="workspaceBar"
           class="tabsRow workspaceBar"
           aria-label="Workspace sections"
@@ -590,6 +687,7 @@ onBeforeUnmount(() => {
         </nav>
 
         <nav
+          v-if="!guidedModeActive"
           id="modeBar"
           class="tabsRow modeBar"
           aria-label="Workflow mode"
@@ -638,7 +736,7 @@ onBeforeUnmount(() => {
       <nav
         id="workflowStepBar"
         class="tabsRow workflowStepBar"
-        v-if="currentWorkspace === 'workflow'"
+        v-if="!guidedModeActive && currentWorkspace === 'workflow'"
         aria-label="Workflow steps"
         role="tablist"
         aria-orientation="horizontal"
@@ -673,7 +771,7 @@ onBeforeUnmount(() => {
       </div>
 
       <RunContextBar
-        :items="contextItems"
+        :items="primaryContextItems"
         :secondary-items="secondaryContextItems"
         :secondary-summary="secondaryContextSummary"
       />
@@ -687,6 +785,14 @@ onBeforeUnmount(() => {
         :aria-labelledby="selectedShellTabId"
         :aria-describedby="shellSelectionStatusId"
       >
+        <section
+          v-show="guidedModeActive"
+          id="guidedShellGrid"
+          aria-label="Guided mode shell"
+        >
+          <div id="guidedVueShellMount"></div>
+        </section>
+
         <section
           ref="workspaceGridRef"
           class="workspaceGrid"
@@ -979,7 +1085,7 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <footer id="runFooterShell" role="contentinfo">
+    <footer v-if="!guidedModeActive" id="runFooterShell" role="contentinfo">
       <div id="runFooterVueShellMount"></div>
     </footer>
   </section>
@@ -1042,6 +1148,14 @@ onBeforeUnmount(() => {
 .workspaceBar {
   flex: 1 1 42rem;
   min-width: 0;
+  padding: 0.24rem 0.28rem 0.18rem;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
+}
+
+.uiModeBar {
+  flex: 0 0 auto;
   padding: 0.24rem 0.28rem 0.18rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
@@ -1456,6 +1570,7 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+#guidedShellGrid,
 #settingsShellGrid,
 #liveShellGrid {
   flex: 1 1 auto;
@@ -1471,6 +1586,10 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 0.9rem;
   box-shadow: var(--shadow-sm);
+}
+
+#guidedShellGrid {
+  align-content: start;
 }
 
 #liveShellGrid {
@@ -1607,6 +1726,7 @@ onBeforeUnmount(() => {
     gap: 0.75rem;
   }
 
+  #guidedShellGrid,
   #settingsShellGrid,
   #liveShellGrid {
     margin: 0.75rem;

@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 import App from './App.vue'
+import { useSettingsStore } from './stores/settingsStore'
 import { useWorkflowStore } from './stores/workflowStore'
 
 const APP_STUBS = {
@@ -20,6 +21,7 @@ const APP_STUBS = {
   DrillWorkspacePanel: { template: '<div data-stub="DrillWorkspacePanel" />' },
   ExecutionWorkspacePanel: { template: '<div data-stub="ExecutionWorkspacePanel" />' },
   HeatmapWorkspacePanel: { template: '<div data-stub="HeatmapWorkspacePanel" />' },
+  GuidedWorkspacePanel: { template: '<div data-stub="GuidedWorkspacePanel" />' },
   HistoryWorkspacePanel: { template: '<div data-stub="HistoryWorkspacePanel" />' },
   HistoryContextDock: { template: '<div data-stub="HistoryContextDock" />' },
   MetaWorkspacePanel: { template: '<div data-stub="MetaWorkspacePanel" />' },
@@ -68,6 +70,29 @@ describe('App root shell', () => {
     expect(document.querySelector('[data-stub="AppRuntimeBanner"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="TaskCenterOverlay"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="ActionStatusBar"]')).not.toBeNull()
+  })
+
+  it('keeps guided mode focused by hiding advanced workflow panels and the advanced footer', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setUiMode('guided')
+
+    const wrapper = mount(App, {
+      global: {
+        plugins: [pinia],
+        stubs: APP_STUBS,
+      },
+      attachTo: document.body,
+    })
+    await flushApp()
+
+    expect(document.querySelector('[data-stub="GuidedWorkspacePanel"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="ActionStatusBar"]')).toBeNull()
+    expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).toBeNull()
+    expect(document.querySelector('[data-stub="OptimizeWorkspacePanel"]')).toBeNull()
+
+    wrapper.unmount()
   })
 
   it('keeps lazily mounted workflow panels mounted once they have been visited', async () => {

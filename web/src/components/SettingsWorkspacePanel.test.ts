@@ -298,6 +298,40 @@ describe("SettingsWorkspacePanel", () => {
     wrapper.unmount();
   });
 
+  it("exposes the Guided/Advanced interface preference without hiding advanced scope", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+
+    const workflowStore = useWorkflowStore(pinia);
+    workflowStore.selectWorkspace("settings");
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await nextTick();
+    await nextTick();
+
+    const settingsStore = useSettingsStore(pinia);
+    const modeSelect = document.querySelector<HTMLSelectElement>(
+      "#vueSettingsUiMode",
+    );
+    expect(modeSelect).not.toBeNull();
+    expect(document.body.textContent || "").toContain("Default interface");
+    expect(document.body.textContent || "").toContain(
+      "Meta, Stage 5 ML confidence, ML Signal/CatBoost, options",
+    );
+
+    if (modeSelect) {
+      modeSelect.value = "guided";
+      modeSelect.dispatchEvent(new Event("change"));
+    }
+    await nextTick();
+
+    expect(settingsStore.uiMode).toBe("guided");
+    expect(document.querySelector("#vueSettingsGuidedStep")).not.toBeNull();
+  });
+
   it("renders density and saved-perspective controls for workstation state", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

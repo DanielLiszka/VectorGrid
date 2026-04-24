@@ -68,6 +68,8 @@ const taskStore = useTaskStore();
 const workflowStore = useWorkflowStore();
 const {
   densityMode,
+  uiMode,
+  guidedStep,
   theme,
   effect,
   helpMode,
@@ -132,6 +134,8 @@ const themeDraft = ref("system");
 const effectDraft = ref("none");
 const helpModeDraft = ref("full");
 const densityModeDraft = ref("standard");
+const uiModeDraft = ref("advanced");
+const guidedStepDraft = ref("data");
 const desktopNotificationModeDraft = ref("off");
 const marketDataDirDraft = ref("");
 const artifactRetentionDrafts = reactive<ArtifactRetentionDraftState>({
@@ -189,6 +193,7 @@ const settingsSummaryChips = computed(() => [
   `Effect ${String(effectDraft.value || "none").trim() || "none"}`,
   `Help ${String(helpModeDraft.value || "full").trim() || "full"}`,
   `Density ${String(densityModeDraft.value || "standard").trim() || "standard"}`,
+  `UI ${String(uiModeDraft.value || "advanced").trim() || "advanced"}`,
   `Desktop alerts ${String(desktopNotificationModeDraft.value || "off").trim() || "off"}`,
   workflowAdvanced.value ? "Advanced controls on" : "Advanced controls off",
   controlsCollapsed.value
@@ -587,6 +592,8 @@ watch(
       String(effect.value || "none").trim() || "none",
       String(helpMode.value || "full").trim() || "full",
       String(densityMode.value || "standard").trim() || "standard",
+      String(uiMode.value || "advanced").trim() || "advanced",
+      String(guidedStep.value || "data").trim() || "data",
       String(desktopNotificationMode.value || "off").trim() || "off",
       String(marketDataDir.value || ""),
       String(selectedPerspectiveId.value || ""),
@@ -596,6 +603,8 @@ watch(
     nextEffect,
     nextHelpMode,
     nextDensityMode,
+    nextUiMode,
+    nextGuidedStep,
     nextDesktopNotificationMode,
     nextMarketDataDir,
     nextPerspectiveId,
@@ -606,6 +615,9 @@ watch(
       helpModeDraft.value = nextHelpMode;
     if (densityModeDraft.value !== nextDensityMode)
       densityModeDraft.value = nextDensityMode;
+    if (uiModeDraft.value !== nextUiMode) uiModeDraft.value = nextUiMode;
+    if (guidedStepDraft.value !== nextGuidedStep)
+      guidedStepDraft.value = nextGuidedStep;
     if (desktopNotificationModeDraft.value !== nextDesktopNotificationMode) {
       desktopNotificationModeDraft.value = nextDesktopNotificationMode;
     }
@@ -950,6 +962,54 @@ onBeforeUnmount(() => {
             <div class="panelMuted">
               Use this as the global policy for optional in-app help. Safety
               notices, errors, and runtime status still stay visible.
+            </div>
+          </div>
+          <div class="rowSingle">
+            <label for="vueSettingsUiMode">Default interface</label>
+            <select
+              id="vueSettingsUiMode"
+              :value="uiModeDraft"
+              @change="
+                uiModeDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'advanced',
+                );
+                setSelectValue('settingsUiMode', uiModeDraft);
+              "
+            >
+              <option value="guided">
+                Guided Mode (optimize, validate, paper/live)
+              </option>
+              <option value="advanced">
+                Advanced Mode (all research tools)
+              </option>
+            </select>
+            <div class="panelMuted">
+              Guided Mode keeps the first-run path narrow. Advanced Mode keeps
+              Meta, Stage 5 ML confidence, ML Signal/CatBoost, options,
+              campaigns, diagnostics, and artifact replay reachable.
+            </div>
+          </div>
+          <div class="rowSingle" v-if="uiModeDraft === 'guided'">
+            <label for="vueSettingsGuidedStep">Guided start step</label>
+            <select
+              id="vueSettingsGuidedStep"
+              :value="guidedStepDraft"
+              @change="
+                guidedStepDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'data',
+                );
+                setSelectValue('settingsGuidedStep', guidedStepDraft);
+              "
+            >
+              <option value="data">Data</option>
+              <option value="strategy">Strategy</option>
+              <option value="optimize">Optimize</option>
+              <option value="validate">Validate</option>
+              <option value="trade">Trade Ready</option>
+            </select>
+            <div class="panelMuted">
+              This only chooses the visible guided step. It does not remove or
+              reset any loaded data, runs, or advanced workspace state.
             </div>
           </div>
           <div class="rowSingle">

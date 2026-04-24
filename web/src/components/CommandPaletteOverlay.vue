@@ -9,6 +9,7 @@ import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import {
   createSharedShellShortcutCommands,
@@ -45,6 +46,7 @@ const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
 const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
+const settingsStore = useSettingsStore()
 const workflowStore = useWorkflowStore()
 
 const { canExportCsv, canExportJson } = storeToRefs(analysisStore)
@@ -65,11 +67,13 @@ const commandGroupMeta: Record<PaletteCommand['group'], string> = {
 const commandGroupOrder: PaletteCommand['group'][] = ['actions', 'data', 'exports', 'layout', 'navigation']
 
 function setWorkflowStepIfNeeded(step: string): void {
+  if (settingsStore.uiMode !== 'advanced') settingsStore.setUiMode('advanced')
   if (String(workspace.value || '').trim() === 'workflow' && String(workflowStep.value || '').trim() === step) return
   workflowStore.selectWorkflowStep(step)
 }
 
 function setWorkspaceIfNeeded(nextWorkspace: string): void {
+  if (settingsStore.uiMode !== 'advanced') settingsStore.setUiMode('advanced')
   if (String(workspace.value || '').trim() === nextWorkspace) return
   workflowStore.selectWorkspace(nextWorkspace)
 }
@@ -127,6 +131,30 @@ const commands = computed<PaletteCommand[]>(() => {
       enabled: canCancel.value,
       run: () => {
         commandActionStore.cancelOptimization()
+      },
+    },
+    {
+      id: 'switch_guided_mode',
+      group: 'navigation',
+      name: 'Switch to Guided Mode',
+      desc: 'Open the simplified optimize, validate, and paper/live path.',
+      keys: [],
+      keywords: ['guided', 'simple', 'beginner', 'mode'],
+      enabled: true,
+      run: () => {
+        settingsStore.setUiMode('guided')
+      },
+    },
+    {
+      id: 'switch_advanced_mode',
+      group: 'navigation',
+      name: 'Switch to Advanced Mode',
+      desc: 'Restore the full workbench with Meta, ML Signal, options, diagnostics, and artifact tools.',
+      keys: [],
+      keywords: ['advanced', 'full', 'mode', 'meta', 'ml', 'options'],
+      enabled: true,
+      run: () => {
+        settingsStore.setUiMode('advanced')
       },
     },
     {

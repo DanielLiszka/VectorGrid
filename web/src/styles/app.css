@@ -1702,15 +1702,22 @@ canvas.chart {
 .tvChartFrame {
   position: relative;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--surface) 96%, var(--surface2));
-  padding: 0.35rem;
+  border-radius: 14px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--surface-focus) 18%, transparent),
+      transparent 42%
+    ),
+    color-mix(in oklab, var(--surface) 96%, var(--surface2));
+  padding: 0.45rem;
+  box-shadow: var(--shadow-sm);
 }
 
 .tvChartHost {
   width: 100%;
-  height: 360px;
-  border-radius: 10px;
+  height: clamp(360px, 42vh, 520px);
+  border-radius: 11px;
   overflow: hidden;
 }
 
@@ -1744,15 +1751,17 @@ canvas.chart {
 
 @media (max-width: 900px) {
   .tvChartHost {
-    height: 280px;
+    height: 320px;
   }
 }
 
 .heatmapCanvasStack {
   position: relative;
-  inline-size: min(100%, 512px);
+  inline-size: min(100%, 680px);
   aspect-ratio: 1 / 1;
   margin-inline: auto;
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
 }
 
 #heatmapCanvas,

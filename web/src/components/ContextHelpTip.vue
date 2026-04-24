@@ -8,6 +8,7 @@ import {
   HoverCardTrigger,
   TooltipContent,
   TooltipPortal,
+  TooltipProvider,
   TooltipRoot,
   TooltipTrigger,
 } from 'reka-ui'
@@ -34,6 +35,9 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { mode, isFull, isOff } = useHelpMode()
 
+const fullHelpOpenDelayMs = 1600
+const conciseTooltipDelayMs = 750
+
 const label = computed(() => String(props.ariaLabel || props.title || 'Help').trim() || 'Help')
 const detailBody = computed(() => String(props.detail || '').trim())
 const textBadge = computed(() => String(props.badge || '').trim())
@@ -41,7 +45,7 @@ const textBadge = computed(() => String(props.badge || '').trim())
 
 <template>
   <span v-if="!isOff" class="contextHelpRoot" :data-help-mode="mode">
-    <HoverCardRoot v-if="isFull" :open-delay="3500" :close-delay="180">
+    <HoverCardRoot v-if="isFull" :open-delay="fullHelpOpenDelayMs" :close-delay="180">
       <HoverCardTrigger as-child>
         <button type="button" class="contextHelpTrigger" :aria-label="label">
           <span v-if="textBadge" class="contextHelpBadgeText">{{ textBadge }}</span>
@@ -57,19 +61,21 @@ const textBadge = computed(() => String(props.badge || '').trim())
       </HoverCardPortal>
     </HoverCardRoot>
 
-    <TooltipRoot v-else :delay-duration="900">
-      <TooltipTrigger as-child>
-        <button type="button" class="contextHelpTrigger" :aria-label="label">
-          <span v-if="textBadge" class="contextHelpBadgeText">{{ textBadge }}</span>
-          <CircleHelp v-else class="contextHelpIcon" aria-hidden="true" />
-        </button>
-      </TooltipTrigger>
-      <TooltipPortal>
-        <TooltipContent class="contextHelpCard contextHelpTooltip" :side="side" :align="align" :side-offset="8" :collision-padding="12">
-          <div class="contextHelpSummary">{{ summary }}</div>
-        </TooltipContent>
-      </TooltipPortal>
-    </TooltipRoot>
+    <TooltipProvider v-else>
+      <TooltipRoot :delay-duration="conciseTooltipDelayMs">
+        <TooltipTrigger as-child>
+          <button type="button" class="contextHelpTrigger" :aria-label="label">
+            <span v-if="textBadge" class="contextHelpBadgeText">{{ textBadge }}</span>
+            <CircleHelp v-else class="contextHelpIcon" aria-hidden="true" />
+          </button>
+        </TooltipTrigger>
+        <TooltipPortal>
+          <TooltipContent class="contextHelpCard contextHelpTooltip" :side="side" :align="align" :side-offset="8" :collision-padding="12">
+            <div class="contextHelpSummary">{{ summary }}</div>
+          </TooltipContent>
+        </TooltipPortal>
+      </TooltipRoot>
+    </TooltipProvider>
   </span>
 </template>
 

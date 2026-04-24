@@ -62,6 +62,8 @@ describe('settings bootstrap service', () => {
       vta_window_effect_v1: 'blur',
       vta_help_mode_v1: 'concise',
       vta_density_mode_v1: 'dense',
+      vta_ui_mode_v1: 'guided',
+      vta_guided_step_v1: 'validate',
       vta_workflow_advanced_v1: '1',
       vta_controls_collapsed_v1: 'false',
     })
@@ -71,6 +73,8 @@ describe('settings bootstrap service', () => {
       effect: 'blur',
       helpMode: 'concise',
       densityMode: 'dense',
+      uiMode: 'guided',
+      guidedStep: 'validate',
       desktopNotificationMode: '',
       workflowAdvanced: true,
       controlsCollapsed: false,
@@ -83,6 +87,8 @@ describe('settings bootstrap service', () => {
       vta_window_effect_v1: 'vibrancy',
       vta_help_mode_v1: 'verbose',
       vta_density_mode_v1: 'spacious',
+      vta_ui_mode_v1: 'pro',
+      vta_guided_step_v1: 'unknown',
       vta_workflow_advanced_v1: 'maybe',
       vta_controls_collapsed_v1: 'sometimes',
     })
@@ -92,6 +98,8 @@ describe('settings bootstrap service', () => {
       effect: '',
       helpMode: '',
       densityMode: '',
+      uiMode: '',
+      guidedStep: '',
       desktopNotificationMode: '',
       workflowAdvanced: null,
       controlsCollapsed: null,
@@ -113,6 +121,8 @@ describe('settings bootstrap service', () => {
       vta_window_effect_v1: 'acrylic',
       vta_help_mode_v1: 'off',
       vta_density_mode_v1: 'comfortable',
+      vta_ui_mode_v1: 'guided',
+      vta_guided_step_v1: 'trade',
       vta_desktop_notification_mode_v1: 'failures',
       vta_workflow_advanced_v1: 'true',
       vta_controls_collapsed_v1: '1',
@@ -126,6 +136,8 @@ describe('settings bootstrap service', () => {
     expect(store.effect).toBe('acrylic')
     expect(store.helpMode).toBe('off')
     expect(store.densityMode).toBe('comfortable')
+    expect(store.uiMode).toBe('guided')
+    expect(store.guidedStep).toBe('trade')
     expect(store.desktopNotificationMode).toBe('failures')
     expect(store.workflowAdvanced).toBe(true)
     expect(store.controlsCollapsed).toBe(true)
@@ -133,6 +145,8 @@ describe('settings bootstrap service', () => {
     expect(dataset.windowEffect).toBe('acrylic')
     expect(dataset.helpMode).toBe('off')
     expect(dataset.density).toBe('comfortable')
+    expect(dataset.uiMode).toBe('guided')
+    expect(dataset.guidedStep).toBe('trade')
     expect(dataset.workflowAdvanced).toBe('1')
     expect(dataset.controlsCollapsed).toBe('1')
     expect(invokeCommandMock).toHaveBeenCalledWith(
@@ -149,6 +163,8 @@ describe('settings bootstrap service', () => {
       vta_window_effect_v1: 'mica',
       vta_help_mode_v1: 'concise',
       vta_density_mode_v1: 'dense',
+      vta_ui_mode_v1: 'guided',
+      vta_guided_step_v1: 'optimize',
       vta_desktop_notification_mode_v1: 'important',
       vta_workflow_advanced_v1: '1',
       vta_controls_collapsed_v1: '1',
@@ -162,6 +178,8 @@ describe('settings bootstrap service', () => {
     expect(store.effect).toBe('mica')
     expect(store.helpMode).toBe('concise')
     expect(store.densityMode).toBe('dense')
+    expect(store.uiMode).toBe('guided')
+    expect(store.guidedStep).toBe('optimize')
     expect(store.desktopNotificationMode).toBe('important')
     expect(store.workflowAdvanced).toBe(true)
     expect(store.controlsCollapsed).toBe(true)
@@ -169,6 +187,8 @@ describe('settings bootstrap service', () => {
     expect(dataset.windowEffect).toBe('mica')
     expect(dataset.helpMode).toBe('concise')
     expect(dataset.density).toBe('dense')
+    expect(dataset.uiMode).toBe('guided')
+    expect(dataset.guidedStep).toBe('optimize')
     expect(dataset.workflowAdvanced).toBe('1')
     expect(dataset.controlsCollapsed).toBe('1')
     expect(invokeCommandMock).toHaveBeenCalledWith(
@@ -198,6 +218,8 @@ describe('settings bootstrap service', () => {
       effect: '',
       helpMode: '',
       densityMode: '',
+      uiMode: '',
+      guidedStep: '',
       desktopNotificationMode: '',
       workflowAdvanced: null,
       controlsCollapsed: null,

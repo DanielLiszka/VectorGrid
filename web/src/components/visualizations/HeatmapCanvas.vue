@@ -33,6 +33,7 @@ const emit = defineEmits<{
   'request-drilldown': [params: HeatmapCellParams]
 }>()
 
+const stackRef = ref<HTMLElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const overlayRef = ref<HTMLCanvasElement | null>(null)
 const tooltipRef = ref<HTMLElement | null>(null)
@@ -40,6 +41,7 @@ const legendRef = ref<InstanceType<typeof HeatmapLegend> | null>(null)
 const hoverCell = ref<HeatmapHoverCell | null>(null)
 const selectedCell = ref<HeatmapResolvedCell | null>(null)
 const lastBaseSignature = ref('')
+let resizeObserver: ResizeObserver | null = null
 const selectedCellSummary = computed(() => {
   const renderModel = props.renderModel
   const cell = selectedCell.value
@@ -64,6 +66,33 @@ function clearCanvases(): void {
   lastBaseSignature.value = ''
 }
 
+function syncCanvasBackingStore(): boolean {
+  const stack = stackRef.value
+  const canvases = [canvasRef.value, overlayRef.value].filter((canvas): canvas is HTMLCanvasElement => Boolean(canvas))
+  if (!stack || canvases.length === 0) return false
+  const rect = stack.getBoundingClientRect()
+  const cssWidth = Math.max(240, Math.round(rect.width || stack.clientWidth || 512))
+  const cssHeight = Math.max(240, Math.round(rect.height || stack.clientHeight || cssWidth))
+  const ratio = typeof window === 'undefined'
+    ? 1
+    : Math.min(3, Math.max(1, Math.round((window.devicePixelRatio || 1) * 100) / 100))
+  const targetWidth = Math.max(1, Math.round(cssWidth * ratio))
+  const targetHeight = Math.max(1, Math.round(cssHeight * ratio))
+  let changed = false
+  for (const canvas of canvases) {
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+      changed = true
+    }
+    if (canvas.dataset.pixelRatio !== String(ratio)) {
+      canvas.dataset.pixelRatio = String(ratio)
+      changed = true
+    }
+  }
+  return changed
+}
+
 function repaint(forceBase = false): void {
   const renderModel = props.renderModel
   const canvas = canvasRef.value
@@ -73,7 +102,8 @@ function repaint(forceBase = false): void {
     hideTooltip()
     return
   }
-  if (forceBase || lastBaseSignature.value !== renderModel.signature) {
+  const backingStoreChanged = syncCanvasBackingStore()
+  if (forceBase || backingStoreChanged || lastBaseSignature.value !== renderModel.signature) {
     paintHeatmapBase(renderModel, canvas)
     canvas.dataset.renderSignature = renderModel.signature
     lastBaseSignature.value = renderModel.signature
@@ -226,10 +256,16 @@ watch(
 )
 
 onMounted(() => {
+  if (typeof ResizeObserver !== 'undefined' && stackRef.value) {
+    resizeObserver = new ResizeObserver(() => repaint(true))
+    resizeObserver.observe(stackRef.value)
+  }
   void nextTick(() => repaint(true))
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   hoverCell.value = null
   selectedCell.value = null
   hideTooltip()
@@ -247,21 +283,26 @@ defineExpose({ exportPng, repaint })
     </div>
     <div class="chartAssist">
       <div id="heatmapKeyboardHint" class="panelMuted">
-        Use the Top results table to open an exact retained candidate, or use arrow keys and Enter on the heatmap to inspect a representative parameter pair for that region.
+        Click a populated cell or use arrow keys and Enter. Top results remains the exact candidate path.
       </div>
       <div class="actions">
         <button type="button" @click="$emit('review-top-results')">Review Top results</button>
       </div>
     </div>
-    <div class="panelAdvisory">
-      Heatmaps require a scored optimization run with Heatmap bins above 0. If the renderer stays empty, verify those settings before rerunning.
-    </div>
+    <details class="heatmapDetails">
+      <summary>Heatmap requirements</summary>
+      <p>
+        Heatmaps require a scored optimization run with Heatmap bins above 0. If the renderer stays empty,
+        verify those settings before rerunning.
+      </p>
+    </details>
     <div id="heatmapWrapVue" v-show="!!renderModel" class="heatmapWrap">
       <div id="heatmapMetaVue" class="panelStatus heatmapRenderMeta" role="status" aria-live="polite">
         {{ renderModel?.meta || '-' }}
       </div>
       <div
         id="heatmapCanvasStackVue"
+        ref="stackRef"
         class="heatmapCanvasStack chartSurface"
         :aria-label="ariaLabel"
         aria-describedby="heatmapKeyboardHint"
@@ -312,6 +353,26 @@ defineExpose({ exportPng, repaint })
 .chartAssist {
   display: grid;
   gap: 0.35rem;
+}
+
+.heatmapDetails {
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface-inline) 76%, transparent);
+  padding: 0.5rem 0.65rem;
+  color: var(--muted-strong);
+  font-size: 0.78rem;
+}
+
+.heatmapDetails summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.heatmapDetails p {
+  margin: 0.45rem 0 0;
+  line-height: 1.45;
 }
 
 .actions {

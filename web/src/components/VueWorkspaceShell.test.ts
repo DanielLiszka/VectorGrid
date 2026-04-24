@@ -172,6 +172,34 @@ describe('VueWorkspaceShell', () => {
     wrapper.unmount()
   })
 
+  it('renders guided mode as an additive shell without advanced workspace chrome', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setUiMode('guided')
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    expect(document.querySelector('#uiModeBar')?.getAttribute('role')).toBe('tablist')
+    expect(document.querySelector('#workspaceBar')).toBeNull()
+    expect(document.querySelector('#modeBar')).toBeNull()
+    expect(document.querySelector('#workflowStepBar')).toBeNull()
+    expect((document.querySelector('#guidedShellGrid') as HTMLElement | null)?.style.display).not.toBe('none')
+    expect((document.querySelector('.workspaceGrid') as HTMLElement | null)?.style.display).toBe('none')
+    expect(document.querySelector('#shellMainPanel')?.getAttribute('aria-labelledby')).toBe('ui_mode_tab_guided')
+    expect(document.querySelector('#shellSelectionStatus')?.textContent).toContain('Workspace Guided Mode.')
+    expect(document.querySelectorAll('.contextStrip > .contextCard')).toHaveLength(3)
+    expect(document.querySelector('.contextOverflowSummary')).toBeNull()
+    expect(document.querySelector('img.shellPostureIcon')).toBeNull()
+    expect(document.querySelector('#runFooterShell')).toBeNull()
+
+    wrapper.unmount()
+  })
+
   it('mounts the finalizer workflow step on the meta surface', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

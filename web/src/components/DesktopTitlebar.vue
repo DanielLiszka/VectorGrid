@@ -10,6 +10,7 @@ import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { type TrackedTask, shouldGuardDesktopCloseForTask, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { invokeCommand, tauriRuntimeAvailable } from '../tauri/invoke'
@@ -28,11 +29,13 @@ const commandPaletteStore = useCommandPaletteStore()
 const dataStore = useDataStore()
 const executionStore = useExecutionStore()
 const optimizeStore = useOptimizeStore()
+const settingsStore = useSettingsStore()
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 
 const { runnerActive } = storeToRefs(executionStore)
-const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
+const { canCancel, runDisabled, strategyKind, validateDisabled } = storeToRefs(optimizeStore)
+const { uiMode } = storeToRefs(settingsStore)
 const { mode, workflowStep, workspace } = storeToRefs(workflowStore)
 
 const desktopRuntimeAvailable = tauriRuntimeAvailable()
@@ -41,8 +44,14 @@ const isFocused = ref(true)
 const isMaximized = ref(false)
 const closeConfirmOpen = ref(false)
 const unlisteners: Array<() => void> = []
+const guidedModeActive = computed(() => uiMode.value === 'guided')
+const guidedStrategySupported = computed(() => {
+  const kind = String(strategyKind.value || '').trim()
+  return kind === 'DoubleMa' || kind === 'CompositeCpu'
+})
 
 const workspaceLabel = computed(() => {
+  if (guidedModeActive.value) return 'Guided'
   const normalizedWorkspace = normalizeWorkspaceTab(workspace.value)
   if (normalizedWorkspace === 'library') return 'Library'
   if (normalizedWorkspace === 'aggregate') return 'Aggregate'
@@ -51,14 +60,25 @@ const workspaceLabel = computed(() => {
   if (normalizedWorkspace === 'settings') return 'Settings'
   return 'Research'
 })
-const showWorkflowStepLabel = computed(() => normalizeWorkspaceTab(workspace.value) === 'workflow')
+const showWorkflowStepLabel = computed(() => guidedModeActive.value || normalizeWorkspaceTab(workspace.value) === 'workflow')
 
 const workflowStepLabel = computed(() => {
+  if (guidedModeActive.value) {
+    const step = settingsStore.guidedStep
+    if (step === 'strategy') return 'Strategy'
+    if (step === 'optimize') return 'Optimize'
+    if (step === 'validate') return 'Validate'
+    if (step === 'trade') return 'Trade Ready'
+    return 'Data'
+  }
   const normalizedStep = normalizeWorkflowStep(workflowStep.value) || 'data'
   return workflowStepLabelForMode(normalizedStep, mode.value)
 })
 
 const subtitle = computed(() => {
+  if (guidedModeActive.value) {
+    return 'Guided path for conventional optimization, validation, and paper/live readiness.'
+  }
   const normalizedWorkspace = normalizeWorkspaceTab(workspace.value)
   if (normalizedWorkspace && normalizedWorkspace !== 'workflow') {
     return WORKSPACE_SUBTITLES[normalizedWorkspace]
@@ -98,6 +118,13 @@ const mlSignalPrimaryActionDisabled = computed(() => {
 })
 const actionLabel = computed(() => {
   if (canCancel.value) return 'Stop run'
+  if (guidedModeActive.value) {
+    if (settingsStore.guidedStep === 'data') return 'Choose data'
+    if (settingsStore.guidedStep === 'strategy') return 'Pick strategy'
+    if (settingsStore.guidedStep === 'validate') return 'Run validation'
+    if (settingsStore.guidedStep === 'trade') return 'Review checklist'
+    return 'Run optimization'
+  }
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.label
   }
@@ -106,6 +133,13 @@ const actionLabel = computed(() => {
 })
 const actionShortLabel = computed(() => {
   if (canCancel.value) return 'Stop'
+  if (guidedModeActive.value) {
+    if (settingsStore.guidedStep === 'data') return 'Data'
+    if (settingsStore.guidedStep === 'strategy') return 'Strategy'
+    if (settingsStore.guidedStep === 'validate') return 'Validate'
+    if (settingsStore.guidedStep === 'trade') return 'Review'
+    return 'Run'
+  }
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryAction.value.shortLabel
   }
@@ -114,6 +148,13 @@ const actionShortLabel = computed(() => {
 })
 const actionDisabled = computed(() => {
   if (canCancel.value) return false
+  if (guidedModeActive.value) {
+    if (settingsStore.guidedStep === 'data') return true
+    if (settingsStore.guidedStep === 'strategy') return true
+    if (settingsStore.guidedStep === 'validate') return !!validateDisabled.value
+    if (settingsStore.guidedStep === 'trade') return true
+    return !!runDisabled.value || !guidedStrategySupported.value
+  }
   if (shellModeLabel(mode.value) === 'ML Signal') {
     return mlSignalPrimaryActionDisabled.value
   }
@@ -168,12 +209,23 @@ function openPalette(): void {
 }
 
 function openSettings(): void {
+  if (guidedModeActive.value) settingsStore.setUiMode('advanced')
   workflowStore.selectWorkspace('settings')
 }
 
 function triggerPrimaryAction(): void {
   if (canCancel.value) {
     commandActionStore.cancelOptimization()
+    return
+  }
+  if (guidedModeActive.value) {
+    if (settingsStore.guidedStep === 'validate' && !validateDisabled.value) {
+      commandActionStore.validateOptimization()
+      return
+    }
+    if (settingsStore.guidedStep === 'optimize' && !runDisabled.value && guidedStrategySupported.value) {
+      commandActionStore.runOptimization()
+    }
     return
   }
   if (shellModeLabel(mode.value) === 'ML Signal') {

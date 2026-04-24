@@ -5,6 +5,8 @@ import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 import CommandPaletteOverlay from './CommandPaletteOverlay.vue'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
+import { useSettingsStore } from '../stores/settingsStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 
 describe('CommandPaletteOverlay', () => {
   beforeEach(() => {
@@ -127,6 +129,52 @@ describe('CommandPaletteOverlay', () => {
     const commandRows = Array.from(document.querySelectorAll<HTMLElement>('.cmdPaletteDialog [role="option"]'))
     expect(commandRows.length).toBeGreaterThan(0)
     expect(commandRows[0]?.textContent).toContain('Go to Workflow Step 1 (Data)')
+
+    wrapper.unmount()
+  })
+
+  it('switches UI modes and routes advanced navigation from guided mode', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    settingsStore.setUiMode('guided')
+    paletteStore.openPalette()
+
+    const wrapper = mount(CommandPaletteOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    paletteStore.setQuery('advanced mode')
+    await nextTick()
+    let firstRow = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="option"]')
+    expect(firstRow?.textContent).toContain('Switch to Advanced Mode')
+    firstRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(settingsStore.uiMode).toBe('advanced')
+
+    paletteStore.openPalette()
+    paletteStore.setQuery('guided mode')
+    await nextTick()
+    firstRow = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="option"]')
+    expect(firstRow?.textContent).toContain('Switch to Guided Mode')
+    firstRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(settingsStore.uiMode).toBe('guided')
+
+    paletteStore.openPalette()
+    paletteStore.setQuery('go aggregate')
+    await nextTick()
+    firstRow = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="option"]')
+    expect(firstRow?.textContent).toContain('Go to Aggregate')
+    firstRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(settingsStore.uiMode).toBe('advanced')
+    expect(workflowStore.workspace).toBe('aggregate')
 
     wrapper.unmount()
   })

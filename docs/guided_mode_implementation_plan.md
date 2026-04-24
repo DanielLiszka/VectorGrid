@@ -14,13 +14,16 @@ This must be additive. The current Advanced Mode remains the full product surfac
 
 Last updated: 2026-04-24.
 
-- [ ] Phase 0: Confirm current advanced capability inventory and mode boundaries.
-- [ ] Phase 1: Add the mode model, persistence, shell switcher, and Advanced Mode preservation tests.
-- [ ] Phase 2: Build the Guided Mode conventional optimize flow.
-- [ ] Phase 3: Build the Guided Mode validation flow and plain-language verdict summaries.
-- [ ] Phase 4: Build the Guided Mode paper/live readiness flow.
-- [ ] Phase 5: Add Advanced Mode bridges, command-palette reachability, and capability preservation checks.
-- [ ] Phase 6: Run frontend, accessibility, browser, desktop, and baseline verification.
+- [x] Phase 0: Confirm current advanced capability inventory and mode boundaries.
+- [x] Phase 1: Add the mode model, persistence, shell switcher, and Advanced Mode preservation tests.
+- [x] Phase 2: Build the Guided Mode conventional optimize flow.
+- [x] Phase 3: Build the Guided Mode validation flow and plain-language verdict summaries.
+- [x] Phase 4: Build the Guided Mode paper/live readiness flow.
+- [x] Phase 5: Add Advanced Mode bridges, command-palette reachability, and capability preservation checks.
+- [x] Phase 6: Run frontend, accessibility, browser, desktop, and baseline verification.
+- [x] Phase 7: Apply post-MVP visual polish for charts, heatmap rendering, tooltip timing, and Guided Mode browser UX coverage.
+
+Implementation note: Guided Mode has been implemented as an additive frontend mode. Advanced Mode remains the default and still owns the complete research surface.
 
 ## Scope
 
@@ -160,11 +163,11 @@ Recommended rollout:
 
 ## Phase 0: Capability Inventory And Boundaries
 
-- [ ] Confirm all Advanced Mode workspaces remain reachable from the shell.
-- [ ] Confirm command-palette entries still expose advanced-only surfaces.
-- [ ] Inventory current conventional optimize, validation, and execution prerequisites from the existing frontend stores/services.
-- [ ] Confirm the live-execution supported strategy list at the frontend boundary and Rust command boundary.
-- [ ] Document which guided templates are full-path eligible and which are validate-only.
+- [x] Confirm all Advanced Mode workspaces remain reachable from the shell.
+- [x] Confirm command-palette entries still expose advanced-only surfaces.
+- [x] Inventory current conventional optimize, validation, and execution prerequisites from the existing frontend stores/services.
+- [x] Confirm the live-execution supported strategy list at the frontend boundary and Rust command boundary.
+- [x] Document which guided templates are full-path eligible and which are validate-only.
 
 Exit criteria:
 
@@ -173,11 +176,11 @@ Exit criteria:
 
 ## Phase 1: Mode Model And Shell Integration
 
-- [ ] Add a persisted UI mode setting.
-- [ ] Add a shell-level Guided/Advanced switch.
-- [ ] Route Guided Mode to a new guided workspace without deleting or renaming Advanced Mode workspaces.
-- [ ] Keep current titlebar, command palette, settings, and task-center behavior available in Advanced Mode.
-- [ ] Add unit tests for mode persistence and shell rendering.
+- [x] Add a persisted UI mode setting.
+- [x] Add a shell-level Guided/Advanced switch.
+- [x] Route Guided Mode to a new guided workspace without deleting or renaming Advanced Mode workspaces.
+- [x] Keep current titlebar, command palette, settings, and task-center behavior available in Advanced Mode.
+- [x] Add unit tests for mode persistence and shell rendering.
 
 Exit criteria:
 
@@ -186,11 +189,11 @@ Exit criteria:
 
 ## Phase 2: Guided Optimization Flow
 
-- [ ] Build the guided data step using existing data-store state and actions.
-- [ ] Build the guided strategy step with curated templates.
-- [ ] Build the guided optimize step using the existing optimization service and task/progress state.
-- [ ] Show selected candidate summary with plain labels for return, drawdown, trade count, and robustness signals already available from the optimizer result.
-- [ ] Add blocked states for missing data, unsupported strategy, missing candidate, or in-progress task.
+- [x] Build the guided data step using existing data-store state and actions.
+- [x] Build the guided strategy step with curated templates.
+- [x] Build the guided optimize step using the existing optimization service and task/progress state.
+- [x] Show selected candidate summary with plain labels for return, drawdown, trade count, and robustness signals already available from the optimizer result.
+- [x] Add blocked states for missing data, unsupported strategy, missing candidate, or in-progress task.
 
 Exit criteria:
 
@@ -199,10 +202,10 @@ Exit criteria:
 
 ## Phase 3: Guided Validation Flow
 
-- [ ] Build the guided validation step using the existing validation request builder/service.
-- [ ] Derive a plain-language verdict from existing validation metrics and report state.
-- [ ] Show "continue", "revise strategy", or "open advanced validation" as the next action.
-- [ ] Preserve advanced validation tables, reports, exports, and artifact behavior.
+- [x] Build the guided validation step using the existing validation request builder/service.
+- [x] Derive a plain-language verdict from existing validation metrics and report state.
+- [x] Show "continue", "revise strategy", or "open advanced validation" as the next action.
+- [x] Preserve advanced validation tables, reports, exports, and artifact behavior.
 
 Exit criteria:
 
@@ -211,10 +214,10 @@ Exit criteria:
 
 ## Phase 4: Paper/Live Readiness Flow
 
-- [ ] Build a readiness checklist for execution support, symbol/data stream, broker credentials, dry-run mode, and risk settings.
-- [ ] Use existing execution store/service actions for dry-run or live runner setup.
-- [ ] Gate non-dry-run actions behind explicit warnings and required readiness.
-- [ ] Explain unsupported strategy handoffs without presenting them as failures.
+- [x] Build a readiness checklist for execution support, symbol/data stream, broker credentials, dry-run mode, and risk settings.
+- [x] Use existing execution store/service actions for dry-run or live runner setup.
+- [x] Gate non-dry-run actions behind explicit warnings and required readiness.
+- [x] Explain unsupported strategy handoffs without presenting them as failures.
 
 Exit criteria:
 
@@ -224,10 +227,10 @@ Exit criteria:
 
 ## Phase 5: Advanced Preservation And Bridges
 
-- [ ] Add consistent "Open in Advanced Mode" links from Guided steps.
-- [ ] Ensure Meta, Stage 5 ML confidence, ML Signal, options-expression, campaigns, dynamic builder, history, reports, diagnostics, and settings remain discoverable in Advanced Mode.
-- [ ] Add regression tests that fail if major advanced workspaces disappear from the shell or command palette.
-- [ ] Keep advanced-only backend functions out of Guided Mode except for contextual bridge text.
+- [x] Add consistent "Open in Advanced Mode" links from Guided steps.
+- [x] Ensure Meta, Stage 5 ML confidence, ML Signal, options-expression, campaigns, dynamic builder, history, reports, diagnostics, and settings remain discoverable in Advanced Mode.
+- [x] Add regression tests that fail if major advanced workspaces disappear from the shell or command palette.
+- [x] Keep advanced-only backend functions out of Guided Mode except for contextual bridge text.
 
 Exit criteria:
 
@@ -238,16 +241,30 @@ Exit criteria:
 
 Run at minimum:
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run a11y:smoke:managed`
-- [ ] `npm --prefix web run test:browser:ux`
-- [ ] `npm --prefix web run baseline:ui`
-- [ ] `npm --prefix web run test:desktop:smoke`
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run test`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run a11y:smoke:managed`
+- [x] `npm --prefix web run test:browser:ux`
+- [x] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run test:desktop:smoke`
 
 For any frontend-to-command contract changes, also run the relevant parity checks from `web/package.json`.
+
+## Phase 7: Post-MVP UI Polish
+
+- [x] Make the TradingView Lightweight Charts frame more visually dominant without changing chart runtime contracts.
+- [x] Improve heatmap canvas sharpness with responsive HiDPI backing-store sizing.
+- [x] Move dense heatmap requirement copy into progressive details.
+- [x] Standardize help tooltip timing to appear faster while preserving delayed full help.
+- [x] Add browser UX coverage for Guided Mode's focused first-run shell and Advanced Mode handoff.
+- [x] Refresh UI baselines after the intentional layout changes.
+
+Exit criteria:
+
+- Guided Mode remains visually streamlined and Advanced Mode remains the complete workbench.
+- Heatmap and chart presentation changes are frontend-only and covered by unit, browser, desktop, and baseline checks.
 
 ## Acceptance Criteria
 
@@ -267,4 +284,3 @@ For any frontend-to-command contract changes, also run the relevant parity check
 | Users select a strategy that cannot be traded live | Filter guided full-path templates to live-supported strategies or mark validate-only clearly |
 | Mode switch corrupts workflow state | Store mode separately from run state and add persistence tests |
 | First-launch default disrupts existing users | Roll out mode switch first, then decide new-install default separately |
-

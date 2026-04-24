@@ -226,6 +226,8 @@ describe("settings store actions", () => {
     store.setSelectField("settingsEffectSelect", "mica");
     store.setSelectField("settingsHelpMode", "off");
     store.setSelectField("settingsDensityMode", "dense");
+    store.setSelectField("settingsUiMode", "guided");
+    store.setSelectField("settingsGuidedStep", "trade");
     store.setSelectField("settingsDesktopNotifications", "important");
     store.setCheckboxField("settingsWorkflowAdvanced", true);
     store.setCheckboxField("settingsControlsCollapsed", true);
@@ -240,6 +242,10 @@ describe("settings store actions", () => {
     expect(harness.dataset.helpMode).toBe("off");
     expect(store.densityMode).toBe("dense");
     expect(harness.dataset.density).toBe("dense");
+    expect(store.uiMode).toBe("guided");
+    expect(harness.dataset.uiMode).toBe("guided");
+    expect(store.guidedStep).toBe("trade");
+    expect(harness.dataset.guidedStep).toBe("trade");
     expect(store.desktopNotificationMode).toBe("important");
     expect(store.workflowAdvanced).toBe(true);
     expect(harness.dataset.workflowAdvanced).toBe("1");
@@ -262,6 +268,8 @@ describe("settings store actions", () => {
     store.setSelectField("settingsEffectSelect", "mica");
     store.setSelectField("settingsHelpMode", "concise");
     store.setSelectField("settingsDensityMode", "dense");
+    store.setSelectField("settingsUiMode", "guided");
+    store.setSelectField("settingsGuidedStep", "optimize");
     store.setSelectField("settingsDesktopNotifications", "important");
     store.setCheckboxField("settingsWorkflowAdvanced", true);
     store.setCheckboxField("settingsControlsCollapsed", true);
@@ -274,6 +282,8 @@ describe("settings store actions", () => {
     store.setSelectField("settingsEffectSelect", "mica");
     store.setSelectField("settingsHelpMode", "concise");
     store.setSelectField("settingsDensityMode", "dense");
+    store.setSelectField("settingsUiMode", "guided");
+    store.setSelectField("settingsGuidedStep", "optimize");
     store.setSelectField("settingsDesktopNotifications", "important");
     store.setCheckboxField("settingsWorkflowAdvanced", true);
     store.setCheckboxField("settingsControlsCollapsed", true);
@@ -285,6 +295,8 @@ describe("settings store actions", () => {
     expect(store.effect).toBe("mica");
     expect(store.helpMode).toBe("concise");
     expect(store.densityMode).toBe("dense");
+    expect(store.uiMode).toBe("guided");
+    expect(store.guidedStep).toBe("optimize");
     expect(store.desktopNotificationMode).toBe("important");
     expect(store.workflowAdvanced).toBe(true);
     expect(store.controlsCollapsed).toBe(true);

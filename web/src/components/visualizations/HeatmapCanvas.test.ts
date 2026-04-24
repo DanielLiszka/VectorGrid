@@ -47,6 +47,7 @@ function mockCanvasContext() {
   return vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
     () => ({
       clearRect: vi.fn(),
+      setTransform: vi.fn(),
       fillRect: vi.fn(),
       strokeRect: vi.fn(),
       beginPath: vi.fn(),

@@ -17,6 +17,7 @@ vi.mock('reka-ui', () => {
     HoverCardTrigger: passthrough('HoverCardTrigger'),
     TooltipContent: passthrough('TooltipContent'),
     TooltipPortal: passthrough('TooltipPortal'),
+    TooltipProvider: passthrough('TooltipProvider'),
     TooltipRoot: passthrough('TooltipRoot'),
     TooltipTrigger: passthrough('TooltipTrigger'),
   }
@@ -43,6 +44,7 @@ describe('ContextHelpTip', () => {
     })
 
     expect(wrapper.attributes('data-help-mode')).toBe('full')
+    expect(wrapper.findComponent({ name: 'HoverCardRoot' }).attributes('open-delay')).toBe('1600')
     expect(wrapper.text()).toContain('Scope')
     expect(wrapper.text()).toContain('Local search only.')
     expect(wrapper.text()).toContain('Use Ctrl+K for the global command palette.')
@@ -64,6 +66,7 @@ describe('ContextHelpTip', () => {
     })
 
     expect(wrapper.attributes('data-help-mode')).toBe('concise')
+    expect(wrapper.findComponent({ name: 'TooltipRoot' }).attributes('delay-duration')).toBe('750')
     expect(wrapper.text()).toContain('Local search only.')
     expect(wrapper.text()).not.toContain('Use Ctrl+K for the global command palette.')
 

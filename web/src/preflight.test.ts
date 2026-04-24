@@ -4,8 +4,10 @@ import {
   CONTROLS_COLLAPSED_KEY,
   CONTROLS_WIDTH_KEY,
   DENSITY_MODE_KEY,
+  GUIDED_STEP_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
+  UI_MODE_KEY,
   WINDOW_EFFECT_KEY,
   WORKFLOW_ADVANCED_KEY,
   WORKFLOW_TAB_KEY,
@@ -52,6 +54,8 @@ describe('preflight', () => {
       'workspace',
       'density',
       'helpMode',
+      'uiMode',
+      'guidedStep',
     ]) {
       delete document.documentElement.dataset[key as keyof DOMStringMap]
     }
@@ -70,6 +74,8 @@ describe('preflight', () => {
     localStorage.setItem(WORKSPACE_TAB_KEY, 'workflow')
     localStorage.setItem(DENSITY_MODE_KEY, 'dense')
     localStorage.setItem(HELP_MODE_KEY, 'concise')
+    localStorage.setItem(UI_MODE_KEY, 'guided')
+    localStorage.setItem(GUIDED_STEP_KEY, 'trade')
     localStorage.setItem(CONTROLS_WIDTH_KEY, '417')
     stubMatchMedia(true)
 
@@ -83,6 +89,8 @@ describe('preflight', () => {
     expect(document.documentElement.dataset.workspace).toBe('workflow')
     expect(document.documentElement.dataset.density).toBe('dense')
     expect(document.documentElement.dataset.helpMode).toBe('concise')
+    expect(document.documentElement.dataset.uiMode).toBe('guided')
+    expect(document.documentElement.dataset.guidedStep).toBe('trade')
     expect(document.documentElement.style.getPropertyValue('--controls-w')).toBe('417px')
   })
 

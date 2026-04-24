@@ -8,6 +8,7 @@ import OptimizeWorkspacePanel from './components/OptimizeWorkspacePanel.vue'
 import ActionStatusBar from './components/ActionStatusBar.vue'
 import StrategyWorkspacePanel from './components/StrategyWorkspacePanel.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
+import { useSettingsStore } from './stores/settingsStore'
 import { useWorkflowStore } from './stores/workflowStore'
 import {
   isAnalysisDockVisible,
@@ -28,6 +29,7 @@ const HistoryWorkspacePanel = defineAsyncComponent(() => import('./components/Hi
 const HistoryContextDock = defineAsyncComponent(() => import('./components/HistoryContextDock.vue'))
 const MetaWorkspacePanel = defineAsyncComponent(() => import('./components/MetaWorkspacePanel.vue'))
 const MlSignalShellPanel = defineAsyncComponent(() => import('./components/MlSignalShellPanel.vue'))
+const GuidedWorkspacePanel = defineAsyncComponent(() => import('./components/GuidedWorkspacePanel.vue'))
 const OptimizeContextDock = defineAsyncComponent(() => import('./components/OptimizeContextDock.vue'))
 const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
 const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/ParetoWorkspacePanel.vue'))
@@ -39,12 +41,15 @@ const ValidationWorkspacePanel = defineAsyncComponent(() => import('./components
 const WorkflowQuickSwitch = defineAsyncComponent(() => import('./components/WorkflowQuickSwitch.vue'))
 
 const workflowStore = useWorkflowStore()
+const settingsStore = useSettingsStore()
 workflowStore.syncRuntimeState()
 
 const { controlsTab, mode, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
+const { uiMode } = storeToRefs(settingsStore)
 
-const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
-const liveWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'live')
+const guidedModeActive = computed(() => uiMode.value === 'guided')
+const settingsWorkspaceActive = computed(() => !guidedModeActive.value && String(workspace.value || '').trim() === 'settings')
+const liveWorkspaceActive = computed(() => !guidedModeActive.value && String(workspace.value || '').trim() === 'live')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
@@ -89,19 +94,19 @@ function shouldShowWorkflowQuickSwitch(): boolean {
 }
 
 const showWorkflowQuickSwitch = shouldShowWorkflowQuickSwitch()
-const dataPanelActive = computed(() => activeControlsTab.value === 'data')
-const optimizePanelActive = computed(() => activeControlsTab.value === 'opt' && !mlSignalModeActive.value)
-const mlSignalPanelActive = computed(() => activeControlsTab.value === 'opt' && mlSignalModeActive.value)
-const strategyPanelActive = computed(() => activeControlsTab.value === 'strategy')
-const advancedPanelActive = computed(() => activeControlsTab.value === 'advanced')
-const overviewPanelActive = computed(() => activeResultsTab.value === 'overview' && !mlSignalModeActive.value)
-const topPanelActive = computed(() => activeResultsTab.value === 'top' && !mlSignalModeActive.value)
-const paretoPanelActive = computed(() => activeResultsTab.value === 'pareto' && !mlSignalModeActive.value)
-const validationPanelActive = computed(() => activeResultsTab.value === 'validate' && !mlSignalModeActive.value)
-const drillPanelActive = computed(() => activeResultsTab.value === 'drill' && !mlSignalModeActive.value)
-const heatmapPanelActive = computed(() => activeResultsTab.value === 'heatmap' && !mlSignalModeActive.value)
-const metaPanelActive = computed(() => activeResultsTab.value === 'meta' && (!mlSignalModeActive.value || currentWorkspace.value !== 'workflow'))
-const debugPanelActive = computed(() => activeResultsTab.value === 'debug')
+const dataPanelActive = computed(() => !guidedModeActive.value && activeControlsTab.value === 'data')
+const optimizePanelActive = computed(() => !guidedModeActive.value && activeControlsTab.value === 'opt' && !mlSignalModeActive.value)
+const mlSignalPanelActive = computed(() => !guidedModeActive.value && activeControlsTab.value === 'opt' && mlSignalModeActive.value)
+const strategyPanelActive = computed(() => !guidedModeActive.value && activeControlsTab.value === 'strategy')
+const advancedPanelActive = computed(() => !guidedModeActive.value && activeControlsTab.value === 'advanced')
+const overviewPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'overview' && !mlSignalModeActive.value)
+const topPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'top' && !mlSignalModeActive.value)
+const paretoPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'pareto' && !mlSignalModeActive.value)
+const validationPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'validate' && !mlSignalModeActive.value)
+const drillPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'drill' && !mlSignalModeActive.value)
+const heatmapPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'heatmap' && !mlSignalModeActive.value)
+const metaPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'meta' && (!mlSignalModeActive.value || currentWorkspace.value !== 'workflow'))
+const debugPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'debug')
 
 type LazyPanelKey = 'data' | 'live' | 'optimize' | 'overview'
 
@@ -131,6 +136,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
 <template>
   <DesktopTitlebar />
   <VueWorkspaceShell />
+  <GuidedWorkspacePanel v-if="guidedModeActive" />
   <CommandPaletteOverlay />
   <GlobalShortcutBridge />
   <AppRuntimeBanner />
@@ -150,7 +156,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <OptimizeContextDock v-if="optimizeDockActive" />
   <ParetoWorkspacePanel v-if="paretoPanelActive" />
   <OptimizeWorkspacePanel v-if="mountedPanels.optimize && !mlSignalModeActive" />
-  <ActionStatusBar />
+  <ActionStatusBar v-if="!guidedModeActive" />
   <SettingsWorkspacePanel v-if="settingsWorkspaceActive" />
   <StrategyWorkspacePanel v-if="strategyPanelActive" />
   <TopWorkspacePanel v-if="topPanelActive" />
