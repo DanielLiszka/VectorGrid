@@ -118,6 +118,7 @@ fn display_cross_mode_label(label: &str) -> &'static str {
     match label {
         "lightweight" => "Lightweight",
         "preserved_finalists" => "Preserved Finalists",
+        "full_stack" => "Full Stack",
         _ => "Unspecified",
     }
 }
@@ -126,6 +127,7 @@ fn display_cross_semantics_label(label: &str) -> &'static str {
     match label {
         "lightweight" => "lightweight rerun filter",
         "preserved_finalists" => "final post-cross shortlist",
+        "full_stack" => "full-stack finalist validation",
         _ => "post-cross candidate summary",
     }
 }
@@ -2684,6 +2686,15 @@ mod tests {
         assert_eq!(
             internal_sheet_link("Shortlist", "A1"),
             "internal:Shortlist!A1"
+        );
+    }
+
+    #[test]
+    fn full_stack_cross_mode_has_specific_dashboard_labels() {
+        assert_eq!(display_cross_mode_label("full_stack"), "Full Stack");
+        assert_eq!(
+            display_cross_semantics_label("full_stack"),
+            "full-stack finalist validation"
         );
     }
 }

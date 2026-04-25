@@ -253,6 +253,90 @@ fn validate_outcome_tensor_layout(
     Ok(())
 }
 
+fn validate_outcome_index_bounds(
+    candidate_slot_stride: usize,
+    summary_stride: usize,
+    tuple_candidate_offsets: &[u32],
+    tuple_summary_offsets: &[u32],
+    event_end: usize,
+    outcome_len: usize,
+) -> Result<usize, String> {
+    if candidate_slot_stride == 0 {
+        return Err("GPU options-expression candidate_slot_stride must be > 0".to_string());
+    }
+    if summary_stride == 0 {
+        return Err("GPU options-expression summary_stride must be > 0".to_string());
+    }
+    let rows_per_event = candidate_slot_stride
+        .checked_mul(summary_stride)
+        .ok_or_else(|| "GPU options-expression rows-per-event shape overflows usize".to_string())?;
+    if outcome_len % rows_per_event != 0 {
+        return Err(
+            "GPU options-expression outcome tensor length is not divisible by event stride"
+                .to_string(),
+        );
+    }
+    let event_capacity = outcome_len / rows_per_event;
+    if event_end > event_capacity {
+        return Err(format!(
+            "GPU options-expression event_end {event_end} exceeds outcome tensor event capacity {event_capacity}"
+        ));
+    }
+    if event_end == 0 {
+        return Ok(event_capacity);
+    }
+
+    let max_candidate_offset = tuple_candidate_offsets.iter().copied().max().unwrap_or(0) as usize;
+    if max_candidate_offset >= candidate_slot_stride {
+        return Err(format!(
+            "GPU options-expression tuple candidate offset {max_candidate_offset} exceeds candidate_slot_stride {candidate_slot_stride}"
+        ));
+    }
+    let max_summary_offset = tuple_summary_offsets.iter().copied().max().unwrap_or(0) as usize;
+    if max_summary_offset >= summary_stride {
+        return Err(format!(
+            "GPU options-expression tuple summary offset {max_summary_offset} exceeds summary_stride {summary_stride}"
+        ));
+    }
+
+    let last_event = event_end - 1;
+    let max_summary_index = last_event
+        .checked_mul(candidate_slot_stride)
+        .and_then(|base| base.checked_add(max_candidate_offset))
+        .and_then(|base| base.checked_mul(summary_stride))
+        .and_then(|base| base.checked_add(max_summary_offset))
+        .ok_or_else(|| "GPU options-expression summary index overflows usize".to_string())?;
+    if max_summary_index >= outcome_len {
+        return Err(format!(
+            "GPU options-expression max summary index {max_summary_index} exceeds outcome tensor length {outcome_len}"
+        ));
+    }
+    Ok(event_capacity)
+}
+
+#[cfg(debug_assertions)]
+fn validate_outcome_premium_contract(
+    outcome_valid: &[u8],
+    outcome_premium: &[f32],
+) -> Result<(), String> {
+    for (index, (&valid, &premium)) in outcome_valid.iter().zip(outcome_premium).enumerate() {
+        if valid != 0 && (!premium.is_finite() || premium <= 0.0) {
+            return Err(format!(
+                "GPU options-expression valid outcome row {index} has non-positive or non-finite premium"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn validate_outcome_premium_contract(
+    _outcome_valid: &[u8],
+    _outcome_premium: &[f32],
+) -> Result<(), String> {
+    Ok(())
+}
+
 fn validate_score_inputs(inputs: &GpuFlatScoreInputs) -> Result<(), String> {
     validate_shared_input_chunk_layout(
         inputs.candidate_slot_stride,
@@ -268,6 +352,79 @@ fn validate_score_inputs(inputs: &GpuFlatScoreInputs) -> Result<(), String> {
         &inputs.outcome_premium,
     )?;
     Ok(())
+}
+
+fn validate_combined_lane_shapes(
+    baseline_inputs: &GpuFlatScoreInputs,
+    conservative_inputs: &GpuFlatScoreInputs,
+    harsher_inputs: &GpuFlatScoreInputs,
+) -> Result<usize, String> {
+    let tuple_count = baseline_inputs.tuple_candidate_offsets.len();
+    if conservative_inputs.tuple_candidate_offsets.len() != tuple_count
+        || harsher_inputs.tuple_candidate_offsets.len() != tuple_count
+    {
+        return Err(
+            "GPU options-expression combined scorer requires identical tuple counts across lanes"
+                .to_string(),
+        );
+    }
+    if conservative_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
+        || harsher_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
+    {
+        return Err(
+            "GPU options-expression combined scorer requires identical outcome tensor lengths across lanes"
+                .to_string(),
+        );
+    }
+    Ok(tuple_count)
+}
+
+fn validate_combined_score_inputs(
+    baseline_inputs: &GpuFlatScoreInputs,
+    conservative_inputs: &GpuFlatScoreInputs,
+    harsher_inputs: &GpuFlatScoreInputs,
+) -> Result<usize, String> {
+    validate_score_inputs(baseline_inputs)?;
+    validate_score_inputs(conservative_inputs)?;
+    validate_score_inputs(harsher_inputs)?;
+    validate_combined_lane_shapes(baseline_inputs, conservative_inputs, harsher_inputs)
+}
+
+fn validate_combined_score_inputs_with_bounds(
+    search_end: usize,
+    holdout_end: usize,
+    baseline_inputs: &GpuFlatScoreInputs,
+    conservative_inputs: &GpuFlatScoreInputs,
+    harsher_inputs: &GpuFlatScoreInputs,
+) -> Result<usize, String> {
+    let tuple_count =
+        validate_combined_score_inputs(baseline_inputs, conservative_inputs, harsher_inputs)?;
+    let baseline_event_capacity = validate_outcome_index_bounds(
+        baseline_inputs.candidate_slot_stride,
+        baseline_inputs.summary_stride,
+        &baseline_inputs.tuple_candidate_offsets,
+        &baseline_inputs.tuple_summary_offsets,
+        holdout_end,
+        baseline_inputs.outcome_valid.len(),
+    )?;
+    validate_outcome_index_bounds(
+        conservative_inputs.candidate_slot_stride,
+        conservative_inputs.summary_stride,
+        &conservative_inputs.tuple_candidate_offsets,
+        &conservative_inputs.tuple_summary_offsets,
+        holdout_end,
+        conservative_inputs.outcome_valid.len(),
+    )?;
+    validate_outcome_index_bounds(
+        harsher_inputs.candidate_slot_stride,
+        harsher_inputs.summary_stride,
+        &harsher_inputs.tuple_candidate_offsets,
+        &harsher_inputs.tuple_summary_offsets,
+        holdout_end,
+        harsher_inputs.outcome_valid.len(),
+    )?;
+    validate_combined_search_holdout_bounds(search_end, holdout_end, baseline_event_capacity)?;
+    Ok(tuple_count)
 }
 
 fn validate_event_ranges(
@@ -552,6 +709,7 @@ impl UploadedOutcomeInputs {
         outcome_premium: &[f32],
     ) -> Result<Self, String> {
         validate_outcome_tensor_layout(outcome_valid, outcome_pnl, outcome_premium)?;
+        validate_outcome_premium_contract(outcome_valid, outcome_premium)?;
 
         Ok(Self {
             d_outcome_valid: DeviceBuffer::from_slice(outcome_valid).map_err(|e| e.to_string())?,
@@ -818,7 +976,20 @@ impl OptionsExpressionGpuRuntime {
         self.set_current()?;
         let mut cache_usage = OptionsGpuRuntimeCacheUsage::default();
         validate_score_inputs(inputs)?;
-        validate_event_ranges(event_ranges, inputs.outcome_valid.len())?;
+        let max_event_end = event_ranges
+            .iter()
+            .map(|(_start, end)| *end)
+            .max()
+            .unwrap_or(0);
+        let event_capacity = validate_outcome_index_bounds(
+            inputs.candidate_slot_stride,
+            inputs.summary_stride,
+            &inputs.tuple_candidate_offsets,
+            &inputs.tuple_summary_offsets,
+            max_event_end,
+            inputs.outcome_valid.len(),
+        )?;
+        validate_event_ranges(event_ranges, event_capacity)?;
         let tuple_count = inputs.tuple_candidate_offsets.len();
         let free_memory_bytes = mem_get_info().ok().map(|(free, _total)| free as u64);
         let chunk_plan = OptionsGpuChunkPlan::for_inputs(
@@ -930,27 +1101,12 @@ impl OptionsExpressionGpuRuntime {
         harsher_inputs: &GpuFlatScoreInputs,
     ) -> Result<OptionsGpuCombinedTensorRun, String> {
         self.set_current()?;
-        validate_score_inputs(baseline_inputs)?;
-        validate_score_inputs(conservative_inputs)?;
-        validate_score_inputs(harsher_inputs)?;
-        let tuple_count = baseline_inputs.tuple_candidate_offsets.len();
-        if conservative_inputs.tuple_candidate_offsets.len() != tuple_count
-            || harsher_inputs.tuple_candidate_offsets.len() != tuple_count
-        {
-            return Err("GPU options-expression combined scorer requires identical tuple counts across lanes".to_string());
-        }
-        if conservative_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
-            || harsher_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
-        {
-            return Err(
-                "GPU options-expression combined scorer requires identical outcome tensor lengths across lanes"
-                    .to_string(),
-            );
-        }
-        validate_combined_search_holdout_bounds(
+        let tuple_count = validate_combined_score_inputs_with_bounds(
             search_end,
             holdout_end,
-            baseline_inputs.outcome_valid.len(),
+            baseline_inputs,
+            conservative_inputs,
+            harsher_inputs,
         )?;
         let search_end_u32 =
             u32::try_from(search_end).map_err(|_| "search_end exceeds u32::MAX".to_string())?;
@@ -1168,23 +1324,8 @@ impl OptionsExpressionGpuRuntime {
         harsher_inputs: &GpuFlatScoreInputs,
     ) -> Result<OptionsGpuRuntimeCacheUsage, String> {
         self.set_current()?;
-        validate_score_inputs(baseline_inputs)?;
-        validate_score_inputs(conservative_inputs)?;
-        validate_score_inputs(harsher_inputs)?;
-        let tuple_count = baseline_inputs.tuple_candidate_offsets.len();
-        if conservative_inputs.tuple_candidate_offsets.len() != tuple_count
-            || harsher_inputs.tuple_candidate_offsets.len() != tuple_count
-        {
-            return Err("GPU options-expression combined scorer requires identical tuple counts across lanes".to_string());
-        }
-        if conservative_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
-            || harsher_inputs.outcome_valid.len() != baseline_inputs.outcome_valid.len()
-        {
-            return Err(
-                "GPU options-expression combined scorer requires identical outcome tensor lengths across lanes"
-                    .to_string(),
-            );
-        }
+        let tuple_count =
+            validate_combined_score_inputs(baseline_inputs, conservative_inputs, harsher_inputs)?;
         let free_memory_bytes = mem_get_info().ok().map(|(free, _total)| free as u64);
         let chunk_plan = OptionsGpuChunkPlan::for_combined_inputs(
             tuple_count,
@@ -1515,6 +1656,69 @@ mod tests {
     }
 
     #[test]
+    fn score_input_validation_rejects_tuple_offset_length_mismatch() {
+        let mut inputs = sample_inputs(8);
+        inputs.tuple_summary_offsets.pop();
+
+        let err = validate_score_inputs(&inputs).expect_err("tuple mismatch should be rejected");
+        assert!(err.contains("tuple offset lengths do not match"));
+    }
+
+    #[test]
+    fn score_input_validation_rejects_stride_values_outside_kernel_abi() {
+        let mut inputs = sample_inputs(8);
+        inputs.candidate_slot_stride = (u32::MAX as usize) + 1;
+
+        let err =
+            validate_score_inputs(&inputs).expect_err("candidate stride overflow should fail");
+        assert!(err.contains("candidate_slot_stride exceeds u32::MAX"));
+
+        inputs.candidate_slot_stride = 1;
+        inputs.summary_stride = (u32::MAX as usize) + 1;
+        let err = validate_score_inputs(&inputs).expect_err("summary stride overflow should fail");
+        assert!(err.contains("summary_stride exceeds u32::MAX"));
+    }
+
+    #[test]
+    fn outcome_index_validation_rejects_bad_event_shape_and_offsets() {
+        let err = validate_outcome_index_bounds(2, 2, &[0], &[0], 3, 8)
+            .expect_err("event end past tensor capacity should fail");
+        assert!(err.contains("event_end 3 exceeds outcome tensor event capacity 2"));
+
+        let err = validate_outcome_index_bounds(2, 2, &[2], &[0], 1, 8)
+            .expect_err("candidate offset outside stride should fail");
+        assert!(err.contains("tuple candidate offset 2 exceeds candidate_slot_stride 2"));
+
+        let err = validate_outcome_index_bounds(2, 2, &[0], &[2], 1, 8)
+            .expect_err("summary offset outside stride should fail");
+        assert!(err.contains("tuple summary offset 2 exceeds summary_stride 2"));
+
+        let err = validate_outcome_index_bounds(2, 2, &[0], &[0], 1, 9)
+            .expect_err("non-divisible tensor shape should fail");
+        assert!(err.contains("not divisible by event stride"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_score_input_validation_rejects_invalid_premium_for_valid_rows() {
+        for bad_premium in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut inputs = sample_inputs(4);
+            inputs.outcome_premium[1] = bad_premium;
+
+            let err =
+                validate_outcome_premium_contract(&inputs.outcome_valid, &inputs.outcome_premium)
+                    .expect_err("valid row bad premium should fail");
+            assert!(err.contains("non-positive or non-finite premium"));
+        }
+
+        let mut inputs = sample_inputs(4);
+        inputs.outcome_valid[1] = 0;
+        inputs.outcome_premium[1] = 0.0;
+        validate_outcome_premium_contract(&inputs.outcome_valid, &inputs.outcome_premium)
+            .expect("invalid rows may carry zero premium");
+    }
+
+    #[test]
     fn event_range_validation_rejects_invalid_ranges() {
         let err = validate_event_ranges(&[(3, 3)], 8).expect_err("empty range should fail");
         assert!(err.contains("must be < end"));
@@ -1533,9 +1737,33 @@ mod tests {
             validate_combined_search_holdout_bounds(4, 4, 8).expect_err("equal bounds should fail");
         assert!(err.contains("search_end (4) < holdout_end (4)"));
 
+        let err = validate_combined_search_holdout_bounds(5, 4, 8)
+            .expect_err("inverted bounds should fail");
+        assert!(err.contains("search_end (5) < holdout_end (4)"));
+
         let err = validate_combined_search_holdout_bounds(3, 9, 8)
             .expect_err("holdout end past tensor length should fail");
         assert!(err.contains("exceeds outcome tensor length 8"));
+    }
+
+    #[test]
+    fn combined_score_input_validation_rejects_lane_shape_mismatches() {
+        let baseline = sample_inputs(8);
+        let mut conservative = sample_inputs(7);
+        let harsher = sample_inputs(8);
+
+        let err = validate_combined_score_inputs(&baseline, &conservative, &harsher)
+            .expect_err("tuple count mismatch should fail");
+        assert!(err.contains("identical tuple counts"));
+
+        conservative = sample_inputs(8);
+        conservative.outcome_valid.pop();
+        conservative.outcome_pnl.pop();
+        conservative.outcome_premium.pop();
+
+        let err = validate_combined_score_inputs(&baseline, &conservative, &harsher)
+            .expect_err("outcome tensor mismatch should fail");
+        assert!(err.contains("identical outcome tensor lengths"));
     }
 
     #[test]

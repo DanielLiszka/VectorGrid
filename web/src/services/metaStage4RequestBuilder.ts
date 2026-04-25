@@ -28,6 +28,7 @@ export interface MetaStage4BuildInputs {
   autoTrainModel?: unknown;
   requireHealthyModel?: unknown;
   fallbackToMetaIfEmpty?: unknown;
+  trainingHistoryPolicy?: unknown;
 }
 
 export interface MetaStage5BuildInputs extends MetaStage4BuildInputs {}
@@ -40,6 +41,13 @@ export function buildMetaStage5Request(
   const timeframeRaw = normalizeText(inputs.timeframe);
   const sourceMetaPathRaw = normalizeText(inputs.sourceMetaPath);
   const autoTrainModel = normalizeBoolean(inputs.autoTrainModel);
+  const trainingHistoryRaw = normalizeText(
+    inputs.trainingHistoryPolicy,
+  ).toLowerCase();
+  const trainingHistoryPolicy =
+    trainingHistoryRaw === "chronological_before_source"
+      ? "chronological_before_source"
+      : "source_excluded";
 
   return {
     strategy_kind: strategyKind,
@@ -57,6 +65,7 @@ export function buildMetaStage5Request(
     auto_retrain_stale: autoTrainModel,
     require_healthy_model: normalizeBoolean(inputs.requireHealthyModel),
     fallback_to_meta_if_empty: normalizeBoolean(inputs.fallbackToMetaIfEmpty),
+    training_history_policy: trainingHistoryPolicy,
   };
 }
 

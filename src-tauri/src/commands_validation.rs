@@ -386,6 +386,11 @@ pub async fn run_composite_validation(
         let ma_source = base_req.ma_source.clone();
         let fast_ma_params = base_req.fast_ma_params.clone();
         let slow_ma_params = base_req.slow_ma_params.clone();
+        let walk_forward = base_req.walk_forward.clone();
+        let reopt_walk_forward = base_req.reopt_walk_forward.clone();
+        let spa = base_req.spa.clone();
+        let perturb = base_req.perturb.clone();
+        let trade_bootstrap = base_req.trade_bootstrap.clone();
         let seed = base_req.seed;
         let cscv_pbo = base_req.cscv_pbo.clone();
         let validation_engine = base_req.validation_engine;
@@ -404,7 +409,7 @@ pub async fn run_composite_validation(
         )?;
 
         if let Some(cross_cfg) = cross_cfg {
-            apply_cross_ticker_validation(
+            apply_cross_ticker_validation_with_stack(
                 &mut res,
                 cross_cfg,
                 &candles,
@@ -412,6 +417,11 @@ pub async fn run_composite_validation(
                 &ma_source,
                 fast_ma_params,
                 slow_ma_params,
+                walk_forward,
+                reopt_walk_forward,
+                spa,
+                perturb,
+                trade_bootstrap,
                 seed,
                 &app_cache_dir,
                 cancel2.as_ref(),
@@ -433,6 +443,7 @@ pub async fn run_composite_validation(
     .map_err(|e| e.to_string())?
 }
 
+#[allow(dead_code)]
 pub(crate) fn apply_cross_ticker_validation(
     res: &mut CompositeValidationResult,
     cross_cfg: ta_app_core::CrossTickerConfig,
@@ -454,15 +465,71 @@ pub(crate) fn apply_cross_ticker_validation(
     min_cscv_oos_metric: Option<f64>,
     max_pbo: Option<f64>,
 ) -> Result<(), String> {
+    apply_cross_ticker_validation_with_stack(
+        res,
+        cross_cfg,
+        base_candles,
+        backend,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        None,
+        None,
+        None,
+        None,
+        None,
+        seed,
+        app_cache_dir,
+        cancel,
+        app_for_progress,
+        validation_engine,
+        iterative_cfg,
+        cscv_pbo,
+        min_psr,
+        min_dsr,
+        min_cscv_oos_rank_frac,
+        min_cscv_oos_metric,
+        max_pbo,
+    )
+}
+
+fn apply_cross_ticker_validation_with_stack(
+    res: &mut CompositeValidationResult,
+    cross_cfg: ta_app_core::CrossTickerConfig,
+    base_candles: &vector_ta::utilities::data_loader::Candles,
+    backend: ta_app_core::Backend,
+    ma_source: &str,
+    fast_ma_params: Option<HashMap<String, f64>>,
+    slow_ma_params: Option<HashMap<String, f64>>,
+    walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    reopt_walk_forward: Option<ta_app_core::ReoptWalkForwardConfigOptional>,
+    spa: Option<ta_app_core::SpaConfigOptional>,
+    perturb: Option<ta_app_core::PerturbConfig>,
+    trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    seed: u64,
+    app_cache_dir: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    app_for_progress: Option<tauri::AppHandle>,
+    validation_engine: ta_app_core::ValidationEngine,
+    iterative_cfg: ta_app_core::IterativeSimConfig,
+    cscv_pbo: Option<ta_app_core::CscvPboConfig>,
+    min_psr: Option<f64>,
+    min_dsr: Option<f64>,
+    min_cscv_oos_rank_frac: Option<f64>,
+    min_cscv_oos_metric: Option<f64>,
+    max_pbo: Option<f64>,
+) -> Result<(), String> {
     let preserved_cross_mode = matches!(
         cross_cfg.mode,
         ta_app_core::CrossTickerMode::PreservedFinalists
     );
+    let full_stack_cross_mode = matches!(cross_cfg.mode, ta_app_core::CrossTickerMode::FullStack);
+    let finalists_cross_mode = preserved_cross_mode || full_stack_cross_mode;
     // Preserve the original validation contract: cross-ticker filtering may
     // change the surviving set, but `candidates_tested` should continue to
     // describe the base validation run rather than the post-filter remainder.
     let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
-    if preserved_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
+    if finalists_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
     }
 
@@ -483,27 +550,52 @@ pub(crate) fn apply_cross_ticker_validation(
                 ma_source,
                 fast_ma_params.clone(),
                 slow_ma_params.clone(),
+                if full_stack_cross_mode {
+                    walk_forward.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    reopt_walk_forward.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    spa.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    perturb.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    trade_bootstrap.clone()
+                } else {
+                    None
+                },
                 seed,
                 validation_engine,
                 iterative_cfg.clone(),
-                if preserved_cross_mode {
+                if finalists_cross_mode {
                     cscv_pbo.clone()
                 } else {
                     None
                 },
-                if preserved_cross_mode { min_psr } else { None },
-                if preserved_cross_mode { min_dsr } else { None },
-                if preserved_cross_mode {
+                if finalists_cross_mode { min_psr } else { None },
+                if finalists_cross_mode { min_dsr } else { None },
+                if finalists_cross_mode {
                     min_cscv_oos_rank_frac
                 } else {
                     None
                 },
-                if preserved_cross_mode {
+                if finalists_cross_mode {
                     min_cscv_oos_metric
                 } else {
                     None
                 },
-                if preserved_cross_mode { max_pbo } else { None },
+                if finalists_cross_mode { max_pbo } else { None },
             )
         },
         |req2, candles2, cancel2, progress2| {
@@ -557,6 +649,11 @@ fn build_composite_cross_ticker_request(
     ma_source: &str,
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
+    walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    reopt_walk_forward: Option<ta_app_core::ReoptWalkForwardConfigOptional>,
+    spa: Option<ta_app_core::SpaConfigOptional>,
+    perturb: Option<ta_app_core::PerturbConfig>,
+    trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
     seed: u64,
     validation_engine: ta_app_core::ValidationEngine,
     iterative_cfg: ta_app_core::IterativeSimConfig,
@@ -574,11 +671,11 @@ fn build_composite_cross_ticker_request(
         fast_ma_params,
         slow_ma_params,
         candidates,
-        walk_forward: None,
-        reopt_walk_forward: None,
-        spa: None,
-        perturb: None,
-        trade_bootstrap: None,
+        walk_forward,
+        reopt_walk_forward,
+        spa,
+        perturb,
+        trade_bootstrap,
         cross_ticker: None,
         cscv_pbo,
         seed,
@@ -699,11 +796,11 @@ fn apply_cross_ticker_validation_double_ma(
     ma_source: &str,
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
-    _walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
-    _reopt_walk_forward: Option<ta_app_core::ReoptWalkForwardConfigOptional>,
-    _spa: Option<ta_app_core::SpaConfigOptional>,
-    _perturb: Option<ta_app_core::PerturbConfig>,
-    _trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    reopt_walk_forward: Option<ta_app_core::ReoptWalkForwardConfigOptional>,
+    spa: Option<ta_app_core::SpaConfigOptional>,
+    perturb: Option<ta_app_core::PerturbConfig>,
+    trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
     cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     app_cache_dir: &Path,
@@ -721,11 +818,13 @@ fn apply_cross_ticker_validation_double_ma(
         cross_cfg.mode,
         ta_app_core::CrossTickerMode::PreservedFinalists
     );
+    let full_stack_cross_mode = matches!(cross_cfg.mode, ta_app_core::CrossTickerMode::FullStack);
+    let finalists_cross_mode = preserved_cross_mode || full_stack_cross_mode;
     // Preserve the original validation contract: cross-ticker filtering may
     // change the surviving set, but `candidates_tested` should continue to
     // describe the base validation run rather than the post-filter remainder.
     let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
-    if preserved_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
+    if finalists_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
     }
 
@@ -750,12 +849,32 @@ fn apply_cross_ticker_validation_double_ma(
                 ma_source,
                 fast_ma_params.clone(),
                 slow_ma_params.clone(),
-                None,
-                None,
-                None,
-                None,
-                None,
-                if preserved_cross_mode {
+                if full_stack_cross_mode {
+                    walk_forward.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    reopt_walk_forward.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    spa.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    perturb.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    trade_bootstrap.clone()
+                } else {
+                    None
+                },
+                if finalists_cross_mode {
                     cscv_pbo.clone()
                 } else {
                     None
@@ -763,19 +882,19 @@ fn apply_cross_ticker_validation_double_ma(
                 seed,
                 validation_engine,
                 iterative_cfg.clone(),
-                if preserved_cross_mode { min_psr } else { None },
-                if preserved_cross_mode { min_dsr } else { None },
-                if preserved_cross_mode {
+                if finalists_cross_mode { min_psr } else { None },
+                if finalists_cross_mode { min_dsr } else { None },
+                if finalists_cross_mode {
                     min_cscv_oos_rank_frac
                 } else {
                     None
                 },
-                if preserved_cross_mode {
+                if finalists_cross_mode {
                     min_cscv_oos_metric
                 } else {
                     None
                 },
-                if preserved_cross_mode { max_pbo } else { None },
+                if finalists_cross_mode { max_pbo } else { None },
             )
         },
         |req2, candles2, cancel2, progress2| {
@@ -871,11 +990,11 @@ fn build_double_ma_cross_ticker_request(
     ma_source: &str,
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
-    _walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
-    _reopt_walk_forward: Option<ta_app_core::ReoptWalkForwardConfigOptional>,
-    _spa: Option<ta_app_core::SpaConfigOptional>,
-    _perturb: Option<ta_app_core::PerturbConfig>,
-    _trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    walk_forward: Option<ta_app_core::WalkForwardConfigOptional>,
+    reopt_walk_forward: Option<ta_app_core::ReoptWalkForwardConfigOptional>,
+    spa: Option<ta_app_core::SpaConfigOptional>,
+    perturb: Option<ta_app_core::PerturbConfig>,
+    trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
     cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     validation_engine: ta_app_core::ValidationEngine,
@@ -893,11 +1012,11 @@ fn build_double_ma_cross_ticker_request(
         fast_ma_params,
         slow_ma_params,
         candidates,
-        walk_forward: None,
-        reopt_walk_forward: None,
-        spa: None,
-        perturb: None,
-        trade_bootstrap: None,
+        walk_forward,
+        reopt_walk_forward,
+        spa,
+        perturb,
+        trade_bootstrap,
         cross_ticker: None,
         cscv_pbo,
         seed,
@@ -2548,6 +2667,11 @@ mod tests {
             "close",
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
             11,
             ta_app_core::ValidationEngine::Vectorized,
             ta_app_core::IterativeSimConfig::default(),
@@ -2600,6 +2724,11 @@ mod tests {
             }],
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             13,
@@ -2657,6 +2786,11 @@ mod tests {
             "close",
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
             19,
             ta_app_core::ValidationEngine::Vectorized,
             ta_app_core::IterativeSimConfig::default(),
@@ -2689,7 +2823,7 @@ mod tests {
     }
 
     #[test]
-    fn double_ma_cross_ticker_request_preserves_verdict_relevant_stack() {
+    fn double_ma_cross_ticker_request_preserves_requested_full_stack_modules() {
         let req = build_double_ma_cross_ticker_request(
             2,
             5,
@@ -2759,11 +2893,11 @@ mod tests {
             req.backend,
             ta_app_core::Backend::GpuKernel { device_id: 0 }
         ));
-        assert!(req.walk_forward.is_none());
-        assert!(req.reopt_walk_forward.is_none());
-        assert!(req.spa.is_none());
-        assert!(req.perturb.is_none());
-        assert!(req.trade_bootstrap.is_none());
+        assert!(req.walk_forward.is_some());
+        assert!(req.reopt_walk_forward.is_some());
+        assert!(req.spa.is_some());
+        assert!(req.perturb.is_some());
+        assert!(req.trade_bootstrap.is_some());
         assert!(req.cscv_pbo.is_some());
         assert_eq!(req.min_psr, Some(0.6));
         assert_eq!(req.min_dsr, Some(0.4));

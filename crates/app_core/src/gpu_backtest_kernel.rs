@@ -185,6 +185,9 @@ const METRIC_IDX_LOSING_TRADES: usize = 19;
 const METRIC_IDX_GROSS_PROFIT: usize = 20;
 const METRIC_IDX_GROSS_LOSS: usize = 21;
 const TOPK_BLOCK_ITEMS: usize = 512;
+// CUDA top-k selectors instantiate CUB block sorts with 256 threads.
+// Host launches for those selectors must keep `block_x == TOPK_BLOCK_THREADS`.
+const TOPK_BLOCK_THREADS: u32 = 256;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DeviceLaunchCaps {
     pub(crate) sm_count: u32,
@@ -2573,6 +2576,7 @@ fn validate_double_ma_dynamic_strategy_handle(handle: &StrategyHandle) -> Result
                 .to_string(),
         );
     }
+    crate::strategy_dynamic::validate_canonical_double_ma_crossover_plan_shape_v1(&handle.plan)?;
     let program = handle
         .gpu_program
         .as_ref()
@@ -6011,6 +6015,19 @@ fn should_use_compact_valid_pair_output(
     _metrics_count: usize,
 ) -> bool {
     true
+}
+
+fn normalize_topk_select_for_device(
+    top_k: usize,
+    device_include_all: bool,
+) -> Result<usize, String> {
+    let topk_select = top_k.max(1);
+    if !device_include_all && topk_select > TOPK_BLOCK_THREADS as usize {
+        return Err(
+            "GPU kernel backend top_k too large (max 256 when include_all=false)".to_string(),
+        );
+    }
+    Ok(topk_select)
 }
 
 #[inline]
@@ -12680,12 +12697,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         cfg.include_trade_metrics,
         cfg.metric_contract,
     );
-    let topk_select: usize = if top_k == 0 { 1 } else { top_k };
-    if !device_include_all && topk_select > 256 {
-        return Err(
-            "GPU kernel backend top_k too large (max 256 when include_all=false)".to_string(),
-        );
-    }
+    let topk_select = normalize_topk_select_for_device(top_k, device_include_all)?;
     let objective_i = objective_kind_kernel_index(objective);
     let bt_stream = &rt.stream;
     let bt_module = &rt.module;
@@ -16131,8 +16143,8 @@ mod tests {
         kernel_shortlist_slice_diagnostic_row_limit, kernel_shortlist_slice_mode,
         kernel_shortlist_union_mode, kernel_should_use_lockstep_time,
         kernel_should_use_m7_specialize, kernel_strategy_params,
-        max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
-        rerank_shortlist_by_union_mode, score_first_topk_blockers,
+        max_drawdown_constraint_to_search_space, normalize_topk_select_for_device,
+        rerank_shortlist_by_confidence, rerank_shortlist_by_union_mode, score_first_topk_blockers,
         search_metrics_count_for_optimization, search_metrics_count_for_optimization_with_contract,
         search_rows_use_log_space, shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
@@ -16140,7 +16152,7 @@ mod tests {
         validate_uploaded_double_ma_dynamic_program_batch_geometry, EffectiveSampleScoreContext,
         FixedContractDispatchKind, FixedContractKernelFlavor, ShortlistConfidenceMode,
         ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, STRAT_SIGNED_EXPOSURE,
-        TRADE_METRICS_COUNT,
+        TOPK_BLOCK_THREADS, TRADE_METRICS_COUNT,
     };
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
@@ -16151,11 +16163,26 @@ mod tests {
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
         eval_dynamic_plan_metrics_cpu,
     };
+    use crate::strategy_gpu_program::{
+        compile_gpu_predicate_program, compile_gpu_predicate_program_abi,
+        CompiledGpuPredicateProgramAbi, GpuConditionAbi, GpuConditionGroupAbi, GpuIndicatorSlotAbi,
+        GpuSignalBindingsAbi, GpuValueOperandAbi,
+    };
     use crate::strategy_gpu_runtime::{
         reset_gpu_strategy_executable_cache, StrategyCapabilityReport, StrategyHandle,
     };
-    use crate::strategy_plan::StrategyPlanBackend;
+    use crate::strategy_ir::{
+        ConditionGroupMode, ConditionOp, IndicatorKind, StrategyProfileKind,
+        STRATEGY_IR_SCHEMA_VERSION,
+    };
+    use crate::strategy_plan::{
+        CompiledConditionGroup, CompiledConditionOp, CompiledSignalBindings, CompiledStrategyPlan,
+        CompiledValueRef, IndicatorComputePlan, IndicatorRouteKind, StrategyPlanBackend,
+        STRATEGY_PLAN_SCHEMA_VERSION,
+    };
     use crate::validation_shared::SpaBenchmarkKind;
+    use cust::memory::{CopyDestination, DeviceBuffer};
+    use std::ffi::c_void;
     use ta_optimizer::ObjectiveKind;
     use ta_strategies::double_ma::Metrics;
     use ta_strategies::double_ma::{DoubleMaParams, StrategyConfig};
@@ -16220,6 +16247,842 @@ mod tests {
 
     fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() <= tol
+    }
+
+    fn metric_row17_for_selector(
+        pnl: f32,
+        trades: f32,
+        max_dd: f32,
+        mean: f32,
+        std: f32,
+        downside_deviation: f32,
+        omega: f32,
+    ) -> [f32; METRICS_COUNT] {
+        let mut row = [0.0f32; METRICS_COUNT];
+        row[0] = pnl;
+        row[1] = trades;
+        row[2] = max_dd;
+        row[3] = mean;
+        row[4] = std;
+        row[5] = 0.50;
+        row[6] = 0.10;
+        row[7] = downside_deviation;
+        row[8] = 0.02;
+        row[9] = omega;
+        row[10] = 0.20;
+        row[11] = 0.05;
+        row[12] = 0.03;
+        row[13] = -0.01;
+        row[14] = 1.10;
+        row[15] = 0.25;
+        row[16] = 4.0;
+        row
+    }
+
+    fn poison_objective_field(row: &mut [f32; METRICS_COUNT], objective: i32) {
+        match objective {
+            0 => row[0] = f32::NAN,
+            1 => row[3] = f32::NAN,
+            2 => row[2] = f32::NAN,
+            3 => row[0] = f32::NAN,
+            4 => row[4] = f32::NAN,
+            5 => row[7] = f32::NAN,
+            6 => row[9] = f32::NAN,
+            _ => row[0] = f32::NAN,
+        }
+    }
+
+    fn flatten_metric_rows(rows: &[[f32; METRICS_COUNT]]) -> Vec<f32> {
+        rows.iter().flat_map(|row| row.iter().copied()).collect()
+    }
+
+    fn assert_only_valid_row_selected(label: &str, selected: &[i32]) {
+        assert_eq!(
+            selected.first().copied(),
+            Some(0),
+            "{label}: valid row should rank first, selected={selected:?}"
+        );
+        assert!(
+            selected.iter().skip(1).all(|&idx| idx == -1),
+            "{label}: unused or invalid slots must stay -1, selected={selected:?}"
+        );
+    }
+
+    fn launch_metric_row_selector_v2_for_test(
+        rt: &super::CudaKernelRuntime,
+        metric_rows: &[f32],
+        row_count: usize,
+        objective: i32,
+        top_k: usize,
+        constraints: &DoubleMaConstraints,
+    ) -> Result<Vec<i32>, String> {
+        let selector = rt
+            .module
+            .get_function("select_topk_metric_rows_f32_v2")
+            .map_err(|e| e.to_string())?;
+        let d_rows = DeviceBuffer::from_slice(metric_rows).map_err(|e| e.to_string())?;
+        let out_init = vec![123_i32; top_k];
+        let d_out = DeviceBuffer::from_slice(&out_init).map_err(|e| e.to_string())?;
+        let constraint_args = build_device_constraint_args(Some(constraints), METRICS_COUNT);
+
+        unsafe {
+            let mut rows_ptr = d_rows.as_device_ptr().as_raw();
+            let mut rows_i = row_count as i32;
+            let mut m_i = METRICS_COUNT as i32;
+            let mut stride_i = METRICS_COUNT as i32;
+            let mut objective_i = objective;
+            let mut hurdle_tau = 0.0f32;
+            let mut topk_i = top_k as i32;
+            let mut use_min_trades = constraint_args.use_min_trades;
+            let mut min_trades = constraint_args.min_trades;
+            let mut use_max_dd = constraint_args.use_max_dd;
+            let mut max_dd = constraint_args.max_dd;
+            let mut use_min_sharpe = constraint_args.use_min_sharpe;
+            let mut min_sharpe = constraint_args.min_sharpe;
+            let mut use_min_sortino = constraint_args.use_min_sortino;
+            let mut min_sortino = constraint_args.min_sortino;
+            let mut use_min_calmar = constraint_args.use_min_calmar;
+            let mut min_calmar = constraint_args.min_calmar;
+            let mut use_max_volatility = constraint_args.use_max_volatility;
+            let mut max_volatility = constraint_args.max_volatility;
+            let mut use_min_exposure = constraint_args.use_min_exposure;
+            let mut min_exposure = constraint_args.min_exposure;
+            let mut use_max_exposure = constraint_args.use_max_exposure;
+            let mut max_exposure = constraint_args.max_exposure;
+            let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+            let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+            let mut use_min_omega = constraint_args.use_min_omega;
+            let mut min_omega = constraint_args.min_omega;
+            let mut use_max_ulcer = constraint_args.use_max_ulcer;
+            let mut max_ulcer = constraint_args.max_ulcer;
+            let mut use_max_downside_deviation = constraint_args.use_max_downside_deviation;
+            let mut max_downside_deviation = constraint_args.max_downside_deviation;
+            let mut out_ptr = d_out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut rows_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut stride_i as *mut _ as *mut c_void,
+                &mut objective_i as *mut _ as *mut c_void,
+                &mut hurdle_tau as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut use_min_trades as *mut _ as *mut c_void,
+                &mut min_trades as *mut _ as *mut c_void,
+                &mut use_max_dd as *mut _ as *mut c_void,
+                &mut max_dd as *mut _ as *mut c_void,
+                &mut use_min_sharpe as *mut _ as *mut c_void,
+                &mut min_sharpe as *mut _ as *mut c_void,
+                &mut use_min_sortino as *mut _ as *mut c_void,
+                &mut min_sortino as *mut _ as *mut c_void,
+                &mut use_min_calmar as *mut _ as *mut c_void,
+                &mut min_calmar as *mut _ as *mut c_void,
+                &mut use_max_volatility as *mut _ as *mut c_void,
+                &mut max_volatility as *mut _ as *mut c_void,
+                &mut use_min_exposure as *mut _ as *mut c_void,
+                &mut min_exposure as *mut _ as *mut c_void,
+                &mut use_max_exposure as *mut _ as *mut c_void,
+                &mut max_exposure as *mut _ as *mut c_void,
+                &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut use_min_omega as *mut _ as *mut c_void,
+                &mut min_omega as *mut _ as *mut c_void,
+                &mut use_max_ulcer as *mut _ as *mut c_void,
+                &mut max_ulcer as *mut _ as *mut c_void,
+                &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                &mut max_downside_deviation as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(&selector, (1, 1, 1), (TOPK_BLOCK_THREADS, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out = out_init;
+        d_out.copy_to(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+
+    fn launch_metric_row_candidate_selector_v2_for_test(
+        rt: &super::CudaKernelRuntime,
+        metric_rows: &[f32],
+        row_count: usize,
+        candidates: &[i32],
+        objective: i32,
+        top_k: usize,
+        constraints: &DoubleMaConstraints,
+    ) -> Result<Vec<i32>, String> {
+        let selector = rt
+            .module
+            .get_function("select_topk_metric_rows_from_candidates_f32_v2")
+            .map_err(|e| e.to_string())?;
+        let d_rows = DeviceBuffer::from_slice(metric_rows).map_err(|e| e.to_string())?;
+        let d_candidates = DeviceBuffer::from_slice(candidates).map_err(|e| e.to_string())?;
+        let out_init = vec![123_i32; top_k];
+        let d_out = DeviceBuffer::from_slice(&out_init).map_err(|e| e.to_string())?;
+        let constraint_args = build_device_constraint_args(Some(constraints), METRICS_COUNT);
+
+        unsafe {
+            let mut rows_ptr = d_rows.as_device_ptr().as_raw();
+            let mut rows_i = row_count as i32;
+            let mut m_i = METRICS_COUNT as i32;
+            let mut stride_i = METRICS_COUNT as i32;
+            let mut objective_i = objective;
+            let mut hurdle_tau = 0.0f32;
+            let mut topk_i = top_k as i32;
+            let mut candidates_ptr = d_candidates.as_device_ptr().as_raw();
+            let mut candidates_len_i = candidates.len() as i32;
+            let mut use_min_trades = constraint_args.use_min_trades;
+            let mut min_trades = constraint_args.min_trades;
+            let mut use_max_dd = constraint_args.use_max_dd;
+            let mut max_dd = constraint_args.max_dd;
+            let mut use_min_sharpe = constraint_args.use_min_sharpe;
+            let mut min_sharpe = constraint_args.min_sharpe;
+            let mut use_min_sortino = constraint_args.use_min_sortino;
+            let mut min_sortino = constraint_args.min_sortino;
+            let mut use_min_calmar = constraint_args.use_min_calmar;
+            let mut min_calmar = constraint_args.min_calmar;
+            let mut use_max_volatility = constraint_args.use_max_volatility;
+            let mut max_volatility = constraint_args.max_volatility;
+            let mut use_min_exposure = constraint_args.use_min_exposure;
+            let mut min_exposure = constraint_args.min_exposure;
+            let mut use_max_exposure = constraint_args.use_max_exposure;
+            let mut max_exposure = constraint_args.max_exposure;
+            let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+            let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+            let mut use_min_omega = constraint_args.use_min_omega;
+            let mut min_omega = constraint_args.min_omega;
+            let mut use_max_ulcer = constraint_args.use_max_ulcer;
+            let mut max_ulcer = constraint_args.max_ulcer;
+            let mut use_max_downside_deviation = constraint_args.use_max_downside_deviation;
+            let mut max_downside_deviation = constraint_args.max_downside_deviation;
+            let mut out_ptr = d_out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut rows_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut stride_i as *mut _ as *mut c_void,
+                &mut objective_i as *mut _ as *mut c_void,
+                &mut hurdle_tau as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut candidates_ptr as *mut _ as *mut c_void,
+                &mut candidates_len_i as *mut _ as *mut c_void,
+                &mut use_min_trades as *mut _ as *mut c_void,
+                &mut min_trades as *mut _ as *mut c_void,
+                &mut use_max_dd as *mut _ as *mut c_void,
+                &mut max_dd as *mut _ as *mut c_void,
+                &mut use_min_sharpe as *mut _ as *mut c_void,
+                &mut min_sharpe as *mut _ as *mut c_void,
+                &mut use_min_sortino as *mut _ as *mut c_void,
+                &mut min_sortino as *mut _ as *mut c_void,
+                &mut use_min_calmar as *mut _ as *mut c_void,
+                &mut min_calmar as *mut _ as *mut c_void,
+                &mut use_max_volatility as *mut _ as *mut c_void,
+                &mut max_volatility as *mut _ as *mut c_void,
+                &mut use_min_exposure as *mut _ as *mut c_void,
+                &mut min_exposure as *mut _ as *mut c_void,
+                &mut use_max_exposure as *mut _ as *mut c_void,
+                &mut max_exposure as *mut _ as *mut c_void,
+                &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut use_min_omega as *mut _ as *mut c_void,
+                &mut min_omega as *mut _ as *mut c_void,
+                &mut use_max_ulcer as *mut _ as *mut c_void,
+                &mut max_ulcer as *mut _ as *mut c_void,
+                &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                &mut max_downside_deviation as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(&selector, (1, 1, 1), (TOPK_BLOCK_THREADS, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out = out_init;
+        d_out.copy_to(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+
+    fn launch_scored_row_selector_for_test(
+        rt: &super::CudaKernelRuntime,
+        scores: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<i32>, String> {
+        let selector = rt
+            .module
+            .get_function("select_topk_scored_rows_f32")
+            .map_err(|e| e.to_string())?;
+        let d_scores = DeviceBuffer::from_slice(scores).map_err(|e| e.to_string())?;
+        let out_init = vec![123_i32; top_k];
+        let d_out = DeviceBuffer::from_slice(&out_init).map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut scores_ptr = d_scores.as_device_ptr().as_raw();
+            let mut rows_i = scores.len() as i32;
+            let mut topk_i = top_k as i32;
+            let mut out_ptr = d_out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut scores_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(&selector, (1, 1, 1), (TOPK_BLOCK_THREADS, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out = out_init;
+        d_out.copy_to(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+
+    fn launch_gather_metric_rows_for_test(
+        rt: &super::CudaKernelRuntime,
+        metric_row: &[f32; METRICS_COUNT],
+        top_rows: &[i32],
+    ) -> Result<(Vec<i32>, Vec<i32>, Vec<f32>), String> {
+        let gather = rt
+            .module
+            .get_function("gather_topk_metric_rows_f32")
+            .map_err(|e| e.to_string())?;
+        let d_metrics = DeviceBuffer::from_slice(metric_row).map_err(|e| e.to_string())?;
+        let d_fast = DeviceBuffer::from_slice(&[5_i32]).map_err(|e| e.to_string())?;
+        let d_slow = DeviceBuffer::from_slice(&[20_i32]).map_err(|e| e.to_string())?;
+        let d_top = DeviceBuffer::from_slice(top_rows).map_err(|e| e.to_string())?;
+        let fast_init = vec![123_i32; top_rows.len()];
+        let slow_init = vec![123_i32; top_rows.len()];
+        let metrics_init = vec![123.0f32; top_rows.len() * METRICS_COUNT];
+        let d_out_fast = DeviceBuffer::from_slice(&fast_init).map_err(|e| e.to_string())?;
+        let d_out_slow = DeviceBuffer::from_slice(&slow_init).map_err(|e| e.to_string())?;
+        let d_out_metrics = DeviceBuffer::from_slice(&metrics_init).map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut metrics_ptr = d_metrics.as_device_ptr().as_raw();
+            let mut rows_i = 1_i32;
+            let mut m_i = METRICS_COUNT as i32;
+            let mut stride_i = METRICS_COUNT as i32;
+            let mut fast_ptr = d_fast.as_device_ptr().as_raw();
+            let mut slow_ptr = d_slow.as_device_ptr().as_raw();
+            let mut top_ptr = d_top.as_device_ptr().as_raw();
+            let mut topk_i = top_rows.len() as i32;
+            let mut out_fast_ptr = d_out_fast.as_device_ptr().as_raw();
+            let mut out_slow_ptr = d_out_slow.as_device_ptr().as_raw();
+            let mut out_metrics_ptr = d_out_metrics.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut metrics_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut stride_i as *mut _ as *mut c_void,
+                &mut fast_ptr as *mut _ as *mut c_void,
+                &mut slow_ptr as *mut _ as *mut c_void,
+                &mut top_ptr as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut out_fast_ptr as *mut _ as *mut c_void,
+                &mut out_slow_ptr as *mut _ as *mut c_void,
+                &mut out_metrics_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(&gather, (1, 1, 1), (256, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out_fast = fast_init;
+        let mut out_slow = slow_init;
+        let mut out_metrics = metrics_init;
+        d_out_fast
+            .copy_to(&mut out_fast)
+            .map_err(|e| e.to_string())?;
+        d_out_slow
+            .copy_to(&mut out_slow)
+            .map_err(|e| e.to_string())?;
+        d_out_metrics
+            .copy_to(&mut out_metrics)
+            .map_err(|e| e.to_string())?;
+        Ok((out_fast, out_slow, out_metrics))
+    }
+
+    fn launch_flex_m7_case_for_test(
+        rt: &super::CudaKernelRuntime,
+        commission: f32,
+        include_ret1: bool,
+        fast: &[f32],
+        slow: &[f32],
+        lr: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let func = rt
+            .module
+            .get_function("double_cross_backtest_tm_flex_f32_m7")
+            .map_err(|e| e.to_string())?;
+        let t_len = lr.len();
+        if t_len == 0 || fast.len() != t_len || slow.len() != t_len {
+            return Err("flex M7 test inputs must be non-empty and equal length".to_string());
+        }
+        let ret1: Vec<f32> = lr.iter().map(|&v| v.exp_m1()).collect();
+
+        let d_fast = DeviceBuffer::from_slice(fast).map_err(|e| e.to_string())?;
+        let d_slow = DeviceBuffer::from_slice(slow).map_err(|e| e.to_string())?;
+        let d_lr = DeviceBuffer::from_slice(lr).map_err(|e| e.to_string())?;
+        let d_ret1 = if include_ret1 {
+            Some(DeviceBuffer::from_slice(&ret1).map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
+        let d_fast_periods = DeviceBuffer::from_slice(&[2_i32]).map_err(|e| e.to_string())?;
+        let d_slow_periods = DeviceBuffer::from_slice(&[4_i32]).map_err(|e| e.to_string())?;
+        let d_pair_map = DeviceBuffer::from_slice(&[0_i32]).map_err(|e| e.to_string())?;
+        let out_init = vec![123.0f32; 7];
+        let d_out = DeviceBuffer::from_slice(&out_init).map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut fast_ptr = d_fast.as_device_ptr().as_raw();
+            let mut slow_ptr = d_slow.as_device_ptr().as_raw();
+            let mut lr_ptr = d_lr.as_device_ptr().as_raw();
+            let mut ret1_ptr = d_ret1
+                .as_ref()
+                .map(|buf| buf.as_device_ptr().as_raw())
+                .unwrap_or(0);
+            let mut t_i = t_len as i32;
+            let mut pf_tile_i = 1_i32;
+            let mut ps_tile_i = 1_i32;
+            let mut fast_stride_i = 1_i32;
+            let mut slow_stride_i = 1_i32;
+            let mut pf_total_i = 1_i32;
+            let mut ps_total_i = 1_i32;
+            let mut f_offset_i = 0_i32;
+            let mut s_offset_i = 0_i32;
+            let mut fast_periods_ptr = d_fast_periods.as_device_ptr().as_raw();
+            let mut slow_periods_ptr = d_slow_periods.as_device_ptr().as_raw();
+            let mut regime_ptr = 0_u64;
+            let mut use_regime_i = 0_i32;
+            let mut use_regime_hybrid_i = 0_i32;
+            let mut regime_entry = 0.0f32;
+            let mut regime_exit = 0.0f32;
+            let mut first_valid_i = 0_i32;
+            let mut regime_first_valid_i = 0_i32;
+            let mut commission_i = commission;
+            let mut eps_rel = 0.0f32;
+            let mut hurdle_tau = 0.0f32;
+            let mut stop_log = 0.0f32;
+            let mut take_log = 0.0f32;
+            let mut flags = 0_u32;
+            let mut m_i = 7_i32;
+            let mut metrics_stride_i = 7_i32;
+            let mut pair_map_ptr = d_pair_map.as_device_ptr().as_raw();
+            let mut compact_fast_periods_ptr = 0_u64;
+            let mut compact_slow_periods_ptr = 0_u64;
+            let mut compact_fast_local_rows_ptr = 0_u64;
+            let mut compact_slow_local_rows_ptr = 0_u64;
+            let mut pair_count_i = 1_i32;
+            let mut compact_output_i = 0_i32;
+            let mut out_ptr = d_out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut fast_ptr as *mut _ as *mut c_void,
+                &mut slow_ptr as *mut _ as *mut c_void,
+                &mut lr_ptr as *mut _ as *mut c_void,
+                &mut ret1_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut pf_tile_i as *mut _ as *mut c_void,
+                &mut ps_tile_i as *mut _ as *mut c_void,
+                &mut fast_stride_i as *mut _ as *mut c_void,
+                &mut slow_stride_i as *mut _ as *mut c_void,
+                &mut pf_total_i as *mut _ as *mut c_void,
+                &mut ps_total_i as *mut _ as *mut c_void,
+                &mut f_offset_i as *mut _ as *mut c_void,
+                &mut s_offset_i as *mut _ as *mut c_void,
+                &mut fast_periods_ptr as *mut _ as *mut c_void,
+                &mut slow_periods_ptr as *mut _ as *mut c_void,
+                &mut regime_ptr as *mut _ as *mut c_void,
+                &mut use_regime_i as *mut _ as *mut c_void,
+                &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                &mut regime_entry as *mut _ as *mut c_void,
+                &mut regime_exit as *mut _ as *mut c_void,
+                &mut first_valid_i as *mut _ as *mut c_void,
+                &mut regime_first_valid_i as *mut _ as *mut c_void,
+                &mut commission_i as *mut _ as *mut c_void,
+                &mut eps_rel as *mut _ as *mut c_void,
+                &mut hurdle_tau as *mut _ as *mut c_void,
+                &mut stop_log as *mut _ as *mut c_void,
+                &mut take_log as *mut _ as *mut c_void,
+                &mut flags as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
+                &mut pair_map_ptr as *mut _ as *mut c_void,
+                &mut compact_fast_periods_ptr as *mut _ as *mut c_void,
+                &mut compact_slow_periods_ptr as *mut _ as *mut c_void,
+                &mut compact_fast_local_rows_ptr as *mut _ as *mut c_void,
+                &mut compact_slow_local_rows_ptr as *mut _ as *mut c_void,
+                &mut pair_count_i as *mut _ as *mut c_void,
+                &mut compact_output_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(&func, (1, 1, 1), (128, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out = out_init;
+        d_out.copy_to(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+
+    fn launch_flex_m7_numeric_case_for_test(
+        rt: &super::CudaKernelRuntime,
+        commission: f32,
+        include_ret1: bool,
+    ) -> Result<Vec<f32>, String> {
+        let t_len = 64usize;
+        let mut fast: Vec<f32> = Vec::with_capacity(t_len);
+        let mut slow: Vec<f32> = Vec::with_capacity(t_len);
+        let mut lr: Vec<f32> = Vec::with_capacity(t_len);
+        for t in 0..t_len {
+            let high_fast = (8..24).contains(&t) || (40..56).contains(&t);
+            fast.push(if high_fast { 2.0 } else { 0.0 });
+            slow.push(1.0);
+            let wave = match t % 5 {
+                0 => 0.018,
+                1 => -0.006,
+                2 => 0.011,
+                3 => -0.004,
+                _ => 0.007,
+            };
+            lr.push(wave);
+        }
+        launch_flex_m7_case_for_test(rt, commission, include_ret1, &fast, &slow, &lr)
+    }
+
+    fn launch_flex_m7_log_equity_case_for_test(
+        rt: &super::CudaKernelRuntime,
+        step_log_return: f32,
+    ) -> Result<Vec<f32>, String> {
+        let t_len = 64usize;
+        let fast = vec![2.0f32; t_len];
+        let slow = vec![1.0f32; t_len];
+        let lr = vec![step_log_return; t_len];
+        launch_flex_m7_case_for_test(rt, 0.0, false, &fast, &slow, &lr)
+    }
+
+    fn launch_strategy_program_tm_m7_negative_count_case_for_test(
+        rt: &super::CudaKernelRuntime,
+    ) -> Result<Vec<f32>, String> {
+        let func = rt
+            .module
+            .get_function("strategy_program_double_ma_backtest_tm_f32_m7")
+            .map_err(|e| e.to_string())?;
+        let t_len = 16usize;
+        let lr = vec![0.0f32; t_len];
+        let fast = vec![1.0f32; t_len];
+        let slow = vec![1.0f32; t_len];
+        let combo_row = [0_i32];
+        let combo_start = [1_i32];
+        let combo_end = [(t_len - 1) as i32];
+        let indicator_slots = [GpuIndicatorSlotAbi {
+            indicator_index: 0,
+            route: 1,
+        }];
+        let condition = GpuConditionAbi {
+            op: 0,
+            lhs: GpuValueOperandAbi {
+                source: 0,
+                index: 0,
+                constant_bits: 0,
+            },
+            rhs: GpuValueOperandAbi {
+                source: 3,
+                index: 0,
+                constant_bits: 1.0f32.to_bits() as u64,
+            },
+        };
+        let groups = [GpuConditionGroupAbi {
+            mode: 0,
+            condition_offset: 0,
+            condition_count: 1,
+        }];
+        let group_indexes = [0_u32];
+        let signals = [GpuSignalBindingsAbi {
+            long_entry_group: 0,
+            long_exit_group: 0,
+            short_entry_group: 0,
+            short_exit_group: 0,
+        }];
+
+        let d_lr = DeviceBuffer::from_slice(&lr).map_err(|e| e.to_string())?;
+        let d_fast = DeviceBuffer::from_slice(&fast).map_err(|e| e.to_string())?;
+        let d_slow = DeviceBuffer::from_slice(&slow).map_err(|e| e.to_string())?;
+        let d_combo_fast = DeviceBuffer::from_slice(&combo_row).map_err(|e| e.to_string())?;
+        let d_combo_slow = DeviceBuffer::from_slice(&combo_row).map_err(|e| e.to_string())?;
+        let d_combo_start = DeviceBuffer::from_slice(&combo_start).map_err(|e| e.to_string())?;
+        let d_combo_end = DeviceBuffer::from_slice(&combo_end).map_err(|e| e.to_string())?;
+        let d_indicator_slots =
+            DeviceBuffer::from_slice(&indicator_slots).map_err(|e| e.to_string())?;
+        let d_conditions = DeviceBuffer::from_slice(&[condition]).map_err(|e| e.to_string())?;
+        let d_groups = DeviceBuffer::from_slice(&groups).map_err(|e| e.to_string())?;
+        let d_group_indexes =
+            DeviceBuffer::from_slice(&group_indexes).map_err(|e| e.to_string())?;
+        let d_signals = DeviceBuffer::from_slice(&signals).map_err(|e| e.to_string())?;
+        let out_init = vec![123.0f32; 7];
+        let d_out = DeviceBuffer::from_slice(&out_init).map_err(|e| e.to_string())?;
+
+        unsafe {
+            let mut lr_ptr = d_lr.as_device_ptr().as_raw();
+            let mut t_i = t_len as i32;
+            let mut fast_ptr = d_fast.as_device_ptr().as_raw();
+            let mut fast_stride_i = 1_i32;
+            let mut slow_ptr = d_slow.as_device_ptr().as_raw();
+            let mut slow_stride_i = 1_i32;
+            let mut combo_fast_ptr = d_combo_fast.as_device_ptr().as_raw();
+            let mut combo_slow_ptr = d_combo_slow.as_device_ptr().as_raw();
+            let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
+            let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
+            let mut combo_count_i = 1_i32;
+            let mut indicator_slots_ptr = d_indicator_slots.as_device_ptr().as_raw();
+            let mut indicator_slot_count_i = -1_i32;
+            let mut conditions_ptr = d_conditions.as_device_ptr().as_raw();
+            let mut condition_count_i = -1_i32;
+            let mut groups_ptr = d_groups.as_device_ptr().as_raw();
+            let mut group_count_i = -1_i32;
+            let mut group_indexes_ptr = d_group_indexes.as_device_ptr().as_raw();
+            let mut group_index_count_i = -1_i32;
+            let mut signals_ptr = d_signals.as_device_ptr().as_raw();
+            let mut flags = 0_u32;
+            let mut commission = 0.0f32;
+            let mut eps_rel = 0.0f32;
+            let mut stop_log = 0.0f32;
+            let mut take_log = 0.0f32;
+            let mut out_ptr = d_out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut lr_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut fast_ptr as *mut _ as *mut c_void,
+                &mut fast_stride_i as *mut _ as *mut c_void,
+                &mut slow_ptr as *mut _ as *mut c_void,
+                &mut slow_stride_i as *mut _ as *mut c_void,
+                &mut combo_fast_ptr as *mut _ as *mut c_void,
+                &mut combo_slow_ptr as *mut _ as *mut c_void,
+                &mut combo_start_ptr as *mut _ as *mut c_void,
+                &mut combo_end_ptr as *mut _ as *mut c_void,
+                &mut combo_count_i as *mut _ as *mut c_void,
+                &mut indicator_slots_ptr as *mut _ as *mut c_void,
+                &mut indicator_slot_count_i as *mut _ as *mut c_void,
+                &mut conditions_ptr as *mut _ as *mut c_void,
+                &mut condition_count_i as *mut _ as *mut c_void,
+                &mut groups_ptr as *mut _ as *mut c_void,
+                &mut group_count_i as *mut _ as *mut c_void,
+                &mut group_indexes_ptr as *mut _ as *mut c_void,
+                &mut group_index_count_i as *mut _ as *mut c_void,
+                &mut signals_ptr as *mut _ as *mut c_void,
+                &mut flags as *mut _ as *mut c_void,
+                &mut commission as *mut _ as *mut c_void,
+                &mut eps_rel as *mut _ as *mut c_void,
+                &mut stop_log as *mut _ as *mut c_void,
+                &mut take_log as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(&func, (1, 1, 1), (128, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out = out_init;
+        d_out.copy_to(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+
+    fn make_threshold_strategy_plan(strategy: StrategyConfig) -> CompiledStrategyPlan {
+        CompiledStrategyPlan {
+            plan_schema_version: STRATEGY_PLAN_SCHEMA_VERSION,
+            backend: StrategyPlanBackend::GpuUnified,
+            profile: StrategyProfileKind::DoubleMa,
+            ir_schema_version: STRATEGY_IR_SCHEMA_VERSION,
+            ir_fingerprint_hex: "test-threshold-strategy-program".to_string(),
+            indicator_plan: vec![
+                IndicatorComputePlan {
+                    indicator_id: "fast_ma".to_string(),
+                    indicator_kind: Some(IndicatorKind::FastMa),
+                    source_indicator_id: None,
+                    output_id: None,
+                    params: Vec::new(),
+                    route: IndicatorRouteKind::GpuKernel,
+                },
+                IndicatorComputePlan {
+                    indicator_id: "slow_ma".to_string(),
+                    indicator_kind: Some(IndicatorKind::SlowMa),
+                    source_indicator_id: None,
+                    output_id: None,
+                    params: Vec::new(),
+                    route: IndicatorRouteKind::GpuKernel,
+                },
+            ],
+            conditions: vec![
+                CompiledConditionOp {
+                    op: ConditionOp::Gt,
+                    lhs: CompiledValueRef::IndicatorIndex { index: 0 },
+                    rhs: CompiledValueRef::ConstantBits {
+                        bits: 1.0f64.to_bits(),
+                    },
+                },
+                CompiledConditionOp {
+                    op: ConditionOp::Le,
+                    lhs: CompiledValueRef::IndicatorIndex { index: 0 },
+                    rhs: CompiledValueRef::ConstantBits {
+                        bits: 1.0f64.to_bits(),
+                    },
+                },
+            ],
+            groups: vec![
+                CompiledConditionGroup {
+                    mode: ConditionGroupMode::All,
+                    condition_indexes: vec![0],
+                },
+                CompiledConditionGroup {
+                    mode: ConditionGroupMode::All,
+                    condition_indexes: vec![1],
+                },
+            ],
+            signals: CompiledSignalBindings {
+                long_entry_group: Some(0),
+                long_exit_group: Some(1),
+                short_entry_group: None,
+                short_exit_group: None,
+            },
+            strategy,
+            halftrend_filter: None,
+            halftrend: None,
+            macz: None,
+            ott: None,
+            signal_mode: None,
+        }
+    }
+
+    fn launch_strategy_program_row_major_threshold_case_for_test(
+        rt: &super::CudaKernelRuntime,
+        strategy: &StrategyConfig,
+        abi: &CompiledGpuPredicateProgramAbi,
+        lr: &[f32],
+        fast: &[f32],
+        slow: &[f32],
+        start_t: i32,
+        end_t: i32,
+    ) -> Result<Vec<f32>, String> {
+        let func = rt
+            .module
+            .get_function("strategy_program_double_ma_backtest_f32")
+            .map_err(|e| e.to_string())?;
+        assert_eq!(lr.len(), fast.len());
+        assert_eq!(lr.len(), slow.len());
+
+        let combo_row = [0_i32];
+        let combo_start = [start_t];
+        let combo_end = [end_t];
+        let signals = [abi.signals];
+
+        let d_lr = DeviceBuffer::from_slice(lr).map_err(|e| e.to_string())?;
+        let d_fast = DeviceBuffer::from_slice(fast).map_err(|e| e.to_string())?;
+        let d_slow = DeviceBuffer::from_slice(slow).map_err(|e| e.to_string())?;
+        let d_combo_fast = DeviceBuffer::from_slice(&combo_row).map_err(|e| e.to_string())?;
+        let d_combo_slow = DeviceBuffer::from_slice(&combo_row).map_err(|e| e.to_string())?;
+        let d_combo_start = DeviceBuffer::from_slice(&combo_start).map_err(|e| e.to_string())?;
+        let d_combo_end = DeviceBuffer::from_slice(&combo_end).map_err(|e| e.to_string())?;
+        let d_indicator_slots =
+            DeviceBuffer::from_slice(&abi.indicator_slots).map_err(|e| e.to_string())?;
+        let d_conditions = DeviceBuffer::from_slice(&abi.conditions).map_err(|e| e.to_string())?;
+        let d_groups = DeviceBuffer::from_slice(&abi.groups).map_err(|e| e.to_string())?;
+        let d_group_indexes =
+            DeviceBuffer::from_slice(&abi.group_condition_indexes).map_err(|e| e.to_string())?;
+        let d_signals = DeviceBuffer::from_slice(&signals).map_err(|e| e.to_string())?;
+        let out_init = vec![123.0f32; 10];
+        let d_out = DeviceBuffer::from_slice(&out_init).map_err(|e| e.to_string())?;
+        let params = kernel_strategy_params(strategy);
+
+        unsafe {
+            let mut lr_ptr = d_lr.as_device_ptr().as_raw();
+            let mut t_i = lr.len() as i32;
+            let mut fast_ptr = d_fast.as_device_ptr().as_raw();
+            let mut fast_rows_i = 1_i32;
+            let mut fast_stride_i = lr.len() as i32;
+            let mut slow_ptr = d_slow.as_device_ptr().as_raw();
+            let mut slow_rows_i = 1_i32;
+            let mut slow_stride_i = lr.len() as i32;
+            let mut combo_fast_ptr = d_combo_fast.as_device_ptr().as_raw();
+            let mut combo_slow_ptr = d_combo_slow.as_device_ptr().as_raw();
+            let mut combo_start_ptr = d_combo_start.as_device_ptr().as_raw();
+            let mut combo_end_ptr = d_combo_end.as_device_ptr().as_raw();
+            let mut combo_count_i = 1_i32;
+            let mut indicator_slots_ptr = d_indicator_slots.as_device_ptr().as_raw();
+            let mut indicator_slot_count_i = abi.indicator_slots.len() as i32;
+            let mut conditions_ptr = d_conditions.as_device_ptr().as_raw();
+            let mut condition_count_i = abi.conditions.len() as i32;
+            let mut groups_ptr = d_groups.as_device_ptr().as_raw();
+            let mut group_count_i = abi.groups.len() as i32;
+            let mut group_indexes_ptr = d_group_indexes.as_device_ptr().as_raw();
+            let mut group_index_count_i = abi.group_condition_indexes.len() as i32;
+            let mut signals_ptr = d_signals.as_device_ptr().as_raw();
+            let mut flags = params.flags;
+            let mut commission = params.commission;
+            let mut eps_rel = params.eps_rel;
+            let mut stop_log = params.stop_log;
+            let mut take_log = params.take_log;
+            let mut out_stride_i = 10_i32;
+            let mut out_ptr = d_out.as_device_ptr().as_raw();
+            let args: &mut [*mut c_void] = &mut [
+                &mut lr_ptr as *mut _ as *mut c_void,
+                &mut t_i as *mut _ as *mut c_void,
+                &mut fast_ptr as *mut _ as *mut c_void,
+                &mut fast_rows_i as *mut _ as *mut c_void,
+                &mut fast_stride_i as *mut _ as *mut c_void,
+                &mut slow_ptr as *mut _ as *mut c_void,
+                &mut slow_rows_i as *mut _ as *mut c_void,
+                &mut slow_stride_i as *mut _ as *mut c_void,
+                &mut combo_fast_ptr as *mut _ as *mut c_void,
+                &mut combo_slow_ptr as *mut _ as *mut c_void,
+                &mut combo_start_ptr as *mut _ as *mut c_void,
+                &mut combo_end_ptr as *mut _ as *mut c_void,
+                &mut combo_count_i as *mut _ as *mut c_void,
+                &mut indicator_slots_ptr as *mut _ as *mut c_void,
+                &mut indicator_slot_count_i as *mut _ as *mut c_void,
+                &mut conditions_ptr as *mut _ as *mut c_void,
+                &mut condition_count_i as *mut _ as *mut c_void,
+                &mut groups_ptr as *mut _ as *mut c_void,
+                &mut group_count_i as *mut _ as *mut c_void,
+                &mut group_indexes_ptr as *mut _ as *mut c_void,
+                &mut group_index_count_i as *mut _ as *mut c_void,
+                &mut signals_ptr as *mut _ as *mut c_void,
+                &mut flags as *mut _ as *mut c_void,
+                &mut commission as *mut _ as *mut c_void,
+                &mut eps_rel as *mut _ as *mut c_void,
+                &mut stop_log as *mut _ as *mut c_void,
+                &mut take_log as *mut _ as *mut c_void,
+                &mut out_stride_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            rt.stream
+                .launch(&func, (1, 1, 1), (128, 1, 1), 0, args)
+                .map_err(|e| e.to_string())?;
+        }
+        rt.stream.synchronize().map_err(|e| e.to_string())?;
+
+        let mut out = out_init;
+        d_out.copy_to(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+
+    fn assert_f32_slices_close(label: &str, actual: &[f32], expected: &[f32], tol: f32) {
+        assert_eq!(actual.len(), expected.len(), "{label}: len mismatch");
+        for (idx, (&a, &b)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                a.is_finite() && b.is_finite(),
+                "{label}: non-finite value at {idx}: actual={a} expected={b}"
+            );
+            assert!(
+                (a - b).abs() <= tol,
+                "{label}: mismatch at {idx}: actual={a} expected={b}"
+            );
+        }
     }
 
     #[test]
@@ -16643,6 +17506,29 @@ mod tests {
                 "slow_precomputed_enabled",
                 "heatmap_bins_nonzero",
             ]
+        );
+    }
+
+    #[test]
+    fn topk_select_contract_caps_global_device_reduction_width() {
+        assert_eq!(
+            normalize_topk_select_for_device(0, false).expect("top_k zero normalizes to one"),
+            1
+        );
+        assert_eq!(
+            normalize_topk_select_for_device(TOPK_BLOCK_THREADS as usize, false)
+                .expect("block-width top_k is allowed"),
+            TOPK_BLOCK_THREADS as usize
+        );
+
+        let err = normalize_topk_select_for_device((TOPK_BLOCK_THREADS as usize) + 1, false)
+            .expect_err("top_k beyond block width should fail");
+        assert!(err.contains("max 256 when include_all=false"));
+
+        assert_eq!(
+            normalize_topk_select_for_device((TOPK_BLOCK_THREADS as usize) + 1, true)
+                .expect("include_all/score-mode path bypasses global top-k cap"),
+            (TOPK_BLOCK_THREADS as usize) + 1
         );
     }
 
@@ -18703,6 +19589,280 @@ mod tests {
 
         assert_eq!(trade22.use_max_dd, 1);
         assert!((trade22.max_dd - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn selector_harness_keeps_unused_topk_slots_invalid_across_objectives() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+        let constraints = DoubleMaConstraints {
+            min_trades: Some(2),
+            max_drawdown: Some(0.50),
+            ..Default::default()
+        };
+        let candidates = [1_i32, -1, 3, 99, 0, 2];
+
+        for objective in 0..=6 {
+            let valid = metric_row17_for_selector(0.25, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5);
+            let mut failed_trades =
+                metric_row17_for_selector(10.0, 1.0, 0.10, 2.0, 0.01, 0.001, 10.0);
+            failed_trades[8] = 0.001;
+            let failed_drawdown =
+                metric_row17_for_selector(10.0, 3.0, 0.90, 2.0, 0.01, 0.001, 10.0);
+            let mut nonfinite = metric_row17_for_selector(10.0, 3.0, 0.10, 2.0, 0.01, 0.001, 10.0);
+            poison_objective_field(&mut nonfinite, objective);
+
+            let rows = [valid, failed_trades, failed_drawdown, nonfinite];
+            let flat = flatten_metric_rows(&rows);
+            let label = format!("objective {objective}");
+
+            let selected = launch_metric_row_selector_v2_for_test(
+                &rt,
+                &flat,
+                rows.len(),
+                objective,
+                5,
+                &constraints,
+            )
+            .unwrap_or_else(|e| panic!("direct selector failed for {label}: {e}"));
+            assert_only_valid_row_selected(&label, &selected);
+
+            let selected = launch_metric_row_candidate_selector_v2_for_test(
+                &rt,
+                &flat,
+                rows.len(),
+                &candidates,
+                objective,
+                5,
+                &constraints,
+            )
+            .unwrap_or_else(|e| panic!("candidate selector failed for {label}: {e}"));
+            assert_only_valid_row_selected(&format!("{label} candidates"), &selected);
+        }
+    }
+
+    #[test]
+    fn scored_row_selector_and_gather_preserve_invalid_topk_sentinels() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+
+        let selected = launch_scored_row_selector_for_test(
+            &rt,
+            &[0.75, f32::NAN, f32::INFINITY, -0.10, f32::NEG_INFINITY],
+            7,
+        )
+        .expect("scored selector");
+        assert_eq!(selected[0], 0);
+        assert_eq!(selected[1], 3);
+        assert!(
+            selected.iter().skip(2).all(|&idx| idx == -1),
+            "invalid scored slots must stay -1: {selected:?}"
+        );
+
+        let metric_row = metric_row17_for_selector(0.25, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5);
+        let (fast, slow, metrics) =
+            launch_gather_metric_rows_for_test(&rt, &metric_row, &[0, -1, 999])
+                .expect("gather metric rows");
+        assert_eq!(fast, vec![5, 0, 0]);
+        assert_eq!(slow, vec![20, 0, 0]);
+        assert_eq!(&metrics[0..METRICS_COUNT], &metric_row);
+        for value in &metrics[METRICS_COUNT..] {
+            assert!(value.is_nan(), "invalid gathered metrics should be NaN");
+        }
+    }
+
+    #[test]
+    fn flex_m7_numeric_harness_covers_commission_clamp_and_ret1_fallback() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+
+        let with_ret1 = launch_flex_m7_numeric_case_for_test(&rt, 0.0, true).expect("ret1 launch");
+        let null_ret1 =
+            launch_flex_m7_numeric_case_for_test(&rt, 0.0, false).expect("null ret1 launch");
+        assert!(
+            with_ret1[1] > 0.0,
+            "numeric harness should exercise non-zero trades: {with_ret1:?}"
+        );
+        assert_f32_slices_close("ret1 fallback", &null_ret1, &with_ret1, 1e-6);
+
+        let zero = launch_flex_m7_numeric_case_for_test(&rt, 0.0, true).expect("zero commission");
+        let negative =
+            launch_flex_m7_numeric_case_for_test(&rt, -0.25, true).expect("negative commission");
+        assert_f32_slices_close("negative commission clamp", &negative, &zero, 1e-6);
+
+        let clamp = launch_flex_m7_numeric_case_for_test(&rt, 0.95, true).expect("0.95 commission");
+        let one = launch_flex_m7_numeric_case_for_test(&rt, 1.0, true).expect("1.0 commission");
+        let oversized =
+            launch_flex_m7_numeric_case_for_test(&rt, 2.0, true).expect("oversized commission");
+        assert_f32_slices_close("1.0 commission clamp", &one, &clamp, 1e-6);
+        assert_f32_slices_close("oversized commission clamp", &oversized, &clamp, 1e-6);
+    }
+
+    #[test]
+    fn flex_m7_numeric_harness_keeps_extreme_log_equity_rows_finite() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+
+        let positive =
+            launch_flex_m7_log_equity_case_for_test(&rt, 10.0).expect("positive log-equity launch");
+        assert!(
+            positive[0] > 88.0,
+            "positive reduced M7 row should keep log equity beyond f32 exp overflow threshold: {positive:?}"
+        );
+        assert!(
+            positive.iter().all(|v| v.is_finite()),
+            "positive extreme log-equity row should stay finite: {positive:?}"
+        );
+
+        let negative = launch_flex_m7_log_equity_case_for_test(&rt, -10.0)
+            .expect("negative log-equity launch");
+        assert!(
+            negative[0] < -88.0,
+            "negative reduced M7 row should keep large negative log equity: {negative:?}"
+        );
+        assert!(
+            negative[2] > 88.0,
+            "negative reduced M7 row should keep large drawdown in log space: {negative:?}"
+        );
+        assert!(
+            negative.iter().all(|v| v.is_finite()),
+            "negative extreme log-equity row should stay finite: {negative:?}"
+        );
+    }
+
+    #[test]
+    fn strategy_program_tm_m7_rejects_negative_abi_counts_without_device_fault() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+
+        let metrics = launch_strategy_program_tm_m7_negative_count_case_for_test(&rt)
+            .expect("negative ABI count launch");
+        assert_f32_slices_close("negative ABI counts", &metrics, &[0.0; 7], 1e-7);
+    }
+
+    #[test]
+    fn strategy_program_row_major_generic_threshold_matches_cpu_dynamic() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+
+        let len = 96usize;
+        let mut lr = Vec::with_capacity(len);
+        for t in 0..len {
+            let step = match t % 6 {
+                0 => 0.0040,
+                1 => -0.0015,
+                2 => 0.0030,
+                3 => -0.0020,
+                4 => 0.0010,
+                _ => 0.0025,
+            };
+            lr.push(step);
+        }
+
+        let mut fast = vec![0.50f32; len];
+        for v in fast.iter_mut().take(40).skip(10) {
+            *v = 1.25;
+        }
+        let slow = vec![10.0f32; len];
+        let strategy = StrategyConfig {
+            trade_on_next_bar: false,
+            long_only: true,
+            ..StrategyConfig::default()
+        };
+        let plan = make_threshold_strategy_plan(strategy);
+        let abi = compile_gpu_predicate_program(&plan)
+            .map(|program| compile_gpu_predicate_program_abi(&program))
+            .expect("compile threshold strategy ABI");
+
+        let gpu = launch_strategy_program_row_major_threshold_case_for_test(
+            &rt,
+            &plan.strategy,
+            &abi,
+            &lr,
+            &fast,
+            &slow,
+            1,
+            len as i32,
+        )
+        .expect("row-major strategy program launch");
+        assert!(
+            gpu.iter().all(|v| v.is_finite()),
+            "generic row-major strategy metrics must be finite: {gpu:?}"
+        );
+        assert!(
+            gpu[7] > 0.0,
+            "threshold strategy should produce trades, metrics={gpu:?}"
+        );
+
+        let lr_f64: Vec<f64> = lr.iter().map(|&v| f64::from(v)).collect();
+        let fast_f64: Vec<f64> = fast.iter().map(|&v| f64::from(v)).collect();
+        let slow_f64: Vec<f64> = slow.iter().map(|&v| f64::from(v)).collect();
+        let mut close = vec![100.0f64; len];
+        for t in 1..len {
+            close[t] = close[t - 1] * lr_f64[t].exp();
+        }
+        let context = build_dynamic_cpu_context_from_precomputed(
+            &lr_f64, &close, &close, None, None, None, None, None,
+        );
+        let cpu = eval_dynamic_plan_metrics_cpu(&plan, &context, &fast_f64, &slow_f64, 1, true)
+            .expect("cpu dynamic threshold eval");
+
+        let expected = [
+            cpu.pnl,
+            cpu.sharpe,
+            cpu.sortino,
+            cpu.calmar,
+            cpu.omega,
+            cpu.volatility,
+            cpu.max_dd,
+            f64::from(cpu.trades),
+            cpu.exposure,
+            cpu.net_exposure,
+        ];
+        let tolerances = [
+            5.0e-5, 5.0e-5, 5.0e-4, 2.0e-3, 1.0e-3, 5.0e-6, 5.0e-5, 1.0e-6, 1.0e-6, 1.0e-6,
+        ];
+        for (idx, ((&actual, &expected), &tol)) in gpu
+            .iter()
+            .zip(expected.iter())
+            .zip(tolerances.iter())
+            .enumerate()
+        {
+            assert!(
+                (f64::from(actual) - expected).abs() <= tol,
+                "metric {idx} mismatch: gpu={actual} cpu={expected} tol={tol} row={gpu:?}"
+            );
+        }
     }
 
     #[test]

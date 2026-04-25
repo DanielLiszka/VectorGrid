@@ -85,6 +85,7 @@ enum BootstrapModeArg {
 enum CrossModeArg {
     Lightweight,
     PreservedFinalists,
+    FullStack,
 }
 
 #[derive(Parser, Debug)]
@@ -276,6 +277,7 @@ fn to_cross_mode(arg: CrossModeArg) -> ta_app_core::CrossTickerMode {
     match arg {
         CrossModeArg::Lightweight => ta_app_core::CrossTickerMode::Lightweight,
         CrossModeArg::PreservedFinalists => ta_app_core::CrossTickerMode::PreservedFinalists,
+        CrossModeArg::FullStack => ta_app_core::CrossTickerMode::FullStack,
     }
 }
 

@@ -151,7 +151,7 @@ export interface ValidationRequestPayload {
   } | null;
   cross_ticker: {
     max_datasets: number;
-    mode: "lightweight" | "preserved_finalists";
+    mode: "lightweight" | "preserved_finalists" | "full_stack";
     datasets: Array<{ csv_path: string; label: string }>;
   } | null;
   cscv_pbo: {
@@ -366,11 +366,12 @@ function normalizeCrossDatasets(
 function normalizeCrossTickerMode(
   value: unknown,
   strategyKind: string,
-): "lightweight" | "preserved_finalists" {
+): "lightweight" | "preserved_finalists" | "full_stack" {
   const raw = normalizeText(value).toLowerCase();
   if (raw === "lightweight") return "lightweight";
   if (raw === "preserved_finalists" || raw === "preserved-finalists")
     return "preserved_finalists";
+  if (raw === "full_stack" || raw === "full-stack") return "full_stack";
   return isDoubleLikeKind(strategyKind) ? "preserved_finalists" : "lightweight";
 }
 
@@ -1227,7 +1228,11 @@ export function buildValidationCapabilitySummary(
       }
     }
     if (req.cross_ticker) {
-      if (crossMode === "preserved_finalists") {
+      if (crossMode === "full_stack") {
+        warningNotes.push(
+          "Composite cross reruns use full-stack validation modules for the bounded finalist set.",
+        );
+      } else if (crossMode === "preserved_finalists") {
         warningNotes.push(
           "Composite fixed-candidate main-route validation does not support inline cross_ticker; preserved-finalists composite cross reruns keep CSCV/PBO + hard gates and omit walk_forward, reopt_walk_forward, spa, perturb, and trade_bootstrap.",
         );
@@ -1248,7 +1253,9 @@ export function buildValidationCapabilitySummary(
   let crossSummary = "not run";
   if (crossDatasets > 0) {
     const base = `${crossDatasets} dataset${crossDatasets === 1 ? "" : "s"} | ${crossMode || "default"}`;
-    if (isDoubleLike && crossMode === "preserved_finalists") {
+    if (crossMode === "full_stack") {
+      crossSummary = `${base} | full stack finalists (cap=4)`;
+    } else if (isDoubleLike && crossMode === "preserved_finalists") {
       crossSummary = `${base} | finalists only (cap=4)`;
       warningNotes.push(
         "Preserved-finalists cross reruns keep CSCV/PBO + hard gates; auxiliary cross reruns omit walk-forward, SPA, reopt WF, perturb, and trade bootstrap.",
@@ -1262,6 +1269,8 @@ export function buildValidationCapabilitySummary(
       crossSummary =
         crossMode === "preserved_finalists"
           ? `${base} | finalists only (cap=4)`
+          : crossMode === "full_stack"
+            ? `${base} | full stack finalists (cap=4)`
           : `${base} | lightweight reruns`;
     } else {
       crossSummary = base;

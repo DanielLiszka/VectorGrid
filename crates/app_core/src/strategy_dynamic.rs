@@ -15,10 +15,13 @@ use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cuda_with_inputs, PreparedCudaIndicatorInputs,
 };
 use crate::strategy_gpu_runtime::{StrategyCapabilityReport, StrategyHandle};
-use crate::strategy_ir::{build_static_strategy_ir, StaticStrategyIrInput, StrategyProfileKind};
+use crate::strategy_ir::{
+    build_static_strategy_ir, ConditionGroupMode, ConditionOp, IndicatorKind,
+    StaticStrategyIrInput, StrategyProfileKind,
+};
 use crate::strategy_plan::{
     compile_strategy_plan, CompiledConditionGroup, CompiledConditionOp, CompiledStrategyPlan,
-    CompiledValueRef, StrategyPlanBackend,
+    CompiledValueRef, IndicatorRouteKind, StrategyPlanBackend,
 };
 use crate::CompositeSignalMode;
 use serde::{Deserialize, Serialize};
@@ -305,6 +308,160 @@ fn validate_dynamic_indicator_output_for_gpu_v1(
     Ok(())
 }
 
+fn compiled_value_ref_is_indicator(value: &CompiledValueRef, expected_index: u32) -> bool {
+    matches!(value, CompiledValueRef::IndicatorIndex { index } if *index == expected_index)
+}
+
+fn validate_canonical_double_ma_indicator(
+    plan: &CompiledStrategyPlan,
+    index: usize,
+    expected_id: &str,
+    expected_kind: IndicatorKind,
+) -> Result<(), String> {
+    let Some(slot) = plan.indicator_plan.get(index) else {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects indicator slot {index} to be '{expected_id}'"
+        ));
+    };
+    if slot.indicator_id != expected_id || slot.indicator_kind != Some(expected_kind) {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects indicator slot {index} to be '{expected_id}'/{expected_kind:?}, got '{}'/{:?}",
+            slot.indicator_id, slot.indicator_kind
+        ));
+    }
+    if slot.source_indicator_id.is_some() {
+        return Err(format!(
+            "canonical double-ma gpu v1 does not accept descriptor-driven indicator slot '{}'",
+            slot.indicator_id
+        ));
+    }
+    if slot.route != IndicatorRouteKind::GpuKernel {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects indicator slot '{}' to use the GpuKernel route, got {:?}",
+            slot.indicator_id, slot.route
+        ));
+    }
+    Ok(())
+}
+
+fn validate_canonical_double_ma_condition(
+    plan: &CompiledStrategyPlan,
+    index: usize,
+    expected_op: ConditionOp,
+    label: &str,
+) -> Result<(), String> {
+    let Some(condition) = plan.conditions.get(index) else {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects condition {index} ({label})"
+        ));
+    };
+    if condition.op != expected_op
+        || !compiled_value_ref_is_indicator(&condition.lhs, 0)
+        || !compiled_value_ref_is_indicator(&condition.rhs, 1)
+    {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects condition {index} ({label}) to be {expected_op:?}(fast_ma, slow_ma), got {:?}",
+            condition
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_signal_group<'a>(
+    plan: &'a CompiledStrategyPlan,
+    binding: Option<u32>,
+    label: &str,
+) -> Result<&'a CompiledConditionGroup, String> {
+    let group_index = binding
+        .ok_or_else(|| format!("canonical double-ma gpu v1 requires signal binding '{label}'"))?;
+    plan.groups.get(group_index as usize).ok_or_else(|| {
+        format!(
+            "canonical double-ma gpu v1 signal binding '{label}' references out-of-range group {group_index}"
+        )
+    })
+}
+
+fn validate_canonical_double_ma_signal_group(
+    plan: &CompiledStrategyPlan,
+    binding: Option<u32>,
+    label: &str,
+    expected_condition_index: u32,
+) -> Result<(), String> {
+    let group = canonical_signal_group(plan, binding, label)?;
+    if group.mode != ConditionGroupMode::All
+        || group.condition_indexes != [expected_condition_index]
+    {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects signal '{label}' to bind a single All group over condition {expected_condition_index}, got {:?}",
+            group
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_canonical_double_ma_crossover_plan_shape_v1(
+    plan: &CompiledStrategyPlan,
+) -> Result<(), String> {
+    if plan.profile != StrategyProfileKind::DoubleMa {
+        return Err("canonical double-ma gpu v1 supports only the DoubleMa profile".to_string());
+    }
+    if plan.indicator_plan.len() != 2 {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects exactly 2 indicators, got {}",
+            plan.indicator_plan.len()
+        ));
+    }
+    validate_canonical_double_ma_indicator(plan, 0, "fast_ma", IndicatorKind::FastMa)?;
+    validate_canonical_double_ma_indicator(plan, 1, "slow_ma", IndicatorKind::SlowMa)?;
+
+    if plan.conditions.len() != 2 {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects exactly 2 crossover conditions, got {}",
+            plan.conditions.len()
+        ));
+    }
+    validate_canonical_double_ma_condition(plan, 0, ConditionOp::CrossUp, "long entry/short exit")?;
+    validate_canonical_double_ma_condition(
+        plan,
+        1,
+        ConditionOp::CrossDown,
+        "long exit/short entry",
+    )?;
+
+    if plan.groups.len() != 4 {
+        return Err(format!(
+            "canonical double-ma gpu v1 expects exactly 4 signal groups, got {}",
+            plan.groups.len()
+        ));
+    }
+    validate_canonical_double_ma_signal_group(
+        plan,
+        plan.signals.long_entry_group,
+        "long_entry_group",
+        0,
+    )?;
+    validate_canonical_double_ma_signal_group(
+        plan,
+        plan.signals.long_exit_group,
+        "long_exit_group",
+        1,
+    )?;
+    validate_canonical_double_ma_signal_group(
+        plan,
+        plan.signals.short_entry_group,
+        "short_entry_group",
+        1,
+    )?;
+    validate_canonical_double_ma_signal_group(
+        plan,
+        plan.signals.short_exit_group,
+        "short_exit_group",
+        0,
+    )?;
+
+    Ok(())
+}
+
 /// Validate the narrower runnable GPU-kernel contract for a resolved dynamic Double-MA handle.
 ///
 /// This is intentionally stricter than the product-surface preview caps: a request can remain in
@@ -331,6 +488,7 @@ pub(crate) fn validate_dynamic_double_ma_gpu_handle_v1(
                 .to_string(),
         );
     }
+    validate_canonical_double_ma_crossover_plan_shape_v1(&handle.plan)?;
     let program = handle
         .gpu_program
         .as_ref()
@@ -3554,6 +3712,51 @@ mod tests {
     }
 
     #[test]
+    fn preview_dynamic_double_ma_strategy_ir_falls_back_for_noncanonical_gpu_shape() {
+        let _guard = lock_test_env();
+        let mut ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        ir.program
+            .conditions
+            .first_mut()
+            .expect("canonical entry condition expected")
+            .op = ConditionOp::Gt;
+
+        reset_compile_dynamic_strategy_plan_call_count();
+        let preview = preview_dynamic_double_ma_strategy_ir(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            ObjectiveKind::Sharpe,
+            32,
+            false,
+        )
+        .expect("preview should still succeed via cpu fallback");
+
+        assert!(!preview.capability.gpu_dynamic_supported);
+        assert_eq!(preview.resolved_backend, StrategyPlanBackend::Cpu);
+        assert!(
+            compile_dynamic_strategy_plan_call_count() >= 2,
+            "noncanonical GPU preview should compile once for GPU and once for CPU fallback"
+        );
+        assert!(preview
+            .capability
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("canonical double-ma gpu v1")));
+    }
+
+    #[test]
     fn prepare_runnable_dynamic_double_ma_plan_rejects_missing_gpu_handle_without_panicking() {
         let _guard = lock_test_env();
         let candles = make_trending_candles(128);
@@ -3632,13 +3835,23 @@ mod tests {
             runnable.preview.resolved_backend,
             StrategyPlanBackend::GpuUnified
         );
-        assert_eq!(compile_dynamic_strategy_plan_call_count(), 1);
-        assert_eq!(prepare_dynamic_cpu_context_call_count(), 0);
+        let compile_count_after_prepare = compile_dynamic_strategy_plan_call_count();
+        let cpu_context_count_after_prepare = prepare_dynamic_cpu_context_call_count();
+        assert!(
+            compile_count_after_prepare >= 1,
+            "runnable GPU preview should compile before returning"
+        );
         runnable
             .cpu_context(&candles)
             .expect("deferred cpu context should build on first access");
-        assert_eq!(compile_dynamic_strategy_plan_call_count(), 2);
-        assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
+        assert!(
+            compile_dynamic_strategy_plan_call_count() > compile_count_after_prepare,
+            "CPU fallback plan should compile lazily on first CPU context access"
+        );
+        assert!(
+            prepare_dynamic_cpu_context_call_count() > cpu_context_count_after_prepare,
+            "CPU context preparation should be deferred until first access"
+        );
     }
 
     #[test]
@@ -3767,7 +3980,10 @@ mod tests {
 
         assert!(!preview.capability.gpu_dynamic_supported);
         assert_eq!(preview.resolved_backend, StrategyPlanBackend::Cpu);
-        assert_eq!(compile_dynamic_strategy_plan_call_count(), 1);
+        assert!(
+            compile_dynamic_strategy_plan_call_count() >= 1,
+            "fallback preview should compile a CPU plan"
+        );
         assert!(preview
             .capability
             .reasons

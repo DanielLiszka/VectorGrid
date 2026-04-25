@@ -754,6 +754,13 @@ pub fn prepare_ml_confidence_rows_from_meta_artifacts(
         let mut holdout_gate_rows: Vec<DatasetRow> = Vec::new();
         let mut holdout_dataset_rows: Vec<DatasetRow> = Vec::new();
         for g in groups {
+            if g.pointer("/holdout_coverage/evaluated")
+                .and_then(|v| v.as_bool())
+                == Some(false)
+            {
+                continue;
+            }
+
             let Some(x) = extract_features_from_meta_group(g) else {
                 continue;
             };

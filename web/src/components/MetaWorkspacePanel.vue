@@ -201,6 +201,7 @@ const {
   metaStage4AutoTrain,
   metaStage4RequireHealthy,
   metaStage4FallbackToMeta,
+  metaStage4TrainingHistoryPolicy,
   canRunMetaStage4,
   canRunMetaPolicyEval,
   canRevealMetaStage4,
@@ -269,6 +270,7 @@ const metaStage4MaxAcceptUncertaintyDraft = ref("0.45");
 const metaStage4AutoTrainDraft = ref(true);
 const metaStage4RequireHealthyDraft = ref(true);
 const metaStage4FallbackToMetaDraft = ref(true);
+const metaStage4TrainingHistoryPolicyDraft = ref("source_excluded");
 const savedArtifactFamily = ref<SavedArtifactFamilyKey>("meta");
 const pendingSavedArtifactDeleteFamily = ref<SavedArtifactFamilyKey | null>(
   null,
@@ -880,6 +882,8 @@ watch(
       Boolean(metaStage4AutoTrain.value),
       Boolean(metaStage4RequireHealthy.value),
       Boolean(metaStage4FallbackToMeta.value),
+      String(metaStage4TrainingHistoryPolicy.value || "source_excluded").trim() ||
+        "source_excluded",
     ] as const,
   ([
     nextStrategy,
@@ -930,6 +934,7 @@ watch(
     nextStage4AutoTrain,
     nextStage4RequireHealthy,
     nextStage4FallbackToMeta,
+    nextStage4TrainingHistoryPolicy,
   ]) => {
     if (strategyDraft.value !== nextStrategy)
       strategyDraft.value = nextStrategy;
@@ -1029,6 +1034,12 @@ watch(
       metaStage4RequireHealthyDraft.value = nextStage4RequireHealthy;
     if (metaStage4FallbackToMetaDraft.value !== nextStage4FallbackToMeta)
       metaStage4FallbackToMetaDraft.value = nextStage4FallbackToMeta;
+    if (
+      metaStage4TrainingHistoryPolicyDraft.value !==
+      nextStage4TrainingHistoryPolicy
+    )
+      metaStage4TrainingHistoryPolicyDraft.value =
+        nextStage4TrainingHistoryPolicy;
   },
   { immediate: true },
 );
@@ -2677,6 +2688,29 @@ onBeforeUnmount(() => {
                 "
               />
             </div>
+          </div>
+
+          <div>
+            <label for="metaStage4TrainingHistory">Training history</label>
+            <select
+              id="metaStage4TrainingHistory"
+              :value="metaStage4TrainingHistoryPolicyDraft"
+              @change="
+                metaStage4TrainingHistoryPolicyDraft = String(
+                  ($event.target as HTMLSelectElement).value ||
+                    'source_excluded',
+                );
+                setInputValue(
+                  'metaStage4TrainingHistoryPolicy',
+                  metaStage4TrainingHistoryPolicyDraft,
+                );
+              "
+            >
+              <option value="source_excluded">Source excluded</option>
+              <option value="chronological_before_source">
+                Chronological before source
+              </option>
+            </select>
           </div>
 
           <div class="checks">

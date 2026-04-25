@@ -254,6 +254,7 @@ interface AnalysisState {
   metaStage4AutoTrain: boolean
   metaStage4RequireHealthy: boolean
   metaStage4FallbackToMeta: boolean
+  metaStage4TrainingHistoryPolicy: string
   canRunMetaStage4: boolean
   canRunMetaPolicyEval: boolean
   canRevealMetaStage4: boolean
@@ -446,6 +447,9 @@ function applyVueMetaTextFieldUpdate(state: AnalysisState, field: string, value:
       return true
     case 'metaStage4MaxAcceptUncertainty':
       state.metaStage4MaxAcceptUncertainty = next
+      return true
+    case 'metaStage4TrainingHistoryPolicy':
+      state.metaStage4TrainingHistoryPolicy = next || 'source_excluded'
       return true
     default:
       return false
@@ -667,6 +671,7 @@ export const useAnalysisStore = defineStore('analysis', {
     metaStage4AutoTrain: true,
     metaStage4RequireHealthy: true,
     metaStage4FallbackToMeta: true,
+    metaStage4TrainingHistoryPolicy: 'source_excluded',
     canRunMetaStage4: false,
     canRunMetaPolicyEval: false,
     canRevealMetaStage4: false,
@@ -867,6 +872,7 @@ export const useAnalysisStore = defineStore('analysis', {
       this.metaStage4AutoTrain = Boolean(snapshot.metaStage4AutoTrain ?? this.metaStage4AutoTrain)
       this.metaStage4RequireHealthy = Boolean(snapshot.metaStage4RequireHealthy ?? this.metaStage4RequireHealthy)
       this.metaStage4FallbackToMeta = Boolean(snapshot.metaStage4FallbackToMeta ?? this.metaStage4FallbackToMeta)
+      this.metaStage4TrainingHistoryPolicy = String(snapshot.metaStage4TrainingHistoryPolicy ?? this.metaStage4TrainingHistoryPolicy ?? 'source_excluded').trim() || 'source_excluded'
       this.canRunMetaStage4 = Boolean(snapshot.canRunMetaStage4 ?? this.canRunMetaStage4)
       this.canRunMetaPolicyEval = Boolean(snapshot.canRunMetaPolicyEval ?? this.canRunMetaPolicyEval)
       this.canRevealMetaStage4 = Boolean(snapshot.canRevealMetaStage4 ?? this.canRevealMetaStage4)

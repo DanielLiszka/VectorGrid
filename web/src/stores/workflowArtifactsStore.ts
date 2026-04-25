@@ -96,6 +96,8 @@ export interface WorkflowMlSignalArtifact {
   barsScored: number | null;
   coverageRatio: number | null;
   duplicateTimestamps: number | null;
+  deployability: Record<string, unknown> | null;
+  deployabilityState: string;
   policy: Record<string, unknown> | null;
   policySweep: Record<string, unknown> | null;
 }
@@ -382,6 +384,9 @@ function normalizeMlSignalArtifact(
     coverageRatio?: unknown;
     duplicate_timestamps?: unknown;
     duplicateTimestamps?: unknown;
+    deployability?: unknown;
+    deployability_state?: unknown;
+    deployabilityState?: unknown;
     policy?: unknown;
     policy_sweep?: unknown;
     policySweep?: unknown;
@@ -396,6 +401,7 @@ function normalizeMlSignalArtifact(
       : row.policySweep && typeof row.policySweep === "object"
         ? (row.policySweep as Record<string, unknown>)
         : null;
+  const deployability = normalizeOptionalRecord(row.deployability);
   const exporter =
     normalizeOptionalRecord(
       row.exporter ?? row.exporter_metadata ?? row.exporterMetadata,
@@ -670,6 +676,12 @@ function normalizeMlSignalArtifact(
     duplicateTimestamps: normalizeOptionalNumber(
       row.duplicate_timestamps ?? row.duplicateTimestamps,
     ),
+    deployability: markRawUnknown(deployability),
+    deployabilityState: normalizeText(
+      row.deployability_state ??
+        row.deployabilityState ??
+        deployability?.state,
+    ),
     policy: markRawUnknown(policy),
     policySweep: markRawUnknown(policySweep),
   };
@@ -712,6 +724,8 @@ function normalizeMlSignalArtifact(
     out.barsScored == null &&
     out.coverageRatio == null &&
     out.duplicateTimestamps == null &&
+    !out.deployability &&
+    !out.deployabilityState &&
     !out.policy &&
     !out.policySweep
   ) {

@@ -1,10 +1,4 @@
 
-
-
-#ifndef _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
-#define _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
-#endif
-
 #include <cuda_runtime.h>
 #include <math.h>
 #include <stdint.h>
@@ -64,6 +58,17 @@ struct GpuIndicatorSlotAbi {
     uint32_t indicator_index;
     uint32_t route;
 };
+
+static_assert(sizeof(GpuValueOperandAbi) == 16, "GpuValueOperandAbi ABI size drift");
+static_assert(alignof(GpuValueOperandAbi) == 8, "GpuValueOperandAbi ABI alignment drift");
+static_assert(sizeof(GpuConditionAbi) == 40, "GpuConditionAbi ABI size drift");
+static_assert(alignof(GpuConditionAbi) == 8, "GpuConditionAbi ABI alignment drift");
+static_assert(sizeof(GpuConditionGroupAbi) == 12, "GpuConditionGroupAbi ABI size drift");
+static_assert(alignof(GpuConditionGroupAbi) == 4, "GpuConditionGroupAbi ABI alignment drift");
+static_assert(sizeof(GpuSignalBindingsAbi) == 16, "GpuSignalBindingsAbi ABI size drift");
+static_assert(alignof(GpuSignalBindingsAbi) == 4, "GpuSignalBindingsAbi ABI alignment drift");
+static_assert(sizeof(GpuIndicatorSlotAbi) == 8, "GpuIndicatorSlotAbi ABI size drift");
+static_assert(alignof(GpuIndicatorSlotAbi) == 4, "GpuIndicatorSlotAbi ABI alignment drift");
 
 extern "C" __global__
 void strategy_program_probe_f32(
@@ -203,10 +208,16 @@ static __device__ __forceinline__ float strategy_program_load_indicator_value_f3
     const float* __restrict__ slow_row,
     int t
 ) {
-    if (!indicator_slots || indicator_slot_index >= (uint32_t)indicator_slot_count || t < 0) {
+    if (!indicator_slots || indicator_slot_count <= 0 || t < 0) {
+        return NAN;
+    }
+    if (indicator_slot_index >= (uint32_t)indicator_slot_count) {
         return NAN;
     }
     const GpuIndicatorSlotAbi slot = indicator_slots[indicator_slot_index];
+    if (slot.route > 2u) {
+        return NAN;
+    }
     switch (slot.indicator_index) {
         case 0u:
             return fast_row ? fast_row[t] : NAN;
@@ -326,24 +337,35 @@ static __device__ __forceinline__ int strategy_program_eval_group_f32(
     int sig_t,
     int prev_t
 ) {
-    if (group_index < 0 || group_index >= group_count || !groups) {
+    if (!groups || !conditions || !group_condition_indexes) {
+        return 0;
+    }
+    if (group_index < 0 || group_count <= 0 || group_index >= group_count) {
+        return 0;
+    }
+    if (condition_count <= 0 || group_condition_index_count <= 0) {
         return 0;
     }
 
     const GpuConditionGroupAbi group = groups[group_index];
-    if (group.condition_count == 0u) {
+    if (group.mode > 1u || group.condition_count == 0u) {
+        return 0;
+    }
+    const uint32_t index_count = (uint32_t)group_condition_index_count;
+    if (group.condition_offset >= index_count) {
+        return 0;
+    }
+    if (group.condition_count > (index_count - group.condition_offset)) {
         return 0;
     }
 
+    const uint32_t condition_count_u32 = (uint32_t)condition_count;
     const int is_all = (group.mode == 0u) ? 1 : 0;
     int aggregate = is_all ? 1 : 0;
     for (uint32_t i = 0; i < group.condition_count; ++i) {
         const uint32_t idx_offset = group.condition_offset + i;
-        if (!group_condition_indexes || idx_offset >= (uint32_t)group_condition_index_count) {
-            return 0;
-        }
         const uint32_t condition_index = group_condition_indexes[idx_offset];
-        if ((int)condition_index >= condition_count || !conditions) {
+        if (condition_index >= condition_count_u32) {
             return 0;
         }
         const int condition_ok = strategy_program_eval_condition_f32(
@@ -368,6 +390,26 @@ static __device__ __forceinline__ int strategy_program_eval_group_f32(
         }
     }
     return aggregate;
+}
+
+static __device__ __forceinline__ void write_invalid_metric_row_f32(
+    float* __restrict__ metrics_out,
+    size_t base,
+    int count
+) {
+    for (int i = 0; i < count; ++i) {
+        metrics_out[base + (size_t)i] = NAN;
+    }
+}
+
+static __device__ __forceinline__ void write_invalid_m7_metric_row_f32(
+    float* __restrict__ metrics_out,
+    size_t base
+) {
+#pragma unroll
+    for (int i = 0; i < 7; ++i) {
+        metrics_out[base + (size_t)i] = NAN;
+    }
 }
 
 extern "C" __global__
@@ -403,7 +445,13 @@ void strategy_program_double_ma_backtest_f32(
     float* __restrict__ out_metrics
 ) {
     const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    if (idx >= combo_count) return;
+    if (idx < 0 || idx >= combo_count) return;
+    if (!out_metrics || out_stride < 10) return;
+    const size_t base = (size_t)idx * (size_t)out_stride;
+    write_invalid_metric_row_f32(out_metrics, base, 10);
+    if (!lr || !fast_row_major || !slow_row_major || !signals) return;
+    if (!combo_fast_row_idx || !combo_slow_row_idx || !combo_start_t || !combo_end_t) return;
+    if (T <= 0 || fast_rows <= 0 || slow_rows <= 0 || fast_stride <= 0 || slow_stride <= 0) return;
 
     const int fast_row_index = combo_fast_row_idx[idx];
     const int slow_row_index = combo_slow_row_idx[idx];
@@ -414,22 +462,6 @@ void strategy_program_double_ma_backtest_f32(
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
     const int use_stop = (flags & STRAT_STOP_LOSS) ? 1 : 0;
     const int use_take = (flags & STRAT_TAKE_PROFIT) ? 1 : 0;
-    const int base = idx * out_stride;
-
-    if (base < 0) return;
-    if (out_stride >= 10) {
-        out_metrics[base + 0] = 0.0f;
-        out_metrics[base + 1] = 0.0f;
-        out_metrics[base + 2] = 0.0f;
-        out_metrics[base + 3] = 0.0f;
-        out_metrics[base + 4] = 0.0f;
-        out_metrics[base + 5] = 0.0f;
-        out_metrics[base + 6] = 0.0f;
-        out_metrics[base + 7] = 0.0f;
-        out_metrics[base + 8] = 0.0f;
-        out_metrics[base + 9] = 0.0f;
-    }
-    if (!lr || !fast_row_major || !slow_row_major || !signals) return;
     if (fast_row_index < 0 || fast_row_index >= fast_rows || slow_row_index < 0 || slow_row_index >= slow_rows) return;
     if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
 
@@ -650,7 +682,7 @@ void strategy_program_double_ma_backtest_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
@@ -686,18 +718,16 @@ void strategy_program_double_ma_backtest_f32(
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
 
-    if (out_stride >= 10) {
-        out_metrics[base + 0] = pnl;
-        out_metrics[base + 1] = sharpe;
-        out_metrics[base + 2] = sortino;
-        out_metrics[base + 3] = calmar;
-        out_metrics[base + 4] = omega;
-        out_metrics[base + 5] = volatility;
-        out_metrics[base + 6] = max_dd;
-        out_metrics[base + 7] = (float)trades;
-        out_metrics[base + 8] = exposure;
-        out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
-    }
+    out_metrics[base + 0] = pnl;
+    out_metrics[base + 1] = sharpe;
+    out_metrics[base + 2] = sortino;
+    out_metrics[base + 3] = calmar;
+    out_metrics[base + 4] = omega;
+    out_metrics[base + 5] = volatility;
+    out_metrics[base + 6] = max_dd;
+    out_metrics[base + 7] = (float)trades;
+    out_metrics[base + 8] = exposure;
+    out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
 }
 
 extern "C" __global__
@@ -721,7 +751,13 @@ void strategy_program_double_ma_constrained_tm_f32_m7(
     float* __restrict__ metrics_out
 ) {
     const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    if (idx >= combo_count) return;
+    if (idx < 0 || idx >= combo_count) return;
+    if (!metrics_out) return;
+    const size_t base = (size_t)idx * 7u;
+    write_invalid_m7_metric_row_f32(metrics_out, base);
+    if (!lr || !fast_ma_T || !slow_ma_T) return;
+    if (!combo_fast_row_idx || !combo_slow_row_idx || !combo_start_t || !combo_end_t) return;
+    if (T <= 0 || fast_tm_stride <= 0 || slow_tm_stride <= 0) return;
 
     const int fast_row_index = combo_fast_row_idx[idx];
     const int slow_row_index = combo_slow_row_idx[idx];
@@ -732,10 +768,8 @@ void strategy_program_double_ma_constrained_tm_f32_m7(
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
     const int use_stop = (flags & STRAT_STOP_LOSS) ? 1 : 0;
     const int use_take = (flags & STRAT_TAKE_PROFIT) ? 1 : 0;
-    const int base = idx * 7;
 
-    if (!lr || !fast_ma_T || !slow_ma_T || !metrics_out) return;
-    if (fast_row_index < 0 || slow_row_index < 0) return;
+    if (fast_row_index < 0 || fast_row_index >= fast_tm_stride || slow_row_index < 0 || slow_row_index >= slow_tm_stride) return;
     if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
 
     int pos = 0;
@@ -840,7 +874,7 @@ void strategy_program_double_ma_constrained_tm_f32_m7(
 
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float std = sqrtf(fmaxf(variance, 0.0f));
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_expo = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
@@ -884,7 +918,13 @@ void strategy_program_double_ma_backtest_tm_f32_m7(
     float* __restrict__ metrics_out
 ) {
     const int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    if (idx >= combo_count) return;
+    if (idx < 0 || idx >= combo_count) return;
+    if (!metrics_out) return;
+    const size_t base = (size_t)idx * 7u;
+    write_invalid_m7_metric_row_f32(metrics_out, base);
+    if (!lr || !fast_ma_T || !slow_ma_T || !signals) return;
+    if (!combo_fast_row_idx || !combo_slow_row_idx || !combo_start_t || !combo_end_t) return;
+    if (T <= 0 || fast_tm_stride <= 0 || slow_tm_stride <= 0) return;
 
     const int fast_row_index = combo_fast_row_idx[idx];
     const int slow_row_index = combo_slow_row_idx[idx];
@@ -895,10 +935,8 @@ void strategy_program_double_ma_backtest_tm_f32_m7(
     const int trade_on_next_bar = (flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0;
     const int use_stop = (flags & STRAT_STOP_LOSS) ? 1 : 0;
     const int use_take = (flags & STRAT_TAKE_PROFIT) ? 1 : 0;
-    const int base = idx * 7;
 
-    if (!lr || !fast_ma_T || !slow_ma_T || !signals || !metrics_out) return;
-    if (fast_row_index < 0 || slow_row_index < 0) return;
+    if (fast_row_index < 0 || fast_row_index >= fast_tm_stride || slow_row_index < 0 || slow_row_index >= slow_tm_stride) return;
     if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
 
     int pos = 0;
@@ -1105,7 +1143,7 @@ void strategy_program_double_ma_backtest_tm_f32_m7(
 
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float std = sqrtf(fmaxf(variance, 0.0f));
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_expo = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
@@ -1375,7 +1413,7 @@ void rocb_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
 
     const float clamp_max = 1.0e6f;
@@ -1727,7 +1765,7 @@ void vcet_backtest_metrics_f32(
 
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = 1.0f - expf(-max_log_dd);
     const float eps_denom = 1.0e-12f;
     const float clamp_max = 1.0e6f;
@@ -2056,7 +2094,7 @@ void mkcs_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
     const float mean_excess = mean - hurdle_tau;
 
@@ -2393,7 +2431,7 @@ void cdmc_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
     const float mean_excess = mean - hurdle_tau;
 
@@ -2744,7 +2782,7 @@ void kqsr_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
 
     const float clamp_max = 1.0e6f;
@@ -3094,7 +3132,7 @@ void carm_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
 
     const float clamp_max = 1.0e6f;
@@ -3453,7 +3491,7 @@ void kvdf_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
     const float mean_excess = mean - hurdle_tau;
 
@@ -3550,7 +3588,7 @@ static __device__ __forceinline__ float compute_eps_f32(float s, float eps_rel) 
     if constexpr (EPS_MODE == 0) {
         return 0.0f;
     } else if constexpr (EPS_MODE == 1) {
-        return eps_rel * fmaxf(1.0f, fabsf(s));
+        return fmaxf(eps_rel, 0.0f) * fmaxf(1.0f, fabsf(s));
     } else {
         return (eps_rel > 0.0f) ? (eps_rel * fmaxf(1.0f, fabsf(s))) : 0.0f;
     }
@@ -4065,12 +4103,18 @@ void build_orc_regime_f32(const float* __restrict__ rsi,
 #ifndef STRAT_TRADE_ON_NEXT_BAR
 #define STRAT_TRADE_ON_NEXT_BAR      (1u<<2)
 #endif
+#ifndef STRAT_ENFORCE_FAST_LT_SLOW
 #define STRAT_ENFORCE_FAST_LT_SLOW   (1u<<3)
+#endif
 #ifndef STRAT_SIGNED_EXPOSURE
 #define STRAT_SIGNED_EXPOSURE        (1u<<4)
 #endif
+#ifndef STRAT_STOP_LOSS
 #define STRAT_STOP_LOSS              (1u<<5)
+#endif
+#ifndef STRAT_TAKE_PROFIT
 #define STRAT_TAKE_PROFIT            (1u<<6)
+#endif
 
 
 
@@ -4087,7 +4131,7 @@ static __device__ __forceinline__ void record_closed_trade_summary_f32(
 {
     if (!enabled) return;
     *closed_trades += 1;
-    const float trade_ret = expf(trade_log_ret) - 1.0f;
+    const float trade_ret = expm1f(trade_log_ret);
     if (trade_ret > 0.0f) {
         *winning_trades += 1;
         *gross_profit += trade_ret;
@@ -4099,6 +4143,8 @@ static __device__ __forceinline__ void record_closed_trade_summary_f32(
 
 static __device__ __forceinline__ bool metrics_row_uses_log_space_f32(int M)
 {
+    // Compatibility inference for existing reduced-row kernels. A fully
+    // explicit row-format ABI requires coordinated host dispatch changes.
     return M < 17;
 }
 
@@ -4275,9 +4321,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         (SCORE_ONLY_SHARPE
             ? 1
             : (metrics_out_stride > 0) ? metrics_out_stride : (FULL_M7 ? 7 : effective_m));
+    const float commission_clamped = fminf(fmaxf(commission, 0.0f), 0.95f);
     const bool has_commission =
-        (COMMISSION_MODE == 0) ? false : ((COMMISSION_MODE == 1) ? true : (commission > 0.0f));
-    const float log_comm = has_commission ? log1pf(-commission) : 0.0f;
+        (COMMISSION_MODE == 0) ? false : ((COMMISSION_MODE == 1) ? (commission_clamped > 0.0f) : (commission_clamped > 0.0f));
+    const float log_comm = has_commission ? log1pf(-commission_clamped) : 0.0f;
     const int need_trades = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 1) : (M > 1)));
     const int need_max_dd = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 2) : (M > 2)));
     const int need_stats  = SCORE_ONLY_SHARPE ? 1 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 3) : (M > 3)));
@@ -4632,7 +4679,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     const float f = fast_cur;
                     const float s = slow_cur;
                     const float lr_t = lr_cur;
-                    const float ret1_t = need_step_returns ? ret1_cur : 0.0f;
+                    const float ret1_t = need_step_returns
+                        ? ((ret1_ptr != nullptr) ? ret1_cur : expm1f(lr_t))
+                        : 0.0f;
                     const float fast_next = ld_ro_1d(fast_ptr + (size_t)fast_stride, 0);
                     const float slow_next = ld_ro_1d(slow_ptr + (size_t)slow_stride, 0);
                     const float lr_next = ld_ro_1d(lr_ptr + 1, 0);
@@ -4660,7 +4709,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     const float f = fast_cur;
                     const float s = slow_cur;
                     const float lr_t = lr_cur;
-                    const float ret1_t = need_step_returns ? ret1_cur : 0.0f;
+                    const float ret1_t = need_step_returns
+                        ? ((ret1_ptr != nullptr) ? ret1_cur : expm1f(lr_t))
+                        : 0.0f;
                     PROCESS_NO_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
                 }
             } else {
@@ -4685,7 +4736,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     const float lr_t = ld_ro_1d(lr, (size_t)t);
                     float ret1_t = 0.0f;
                     if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
-                        ret1_t = ld_ro_1d(ret1, (size_t)t);
+                        ret1_t = (ret1 != nullptr) ? ld_ro_1d(ret1, (size_t)t) : expm1f(lr_t);
                     }
                     PROCESS_NO_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
                 }
@@ -4865,6 +4916,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     if (need_step_returns && ret1_ptr != nullptr) {
                         ret1_t = ret1_cur;
                         ret1_next = ld_ro_1d(ret1_ptr + 1, 0);
+                    } else if (need_step_returns) {
+                        ret1_t = expm1f(lr_t);
                     }
                     fast_ptr += (size_t)fast_stride;
                     slow_ptr += (size_t)slow_stride;
@@ -4886,7 +4939,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     const float f = fast_cur;
                     const float s = slow_cur;
                     const float lr_t = lr_cur;
-                    const float ret1_t = need_step_returns ? ret1_cur : 0.0f;
+                    const float ret1_t = need_step_returns
+                        ? ((ret1_ptr != nullptr) ? ret1_cur : expm1f(lr_t))
+                        : 0.0f;
                     PROCESS_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
                 }
             } else {
@@ -4911,7 +4966,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     const float lr_t = ld_ro_1d(lr, (size_t)t);
                     float ret1_t = 0.0f;
                     if (need_step_returns) {
-                        ret1_t = ld_ro_1d(ret1, (size_t)t);
+                        ret1_t = (ret1 != nullptr) ? ld_ro_1d(ret1, (size_t)t) : expm1f(lr_t);
                     }
                     PROCESS_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
                 }
@@ -4923,8 +4978,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         const float max_dd = (need_max_dd && max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
         const float exposure = (need_expo && n > 0) ? ((float)sum_abs_pos / (float)n) : 0.0f;
         const float net_expo = (need_expo && n > 0) ? ((float)sum_pos / (float)n)     : 0.0f;
-        const float pnl = expf(log_eq) - 1.0f;
-        const float std = sqrtf(variance);
+        const float pnl = expm1f(log_eq);
+        const float std = sqrtf(fmaxf(variance, 0.0f));
         const float downside_dev =
             (need_downside_dev && obs > 0) ? sqrtf(fmaxf(sum_neg_sq / (float)obs, 0.0f)) : 0.0f;
         const float ulcer_index =
@@ -8609,22 +8664,30 @@ static __device__ __forceinline__ float objective_score_f32(
     // 5 = sortino, 6 = omega
     const float clamp_max = 1.0e6f;
     if (objective == 0) {
-        return (M > 0) ? metrics[base + 0] : NEG_INF_F;
+        if (M <= 0) return NEG_INF_F;
+        const bool search_row = metrics_row_uses_log_space_f32(M);
+        const float score = search_row ? expm1f(metrics[base + 0]) : metrics[base + 0];
+        return isfinite(score) ? score : NEG_INF_F;
     }
     if (objective == 1) {
         if (M <= 4) return NEG_INF_F;
         const float mean = metrics[base + 3];
         const float std  = metrics[base + 4];
+        if (!isfinite(mean) || !isfinite(std)) return NEG_INF_F;
         return (std > 0.0f) ? (mean / std) : 0.0f;
     }
     if (objective == 2) {
-        return (M > 2) ? -metrics[base + 2] : NEG_INF_F;
+        if (M <= 2) return NEG_INF_F;
+        const bool search_row = metrics_row_uses_log_space_f32(M);
+        const float dd = search_row ? -expm1f(-metrics[base + 2]) : metrics[base + 2];
+        return isfinite(dd) ? -dd : NEG_INF_F;
     }
     if (objective == 3) {
         if (M <= 2) return NEG_INF_F;
         const bool search_row = metrics_row_uses_log_space_f32(M);
         const float pnl = search_row ? expm1f(metrics[base + 0]) : metrics[base + 0];
         const float max_dd = search_row ? -expm1f(-metrics[base + 2]) : metrics[base + 2];
+        if (!isfinite(pnl) || !isfinite(max_dd)) return NEG_INF_F;
         const float eps = 1e-12f;
         float raw = 0.0f;
         if (max_dd > eps) {
@@ -8641,20 +8704,23 @@ static __device__ __forceinline__ float objective_score_f32(
     if (objective == 4) {
         if (M <= 4) return NEG_INF_F;
         const float std = metrics[base + 4];
-        return -std;
+        return isfinite(std) ? -std : NEG_INF_F;
     }
     if (objective == 5) {
         if (M <= 7) return NEG_INF_F;
         const float mean = metrics[base + 3];
         const float downside = metrics[base + 7];
         const float mean_excess = mean - hurdle_tau;
+        if (!isfinite(mean) || !isfinite(downside) || !isfinite(mean_excess)) return NEG_INF_F;
         if (downside > 0.0f) return mean_excess / downside;
         if (mean_excess > 0.0f) return clamp_max;
         if (mean_excess < 0.0f) return -clamp_max;
         return 0.0f;
     }
     if (objective == 6) {
-        return (M > 9) ? metrics[base + 9] : NEG_INF_F;
+        if (M <= 9) return NEG_INF_F;
+        const float omega = metrics[base + 9];
+        return isfinite(omega) ? omega : NEG_INF_F;
     }
     return NEG_INF_F;
 }
@@ -8667,26 +8733,34 @@ static __device__ __forceinline__ float objective_score_vemr_f32(
 ) {
     // objective: 0 = pnl, 1 = sharpe, 2 = sortino, 3 = calmar, 4 = omega,
     // 5 = -volatility, 6 = -max_dd
+    float score = NEG_INF_F;
     if (objective == 0) {
-        return (M > 0) ? metrics[base + 0] : NEG_INF_F;
+        score = (M > 0) ? metrics[base + 0] : NEG_INF_F;
+        return isfinite(score) ? score : NEG_INF_F;
     }
     if (objective == 1) {
-        return (M > 1) ? metrics[base + 1] : NEG_INF_F;
+        score = (M > 1) ? metrics[base + 1] : NEG_INF_F;
+        return isfinite(score) ? score : NEG_INF_F;
     }
     if (objective == 2) {
-        return (M > 2) ? metrics[base + 2] : NEG_INF_F;
+        score = (M > 2) ? metrics[base + 2] : NEG_INF_F;
+        return isfinite(score) ? score : NEG_INF_F;
     }
     if (objective == 3) {
-        return (M > 3) ? metrics[base + 3] : NEG_INF_F;
+        score = (M > 3) ? metrics[base + 3] : NEG_INF_F;
+        return isfinite(score) ? score : NEG_INF_F;
     }
     if (objective == 4) {
-        return (M > 4) ? metrics[base + 4] : NEG_INF_F;
+        score = (M > 4) ? metrics[base + 4] : NEG_INF_F;
+        return isfinite(score) ? score : NEG_INF_F;
     }
     if (objective == 5) {
-        return (M > 5) ? -metrics[base + 5] : NEG_INF_F;
+        score = (M > 5) ? -metrics[base + 5] : NEG_INF_F;
+        return isfinite(score) ? score : NEG_INF_F;
     }
     if (objective == 6) {
-        return (M > 6) ? -metrics[base + 6] : NEG_INF_F;
+        score = (M > 6) ? -metrics[base + 6] : NEG_INF_F;
+        return isfinite(score) ? score : NEG_INF_F;
     }
     return NEG_INF_F;
 }
@@ -8724,11 +8798,14 @@ static __device__ __forceinline__ bool passes_constraints_f32(
     if (use_min_trades) {
         if (M <= 1) return false;
         const float trades = metrics[base + 1];
+        if (!isfinite(trades)) return false;
         if (!(trades >= min_trades)) return false;
     }
     if (use_max_dd) {
         if (M <= 2) return false;
-        const float dd = metrics[base + 2];
+        const bool search_row = metrics_row_uses_log_space_f32(M);
+        const float dd = search_row ? -expm1f(-metrics[base + 2]) : metrics[base + 2];
+        if (!isfinite(dd)) return false;
         if (!(dd <= max_dd)) return false;
     }
     if (use_min_sharpe) {
@@ -8746,21 +8823,25 @@ static __device__ __forceinline__ bool passes_constraints_f32(
     if (use_max_volatility) {
         if (M <= 4) return false;
         const float volatility = metrics[base + 4];
+        if (!isfinite(volatility)) return false;
         if (!(volatility <= max_volatility)) return false;
     }
     if (use_min_exposure) {
         if (M <= 5) return false;
         const float exposure = metrics[base + 5];
+        if (!isfinite(exposure)) return false;
         if (!(exposure >= min_exposure)) return false;
     }
     if (use_max_exposure) {
         if (M <= 5) return false;
         const float exposure = metrics[base + 5];
+        if (!isfinite(exposure)) return false;
         if (!(exposure <= max_exposure)) return false;
     }
     if (use_max_abs_net_exposure) {
         if (M <= 6) return false;
         const float net_exposure = fabsf(metrics[base + 6]);
+        if (!isfinite(net_exposure)) return false;
         if (!(net_exposure <= max_abs_net_exposure)) return false;
     }
     if (use_min_omega) {
@@ -8770,11 +8851,13 @@ static __device__ __forceinline__ bool passes_constraints_f32(
     if (use_max_ulcer) {
         if (M <= 8) return false;
         const float ulcer = metrics[base + 8];
+        if (!isfinite(ulcer)) return false;
         if (!(ulcer <= max_ulcer)) return false;
     }
     if (use_max_downside_deviation) {
         if (M <= 7) return false;
         const float downside = metrics[base + 7];
+        if (!isfinite(downside)) return false;
         if (!(downside <= max_downside_deviation)) return false;
     }
     return true;
@@ -8901,6 +8984,19 @@ void heatmap_update_scores_tm_f32(
 #define TOPK_ITEMS_PER_THREAD 2
 #define TOPK_BLOCK_ITEMS (TOPK_BLOCK_THREADS * TOPK_ITEMS_PER_THREAD)
 
+// CUB BlockRadixSort instantiations below require launches with blockDim.x == 256.
+static __device__ __forceinline__ void accept_topk_candidate_f32(
+    float candidate_score,
+    int candidate_value,
+    float* __restrict__ score,
+    int* __restrict__ value
+) {
+    if (candidate_value >= 0 && isfinite(candidate_score)) {
+        *score = candidate_score;
+        *value = candidate_value;
+    }
+}
+
 extern "C" __global__
 void select_topk_from_pairs_tm_f32(
     const float* __restrict__ metrics,
@@ -8933,9 +9029,11 @@ void select_topk_from_pairs_tm_f32(
         if (compact_idx < total_pairs) {
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
-                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                if (!isfinite(score)) score = NEG_INF_F;
-                val = compact_idx;
+                accept_topk_candidate_f32(
+                    objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                    compact_idx,
+                    &score,
+                    &val);
             } else {
                 const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
                 if (pair >= 0) {
@@ -8948,9 +9046,11 @@ void select_topk_from_pairs_tm_f32(
                             const size_t row_idx =
                                 compact_output ? (size_t)compact_idx : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                            if (!isfinite(score)) score = NEG_INF_F;
-                            val = compact_output ? compact_idx : pair;
+                            accept_topk_candidate_f32(
+                                objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                                compact_output ? compact_idx : pair,
+                                &score,
+                                &val);
                         }
                     }
                 }
@@ -8968,7 +9068,7 @@ void select_topk_from_pairs_tm_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_pair_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9005,13 +9105,17 @@ void select_topk_from_candidates_tm_f32(
         int row = -1;
         int pair = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_pair_idx[in_pos];
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 if (row >= 0 && row < total_rows) {
                     const size_t base = (size_t)row * (size_t)metrics_stride;
-                    score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                    if (!isfinite(score)) score = NEG_INF_F;
+                    accept_topk_candidate_f32(
+                        objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                        row,
+                        &score,
+                        &val);
                 }
             } else {
                 if (row >= 0 && row < total_rows) {
@@ -9028,15 +9132,18 @@ void select_topk_from_candidates_tm_f32(
                         if (f < s) {
                             const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                            if (!isfinite(score)) score = NEG_INF_F;
+                            accept_topk_candidate_f32(
+                                objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                                row,
+                                &score,
+                                &val);
                         }
                     }
                 }
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -9047,7 +9154,7 @@ void select_topk_from_candidates_tm_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_pair_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9109,9 +9216,11 @@ void select_topk_from_pairs_tm_f32_v2(
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
                 if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                    score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                    if (!isfinite(score)) score = NEG_INF_F;
-                    val = compact_idx;
+                    accept_topk_candidate_f32(
+                        objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                        compact_idx,
+                        &score,
+                        &val);
                 }
             } else {
                 const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
@@ -9126,9 +9235,11 @@ void select_topk_from_pairs_tm_f32_v2(
                                 compact_output ? (size_t)compact_idx : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
                             if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                                if (!isfinite(score)) score = NEG_INF_F;
-                                val = compact_output ? compact_idx : pair;
+                                accept_topk_candidate_f32(
+                                    objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                                    compact_output ? compact_idx : pair,
+                                    &score,
+                                    &val);
                             }
                         }
                     }
@@ -9147,7 +9258,7 @@ void select_topk_from_pairs_tm_f32_v2(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_pair_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9208,14 +9319,18 @@ void select_topk_from_candidates_tm_f32_v2(
         int row = -1;
         int pair = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_pair_idx[in_pos];
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 if (row >= 0 && row < total_rows) {
                     const size_t base = (size_t)row * (size_t)metrics_stride;
                     if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                        score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                        if (!isfinite(score)) score = NEG_INF_F;
+                        accept_topk_candidate_f32(
+                            objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                            row,
+                            &score,
+                            &val);
                     }
                 }
             } else {
@@ -9234,8 +9349,11 @@ void select_topk_from_candidates_tm_f32_v2(
                             const size_t row_idx = compact_output ? (size_t)row : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
                             if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                                if (!isfinite(score)) score = NEG_INF_F;
+                                accept_topk_candidate_f32(
+                                    objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                                    row,
+                                    &score,
+                                    &val);
                             }
                         }
                     }
@@ -9243,7 +9361,7 @@ void select_topk_from_candidates_tm_f32_v2(
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -9254,7 +9372,7 @@ void select_topk_from_candidates_tm_f32_v2(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_pair_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9359,9 +9477,11 @@ void select_topk_scored_pairs_tm_f32(
         if (compact_idx < total_pairs) {
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
-                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                if (!isfinite(score)) score = NEG_INF_F;
-                val = compact_idx;
+                accept_topk_candidate_f32(
+                    objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                    compact_idx,
+                    &score,
+                    &val);
             } else {
                 const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
                 if (pair >= 0) {
@@ -9374,9 +9494,11 @@ void select_topk_scored_pairs_tm_f32(
                             const size_t row_idx =
                                 compact_output ? (size_t)compact_idx : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
-                            score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                            if (!isfinite(score)) score = NEG_INF_F;
-                            val = compact_output ? compact_idx : pair;
+                            accept_topk_candidate_f32(
+                                objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                                compact_output ? compact_idx : pair,
+                                &score,
+                                &val);
                         }
                     }
                 }
@@ -9394,8 +9516,8 @@ void select_topk_scored_pairs_tm_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
-            out_scores[(int)blockIdx.x * topk + rank] = keys[item];
+            out_pair_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
+            out_scores[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = keys[item];
         }
     }
 }
@@ -9459,9 +9581,11 @@ void select_topk_scored_pairs_tm_f32_v2(
             if (compact_output && pair_index_map != nullptr && pair_count > 0) {
                 const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
                 if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                    score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                    if (!isfinite(score)) score = NEG_INF_F;
-                    val = compact_idx;
+                    accept_topk_candidate_f32(
+                        objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                        compact_idx,
+                        &score,
+                        &val);
                 }
             } else {
                 const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
@@ -9476,9 +9600,11 @@ void select_topk_scored_pairs_tm_f32_v2(
                                 compact_output ? (size_t)compact_idx : (size_t)pair;
                             const size_t base = row_idx * (size_t)metrics_stride;
                             if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
-                                if (!isfinite(score)) score = NEG_INF_F;
-                                val = compact_output ? compact_idx : pair;
+                                accept_topk_candidate_f32(
+                                    objective_score_f32(metrics, base, M, objective, hurdle_tau),
+                                    compact_output ? compact_idx : pair,
+                                    &score,
+                                    &val);
                             }
                         }
                     }
@@ -9497,8 +9623,8 @@ void select_topk_scored_pairs_tm_f32_v2(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
-            out_scores[(int)blockIdx.x * topk + rank] = keys[item];
+            out_pair_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
+            out_scores[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = keys[item];
         }
     }
 }
@@ -9523,9 +9649,7 @@ void select_topk_scored_candidates_tm_f32(
         float score = NEG_INF_F;
         int val = -1;
         if (in_pos < in_len) {
-            score = in_scores[in_pos];
-            if (!isfinite(score)) score = NEG_INF_F;
-            val = in_pair_idx[in_pos];
+            accept_topk_candidate_f32(in_scores[in_pos], in_pair_idx[in_pos], &score, &val);
         }
         keys[item] = score;
         vals[item] = val;
@@ -9539,8 +9663,8 @@ void select_topk_scored_candidates_tm_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
-            out_scores[(int)blockIdx.x * topk + rank] = keys[item];
+            out_pair_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
+            out_scores[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = keys[item];
         }
     }
 }
@@ -9717,9 +9841,7 @@ void select_topk_scored_rows_f32(
         float score = NEG_INF_F;
         int val = -1;
         if (idx < rows) {
-            score = score_rows[idx];
-            if (!isfinite(score)) score = NEG_INF_F;
-            val = idx;
+            accept_topk_candidate_f32(score_rows[idx], idx, &score, &val);
         }
         keys[item] = score;
         vals[item] = val;
@@ -9733,7 +9855,7 @@ void select_topk_scored_rows_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9756,15 +9878,15 @@ void select_topk_scored_rows_from_candidates_f32(
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         int row = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
-                score = score_rows[row];
-                if (!isfinite(score)) score = NEG_INF_F;
+                accept_topk_candidate_f32(score_rows[row], row, &score, &val);
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -9775,7 +9897,7 @@ void select_topk_scored_rows_from_candidates_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9828,9 +9950,11 @@ void select_topk_metric_rows_dense_f32(
         int val = -1;
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)M;
-            score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-            if (!isfinite(score)) score = NEG_INF_F;
-            val = idx;
+            accept_topk_candidate_f32(
+                objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                idx,
+                &score,
+                &val);
         }
         keys[item] = score;
         vals[item] = val;
@@ -9844,7 +9968,7 @@ void select_topk_metric_rows_dense_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9872,9 +9996,11 @@ void select_topk_metric_rows_f32(
         int val = -1;
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)row_stride;
-            score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-            if (!isfinite(score)) score = NEG_INF_F;
-            val = idx;
+            accept_topk_candidate_f32(
+                objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                idx,
+                &score,
+                &val);
         }
         keys[item] = score;
         vals[item] = val;
@@ -9888,7 +10014,7 @@ void select_topk_metric_rows_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9914,16 +10040,20 @@ void select_topk_metric_rows_from_candidates_dense_f32(
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         int row = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)M;
-                score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-                if (!isfinite(score)) score = NEG_INF_F;
+                accept_topk_candidate_f32(
+                    objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                    row,
+                    &score,
+                    &val);
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -9934,7 +10064,7 @@ void select_topk_metric_rows_from_candidates_dense_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -9962,16 +10092,20 @@ void select_topk_metric_rows_from_candidates_f32(
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         int row = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)row_stride;
-                score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-                if (!isfinite(score)) score = NEG_INF_F;
+                accept_topk_candidate_f32(
+                    objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                    row,
+                    &score,
+                    &val);
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -9982,7 +10116,7 @@ void select_topk_metric_rows_from_candidates_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -10033,10 +10167,12 @@ void select_topk_metric_rows_dense_f32_v2(
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)M;
             if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-                if (!isfinite(score)) score = NEG_INF_F;
+                accept_topk_candidate_f32(
+                    objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                    idx,
+                    &score,
+                    &val);
             }
-            val = idx;
         }
         keys[item] = score;
         vals[item] = val;
@@ -10050,7 +10186,7 @@ void select_topk_metric_rows_dense_f32_v2(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -10103,10 +10239,12 @@ void select_topk_metric_rows_f32_v2(
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)row_stride;
             if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-                if (!isfinite(score)) score = NEG_INF_F;
+                accept_topk_candidate_f32(
+                    objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                    idx,
+                    &score,
+                    &val);
             }
-            val = idx;
         }
         keys[item] = score;
         vals[item] = val;
@@ -10120,7 +10258,7 @@ void select_topk_metric_rows_f32_v2(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -10170,18 +10308,22 @@ void select_topk_metric_rows_from_candidates_dense_f32_v2(
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         int row = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)M;
                 if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                    score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-                    if (!isfinite(score)) score = NEG_INF_F;
+                    accept_topk_candidate_f32(
+                        objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                        row,
+                        &score,
+                        &val);
                 }
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -10192,7 +10334,7 @@ void select_topk_metric_rows_from_candidates_dense_f32_v2(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -10244,18 +10386,22 @@ void select_topk_metric_rows_from_candidates_f32_v2(
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         int row = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)row_stride;
                 if (passes_constraints_f32(metrics_rows, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
-                    score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
-                    if (!isfinite(score)) score = NEG_INF_F;
+                    accept_topk_candidate_f32(
+                        objective_score_f32(metrics_rows, base, M, objective, hurdle_tau),
+                        row,
+                        &score,
+                        &val);
                 }
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -10266,7 +10412,7 @@ void select_topk_metric_rows_from_candidates_f32_v2(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -10293,9 +10439,11 @@ void select_topk_vemr_metric_rows_f32(
         int val = -1;
         if (idx < rows) {
             const size_t base = (size_t)idx * (size_t)row_stride;
-            score = objective_score_vemr_f32(metrics_rows, base, M, objective);
-            if (!isfinite(score)) score = NEG_INF_F;
-            val = idx;
+            accept_topk_candidate_f32(
+                objective_score_vemr_f32(metrics_rows, base, M, objective),
+                idx,
+                &score,
+                &val);
         }
         keys[item] = score;
         vals[item] = val;
@@ -10309,7 +10457,7 @@ void select_topk_vemr_metric_rows_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -10336,16 +10484,20 @@ void select_topk_vemr_metric_rows_from_candidates_f32(
         const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         int row = -1;
         float score = NEG_INF_F;
+        int val = -1;
         if (in_pos < in_len) {
             row = in_row_idx[in_pos];
             if (row >= 0 && row < rows) {
                 const size_t base = (size_t)row * (size_t)row_stride;
-                score = objective_score_vemr_f32(metrics_rows, base, M, objective);
-                if (!isfinite(score)) score = NEG_INF_F;
+                accept_topk_candidate_f32(
+                    objective_score_vemr_f32(metrics_rows, base, M, objective),
+                    row,
+                    &score,
+                    &val);
             }
         }
         keys[item] = score;
-        vals[item] = row;
+        vals[item] = val;
     }
 
     typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
@@ -10356,7 +10508,7 @@ void select_topk_vemr_metric_rows_from_candidates_f32(
     for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
         const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
         if (rank < topk) {
-            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_row_idx[(size_t)blockIdx.x * (size_t)topk + (size_t)rank] = vals[item];
         }
     }
 }
@@ -10948,7 +11100,7 @@ void asr_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
 
     const float clamp_max = 1.0e6f;
@@ -11396,7 +11548,7 @@ void vcc_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
 
     const float clamp_max = 1.0e6f;
@@ -11835,7 +11987,7 @@ void vemr_backtest_metrics_f32(
     const float variance = (n_obs > 1) ? (m2 / (float)(n_obs - 1)) : 0.0f;
     const float volatility = sqrtf(fmaxf(variance, 0.0f));
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
-    const float pnl = expf(log_eq) - 1.0f;
+    const float pnl = expm1f(log_eq);
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
 
     const float clamp_max = 1.0e6f;

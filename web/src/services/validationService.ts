@@ -1329,6 +1329,8 @@ function buildValidationMetaText(
   const crossMode =
     crossModeRaw === "preserved_finalists"
       ? "preserved_finalists"
+      : crossModeRaw === "full_stack"
+        ? "full_stack"
       : crossModeRaw === "lightweight"
         ? "lightweight"
         : "";
@@ -1884,11 +1886,12 @@ function buildValidationExecutionSummary(
   const crossMode =
     normalizeText(cross?.mode) || normalizeText(requestedCross?.mode);
   const preservedFinalistsMode = crossMode === "preserved_finalists";
+  const fullStackMode = crossMode === "full_stack";
   const crossSummary =
     crossDatasets > 0
       ? isDoubleLike
-        ? `${crossDatasets} dataset${crossDatasets === 1 ? "" : "s"}${crossMode ? ` • ${crossMode}` : ""}${preservedFinalistsMode ? " • finalists only (cap=4)" : ""}`
-        : `${crossDatasets} dataset${crossDatasets === 1 ? "" : "s"}${crossMode ? ` • requested=${crossMode}` : ""} • ${preservedFinalistsMode ? "finalists only (cap=4)" : "lightweight reruns"}`
+        ? `${crossDatasets} dataset${crossDatasets === 1 ? "" : "s"}${crossMode ? ` • ${crossMode}` : ""}${preservedFinalistsMode || fullStackMode ? " • finalists only (cap=4)" : ""}${fullStackMode ? " • full stack" : ""}`
+        : `${crossDatasets} dataset${crossDatasets === 1 ? "" : "s"}${crossMode ? ` • requested=${crossMode}` : ""} • ${fullStackMode ? "full stack finalists (cap=4)" : preservedFinalistsMode ? "finalists only (cap=4)" : "lightweight reruns"}`
       : "not run";
 
   const skipped: string[] = [];
@@ -1903,7 +1906,7 @@ function buildValidationExecutionSummary(
     skipped.push(
       "Cross reruns: omit walk_forward + reopt WF + SPA + perturb + trade bootstrap",
     );
-  } else if (!isDoubleLike && requestedCross) {
+  } else if (!isDoubleLike && requestedCross && !fullStackMode) {
     skipped.push(
       preservedFinalistsMode
         ? "Cross reruns: preserved_finalists omit walk_forward + reopt WF + SPA + perturb + trade bootstrap"

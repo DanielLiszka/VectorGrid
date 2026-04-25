@@ -365,6 +365,7 @@ pub struct CrossTickerDataset {
 pub enum CrossTickerMode {
     Lightweight,
     PreservedFinalists,
+    FullStack,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -457,6 +458,15 @@ pub struct ValidationSemanticsProvenance {
     pub cscv_skipped_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_mode: Option<CrossTickerMode>,
+    /// Normalized evidence-depth label for cross-ticker reruns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_evidence_depth: Option<String>,
+    /// Validation modules intentionally preserved inside cross-ticker reruns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cross_modules_preserved: Vec<String>,
+    /// Validation modules intentionally omitted from cross-ticker reruns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cross_modules_omitted: Vec<String>,
     /// Current cross-ticker aggregation scope. Success-only summaries do not
     /// imply full-panel robustness over failed reruns.
     #[serde(default)]

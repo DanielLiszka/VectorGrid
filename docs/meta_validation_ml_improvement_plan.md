@@ -15,7 +15,16 @@ Last updated: 2026-04-24.
 
 ## Status
 
-This is an implementation plan. No items in this document should be treated as already implemented unless they are explicitly marked complete.
+Implementation started on 2026-04-24. The checklist later in this document remains the detailed delivery tracker; the high-level implementation state is:
+
+- [x] Added cross-dataset `full_stack` mode, request shaping, UI selection, CLI parsing, and validation provenance fields for cross evidence depth plus preserved/omitted modules.
+- [x] Added Meta cohort manifests with raw artifact SHA-256 hashes, train/holdout artifact refs, dataset-key disjointness summary, saved JSON persistence, and UI summaries.
+- [x] Added result-level and group-level Meta holdout coverage, including explicit partial/unevaluated states, plus ML-confidence row-prep skipping for unevaluated groups.
+- [x] Added Stage 5 `training_history_policy`, chronological-before-source filtering, source/future/missing timestamp exclusion reasons, training manifests, and UI controls/summaries.
+- [x] Expanded ML-confidence policy evaluation metrics with base rate, selection rate, and lift vs base rate.
+- [x] Added `MlSignal` deployability state, gates, warnings, artifact persistence, store normalization, status summaries, and UI display.
+- [ ] Add dedicated fixture/replay tests and report workbook coverage for every new field family.
+- [ ] Add richer ML policy evaluation outputs beyond precision/base-rate lift, such as confidence intervals, calibration slices, and artifact-level per-policy comparisons.
 
 ## Current State Snapshot
 
@@ -1140,4 +1149,3 @@ Rationale:
 - Should `MlSignal` deployability require `walkforward_test` score scope only, or allow `full_dataset` when generated from an approved holdout bundle?
 - Should full-stack cross validation reuse the same candidate cap as preserved-finalist mode, or expose a separate cap?
 - Should Meta report XLSX get a dedicated manifest worksheet, or should manifest details stay JSON-only with summary columns in XLSX?
-

@@ -215,9 +215,9 @@ pub use indicator_catalog::{
 pub use meta_select::{
     meta_group_key, meta_group_key_for_request, meta_select_from_artifacts,
     refresh_meta_group_evidence_flags, HoldoutAggregate, HoldoutDatasetRow, HoldoutSummary,
-    MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode, MetaHoldoutMode,
-    MetaHoldoutValidationConfig, MetaScoreWeights, MetaSelectionRequest, MetaSelectionResult,
-    TrainDatasetRow,
+    MetaCandidateAggregate, MetaClusterConfig, MetaGroupHoldoutCoverage, MetaGroupingMode,
+    MetaHoldoutCoverageSummary, MetaHoldoutMode, MetaHoldoutValidationConfig, MetaScoreWeights,
+    MetaSelectionRequest, MetaSelectionResult, TrainDatasetRow,
 };
 
 pub use ml_confidence::{

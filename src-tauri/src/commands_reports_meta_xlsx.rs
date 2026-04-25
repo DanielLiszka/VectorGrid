@@ -870,6 +870,7 @@ mod tests {
             meta_score: 0.33,
             final_score: Some(0.36),
             holdout,
+            holdout_coverage: None,
             train_rows,
             holdout_rows,
         }
@@ -920,6 +921,7 @@ mod tests {
             groups,
             warnings: vec!["smoke".to_string()],
             holdout,
+            holdout_coverage: None,
         }
     }
 

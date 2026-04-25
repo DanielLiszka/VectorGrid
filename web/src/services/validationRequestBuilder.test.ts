@@ -1627,6 +1627,47 @@ describe("validationRequestBuilder", () => {
     );
   });
 
+  it("surfaces full-stack cross reruns without auxiliary omissions", () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "Asr",
+        data_id: "data-composite-full-stack",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
+            fast_len: 9,
+            slow_len: 30,
+            asr: {},
+          },
+        },
+      ],
+      wfEnable: true,
+      wfWindow: "12000",
+      wfStep: "3000",
+      cscvEnable: true,
+      cscvSlices: "16",
+      crossEnable: true,
+      crossMax: "2",
+      crossMode: "full_stack",
+      crossDatasets: [{ csv_path: "C:/data/SPY.csv", label: "SPY" }],
+      candidates: "8",
+    });
+
+    const summary = buildValidationCapabilitySummary(req);
+    expect(req.cross_ticker?.mode).toBe("full_stack");
+    expect(summary.crossSummary).toContain("full stack finalists (cap=4)");
+    expect(summary.skippedSummary).not.toContain("Cross reruns:");
+    expect(summary.warningSummary).toContain(
+      "Composite cross reruns use full-stack validation modules",
+    );
+  });
+
   it("surfaces plain CompositeCpu GPU route restrictions explicitly in previews", () => {
     const req = buildValidationRequest({
       currentRunReq: {

@@ -117,6 +117,8 @@ pub struct GpuSignalBindingsAbi {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub struct GpuIndicatorSlotAbi {
     pub indicator_index: u32,
+    /// Functional route metadata encoded as 0=Cpu, 1=GpuKernel, 2=GpuSingle.
+    /// CUDA kernels reject values outside this range.
     pub route: u32,
 }
 
@@ -258,6 +260,95 @@ fn validate_optional_group_binding_fits_i32(value: Option<u32>, label: &str) -> 
     }
 }
 
+fn validate_abi_len_fits_i32(len: usize, label: &str) -> Result<(), String> {
+    if len > i32::MAX as usize {
+        Err(format!("{label} exceeds i32 ABI range: {len}"))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_optional_group_binding_in_range(
+    value: Option<u32>,
+    group_count: usize,
+    label: &str,
+) -> Result<(), String> {
+    if let Some(binding) = value {
+        if (binding as usize) >= group_count {
+            return Err(format!(
+                "signal binding '{label}' references out-of-range group index {binding} (len={group_count})"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_program_group_index_ranges(
+    program: &CompiledGpuPredicateProgram,
+) -> Result<(), String> {
+    validate_abi_len_fits_i32(program.indicator_slots.len(), "indicator_slots len")?;
+    validate_abi_len_fits_i32(program.conditions.len(), "conditions len")?;
+    validate_abi_len_fits_i32(program.groups.len(), "groups len")?;
+    validate_abi_len_fits_i32(
+        program.group_condition_indexes.len(),
+        "group_condition_indexes len",
+    )?;
+
+    let condition_count = program.conditions.len();
+    let index_count = program.group_condition_indexes.len();
+    for (group_idx, group) in program.groups.iter().enumerate() {
+        let offset = group.condition_offset as usize;
+        let count = group.condition_count as usize;
+        if offset > index_count {
+            return Err(format!(
+                "group {group_idx} condition_offset {} exceeds group_condition_indexes len {index_count}",
+                group.condition_offset
+            ));
+        }
+        if count > index_count - offset {
+            return Err(format!(
+                "group {group_idx} condition range offset={} count={} exceeds group_condition_indexes len {index_count}",
+                group.condition_offset, group.condition_count
+            ));
+        }
+        for (local_idx, &condition_index) in program.group_condition_indexes[offset..offset + count]
+            .iter()
+            .enumerate()
+        {
+            if (condition_index as usize) >= condition_count {
+                return Err(format!(
+                    "group {group_idx} condition index {} at local offset {local_idx} out of range (len={condition_count})",
+                    condition_index
+                ));
+            }
+        }
+    }
+
+    let group_count = program.groups.len();
+    validate_optional_group_binding_in_range(
+        program.signals.long_entry_group,
+        group_count,
+        "long_entry_group",
+    )?;
+    validate_optional_group_binding_in_range(
+        program.signals.long_exit_group,
+        group_count,
+        "long_exit_group",
+    )?;
+    validate_optional_group_binding_in_range(
+        program.signals.short_entry_group,
+        group_count,
+        "short_entry_group",
+    )?;
+    validate_optional_group_binding_in_range(
+        program.signals.short_exit_group,
+        group_count,
+        "short_exit_group",
+    )?;
+
+    Ok(())
+}
+
 /// Validates the subset of program invariants that the compact ABI encoder relies on.
 ///
 /// This is intentionally local hardening only. It helps catch malformed or partially populated
@@ -284,6 +375,7 @@ pub fn validate_compiled_gpu_predicate_program_abi_inputs(
         "short_entry_group",
     )?;
     validate_optional_group_binding_fits_i32(program.signals.short_exit_group, "short_exit_group")?;
+    validate_program_group_index_ranges(program)?;
     Ok(())
 }
 
@@ -674,6 +766,69 @@ mod tests {
         let err = validate_compiled_gpu_predicate_program_abi_inputs(&program)
             .expect_err("oversized signal binding must be rejected");
         assert!(err.contains("long_entry_group"));
+    }
+
+    #[test]
+    fn abi_input_validation_rejects_signal_binding_past_group_count() {
+        let plan = make_plan(
+            StrategyProfileKind::DoubleMa,
+            StrategyPlanBackend::GpuUnified,
+        );
+        let mut program = compile_gpu_predicate_program(&plan).expect("gpu program should compile");
+        program.signals.long_entry_group = Some(program.groups.len() as u32);
+
+        let err = validate_compiled_gpu_predicate_program_abi_inputs(&program)
+            .expect_err("signal binding past group count must be rejected");
+        assert!(err.contains("long_entry_group"));
+        assert!(err.contains("out-of-range group index"));
+    }
+
+    #[test]
+    fn abi_input_validation_rejects_group_condition_index_past_condition_count() {
+        let plan = make_plan(
+            StrategyProfileKind::DoubleMa,
+            StrategyPlanBackend::GpuUnified,
+        );
+        let mut program = compile_gpu_predicate_program(&plan).expect("gpu program should compile");
+        let first_index = program
+            .group_condition_indexes
+            .first_mut()
+            .expect("group condition index expected");
+        *first_index = program.conditions.len() as u32;
+
+        let err = validate_compiled_gpu_predicate_program_abi_inputs(&program)
+            .expect_err("condition index past condition count must be rejected");
+        assert!(err.contains("condition index"));
+        assert!(err.contains("out of range"));
+    }
+
+    #[test]
+    fn abi_input_validation_rejects_group_offset_and_count_overflow_edges() {
+        let plan = make_plan(
+            StrategyProfileKind::DoubleMa,
+            StrategyPlanBackend::GpuUnified,
+        );
+        let program = compile_gpu_predicate_program(&plan).expect("gpu program should compile");
+
+        let mut bad_offset = program.clone();
+        bad_offset
+            .groups
+            .first_mut()
+            .expect("group expected")
+            .condition_offset = u32::MAX;
+        let err = validate_compiled_gpu_predicate_program_abi_inputs(&bad_offset)
+            .expect_err("offset beyond group index table must be rejected");
+        assert!(err.contains("condition_offset"));
+
+        let mut bad_count = program.clone();
+        bad_count
+            .groups
+            .first_mut()
+            .expect("group expected")
+            .condition_count = u32::MAX;
+        let err = validate_compiled_gpu_predicate_program_abi_inputs(&bad_count)
+            .expect_err("overflowing group condition range must be rejected");
+        assert!(err.contains("condition range"));
     }
 
     #[test]

@@ -103,6 +103,7 @@ const META_TABLE_COLUMNS: MetaTableColumn[] = markRaw([
   { label: "H p10", alignLeft: false },
   { label: "H med", alignLeft: false },
   { label: "H DD p90", alignLeft: false },
+  { label: "H coverage", alignLeft: false },
   { label: "Fast", alignLeft: true },
   { label: "Slow", alignLeft: true },
   { label: "Params", alignLeft: true },
@@ -134,6 +135,7 @@ const ANALYSIS_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   metaStage4AcceptConf: { key: "metaStage4AcceptConf" },
   metaStage4ReviewConf: { key: "metaStage4ReviewConf" },
   metaStage4MaxAcceptUncertainty: { key: "metaStage4MaxAcceptUncertainty" },
+  metaStage4TrainingHistoryPolicy: { key: "metaStage4TrainingHistoryPolicy" },
   policyEvalSavedSearch: { key: "policyEvalSavedSearch" },
   policyEvalSavedSelect: { key: "policyEvalSavedSelected" },
   policyEvalSavedTags: { key: "policyEvalSavedTagsDraft" },
@@ -595,6 +597,9 @@ function tryBuildAutoMetaStage4Request(): Record<string, unknown> | null {
     autoTrainModel: readStoreCheckboxValue("metaStage4AutoTrain"),
     requireHealthyModel: readStoreCheckboxValue("metaStage4RequireHealthy"),
     fallbackToMetaIfEmpty: readStoreCheckboxValue("metaStage4FallbackToMeta"),
+    trainingHistoryPolicy: readStoreTextInputValue(
+      "metaStage4TrainingHistoryPolicy",
+    ),
   });
 }
 
@@ -699,6 +704,7 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
     const group = groups[index] ?? {};
     const params = asRecord(group.params) ?? {};
     const holdout = asRecord(group.holdout);
+    const holdoutCoverage = asRecord(group.holdout_coverage);
     const evidenceFlags = Array.isArray(group.evidence_flags)
       ? group.evidence_flags
           .map((item) => normalizeText(item))
@@ -735,6 +741,11 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
       holdout ? fmtFixed(holdout.score_p10, 6) : "-",
       holdout ? fmtFixed(holdout.score_median, 6) : "-",
       holdout ? fmtFixed(holdout.max_dd_p90, 6) : "-",
+      holdoutCoverage
+        ? normalizeBoolean(holdoutCoverage.evaluated)
+          ? `${Math.max(0, Math.floor(Number(holdoutCoverage.dataset_rows || 0)))}`
+          : normalizeText(holdoutCoverage.missing_reason) || "not evaluated"
+        : "-",
       fast,
       slow,
       formatParamsCompact(params) || pretty(params),
@@ -743,7 +754,7 @@ function buildMetaRows(groups: Record<string, unknown>[]): MetaTableRow[] {
     rows.push({
       cells: cells.map((text, cellIndex) => ({
         text,
-        className: cellIndex >= 14 ? "left" : "",
+        className: cellIndex >= 15 ? "left" : "",
         title:
           cellIndex === 3 || cellIndex === cells.length - 1
             ? evidenceTitle
@@ -761,6 +772,9 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const result = asRecord(resp?.result);
   const groups = asRecordArray(result?.groups);
   const holdout = asRecord(result?.holdout);
+  const holdoutCoverage = asRecord(result?.holdout_coverage);
+  const cohortManifest = asRecord(resp?.cohort_manifest);
+  const cohortDisjointness = asRecord(cohortManifest?.disjointness);
   const holdoutDatasets = Math.max(
     0,
     Math.floor(Number(holdout?.datasets || 0)),
@@ -805,6 +819,12 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const holdoutText = holdoutDatasets
     ? ` · holdout=${holdoutDatasets}${holdoutSkipped ? ` (skipped ${holdoutSkipped})` : ""}`
     : "";
+  const holdoutCoverageText = holdoutCoverage
+    ? ` · holdout_coverage=${Math.max(0, Math.floor(Number(holdoutCoverage.groups_evaluated || 0)))}/${Math.max(0, Math.floor(Number(holdoutCoverage.groups_total || 0)))} ${normalizeText(holdoutCoverage.coverage_mode) || "unknown"}`
+    : "";
+  const cohortText = cohortDisjointness
+    ? ` · cohort_disjoint=${normalizeBoolean(cohortDisjointness.disjoint) ? "yes" : "no"}`
+    : "";
   const rankMode = groups.some((group) =>
     Number.isFinite(Number(group.final_score)),
   )
@@ -812,7 +832,7 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
     : "";
 
   const metaMeta = result
-    ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${rankMode}${evidenceText}${warnText}`
+    ? `groups=${groups.length} · artifacts=${Math.max(0, Math.floor(Number(result.artifacts_used || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} · candidates=${Math.max(0, Math.floor(Number(result.candidates_considered || 0)))} · runtime=${Math.max(0, Math.floor(Number(result.runtime_ms || 0)))}ms${holdoutText}${holdoutCoverageText}${cohortText}${rankMode}${evidenceText}${warnText}`
     : "—";
 
   const previewLines: string[] = [];
@@ -823,6 +843,16 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
     if (holdoutDatasets) {
       previewLines.push(
         `holdout datasets=${holdoutDatasets}${holdoutSkipped ? ` skipped=${holdoutSkipped}` : ""}`,
+      );
+    }
+    if (holdoutCoverage) {
+      previewLines.push(
+        `holdout coverage=${Math.max(0, Math.floor(Number(holdoutCoverage.groups_evaluated || 0)))}/${Math.max(0, Math.floor(Number(holdoutCoverage.groups_total || 0)))} mode=${normalizeText(holdoutCoverage.coverage_mode) || "unknown"} policy=${normalizeText(holdoutCoverage.selection_policy) || "unknown"}`,
+      );
+    }
+    if (cohortDisjointness) {
+      previewLines.push(
+        `cohort train=${Math.max(0, Math.floor(Number(cohortDisjointness.train_artifacts || 0)))} holdout=${Math.max(0, Math.floor(Number(cohortDisjointness.holdout_artifacts || 0)))} disjoint=${normalizeBoolean(cohortDisjointness.disjoint) ? "yes" : "no"} overlap=${Math.max(0, Math.floor(Number(cohortDisjointness.overlapping_dataset_keys || 0)))}`,
       );
     }
     if (groupsWithEvidenceFlags > 0) {
@@ -917,6 +947,7 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   const decisionCounts = asRecord(result?.decision_counts) ?? {};
   const path = responseStage5Path(resp);
   const sourceMetaPath = normalizePath(result?.source_meta_json_path);
+  const trainingManifest = asRecord(result?.training_manifest);
 
   if (!result || groups.length === 0) {
     patchAnalysisStore({
@@ -949,6 +980,11 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   lines.push(
     "auto_train excludes the active source meta artifact from history to avoid train/score leakage",
   );
+  if (trainingManifest) {
+    lines.push(
+      `training_history=${normalizeText(trainingManifest.policy) || "source_excluded"} artifacts=${Math.max(0, Math.floor(Number(trainingManifest.training_artifact_count || 0)))} excluded_source=${Math.max(0, Math.floor(Number(trainingManifest.excluded_source_count || 0)))} excluded_future=${Math.max(0, Math.floor(Number(trainingManifest.excluded_future_or_equal_count || 0)))} excluded_missing_ts=${Math.max(0, Math.floor(Number(trainingManifest.excluded_missing_ts_count || 0)))}`,
+    );
+  }
   const fallbackReason = normalizeText(result.fallback_reason);
   if (fallbackReason) {
     lines.push(`fallback=${fallbackReason}`);
@@ -2397,7 +2433,9 @@ function buildValidationFingerprintReq(
   const crossMax = Math.max(0, Math.floor(Number(validation?.crossMax || 6)));
   const crossModeRaw = normalizeText(validation?.crossMode).toLowerCase();
   const crossMode =
-    crossModeRaw === "lightweight" || crossModeRaw === "preserved_finalists"
+    crossModeRaw === "lightweight" ||
+    crossModeRaw === "preserved_finalists" ||
+    crossModeRaw === "full_stack"
       ? crossModeRaw
       : [
             "DoubleMa",

@@ -121,6 +121,26 @@ pub enum MlSignalScoreScopePolicy {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum MlSignalDeployabilityState {
+    ResearchOnly,
+    NeedsReview,
+    DeployableCandidate,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MlSignalDeployability {
+    pub state: MlSignalDeployabilityState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates_passed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates_failed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum MlSignalInferenceBackendPreference {
     Auto,
     NativeCpu,
@@ -720,6 +740,7 @@ pub struct MlSignalValidationResult {
     pub score_summary: MlSignalScoreCacheSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dependence_summary: Option<MlSignalDependenceSummary>,
+    pub deployability: MlSignalDeployability,
     pub candidates: Vec<MlSignalValidationCandidateResult>,
     pub run_verdict: ValidationRunVerdict,
 }
@@ -4647,6 +4668,124 @@ fn append_overlap_adjustment_warning_flags(
     }
 }
 
+fn push_deployability_gate(
+    passed: bool,
+    gate: &'static str,
+    gates_passed: &mut Vec<String>,
+    gates_failed: &mut Vec<String>,
+) {
+    if passed {
+        gates_passed.push(gate.to_string());
+    } else {
+        gates_failed.push(gate.to_string());
+    }
+}
+
+fn build_ml_signal_deployability(
+    validation_context: Option<&ValidationArtifactContext>,
+    score_summary: &MlSignalScoreCacheSummary,
+    dependence_summary: Option<&MlSignalDependenceSummary>,
+    run_verdict: &ValidationRunVerdict,
+) -> MlSignalDeployability {
+    let mut gates_passed = Vec::new();
+    let mut gates_failed = Vec::new();
+    let mut warnings = Vec::new();
+
+    push_deployability_gate(
+        validation_context.is_some(),
+        "validation_context_present",
+        &mut gates_passed,
+        &mut gates_failed,
+    );
+    push_deployability_gate(
+        score_summary.score_space == MlSignalScoreSpace::Probability,
+        "score_space_probability",
+        &mut gates_passed,
+        &mut gates_failed,
+    );
+    push_deployability_gate(
+        score_summary.duplicate_timestamps == 0,
+        "duplicate_free_score_cache",
+        &mut gates_passed,
+        &mut gates_failed,
+    );
+    push_deployability_gate(
+        run_verdict.passed && run_verdict.approved,
+        "run_verdict_approved",
+        &mut gates_passed,
+        &mut gates_failed,
+    );
+
+    match score_summary.score_scope {
+        MlSignalScoreScope::WalkforwardTest => {
+            gates_passed.push("score_scope_walkforward_test".to_string());
+        }
+        MlSignalScoreScope::FullDataset => {
+            warnings.push("score_scope_full_dataset_requires_review".to_string());
+        }
+        MlSignalScoreScope::CalibrationSlice | MlSignalScoreScope::CustomPartial => {
+            gates_failed.push("score_scope_deployable_walkforward_test".to_string());
+        }
+    }
+
+    let has_feature_schema_hash = score_summary.feature_schema_hash.is_some()
+        || score_summary.feature_schema_sha256.is_some();
+    push_deployability_gate(
+        has_feature_schema_hash,
+        "feature_schema_hash_present",
+        &mut gates_passed,
+        &mut gates_failed,
+    );
+    let has_bundle_manifest_hash = score_summary.source_bundle_manifest_hash.is_some()
+        || score_summary.bundle_manifest_sha256.is_some();
+    push_deployability_gate(
+        has_bundle_manifest_hash,
+        "bundle_manifest_hash_present",
+        &mut gates_passed,
+        &mut gates_failed,
+    );
+
+    if let Some(summary) = dependence_summary {
+        if summary.effective_score_observations_lower_bound < summary.raw_score_observations {
+            warnings.push("score_observations_overlap_adjusted".to_string());
+        }
+    }
+    for flag in &run_verdict.warning_flags {
+        warnings.push(format!("run_verdict_warning:{flag}"));
+    }
+
+    let blocked = score_summary.score_space != MlSignalScoreSpace::Probability
+        || score_summary.duplicate_timestamps > 0
+        || !run_verdict.passed
+        || !run_verdict.approved;
+    let research_only = validation_context.is_none()
+        || matches!(
+            score_summary.score_scope,
+            MlSignalScoreScope::CalibrationSlice | MlSignalScoreScope::CustomPartial
+        )
+        || !has_feature_schema_hash
+        || !has_bundle_manifest_hash;
+    let needs_review =
+        !warnings.is_empty() || score_summary.score_scope == MlSignalScoreScope::FullDataset;
+
+    let state = if blocked {
+        MlSignalDeployabilityState::Blocked
+    } else if research_only {
+        MlSignalDeployabilityState::ResearchOnly
+    } else if needs_review {
+        MlSignalDeployabilityState::NeedsReview
+    } else {
+        MlSignalDeployabilityState::DeployableCandidate
+    };
+
+    MlSignalDeployability {
+        state,
+        gates_passed,
+        gates_failed,
+        warnings,
+    }
+}
+
 fn score_target(point: Option<ScorePoint>, params: &MlSignalPolicyParams) -> Option<i32> {
     let point = point?;
     let p_long = point.p_long.filter(|v| v.is_finite())?;
@@ -4930,6 +5069,7 @@ fn validate_ml_signal_candidates(
     data_id: String,
     score_cache_path: String,
     score_summary: MlSignalScoreCacheSummary,
+    validation_context: Option<&ValidationArtifactContext>,
     overlap_metadata: &MlSignalOverlapMetadata,
     score_points: &[Option<ScorePoint>],
     candidates: Vec<MlSignalPolicyParams>,
@@ -5007,6 +5147,12 @@ fn validate_ml_signal_candidates(
     let mut run_verdict = build_run_verdict(&out, out.len(), &gates, None, None);
     append_score_scope_warning_flag(&mut run_verdict, &score_summary);
     append_overlap_adjustment_warning_flags(&mut run_verdict, &score_summary, &dependence_summary);
+    let deployability = build_ml_signal_deployability(
+        validation_context,
+        &score_summary,
+        Some(&dependence_summary),
+        &run_verdict,
+    );
 
     Ok(MlSignalValidationResult {
         data_id,
@@ -5017,6 +5163,7 @@ fn validate_ml_signal_candidates(
         score_cache_path,
         score_summary,
         dependence_summary: Some(dependence_summary),
+        deployability,
         candidates: out,
         run_verdict,
     })
@@ -5167,10 +5314,12 @@ pub fn run_ml_signal_validation_blocking_with_candles(
 
     let score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
     validate_score_cache_contract(&score_cache, &req.candidates)?;
+    let validation_context = req.validation_context.clone();
     validate_ml_signal_candidates(
         req.data_id,
         req.score_cache_path,
         score_cache.summary.clone(),
+        validation_context.as_ref(),
         &score_cache.overlap_metadata,
         &score_cache.points,
         req.candidates,
@@ -5253,10 +5402,12 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
     let sweep_size = candidates.len();
     let score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
     validate_score_cache_contract(&score_cache, &candidates)?;
+    let validation_context = req.validation_context.clone();
     let mut validation = validate_ml_signal_candidates(
         req.data_id,
         req.score_cache_path,
         score_cache.summary.clone(),
+        validation_context.as_ref(),
         &score_cache.overlap_metadata,
         &score_cache.points,
         candidates,
@@ -5291,6 +5442,12 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
             summary,
         );
     }
+    validation.deployability = build_ml_signal_deployability(
+        validation_context.as_ref(),
+        &validation.score_summary,
+        validation.dependence_summary.as_ref(),
+        &validation.run_verdict,
+    );
     Ok(MlSignalPolicySweepResult {
         sweep_size,
         top_k: req.top_k,

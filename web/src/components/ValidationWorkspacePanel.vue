@@ -993,6 +993,7 @@ onBeforeUnmount(() => {
             >
               <option value="auto">Auto by strategy</option>
               <option value="preserved_finalists">Preserved finalists</option>
+              <option value="full_stack">Full stack</option>
               <option value="lightweight">Lightweight</option>
             </select>
           </div>

@@ -827,6 +827,28 @@ const currentScoreCoverageSummary = computed(() => {
   return parts.join(" • ") || "No score-cache summary attached yet.";
 });
 
+const currentDeployabilitySummary = computed(() => {
+  const artifact = currentMlArtifact.value;
+  if (!artifact) return "";
+  const deployability = asRecord(artifact.deployability);
+  const state =
+    String(artifact.deployabilityState || deployability?.state || "").trim();
+  if (!state) return "";
+  const failed = Array.isArray(deployability?.gates_failed)
+    ? deployability.gates_failed.length
+    : 0;
+  const warnings = Array.isArray(deployability?.warnings)
+    ? deployability.warnings.length
+    : 0;
+  return [
+    state,
+    failed > 0 ? `failed ${failed}` : "",
+    warnings > 0 ? `warnings ${warnings}` : "",
+  ]
+    .filter((part) => part)
+    .join(" • ");
+});
+
 const validationContextSummary = computed(() => {
   const parts = ["MlSignal"];
   const label = String(dataStore.datasetLabel || "").trim();
@@ -2381,6 +2403,12 @@ onMounted(() => {
           <span class="summaryValue mono">{{
             currentScoreCoverageSummary
           }}</span>
+        </div>
+        <div v-if="currentDeployabilitySummary" class="summaryRow">
+          <span class="summaryKey">Deployability</span>
+          <span class="summaryValue mono">
+            {{ currentDeployabilitySummary }}
+          </span>
         </div>
         <div class="muted">
           {{ featureSchemaContractSummary }}

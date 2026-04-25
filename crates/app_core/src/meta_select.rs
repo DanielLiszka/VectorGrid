@@ -273,6 +273,27 @@ pub struct HoldoutSummary {
     pub skipped: usize,
 }
 
+/// Result-level coverage summary for optional holdout evaluation.
+#[derive(Clone, Debug, Serialize)]
+pub struct MetaHoldoutCoverageSummary {
+    pub groups_total: usize,
+    pub groups_evaluated: usize,
+    pub groups_unevaluated: usize,
+    pub datasets_total: usize,
+    pub datasets_skipped: usize,
+    pub coverage_mode: String,
+    pub selection_policy: String,
+}
+
+/// Group-level holdout coverage metadata.
+#[derive(Clone, Debug, Serialize)]
+pub struct MetaGroupHoldoutCoverage {
+    pub evaluated: bool,
+    pub dataset_rows: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_reason: Option<String>,
+}
+
 /// Train-stage aggregate for one canonical meta group.
 ///
 /// This file always computes the train-stage statistics and `meta_score`. The optional
@@ -328,6 +349,9 @@ pub struct MetaCandidateAggregate {
     /// `None` means no holdout stage owned this group yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutAggregate>,
+    /// Explicit holdout coverage state for this group when a holdout stage was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holdout_coverage: Option<MetaGroupHoldoutCoverage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_flags: Vec<String>,
     /// Per-dataset train-stage evidence rows that feed the train aggregate and `meta_score`.
@@ -388,6 +412,8 @@ pub struct MetaSelectionResult {
     pub warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holdout_coverage: Option<MetaHoldoutCoverageSummary>,
 }
 
 #[derive(Default)]
@@ -828,6 +854,7 @@ pub fn meta_select_from_artifacts(
             meta_score,
             final_score: None,
             holdout: None,
+            holdout_coverage: None,
             evidence_flags: Vec::new(),
             train_rows: acc.train_rows,
             holdout_rows: Vec::new(),
@@ -907,6 +934,7 @@ pub fn meta_select_from_artifacts(
         groups: aggregates,
         warnings,
         holdout: None,
+        holdout_coverage: None,
     }
 }
 
@@ -2450,6 +2478,7 @@ mod tests {
             meta_score: 0.18,
             final_score: None,
             holdout: None,
+            holdout_coverage: None,
             evidence_flags: vec!["train_cluster_disagreement".to_string()],
             train_rows: Vec::new(),
             holdout_rows: Vec::new(),

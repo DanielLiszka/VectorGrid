@@ -4,6 +4,8 @@
 // - `outcome_valid != 0` means the host already vetted the slot and guarantees
 //   the paired premium is strictly positive. The kernels intentionally divide by
 //   premium without rechecking or clamping so they preserve legacy-path math.
+// - The `f64` suffix describes the utility output type. Per-lane accumulation
+//   remains f32 for parity with the legacy scorer.
 // - These kernels only produce fast aggregate screening metrics. Exact median
 //   enrichment and exact extreme-stress scoring remain a host-side exactify
 //   responsibility after ranking, not a kernel responsibility here.
@@ -12,18 +14,18 @@ extern "C" __global__ void options_expression_score_split_f64(
     unsigned int event_end,
     unsigned int candidate_slot_stride,
     unsigned int summary_stride,
-    const unsigned int* tuple_candidate_offsets,
-    const unsigned int* tuple_summary_offsets,
-    const unsigned char* outcome_valid,
-    const float* outcome_pnl,
-    const float* outcome_premium,
+    const unsigned int* __restrict__ tuple_candidate_offsets,
+    const unsigned int* __restrict__ tuple_summary_offsets,
+    const unsigned char* __restrict__ outcome_valid,
+    const float* __restrict__ outcome_pnl,
+    const float* __restrict__ outcome_premium,
     unsigned int tuple_count,
-    int* out_valid,
-    int* out_wins,
-    float* out_total_pnl,
-    float* out_total_premium,
-    float* out_sum_return_on_premium,
-    float* out_sumsq_return_on_premium
+    int* __restrict__ out_valid,
+    int* __restrict__ out_wins,
+    float* __restrict__ out_total_pnl,
+    float* __restrict__ out_total_premium,
+    float* __restrict__ out_sum_return_on_premium,
+    float* __restrict__ out_sumsq_return_on_premium
 ) {
     const unsigned int tuple_index = blockIdx.x * blockDim.x + threadIdx.x;
     if (tuple_index >= tuple_count) {
@@ -41,9 +43,12 @@ extern "C" __global__ void options_expression_score_split_f64(
     float sumsq_return_on_premium = 0.0f;
 
     for (unsigned int event_index = event_start; event_index < event_end; ++event_index) {
-        const unsigned int candidate_base = event_index * candidate_slot_stride;
-        const unsigned int summary_index =
-            (candidate_base + candidate_offset) * summary_stride + summary_offset;
+        const unsigned long long candidate_base =
+            (unsigned long long)event_index * (unsigned long long)candidate_slot_stride;
+        const unsigned long long summary_index =
+            (candidate_base + (unsigned long long)candidate_offset) *
+                (unsigned long long)summary_stride +
+            (unsigned long long)summary_offset;
         if (outcome_valid[summary_index] != 0) {
             const float pnl = outcome_pnl[summary_index];
             const float premium = outcome_premium[summary_index];
@@ -78,19 +83,22 @@ __device__ inline void options_expression_accumulate_lane(
     unsigned int summary_stride,
     unsigned int candidate_offset,
     unsigned int summary_offset,
-    const unsigned char* outcome_valid,
-    const float* outcome_pnl,
-    const float* outcome_premium,
-    int* valid,
-    int* wins,
-    float* total_pnl,
-    float* total_premium,
-    float* sum_return_on_premium,
-    float* sumsq_return_on_premium
+    const unsigned char* __restrict__ outcome_valid,
+    const float* __restrict__ outcome_pnl,
+    const float* __restrict__ outcome_premium,
+    int* __restrict__ valid,
+    int* __restrict__ wins,
+    float* __restrict__ total_pnl,
+    float* __restrict__ total_premium,
+    float* __restrict__ sum_return_on_premium,
+    float* __restrict__ sumsq_return_on_premium
 ) {
-    const unsigned int candidate_base = event_index * candidate_slot_stride;
-    const unsigned int summary_index =
-        (candidate_base + candidate_offset) * summary_stride + summary_offset;
+    const unsigned long long candidate_base =
+        (unsigned long long)event_index * (unsigned long long)candidate_slot_stride;
+    const unsigned long long summary_index =
+        (candidate_base + (unsigned long long)candidate_offset) *
+            (unsigned long long)summary_stride +
+        (unsigned long long)summary_offset;
     if (outcome_valid[summary_index] != 0) {
         const float pnl = outcome_pnl[summary_index];
         const float premium = outcome_premium[summary_index];
@@ -130,51 +138,51 @@ extern "C" __global__ void options_expression_score_search_holdout_stress_f64(
     unsigned int holdout_end,
     unsigned int baseline_candidate_slot_stride,
     unsigned int baseline_summary_stride,
-    const unsigned int* baseline_tuple_candidate_offsets,
-    const unsigned int* baseline_tuple_summary_offsets,
-    const unsigned char* baseline_outcome_valid,
-    const float* baseline_outcome_pnl,
-    const float* baseline_outcome_premium,
+    const unsigned int* __restrict__ baseline_tuple_candidate_offsets,
+    const unsigned int* __restrict__ baseline_tuple_summary_offsets,
+    const unsigned char* __restrict__ baseline_outcome_valid,
+    const float* __restrict__ baseline_outcome_pnl,
+    const float* __restrict__ baseline_outcome_premium,
     unsigned int conservative_candidate_slot_stride,
     unsigned int conservative_summary_stride,
-    const unsigned int* conservative_tuple_candidate_offsets,
-    const unsigned int* conservative_tuple_summary_offsets,
-    const unsigned char* conservative_outcome_valid,
-    const float* conservative_outcome_pnl,
-    const float* conservative_outcome_premium,
+    const unsigned int* __restrict__ conservative_tuple_candidate_offsets,
+    const unsigned int* __restrict__ conservative_tuple_summary_offsets,
+    const unsigned char* __restrict__ conservative_outcome_valid,
+    const float* __restrict__ conservative_outcome_pnl,
+    const float* __restrict__ conservative_outcome_premium,
     unsigned int harsher_candidate_slot_stride,
     unsigned int harsher_summary_stride,
-    const unsigned int* harsher_tuple_candidate_offsets,
-    const unsigned int* harsher_tuple_summary_offsets,
-    const unsigned char* harsher_outcome_valid,
-    const float* harsher_outcome_pnl,
-    const float* harsher_outcome_premium,
+    const unsigned int* __restrict__ harsher_tuple_candidate_offsets,
+    const unsigned int* __restrict__ harsher_tuple_summary_offsets,
+    const unsigned char* __restrict__ harsher_outcome_valid,
+    const float* __restrict__ harsher_outcome_pnl,
+    const float* __restrict__ harsher_outcome_premium,
     unsigned int tuple_count,
-    int* out_search_valid,
-    int* out_search_wins,
-    float* out_search_total_pnl,
-    float* out_search_total_premium,
-    float* out_search_sum_return_on_premium,
-    float* out_search_sumsq_return_on_premium,
-    int* out_holdout_valid,
-    int* out_holdout_wins,
-    float* out_holdout_total_pnl,
-    float* out_holdout_total_premium,
-    float* out_holdout_sum_return_on_premium,
-    float* out_holdout_sumsq_return_on_premium,
-    int* out_conservative_valid,
-    int* out_conservative_wins,
-    float* out_conservative_total_pnl,
-    float* out_conservative_total_premium,
-    float* out_conservative_sum_return_on_premium,
-    float* out_conservative_sumsq_return_on_premium,
-    int* out_harsher_valid,
-    int* out_harsher_wins,
-    float* out_harsher_total_pnl,
-    float* out_harsher_total_premium,
-    float* out_harsher_sum_return_on_premium,
-    float* out_harsher_sumsq_return_on_premium,
-    double* out_robust_score
+    int* __restrict__ out_search_valid,
+    int* __restrict__ out_search_wins,
+    float* __restrict__ out_search_total_pnl,
+    float* __restrict__ out_search_total_premium,
+    float* __restrict__ out_search_sum_return_on_premium,
+    float* __restrict__ out_search_sumsq_return_on_premium,
+    int* __restrict__ out_holdout_valid,
+    int* __restrict__ out_holdout_wins,
+    float* __restrict__ out_holdout_total_pnl,
+    float* __restrict__ out_holdout_total_premium,
+    float* __restrict__ out_holdout_sum_return_on_premium,
+    float* __restrict__ out_holdout_sumsq_return_on_premium,
+    int* __restrict__ out_conservative_valid,
+    int* __restrict__ out_conservative_wins,
+    float* __restrict__ out_conservative_total_pnl,
+    float* __restrict__ out_conservative_total_premium,
+    float* __restrict__ out_conservative_sum_return_on_premium,
+    float* __restrict__ out_conservative_sumsq_return_on_premium,
+    int* __restrict__ out_harsher_valid,
+    int* __restrict__ out_harsher_wins,
+    float* __restrict__ out_harsher_total_pnl,
+    float* __restrict__ out_harsher_total_premium,
+    float* __restrict__ out_harsher_sum_return_on_premium,
+    float* __restrict__ out_harsher_sumsq_return_on_premium,
+    double* __restrict__ out_robust_score
 ) {
     const unsigned int tuple_index = blockIdx.x * blockDim.x + threadIdx.x;
     if (tuple_index >= tuple_count) {

@@ -1840,6 +1840,9 @@ fn describe_cross_omitted_modules(strategy_kind: &str, validation_req: &Value) -
         .and_then(Value::as_str)
         .unwrap_or("default")
         .trim();
+    if mode == "full_stack" {
+        return Vec::new();
+    }
     if is_double_like_strategy(strategy_kind) && mode == "preserved_finalists" {
         return vec![
             "walk_forward".to_string(),
@@ -2207,7 +2210,7 @@ fn build_expected_execution_summary(
     let category_summary =
         build_expected_execution_category_summary(strategy_kind, validation_req, backend);
 
-    let mut route_summary = format!("{backend} requested");
+    let route_summary: String;
     let module_summary: String;
     let mut warning_summary = "none".to_string();
     let mut fallback_summary = "-".to_string();
@@ -2462,7 +2465,18 @@ fn build_expected_execution_summary(
             if datasets == 1 { "" } else { "s" },
             mode
         );
-        if is_double_like && mode == "preserved_finalists" {
+        if mode == "full_stack" {
+            cross_summary = format!("{base} | full stack finalists (cap=4)");
+            if !is_double_like {
+                let cross_warning =
+                    "Composite cross reruns use full-stack validation modules for the bounded finalist set.";
+                warning_summary = if warning_summary == "none" {
+                    cross_warning.to_string()
+                } else {
+                    format!("{warning_summary} | {cross_warning}")
+                };
+            }
+        } else if is_double_like && mode == "preserved_finalists" {
             cross_summary = format!("{base} | finalists only (cap=4)");
             let cross_warning = "Preserved-finalists cross reruns keep CSCV/PBO + hard gates; auxiliary cross reruns omit walk-forward, SPA, reopt WF, perturb, and trade bootstrap.";
             warning_summary = if warning_summary == "none" {
@@ -3093,6 +3107,28 @@ mod tests {
         assert!(summary.cross_omitted_summary.contains("walk_forward"));
         assert!(!summary.cross_omitted_summary.contains("cscv_pbo"));
         assert!(!summary.cross_omitted_summary.contains("hard gates"));
+    }
+
+    #[test]
+    fn composite_full_stack_cross_summary_preserves_all_modules() {
+        let req = json!({
+            "backend": { "backend": "Auto" },
+            "cross_ticker": {
+                "mode": "full_stack",
+                "datasets": [
+                    { "csv_path": "C:/data/SPY.csv" }
+                ]
+            }
+        });
+
+        let summary = build_expected_execution_summary("CompositeCpu", Some(&req));
+        assert!(summary
+            .cross_summary
+            .contains("1 dataset | full_stack | full stack finalists (cap=4)"));
+        assert!(summary
+            .warning_summary
+            .contains("Composite cross reruns use full-stack validation modules"));
+        assert_eq!(summary.cross_omitted_summary, "-");
     }
 
     #[test]

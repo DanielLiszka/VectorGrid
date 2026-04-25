@@ -690,6 +690,60 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
     } else {
         "selected_candidates_present"
     };
+    let (cross_evidence_depth, cross_modules_preserved, cross_modules_omitted) =
+        match cross_summary.map(|summary| &summary.mode) {
+            Some(crate::validation_shared::CrossTickerMode::Lightweight) => (
+                Some("cross_lightweight".to_string()),
+                Vec::new(),
+                vec![
+                    "walk_forward",
+                    "reopt_walk_forward",
+                    "spa",
+                    "perturb",
+                    "trade_bootstrap",
+                    "cscv_pbo",
+                    "hard_gates",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            ),
+            Some(crate::validation_shared::CrossTickerMode::PreservedFinalists) => (
+                Some("cross_preserved_finalists".to_string()),
+                vec!["cscv_pbo", "hard_gates", "psr_dsr"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                vec![
+                    "walk_forward",
+                    "reopt_walk_forward",
+                    "spa",
+                    "perturb",
+                    "trade_bootstrap",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            ),
+            Some(crate::validation_shared::CrossTickerMode::FullStack) => (
+                Some("cross_full_stack".to_string()),
+                vec![
+                    "walk_forward",
+                    "reopt_walk_forward",
+                    "spa",
+                    "perturb",
+                    "trade_bootstrap",
+                    "cscv_pbo",
+                    "hard_gates",
+                    "psr_dsr",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+                Vec::new(),
+            ),
+            None => (None, Vec::new(), Vec::new()),
+        };
 
     ValidationSemanticsProvenance {
         stage_sequence: VALIDATION_STAGE_SEQUENCE
@@ -705,6 +759,9 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
         cscv_selected_candidate_count,
         cscv_skipped_reason: cscv_pbo.and_then(|result| result.skipped_reason.clone()),
         cross_mode: cross_summary.map(|summary| summary.mode.clone()),
+        cross_evidence_depth,
+        cross_modules_preserved,
+        cross_modules_omitted,
         cross_summary_scope: if cross_summary.is_some() {
             "passed_candidates_only".to_string()
         } else {
@@ -723,6 +780,7 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
             crate::validation_shared::CrossTickerMode::PreservedFinalists => {
                 "preserved_finalists".to_string()
             }
+            crate::validation_shared::CrossTickerMode::FullStack => "full_stack".to_string(),
         }),
         regime_summary_semantics: regime_summary_family.map(|family| {
             format!("{family} summaries are descriptive-only unless a later gate promotes them")

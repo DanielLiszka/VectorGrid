@@ -185,6 +185,9 @@ interface MlSignalArtifactLike {
   coverageRatio?: unknown;
   duplicate_timestamps?: unknown;
   duplicateTimestamps?: unknown;
+  deployability?: unknown;
+  deployability_state?: unknown;
+  deployabilityState?: unknown;
 }
 
 function normalizeText(value: unknown): string {
@@ -1722,6 +1725,20 @@ function buildMlSignalArtifactPayload(
         prior.nativeFallbackReason,
       ),
     ),
+    deployability:
+      readOptionalRecord(runResRecord?.deployability) ??
+      readOptionalRecord(prior.deployability) ??
+      null,
+    deployability_state: normalizeText(
+      firstMeaningfulValue(
+        readOptionalRecord(runResRecord?.deployability)?.state,
+        runResRecord?.deployability_state,
+        runResRecord?.deployabilityState,
+        readOptionalRecord(prior.deployability)?.state,
+        prior.deployability_state,
+        prior.deployabilityState,
+      ),
+    ),
     policy:
       validationReq && validationRes
         ? extractMlPolicy(validationReq, validationRes)
@@ -1955,11 +1972,43 @@ function formatMlScoreCoverageMeta(
   return parts.join(" • ");
 }
 
+function formatMlDeployabilityMeta(
+  row: Record<string, unknown> | null,
+): string {
+  if (!row) return "";
+  const validation =
+    row.validation && typeof row.validation === "object"
+      ? (row.validation as Record<string, unknown>)
+      : null;
+  const deployability =
+    readOptionalRecord(row.deployability) ??
+    readOptionalRecord(validation?.deployability);
+  const state =
+    normalizeText(deployability?.state) ||
+    normalizeText(row.deployability_state ?? row.deployabilityState);
+  if (!state) return "";
+  const failed = Array.isArray(deployability?.gates_failed)
+    ? deployability.gates_failed.length
+    : 0;
+  const warnings = Array.isArray(deployability?.warnings)
+    ? deployability.warnings.length
+    : 0;
+  const suffix = [
+    failed > 0 ? `failed ${failed}` : "",
+    warnings > 0 ? `warnings ${warnings}` : "",
+  ]
+    .filter((part) => part)
+    .join(", ");
+  return `deployability ${state}${suffix ? ` (${suffix})` : ""}`;
+}
+
 function formatMlStageStatus(
   base: string,
   row: Record<string, unknown> | null,
 ): string {
-  const suffix = formatMlScoreCoverageMeta(row);
+  const suffix = [formatMlScoreCoverageMeta(row), formatMlDeployabilityMeta(row)]
+    .filter((part) => part)
+    .join(" • ");
   return suffix ? `${base} • ${suffix}` : base;
 }
 
@@ -2263,12 +2312,14 @@ export async function runMlSignalValidation(): Promise<unknown> {
       ? ((validationRecord as Record<string, unknown>).candidates as unknown[])
       : [];
     const scoreCoverageMeta = formatMlScoreCoverageMeta(validationRecord);
+    const deployabilityMeta = formatMlDeployabilityMeta(validationRecord);
     const scopeAdvisory = formatMlScoreScopeAdvisory(validationRecord);
     const boundaryAdvisory = formatMlBoundaryAdvisory(validationRecord);
     patchOptimizeState({
       mlSignalValidationMeta: [
         `ML validation: ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} tested`,
         scoreCoverageMeta,
+        deployabilityMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]
@@ -2448,6 +2499,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
       ),
     )}`;
     const scoreCoverageMeta = formatMlScoreCoverageMeta(sweepRow);
+    const deployabilityMeta = formatMlDeployabilityMeta(sweepRow);
     const scopeAdvisory = formatMlScoreScopeAdvisory(sweepRow);
     const boundaryAdvisory = formatMlBoundaryAdvisory(sweepRow);
     patchOptimizeState({
@@ -2457,6 +2509,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
         Number.isFinite(bestScore) ? `best ${bestScore.toFixed(4)}` : "",
         bestLabel || "",
         scoreCoverageMeta,
+        deployabilityMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]
@@ -2467,6 +2520,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
         verdictFlow,
         retainedCount > 0 ? `${retainedCount} retained` : "",
         scoreCoverageMeta,
+        deployabilityMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]
