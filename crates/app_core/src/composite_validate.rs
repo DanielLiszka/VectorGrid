@@ -9524,13 +9524,6 @@ fn compute_composite_gpu_reopt_walk_forward_for_family(
     }
 }
 
-/// Single-ticker composite validation request accepted by the app-core backend.
-///
-/// Compatibility notes:
-/// - `max_candidates == 0` is normalized to the default limit.
-/// - Candidate lists longer than `max_candidates` are truncated in input order.
-/// - `cross_ticker` and `validation_context` are accepted for DTO compatibility,
-///   but wrapper-owned orchestration is not executed directly by this app-core path.
 #[derive(Clone, Debug, Deserialize)]
 pub struct CompositeValidationRequest {
     pub data_id: String,
@@ -9705,10 +9698,7 @@ pub struct CompositeValidationResult {
     pub backend_route: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
-    /// Best-effort strategy-routing telemetry collected during validation setup.
-    ///
-    /// These diagnostics do not prove the ultimately realized backend execution
-    /// path for every phase.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route_diagnostics: Option<Vec<String>>,
     pub candidates: Vec<CompositeValidationCandidateResult>,
@@ -9716,9 +9706,7 @@ pub struct CompositeValidationResult {
     pub reopt_walk_forward: Option<ReoptWalkForwardStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spa: Option<SpaValidationStats>,
-    /// Wrapper-owned cross-ticker summary output.
-    ///
-    /// The current app-core single-ticker path leaves this as `None`.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_ticker: Option<CrossTickerValidationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -11797,7 +11785,6 @@ fn series_cfg<'a>(series: &'a CandidateSeries<'a>) -> &'a StrategyConfig {
 }
 
 fn repair_params(p: &mut CompositeParams) {
-    // MA lengths
     if p.fast_len == 0 {
         p.fast_len = 1;
     }
@@ -11808,7 +11795,6 @@ fn repair_params(p: &mut CompositeParams) {
         p.slow_len = p.fast_len.saturating_add(1).max(2);
     }
 
-    // HalfTrend
     if p.halftrend.amplitude == 0 {
         p.halftrend.amplitude = 1;
     }
@@ -11819,7 +11805,6 @@ fn repair_params(p: &mut CompositeParams) {
         p.halftrend.channel_deviation = 2.0;
     }
 
-    // MACZ
     if p.macz.fast_length == 0 {
         p.macz.fast_length = 1;
     }
@@ -11851,7 +11836,6 @@ fn repair_params(p: &mut CompositeParams) {
     }
     p.macz.gamma = p.macz.gamma.clamp(0.0, 0.999_999);
 
-    // OTT
     if p.ott.period == 0 {
         p.ott.period = 1;
     }
@@ -11935,7 +11919,6 @@ fn repair_params(p: &mut CompositeParams) {
         }
     }
 
-    // Strategy config
     if !p.strategy.fee_bps.is_finite() || p.strategy.fee_bps < 0.0 {
         p.strategy.fee_bps = 0.0;
     }
@@ -11992,11 +11975,9 @@ fn perturb_params(
     let pct_max = cfg.pct_max.abs().max(pct_min);
     let flip_bool_prob = cfg.flip_bool_prob.clamp(0.0, 1.0);
 
-    // MA lengths
     p.fast_len = apply_pct_u16(p.fast_len, rand_mult(rng, pct_min, pct_max));
     p.slow_len = apply_pct_u16(p.slow_len, rand_mult(rng, pct_min, pct_max));
 
-    // HalfTrend
     p.halftrend.amplitude = apply_pct_u16(p.halftrend.amplitude, rand_mult(rng, pct_min, pct_max));
     p.halftrend.atr_period =
         apply_pct_u16(p.halftrend.atr_period, rand_mult(rng, pct_min, pct_max));
@@ -12005,7 +11986,6 @@ fn perturb_params(
         rand_mult(rng, pct_min, pct_max),
     );
 
-    // MACZ
     p.macz.fast_length = apply_pct_u16(p.macz.fast_length, rand_mult(rng, pct_min, pct_max));
     p.macz.slow_length = apply_pct_u16(p.macz.slow_length, rand_mult(rng, pct_min, pct_max));
     p.macz.signal_length = apply_pct_u16(p.macz.signal_length, rand_mult(rng, pct_min, pct_max));
@@ -12021,12 +12001,9 @@ fn perturb_params(
         p.macz.use_volume = !p.macz.use_volume;
     }
 
-    // OTT
     p.ott.period = apply_pct_u16(p.ott.period, rand_mult(rng, pct_min, pct_max));
     p.ott.percent = apply_pct_f64(p.ott.percent, rand_mult(rng, pct_min, pct_max));
-    if rng.gen_bool(flip_bool_prob) {
-        // Keep ma_type stable most of the time; flipping is not well-defined here.
-    }
+    if rng.gen_bool(flip_bool_prob) {}
 
     if let Some(vemr) = p.vemr.as_mut() {
         vemr.z_period = apply_pct_u16(vemr.z_period, rand_mult(rng, pct_min, pct_max));
@@ -12091,7 +12068,6 @@ fn perturb_params(
         }
     }
 
-    // Strategy config
     p.strategy.fee_bps = apply_pct_f64(p.strategy.fee_bps, rand_mult(rng, pct_min, pct_max)).abs();
     p.strategy.spread_bps =
         apply_pct_f64(p.strategy.spread_bps, rand_mult(rng, pct_min, pct_max)).abs();
@@ -12239,12 +12215,6 @@ pub fn run_composite_validation_blocking_with_candles(
     )
 }
 
-/// Runs app-core composite validation over one candle series with the requested aux work mask.
-///
-/// This entrypoint normalizes `max_candidates`, truncates over-limit candidate
-/// lists in input order, and executes only the single-ticker validation work
-/// owned by app-core. Wrapper-owned artifact hydration, cross-ticker
-/// orchestration, and `validation_context` enforcement remain out of scope here.
 pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
     mut req: CompositeValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,

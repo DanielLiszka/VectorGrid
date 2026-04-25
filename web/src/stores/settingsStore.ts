@@ -830,7 +830,7 @@ export const useSettingsStore = defineStore("settings", {
         if (this.theme === normalized) return;
         this.theme = normalized;
         applyThemeLocally(normalized);
-        // Theme affects the dark/light payload for native window effects.
+
         if (this.effect !== "none") applyEffectLocally(this.effect);
         this.markVueUpdate();
       } else if (key === "settingsEffectSelect") {

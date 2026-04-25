@@ -1,11 +1,5 @@
-<# 
-Builds the CatBoost native model-interface library on Windows.
 
-For the preferred MlSignal desktop CPU-runtime path, copy the resulting
-catboostmodel.dll into <bundle_dir>\native\catboostmodel.dll and keep
-manifest.json::native_library_path relative, for example
-native/catboostmodel.dll.
-#>
+
 
 param(
   [ValidateSet('cpu', 'cuda')]
@@ -14,7 +8,7 @@ param(
   [string]$CatBoostTag = 'v1.2.10',
   [string]$SourceDir = 'C:\cbsrc\catboost',
   [string]$BuildRootDir = '',
-  [string]$PythonVenv = 'C:\Rust Projects\ta_desktop_demo\.catboost-native-build-venv',
+  [string]$PythonVenv = '',
   [string]$CudaRootDir = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2',
   [string]$CudaArchitectures = '89',
   [string]$MsvsVersion = '2022',
@@ -26,6 +20,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+if ([string]::IsNullOrWhiteSpace($PythonVenv)) {
+  $PythonVenv = Join-Path $repoRoot '.catboost-native-build-venv'
+}
 
 function Get-NormalizedFullPath {
   param(

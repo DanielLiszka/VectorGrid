@@ -134,8 +134,7 @@ function clearEventSubscriptions(): void {
     try {
       off()
     } catch {
-      // no-op
-    }
+          }
   }
   eventUnsubscribers = []
   eventSubscribePromise = null
@@ -151,8 +150,7 @@ async function attachListener(
       eventUnsubscribers.push(off)
     }
   } catch {
-    // event subscriptions are best-effort and may be unavailable in some runtime contexts
-  }
+      }
 }
 
 async function subscribeProgressEvents(): Promise<void> {
@@ -191,8 +189,7 @@ async function subscribeProgressEvents(): Promise<void> {
         try {
           off()
         } catch {
-          // no-op
-        }
+                  }
       }
     } finally {
       eventSubscribePromise = null

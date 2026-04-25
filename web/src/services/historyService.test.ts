@@ -1362,7 +1362,7 @@ describe("historyService", () => {
       mlScoreScope: "CalibrationSlice",
       mlScoreContractSummary: "Probability • CalibrationSlice",
       mlScoreNote:
-        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • batch 1",
       tags: ["aapl", "1m"],
     });
     expect(readArtifactHistoryPerfEntries()).toEqual(
@@ -1556,7 +1556,7 @@ describe("historyService", () => {
       mlScoreScope: "CalibrationSlice",
       mlScoreContractSummary: "Probability • CalibrationSlice",
       mlScoreNote:
-        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence.",
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • batch 1",
       mlPolicySummary: "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10",
       mlPolicySweepSummary: "size=27 | top_k=4 | best=best_sweep | score=1.44",
       mlRunVerdictSummary: "approved=1 | survived=1 | considered=27",
@@ -1621,7 +1621,7 @@ describe("historyService", () => {
       mlNativeGpuDeviceId: 0,
       mlNativeFallbackReason: "EnableGPUEvaluation unavailable",
       mlScoreNote:
-        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • native backend native_cpu • fallback EnableGPUEvaluation unavailable",
+        "Calibration-only scores; saved validation metrics reflect calibration rows, not holdout-like evidence. • native backend native_cpu • batch 1 • fallback EnableGPUEvaluation unavailable",
     });
   });
 

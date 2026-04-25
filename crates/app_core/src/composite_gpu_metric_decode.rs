@@ -46,19 +46,6 @@ fn derive_martin_ratio(pnl: f64, ulcer_index: f64) -> f64 {
     martin.clamp(-CLAMP_MAX, CLAMP_MAX)
 }
 
-/// Decodes one non-double-MA GPU metrics row.
-///
-/// Row contract:
-/// - required prefix: 12 fields `[pnl, sharpe, sortino, calmar, omega, volatility, max_dd,
-///   trades, exposure, net_exposure, downside_deviation, ulcer_index]`
-/// - optional tail: up to 7 additional fields `[downside_frequency, downside_severity,
-///   long_mean_return, short_mean_return, kappa_tau, underwater_fraction,
-///   max_underwater_duration_bars]`
-/// - callers may provide only the 12-field prefix; omitted tail fields default to zero
-///
-/// Trade-distribution fields (`closed_trades`, `winning_trades`, `losing_trades`, `gross_profit`,
-/// `gross_loss`) are still placeholder zeros on this GPU path because the kernel row format does
-/// not export them yet.
 pub(crate) fn decode_non_double_ma_gpu_metrics_row(row: &[f32]) -> Metrics {
     assert_non_double_ma_gpu_metrics_row_shape(row);
 
@@ -145,20 +132,7 @@ mod tests {
     use super::*;
 
     fn sample_prefix_row() -> [f32; NON_DOUBLE_MA_GPU_REQUIRED_PREFIX_LEN] {
-        [
-            40.0, // pnl
-            1.5,  // sharpe
-            2.5,  // sortino
-            3.5,  // calmar
-            1.1,  // omega
-            0.4,  // volatility
-            0.2,  // max_dd
-            7.0,  // trades
-            0.8,  // exposure
-            0.3,  // net exposure
-            0.25, // downside deviation
-            5.0,  // ulcer index
-        ]
+        [40.0, 1.5, 2.5, 3.5, 1.1, 0.4, 0.2, 7.0, 0.8, 0.3, 0.25, 5.0]
     }
 
     #[test]

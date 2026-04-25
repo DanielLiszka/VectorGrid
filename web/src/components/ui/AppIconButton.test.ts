@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+
 import { mount } from '@vue/test-utils'
 import { Info } from 'lucide-vue-next'
 import { describe, expect, it } from 'vitest'

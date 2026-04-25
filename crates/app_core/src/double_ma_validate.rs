@@ -233,16 +233,8 @@ fn gpu_exact_combo_metrics_for_ranges(
     }
 }
 
-/// Best-effort execution metadata for a single validation run.
-///
-/// `requested_candidates` and the related uniqueness counters describe the
-/// post-normalization slice that this file actually evaluates after applying
-/// `max_candidates == 0` normalization and truncating the request-local
-/// candidate vector.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ValidationExecutionProfile {
-    /// Number of candidates actually evaluated after local normalization and
-    /// truncation.
     pub requested_candidates: usize,
     pub unique_candidates: usize,
     pub unique_fast_periods: usize,
@@ -313,8 +305,6 @@ struct PreparedGpuValidationPlan {
     evaluated_pairs_on_device: usize,
 }
 
-// Keep CPU-only builds compiling: several CUDA-gated helper stubs still mention the plan type
-// in their signatures.
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 #[derive(Clone)]
 struct PreparedGpuValidationPlan;
@@ -1514,12 +1504,6 @@ pub struct DoubleMaValidationParams {
     pub halftrend_filter: Option<HalfTrendRegimeFilter>,
 }
 
-/// App-core request DTO for validating a single in-memory candle series.
-///
-/// This file owns local candidate normalization, backend routing, fixed-candidate
-/// evaluation, and best-effort execution metadata. Compatibility fields such as
-/// `validation_context` are accepted without forcing wrapper-only orchestration
-/// to happen here.
 #[derive(Clone, Debug, Deserialize)]
 pub struct DoubleMaValidationRequest {
     pub data_id: String,
@@ -1566,12 +1550,6 @@ pub struct DoubleMaValidationRequest {
     pub validation_context: Option<ValidationArtifactContext>,
 }
 
-/// Per-candidate validation output.
-///
-/// The core metrics and requested primary validation outputs are populated for
-/// every returned candidate. Several auxiliary analytics fields are
-/// intentionally finalist-only and are filled only for the top-N finalists of
-/// each auxiliary pass.
 #[derive(Clone, Debug, Serialize)]
 pub struct DoubleMaValidationCandidateResult {
     pub params: DoubleMaValidationParams,
@@ -1699,11 +1677,6 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
     }
 }
 
-/// App-core validation result for a single candle series.
-///
-/// `runtime_ms` measures this local execution path. Cross-ticker summary
-/// population remains wrapper-owned and `cross_ticker` is therefore left `None`
-/// by this entrypoint today.
 #[derive(Clone, Debug, Serialize)]
 pub struct DoubleMaValidationResult {
     pub data_id: String,
@@ -3597,7 +3570,6 @@ fn benchmark_slice_returns(
 }
 
 fn repair_params(p: &mut DoubleMaValidationParams) {
-    // MA lengths
     if p.fast_len == 0 {
         p.fast_len = 1;
     }
@@ -3608,7 +3580,6 @@ fn repair_params(p: &mut DoubleMaValidationParams) {
         p.slow_len = p.fast_len.saturating_add(1).max(2);
     }
 
-    // Strategy config
     if !p.strategy.fee_bps.is_finite() || p.strategy.fee_bps < 0.0 {
         p.strategy.fee_bps = 0.0;
     }
@@ -3652,7 +3623,6 @@ fn repair_params(p: &mut DoubleMaValidationParams) {
         p.strategy.trend_quality_adx_min = 20.0;
     }
 
-    // HalfTrend filter (optional)
     if let Some(f) = p.halftrend_filter.as_mut() {
         if f.amplitude == 0 {
             f.amplitude = 1;
@@ -3665,7 +3635,6 @@ fn repair_params(p: &mut DoubleMaValidationParams) {
         }
     }
 
-    // MA params: drop non-finite values and clamp ALMA.
     let clamp_alma = |ma_type: &str, map: &mut HashMap<String, f64>| {
         if !ma_type.trim().eq_ignore_ascii_case("alma") {
             return;
@@ -3881,8 +3850,6 @@ fn compute_trade_bootstrap_for_candidate(
     ))
 }
 
-/// Runs the default single-series validation flow with the full auxiliary work
-/// mask enabled.
 pub fn run_double_ma_validation_blocking_with_candles(
     req: DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -3898,13 +3865,6 @@ pub fn run_double_ma_validation_blocking_with_candles(
     )
 }
 
-/// Runs single-series validation against the provided candles.
-///
-/// This entrypoint normalizes `max_candidates == 0` to the default limit,
-/// truncates the request-local candidate list before evaluation, and reports
-/// the resulting slice through [`ValidationExecutionProfile`]. It accepts
-/// compatibility fields such as `validation_context`, but wrapper-driven
-/// cross-ticker orchestration and summary population remain out of scope here.
 pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
     mut req: DoubleMaValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,

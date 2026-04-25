@@ -62,11 +62,6 @@ pub(crate) fn build_report_xlsx_blocking(
     Ok(general_purpose::STANDARD.encode(bytes))
 }
 
-/// Headless helper that mirrors `save_report_xlsx` generation behavior.
-///
-/// The active product path now goes straight through the validation workbook builder.
-/// Older report builders below are retained only as legacy/reference code while
-/// Stage 3 meta-report fallback compatibility remains intentionally unchanged.
 pub fn build_report_xlsx_bytes_headless(
     report: &Value,
     max_rows: Option<usize>,
@@ -252,9 +247,7 @@ pub(crate) fn save_report_xlsx_from_artifact_blocking(
             "report_xlsx_path".to_string(),
             Value::String(saved.path.clone()),
         );
-        // Keep the current save-back behavior explicit: this reuses the normal run-artifact save
-        // path, so report-path persistence inherits the same enrichment/pruning side effects as a
-        // full artifact rewrite.
+
         match run_artifacts::save_run_artifact_blocking(artifact, app, Some(artifact_path)) {
             Ok(_) => {
                 saved.artifact_updated = true;
@@ -273,8 +266,6 @@ pub(crate) fn save_report_xlsx_from_artifact_blocking(
     Ok(saved)
 }
 
-// Legacy/reference builder kept only for workbook-history comparison and staged
-// fallback review. It is not part of the current validation export path.
 #[allow(dead_code)]
 fn build_report_xlsx_analysis_v2(
     report: &Value,
@@ -370,7 +361,6 @@ fn build_report_xlsx_analysis_v2(
             .iter()
             .any(|c| c.get("cscv_pbo").and_then(|v| v.as_object()).is_some());
 
-    // Hard shortlist gate: no fallback to broader sets.
     let strict: Vec<&Value> = candidates
         .iter()
         .filter(|cand| {
@@ -499,7 +489,7 @@ fn build_report_xlsx_analysis_v2(
     worksheet
         .set_name("Optimization Result Analysis")
         .map_err(|e: XlsxError| e.to_string())?;
-    // Match the reference workbook defaults: no explicit zoom, and classic page margins.
+
     worksheet.set_margins(0.75, 0.75, 1.0, 1.0, 0.5, 0.5);
 
     let header_fmt = Format::new()
@@ -529,7 +519,6 @@ fn build_report_xlsx_analysis_v2(
     let table_top_border_fmt = Format::new().set_border_top(FormatBorder::Thin);
     let table_bottom_border_fmt = Format::new().set_border_bottom(FormatBorder::Thin);
 
-    // Reference header row: show 0..23 (A..X), keep Y..AO blank, then AP..AR as 0.
     for c in 0..=23u16 {
         worksheet
             .write_number_with_format(0, c, c as f64, &index_header_fmt)
@@ -826,8 +815,6 @@ fn build_report_xlsx_analysis_v2(
         })
         .collect();
 
-    // Prefer the loaded dataset range for date labels when available (frontend includes it in
-    // `report.data.meta`). Fall back to `report.ts` if not present.
     let end_date = report
         .pointer("/data/meta/max_ts")
         .and_then(|v| v.as_i64())
@@ -966,7 +953,7 @@ fn build_report_xlsx_analysis_v2(
         ("kelly_criterion", PaletteKind::Profit, false),
     ];
 
-    let metric_start = 2u32; // Excel row 3
+    let metric_start = 2u32;
     for (ri, (name, palette, int_like)) in main_metric_defs.iter().enumerate() {
         let row_idx = metric_start + ri as u32;
         worksheet
@@ -979,7 +966,7 @@ fn build_report_xlsx_analysis_v2(
         let vmin = vals.iter().fold(f64::INFINITY, |a, b| a.min(*b));
         let vmax = vals.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b));
         for (ci, v) in vals.iter().enumerate() {
-            let col = 1 + ci as u16; // B..X
+            let col = 1 + ci as u16;
             let t = if (vmax - vmin).abs() > f64::EPSILON {
                 (*v - vmin) / (vmax - vmin)
             } else {
@@ -999,7 +986,7 @@ fn build_report_xlsx_analysis_v2(
                 .write_number_with_format(row_idx, col, *v, &fmt)
                 .map_err(|e: XlsxError| e.to_string())?;
         }
-        // Right-edge separator column (Y) for the main metrics table.
+
         let sep_fmt = if ri == 0 {
             &table_sep_left_top_fmt
         } else {
@@ -1010,7 +997,7 @@ fn build_report_xlsx_analysis_v2(
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    let row_start_date = metric_start + main_metric_defs.len() as u32; // Excel row 45
+    let row_start_date = metric_start + main_metric_defs.len() as u32;
     worksheet
         .write_string_with_format(row_start_date, 0, "start_date", &metric_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -1069,13 +1056,8 @@ fn build_report_xlsx_analysis_v2(
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // ---------------------------------------------------------------------
-    // Reference-like secondary analysis blocks (timeframe/robust/symbol) +
-    // chart-data area that mirrors the legacy workbook semantics.
-    // ---------------------------------------------------------------------
     let section_title_fmt = Format::new().set_bold().set_font_size(11);
 
-    // Block titles around row 50 (1-based in Excel).
     worksheet
         .write_string_with_format(49, 0, "Full Backtest Metrics From", &section_title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -1279,8 +1261,6 @@ fn build_report_xlsx_analysis_v2(
         }
     }
 
-    // Random pairs block (T..X): header row + metric values per symbol. This matches the
-    // reference workbook layout (row 52 is the symbol header, metrics start at row 53).
     worksheet
         .write_string_with_format(51, 19, "symbol", &table_sep_left_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -1302,7 +1282,6 @@ fn build_report_xlsx_analysis_v2(
         }
     }
 
-    // Aggregate robustness means in P/Q section.
     let robust_labels: Vec<&str> = vec![
         "finishing_balance_mean",
         "total_mean",
@@ -1373,7 +1352,6 @@ fn build_report_xlsx_analysis_v2(
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Robustness summary footer rows (end_date + avg params) and a small param-deviation table.
     let slow_avg = mean_of(|r| Some(r.slow_len as f64));
     let fast_avg = mean_of(|r| Some(r.fast_len as f64));
     worksheet
@@ -1443,14 +1421,12 @@ fn build_report_xlsx_analysis_v2(
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Separator column (O) between timeframe and robustness blocks.
     for rr in 50..=94u32 {
         worksheet
             .write_blank(rr, 14, &table_sep_left_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Random-pairs header row (row 94) mirrors the reference workbook layout.
     worksheet
         .write_string_with_format(93, 0, "start_date", &metric_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -1527,8 +1503,7 @@ fn build_report_xlsx_analysis_v2(
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Place chart-data where the reference workbook keeps it (~row 101).
-    let chart_data_title_row = 98u32; // Excel row 99
+    let chart_data_title_row = 98u32;
     worksheet
         .write_string_with_format(
             chart_data_title_row,
@@ -1537,7 +1512,7 @@ fn build_report_xlsx_analysis_v2(
             &header_fmt,
         )
         .map_err(|e: XlsxError| e.to_string())?;
-    let chart_hdr = 100u32; // Excel row 101
+    let chart_hdr = 100u32;
     worksheet
         .write_string(chart_hdr, 2, "Start Date")
         .map_err(|e: XlsxError| e.to_string())?;
@@ -1772,15 +1747,12 @@ fn build_report_xlsx_analysis_v2(
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Embed the same reference image used in the sample "SERENITY" workbook so
-    // the report opens with a similar visual layout.
     let report_image = Image::new_from_buffer(include_bytes!("../assets/report_image.png"))
         .map_err(|e: XlsxError| e.to_string())?;
     worksheet
         .insert_image(49, 28, &report_image)
         .map_err(|e: XlsxError| e.to_string())?;
 
-    // Preserve a broad worksheet canvas similar to the reference workbook.
     worksheet
         .write_string(198, 43, " ")
         .map_err(|e: XlsxError| e.to_string())?;
@@ -1790,8 +1762,6 @@ fn build_report_xlsx_analysis_v2(
         .map_err(|e: XlsxError| e.to_string())
 }
 
-// Legacy/reference builder kept only for workbook-history comparison and staged
-// fallback review. It is not part of the current validation export path.
 #[allow(dead_code)]
 fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Vec<u8>, String> {
     use rust_xlsxwriter::{
@@ -1839,10 +1809,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .iter()
             .any(|c| c.get("cscv_pbo").and_then(|v| v.as_object()).is_some());
 
-    // Match the frontend shortlist rule:
-    // - If cross-ticker was run, shortlist = robust_pareto && cross_ticker_pareto
-    // - Otherwise shortlist = robust_pareto
-    // - If shortlist is empty, fall back to all candidates.
     let shortlist_base: Vec<&Value> = candidates
         .iter()
         .filter(|cand| {
@@ -1937,7 +1903,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .then_with(|| b_m.total_cmp(&a_m))
     });
 
-    // Keep a full copy for distribution charts, even if the table is capped by `max_rows`.
     let mut rows: Vec<&Value> = all_rows.clone();
     if let Some(n) = max_rows {
         if rows.len() > n {
@@ -1979,7 +1944,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
         .set_border(FormatBorder::Thin)
         .set_align(FormatAlign::Center);
 
-    // Title + meta.
     worksheet
         .merge_range(0, 0, 0, 47, "VectorGrid Report", &title_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -2017,7 +1981,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Table headers.
     let header_row: u32 = 4;
     let headers: Vec<&str> = vec![
         "Rank",
@@ -2075,7 +2038,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Column widths for readability.
     let _ = worksheet.set_column_width(0, 6);
     let _ = worksheet.set_column_width(1, 14);
     let _ = worksheet.set_column_width(2, 9);
@@ -2528,7 +2490,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .set_midpoint_color("FFEB84")
             .set_maximum_color("F8696B");
 
-        // Key metric heatmaps for quick visual scanning.
         worksheet
             .add_conditional_format(row_min, 5, row_max, 5, &cf_bar_green)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -2556,7 +2517,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .add_conditional_format(row_min, 42, row_max, 42, &cf_bad)
             .map_err(|e: XlsxError| e.to_string())?;
 
-        // Row/flag highlighting (recommended + Pareto).
         let excel_first_row = row_min + 1;
         let rec_row_fmt = Format::new()
             .set_bold()
@@ -2617,7 +2577,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
 
     let _ = worksheet;
 
-    // Dashboard summary (active sheet on open).
     let dashboard = workbook.add_worksheet();
     dashboard
         .set_name("Dashboard")
@@ -2808,7 +2767,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
         let shortlist_link = format!("internal:Shortlist!A{}", excel_first_row);
         let _ = dashboard.write_url_with_text(4, 1, shortlist_link.as_str(), "Go to Shortlist");
 
-        // Robust score chart.
         let col_rank = 0;
         let col_robust = 5;
         let mut score_chart = Chart::new(ChartType::Column);
@@ -2837,7 +2795,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .insert_chart_with_offset(4, 5, &score_chart, 10, 10)
             .map_err(|e: XlsxError| e.to_string())?;
 
-        // Risk/return scatter: Sharpe vs MaxDD (best in top-left).
         let col_sharpe = 10;
         let col_max_dd = 11;
         let mut rr_chart = Chart::new(ChartType::Scatter);
@@ -2855,9 +2812,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // ---------------------------------------------------------------------
-    // Distributions (derived from the full shortlist before `max_rows` cap).
-    // ---------------------------------------------------------------------
     use std::collections::BTreeMap;
 
     let mut ma_pair_stats: BTreeMap<(String, String), (usize, f64)> = BTreeMap::new();
@@ -2959,7 +2913,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
     let _ = dist.write_url_with_text(1, 3, "internal:Dashboard!A1", "Dashboard");
     let _ = dist.write_url_with_text(1, 4, "internal:Shortlist!A1", "Shortlist");
 
-    // MA pair frequency table.
     let pair_header_row: u32 = 3;
     dist.write_string_with_format(pair_header_row, 0, "MA Pair", &header_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
@@ -2978,7 +2931,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Length count tables.
     dist.write_string_with_format(pair_header_row, 4, "Fast Len", &header_fmt)
         .map_err(|e: XlsxError| e.to_string())?;
     dist.write_string_with_format(pair_header_row, 5, "Count", &header_fmt)
@@ -3003,7 +2955,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Charts.
     if !pair_rows.is_empty() {
         let row_min = pair_header_row + 1;
         let row_max = pair_header_row + pair_rows.len() as u32;
@@ -3052,7 +3003,6 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .map_err(|e: XlsxError| e.to_string())?;
     }
 
-    // Fast vs slow scatter with robust buckets (low/mid/high).
     let scatter_header_row: u32 = 20;
     dist.write_string_with_format(scatter_header_row, 0, "slow_len_low", &header_fmt)
         .map_err(|e: XlsxError| e.to_string())?;

@@ -9,9 +9,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
 use ta_strategies::double_ma::StrategyConfig;
 
-/// Current `schema_version` emitted by this build for serialized [`StrategyIr`] payloads.
 pub const STRATEGY_IR_SCHEMA_VERSION: u16 = 2;
-/// Oldest `schema_version` still accepted by [`validate_strategy_ir`] and planner entry points.
+
 pub const STRATEGY_IR_MIN_SUPPORTED_SCHEMA_VERSION: u16 = 1;
 
 pub const IR_MAX_INDICATORS: usize = 64;
@@ -113,11 +112,7 @@ pub enum ValueRef {
     },
     MaSource,
     Close,
-    /// Lossless `f64` transport encoded as raw IEEE-754 bits.
-    ///
-    /// Rust producers may send either a JSON number or a decimal string for `bits`, but string
-    /// transport is the safest choice for JavaScript-facing payloads because integers above
-    /// `2^53 - 1` are not exactly representable by JS numbers.
+
     ConstantBits {
         #[serde(deserialize_with = "deserialize_constant_bits_u64")]
         bits: u64,
@@ -464,17 +459,6 @@ fn validate_program(program: &SignalProgramGraph) -> Result<(), String> {
     Ok(())
 }
 
-/// Validates wire-level well-formedness for a deserialized [`StrategyIr`].
-///
-/// This function deliberately stays narrower than full runnable-profile validation:
-///
-/// - serde remains lenient, so omitted fields still receive defaults and unknown JSON fields are
-///   ignored during deserialization;
-/// - casing and surrounding whitespace are only checked for emptiness here, not canonicalized;
-/// - profile-specific program and execution invariants are left to narrower builders/callers.
-///
-/// Callers that require canonical static-builder shapes or tighter runtime invariants should layer
-/// those checks separately instead of broadening this validator in place.
 pub fn validate_strategy_ir(ir: &StrategyIr) -> Result<(), String> {
     ensure_schema_supported(ir.schema_version)?;
     validate_ma_spec(&ir.fast_ma, "fast_ma")?;

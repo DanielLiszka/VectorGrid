@@ -1271,8 +1271,7 @@ export async function presetKernel(): Promise<void> {
     const summary = await refreshGpuStatus();
     applyGpuSummaryToOptimizeStore(summary);
   } catch {
-    // keep preset application non-throwing (legacy-compatible behavior)
-  }
+      }
 }
 
 export async function refreshGpuStatus(): Promise<GpuStatusSummary> {
@@ -1485,8 +1484,7 @@ export async function runGpuParityCheck(): Promise<void> {
       const summary = await refreshGpuStatus();
       applyGpuSummaryToOptimizeStore(summary);
     } catch {
-      // keep parity action completion non-throwing
-    }
+          }
   } finally {
     markOptimizeIdle();
   }
@@ -2991,8 +2989,7 @@ export async function runOptimization(
       timings.gpuRefreshMs = elapsedMs(gpuRefreshStartedAt);
       applyGpuSummaryToOptimizeStore(summary);
     } catch {
-      // Keep run completion non-throwing if status refresh is unavailable.
-    }
+          }
 
     timings.totalMs = elapsedMs(runStartedAt);
     progressMeta = buildRunPhaseSummary(strategyKind, timings);

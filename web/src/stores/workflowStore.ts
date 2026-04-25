@@ -374,7 +374,7 @@ export const useWorkflowStore = defineStore('workflow', {
         this.controlsTab = 'data'
         this.resultsTab = 'overview'
       } else if (this.workspace === 'live') {
-        // Live workspace preserves the underlying workflow context; it is a shell placement change, not a new workflow family.
+
       } else if (this.workspace === 'library') {
         this.workflow = 'history'
         this.controlsTab = 'data'

@@ -922,8 +922,6 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
         ),
     ];
 
-    // Prewarm each variant once so the first benchmark in the group does not
-    // absorb one-time CUDA/runtime setup costs that would distort the split.
     for (_, req0, recompute_enabled, reduced_rows_override) in variants.iter() {
         let req2 = req0.clone();
         run_with_product_reduced_rows_env(*reduced_rows_override, || {

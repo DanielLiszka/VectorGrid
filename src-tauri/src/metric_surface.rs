@@ -335,7 +335,6 @@ fn rebuild_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
 }
 
 fn metrics_mean(metrics: &Metrics) -> f64 {
-    // Sidecar rows keep the historical `mean = sharpe * volatility` contract.
     metrics.sharpe * metrics.volatility
 }
 
@@ -509,7 +508,7 @@ pub(crate) fn build_optimization_metric_surface_artifact(
 
 pub(crate) fn build_optimization_metric_surface_artifact_value(artifact: &Value) -> Option<Value> {
     artifact.pointer("/run/res")?;
-    // Non-finite `f64` row cells serialize as JSON `null` through `serde_json::to_value`.
+
     serde_json::to_value(build_optimization_metric_surface_artifact(artifact)).ok()
 }
 

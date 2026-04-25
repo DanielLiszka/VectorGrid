@@ -1,18 +1,5 @@
-<#
-.SYNOPSIS
-Runs the headless MlSignal native score-cache smoke harness.
 
-.DESCRIPTION
-Defaults to the standard CPU-native runtime path. Leave -NativeLibraryPath blank
-to rely on bundle-relative discovery, preferably native\catboostmodel.dll next
-to the selected bundle manifest.
 
-.EXAMPLE
-powershell -File scripts/run_ml_signal_native_smoke.ps1 `
-  -CsvPath C:\data\prices.csv `
-  -BundleManifest C:\models\ml_signal\bundle-a\manifest.json `
-  -BackendPreference native_cpu
-#>
 
 param(
   [Parameter(Mandatory = $true)]

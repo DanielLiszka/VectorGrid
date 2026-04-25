@@ -2,8 +2,33 @@ import { configDefaults, defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import { visualizer } from 'rollup-plugin-visualizer'
 
-// https://vite.dev/config/
-export default defineConfig(({ mode }) => ({
+const baseTestExclude = [...configDefaults.exclude, 'e2e/**']
+
+const jsdomTestInclude = [
+  'src/App.test.ts',
+  'src/main.test.ts',
+  'src/preflight.test.ts',
+  'src/components/**/*.test.ts',
+  'src/composables/useLightweightChart.test.ts',
+  'src/composables/usePersistedMatrixColumnState.test.ts',
+  'src/composables/useShellMount.test.ts',
+  'src/composables/useTaskCenterVisibility.test.ts',
+  'src/composables/useTaskLifecycleSummary.test.ts',
+  'src/services/analysisService.test.ts',
+  'src/services/artifactHistoryPerf.test.ts',
+  'src/services/desktopProductization.test.ts',
+  'src/services/executionChartService.test.ts',
+  'src/services/optionsExpressionService.test.ts',
+  'src/services/validationReportPerf.test.ts',
+  'src/stores/historyStore.search.test.ts',
+  'src/tauri/errorPathQa.test.ts',
+  'src/tauri/instrumentation.mockIPC.test.ts',
+  'src/tauri/invoke.mockIPC.test.ts',
+  'src/utils/core/runArtifactReview.test.ts',
+  'src/visualizations/*.test.ts',
+]
+
+export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
     ...(mode === 'analyze'
@@ -23,7 +48,26 @@ export default defineConfig(({ mode }) => ({
     strictPort: true,
   },
   test: {
-    exclude: [...configDefaults.exclude, 'e2e/**'],
+    exclude: baseTestExclude,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          exclude: [...baseTestExclude, ...jsdomTestInclude],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'jsdom',
+          environment: 'jsdom',
+          include: jsdomTestInclude,
+          exclude: baseTestExclude,
+        },
+      },
+    ],
   },
   build: {
     outDir: 'dist',

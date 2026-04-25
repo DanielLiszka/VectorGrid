@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { describe, expect, it, vi } from 'vitest'

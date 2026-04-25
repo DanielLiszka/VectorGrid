@@ -1,8 +1,3 @@
-//! Test-only forwarding helpers for `double_ma.rs`.
-//!
-//! Canonical preset definitions remain owned by `strategy_presets.rs`; this
-//! module only keeps large local tests from importing that module repeatedly.
-
 use ta_strategies::double_ma::StrategyConfig;
 
 pub(super) fn trend_quality_strategy_for_kernel() -> StrategyConfig {

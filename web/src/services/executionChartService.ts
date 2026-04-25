@@ -350,14 +350,14 @@ function clearRuntimeData(): void {
     try {
       chartRuntime.candleSeries.setData([])
     } catch {
-      // chart already disposed
+
     }
   }
   if (chartRuntime.markerApi && typeof chartRuntime.markerApi.setMarkers === 'function') {
     try {
       chartRuntime.markerApi.setMarkers([])
     } catch {
-      // chart already disposed
+
     }
   }
 }
@@ -367,7 +367,7 @@ export function disposeExecutionChart(): void {
     try {
       chartRuntime.resizeObserver.unobserve(chartRuntime.host)
     } catch {
-      // host already detached
+
     }
   }
   chartRuntime.resizeObserver = null
@@ -375,7 +375,7 @@ export function disposeExecutionChart(): void {
     try {
       chartRuntime.chart.remove()
     } catch {
-      // chart already removed
+
     }
   }
   chartRuntime.host = null
@@ -407,7 +407,7 @@ async function ensureExecutionChart(host: HTMLElement): Promise<boolean> {
       try {
         applyLightweightChartSize(chartRef, entry.contentRect.width, entry.contentRect.height)
       } catch {
-        // chart already disposed
+
       }
     })
     chartRuntime.resizeObserver.observe(host)

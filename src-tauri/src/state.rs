@@ -1098,11 +1098,6 @@ fn expanded_protect_ids_locked(
     expanded
 }
 
-/// Observational snapshot of the current retention heuristic input set.
-///
-/// This is intentionally descriptive only. It mirrors the current tree-aware
-/// `(shared Arc, last_access_seq, id)` candidate ranking and subtree removal
-/// scope, but it does not claim to be LRU or globally optimal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DatasetRetentionCandidate {
     id: String,
@@ -1158,11 +1153,6 @@ fn retention_candidates_locked(
         .collect()
 }
 
-/// Picks the current eviction candidate for a retention boundary crossing.
-///
-/// The policy is intentionally heuristic and tree-aware: prefer exclusive data
-/// before externally shared `Arc` data, then evict the coldest candidate by
-/// `last_access_seq`, with `id` as the final deterministic tie-breaker.
 fn eviction_candidate_locked(
     map: &HashMap<String, DatasetEntry>,
     kind: DatasetRetentionKind,
@@ -2076,7 +2066,7 @@ fn min_max_ts(ts: &[i64]) -> (i64, i64) {
     (min, max)
 }
 
-const MIN_EPOCH_SECONDS: i64 = 315_532_800; // 1980-01-01T00:00:00Z
+const MIN_EPOCH_SECONDS: i64 = 315_532_800;
 const MIN_EPOCH_MILLIS: i64 = MIN_EPOCH_SECONDS * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2171,8 +2161,7 @@ fn infer_timeframe_label(ts: &[i64]) -> Option<String> {
         return None;
     }
 
-    // Match common timeframes within a small tolerance.
-    let tol = (sec / 50).max(1); // ~2% tolerance, min 1s.
+    let tol = (sec / 50).max(1);
     let match_secs = |target: i64| (sec - target).abs() <= tol;
 
     let label = if match_secs(60) {

@@ -30,10 +30,6 @@ const CDMC_FLAG_DISABLE_FLIP: u32 = 1u32 << 1;
 const CDMC_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
 const CDMC_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
-/// Borrowed GPU-resident CDMC signal inputs for one evaluation batch.
-///
-/// All non-zero pointers must reference row-major device memory in the current CUDA context.
-/// `cols` is the logical series length, and each stride must be at least `cols`.
 pub struct CdmcGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
     pub close_device_ptr: u64,
@@ -52,10 +48,6 @@ pub struct CdmcGpuDeviceSignalMatrices<'a> {
     pub decycler_stride: usize,
 }
 
-/// Parallel combo vectors describing which precomputed signal rows and time windows to evaluate.
-///
-/// Every slice must have identical length, and each index/window entry must already be bounds-checked
-/// against the matrices in `CdmcGpuDeviceSignalMatrices`.
 pub struct CdmcGpuComboBatch<'a> {
     pub dpo_row_index: &'a [i32],
     pub cycle_row_index: &'a [i32],
@@ -119,8 +111,6 @@ struct CdmcCudaRuntime {
 }
 
 impl CdmcCudaRuntime {
-    /// Creates a per-device CUDA runtime and changes CUDA's current context while the `Context`
-    /// and follow-on stream/module state are being initialized.
     fn new(device_id: u32) -> Result<Self, String> {
         cust::init(CudaFlags::empty()).map_err(|e| e.to_string())?;
         let device = Device::get_device(device_id).map_err(|e| e.to_string())?;
@@ -140,10 +130,6 @@ impl CdmcCudaRuntime {
         })
     }
 
-    /// Makes this runtime's CUDA context current on the calling thread.
-    ///
-    /// This mutates CUDA's thread-local current-context slot, so callers must assume subsequent
-    /// device-pointer and launch work happens against `self.context` until another context is set.
     fn set_current(&self) -> Result<(), String> {
         CurrentContext::set_current(self.context.as_ref()).map_err(|e| e.to_string())
     }
@@ -381,13 +367,6 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
-/// Evaluates a batch of CDMC combos against precomputed GPU signal rows.
-///
-/// Contract:
-/// - all device pointers in `signals` must already be valid in the current device/context pairing
-/// - `combos` slice lengths must match and windows must satisfy `0 <= start_t < end_t <= cols`
-/// - execution overlays, stop-loss, and take-profit remain unsupported on this GPU path
-/// - returned rows decode with the shared non-double-MA 19-float metric layout
 pub fn eval_cdmc_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &CdmcGpuDeviceSignalMatrices<'_>,

@@ -276,12 +276,6 @@ impl VccPeriodSweepDevice {
         self.matrix.device_ptr.checked_add(offset)
     }
 
-    /// Returns the indicator-local first valid row offset for `period`.
-    ///
-    /// This is only the sweep row's own period-derived offset (`period - 1`).
-    /// It does not apply the full VCC warmup/start gate, which also depends on
-    /// momentum-bollinger warmup, other signal families, and
-    /// [`compute_vcc_start_t`].
     pub fn first_valid_for_period(&self, period: u16) -> usize {
         usize::from(period.saturating_sub(1))
     }
@@ -902,7 +896,6 @@ pub fn compute_vcc_trend_signals(
     })
 }
 
-/// Combines the per-series first-valid bars into the first tradable VCC bar.
 pub fn compute_vcc_start_t(
     first_valid_close: usize,
     first_valid_source: usize,
@@ -923,11 +916,6 @@ pub fn compute_vcc_start_t(
     }
 }
 
-/// Returns the fast-signal warmup gate before trend/close/source alignment.
-///
-/// This is not the final bar where VCC can begin trading. Use
-/// [`compute_vcc_start_t`] to combine this with the other signal families and
-/// the execution offset.
 pub fn compute_vcc_fast_first_valid(
     cfg: &VccStrategyParams,
     squeeze_period: u16,

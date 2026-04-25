@@ -1,28 +1,25 @@
-//! Projection helpers for the frontend moving-average catalog.
-
 use serde::Serialize;
 
 use vector_ta::indicators::moving_averages::param_schema::MaParamInfo;
 
-/// Frontend catalog row projected from the upstream moving-average registry.
 #[derive(Debug, Clone, Serialize)]
 pub struct MaInfo {
     pub id: String,
     pub label: String,
-    /// Upstream single-call CPU support. Batch-only CPU support may still exist when this is false.
+
     pub supports_cpu: bool,
-    /// Upstream single-call CUDA support. Sweep/batch CUDA support may still exist when this is false.
+
     pub supports_cuda: bool,
-    /// Upstream CUDA sweep/batch support.
+
     pub supports_cuda_ma_sweep: bool,
-    /// App-local GPU-kernel policy overlay.
+
     pub supports_cuda_kernel: bool,
-    /// App-local preferred GPU-kernel policy overlay.
+
     pub prefers_cuda_kernel: bool,
     pub requires_candles: bool,
     pub period_based: bool,
     pub single_output: bool,
-    /// Numeric parameter schema only. Additional enum/output semantics may still live in `notes`.
+
     pub params: Vec<MaParamInfo>,
     pub notes: Option<String>,
 }

@@ -270,7 +270,7 @@ pub struct MetaStage4Request {
     pub source_meta_path: Option<String>,
     #[serde(default = "default_stage4_top_k")]
     pub top_k: usize,
-    /// Probability threshold in [0,1]. Values in (1,100] are interpreted as percentages.
+
     #[serde(default = "default_stage4_min_ml_confidence")]
     pub min_ml_confidence: f64,
     #[serde(default = "default_stage4_meta_weight")]
@@ -902,7 +902,6 @@ fn build_ml_confidence_status(
             let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000;
 
             if retrain_reason.is_some() {
-                // Keep the explicit compatibility warning as the primary reason.
             } else if stale && new_rows >= threshold && cooldown_ok {
                 retrain_recommended = true;
                 retrain_reason = Some(format!(
@@ -1110,7 +1109,6 @@ fn stable_logit(p: f64) -> f64 {
 }
 
 fn ml_uncertainty_from_prob(p: f64) -> f64 {
-    // 4*p*(1-p) in [0,1], maximum at p=0.5.
     (4.0 * p * (1.0 - p)).clamp(0.0, 1.0)
 }
 
@@ -2501,8 +2499,6 @@ pub(super) fn run_meta_selection_blocking(
         );
     }
 
-    // Parity guard: if timeframe filter isn't set, infer it from the candidate pool.
-    // This prevents mixing artifacts across multiple timeframes in meta-selection.
     let mut auto_tf_warning: Option<String> = None;
     let tf_set = req
         .timeframe
@@ -2609,8 +2605,6 @@ pub(super) fn run_meta_selection_blocking(
     }
 
     if let Some(tag) = holdout_tag.as_deref() {
-        // Optional: evaluate only a subset of groups to reduce expensive holdout compute.
-        // Default remains evaluating all groups.
         let mut selected_groups: Option<Vec<usize>> = None;
         let top_n = req.holdout_eval_top_n.unwrap_or(0);
         let explore_n = req.holdout_eval_explore_n;
@@ -2626,7 +2620,6 @@ pub(super) fn run_meta_selection_blocking(
                 rank_by = "auto".to_string();
             }
 
-            // Try ML ranking if requested/auto and a healthy model exists.
             let mut ml_model: Option<MlConfidenceModel> = None;
             if rank_by != "meta" {
                 if let Some(tf) = req
@@ -2777,7 +2770,7 @@ pub(super) fn run_meta_selection_blocking(
     let meta_bytes = serde_json::to_vec_pretty(&meta_obj).map_err(|e| e.to_string())?;
     let meta_path = run_artifacts::suggest_meta_artifact_path(&ts, &app)?;
     std::fs::write(&meta_path, &meta_bytes).map_err(|e| e.to_string())?;
-    // Retention policy: keep newest N untagged meta runs; tags preserve older runs.
+
     run_artifacts::prune_old_meta_artifacts_blocking(
         &app,
         run_artifacts::artifact_retention_policy_for_app(&app).meta_keep_newest,
@@ -2882,7 +2875,7 @@ fn normalize_timeframe_label(raw: &str) -> String {
     if s0.is_empty() {
         return String::new();
     }
-    // Back-compat: older artifacts may store inferred timeframes like "120s".
+
     if let Some(sec_str) = s0.strip_suffix('s') {
         if let Ok(sec) = sec_str.parse::<i64>() {
             let mapped = match sec {
@@ -3716,7 +3709,6 @@ fn apply_holdout_evaluation(
         )
     };
 
-    // Filter to holdout artifacts that match the request and actually have validation results.
     let holdout: Vec<&Value> = holdout_artifacts
         .iter()
         .filter(|a| artifact_matches_meta_req(a, req))
@@ -3728,7 +3720,7 @@ fn apply_holdout_evaluation(
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
 
-    let mut uniq_paths: Vec<(String, String)> = Vec::new(); // (csv_path, label)
+    let mut uniq_paths: Vec<(String, String)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for art in &holdout {
         let Some(csv_path) = artifact_csv_path(art) else {

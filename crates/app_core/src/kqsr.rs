@@ -19,14 +19,6 @@ use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
-/// KQSR strategy parameters.
-///
-/// Current runtime semantics intentionally remain broader than a stricter
-/// product-policy envelope:
-/// - exits in [`build_kqsr_desired_positions`] still pivot around the fixed
-///   neutral `50.0`
-/// - [`validate_kqsr_params`] accepts `prb_threshold` anywhere in `[0, 1]`, so
-///   values above `0.5` create overlapping long/short PRB acceptance regions
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct KqsrStrategyParams {
     #[serde(default = "default_kqsr_kdj_period")]
@@ -161,12 +153,6 @@ impl Default for KqsrStrategyParams {
     }
 }
 
-/// Validates that the persisted/runtime KQSR configuration is structurally
-/// usable without tightening historical compatibility.
-///
-/// This validator does not require `oversold < 50 < overbought` and does not
-/// cap `prb_threshold` at `0.5`; callers that want stricter policy should
-/// enforce it separately from this compatibility-oriented check.
 pub fn validate_kqsr_params(cfg: &KqsrStrategyParams) -> Result<(), String> {
     if cfg.kdj_period == 0 {
         return Err("KQSR kdj_period must be >= 1.".to_string());
@@ -1091,12 +1077,6 @@ pub fn compute_kqsr_slow_signals_f32(
     })
 }
 
-/// Computes the first tradeable bar for KQSR evaluation.
-///
-/// When `trade_on_next_bar` is enabled, a valid terminal outcome is
-/// `start_t == close.len()`: the first usable signal may arrive on the last
-/// bar, leaving no remaining tradeable bar. Downstream callers should treat
-/// that as a legitimate all-flat case rather than as an error by itself.
 pub fn compute_kqsr_start_t(
     first_valid_close: usize,
     first_valid_signals: usize,
@@ -1121,17 +1101,6 @@ fn prb_band_fraction(close: f64, lower: f64, upper: f64) -> f64 {
     (close - lower) / width
 }
 
-/// Builds the desired-position vector for the already-computed KQSR signals.
-///
-/// Current semantics are intentionally preserved:
-/// - long and short exits both pivot around the fixed neutral `50.0`
-/// - `prb_threshold > 0.5` creates overlapping PRB acceptance regions for long
-///   and short entry checks
-/// - returning an all-flat vector is legitimate when `start_t >= close.len()`
-///   and no tradeable bar remains
-///
-/// Malformed signal shapes should be rejected earlier by the fallible signal
-/// builders. This helper keeps its flat-output API for compatibility.
 pub fn build_kqsr_desired_positions(
     close: &[f64],
     signals: &KqsrSignals,

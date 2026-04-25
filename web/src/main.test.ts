@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveRuntimePinia, bindRuntimePinia } from './stores/runtimePinia'
 import { BOOT_STAGES, useRuntimeStore } from './stores/runtimeStore'
 

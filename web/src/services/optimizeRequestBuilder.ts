@@ -1323,8 +1323,7 @@ function buildStrategyConfigFromInputs(
   return {
     long_only: common.longOnly,
     allow_flip: common.allowFlip,
-    // The optimize request path currently keeps this fixed for parity with the existing runtime behavior.
-    trade_on_next_bar: true,
+        trade_on_next_bar: true,
     cost_preset: common.costPreset,
     starting_equity: common.startingEquity,
     fee_bps: common.feeBps,
@@ -3370,9 +3369,7 @@ export function buildCompositeCpuOptimizationRequest(
     extra_shortlist_objectives: extraShortlistObjectives,
     shortlist_confidence_mode: shortlistConfidenceMode,
     shortlist_union_mode: shortlistUnionMode,
-    // Standalone CompositeCpu-family product requests stay Grid-only and do not
-    // emit the Double-MA heatmap/export-all surface.
-    mode: COMPOSITE_CPU_PRODUCT_MODE,
+            mode: COMPOSITE_CPU_PRODUCT_MODE,
     top_k: topK,
     include_all: includeAll,
     heatmap_bins: COMPOSITE_CPU_PRODUCT_HEATMAP_BINS,

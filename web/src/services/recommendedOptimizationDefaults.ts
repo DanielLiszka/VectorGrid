@@ -60,8 +60,7 @@ export function applyRecommendedOptimizationDefaults(): boolean {
   });
   let changed = false;
 
-  // These are fallback defaults for missing/invalid values, not preset profiles.
-  if (resolved.topK != null) {
+    if (resolved.topK != null) {
     advancedStore.topK = resolved.topK;
     changed = true;
   }

@@ -58,13 +58,6 @@ fn cap_periods_even(mut periods: Vec<u16>, cap: usize) -> Vec<u16> {
     out
 }
 
-/// Inputs for the crate-private predictive prescan rescue heuristic.
-///
-/// The heuristic computes MA series from `ma_source`, scores each `(fast, slow)` pair
-/// against the next-close log return, and returns up to `top_k` strictly ordered
-/// `fast < slow` seeds. When `long_only` is enabled, bearish bars are skipped from the
-/// score denominator instead of being averaged as zero. Time sampling is approximate:
-/// `period_stride` and `MAX_TIME_STEPS` cap work without guaranteeing an exact ceiling.
 pub(crate) struct PredictivePrescanParams<'a> {
     pub candles: &'a vector_ta::utilities::data_loader::Candles,
     pub ma_source: &'a str,
@@ -83,11 +76,6 @@ pub(crate) struct PredictivePrescanParams<'a> {
     pub period_stride: u16,
 }
 
-/// Scores sampled `(fast, slow)` MA pairs and returns the highest-ranked seeds.
-///
-/// The scoring target is the next-close log return. Duplicate or unsorted period domains
-/// are normalized before scoring so the output remains unique on the common
-/// `period_stride <= 1` path.
 pub(crate) fn predictive_prescan_seed_pairs(
     params: PredictivePrescanParams<'_>,
 ) -> Result<Vec<(u16, u16)>, String> {

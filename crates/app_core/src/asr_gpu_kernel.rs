@@ -526,8 +526,6 @@ fn ensure_resident_close_lr<'a>(
     close_f64: &[f64],
     close_device_ptr: u64,
 ) -> Result<&'a ResidentCloseReturns, String> {
-    // This cache keys off host/device pointer identity plus series length. Callers must treat the
-    // pointed-at close data as immutable while the cached resident close/log-return buffers remain live.
     let key = CloseSeriesKey {
         len: close_f64.len(),
         host_ptr: close_f64.as_ptr() as usize,
@@ -615,7 +613,7 @@ fn launch_pack_rows_u64_ptr_f32(
 
 #[inline]
 fn asr_kernel_flags(strategy: &StrategyConfig) -> u32 {
-    let mut flags: u32 = 1u32 << 4; // signed exposure
+    let mut flags: u32 = 1u32 << 4;
     if strategy.long_only {
         flags |= 1u32 << 0;
     }
@@ -1085,8 +1083,6 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
             "slow z-score rows",
         )?;
 
-        // Packed-row cache entries are keyed by the row-pointer identities already uploaded plus the
-        // column count. The GPU-resident rows those pointers reference must stay immutable while cached.
         let fast_sq_pack_sig = (fast_sq_rows_sig, signals.cols);
         if rt.scratch.fast_sq_packed_sig != Some(fast_sq_pack_sig) {
             let row_ptrs_ptr = rt

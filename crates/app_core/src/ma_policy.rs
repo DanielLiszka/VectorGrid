@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-// Kernel-capable MA ids aligned with the vector-ta 0.2.4 moving-average registry
-// and the VRAM kernel route currently wired through this app.
 const GPU_KERNEL_SUPPORTED_MAS: &[&str] = &[
     "sma",
     "ema",
@@ -39,8 +37,6 @@ const GPU_KERNEL_SUPPORTED_MAS: &[&str] = &[
     "frama",
 ];
 
-// Built-in preferred subset for Auto kernel routing and UI emphasis.
-// Kept static in code so the app does not depend on external benchmark files.
 const GPU_KERNEL_PREFERRED_MAS: &[&str] = &[
     "alma",
     "cora_wave",
@@ -172,11 +168,6 @@ pub fn prefers_gpu_kernel_ma(ma_type: &str) -> bool {
     normalized_id_is_in_set(GPU_KERNEL_PREFERRED_MAS, ma_type)
 }
 
-/// Advisory preference derived from the embedded GPU speedup table.
-///
-/// This does not guarantee that an indicator is eligible for the direct
-/// `GpuKernel` route. Kernel-route eligibility is still owned by the registry
-/// capability check plus the explicit kernel-capable allowlist.
 #[inline]
 pub fn prefers_gpu_by_speedup_table(ma_type: &str) -> bool {
     prefers_gpu_kernel_ma(ma_type)
@@ -206,8 +197,7 @@ pub enum HybridRouteTier {
 pub struct HybridIndicatorRouteDecision {
     pub indicator_id: String,
     pub capability: HybridCapabilityTier,
-    /// Advisory speedup preference only. This may be `true` for indicators that
-    /// still route through `CpuStaged` because they are not kernel-capable.
+
     pub gpu_preferred_by_speedup: bool,
     pub route: HybridRouteTier,
 }
@@ -285,7 +275,6 @@ pub fn plan_hybrid_indicator_partition<'a, I>(ma_types: I) -> HybridIndicatorPar
 where
     I: IntoIterator<Item = &'a str>,
 {
-    // BTreeSet provides deterministic order and removes duplicates.
     let mut unique_ids: BTreeSet<String> = BTreeSet::new();
     for raw in ma_types {
         let id = normalize_indicator_id(raw);
@@ -307,12 +296,6 @@ where
     out
 }
 
-/// Plans the current hybrid route for one moving-average id.
-///
-/// The embedded speedup table acts as advisory policy input. It can mark an
-/// indicator as GPU-preferred even when the indicator still has to use
-/// `CpuStaged` because only kernel-capable ids can take the direct
-/// `GpuKernel` route in the current model.
 #[inline]
 pub fn plan_hybrid_indicator_route(ma_type: &str) -> HybridIndicatorRouteDecision {
     let id = normalize_indicator_id(ma_type);
@@ -327,7 +310,7 @@ pub fn plan_hybrid_indicator_route(ma_type: &str) -> HybridIndicatorRouteDecisio
                 HybridRouteTier::CpuStaged
             }
         }
-        // Current unified execution path only has direct GPU route for kernel-capable MAs.
+
         HybridCapabilityTier::CudaOnly | HybridCapabilityTier::CpuOnly => {
             HybridRouteTier::CpuStaged
         }
@@ -549,8 +532,6 @@ mod tests {
         }
 
         let (Some(fast), Some(slow)) = (gpu_kernel_preferred, gpu_kernel_cpu_staged) else {
-            // If all kernel-capable MAs are GPU-preferred by the current speedup CSV,
-            // this scenario is not representable and should not fail the test suite.
             return;
         };
 

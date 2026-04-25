@@ -247,10 +247,7 @@ try {
     [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $null, "Process")
   }
   if ($NvtxMode -eq "on" -and $CaptureMode -eq "nvtx") {
-    # Nsight Systems only considers registered NVTX strings for capture triggering by
-    # default. Our current Rust NVTX path uses push/pop ranges with plain strings,
-    # so opt into matching non-registered strings when bounded capture is requested.
-    [System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", "0", "Process")
+                [System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", "0", "Process")
   } else {
     [System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", $prevNsysNvtxRegisterOnly, "Process")
   }

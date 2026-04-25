@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import RunContextBar, { type RunContextItem } from './RunContextBar.vue'

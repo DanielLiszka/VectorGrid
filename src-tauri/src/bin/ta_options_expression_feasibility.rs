@@ -484,9 +484,7 @@ fn build_phase05_gate_evaluation(
     const VALID_SLOT_DENSITY_GATE_MIN: f64 = 0.25;
     const INVALID_SLOT_RATE_GATE_MAX: f64 = 0.75;
     const CACHE_REUSE_GATE_MIN: f64 = 0.90;
-    // The CUDA scorer now carries the harsher robustness lane during hybrid ranking,
-    // so the product-promotion floor should reflect "more useful work per pass"
-    // rather than the older narrower 3.0x scorer-only target.
+
     const GPU_SPEEDUP_GATE_MIN: f64 = 2.75;
 
     let structural_cache_reuse_observed = warm_runs

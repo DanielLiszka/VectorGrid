@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invokeByName, invokeCommand, resetInvokeLifecycleHooksForTests, setInvokeLifecycleHooks } from './invoke'
 import { TauriRuntimeError } from './runtimeError'
 import { installMockIpc, resetTauriApiMocks } from '../test/tauriMocks'

@@ -433,10 +433,7 @@ pub(crate) fn reset_test_cuda_input_cache() {
 
 #[cfg(feature = "cuda")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-/// Per-thread counters for prepared-input CUDA dispatch decisions.
-///
-/// These counters are tracked in thread-local storage. Reading them through
-/// [`take_prepared_cuda_dispatch_stats`] resets the current thread's counters.
+
 pub struct PreparedCudaDispatchStats {
     pub device_path_hits: u64,
     pub device_path_fallbacks: u64,
@@ -448,10 +445,7 @@ const PREPARED_CUDA_FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const PREPARED_CUDA_FNV_PRIME: u64 = 0x100000001b3;
 
 #[cfg(feature = "cuda")]
-/// Return and reset the current thread's prepared-input CUDA dispatch stats.
-///
-/// The counters are thread-local so tests and callers can sample fallback
-/// behavior without cross-thread contamination.
+
 pub fn take_prepared_cuda_dispatch_stats() -> PreparedCudaDispatchStats {
     PREPARED_CUDA_DISPATCH_STATS.with(|cell| {
         let mut stats = cell.borrow_mut();
@@ -695,15 +689,7 @@ fn ensure_prepared_cuda_base_fields(
 
 #[cfg(feature = "cuda")]
 #[derive(Debug)]
-/// Prepared host/device indicator inputs for reuse across multiple CUDA
-/// indicator dispatches against the same candle allocation.
-///
-/// This type is intentionally sharp:
-/// - cache reuse is keyed by dataset pointer identity and length, not a broader
-///   mutation/revision contract
-/// - accessors assume the requested field family was materialized up front
-/// - the prepared buffers are best suited for callers that already understand
-///   the descriptor input-kind requirements they will dispatch
+
 pub struct PreparedCudaIndicatorInputs {
     source_kind: PreparedCudaSourceKind,
     source_override: Option<Arc<Vec<f32>>>,
@@ -731,7 +717,6 @@ pub struct PreparedCudaIndicatorInputs {
 
 #[cfg(feature = "cuda")]
 impl PreparedCudaIndicatorInputs {
-    /// Prepare reusable CUDA indicator inputs on device `0`.
     pub fn from_candles(
         candles: &Candles,
         ma_source: &str,
@@ -739,7 +724,6 @@ impl PreparedCudaIndicatorInputs {
         Self::from_candles_on_device(candles, ma_source, 0)
     }
 
-    /// Prepare reusable CUDA indicator inputs on a specific CUDA device.
     pub fn from_candles_on_device(
         candles: &Candles,
         ma_source: &str,
@@ -1278,11 +1262,7 @@ pub(crate) fn device_slice_ref_from_matrix_row(
 }
 
 #[cfg(feature = "cuda")]
-/// Compute a CUDA-backed dynamic indicator by chaining from a single row of an
-/// existing device matrix.
-///
-/// This helper is limited to slice-input indicators and rejects out-of-range
-/// row indices before dispatch.
+
 pub fn compute_dynamic_indicator_cuda_from_device_matrix_row(
     indicator_id: &str,
     output_id: Option<&str>,
@@ -1348,11 +1328,7 @@ pub fn compute_dynamic_indicator_cuda_from_device_matrix_row(
 }
 
 #[cfg(feature = "cuda")]
-/// Compute a dynamic indicator through CUDA using pre-uploaded prepared inputs.
-///
-/// The adapter prefers a device-native dispatch path first. If that path fails,
-/// it records a fallback event and retries through the host-backed CUDA request
-/// path before surfacing an error.
+
 pub fn compute_dynamic_indicator_cuda_with_inputs(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     indicator_id: &str,
@@ -1434,13 +1410,7 @@ pub fn compute_dynamic_indicator_cuda_with_inputs(
 }
 
 #[cfg(feature = "cuda")]
-/// Compute a CUDA-backed dynamic indicator using caller-specified input kind
-/// dispatch over already prepared inputs.
-///
-/// This is a lower-level helper than
-/// [`compute_dynamic_indicator_cuda_with_inputs`]: it trusts the caller to
-/// supply an input kind compatible with `indicator_id` and preserves the same
-/// device-path then host-path fallback behavior.
+
 pub fn compute_dynamic_indicator_cuda_direct_with_inputs(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     indicator_id: &str,
@@ -1506,8 +1476,7 @@ pub fn compute_dynamic_indicator_cuda_direct_with_inputs(
 }
 
 #[cfg(feature = "cuda")]
-/// Prepare the minimum required CUDA inputs for `indicator_id` from `candles`
-/// and dispatch through [`compute_dynamic_indicator_cuda_with_inputs`].
+
 pub fn compute_dynamic_indicator_cuda(
     candles: &Candles,
     ma_source: &str,

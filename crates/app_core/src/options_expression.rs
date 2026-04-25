@@ -39,10 +39,7 @@ use crate::options_types::OptionsExpressionBackendPreference;
 const MINUTE_MS: i64 = 60_000;
 const DAY_MS: i64 = 86_400_000;
 const OPTIONS_EXPRESSION_PREPARE_CACHE_MAX_ENTRIES: usize = 32;
-// Keep runtime `auto` aligned with the current Phase 0.5 product gate so
-// representative provider-backed slices that already clear the documented
-// promotion envelope are not downgraded back to CPU solely by stricter live
-// density/invalid heuristics.
+
 const OPTIONS_AUTO_GPU_MIN_CANDIDATE_DENSITY: f64 = 0.25;
 const OPTIONS_AUTO_GPU_MAX_INVALID_SLOT_RATE: f64 = 0.75;
 const OPTIONS_AUTO_GPU_MIN_COMPILED_TUPLES: usize = 256;
@@ -195,10 +192,6 @@ impl DetailedTradeOutcome {
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 #[derive(Clone, Debug)]
 pub(crate) struct GpuFlatScoreInputs {
-    // The GPU scorer intentionally consumes a mixed-precision screening view:
-    // exact CPU-prepared outcomes are flattened to f32 here for fast aggregate
-    // accumulation, then retained finalists are exactified on the host before
-    // final reporting and verdict refresh.
     pub(crate) tuple_candidate_offsets: Vec<u32>,
     pub(crate) tuple_summary_offsets: Vec<u32>,
     pub(crate) outcome_valid: Vec<u8>,
@@ -1545,8 +1538,6 @@ fn evaluate_trade_detail(
     })
 }
 
-// Summary-cache compilation only needs PnL/premium/return, not the full path replay payload.
-// Keep this logic semantically aligned with evaluate_trade_detail; tests enforce parity.
 fn evaluate_trade_summary(
     event: &OptionsSignalEvent,
     tuple: &OptionsTupleSpec,
@@ -2452,9 +2443,6 @@ fn runtime_auto_backend_decision(
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn options_gpu_combined_scoring_enabled() -> bool {
-    // This env var is a parity/rollback switch for the search+holdout+stress
-    // fusion only. It must not change aggregate math; it only selects between
-    // the combined kernel and the legacy multi-launch lane scorer.
     std::env::var("VECTORGRID_OPTIONS_GPU_DISABLE_COMBINED_SCORING")
         .ok()
         .map(|value| {
@@ -3195,9 +3183,6 @@ fn exactify_ranked_results(
     dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
 ) -> ExactifyTimingBreakdown {
-    // GPU ranking is intentionally aggregate-first. This exactify pass is the
-    // boundary where retained rows regain exact summary metrics, enrichment,
-    // and exact extreme-stress scoring before robust scores are recomputed.
     let _nvtx_scope = crate::nvtx::scope("engine", "options_exactify_total");
     let total_start = Instant::now();
 
@@ -3376,8 +3361,7 @@ fn finalize_ranked_results(
         .map(|entry| (entry.compiled.tuple.clone(), entry.result.robust_score))
         .collect();
     let exactify = exactify_ranked_results(prepared, dataset, ranked_results);
-    // Keep a bounded surplus shortlist alive through exactify so exact replay can
-    // rerank borderline tuples before the final retained `top_k` cut.
+
     sort_ranked_results(ranked_results);
     resequence_pre_sealed_ranks(ranked_results);
     let final_top_k = final_top_k_limit(req.top_k, ranked_results.len());
@@ -3441,9 +3425,6 @@ mod gpu_scoring {
         aggregate: OptionsGpuTupleAggregate,
         split_event_count: usize,
     ) -> TupleAggregateMetrics {
-        // This conversion preserves the provisional aggregate view emitted by
-        // the kernel. Any exact median enrichment and exact extreme-stress work
-        // is injected later during `exactify_ranked_results`.
         let valid_trades = aggregate.valid_trades as usize;
         TupleAggregateMetrics {
             valid_trades,
@@ -3563,8 +3544,6 @@ mod gpu_scoring {
         ),
         String,
     > {
-        // Keep the old split launches available for forced parity checks and as
-        // a bounded fallback when the combined kernel is disabled or rejected.
         let holdout_events = prepared.diagnostics.holdout_events;
         let baseline_target_ranges = if holdout_events > 0 {
             vec![search_event_range, holdout_event_range]
@@ -3727,10 +3706,7 @@ mod gpu_scoring {
             shortlisted_indices.sort_by(|left, right| {
                 compare_gpu_shortlist_indices(*left, *right, robust_scores, &search_aggregates)
             });
-            // This GPU host-side retain step is a provisional frontier. It only
-            // becomes exact after host exactify, and aggregate-class semantics
-            // cannot overclaim exact pruning until exact extreme-lane state or
-            // an interval certificate exists.
+
             shortlisted_indices.truncate(buffered_exactify_limit(
                 req.top_k,
                 shortlisted_indices.len(),
@@ -3963,10 +3939,7 @@ fn rank_compiled_tuples_cpu(
 
     sort_ranked_results(&mut ranked_results);
     resequence_pre_sealed_ranks(&mut ranked_results);
-    // This retained frontier is exact only for quote-class CPU runs. Aggregate
-    // semantics still need exact extreme-lane replay before any exact-pruning
-    // claim, and GPU quote-class runs remain mixed-precision provisional until
-    // a future interval certificate is available.
+
     ranked_results.truncate(buffered_exactify_limit(req.top_k, ranked_results.len()));
     let (_, _, exactify_drift) =
         finalize_ranked_results(req, prepared, dataset, &mut ranked_results);
@@ -4598,7 +4571,7 @@ fn robust_score(
     let extreme_stress_score = extreme_stress
         .map(lane_utility)
         .unwrap_or(harsher_stress_score);
-    // Sealed metrics are recorded for final reporting, not for tuple ranking.
+
     0.45 * search_score
         + 0.25 * holdout_score
         + 0.15 * stress_score
@@ -4766,12 +4739,6 @@ fn build_event_detail_row(
     }
 }
 
-/// Builds inspection-only event path points from raw contract bar data.
-///
-/// This path visualization intentionally uses the underlying option-row
-/// open/high/low/close values, netted by structure family when a companion leg
-/// is present. It is not a quote-aware fill replay and does not reapply the
-/// entry/exit pricing model used by ranking.
 fn build_event_path_points(
     structure_family: OptionsStructureFamily,
     primary_contract: &OptionsContractSeries,
@@ -5412,11 +5379,6 @@ fn build_coverage_adequacy_summary(
     }
 }
 
-/// Runs the full blocking options-expression workflow for the current request.
-///
-/// This entrypoint prepares candidates, ranks the compiled tuples, and then
-/// finalizes result summaries using the same live split fallback semantics the
-/// ranking path used during execution.
 pub fn run_options_expression_blocking(
     req: OptionsExpressionRunRequest,
     signal_manifest: &OptionsSignalEventManifestV1,
@@ -5848,12 +5810,6 @@ fn elapsed_us(start: Instant) -> u64 {
     start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
-/// Re-runs prepare plus ranking and returns event-level inspection rows for the
-/// currently ranked tuple at `tuple_index`.
-///
-/// `tuple_index` is relative to the current ranked output, not a stable tuple
-/// identity across different requests or reruns. Inspection rows replay the
-/// baseline lane only.
 pub fn inspect_options_expression_tuple_blocking(
     req: OptionsExpressionRunRequest,
     tuple_index: usize,
@@ -5911,11 +5867,6 @@ pub fn inspect_options_expression_tuple_blocking(
     })
 }
 
-/// Re-runs prepare plus ranking and returns raw-bar path points for one event in
-/// the currently ranked tuple at `tuple_index`.
-///
-/// `tuple_index` is current-rank-relative. Path inspection remains a baseline
-/// lane, raw-bar visualization rather than a quote-aware fill replay.
 pub fn inspect_options_expression_event_path_blocking(
     req: OptionsExpressionRunRequest,
     tuple_index: usize,

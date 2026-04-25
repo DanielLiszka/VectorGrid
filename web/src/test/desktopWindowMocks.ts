@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { mockWindows } from '@tauri-apps/api/mocks'
+import { mockWindows } from '@tauri-apps/api/mocks'
 
 export function mockDesktopWindows(current: string, ...others: string[]): void {
   ;(globalThis as { isTauri?: boolean }).isTauri = true

@@ -163,8 +163,7 @@ function normalizeBoolFlag(key: LegacyStorageKey): void {
 }
 
 function migrateToSchemaV1(): void {
-  // Keep existing legacy keys; only normalize permissive bool-like values.
-  normalizeBoolFlag(WORKFLOW_ADVANCED_KEY)
+    normalizeBoolFlag(WORKFLOW_ADVANCED_KEY)
   normalizeBoolFlag(CONTROLS_COLLAPSED_KEY)
 }
 

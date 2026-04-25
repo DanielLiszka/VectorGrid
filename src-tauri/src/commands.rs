@@ -1,10 +1,3 @@
-//! Private child-module assembly root plus public command facade.
-//!
-//! The frontend/Tauri invoke surface is only the subset registered in
-//! `src-tauri/src/lib.rs` via `generate_handler!`. This file also intentionally
-//! re-exports Rust-only headless/blocking helpers and convenience DTOs for
-//! non-IPC callers inside the workspace.
-
 #[path = "commands_analysis.rs"]
 mod commands_analysis;
 #[path = "commands_artifacts.rs"]

@@ -723,23 +723,21 @@ impl UploadedOutcomeInputs {
 impl ReusableOutputBuffers {
     fn new(tuple_count: usize) -> Result<Self, String> {
         Ok(Self {
-            // Safety: the score kernel writes every output index in `[0, tuple_count)` before any
-            // device-to-host copy, so there is no observable read of uninitialized device memory.
             d_out_valid: unsafe { DeviceBuffer::<i32>::uninitialized(tuple_count) }
                 .map_err(|e| e.to_string())?,
-            // Safety: same full-write guarantee as `d_out_valid`.
+
             d_out_wins: unsafe { DeviceBuffer::<i32>::uninitialized(tuple_count) }
                 .map_err(|e| e.to_string())?,
-            // Safety: same full-write guarantee as `d_out_valid`.
+
             d_out_total_pnl: unsafe { DeviceBuffer::<f32>::uninitialized(tuple_count) }
                 .map_err(|e| e.to_string())?,
-            // Safety: same full-write guarantee as `d_out_valid`.
+
             d_out_total_premium: unsafe { DeviceBuffer::<f32>::uninitialized(tuple_count) }
                 .map_err(|e| e.to_string())?,
-            // Safety: same full-write guarantee as `d_out_valid`.
+
             d_out_sum_return_on_premium: unsafe { DeviceBuffer::<f32>::uninitialized(tuple_count) }
                 .map_err(|e| e.to_string())?,
-            // Safety: same full-write guarantee as `d_out_valid`.
+
             d_out_sumsq_return_on_premium: unsafe {
                 DeviceBuffer::<f32>::uninitialized(tuple_count)
             }
@@ -800,7 +798,7 @@ impl CombinedReusableOutputBuffers {
             holdout: ReusableOutputBuffers::new(tuple_count)?,
             conservative_holdout: ReusableOutputBuffers::new(tuple_count)?,
             harsher_holdout: ReusableOutputBuffers::new(tuple_count)?,
-            // Safety: the combined score kernel writes every score element before any copy.
+
             d_out_robust_score: unsafe { DeviceBuffer::<f64>::uninitialized(tuple_count) }
                 .map_err(|e| e.to_string())?,
             host_robust_score: vec![0.0f64; tuple_count],

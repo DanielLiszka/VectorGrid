@@ -4,11 +4,6 @@ use crate::validation_pipeline::{ValidationHardGateConfig, ValidationPostCandida
 use rand::rngs::StdRng;
 use std::sync::atomic::AtomicBool;
 
-/// Run the shared validation flow.
-///
-/// `process_one` returns `(candidate, candidate_start_t, sample_observations)` where:
-/// - `candidate_start_t` participates in the cross-candidate CSCV alignment max
-/// - `sample_observations` feeds probability metric sample sizing
 pub fn run_validation_candidates<P, C, FProcess, FSliceStats>(
     candidates: &[P],
     seed: u64,

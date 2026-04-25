@@ -43,8 +43,7 @@ pub(crate) struct OffsetProgressSink {
     pub(crate) app: tauri::AppHandle,
     pub(crate) base_offset: usize,
     pub(crate) total: usize,
-    // This sink intentionally rewrites both the count offset and the visible phase so staged
-    // optimize flows can project one continuous progress stream at the command boundary.
+
     pub(crate) phase: &'static str,
 }
 

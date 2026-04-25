@@ -135,7 +135,6 @@ pub struct CdmcPeriodSweepDevice {
 
 #[cfg(feature = "cuda")]
 impl CdmcPeriodSweepDevice {
-    /// Returns the device-row index for an exact period inside the current sweep.
     pub fn row_index_for_period(&self, period: u16) -> Option<usize> {
         if self.period_step == 0 || period < self.period_start || period > self.period_end {
             return None;
@@ -148,12 +147,6 @@ impl CdmcPeriodSweepDevice {
         (idx < self.matrix.rows).then_some(idx)
     }
 
-    /// Returns the current conservative warmup estimate used by existing sweep consumers.
-    ///
-    /// This helper is intentionally documented as inexact. DPO, Correlation
-    /// Cycle `angle`, Correlation Cycle `state`, and Decycler do not share the
-    /// same exact warmup contract, so this compatibility helper should not be
-    /// treated as a precise output-validity boundary for every sweep family.
     pub fn first_valid_for_period(&self, period: u16) -> usize {
         usize::from(period.saturating_sub(1))
     }

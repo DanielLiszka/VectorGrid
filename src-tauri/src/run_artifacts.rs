@@ -2059,7 +2059,6 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
         None => run_artifact_path(&artifact, &app)?,
     };
 
-    // Save-only env metadata stays here; canonical artifact normalization runs afterward.
     if let Value::Object(root) = &mut artifact {
         {
             let env_v = root
@@ -2087,7 +2086,6 @@ pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
     let bytes = serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
 
-    // Retention policy: keep newest N untagged runs, but never delete tagged runs.
     prune_old_run_artifacts_blocking(
         &app,
         artifact_retention_policy_for_app(&app).run_keep_newest,

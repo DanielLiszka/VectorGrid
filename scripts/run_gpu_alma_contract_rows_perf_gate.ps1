@@ -51,9 +51,7 @@ foreach ($spec in $specs) {
   Write-Host "Running ALMA contract-row GPU perf gate for $($spec.name)..."
   $criterionCaseDir = Split-Path -Parent (Split-Path -Parent $spec.criterion_estimates_path)
   if (Test-Path $criterionCaseDir) {
-    # Force a fresh Criterion case artifact for this focused lane instead of
-    # inheriting potentially stale case-local output from an earlier run.
-    Remove-Item -Recurse -Force $criterionCaseDir
+            Remove-Item -Recurse -Force $criterionCaseDir
   }
   & $gateScript `
     -Mode $Mode `

@@ -6,10 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Default progress phase emitted by the CSCV/PBO evaluation loop.
-///
-/// Keep this value stable unless the downstream progress contract is updated in
-/// lockstep with consumers that classify validation phases by string.
 pub const CSCV_PROGRESS_PHASE: &str = "composite_validate_cscv";
 
 fn default_slices() -> usize {
@@ -26,38 +22,30 @@ fn default_threshold() -> f64 {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CscvPboConfig {
-    /// Requested slice count. The implementation clamps this to `4..=32` and
-    /// forces an even value before any computation begins.
     #[serde(default = "default_slices")]
     pub slices: usize,
-    /// Best-effort cap for the number of CSCV train/test combinations to
-    /// evaluate. A configured value of `0` is coerced to `1`.
+
     #[serde(default = "default_max_combinations")]
     pub max_combinations: usize,
-    /// Out-of-sample threshold used when computing
-    /// `prob_oos_below_threshold`.
+
     #[serde(default = "default_threshold")]
     pub threshold: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SliceReturnStats {
-    /// Sum of per-bar returns inside the slice.
     pub sum: f64,
-    /// Sum of squared per-bar returns inside the slice.
+
     pub sumsq: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CscvCandidatePboStats {
-    /// Fraction of evaluated CSCV splits that selected this candidate in-sample.
     pub is_selected_frac: f64,
-    /// Median out-of-sample rank fraction for the splits that selected this
-    /// candidate. Uses the file-local nearest-by-rounded quantile convention.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oos_rank_frac_p50: Option<f64>,
-    /// Median out-of-sample score for the splits that selected this candidate.
-    /// Uses the file-local nearest-by-rounded quantile convention.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oos_metric_p50: Option<f64>,
 }
@@ -82,10 +70,6 @@ pub struct CscvPboResult {
     pub skipped_reason: Option<String>,
 }
 
-/// Clamp the requested slice count into the supported even range.
-///
-/// The CSCV implementation only supports an even number of slices so that the
-/// train/test split is exactly half-and-half.
 fn sanitize_slices(slices: usize) -> usize {
     let s = slices.clamp(4, 32);
     if (s & 1) == 0 {
@@ -119,7 +103,7 @@ fn all_k_masks(s: usize, k: usize) -> Vec<u64> {
     let mut out: Vec<u64> = Vec::new();
     while x < limit {
         out.push(x);
-        // Gosper's hack: next higher number with same bitcount.
+
         let u = x & x.wrapping_neg();
         let v = x.wrapping_add(u);
         if v == 0 || v >= limit {
@@ -130,10 +114,6 @@ fn all_k_masks(s: usize, k: usize) -> Vec<u64> {
     out
 }
 
-/// Deterministically sample up to `take` unique `k`-of-`s` masks.
-///
-/// This is intentionally best-effort: when the retry budget is exhausted, the
-/// returned set may contain fewer than `take` masks.
 fn sample_k_masks(s: usize, k: usize, take: usize, seed: u64) -> Vec<u64> {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut idx: Vec<u8> = (0..(s as u8)).collect();
@@ -156,10 +136,6 @@ fn sample_k_masks(s: usize, k: usize, take: usize, seed: u64) -> Vec<u64> {
     out
 }
 
-/// Compute the per-slice Sharpe proxy currently used by CSCV/PBO.
-///
-/// Non-finite or non-positive sample variance collapses to `0.0` to preserve
-/// the established scoring contract.
 fn sharpe_from_sum_sumsq(n: usize, sum: f64, sumsq: f64) -> f64 {
     if n < 2 {
         return 0.0;
@@ -173,7 +149,6 @@ fn sharpe_from_sum_sumsq(n: usize, sum: f64, sumsq: f64) -> f64 {
     mean / var.sqrt()
 }
 
-/// Assign 1-based ascending ranks, averaging ties.
 fn ranks_average_ascending(scores: &[f64]) -> Vec<f64> {
     let n = scores.len();
     let mut order: Vec<usize> = (0..n).collect();
@@ -186,7 +161,7 @@ fn ranks_average_ascending(scores: &[f64]) -> Vec<f64> {
         while j < n && scores[order[j]] == scores[order[i]] {
             j += 1;
         }
-        // Ranks are 1-based positions.
+
         let rank_start = (i + 1) as f64;
         let rank_end = j as f64;
         let avg = (rank_start + rank_end) * 0.5;
@@ -198,10 +173,6 @@ fn ranks_average_ascending(scores: &[f64]) -> Vec<f64> {
     ranks
 }
 
-/// Return the nearest-by-rounded quantile from an already sorted slice.
-///
-/// This is intentionally not an interpolating quantile implementation. Even
-/// length medians select whichever middle index the rounded rank lands on.
 fn quantile(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -269,21 +240,6 @@ impl FiniteOr for f64 {
     }
 }
 
-/// Compute CSCV/PBO summary statistics from pre-aggregated per-candidate slice
-/// return summaries.
-///
-/// Contract notes:
-/// - `cfg.slices` is sanitized to an even value in `4..=32`.
-/// - every candidate must provide exactly that many slice summaries or the
-///   function returns an error.
-/// - `slice_bars < 2`, `candidates < 2`, or zero realized combinations produce
-///   a populated [`CscvPboResult`] with `skipped_reason` and an empty candidate
-///   stats vector.
-/// - `cfg.max_combinations = 0` is treated as `1`.
-/// - when sampling is required, the mask set is deterministic for a given
-///   `seed` but remains best-effort rather than exact-count guaranteed.
-/// - tie handling, rank normalization, and quantile selection intentionally
-///   preserve the current statistical contract.
 pub fn compute_cscv_pbo_from_slices(
     slices_by_candidate: &[Vec<SliceReturnStats>],
     slice_bars: usize,
@@ -446,7 +402,6 @@ fn compute_cscv_pbo_from_slices_with_phase(
             oos_scores[n] = sharpe_from_sum_sumsq(total_obs, sum_oos, sumsq_oos);
         }
 
-        // which.max: first max index
         let mut n_star = 0usize;
         let mut best = is_scores[0];
         for n in 1..candidates {
@@ -567,10 +522,6 @@ mod tests {
 
     #[test]
     fn cscv_pbo_overfit_pattern_has_expected_phi() {
-        // 3 candidates, 4 slices, 2 slices per IS/OOS.
-        // Candidate0 wins when IS picks {0,2} and loses OOS.
-        // Candidate1 wins when IS picks {1,3} and loses OOS.
-        // Other splits tie -> not overfit in rank-average scheme.
         let slices = 4usize;
         let slice_bars = 10usize;
         let pos = SliceReturnStats {

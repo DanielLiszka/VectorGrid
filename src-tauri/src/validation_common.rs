@@ -653,9 +653,6 @@ mod tests {
 
         finalize_cross_ticker_candidates(&mut candidates, accs);
 
-        // id=1 gets folded to 0.2 (min(1.0, 0.4 - 2*0.1)),
-        // id=2 remains 0.5 (min(0.5, 1.2 - 2*0.2) = 0.5),
-        // so descending sort should place id=2 first.
         assert_eq!(candidates[0].params.id, 2);
         assert_eq!(candidates[1].params.id, 1);
         assert!((candidates[0].robust_score - 0.5).abs() < 1e-12);

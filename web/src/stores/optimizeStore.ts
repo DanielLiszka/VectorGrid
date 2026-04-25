@@ -181,7 +181,7 @@ function normalizeBackendValue(value: unknown): string {
   if (backend === "Auto") return "Auto";
   if (backend === "CpuOnly") return "CpuOnly";
   if (backend === "GpuKernel") return "GpuKernel";
-  // Legacy backends are normalized to unified GPU backend.
+
   if (backend === "GpuOnly" || backend === "GpuHybridKernel")
     return "GpuKernel";
   return "CpuOnly";

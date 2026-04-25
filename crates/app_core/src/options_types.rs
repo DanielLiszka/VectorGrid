@@ -367,12 +367,6 @@ pub struct OptionsCandidateAxisCoverage {
     pub moneyness_buckets: Vec<OptionsMoneynessBucketCoverage>,
 }
 
-/// Static candidate filters persisted inside run requests and artifacts.
-///
-/// The omission shape is part of the current compatibility contract:
-/// omitting the whole `filters` object applies `Default`, while providing an
-/// empty object relies on each field's own serde default. That distinction is
-/// currently behavior-bearing for `max_entry_lag_minutes`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsStaticFilterBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -609,13 +603,6 @@ pub enum OptionsExpressionValidationVerdict {
 
 pub const OPTIONS_VALIDATION_STRESS_DROP_THRESHOLD: f64 = 0.03;
 
-/// Persisted evaluation summary for one compiled tuple.
-///
-/// Several fields intentionally duplicate or summarize information that can be
-/// re-derived elsewhere: `validation_verdict` and `robust_score` are persisted
-/// snapshots, while `inferred_validation_verdict()` recomputes the current
-/// local interpretation from the available validation metrics and
-/// sealed-finalist state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionTupleResult {
     pub tuple: OptionsTupleSpec,
@@ -822,10 +809,6 @@ pub struct OptionsExpressionEventPathPoint {
     pub underlying_price: f64,
 }
 
-/// Detailed path inspection result for a single event inside a tuple.
-///
-/// `point_count` is an explicit summary count retained alongside `points` for
-/// compatibility with persisted inspection payloads.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionEventPathInspectionResult {
     pub tuple_index: usize,
@@ -1153,12 +1136,6 @@ pub struct OptionsExpressionFeasibilityReport {
     pub axis_coverage: OptionsCandidateAxisCoverage,
 }
 
-/// Request DTO for one options-expression evaluation run.
-///
-/// This struct crosses persistence and IPC-style seams, so additive defaults are
-/// intentionally encoded in serde attributes instead of ad hoc builder logic.
-/// In particular, `filters` has a whole-struct default whose omission semantics
-/// differ from an explicitly present empty object.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionRunRequest {
     pub parent_artifact_path: String,
@@ -1201,11 +1178,6 @@ pub struct OptionsExpressionRunRequest {
     pub sealed_finalist_count: usize,
 }
 
-/// Top-level run result returned by the evaluator and persisted into artifacts.
-///
-/// `tuple_count` is kept as an explicit summary field even though
-/// `ranked_results.len()` often matches it in fresh outputs; persisted artifacts
-/// may intentionally preserve both values during replay and migration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionRunResult {
     pub diagnostics: OptionsExpressionDiagnostics,

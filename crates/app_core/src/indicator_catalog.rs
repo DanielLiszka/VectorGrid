@@ -49,9 +49,7 @@ pub struct IndicatorParamDescriptor {
     pub default: Option<IndicatorParamValue>,
     pub min: Option<f64>,
     pub max: Option<f64>,
-    /// Optional UI/metadata hint for numeric increment display.
-    ///
-    /// This is not enforced by `normalize_and_validate_indicator_params` today.
+
     pub step: Option<f64>,
     pub enum_values: Vec<String>,
     pub notes: Option<String>,
@@ -83,15 +81,9 @@ pub struct IndicatorDescriptor {
     pub supports_cuda_single: bool,
     pub supports_cuda_sweep: bool,
     pub supports_cuda_vram: bool,
-    /// App-core routing hint layered on top of registry metadata.
-    ///
-    /// This is not a raw registry capability field; it reflects current
-    /// `ma_policy` kernel-route support for the normalized indicator id.
+
     pub supports_gpu_kernel: bool,
-    /// App-core routing preference hint layered on top of registry metadata.
-    ///
-    /// This does not guarantee a GPU route. It reflects the current
-    /// `ma_policy` speedup table for the normalized indicator id.
+
     pub prefers_gpu_by_speedup: bool,
     pub output_count: usize,
     pub outputs: Vec<IndicatorOutputDescriptor>,
@@ -314,14 +306,6 @@ fn normalize_param_value_for_schema(
     }
 }
 
-/// Lists dynamic-indicator descriptors using currently available metadata.
-///
-/// This list is sourced from VectorTA unified indicator registry metadata and includes
-/// only dynamic-strategy-eligible indicators.
-///
-/// Each call performs a fresh projection over the current registry metadata and returns
-/// an owned `Vec`. For a process-lifetime cached snapshot, use
-/// [`list_dynamic_indicator_descriptors_cached`].
 pub fn list_dynamic_indicator_descriptors() -> Vec<IndicatorDescriptor> {
     vector_ta::indicators::registry::list_indicators()
         .iter()
@@ -332,20 +316,12 @@ pub fn list_dynamic_indicator_descriptors() -> Vec<IndicatorDescriptor> {
 
 static DYNAMIC_INDICATOR_DESCRIPTORS_CACHE: OnceLock<Vec<IndicatorDescriptor>> = OnceLock::new();
 
-/// Returns a process-lifetime cached snapshot of dynamic indicator descriptors.
-///
-/// The first call projects the registry into owned descriptors and stores the result in a
-/// [`OnceLock`]. Subsequent calls reuse that same snapshot for the remainder of the process.
 pub fn list_dynamic_indicator_descriptors_cached() -> &'static [IndicatorDescriptor] {
     DYNAMIC_INDICATOR_DESCRIPTORS_CACHE
         .get_or_init(list_dynamic_indicator_descriptors)
         .as_slice()
 }
 
-/// Looks up a dynamic indicator descriptor in the cached catalog snapshot.
-///
-/// This uses [`list_dynamic_indicator_descriptors_cached`] rather than rebuilding the catalog
-/// on each lookup.
 pub fn find_dynamic_indicator_descriptor(
     indicator_id: &str,
 ) -> Option<&'static IndicatorDescriptor> {
@@ -437,7 +413,6 @@ pub fn normalize_and_validate_indicator_params(
         ));
     }
 
-    // Keep deterministic ordering based on descriptor schema order.
     normalized.sort_by(|a, b| {
         let ia = descriptor
             .params
@@ -452,7 +427,6 @@ pub fn normalize_and_validate_indicator_params(
         ia.cmp(&ib)
     });
 
-    // Guard against registry drift where descriptor params include duplicate keys.
     if known_keys.len() != descriptor.params.len() {
         return Err(format!(
             "indicator '{}' has duplicate parameter keys in descriptor schema",

@@ -387,8 +387,7 @@ function supportsBackend(
   if (!entry.periodBased || !entry.singleOutput) return false;
   if (backendKind === "CpuOnly") return entry.supportsCpu;
   if (backendKind === "GpuKernel") {
-    // Unified GPU mode can route via kernel, CUDA-sweep fallback, or CPU staging.
-    return entry.supportsCudaKernel || entry.supportsCuda || entry.supportsCpu;
+        return entry.supportsCudaKernel || entry.supportsCuda || entry.supportsCpu;
   }
   return entry.supportsCpu || entry.supportsCuda || entry.supportsCudaKernel;
 }

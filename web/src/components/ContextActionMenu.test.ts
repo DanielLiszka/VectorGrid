@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, describe, expect, it } from 'vitest'
 import ContextActionMenu from './ContextActionMenu.vue'

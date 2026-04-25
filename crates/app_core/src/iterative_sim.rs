@@ -34,27 +34,14 @@ impl Default for IntrabarRule {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IterativeSimConfig {
-    /// Optional stop-loss override for the iterative simulator.
-    ///
-    /// The simulator normalizes non-finite, non-positive, and overly large
-    /// values silently through the same `clamp_pct` path used internally. When
-    /// this is `None`, the strategy-level stop-loss setting is used instead.
     #[serde(default)]
     pub stop_loss_pct: Option<f64>,
-    /// Optional take-profit override for the iterative simulator.
-    ///
-    /// The simulator normalizes non-finite, non-positive, and overly large
-    /// values silently through the same `clamp_pct` path used internally. When
-    /// this is `None`, the strategy-level take-profit setting is used instead.
+
     #[serde(default)]
     pub take_profit_pct: Option<f64>,
     #[serde(default)]
     pub intrabar_rule: IntrabarRule,
-    /// Extra transaction-cost multiplier applied from the current bar's
-    /// realized absolute log move (`lr[t].abs()`).
-    ///
-    /// This is same-bar slippage scaling, not a separate intrabar volatility
-    /// estimate.
+
     #[serde(default)]
     pub slippage_vol_mult: f64,
 }
@@ -418,9 +405,7 @@ fn simulate_iterative_from_signals_inner(
         if cfg.long_only && desired < 0 {
             desired = 0;
         }
-        // Generic iterative simulation applies overlay semantics here. Callers
-        // such as `ml_signal` that already resolved cooldown/persistence/flip
-        // policy into `desired_pos` must neutralize those overlay fields first.
+
         desired = overlay_apply_signal_persistence(desired, pos, &overlays, &mut overlay_state);
         desired = overlay_apply_entry_cooldown(desired, pos, &overlay_state);
 
@@ -554,9 +539,6 @@ fn simulate_iterative_from_signals_inner(
             short_sum_r += step_r;
         }
 
-        // Exposure is derived from the end-of-bar position state after this
-        // loop accounts for fills and cooldown-driven exits. It is not an
-        // intrabar fractional exposure model.
         sum_abs_pos += (pos as i64).abs();
         sum_pos += pos as i64;
     }
@@ -678,15 +660,6 @@ fn simulate_iterative_from_signals_inner(
     }
 }
 
-/// Simulates the iterative validation path and returns an explicit input error
-/// instead of silently falling back to [`Metrics::default`].
-///
-/// Semantics pinned by this entrypoint:
-/// - stop-loss / take-profit inputs are normalized silently via `clamp_pct`
-/// - `slippage_vol_mult` is applied from the current bar's realized absolute
-///   log move (`lr[t].abs()`)
-/// - exposure and net exposure are derived from end-of-bar loop state
-///   accounting, not an intrabar fractional exposure model
 pub fn try_simulate_iterative_from_signals(
     lr: &[f64],
     ohlc: OhlcSlice<'_>,
@@ -706,10 +679,6 @@ pub fn try_simulate_iterative_from_signals(
     ))
 }
 
-/// Compatibility wrapper around [`try_simulate_iterative_from_signals`].
-///
-/// This preserves the historical behavior of returning [`Metrics::default`]
-/// when the input slices are malformed or `start_t` is out of range.
 pub fn simulate_iterative_from_signals(
     lr: &[f64],
     ohlc: OhlcSlice<'_>,

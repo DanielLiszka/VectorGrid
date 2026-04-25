@@ -20,10 +20,6 @@ use vector_ta::indicators::dispatch::DeviceMatrixF32;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
-/// Serialized MKCS strategy parameters.
-///
-/// The serde defaults below are part of the persisted-config compatibility
-/// contract for saved presets and artifact replays.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MkcsStrategyParams {
     #[serde(default = "default_true")]
@@ -73,28 +69,18 @@ impl Default for MkcsStrategyParams {
     }
 }
 
-/// Concrete stddev / breakout periods after fast/slow mapping is resolved.
 #[derive(Clone, Copy, Debug)]
 pub struct MkcsResolvedPeriods {
     pub stddev: u16,
     pub breakout: u16,
 }
 
-/// Compression-side MKCS series.
-///
-/// `stddev` is expected to stay aligned with `candles.close`; callers may rely
-/// on `first_valid` only after the returned length contract is satisfied.
 #[derive(Clone, Debug)]
 pub struct MkcsCompressionSignals {
     pub stddev: Vec<f64>,
     pub first_valid: usize,
 }
 
-/// Breakout-side MKCS series.
-///
-/// `upper` and `lower` are expected to stay aligned with each other and with
-/// `candles.close`; callers may rely on `first_valid` only after the returned
-/// length contract is satisfied.
 #[derive(Clone, Debug)]
 pub struct MkcsBreakoutSignals {
     pub upper: Vec<f64>,
@@ -103,7 +89,7 @@ pub struct MkcsBreakoutSignals {
 }
 
 #[cfg(feature = "cuda")]
-/// Device-resident Donchian sweeps kept on-device for downstream consumers.
+
 pub struct MkcsDonchianSweepsDevice {
     pub upper: MkcsPeriodSweepDevice,
     pub lower: MkcsPeriodSweepDevice,
@@ -127,7 +113,7 @@ enum MkcsDeviceMatrixOwner {
 }
 
 #[cfg(feature = "cuda")]
-/// Keepalive wrapper around a dispatch-owned device matrix.
+
 pub struct MkcsDeviceMatrix {
     pub device_ptr: u64,
     pub rows: usize,
@@ -159,11 +145,7 @@ impl MkcsDeviceMatrix {
 }
 
 #[cfg(feature = "cuda")]
-/// Row-major device matrix for a normalized inclusive period sweep.
-///
-/// Rows map to periods from `period_start..=period_end` using `period_step`.
-/// Construction validates the returned row count against that normalized
-/// cardinality before this carrier is exposed to callers.
+
 pub struct MkcsPeriodSweepDevice {
     pub matrix: MkcsDeviceMatrix,
     pub period_start: u16,
@@ -417,8 +399,6 @@ fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
 fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
     static IDS: OnceLock<Result<MkcsIndicatorIds, String>> = OnceLock::new();
 
-    // The first descriptor-resolution outcome is intentionally sticky for the
-    // process lifetime so registry drift cannot change MKCS bindings mid-run.
     IDS.get_or_init(|| {
         #[cfg(feature = "cuda")]
         let stddev_descriptor = find_dynamic_indicator_descriptor("stddev").ok_or_else(|| {

@@ -317,9 +317,7 @@ where
             let Some(&idx) = key_to_idx.get(&key) else {
                 continue;
             };
-            // Cross-ticker aggregation is success-only by design: failed reruns
-            // contribute no evidence and are filtered later via missing stats
-            // rather than by injecting an explicit penalty record here.
+
             if c.validation_passed() {
                 validation_common::push_metrics(&mut accs[idx], c.cross_ticker_metrics());
             }
@@ -525,9 +523,7 @@ fn apply_cross_ticker_validation_with_stack(
     );
     let full_stack_cross_mode = matches!(cross_cfg.mode, ta_app_core::CrossTickerMode::FullStack);
     let finalists_cross_mode = preserved_cross_mode || full_stack_cross_mode;
-    // Preserve the original validation contract: cross-ticker filtering may
-    // change the surviving set, but `candidates_tested` should continue to
-    // describe the base validation run rather than the post-filter remainder.
+
     let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
     if finalists_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
@@ -820,9 +816,7 @@ fn apply_cross_ticker_validation_double_ma(
     );
     let full_stack_cross_mode = matches!(cross_cfg.mode, ta_app_core::CrossTickerMode::FullStack);
     let finalists_cross_mode = preserved_cross_mode || full_stack_cross_mode;
-    // Preserve the original validation contract: cross-ticker filtering may
-    // change the surviving set, but `candidates_tested` should continue to
-    // describe the base validation run rather than the post-filter remainder.
+
     let original_candidates_tested = res.run_verdict.candidates_tested.max(res.candidates.len());
     if finalists_cross_mode && res.candidates.len() > PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
         res.candidates = select_cross_ticker_preserved_finalists(&res.candidates);
@@ -837,10 +831,6 @@ fn apply_cross_ticker_validation_double_ma(
         app_for_progress,
         "double_ma_validate_cross",
         |di, total_candidates, candidates| {
-            // Cross-ticker aggregation only consumes candidate-level verdicts and
-            // cross metrics. Preserve the verdict-relevant stack here rather than
-            // rerunning non-gating evidence modules whose outputs are not used by
-            // the cross filter or workbook summaries.
             build_double_ma_cross_ticker_request(
                 di,
                 total_candidates,
@@ -1032,8 +1022,6 @@ fn build_double_ma_cross_ticker_request(
     }
 }
 
-/// Headless helper for applying cross-ticker validation to an already computed
-/// `DoubleMaValidationResult` without requiring a running Tauri app.
 pub fn apply_cross_ticker_validation_double_ma_headless(
     res: &mut DoubleMaValidationResult,
     cross_cfg: ta_app_core::CrossTickerConfig,

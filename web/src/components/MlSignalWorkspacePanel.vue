@@ -995,7 +995,7 @@ async function onExportDataset(): Promise<void> {
   try {
     await exportMlSignalDataset();
   } catch {
-    // status line is updated in the service
+
   }
 }
 
@@ -1003,7 +1003,7 @@ async function onBuildScoreCache(): Promise<void> {
   try {
     await generateMlSignalScoreCache();
   } catch {
-    // status line is updated in the service
+
   }
 }
 
@@ -1011,7 +1011,7 @@ async function onRunValidation(): Promise<void> {
   try {
     await runMlSignalValidation();
   } catch {
-    // status line is updated in the service
+
   }
 }
 
@@ -1019,7 +1019,7 @@ async function onRunPolicySweep(): Promise<void> {
   try {
     await runMlSignalPolicySweep();
   } catch {
-    // status line is updated in the service
+
   }
 }
 

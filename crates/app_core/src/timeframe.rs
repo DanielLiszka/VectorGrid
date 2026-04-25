@@ -31,7 +31,6 @@ pub fn parse_timeframe_label(raw: &str) -> Result<TimeframeSpec, String> {
     }
     let s = s0.to_ascii_lowercase();
 
-    // Back-compat / convenience: accept seconds labels like "120s".
     if let Some(sec_str) = s.strip_suffix('s') {
         let sec: i64 = sec_str
             .parse()
@@ -85,20 +84,6 @@ pub fn parse_timeframe_label(raw: &str) -> Result<TimeframeSpec, String> {
     })
 }
 
-/// Resamples intraday candles into larger UTC-day-bounded buckets.
-///
-/// Contract:
-/// - `interval_ms` must be greater than `0` and less than or equal to one UTC day.
-/// - Buckets never span UTC-day boundaries; the accumulator resets whenever the
-///   timestamp's `ts.div_euclid(DAY_MS)` day changes.
-/// - Within each UTC day, bucket alignment is anchored to the first observed bar
-///   of that day, so truncated sessions keep their own left edge instead of
-///   snapping to midnight or fixed clock boundaries.
-/// - Output timestamps are the left-edge timestamp of each emitted bucket.
-/// - Optional fields (`open`, `high`, `low`, `volume`) aggregate only over
-///   finite source values. If no finite value for an optional field is observed
-///   across the whole resampled output, that field's output flag is downgraded
-///   to `false` and its output column is filled with `NaN`.
 pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, String> {
     if interval_ms <= 0 {
         return Err("interval_ms must be > 0".to_string());
@@ -122,7 +107,6 @@ pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, 
         return Err("candles vectors have inconsistent lengths".to_string());
     }
 
-    // Validate monotonic timestamps (required for stable resampling).
     for i in 1..n {
         if candles.timestamp[i] < candles.timestamp[i - 1] {
             return Err(
@@ -244,7 +228,6 @@ pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, 
             saw_vol = false;
         }
 
-        // Open: first finite open in bucket (only if the source actually has open).
         if candles.fields.open && !saw_open {
             let o = candles.open[i];
             if o.is_finite() {
@@ -253,7 +236,6 @@ pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, 
             }
         }
 
-        // High/low: track max/min over finite values (only if present).
         if candles.fields.high {
             let h = candles.high[i];
             if h.is_finite() {
@@ -269,14 +251,12 @@ pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, 
             }
         }
 
-        // Close: last close in bucket (required).
         let c = candles.close[i];
         if !c.is_finite() {
             return Err(format!("close is not finite at index {i}"));
         }
         acc_close = c;
 
-        // Volume: sum over finite values (only if present).
         if candles.fields.volume {
             let v = candles.volume[i];
             if v.is_finite() {
@@ -313,8 +293,6 @@ pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, 
         volume: candles.fields.volume && has_vol_any,
     };
 
-    // Keep output vectors aligned: for missing fields, preserve NaNs.
-    // For high/low/open/volume, leave NaN where the field isn't present.
     if !fields.open {
         out_open.iter_mut().for_each(|x| *x = f64::NAN);
     }
@@ -389,8 +367,7 @@ mod tests {
 
     #[test]
     fn resample_anchors_to_first_bar_of_day() {
-        // Two "days" of minute bars. Day 0 starts at 09:30 (in ms from epoch day 0).
-        let day0_start = 9 * 3_600_000 + 30 * 60_000; // 09:30
+        let day0_start = 9 * 3_600_000 + 30 * 60_000;
         let day1_start = day0_start + DAY_MS;
 
         let mut ts = Vec::new();
@@ -400,7 +377,6 @@ mod tests {
         let mut c = Vec::new();
         let mut v = Vec::new();
 
-        // Day 0: 5 minutes (09:30..09:34)
         for i in 0..5 {
             ts.push(day0_start + (i as i64) * 60_000);
             let px = 100.0 + i as f64;
@@ -410,7 +386,6 @@ mod tests {
             c.push(px + 0.5);
             v.push(10.0);
         }
-        // Day 1: 3 minutes (09:30..09:32)
         for i in 0..3 {
             ts.push(day1_start + (i as i64) * 60_000);
             let px = 200.0 + i as f64;
@@ -423,7 +398,6 @@ mod tests {
 
         let candles = Candles::new(ts, o, h, l, c, v);
 
-        // 2h buckets within each day should start at 09:30 (not midnight, not 08:00).
         let out = resample_candles(&candles, 2 * 3_600_000).unwrap();
         assert_eq!(out.timestamp[0], day0_start);
         assert_eq!(out.timestamp[1], day1_start);
@@ -435,7 +409,7 @@ mod tests {
 
     #[test]
     fn resample_anchors_truncated_day_to_first_observed_bar() {
-        let start = 9 * 3_600_000 + 33 * 60_000; // 09:33, intentionally off a common boundary.
+        let start = 9 * 3_600_000 + 33 * 60_000;
         let candles = Candles::new(
             vec![start, start + 60_000, start + 120_000],
             vec![10.0, 11.0, 12.0],
@@ -453,7 +427,7 @@ mod tests {
 
     #[test]
     fn resample_ohlc_volume_for_2m() {
-        let day0_start = 9 * 3_600_000 + 30 * 60_000; // 09:30
+        let day0_start = 9 * 3_600_000 + 30 * 60_000;
         let mut ts = Vec::new();
         let mut o = Vec::new();
         let mut h = Vec::new();
@@ -461,7 +435,6 @@ mod tests {
         let mut c = Vec::new();
         let mut v = Vec::new();
 
-        // 5 minute bars
         for i in 0..5 {
             ts.push(day0_start + (i as i64) * 60_000);
             o.push(10.0 + i as f64);
@@ -473,13 +446,11 @@ mod tests {
         let candles = Candles::new(ts, o, h, l, c, v);
         let out = resample_candles(&candles, 120_000).unwrap();
 
-        // Buckets: [0..1], [2..3], [4]
         assert_eq!(out.timestamp.len(), 3);
         assert_eq!(out.timestamp[0], day0_start);
         assert_eq!(out.timestamp[1], day0_start + 2 * 60_000);
         assert_eq!(out.timestamp[2], day0_start + 4 * 60_000);
 
-        // First bucket: open from 0, close from 1, high=max(11,12)=12, low=min(9,10)=9, vol=1+2=3
         assert_eq!(out.open[0], 10.0);
         assert_eq!(out.close[0], 11.5);
         assert_eq!(out.high[0], 12.0);

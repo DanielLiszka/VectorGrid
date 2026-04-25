@@ -336,11 +336,7 @@ pub struct DoubleMaRequest {
     pub dynamic_strategy_ir: Option<crate::strategy_ir::StrategyIr>,
     #[serde(default)]
     pub gpu_execution: GpuExecutionPolicy,
-    /// Enables a process-local, best-effort follow-up hint for later drilldown
-    /// or local-stability requests in the same process.
-    ///
-    /// This does not persist artifacts to disk and callers must remain correct
-    /// when the hint is absent, stale, or rejected by follow-up validation.
+
     #[serde(default)]
     pub persist_followup_cache: bool,
     #[serde(default)]
@@ -503,22 +499,15 @@ pub struct DoubleMaDrilldownRequest {
     pub data_id: String,
     #[serde(default, alias = "backend")]
     pub backend_hint: Option<Backend>,
-    /// Optional process-local token returned by optimization for best-effort
-    /// reuse of in-memory follow-up preparation in the same process.
-    ///
-    /// This is not stable across process boundaries or durable storage. The
-    /// follow-up path revalidates the token against the live request contract
-    /// before attempting reuse.
+
     #[serde(default)]
     pub followup_cache_key: Option<String>,
     pub params: DoubleMaParamsResolved,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
-    /// Explicit follow-up overrides for the fast MA. When absent, the nested
-    /// `params.fast_ma_params` value remains the source of truth.
+
     pub fast_ma_params: Option<HashMap<String, f64>>,
-    /// Explicit follow-up overrides for the slow MA. When absent, the nested
-    /// `params.slow_ma_params` value remains the source of truth.
+
     pub slow_ma_params: Option<HashMap<String, f64>>,
     #[serde(default)]
     pub strategy: StrategyConfig,
@@ -531,22 +520,15 @@ pub struct DoubleMaLocalStabilityRequest {
     pub data_id: String,
     #[serde(default, alias = "backend")]
     pub backend_hint: Option<Backend>,
-    /// Optional process-local token returned by optimization for best-effort
-    /// reuse of in-memory follow-up preparation in the same process.
-    ///
-    /// This is not stable across process boundaries or durable storage. The
-    /// follow-up path revalidates the token against the live request contract
-    /// before attempting reuse.
+
     #[serde(default)]
     pub followup_cache_key: Option<String>,
     pub params: DoubleMaParamsResolved,
     #[serde(default = "default_ma_source")]
     pub ma_source: String,
-    /// Explicit follow-up overrides for the fast MA. When absent, the nested
-    /// `params.fast_ma_params` value remains the source of truth.
+
     pub fast_ma_params: Option<HashMap<String, f64>>,
-    /// Explicit follow-up overrides for the slow MA. When absent, the nested
-    /// `params.slow_ma_params` value remains the source of truth.
+
     pub slow_ma_params: Option<HashMap<String, f64>>,
     #[serde(default)]
     pub strategy: StrategyConfig,
@@ -738,11 +720,6 @@ pub struct BackendOptimizationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub residency: Option<GpuResidencySummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Optional process-local token that follow-up requests may pass back for
-    /// best-effort in-memory reuse during the same process lifetime.
-    ///
-    /// The token is not a durable artifact identifier and is validated against
-    /// the live follow-up request contract before reuse.
     pub followup_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnosticsResolved>,
@@ -5324,7 +5301,6 @@ pub fn compute_double_ma_local_stability_blocking_with_candles(
     fast_periods.sort_unstable();
     slow_periods.sort_unstable();
 
-    // Use a single start_t based on the maximum period in the neighborhood so all points are comparable.
     let trade_offset = if req.strategy.trade_on_next_bar {
         1usize
     } else {
@@ -5839,8 +5815,6 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
         );
     }
 
-    // If the user explicitly asks for the kernel backend but it's not available for this MA/build,
-    // fall back to the best available backend (unless export is requested).
     let kernel_device_id = match &backend {
         Backend::GpuKernel { device_id } => Some(device_id),
         _ => None,
@@ -7386,7 +7360,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                                 );
                             }
                         }
-                        // Intermediate rungs are only for seed generation.
+
                         rung_res.top = ranked;
                     } else {
                         full_fidelity_pairs_evaluated = rung_res.num_combos;
@@ -9094,7 +9068,7 @@ pub(crate) fn compute_trend_quality_regime(
     let angle_exit = (angle_min * 0.6).max(0.0001);
     let bbw_exit = (bbw_min * 0.7).max(0.0);
     let mut regime = alloc_uninit_f64(n);
-    let mut state: i8 = 0; // +1 trend-long, -1 trend-short, 0 range
+    let mut state: i8 = 0;
     for i in 0..n {
         let a = lr_angle[i];
         let b = bbw[i];
@@ -9869,8 +9843,6 @@ pub(crate) fn build_pressure_impulse_trend_regime_device(
     let vosc_row = device_slice_ref_from_matrix_row(&vosc_matrix, 0)
         .map_err(|e| format!("pit vosc device row build failed: {e}"))?;
 
-    // Stage ACOSC from the CPU reference path for PIT until the upstream CUDA
-    // wrapper matches the CPU oscillator output on breakout inputs.
     let acosc_host = vector_ta::indicators::acosc::acosc(
         &vector_ta::indicators::acosc::AcoscInput::from_candles(
             candles,
@@ -11585,7 +11557,6 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
             Ok((values, n))
         }
         _ => {
-            // Fall back to row-wise CPU assembly without materializing a full f64 matrix first.
             copy_scalar_fallback_rows_f32(&mut values, n, periods, |period| {
                 vector_ta::indicators::moving_averages::ma::ma(
                     ma_type,
@@ -13072,7 +13043,7 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     }
 
     emit_progress(progress, 0, 1, "hybrid_transfer");
-    // H2D for precomputed rows currently occurs inside the kernel executor.
+
     #[allow(unused_mut)]
     let mut h2d_upload_ms = {
         let _nvtx_scope = crate::nvtx::scope("engine", "hybrid_transfer");
@@ -13889,11 +13860,6 @@ fn dynamic_gpu_batch_semantic_identity(
     })
 }
 
-/// Operational thread-local cache key for uploaded dynamic GPU batches.
-///
-/// This key intentionally preserves the current runtime reuse behavior and must not be treated as
-/// an exact semantic identity. For layer-exact observability and tests, use
-/// `dynamic_gpu_batch_semantic_identity(...)` instead.
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn dynamic_gpu_batch_cache_key(
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -18944,8 +18910,7 @@ mod tests {
         let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
         let prev_reduced = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
         std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "1");
-        // Force the replay-backed baseline so this test truly compares:
-        // baseline = 7-row + replay vs. reduced = 10-row + no replay.
+
         std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
 
         let candles = make_trending_candles(4096);
@@ -19468,9 +19433,6 @@ mod tests {
         assert_eq!(h1.fast_max, h2.fast_max);
         assert_eq!(h1.slow_min, h2.slow_min);
         assert_eq!(h1.slow_max, h2.slow_max);
-        // NMA remains batch-sensitive at the dense heatmap-cell level even when the
-        // exact candidate count and winning parameters match. Keep the invariant here
-        // focused on search-space coverage and best-result parity.
     }
 
     #[cfg(not(feature = "cuda"))]
@@ -23279,9 +23241,7 @@ mod tests {
         let cpu_regime = compute_pressure_impulse_trend_regime(&candles, "close", &strategy)
             .expect("compute cpu pit regime")
             .expect("pit regime enabled");
-        // PIT's native device-regime path is still flaky under long same-process CUDA test
-        // sweeps. Keep the parity assertion stable while the underlying device path is
-        // investigated separately by uploading the known-good CPU regime.
+
         let device_regime = build_pressure_impulse_trend_regime_device_parity_stable(
             &candles, "close", 0, &strategy,
         )
@@ -23365,8 +23325,7 @@ mod tests {
             38,
             1e-4,
         );
-        // PIT stages ACOSC from the CPU reference path until the upstream CUDA
-        // oscillator output matches CPU sign semantics on breakout inputs.
+
         assert_indicator_cuda_host_matches_cpu_on_candles(
             &candles,
             "close",
@@ -23561,7 +23520,7 @@ mod tests {
         base.insert("sigma".to_string(), 6.0);
 
         let mut sweeps: HashMap<String, (f64, f64, f64)> = HashMap::new();
-        sweeps.insert("sigma".to_string(), (4.0, 5.0, 1.0)); // => [4.0, 5.0]
+        sweeps.insert("sigma".to_string(), (4.0, 5.0, 1.0));
 
         let req = DoubleMaRequest {
             backend: Backend::CpuOnly,
@@ -23605,7 +23564,6 @@ mod tests {
         let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
             .expect("cpu run");
 
-        // Base grid has 3*2=6 fast<slow pairs; sweep adds 2 variants => 12 combos.
         assert_eq!(res.num_combos, 12);
         let fast_p = res
             .best_params
@@ -28499,10 +28457,6 @@ mod tests {
         assert_eq!(h1.fast_max, h2.fast_max);
         assert_eq!(h1.slow_min, h2.slow_min);
         assert_eq!(h1.slow_max, h2.slow_max);
-        // NMA remains batch-sensitive at the dense heatmap-cell level even when the
-        // exact candidate count and winning parameters match. Keep this test focused
-        // on search-space coverage and best-result parity rather than byte-for-byte
-        // heatmap identity.
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

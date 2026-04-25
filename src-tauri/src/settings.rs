@@ -57,9 +57,6 @@ impl ExecutionRiskPolicySettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
-    /// Optional override for where large market data files live (e.g. Polygon CSV datasets).
-    ///
-    /// If unset, the app uses `app_local_data_dir()` (platform default) for market data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market_data_root_dir: Option<String>,
     #[serde(default, skip_serializing_if = "ArtifactRetentionSettings::is_empty")]

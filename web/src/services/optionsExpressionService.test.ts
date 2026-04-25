@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeCommand } from "../tauri/invoke";
 import {

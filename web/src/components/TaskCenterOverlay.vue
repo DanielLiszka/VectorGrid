@@ -335,8 +335,7 @@ async function cancelTask(task: TrackedTask): Promise<void> {
   try {
     await requestCancellationForMappedCommand(cmd)
   } catch {
-    // Keep cancellation best-effort; error details are already surfaced by backend invoke failures.
-  } finally {
+      } finally {
     setCancelBusy(task.id, false)
   }
 }

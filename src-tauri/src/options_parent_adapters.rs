@@ -57,7 +57,6 @@ pub fn supported_options_parent_strategy_list() -> &'static str {
     "DoubleMa, CompositeTrend, RegimeHybrid, and BreakoutMomentum"
 }
 
-/// Kind allowlist prefilter only; replay compatibility is established later.
 pub fn supported_options_parent_family_from_artifact(
     artifact: &Value,
 ) -> Option<OptionsSupportedParentFamily> {
@@ -101,7 +100,6 @@ fn build_double_like_parent_replay(
     })?;
 
     let candidate_params = if let Some(index) = parent_candidate_index {
-        // An explicit replay candidate request is fail-closed when absent.
         Some(
             artifact
                 .pointer(&format!("/validation/res/candidates/{index}/params"))
@@ -119,7 +117,6 @@ fn build_double_like_parent_replay(
     };
 
     let (params, strategy, halftrend_filter) = if let Some(candidate_value) = candidate_params {
-        // A malformed candidate payload is an error; do not silently fall back.
         let candidate: DoubleMaValidationParams =
             serde_json::from_value(candidate_value).map_err(|e| {
                 format!(

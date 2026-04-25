@@ -200,7 +200,7 @@ try {
     }
   }
 
-  $qualityArgs = @("-File", (Join-Path $repoRoot "scripts\\run_repo_quality_gate.ps1"), "-IncludeDesktopTypecheck")
+  $qualityArgs = @("-File", (Join-Path $repoRoot "scripts\\run_repo_quality_gate.ps1"))
   if (-not $SkipWorkspaceTests) {
     $qualityArgs += "-IncludeWorkspaceTests"
   }
@@ -218,12 +218,7 @@ try {
     }
   }
 
-  Invoke-ReleaseStep -Name "Output parity" -CommandText "npm --prefix web run parity:outputs" -Action {
-    & npm.cmd --prefix web run parity:outputs
-    if ($LASTEXITCODE -ne 0) {
-      throw "output parity failed with exit code $LASTEXITCODE"
-    }
-  }
+  Write-Host "[SKIP] Output parity sample baselines are local-only in the backend-preview public tree."
 
   $workflowArgs = @("-File", (Join-Path $repoRoot "scripts\\run_workflow_gate.ps1"), "-Mode", "candidate")
   Invoke-ReleaseStep -Name "Workflow gate" -CommandText ("powershell " + ($workflowArgs -join " ")) -Action {
@@ -320,13 +315,7 @@ try {
   }
 
   if ($IncludeDesktopSmoke -and -not $SkipPackagedSmoke) {
-    $smokeArgs = @("-File", (Join-Path $repoRoot "scripts\\run_packaged_smoke.ps1"), "-OutDir", $resolvedOutDir)
-    Invoke-ReleaseStep -Name "Packaged desktop smoke" -CommandText ("powershell " + ($smokeArgs -join " ")) -Action {
-      powershell @smokeArgs
-      if ($LASTEXITCODE -ne 0) {
-        throw "packaged smoke failed with exit code $LASTEXITCODE"
-      }
-    }
+    Write-Host "[SKIP] Packaged desktop smoke is local-only in the backend-preview public tree."
   }
 
   if ($IncludeLiveSafetyHarness) {

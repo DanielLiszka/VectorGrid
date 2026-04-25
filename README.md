@@ -140,35 +140,6 @@ cargo run -p ta_app_core --release --features cli,cuda,cuda-backtest-kernel --bi
 
 The Tauri desktop app can still be built by maintainers, but it is intentionally not documented as a supported public run path in this backend-preview release.
 
-## Local Release Candidate Gate
-
-The release-candidate wrapper is maintainer-oriented. It still exercises desktop/frontend packaging paths and should not be read as the public quick-start path:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant cpu
-```
-
-GPU MA variant:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant gpu-ma
-```
-
-GPU kernel variant:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant gpu-kernel
-```
-
-Useful switches:
-
-- `-IncludePerf`
-- `-IncludeDesktopSmoke`
-- `-IncludeLiveSafetyHarness`
-- `-SkipWorkspaceTests`
-
-Local release-candidate outputs are written under `output/release_candidates/`.
-
 ## Local Quality Gate
 
 For backend-preview changes, start with the Rust backend checks:
@@ -191,12 +162,6 @@ The full maintainer lane still runs frontend checks because the source remains i
 - `cargo clippy --workspace --all-targets --no-deps`
 - `npm --prefix web run lint`
 - `npm --prefix web run typecheck`
-
-Add desktop-harness type checking when desktop test code changes:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck
-```
 
 Add workspace tests for higher-risk backend or cross-layer changes:
 
@@ -261,20 +226,27 @@ New faceoff artifacts belong under `output/benchmarks/`, which is intentionally 
 CPU perf gate:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_cpu_perf_gate.ps1 -Mode baseline
 powershell -ExecutionPolicy Bypass -File scripts/run_cpu_perf_gate.ps1 -Mode candidate
 ```
 
 GPU perf gate:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode baseline
 powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate
 ```
 
 ALMA contract-row GPU perf gate:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode baseline
 powershell -ExecutionPolicy Bypass -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate
 ```
+
+Perf baselines are intentionally machine-local and ignored by Git. Run the
+`baseline` command first on the machine you are using, then use `candidate` for
+same-machine regression checks.
 
 Nsight Compute capture:
 

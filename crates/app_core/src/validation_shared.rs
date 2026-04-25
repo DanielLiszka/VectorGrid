@@ -283,9 +283,6 @@ pub struct SpaValidationStats {
     pub skipped_reason: Option<String>,
 }
 
-/// Parameter perturbation config.
-///
-/// A fully omitted or zeroed config is treated as disabled work by the validation pipeline.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PerturbConfig {
     #[serde(default)]
@@ -316,7 +313,7 @@ pub struct PerturbStats {
 pub struct TradeBootstrapConfig {
     #[serde(default = "default_mc_sims")]
     pub simulations: usize,
-    /// `Some(0)` is a sentinel for IID-only mode in the validation pipeline.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stationary_mean_block_len: Option<usize>,
 }
@@ -425,31 +422,26 @@ pub struct CrossTickerValidationSummary {
     pub datasets: Vec<CrossTickerDatasetMeta>,
 }
 
-/// Additive semantics/provenance contract for validation artifacts.
-///
-/// This is intentionally descriptive metadata layered on top of the existing
-/// validation outputs. It does not change ranking, gating, or approval logic.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ValidationSemanticsProvenance {
-    /// Stage order for the current validation stack.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stage_sequence: Vec<String>,
-    /// Metric channel used for the candidate-local score basis.
+
     #[serde(default)]
     pub score_channel: String,
-    /// Source contract for PSR/DSR.
+
     #[serde(default)]
     pub probability_metric_source: String,
-    /// Source contract for the stored track-record bars.
+
     #[serde(default)]
     pub track_record_source: String,
-    /// CSCV coverage state at the run level.
+
     #[serde(default)]
     pub cscv_coverage_state: String,
-    /// Candidate-stat coverage shape for CSCV outputs.
+
     #[serde(default)]
     pub cscv_candidate_stat_coverage: String,
-    /// Whether evaluated CSCV selected any candidates.
+
     #[serde(default)]
     pub cscv_selection_state: String,
     #[serde(default)]
@@ -458,17 +450,16 @@ pub struct ValidationSemanticsProvenance {
     pub cscv_skipped_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_mode: Option<CrossTickerMode>,
-    /// Normalized evidence-depth label for cross-ticker reruns.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_evidence_depth: Option<String>,
-    /// Validation modules intentionally preserved inside cross-ticker reruns.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cross_modules_preserved: Vec<String>,
-    /// Validation modules intentionally omitted from cross-ticker reruns.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cross_modules_omitted: Vec<String>,
-    /// Current cross-ticker aggregation scope. Success-only summaries do not
-    /// imply full-panel robustness over failed reruns.
+
     #[serde(default)]
     pub cross_summary_scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -586,9 +577,6 @@ pub(crate) fn canonical_json_value_key_bytes(value: &JsonValue) -> Result<Vec<u8
     serde_json::to_vec(&CanonicalJsonValue(value)).map_err(|e| e.to_string())
 }
 
-/// Canonicalize JSON object-key ordering for deterministic internal key generation.
-///
-/// Arrays intentionally preserve their existing order.
 pub(crate) fn canonical_json_key<T: Serialize>(value: &T) -> Result<String, String> {
     let json = serde_json::to_value(value).map_err(|e| e.to_string())?;
     canonical_json_value_key(&json)

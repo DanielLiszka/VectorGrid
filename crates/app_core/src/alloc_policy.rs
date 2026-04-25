@@ -45,12 +45,6 @@ impl ScalarScratchInit for i32 {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-/// Compatibility helper for GPU-adjacent scalar scratch buffers.
-///
-/// The name is preserved to avoid cross-file churn, but this helper no longer
-/// exposes uninitialized `Vec<T>` storage. If a call site truly needs
-/// `MaybeUninit`, it should keep that storage local until every element has been
-/// written and only then expose a typed view.
 #[inline(always)]
 pub(crate) fn alloc_uninit_copy<T: ScalarScratchInit>(len: usize) -> Vec<T> {
     #[cfg(not(debug_assertions))]
@@ -64,11 +58,6 @@ pub(crate) fn alloc_uninit_copy<T: ScalarScratchInit>(len: usize) -> Vec<T> {
     }
 }
 
-/// Returns an `f64` scratch buffer whose warm prefix is defined immediately.
-///
-/// The helper name is preserved for compatibility, but the full visible range
-/// is now initialized in release builds so the returned `Vec<f64>` never
-/// exposes uninitialized elements.
 #[inline(always)]
 pub(crate) fn alloc_f64_with_prefix_uninit_tail(len: usize, warm: usize, prefix: f64) -> Vec<f64> {
     let warm = warm.min(len);
@@ -89,11 +78,6 @@ pub(crate) fn alloc_f64_with_prefix_uninit_tail(len: usize, warm: usize, prefix:
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-/// Returns an `f32` scratch buffer whose warm prefix is defined immediately.
-///
-/// The helper name is preserved for compatibility, but the full visible range
-/// is now initialized in release builds so the returned `Vec<f32>` never
-/// exposes uninitialized elements.
 #[inline(always)]
 pub(crate) fn alloc_f32_with_prefix_uninit_tail(len: usize, warm: usize, prefix: f32) -> Vec<f32> {
     let warm = warm.min(len);
@@ -113,10 +97,6 @@ pub(crate) fn alloc_f32_with_prefix_uninit_tail(len: usize, warm: usize, prefix:
     buf
 }
 
-/// Returns a scalar scratch buffer without exposing uninitialized `f64` ranges.
-///
-/// The release branch uses a defined fill value for safety. Callers should
-/// still overwrite the buffer before relying on semantic contents.
 #[inline(always)]
 pub(crate) fn alloc_uninit_f64(len: usize) -> Vec<f64> {
     #[cfg(not(debug_assertions))]
@@ -130,10 +110,6 @@ pub(crate) fn alloc_uninit_f64(len: usize) -> Vec<f64> {
     }
 }
 
-/// Returns a scalar scratch buffer without exposing uninitialized `f32` ranges.
-///
-/// The release branch uses a defined fill value for safety. Callers should
-/// still overwrite the buffer before relying on semantic contents.
 #[inline(always)]
 pub(crate) fn alloc_uninit_f32(len: usize) -> Vec<f32> {
     #[cfg(not(debug_assertions))]
@@ -208,7 +184,6 @@ pub(crate) fn make_uninit_matrix_f64(rows: usize, cols: usize) -> Vec<MaybeUnini
 
     #[cfg(not(debug_assertions))]
     unsafe {
-        // SAFETY: callers must initialize each cell before reading it.
         v.set_len(total);
     }
 
@@ -237,7 +212,6 @@ pub(crate) fn make_uninit_matrix_f32(rows: usize, cols: usize) -> Vec<MaybeUnini
 
     #[cfg(not(debug_assertions))]
     unsafe {
-        // SAFETY: callers must initialize each cell before reading it.
         v.set_len(total);
     }
 

@@ -191,12 +191,6 @@ impl Default for MetaClusterConfig {
     }
 }
 
-/// Train-stage request for grouping and ranking meta-selection artifacts.
-///
-/// `meta_select_from_artifacts` owns only the train-stage shortlist, grouping,
-/// and `meta_score` ranking pass. Holdout augmentation is a later stage in the
-/// broader workflow: direct callers of `meta_select_from_artifacts` should not
-/// expect populated `holdout` rows or `final_score` values in its result.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MetaSelectionRequest {
     pub strategy_kind: String,
@@ -208,19 +202,16 @@ pub struct MetaSelectionRequest {
     pub holdout_tag: Option<String>,
     #[serde(default = "default_eval_holdout")]
     pub eval_holdout: bool,
-    /// When holdout evaluation is enabled, optionally persist per-dataset holdout rows
-    /// (useful for future ML improvements, but increases meta JSON size).
+
     #[serde(default)]
     pub save_holdout_rows: bool,
-    /// Optionally evaluate holdout for only a subset of meta groups (leave others unlabeled).
-    /// When `None` or `0`, evaluate all groups (default / backwards compatible).
+
     #[serde(default)]
     pub holdout_eval_top_n: Option<usize>,
-    /// Optional exploration budget: evaluate additional groups with highest uncertainty
-    /// (only relevant when the ranker is ML-based).
+
     #[serde(default)]
     pub holdout_eval_explore_n: usize,
-    /// Ranking strategy used when selecting holdout groups: "auto" (default), "meta", or "ml".
+
     #[serde(default)]
     pub holdout_eval_rank_by: Option<String>,
     #[serde(default)]
@@ -233,8 +224,7 @@ pub struct MetaSelectionRequest {
     pub min_samples: usize,
     #[serde(default = "default_strict_shortlist")]
     pub strict_shortlist: bool,
-    /// When true, empty shortlist stages fall back to the broader candidate set.
-    /// Disable this for a hard validation gate prior to meta aggregation.
+
     #[serde(default = "default_allow_shortlist_fallback")]
     pub allow_shortlist_fallback: bool,
     #[serde(default)]
@@ -247,15 +237,10 @@ pub struct MetaSelectionRequest {
     pub cluster_representatives: usize,
 }
 
-/// Aggregate holdout metrics for a group after the optional holdout stage runs.
-///
-/// Train-stage aggregation in this file owns `meta_score` and the `train_rows` payload.
-/// A later holdout stage, when enabled, owns this struct and the compatible
-/// `final_score` rewrite on [`MetaCandidateAggregate`].
 #[derive(Clone, Debug, Serialize)]
 pub struct HoldoutAggregate {
     pub datasets: usize,
-    /// Fraction of holdout datasets that passed the holdout gate for this group.
+
     pub pass_rate: f64,
     pub score_median: f64,
     pub score_p10: f64,
@@ -264,16 +249,13 @@ pub struct HoldoutAggregate {
     pub pnl_median: f64,
 }
 
-/// Summary of the optional holdout stage across all selected groups.
 #[derive(Clone, Debug, Serialize)]
 pub struct HoldoutSummary {
-    /// Number of groups/datasets that received holdout evaluation rows.
     pub datasets: usize,
-    /// Number of groups/datasets that remained train-only because holdout was skipped.
+
     pub skipped: usize,
 }
 
-/// Result-level coverage summary for optional holdout evaluation.
 #[derive(Clone, Debug, Serialize)]
 pub struct MetaHoldoutCoverageSummary {
     pub groups_total: usize,
@@ -285,7 +267,6 @@ pub struct MetaHoldoutCoverageSummary {
     pub selection_policy: String,
 }
 
-/// Group-level holdout coverage metadata.
 #[derive(Clone, Debug, Serialize)]
 pub struct MetaGroupHoldoutCoverage {
     pub evaluated: bool,
@@ -294,15 +275,10 @@ pub struct MetaGroupHoldoutCoverage {
     pub missing_reason: Option<String>,
 }
 
-/// Train-stage aggregate for one canonical meta group.
-///
-/// This file always computes the train-stage statistics and `meta_score`. The optional
-/// holdout stage may later attach [`HoldoutAggregate`] and overwrite `final_score` with the
-/// train-plus-holdout ranking score that downstream consumers should use when present.
 #[derive(Clone, Debug, Serialize)]
 pub struct MetaCandidateAggregate {
     pub params: Value,
-    /// Canonical grouping key used as the stable group identity and deterministic tie-breaker.
+
     pub key: String,
     pub ma_source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -315,19 +291,13 @@ pub struct MetaCandidateAggregate {
     pub slow_ma_params: Option<HashMap<String, f64>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub representatives: Vec<Value>,
-    /// Number of train-stage candidate rows absorbed into this group.
+
     pub samples: usize,
-    /// Conservative lower bound on distinct train-stage evidence units.
-    ///
-    /// This intentionally stays descriptive in this pass. Ranking and gating
-    /// continue to use the existing raw `samples` and `meta_score` behavior.
+
     pub effective_samples_lower_bound: usize,
-    /// Number of distinct train-stage datasets represented by `train_rows`.
+
     pub datasets_covered: usize,
-    /// Train-stage dataset coverage ratio for this group.
-    ///
-    /// The denominator is the train-stage dataset universe considered by this request, not the
-    /// holdout dataset count.
+
     pub pass_rate: f64,
     pub robust_score_median: f64,
     pub robust_score_p10: f64,
@@ -337,32 +307,27 @@ pub struct MetaCandidateAggregate {
     pub cross_score_median: Option<f64>,
     pub psr_median: f64,
     pub dsr_median: f64,
-    /// Train-stage ranking score before any optional holdout adjustment.
+
     pub meta_score: f64,
-    /// Final ranking score after optional holdout enrichment.
-    ///
-    /// `None` means this group is still train-only and should be interpreted by `meta_score`.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_score: Option<f64>,
-    /// Optional holdout-stage aggregate attached after holdout evaluation.
-    ///
-    /// `None` means no holdout stage owned this group yet.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<HoldoutAggregate>,
-    /// Explicit holdout coverage state for this group when a holdout stage was requested.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout_coverage: Option<MetaGroupHoldoutCoverage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_flags: Vec<String>,
-    /// Per-dataset train-stage evidence rows that feed the train aggregate and `meta_score`.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub train_rows: Vec<TrainDatasetRow>,
-    /// Optional per-dataset holdout rows populated only by a later holdout stage.
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holdout_rows: Vec<HoldoutDatasetRow>,
 }
 
-/// Per-dataset row emitted by the optional holdout stage.
 #[derive(Clone, Debug, Serialize)]
 pub struct HoldoutDatasetRow {
     pub dataset: String,
@@ -374,7 +339,6 @@ pub struct HoldoutDatasetRow {
     pub pass: bool,
 }
 
-/// Per-dataset row emitted by the train-stage aggregation pass in this file.
 #[derive(Clone, Debug, Serialize)]
 pub struct TrainDatasetRow {
     pub dataset: String,
@@ -394,19 +358,16 @@ pub struct TrainDatasetRow {
     pub ts: Option<String>,
 }
 
-/// Result payload for one train-stage meta-selection run.
 #[derive(Clone, Debug, Serialize)]
 pub struct MetaSelectionResult {
     pub runtime_ms: u64,
     pub strategy_kind: String,
     pub timeframe: Option<String>,
-    /// Total input artifacts scanned for this request before any filtering.
+
     pub artifacts_considered: usize,
-    /// Artifacts that matched the request and produced a candidate set eligible for train-stage
-    /// aggregation before shortlist/gate reduction.
+
     pub artifacts_used: usize,
-    /// Candidate rows admitted into train-stage grouping after shortlist filtering and per-artifact
-    /// duplicate-key suppression.
+
     pub candidates_considered: usize,
     pub groups: Vec<MetaCandidateAggregate>,
     pub warnings: Vec<String>,
@@ -438,8 +399,7 @@ struct GroupAcc {
 struct RepresentativeParam {
     robust_score: f64,
     params: Value,
-    // Keep canonical_json as the baseline correctness contract, but cache it once
-    // during clustered ingestion so representative dedupe does not recompute it.
+
     canonical_sig: Option<String>,
 }
 
@@ -558,18 +518,6 @@ const GROUP_EVIDENCE_MIN_HOLDOUT_DATASETS_WARN: usize = 3;
 const GROUP_EVIDENCE_MIN_HOLDOUT_PASS_RATE_WARN: f64 = 0.50;
 const GROUP_EVIDENCE_MAX_HOLDOUT_DD_P90_WARN: f64 = 0.50;
 
-/// Builds train-stage meta-selection aggregates from compatible artifacts.
-///
-/// This function does not execute the later holdout augmentation stage. The
-/// returned [`MetaCandidateAggregate`] values therefore always own train-stage
-/// `meta_score` and `train_rows`, while `holdout` and `final_score` remain
-/// stage-two outputs for a later workflow step.
-///
-/// Counter semantics:
-/// - `artifacts_used` counts artifacts that matched the request and contributed
-///   an eligible candidate set before final group truncation.
-/// - `candidates_considered` counts post-shortlist, post-within-artifact-dedupe
-///   candidate rows admitted into group aggregation.
 pub fn meta_select_from_artifacts(
     req: &MetaSelectionRequest,
     artifacts: &[Value],
@@ -954,7 +902,7 @@ fn normalize_timeframe_label(raw: &str) -> String {
     if s0.is_empty() {
         return String::new();
     }
-    // Back-compat: older artifacts may store inferred timeframes like "120s".
+
     if let Some(sec_str) = s0.strip_suffix('s') {
         if let Ok(sec) = sec_str.parse::<i64>() {
             let mapped = match sec {
@@ -1178,7 +1126,6 @@ pub fn meta_group_key_with_context(
     feature_context: Option<&Value>,
     run_context: Option<&Value>,
 ) -> String {
-    // Prefer strategy-agnostic context when present; otherwise keep legacy MA-based key shape.
     let v = if feature_context.is_some() || run_context.is_some() {
         serde_json::json!({
             "params": params,
@@ -1912,8 +1859,6 @@ mod tests {
 
         let res = meta_select_from_artifacts(&req, &[art], None);
 
-        // Strict shortlist would exclude, but we intentionally fall back to all candidates
-        // to avoid producing an empty meta run.
         assert_eq!(res.groups.len(), 1);
         assert_eq!(res.groups[0].samples, 1);
     }
@@ -2353,7 +2298,6 @@ mod tests {
         };
         let clustered = meta_select_from_artifacts(&clustered_req, &[art1, art2], None);
 
-        // With int buckets of 5 and float buckets of 0.25, these params should collapse into a single region.
         assert_eq!(clustered.groups.len(), 1);
         assert_eq!(clustered.groups[0].samples, 2);
         assert!(clustered.groups[0].representatives.len() >= 2);
@@ -2559,7 +2503,7 @@ mod tests {
             &[mk_art("AAPL", "close"), mk_art("MSFT", "hl2")],
             None,
         );
-        // Legacy MA context is still part of the grouping key when generic context is absent.
+
         assert_eq!(res.groups.len(), 2);
     }
 

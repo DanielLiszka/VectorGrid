@@ -753,7 +753,7 @@ function latestExecutionDatasetContext(): {
         }
       }
     } catch {
-      // fall back to workflow artifact context
+
     }
   }
   const snapshot = readLatestWorkflowRunSnapshot()
@@ -1505,8 +1505,7 @@ export async function subscribeExecutionRuntimeEvents(
       try {
         off?.()
       } catch {
-        // best-effort teardown
-      }
+              }
     }
   }
 }
@@ -2430,7 +2429,7 @@ export async function migrateLegacyStoredExecutionKeysToSecureStorage(): Promise
     try {
       removeStorageKey(EXEC_KEYS_STORAGE_KEY)
     } catch {
-      // best-effort cleanup only after verified secure write
+
     }
   }
   return status
@@ -2446,7 +2445,7 @@ export async function clearKeys(): Promise<ExecutionActionResult> {
   try {
     removeStorageKey(EXEC_KEYS_STORAGE_KEY)
   } catch {
-    // best-effort local key cleanup only
+
   }
   if (secureClearError) {
     const detail = text(secureClearError)

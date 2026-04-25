@@ -10,7 +10,7 @@ export async function seedAdvancedUiMode(context) {
     try {
       localStorage.setItem('vta_ui_mode_v1', 'advanced')
     } catch {
-      // ignore storage failures in mocked browser harnesses
+
     }
   })
 }
@@ -65,7 +65,7 @@ export async function installMockedTauri(context, options = {}) {
         localStorage.removeItem(holdKey)
       }
     } catch {
-      // ignore storage failures in mocked browser harnesses
+
     }
 
     window.isTauri = true
@@ -94,8 +94,7 @@ export async function installMockedTauri(context, options = {}) {
           try {
             cb({ event, payload })
           } catch {
-            // ignore callback failures in mocked browser harnesses
-          }
+                      }
         }
       }
     }

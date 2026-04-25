@@ -164,16 +164,6 @@ impl SearchSpace {
         }
     }
 
-    /// Expand each parameter domain into a discrete list and iterate the full Cartesian product.
-    ///
-    /// This is intended for **deterministic grid runs** over small/medium discrete spaces (vectorbt-style
-    /// "param_product"). It will refuse to enumerate:
-    /// - any `FloatRange` with `low != high` (no step is defined in `ParamDomain`)
-    /// - any axis with more than `max_axis_values` discrete values
-    /// - any grid whose total combinations exceeds `max_combos`
-    ///
-    /// `Bool` axes are always treated as a fixed two-value axis (`false`, `true`) even when
-    /// `max_axis_values < 2`.
     pub fn grid_iter(
         &self,
         max_axis_values: usize,
@@ -190,11 +180,6 @@ impl SearchSpace {
         Ok(SearchSpaceGridIter::new(axes, len))
     }
 
-    /// Expand each parameter domain into a discrete list and expose the full Cartesian product as
-    /// a stable, indexable grid.
-    ///
-    /// `Bool` axes are always treated as a fixed two-value axis (`false`, `true`) even when
-    /// `max_axis_values < 2`.
     pub fn grid(
         &self,
         max_axis_values: usize,
@@ -219,7 +204,7 @@ pub fn bounded_exact_grid(
 ) -> Result<Option<SearchSpaceGrid>, String> {
     let max_axis_values = max_axis_values.max(1);
     let max_combos = max_combos.max(1);
-    // Bool axes are intentionally exempt from max_axis_values and always enumerate both states.
+
     space.validate()?;
 
     let mut total = 1usize;
@@ -559,7 +544,6 @@ fn sample_one<R: Rng + ?Sized>(domain: &ParamDomain, rng: &mut R) -> ParamValue 
                 return ParamValue::Int(lo);
             }
             if *log {
-                // Sample uniformly in log-space on the discrete grid.
                 let lo_f = (lo as f64).ln();
                 let hi_f = (hi as f64).ln();
                 let v = rng.gen_range(lo_f..=hi_f).exp();
@@ -671,15 +655,15 @@ fn mo_point_from_outcome<T>(values: Vec<ParamValue>, out: EvalOutcome<T>) -> MoP
 
 #[derive(Clone, Debug)]
 pub struct EvalOutcome<T> {
-    pub objectives: [f64; 2],  // should already be normalized to "maximize both"
-    pub constraints: Vec<f64>, // <=0 is feasible; >0 is violation amount
+    pub objectives: [f64; 2],
+    pub constraints: Vec<f64>,
     pub payload: T,
 }
 
 #[derive(Clone, Debug)]
 pub struct MoPoint<T> {
     pub values: Vec<ParamValue>,
-    pub objectives: [f64; 2], // normalized to maximize
+    pub objectives: [f64; 2],
     pub violation: f64,
     pub payload: T,
 }
@@ -719,8 +703,7 @@ pub struct MoSearchStats {
     pub actual_evaluations: usize,
     pub unique_evaluations: usize,
     pub duplicate_evaluations_avoided: usize,
-    /// Execution-path label only. This does not by itself prove exactness on the full original
-    /// request space; callers must pair it with the declared evaluated domain.
+
     pub exact_grid_used: bool,
 }
 
@@ -828,8 +811,6 @@ fn pareto_front_constrained_indices<T>(pop: &[MoPoint<T>]) -> Vec<usize> {
             .collect();
     }
 
-    // 2D Pareto front in O(n log n) for "maximize both":
-    // sort by obj0 desc, then obj1 desc; keep points with strictly increasing obj1.
     feasible.sort_by(|&a, &b| {
         let pa = &pop[a];
         let pb = &pop[b];
@@ -922,7 +903,6 @@ fn elite_indices<T>(pop: &[MoPoint<T>], population_size: usize) -> Vec<usize> {
             continue;
         }
 
-        // Partial fill by crowding distance.
         let crowd = crowding_distance(&front, pop);
         let mut idx: Vec<usize> = (0..front.len()).collect();
         idx.sort_by(|&a, &b| crowd[b].total_cmp(&crowd[a]));
@@ -1087,7 +1067,6 @@ where
     let mut cache: PointCache<T> = HashMap::new();
     let mut all_seen_unique: Vec<MoPoint<T>> = Vec::new();
 
-    // Initial population (random).
     let mut population_values: Vec<Vec<ParamValue>> = (0..cfg.population_size)
         .map(|_| space.sample(&mut rng))
         .collect();
@@ -1102,14 +1081,12 @@ where
     let mut population: Vec<MoPoint<T>> = initial.points;
 
     for _gen in 0..cfg.generations {
-        // Generate offspring.
         let mut offspring_values: Vec<Vec<ParamValue>> = Vec::with_capacity(cfg.population_size);
         while offspring_values.len() < cfg.population_size {
             let p0 = select_parent(&population, &mut rng);
             let p1 = if rng.gen_bool(cfg.crossover_prob.clamp(0.0, 1.0) as f64)
                 && population.len() > 1
             {
-                // Ensure distinct when possible.
                 let mut idx = select_parent(&population, &mut rng);
                 if idx == p0 {
                     idx = (idx + 1) % population.len();
@@ -1580,8 +1557,8 @@ fn log_sum_exp(xs: &[f64]) -> f64 {
 
 #[derive(Clone, Debug)]
 struct ParzenEstimator {
-    mus: Vec<f64>,    // transformed space
-    sigmas: Vec<f64>, // transformed space
+    mus: Vec<f64>,
+    sigmas: Vec<f64>,
     weights: Vec<f64>,
     low: f64,
     high: f64,
@@ -2038,8 +2015,6 @@ fn build_tpe_models<T: Clone>(
         }
     }
 
-    // Rank points using constrained Pareto fronts on the subset (small enough for O(n^2)),
-    // then prioritize diversity via crowding distance within each front.
     let subset: Vec<MoPoint<()>> = idxs
         .iter()
         .map(|&i| {
@@ -2082,7 +2057,6 @@ fn build_tpe_models<T: Clone>(
         }
     }
     if bad_idx.is_empty() {
-        // Fallback: split by time if rank produced only one bucket.
         let split = (idxs.len() / 2).max(1);
         good_idx = idxs.iter().copied().take(split).collect();
         bad_idx = idxs.iter().copied().skip(split).collect();
@@ -2675,7 +2649,7 @@ mod tests {
                 ParamValue::Float(f) => f,
                 _ => 0.0,
             };
-            // Objectives: maximize -x^2 and maximize -y^2 (prefer near 0).
+
             EvalOutcome {
                 objectives: [-x * x, -y * y],
                 constraints: vec![],
@@ -2928,7 +2902,7 @@ mod tests {
                 Some(ParamValue::Float(y)) => *y,
                 _ => 0.0,
             };
-            // toy: maximize closeness to (0.7, 0.2) on both objectives
+
             let obj1 = 1.0 - (x - 0.7).abs();
             let obj2 = 1.0 - (y - 0.2).abs();
             EvalOutcome {
@@ -3055,7 +3029,6 @@ mod tests {
         let pts: Vec<Vec<ParamValue>> = space.grid_iter(16, 128).unwrap().collect();
         assert_eq!(pts.len(), 3 * 2 * 2);
 
-        // Odometer ordering: last axis fastest.
         assert_eq!(
             pts[0],
             vec![

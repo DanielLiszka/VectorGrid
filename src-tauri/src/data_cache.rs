@@ -113,9 +113,6 @@ fn content_fingerprint_hash_for_source(path: &Path) -> Result<u64, String> {
     Ok(hash)
 }
 
-/// Content fingerprint for reproducibility:
-/// - Small/medium files: full-file FNV-1a 64 hash (`fnv1a64-full-*`)
-/// - Large files: sampled FNV-1a 64 hash over first/middle/last windows (`fnv1a64-sampled-*`)
 pub fn content_fingerprint_for_source(path: &Path) -> Result<String, String> {
     let (mode, hash) = content_fingerprint_parts_for_source(path)?;
     Ok(format!("fnv1a64-{mode}-{hash:016x}"))
@@ -223,8 +220,6 @@ fn read_header(input: &[u8; HEADER_LEN]) -> Option<(u32, u64, u64, i64, u64)> {
 fn write_le_slice_i64(w: &mut dyn Write, v: &[i64]) -> Result<(), String> {
     #[cfg(target_endian = "little")]
     {
-        // SAFETY: `i64` is plain old data, the cast preserves the slice bounds,
-        // and we read exactly `v.len() * size_of::<i64>()` initialized bytes.
         let bytes = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 8) };
         w.write_all(bytes).map_err(|e| e.to_string())
     }
@@ -240,8 +235,6 @@ fn write_le_slice_i64(w: &mut dyn Write, v: &[i64]) -> Result<(), String> {
 fn write_le_slice_f64(w: &mut dyn Write, v: &[f64]) -> Result<(), String> {
     #[cfg(target_endian = "little")]
     {
-        // SAFETY: `f64` is plain old data, the cast preserves the slice bounds,
-        // and we read exactly `v.len() * size_of::<f64>()` initialized bytes.
         let bytes = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 8) };
         w.write_all(bytes).map_err(|e| e.to_string())
     }
@@ -262,18 +255,14 @@ fn read_le_vec_i64(r: &mut dyn Read, len: usize) -> Result<Vec<i64>, String> {
     unsafe {
         out_uninit.set_len(len);
     }
-    // SAFETY: `out_uninit` has capacity for `len` elements, we expose exactly
-    // `byte_len` bytes that cover that allocation, and `read_exact` fully
-    // initializes the backing memory before we reconstitute `Vec<i64>`.
+
     let buf =
         unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, byte_len) };
     r.read_exact(buf).map_err(|e| e.to_string())?;
     let ptr = out_uninit.as_mut_ptr() as *mut i64;
     let cap = out_uninit.capacity();
     mem::forget(out_uninit);
-    // SAFETY: the allocation originated from `Vec<MaybeUninit<i64>>` with the
-    // same pointer/capacity, and the preceding `read_exact` initialized all
-    // `len` elements.
+
     #[cfg(target_endian = "little")]
     let out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
     #[cfg(target_endian = "big")]
@@ -295,18 +284,14 @@ fn read_le_vec_f64(r: &mut dyn Read, len: usize) -> Result<Vec<f64>, String> {
     unsafe {
         out_uninit.set_len(len);
     }
-    // SAFETY: `out_uninit` has capacity for `len` elements, we expose exactly
-    // `byte_len` bytes that cover that allocation, and `read_exact` fully
-    // initializes the backing memory before we reconstitute `Vec<f64>`.
+
     let buf =
         unsafe { std::slice::from_raw_parts_mut(out_uninit.as_mut_ptr() as *mut u8, byte_len) };
     r.read_exact(buf).map_err(|e| e.to_string())?;
     let ptr = out_uninit.as_mut_ptr() as *mut f64;
     let cap = out_uninit.capacity();
     mem::forget(out_uninit);
-    // SAFETY: the allocation originated from `Vec<MaybeUninit<f64>>` with the
-    // same pointer/capacity, and the preceding `read_exact` initialized all
-    // `len` elements.
+
     #[cfg(target_endian = "little")]
     let out = unsafe { Vec::from_raw_parts(ptr, len, cap) };
     #[cfg(target_endian = "big")]
@@ -355,7 +340,6 @@ pub fn load_or_build_with_identity(
         }
     }
 
-    // Cache miss: parse CSV, then write cache for future runs.
     let candles = ta_app_core::read_candles_from_csv_compat(csv_path.to_string_lossy().as_ref())?;
 
     let mut wrote_path = None;

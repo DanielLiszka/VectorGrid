@@ -1,12 +1,5 @@
-<#
-.SYNOPSIS
-Runs the focused MlSignal / CatBoost correctness gate.
 
-.DESCRIPTION
-This gate intentionally avoids benchmark and profiling commands. It is safe to
-use while other CPU/GPU-intensive workloads are running, although wall-clock
-time may still be affected by system load.
-#>
+
 
 param(
   [switch]$SkipWeb,

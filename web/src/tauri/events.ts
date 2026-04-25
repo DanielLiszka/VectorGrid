@@ -35,12 +35,10 @@ function clearSharedChannel(event: string, channel: SharedChannelListener): void
     const offResult = channel.nativeOff?.()
     if (offResult && typeof (offResult as Promise<void>).catch === 'function') {
       void (offResult as Promise<void>).catch(() => {
-        // best-effort teardown only
-      })
+              })
     }
   } catch {
-    // best-effort teardown only
-  }
+      }
   channel.nativeOff = null
   channel.subscribePromise = null
   sharedChannels.delete(event)
@@ -67,8 +65,7 @@ async function ensureNativeListener(
           try {
             handler(evt.payload, meta)
           } catch {
-            // keep one misbehaving consumer from breaking the others
-          }
+                      }
         }
       })
       channel.nativeOff = typeof off === 'function' ? off : null

@@ -97,13 +97,10 @@ fn default_model_kind() -> MlConfidenceModelKind {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MlConfidenceTarget {
-    /// Pick the best target based on available artifacts:
-    /// - Prefer `holdout_rows` (per-dataset labels) when present.
-    /// - Fall back to `holdout` aggregates otherwise.
     Auto,
-    /// Binary label computed from per-group `holdout` aggregates (v1 behavior).
+
     HoldoutGate,
-    /// Binary label per holdout dataset row (`holdout_rows`), using the label thresholds.
+
     HoldoutDatasetPass,
 }
 
@@ -116,12 +113,10 @@ impl Default for MlConfidenceTarget {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MlConfidenceModelFamily {
-    /// Prefer non-linear boosted stumps when enough labeled rows exist;
-    /// fall back to logistic when needed.
     Auto,
-    /// Linear baseline model.
+
     Logistic,
-    /// Non-linear boosted tree stumps (tabular-friendly, lightweight).
+
     GbdtStump,
 }
 
@@ -228,7 +223,6 @@ pub struct MlConfidenceTrainMetrics {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MlConfidenceCalibration {
-    /// Platt scaling on logit(p): p_cal = sigmoid(a * logit(p_raw) + b)
     pub method: String,
     pub a: f64,
     pub b: f64,
@@ -635,9 +629,6 @@ fn label_from_holdout_row(row: &Value, cfg: &MlConfidenceLabelConfig) -> Option<
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())?;
 
-    // NOTE: `min_holdout_score_p10` is interpreted as a threshold on the per-dataset median score.
-    // This aligns with how the meta holdout aggregate is computed (`score_p10` is the p10 quantile
-    // across datasets of each dataset's representative-median score).
     let score_median = row.get("score_median").and_then(|v| v.as_f64())?;
     let max_dd_worst = row
         .get("max_dd_worst")
@@ -1522,7 +1513,6 @@ fn fit_platt_scaling_from_probs(ps: &[f64], ys: &[f64]) -> Option<MlConfidenceCa
     }
     let ys2: Vec<f64> = ys.to_vec();
 
-    // Lightweight 1D logistic regression (Platt scaling). Very small l2 to keep it stable.
     let (w, b, _) = fit_logistic_regression(&xs, &ys2, 1e-6, 0.2, 200);
     let a = w.first().copied().unwrap_or(1.0);
     if !a.is_finite() || !b.is_finite() || a <= 0.0 {
@@ -1555,7 +1545,6 @@ fn auc_roc(ps: &[f64], ys: &[f64]) -> Option<f64> {
     }
     pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Compute average ranks for ties, then use rank-sum AUC.
     let mut rank_sum_pos = 0.0;
     let mut i = 0usize;
     let n = pairs.len();
@@ -1565,7 +1554,7 @@ fn auc_roc(ps: &[f64], ys: &[f64]) -> Option<f64> {
         while j < n && pairs[j].0 == p0 {
             j += 1;
         }
-        // ranks are 1-based
+
         let rank_lo = (i + 1) as f64;
         let rank_hi = j as f64;
         let rank_avg = (rank_lo + rank_hi) / 2.0;
@@ -2112,7 +2101,6 @@ mod tests {
             })
         };
 
-        // Two meta runs, each with a mix of positives and negatives.
         let mut groups1 = Vec::new();
         let mut groups2 = Vec::new();
         for i in 0..30 {
@@ -2171,7 +2159,6 @@ mod tests {
         assert!(metrics.rows >= 50);
         assert!(metrics.train_auc > 0.7);
 
-        // Sanity: "good-looking" group should have higher confidence than "bad-looking".
         let good_g = json!({
             "samples": 40,
             "pass_rate": 0.8,
@@ -2543,8 +2530,6 @@ mod tests {
 
     #[test]
     fn trains_from_holdout_rows_dataset_labels() {
-        // Build multiple groups with different feature strength. "Good" groups have more passing
-        // holdout datasets; "bad" groups have fewer.
         let mk_group = |good: bool, gid: usize| {
             let mut rows = Vec::new();
             for ds in 0..50usize {

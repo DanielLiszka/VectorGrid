@@ -65,8 +65,8 @@ function readHoldDebugFlag(): boolean {
     if (params.get(HOLD_QUERY_KEY) === HOLD_QUERY_VALUE) return true
     if (sessionStorage.getItem(HOLD_STORAGE_KEY) === '1') return true
     if (localStorage.getItem(HOLD_STORAGE_KEY) === '1') {
-      // Older debug builds persisted this flag across launches and could trap the UI under
-      // a pointer-blocking startup overlay on the dev origin. Clear the stale key on read.
+
+
       localStorage.removeItem(HOLD_STORAGE_KEY)
     }
     return false

@@ -6,10 +6,6 @@ use serde::{Deserialize, Serialize};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 use vector_ta::utilities::data_loader::Candles;
 
-/// Objective vocabulary shared by optimizer request and result surfaces.
-///
-/// This enum names the metric being optimized. Maximize-vs-minimize policy is
-/// defined by the consuming search implementation rather than by this enum alone.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ObjectiveKind {
     Pnl,
@@ -21,30 +17,19 @@ pub enum ObjectiveKind {
     MaxDrawdown,
 }
 
-/// Optimization request mode vocabulary shared by optimizer callers.
-///
-/// Not every downstream workflow necessarily honors every variant, so this enum
-/// should be treated as shared request vocabulary rather than a universal
-/// execution guarantee.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OptimizationMode {
     Grid,
     CoarseToFine,
-    /// VRAM-aware deterministic progressive search (GPU-oriented).
-    /// Uses staged pruning/refinement for very large spaces.
+
     GpuVdps,
     Auto,
 }
 
-/// Batch evaluation contract used by grid and streaming search helpers.
-///
-/// Implementations are expected to return exactly one `Metrics` row per input
-/// combo, in the same order as the provided slice.
 pub trait BacktestEngine {
     fn eval_batch(&self, combos: &[DoubleMaParams]) -> Vec<Metrics>;
 }
 
-/// Thin adapter over `ta_strategies::double_ma::double_ma_batch_cpu`.
 pub struct CpuEngine<'a> {
     pub candles: &'a Candles,
     pub fast_ma_types: &'a [String],
@@ -64,10 +49,6 @@ impl<'a> BacktestEngine for CpuEngine<'a> {
     }
 }
 
-/// Shared optimizer result DTO.
-///
-/// `top_scores` pairs with `top`, `all_scores` pairs with `all`, and omitted
-/// optional fields are part of the serde-visible contract.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptimizationResult {
     pub best_params: DoubleMaParams,
@@ -87,10 +68,6 @@ pub struct OptimizationResult {
     pub num_candles: usize,
 }
 
-/// Flattened heatmap DTO with separate dimension metadata.
-///
-/// `values` stores the primary flattened grid, while `mean_values` and
-/// `sample_counts` are optional compatibility-bearing aggregate arrays.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptimizationHeatmap {
     pub bins_fast: usize,

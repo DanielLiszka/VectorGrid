@@ -501,8 +501,8 @@ function readStoreCheckboxValue(id: string): boolean {
 }
 
 function tryBuildAutoMetaRequest(): Record<string, unknown> | null {
-  // Keep Stage 3, batch, Stage 5, and ML scope request shaping in separate
-  // builders so compatibility aliases do not blur their contracts.
+
+
   return buildMetaSelectionRequest({
     strategyKind: readStoreTextInputValue("metaStrategyKind"),
     timeframe: readStoreTextInputValue("metaTimeframe"),
@@ -645,8 +645,8 @@ function tryBuildAutoMetaMlScope(): Record<string, unknown> | null {
 function currentMetaScope(): { strategy_kind: string; timeframe: string } {
   const store = getAnalysisStore();
   const result = asRecord(LAST_META_RUN?.result);
-  // ML actions prefer the latest saved/live Meta result before draft store
-  // inputs so rerank/train flows can recover scope after a real Meta run.
+
+
   const strategy =
     normalizeText(
       result?.strategy_kind ?? store?.metaStrategyKind ?? "CompositeMo",
@@ -2374,7 +2374,7 @@ async function loadLastBatchSummaryFromDisk(): Promise<void> {
       return;
     setBatchSummaryState(row, path);
   } catch {
-    // Best-effort hydration only.
+
   }
 }
 
@@ -2574,7 +2574,7 @@ async function refreshSavedRunCount(): Promise<void> {
       aggregateSummarySavedRuns: String(Array.isArray(rows) ? rows.length : 0),
     });
   } catch {
-    // keep batch flow non-throwing if run-list query fails
+
   }
 }
 
@@ -3187,8 +3187,7 @@ export async function deleteSaved(): Promise<void> {
   }
 }
 
-// Stage 4 names remain as compatibility aliases while the conventional ML
-// finalizer is presented as Stage 5 in the UI.
+
 export async function saveStage5SavedTags(): Promise<void> {
   try {
     const entry = selectedStage4SavedEntry();

@@ -30,20 +30,6 @@ const KQSR_FLAG_DISABLE_FLIP: u32 = 1u32 << 1;
 const KQSR_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
 const KQSR_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
-/// Raw GPU-side signal matrix inputs for the KQSR kernel entrypoint.
-///
-/// All `*_ptr` fields are borrowed raw device pointers in the current CUDA context.
-/// They are not owned or validated for provenance here, so the caller must ensure they
-/// remain valid for the duration of the call and that each row-major matrix shape
-/// matches its corresponding `*_rows` / `*_stride` metadata.
-///
-/// `close_f32` is always required as the host mirror of the close series. The runtime
-/// uses it to derive the resident close/log-return cache identity, even when
-/// `close_device_ptr` is non-zero and already points at device-resident close data.
-///
-/// When `close_device_ptr == 0`, the entrypoint treats that as an explicit host-upload
-/// fallback and uploads `close_f32` into device memory before computing log returns.
-/// All other signal pointers must still be valid non-zero device pointers.
 pub struct KqsrGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
     pub close_device_ptr: u64,
@@ -62,11 +48,6 @@ pub struct KqsrGpuDeviceSignalMatrices<'a> {
     pub prb_lower_row_major_ptr: u64,
 }
 
-/// Borrowed combo-index vectors for a batch KQSR GPU evaluation.
-///
-/// Each slice must have identical length. Empty batches are currently accepted and
-/// return success with an empty metrics vector before any unsupported-feature rejection
-/// or CUDA runtime work begins.
 pub struct KqsrGpuComboBatch<'a> {
     pub fast_row_index: &'a [i32],
     pub slow_row_index: &'a [i32],
@@ -372,27 +353,6 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
-/// Evaluates a batch of KQSR candidate windows against device-resident signal matrices.
-///
-/// This function mutates the calling thread's current CUDA context by setting the
-/// thread-local KQSR runtime context current before reusing or allocating scratch buffers.
-/// Callers must treat that as an observable side effect when mixing multiple CUDA
-/// runtimes on the same thread.
-///
-/// The close-series cache is identity-based rather than deep-validated: it keys resident
-/// close/log-return buffers from the `close_f32` host mirror together with
-/// `close_device_ptr`. If the caller reuses the same pointer for different underlying
-/// device contents without also changing the host mirror, the cached device log returns
-/// may be reused under stale identity assumptions.
-///
-/// `close_f32` is therefore required even in pure device-pointer mode. If
-/// `signals.close_device_ptr == 0`, the function uploads `signals.close_f32` into a
-/// temporary device buffer and uses that uploaded series as the close input for the
-/// log-return prepass. All other signal matrices must already be resident device data.
-///
-/// The raw row-major signal pointers are transport-only inputs. This function does not
-/// narrow visibility, require `unsafe`, or redesign the pointer transport surface; it
-/// only validates obvious null/shape issues before launching the kernel.
 pub fn eval_kqsr_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &KqsrGpuDeviceSignalMatrices<'_>,

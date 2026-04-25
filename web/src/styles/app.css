@@ -113,7 +113,7 @@ html[data-theme="light"] {
 
 html[data-theme="dark"] {
   color-scheme: dark;
-  /* Softer dark (avoid pitch-black): slate/navy surfaces with gentle contrast. */
+
   --bg: #111827;
   --panel: rgba(24, 33, 49, 0.975);
   --panel-footer: rgba(24, 33, 49, 0.965);
@@ -1721,8 +1721,7 @@ canvas.chart {
   overflow: hidden;
 }
 
-/* Lightweight Charts creates multiple internal canvases. Reset the global
-   canvas skin here so overlay layers stay transparent and candles remain visible. */
+
 .tvChartHost canvas {
   border: 0;
   border-radius: 0;

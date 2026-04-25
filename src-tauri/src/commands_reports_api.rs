@@ -11,9 +11,6 @@ pub struct SaveReportXlsxResponse {
     pub artifact_update_warning: String,
 }
 
-/// Build a validation workbook and return it as base64-encoded XLSX bytes.
-///
-/// This command is transport-oriented: it returns encoded workbook content rather than a saved path.
 #[tauri::command]
 pub async fn build_report_xlsx(report: Value, max_rows: Option<u32>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -23,7 +20,6 @@ pub async fn build_report_xlsx(report: Value, max_rows: Option<u32>) -> Result<S
     .map_err(|e| e.to_string())?
 }
 
-/// Build the shortlist export and return CSV text, not a persisted file path.
 #[tauri::command]
 pub async fn build_validation_shortlist_csv(validation_res: Value) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -54,10 +50,6 @@ async fn save_report_xlsx_with_app<R: tauri::Runtime>(
     .map_err(|e| e.to_string())?
 }
 
-/// Build and save a report workbook from a persisted artifact path.
-///
-/// This may update persisted artifact metadata by writing back `report_xlsx_path`. When that save-back
-/// fails after the workbook itself was written, `artifact_update_warning` carries the non-fatal warning.
 #[tauri::command]
 pub async fn save_report_xlsx_from_artifact(
     path: String,
@@ -79,7 +71,6 @@ async fn save_report_xlsx_from_artifact_with_app<R: tauri::Runtime>(
     .map_err(|e| e.to_string())?
 }
 
-/// Reveal the app-local reports directory in the host shell and return that directory path.
 #[tauri::command]
 pub async fn open_reports_dir(app: tauri::AppHandle) -> Result<String, String> {
     open_reports_dir_with_app(app).await
@@ -113,7 +104,6 @@ fn open_reports_dir_blocking<R: tauri::Runtime>(
     open_reports_dir_blocking_with_revealer(app, commands_reports::reveal_path_blocking)
 }
 
-/// Reveal an existing path via the shared shell-launch helper.
 #[tauri::command]
 pub async fn reveal_path(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || commands_reports::reveal_path_blocking(path))
@@ -121,7 +111,6 @@ pub async fn reveal_path(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Open an existing path via the shared shell-launch helper.
 #[tauri::command]
 pub async fn open_path(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || commands_reports::open_path_blocking(path))

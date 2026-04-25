@@ -31,17 +31,13 @@ const CARM_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
 const CARM_FLAG_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
 pub struct CarmGpuDeviceSignalMatrices<'a> {
-    /// Host close prices remain the validation length anchor and part of the resident-cache key
-    /// even when `close_device_ptr` already points at device-resident closes.
     pub close_f32: &'a [f32],
-    /// Raw CUDA device pointer for the close series. When non-zero it must reference at least
-    /// `cols` contiguous `f32` values on the active device.
+
     pub close_device_ptr: u64,
     pub cols: usize,
     pub mixed_rows: usize,
     pub mixed_stride: usize,
-    /// Raw CUDA device pointers for row-major signal matrices. Each pointer must stay valid for
-    /// the launch and reference at least `rows * stride` `f32` values on the active device.
+
     pub coppock_row_major_ptr: u64,
     pub ao_row_major_ptr: u64,
     pub rocr_row_major_ptr: u64,

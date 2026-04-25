@@ -19,13 +19,6 @@ use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
-/// Serde-backed KVDF strategy configuration.
-///
-/// The default values here participate in the request contract for callers that
-/// omit fields during deserialization. The `vwap_anchor` field accepts the
-/// legacy `"session"` alias, which is normalized to `"1d"` before indicator
-/// dispatch. This file intentionally preserves month anchors such as `"1M"`
-/// rather than lowercasing them into minute anchors.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct KvdfStrategyParams {
     #[serde(default = "default_kvdf_keltner_period")]
@@ -167,12 +160,6 @@ impl Default for KvdfStrategyParams {
     }
 }
 
-/// Validates the basic KVDF parameter contract.
-///
-/// This validates field-level ranges and obvious malformed input, but it does
-/// not guarantee that every downstream helper in this module has already been
-/// called with a fully validated config. Callers that rely on strict
-/// pre-validation should invoke this explicitly before strategy execution.
 pub fn validate_kvdf_params(cfg: &KvdfStrategyParams) -> Result<(), String> {
     if cfg.keltner_period == 0 {
         return Err("KVDF keltner_period must be >= 1.".to_string());
@@ -206,12 +193,6 @@ pub fn normalized_kvdf_dti_threshold(cfg: &KvdfStrategyParams) -> f64 {
     cfg.dti_threshold.abs()
 }
 
-/// Normalizes the public KVDF VWAP anchor string into the form expected by the
-/// underlying VWAP indicator.
-///
-/// This keeps the historical `"session"` alias mapped to `"1d"`, normalizes
-/// day/hour units case-insensitively, and preserves uppercase month anchors
-/// such as `"1M"` so they do not silently turn into minute anchors.
 pub fn normalize_kvdf_vwap_anchor(anchor: &str) -> String {
     let trimmed = anchor.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("session") {
@@ -1107,9 +1088,6 @@ pub fn compute_kvdf_fast_signals_f32(
     })
 }
 
-/// Computes the first bar index where KVDF can begin writing desired
-/// positions, combining candle and indicator warmup with the current
-/// `trade_on_next_bar` execution rule.
 pub fn compute_kvdf_start_t(
     first_valid_close: usize,
     first_valid_signals: usize,
@@ -1123,12 +1101,6 @@ pub fn compute_kvdf_start_t(
     }
 }
 
-/// Builds the KVDF desired-position series from precomputed indicator signals.
-///
-/// Callers are expected to provide coherent signal vectors for the same candle
-/// series and to pass a `start_t` derived from the same warmup boundary. This
-/// function intentionally keeps the current entry/exit state-machine behavior
-/// stable and should not be treated as a generic signal-repair layer.
 pub fn build_kvdf_desired_positions(
     close: &[f64],
     signals: &KvdfSignals,
@@ -1429,7 +1401,7 @@ mod tests {
         }
 
         let mut candles = make_trending_candles(512);
-        // Inject a few explicit three-candle gaps so the FVG surface has finite output rows.
+
         for i in (8..candles.close.len()).step_by(37) {
             let gap_low = candles.high[i - 2] + 2.0;
             candles.open[i] = gap_low + 0.2;

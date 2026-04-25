@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import AppVisualIcon from './AppVisualIcon.vue'
 import { runtimeReadyIcon } from '../utils/appSvgAssets'

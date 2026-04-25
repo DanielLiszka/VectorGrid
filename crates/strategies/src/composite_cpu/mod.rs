@@ -80,7 +80,6 @@ pub fn composite_desired_position(
             }
             let pos = current_pos.clamp(-1, 1);
 
-            // Entry is driven by the MA + HalfTrend core. MACZ/OTT are used as protective exits.
             if pos > 0 && core_sign > 0 {
                 if !macz_hist.is_finite() || !ott_price.is_finite() || !ott_line.is_finite() {
                     0
@@ -112,8 +111,6 @@ pub fn composite_desired_position(
                 0.0
             };
 
-            // Treat MA trend + HalfTrend regime as the directional bias; only enter on pullbacks.
-            // MACZ is used as pullback/reversion timing, and OTT line as a protective regime break.
             let pullback_long = macz_hist.is_finite()
                 && macz_hist <= 0.0
                 && ott_price.is_finite()
@@ -300,10 +297,6 @@ pub fn eval_composite_metrics_from_log_returns_and_mas_f64(
     )
 }
 
-/// `start_t` must already point at the first executable bar after indicator warmup and any
-/// caller-chosen `trade_on_next_bar` offset. This evaluator still reads signals from
-/// `t.saturating_sub(trade_offset)` internally, so callers should not pass the first raw signal
-/// bar here.
 pub fn eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
     lr: &[f64],
     ott_prices: &[f64],
@@ -750,10 +743,6 @@ pub fn eval_composite_curves_from_log_returns_and_mas_f64(
     )
 }
 
-/// `start_t` must already point at the first executable bar after indicator warmup and any
-/// caller-chosen `trade_on_next_bar` offset. This evaluator still reads signals from
-/// `t.saturating_sub(trade_offset)` internally, so callers should not pass the first raw signal
-/// bar here.
 pub fn eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
     lr: &[f64],
     ott_prices: &[f64],
@@ -1173,9 +1162,9 @@ mod tests {
         let sign = composite_desired_position(
             11.0,
             10.0,
-            0.0,  // HalfTrend bullish branch
-            -1.0, // MACZ bearish (should not block fresh entry)
-            99.0, // OTT bearish (should not block fresh entry)
+            0.0,
+            -1.0,
+            99.0,
             100.0,
             0,
             &cfg,
@@ -1190,11 +1179,11 @@ mod tests {
         let sign = composite_desired_position(
             11.0,
             10.0,
-            0.0, // HalfTrend bullish
+            0.0,
             -1.0,
             99.0,
             100.0,
-            1, // currently long
+            1,
             &cfg,
             CompositeSignalMode::EntryCoreExitOverlay,
         );
@@ -1207,9 +1196,9 @@ mod tests {
         let sign = composite_desired_position(
             11.0,
             10.0,
-            0.0,  // HalfTrend bullish
-            -1.0, // MACZ bearish veto
-            99.0, // OTT bearish veto
+            0.0,
+            -1.0,
+            99.0,
             100.0,
             0,
             &cfg,
@@ -1397,10 +1386,10 @@ mod tests {
         let sign = composite_desired_position(
             110.0,
             100.0,
-            0.0, // HalfTrend bullish
+            0.0,
             -0.4,
-            105.0, // below fast, above slow (pullback)
-            103.0, // above OTT line
+            105.0,
+            103.0,
             0,
             &cfg,
             CompositeSignalMode::TrendPullbackReversion,
@@ -1414,9 +1403,9 @@ mod tests {
         let sign = composite_desired_position(
             110.0,
             100.0,
-            0.0,   // HalfTrend bullish
-            0.6,   // not a pullback
-            111.0, // above fast
+            0.0,
+            0.6,
+            111.0,
             103.0,
             0,
             &cfg,
@@ -1431,9 +1420,9 @@ mod tests {
         let sign = composite_desired_position(
             110.0,
             100.0,
-            0.0,   // HalfTrend bullish
-            0.3,   // reverted momentum
-            111.0, // above fast => reversion complete
+            0.0,
+            0.3,
+            111.0,
             104.0,
             1,
             &cfg,

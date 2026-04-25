@@ -17,7 +17,6 @@ pub fn effective_trial_count(raw_trials: usize, effective_trials: Option<usize>)
 }
 
 fn normal_cdf(x: f64) -> f64 {
-    // Abramowitz and Stegun 7.1.26
     let z = x.abs();
     let t = 1.0 / (1.0 + 0.231_641_9 * z);
     let d = (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
@@ -34,7 +33,6 @@ fn normal_cdf(x: f64) -> f64 {
 }
 
 fn normal_inv_cdf(p: f64) -> f64 {
-    // Peter J. Acklam's rational approximation.
     const A: [f64; 6] = [
         -3.969_683_028_665_376e+01,
         2.209_460_984_245_205e+02,
@@ -85,10 +83,6 @@ fn normal_inv_cdf(p: f64) -> f64 {
     }
 }
 
-/// Computes the Sharpe-family exceedance probability against a benchmark Sharpe ratio.
-///
-/// `kurtosis` is interpreted as raw Pearson kurtosis, not excess kurtosis. This helper keeps
-/// the current `0.5` invalid-input fallback because wrapper-level policy still depends on it.
 pub fn probabilistic_sharpe_ratio(
     sr_hat: f64,
     benchmark_sr: f64,
@@ -151,8 +145,6 @@ pub fn mean_std(xs: &[f64]) -> (f64, f64) {
     (mean, (m2 / (n - 1.0)).sqrt())
 }
 
-/// Estimates the expected maximum Sharpe ratio across peer trials using the same normal-quantile
-/// helper as `deflated_sharpe_ratio`.
 pub fn expected_max_sharpe(num_trials: usize, sr_mean: f64, sr_std: f64) -> f64 {
     if num_trials <= 1 || !sr_mean.is_finite() || !sr_std.is_finite() {
         return sr_mean;

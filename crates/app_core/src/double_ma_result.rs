@@ -150,9 +150,6 @@ fn resolve_params(
         slow_param_variants.len()
     );
 
-    // Preserve existing serialized compatibility for stale cached artifacts or
-    // externally constructed params by collapsing out-of-range variant ids to
-    // `None` instead of changing the wire shape.
     let fast_ma_params = fast_param_variants
         .get(params.fast_ma_id as usize)
         .cloned()
@@ -201,9 +198,6 @@ fn build_grid_matrix_index(
                 match idx.col_id(params.fast_len, params.slow_len) {
                     Some(col) => top_cols.push(col),
                     None => {
-                        // Keep this projection all-or-nothing: partial `top_cols`
-                        // would desynchronize consumers that treat the vector as a
-                        // positional overlay for `top`.
                         top_cols.clear();
                         break;
                     }

@@ -174,14 +174,14 @@ thread_local! {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StrategyExecutableCacheStats {
     pub compiled_bundle_hits: u64,
-    /// Actual process-global compiled-bundle insertions, not cold-path attempts that lost a race.
+
     pub compiled_bundle_misses: u64,
     pub compiled_bundle_entries: usize,
     pub hits: u64,
-    /// Actual process-global executable-cache insertions, not cold-path attempts that lost a race.
+
     pub misses: u64,
     pub entries: usize,
-    /// Uploads cached for the current thread only.
+
     pub uploaded_thread_entries: usize,
 }
 
@@ -284,9 +284,6 @@ fn get_or_build_compiled_gpu_predicate_bundle(
     Ok(entry)
 }
 
-/// Clear the process-global compiled/executable caches and the upload cache for the current thread.
-///
-/// This does not invalidate uploads that may remain cached in other threads.
 pub fn reset_gpu_strategy_executable_cache() {
     if let Some(cache) = GPU_STRATEGY_COMPILED_BUNDLE_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
@@ -308,8 +305,6 @@ pub fn reset_gpu_strategy_executable_cache() {
     GPU_STRATEGY_EXECUTABLE_CACHE_MISSES.store(0, Ordering::Relaxed);
 }
 
-/// Return cache stats for the process-global compiled/executable caches plus the current thread's
-/// uploaded-executable cache entry count.
 pub fn gpu_strategy_executable_cache_stats() -> StrategyExecutableCacheStats {
     let compiled_bundle_entries = GPU_STRATEGY_COMPILED_BUNDLE_CACHE
         .get()

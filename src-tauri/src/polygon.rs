@@ -327,9 +327,7 @@ fn maybe_migrate_settings_key_to_keyring(app_identifier: &str, cache_dir: &Path,
         Ok(read_back) if read_back.trim() == key => {
             let _ = fs::remove_file(settings_path(cache_dir));
         }
-        _ => {
-            // Keep the legacy fallback file in place unless the keyring round-trip is proven.
-        }
+        _ => {}
     }
 }
 
@@ -343,12 +341,10 @@ pub fn set_api_key(app_identifier: &str, cache_dir: &Path, api_key: &str) -> Res
     let entry = keyring::Entry::new(&service, KEYRING_USERNAME).map_err(|e| e.to_string())?;
 
     if entry.set_password(key).is_err() {
-        // Fallback to a local file if keyring is unavailable.
         write_settings_file(cache_dir, key)?;
         return Ok(());
     }
 
-    // Best-effort cleanup of legacy plaintext key storage.
     let _ = fs::remove_file(settings_path(cache_dir));
     Ok(())
 }
@@ -376,7 +372,6 @@ pub fn read_api_key(app_identifier: &str, cache_dir: &Path) -> Result<Option<Str
         }
     }
 
-    // Fallback (and migrate) from legacy disk storage.
     let st = read_settings_file(cache_dir)?;
     let Some(st) = st else {
         return Ok(env_api_key_fallback());
@@ -398,7 +393,7 @@ fn load_manifest(cache_dir: &Path) -> Result<PolygonCacheManifest, String> {
     }
     let text = fs::read_to_string(p).map_err(|e| e.to_string())?;
     let mut m: PolygonCacheManifest = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    // Back-compat: earlier manifests didn't persist this and only supported adjusted stocks.
+
     for (k, ds) in m.datasets.iter_mut() {
         if ds.market == "stocks" && !ds.adjusted && k.starts_with("stocks:") {
             ds.adjusted = true;
@@ -524,7 +519,6 @@ fn normalize_symbol(market: Market, symbol: &str) -> Result<(String, String), St
         return Err("symbol is required".to_string());
     }
 
-    // Allow power users to paste Polygon-form tickers (e.g. X:BTCUSD, C:EURUSD).
     if raw.contains(':') {
         let t = raw.trim().to_ascii_uppercase();
         let display = match market {
@@ -579,7 +573,6 @@ struct AggBar {
 }
 
 fn encode_path_segment(seg: &str) -> String {
-    // Polygon tickers may include ':', which must be percent-encoded inside the URL path.
     seg.replace(':', "%3A")
 }
 
@@ -964,7 +957,6 @@ pub fn repair_cached_dataset(
     let f = fs::File::open(p).map_err(|e| e.to_string())?;
     let r = BufReader::new(f);
 
-    // Hard limit to avoid accidental huge memory usage; for bigger datasets, a full re-download is safer.
     const MAX_REPAIR_ROWS: usize = 2_000_000;
     let mut bars: Vec<AggBar> = Vec::new();
     let mut parse_errors: u64 = 0;
@@ -998,10 +990,8 @@ pub fn repair_cached_dataset(
     bars.sort_by_key(|b| b.t);
     bars.dedup_by_key(|b| b.t);
 
-    // Attempt to selectively refetch days with intra-day gaps (if API key is available).
     let gappy_days = collect_same_day_gap_dates(&bars, gap_threshold_ms);
     if !gappy_days.is_empty() {
-        // Best-effort: do not fail the repair if the API key can't be read or requests fail.
         let api_key = match read_api_key(app_identifier, cache_dir) {
             Ok(k) => k,
             Err(_) => None,
@@ -1153,7 +1143,6 @@ pub fn download_1m_to_cache(
     };
     let tf = parse_timeframe(req.timeframe.as_deref())?;
 
-    // Keep back-compat: adjusted stocks keep the original key/path. Unadjusted stocks get their own cache entry.
     let (dataset_key, file_name) =
         polygon_dataset_key_and_file_name(market, &polygon_ticker, adjusted, &tf.label);
     let csv_path = cache_dir.join(file_name);
@@ -1164,20 +1153,16 @@ pub fn download_1m_to_cache(
         let min_ts = meta.min_ts;
         let max_ts = meta.max_ts;
         if min_ts > 0 && max_ts > 0 {
-            // If the user requests older history than we have, do a full refresh.
-            // Otherwise, only append newer bars.
-            let want_full_refresh = false; // date-range based refresh is handled below
+            let want_full_refresh = false;
             let _ = want_full_refresh;
         }
     }
 
-    // Decide refresh strategy by date request vs cached coverage (append-only if possible).
     let cached_meta = manifest.datasets.get(&dataset_key).cloned();
     let mut min_ts = cached_meta.as_ref().map(|m| m.min_ts).unwrap_or(0);
     let mut max_ts = cached_meta.as_ref().map(|m| m.max_ts).unwrap_or(0);
     let mut row_count = cached_meta.as_ref().map(|m| m.row_count).unwrap_or(0);
 
-    // Cache coverage decisions are made at the date granularity (Polygon aggs API uses dates).
     let cached_min_date =
         chrono::DateTime::<chrono::Utc>::from_timestamp_millis(min_ts).map(|dt| dt.date_naive());
     let cached_max_date =
@@ -1214,11 +1199,7 @@ pub fn download_1m_to_cache(
             .build()
             .map_err(|e| e.to_string())?;
 
-        // Append-only: if we have some data and the request starts within what we have, fetch only newer bars.
-        // Otherwise, refresh the full requested range and overwrite.
         if cache_plan == DownloadCachePlan::AppendOnly {
-            // Fetch from (cached max timestamp + 1 minute) up to requested to.
-            // We convert cached max_ts to a date for Polygon requests.
             let next_ms = max_ts.saturating_add(tf.interval_ms);
             let next_dt = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(next_ms)
                 .ok_or_else(|| "cached timestamp out of range".to_string())?;
@@ -1249,7 +1230,6 @@ pub fn download_1m_to_cache(
                 chunk_from = chunk_to + Duration::days(1);
             }
         } else {
-            // Full refresh for the requested range.
             let mut all: Vec<AggBar> = Vec::new();
             let mut chunk_from = from_date;
             while chunk_from <= to_date {
@@ -1274,7 +1254,7 @@ pub fn download_1m_to_cache(
             if all.is_empty() {
                 return Err("Polygon returned no data for that range.".to_string());
             }
-            // Ensure ascending and unique by timestamp.
+
             all.sort_by_key(|b| b.t);
             all.dedup_by_key(|b| b.t);
             let (wrote, new_min, new_max) = overwrite_bars(&csv_path, &all)?;
@@ -1286,7 +1266,6 @@ pub fn download_1m_to_cache(
     }
 
     if min_ts == 0 || max_ts == 0 {
-        // If we never wrote data, treat as an error so the user knows why load won't work.
         return Err("No bars available (empty dataset).".to_string());
     }
 
@@ -1432,7 +1411,7 @@ badline\n",
                 timeframe: "1m".to_string(),
                 csv_path: "C:/cache/polygon_stocks_AAPL_1m.csv".to_string(),
                 min_ts: 0,
-                max_ts: 1_735_689_600_000, // 2025-01-01T00:00:00Z
+                max_ts: 1_735_689_600_000,
                 last_updated_utc_ms: 0,
                 row_count: 0,
                 adjusted: true,
@@ -1460,7 +1439,7 @@ badline\n",
                 timeframe: "1m".to_string(),
                 csv_path: "C:/cache/polygon_stocks_AAPL_1m.csv".to_string(),
                 min_ts: 0,
-                max_ts: 1_640_995_200_000, // 2022-01-01T00:00:00Z
+                max_ts: 1_640_995_200_000,
                 last_updated_utc_ms: 0,
                 row_count: 0,
                 adjusted: true,

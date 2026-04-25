@@ -411,8 +411,7 @@ pub struct CompositeCpuRequest {
     pub cdmc: Option<CdmcStrategyParams>,
     pub objective: ObjectiveKind,
     pub mode: OptimizationMode,
-    /// Optional stage-0 prescan (double-MA optimization) to narrow MA-length ranges before running
-    /// the composite grid search.
+
     #[serde(default)]
     pub gpu_prescan: Option<CompositeGpuPrescanConfig>,
     #[serde(default)]
@@ -11134,8 +11133,6 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         return Err("not enough candles (need at least 2)".to_string());
     }
 
-    // Optional stage-0 prescan: use the fast double-MA optimizer (GPU-kernel if available) to
-    // narrow the (fast_len, slow_len) search space for the composite grid search.
     const AUTO_PRESCAN_MIN_PAIRS: usize = 250_000;
     const AUTO_PRESCAN_TOP_K: usize = 128;
     const AUTO_PRESCAN_WINDOW: u16 = 8;
@@ -11230,11 +11227,8 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             hurdle_tau: None,
         };
 
-        let dm_res = run_double_ma_optimization_blocking_with_candles(
-            dm_req, candles, cancel,
-            // Forward progress so the UI shows the prescan phase too.
-            progress,
-        )?;
+        let dm_res =
+            run_double_ma_optimization_blocking_with_candles(dm_req, candles, cancel, progress)?;
         route_diagnostics.push(format!(
             "stage-0 prescan backend_used={:?} route={} fallback={}",
             dm_res.backend_used,
@@ -11304,7 +11298,6 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         let mut fast_candidates: Vec<u16> = fast_set.into_iter().collect();
         let mut slow_candidates: Vec<u16> = slow_set.into_iter().collect();
 
-        // Cap candidate set sizes to keep memory use and total work bounded.
         if fast_candidates.len() > AUTO_PRESCAN_MAX_PERIODS {
             fast_candidates.sort_by_key(|&p| (p.abs_diff(best_fast), p));
             fast_candidates.truncate(AUTO_PRESCAN_MAX_PERIODS);
@@ -12016,7 +12009,6 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
     let fast_periods = build_local_stability_periods(base_fast, radius, step);
     let slow_periods = build_local_stability_periods(base_slow, radius, step);
 
-    // Use a single start_t based on the maximum period in the neighborhood so all points are comparable.
     let trade_offset = if req.strategy.trade_on_next_bar {
         1usize
     } else {

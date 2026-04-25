@@ -35,8 +35,7 @@ pub struct CarmStrategyParams {
     pub apo_slow_period: u16,
     #[serde(default = "default_carm_otto_period")]
     pub otto_period: u16,
-    /// Non-negative OTTO regime-spread threshold magnitude. Under current entry logic, equality
-    /// counts as passing (`>=` for long, `<= -threshold` for short).
+
     #[serde(default = "default_carm_otto_threshold")]
     pub otto_threshold: f64,
 }

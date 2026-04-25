@@ -14,8 +14,6 @@ pub(crate) struct CloseSeriesKey {
 }
 
 impl CloseSeriesKey {
-    // This key is only valid while the caller keeps the same host slice allocation and device
-    // buffer alive. Any reallocation, replacement, or in-place pointer change invalidates it.
     pub(crate) fn from_host_and_device(close_f32: &[f32], close_device_ptr: u64) -> Self {
         Self {
             len: close_f32.len(),
@@ -66,7 +64,7 @@ pub(crate) fn ensure_device_buffer_len<T: DeviceCopy>(
         if let Some(old) = buf.take() {
             old.drop_async(stream).map_err(|e| e.to_string())?;
         }
-        // The caller must fully initialize any newly grown tail before a device read observes it.
+
         *buf =
             Some(unsafe { DeviceBuffer::<T>::uninitialized(required) }.map_err(|e| e.to_string())?);
     }
@@ -103,7 +101,6 @@ pub(crate) fn copy_device_to_host_prefix<T: DeviceCopy>(
 }
 
 pub(crate) fn ensure_host_f32_len(buf: &mut Vec<f32>, required: usize) {
-    // The grown tail is intentionally left uninitialized; callers must overwrite it before read.
     if buf.capacity() < required {
         *buf = alloc_uninit_copy(required);
     } else {

@@ -297,9 +297,6 @@ fn configure_nvcc_command(cmd: &mut Command) {
     if cfg!(target_os = "windows") {
         cmd.arg("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH");
         cmd.arg("-allow-unsupported-compiler");
-        // CUDA 13.2's CCCL headers reject MSVC's traditional preprocessor.
-        // Forward the conforming preprocessor flag to cl.exe so fresh PTX/cubin
-        // builds keep working instead of silently falling back to stale prebuilt PTX.
         cmd.arg("-Xcompiler").arg("/Zc:preprocessor");
         if which::which("cl.exe").is_err() {
             if let Ok(vs_path) = find_vs_installation() {

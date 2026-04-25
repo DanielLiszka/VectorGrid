@@ -60,9 +60,8 @@ try {
     }
 
     if ($IncludeWorkspaceTests) {
-      # Keep the optional full-workspace test leg deterministic on Windows.
-      # The Tauri/bin/example surface is large enough that default parallelism
-      # can trip linker/pagefile instability even when the serial workspace suite is green.
+
+
       Invoke-Step "Rust workspace tests" { cargo test --workspace -j 1 }
     }
   }
@@ -72,21 +71,21 @@ try {
     Invoke-Step "Web typecheck" { & npm.cmd --prefix web run typecheck }
 
     if ($IncludeDesktopTypecheck) {
-      Invoke-Step "Web desktop typecheck" { & npm.cmd --prefix web run typecheck:desktop }
+      Write-Host "[SKIP] Web desktop typecheck is local-only in the backend-preview public tree."
     }
 
     if ($IncludeA11ySmoke) {
-      Invoke-Step "Web accessibility smoke" { & npm.cmd --prefix web run a11y:smoke:managed }
+      Write-Host "[SKIP] Web accessibility smoke is local-only in the backend-preview public tree."
     }
 
     if ($IncludeBaselineUi) {
-      Invoke-Step "Web baseline UI capture" { & npm.cmd --prefix web run baseline:ui:managed }
+      Write-Host "[SKIP] Web baseline UI capture is local-only in the backend-preview public tree."
     }
   }
 
   Write-Host "Repo quality gate completed successfully."
   Write-Host "Default scope: rust fmt/check/clippy + web lint/typecheck."
-  Write-Host "Optional scope: -IncludeDesktopTypecheck, -IncludeWorkspaceTests, -IncludeA11ySmoke, and -IncludeBaselineUi."
+  Write-Host "Optional scope: -IncludeWorkspaceTests. Desktop/a11y/baseline UI switches are accepted but skipped in this backend-preview tree."
 } finally {
   if ($null -ne $previousRustcWrapper) {
     $env:RUSTC_WRAPPER = $previousRustcWrapper

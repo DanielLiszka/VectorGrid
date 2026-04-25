@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { computed, nextTick, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'

@@ -60,8 +60,7 @@ function safeAfterSuccess(
   try {
     invokeLifecycleHooks?.afterSuccess?.(token, command, args, result)
   } catch {
-    // keep invoke lifecycle instrumentation best-effort
-  }
+      }
 }
 
 function safeAfterError(
@@ -73,8 +72,7 @@ function safeAfterError(
   try {
     invokeLifecycleHooks?.afterError?.(token, command, args, error)
   } catch {
-    // keep invoke lifecycle instrumentation best-effort
-  }
+      }
 }
 
 export async function invokeCommand<T>(command: TauriCommand, args?: InvokeArgs): Promise<T> {

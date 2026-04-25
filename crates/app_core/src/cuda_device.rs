@@ -1,18 +1,6 @@
-//! Preferred CUDA device selection and sticky process-lifetime caches.
-//!
-//! This module intentionally exposes two independent cached views of the
-//! preferred CUDA device on CUDA builds:
-//!
-//! - the preferred device id via [`preferred_cuda_device_id_result`]
-//! - the preferred device metadata via [`preferred_cuda_device`]
-//!
-//! Each cache is sticky for the process lifetime. On CPU-only builds both
-//! public result-returning helpers resolve to `Ok(None)`.
-
 #[cfg(feature = "cuda")]
 use std::sync::OnceLock;
 
-/// Metadata for the currently selected preferred CUDA device.
 #[derive(Clone, Debug)]
 pub struct PreferredCudaDevice {
     pub device_id: u32,
@@ -66,25 +54,13 @@ fn resolve_preferred_cuda_device_id() -> Result<Option<u32>, String> {
 }
 
 #[cfg(feature = "cuda")]
-/// Returns the cached preferred CUDA device id.
-///
-/// The first successful or failed probe result is cached for the lifetime of
-/// the current process. The current selection policy is:
-///
-/// - `Ok(None)` when CUDA enumerates no devices
-/// - `Ok(Some(0))` when exactly one device is visible
-/// - otherwise the visible device with the largest total VRAM wins, with ties
-///   broken by first enumeration order
+
 pub fn preferred_cuda_device_id_result() -> Result<Option<u32>, String> {
     resolve_preferred_cuda_device_id()
 }
 
 #[cfg(feature = "cuda")]
-/// Returns cached metadata for the preferred CUDA device.
-///
-/// This metadata cache is independent from the device-id cache used by
-/// [`preferred_cuda_device_id_result`], but both caches are sticky for the
-/// lifetime of the current process.
+
 pub fn preferred_cuda_device() -> Result<Option<PreferredCudaDevice>, String> {
     static PREFERRED_CUDA_DEVICE: OnceLock<Result<Option<PreferredCudaDevice>, String>> =
         OnceLock::new();
@@ -108,22 +84,17 @@ pub fn preferred_cuda_device() -> Result<Option<PreferredCudaDevice>, String> {
 }
 
 #[cfg(not(feature = "cuda"))]
-/// Returns `Ok(None)` on CPU-only builds.
+
 pub fn preferred_cuda_device() -> Result<Option<PreferredCudaDevice>, String> {
     Ok(None)
 }
 
 #[cfg(not(feature = "cuda"))]
-/// Returns `Ok(None)` on CPU-only builds.
+
 pub fn preferred_cuda_device_id_result() -> Result<Option<u32>, String> {
     Ok(None)
 }
 
-/// Lossy convenience wrapper over [`preferred_cuda_device_id_result`].
-///
-/// This helper collapses both probe failures and the "no visible device" case
-/// into `None`, so callers that need to differentiate those outcomes should use
-/// the result-returning API instead.
 pub fn preferred_cuda_device_id() -> Option<u32> {
     preferred_cuda_device_id_result().ok().flatten()
 }

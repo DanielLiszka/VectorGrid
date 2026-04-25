@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { expect } from 'vitest'

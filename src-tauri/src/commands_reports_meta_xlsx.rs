@@ -2,10 +2,6 @@ use rust_xlsxwriter::{Chart, ChartType, Worksheet};
 use std::collections::{BTreeMap, BTreeSet};
 use ta_app_core::{MetaSelectionResult, TrainDatasetRow};
 
-/// Builds the in-memory XLSX workbook for a meta-selection report.
-///
-/// This module owns workbook bytes, visible sheet structure, and deterministic ordering
-/// for the generated workbook. It does not own artifact persistence or report-path policy.
 pub(crate) fn build_meta_report_xlsx_bytes(
     ts: &str,
     meta: &MetaSelectionResult,

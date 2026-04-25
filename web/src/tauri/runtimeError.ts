@@ -36,7 +36,7 @@ function stringifyCause(cause: unknown): string {
     const json = JSON.stringify(cause)
     if (json && json !== '{}' && json !== '[]') return json
   } catch {
-    // Ignore serialization errors and fall through to default.
+
   }
   return ''
 }

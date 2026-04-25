@@ -704,8 +704,8 @@ function patchCurrentMlSignalArtifact(patch: Record<string, unknown>): void {
 }
 
 function setMlBusy(message: string): void {
-  // ML Signal keeps its own busy/status ownership instead of reusing the
-  // Meta service, so UI disablement and status text stay stage-local.
+
+
   patchOptimizeState({
     runDisabled: true,
     validateDisabled: true,
@@ -1869,7 +1869,7 @@ async function persistValidationArtifact(
     })) as SaveRunArtifactResponse;
     path = normalizeText(saved?.path) || path;
   } catch {
-    // Keep validation usable even if artifact persistence fails.
+
   }
   return { path, ts, csvPath };
 }

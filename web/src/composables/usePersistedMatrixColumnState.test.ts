@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { ref } from 'vue'
 import { usePersistedMatrixColumnState } from './usePersistedMatrixColumnState'
 

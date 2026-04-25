@@ -2,8 +2,6 @@ use crate::{BacktestEngine, ObjectiveKind, OptimizationResult};
 use std::cmp::Ordering;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
-// Returns the normalized ranking score used by grid and stream aggregation.
-// Risk objectives are negated so "higher is better" stays consistent.
 fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
     let score = match objective {
         ObjectiveKind::Pnl => metrics.pnl,
@@ -21,10 +19,6 @@ fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
     }
 }
 
-/// Evaluates a fixed parameter grid with the same ranking semantics as stream aggregation.
-///
-/// Contract: `engine.eval_batch(combos)` must return exactly one `Metrics` row per input
-/// combo, in the same order. Cardinality mismatches are treated as an invalid batch result.
 pub fn grid_search<E: BacktestEngine>(
     engine: &E,
     combos: &[DoubleMaParams],
@@ -59,7 +53,7 @@ pub fn grid_search<E: BacktestEngine>(
         Vec::new()
     } else {
         let mut idx: Vec<usize> = (0..metrics.len()).collect();
-        // Stable sorting preserves input order for equal-score ties.
+
         idx.sort_by(|&a, &b| {
             let sa = score(&metrics[a], objective);
             let sb = score(&metrics[b], objective);

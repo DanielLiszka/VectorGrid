@@ -59,8 +59,6 @@ fn infer_column_mapping(headers: &[String]) -> Result<(ColumnIdx, CandleFieldFla
         return Err("CSV must have at least 2 columns: timestamp, close (or t, c)".to_string());
     }
 
-    // If we can map timestamp+close by name, assume header-based format (supports Polygon raw CSV:
-    // v,vw,o,c,h,l,t,n,... as well as timestamp,open,close,high,low,volume).
     let idx_ts_named = find_idx(headers, &["timestamp", "t", "time", "ts"]);
     let idx_close_named = find_idx(headers, &["close", "c"]);
     let use_named = idx_ts_named.is_some() && idx_close_named.is_some();
@@ -90,9 +88,6 @@ fn infer_column_mapping(headers: &[String]) -> Result<(ColumnIdx, CandleFieldFla
             },
         )
     } else {
-        // Fallback: VectorTA positional format.
-        // - 2 cols: timestamp, close
-        // - 3+ cols: timestamp, open, close, high?, low?, volume?
         let open = if header_len >= 3 { Some(1usize) } else { None };
         let close = if header_len >= 3 { 2usize } else { 1usize };
         let high = if header_len > 3 { Some(3usize) } else { None };
@@ -120,10 +115,6 @@ fn infer_column_mapping(headers: &[String]) -> Result<(ColumnIdx, CandleFieldFla
     Ok((idx, fields))
 }
 
-/// Parse a timestamp field with the legacy CSV compatibility contract.
-///
-/// Integer strings are preferred. Float-form timestamps remain accepted for
-/// compatibility and are rounded to the nearest `i64`.
 fn parse_i64_flexible(s: &str) -> Result<i64, String> {
     let t = s.trim();
     if t.is_empty() {
@@ -180,20 +171,6 @@ fn format_csv_read_error(context: &str, error: csv::Error) -> String {
     }
 }
 
-/// Load candle data from a compatibility CSV format used by the desktop app.
-///
-/// Contract notes:
-/// - a non-empty first row is always consumed as header metadata; headerless
-///   files are therefore not supported and will lose that first data row
-///   instead of being auto-detected.
-/// - named-header mode supports aliases such as `timestamp`/`t` and
-///   `close`/`c`, including Polygon raw aggregate exports.
-/// - positional fallback is only used after that first-row header probe and
-///   interprets columns as `timestamp,close` or
-///   `timestamp,open,close,high,low,volume`.
-/// - blank optional cells become `NaN`, and the returned [`CandleFieldFlags`]
-///   report whether any finite value was observed for each optional column.
-/// - float-form timestamps remain accepted and rounded for compatibility.
 pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> {
     let file =
         File::open(file_path).map_err(|e| format!("failed to open CSV '{}': {e}", file_path))?;

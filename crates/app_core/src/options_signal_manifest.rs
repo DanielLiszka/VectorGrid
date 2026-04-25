@@ -20,7 +20,6 @@ fn build_event_id(parent_artifact_id: &str, index: usize) -> String {
     format!("{parent_artifact_id}:event:{index}")
 }
 
-/// Current persistence contract: session ids are UTC-day labels, not exchange-local sessions.
 fn session_id_from_timestamp(timestamp_ms: i64) -> Option<String> {
     DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
         .map(|value| value.format("%Y-%m-%d").to_string())
@@ -93,8 +92,7 @@ fn build_options_signal_manifest_from_double_like_curves(
         } else {
             resolve_closed_trade_exit(entry_idx, trade.exit_t, candle_len, &candles.timestamp)?
         };
-        // Persist the current projection contract: use the entry-bar open when present and
-        // only fall back to close when the open series is missing that bar.
+
         let raw_underlier_price = candles
             .open
             .get(entry_idx)
@@ -135,7 +133,7 @@ fn build_options_signal_manifest_from_double_like_curves(
             base_exit_timestamp,
             base_exit_bar_index,
             fold: OptionsEvaluationSplit::Search,
-            // This is a UTC-day persistence label today, not an exchange-local market-hours id.
+
             session_id: session_id_from_timestamp(earliest_tradable_timestamp),
             regime_tag: None,
             confidence_tag: None,

@@ -67,14 +67,12 @@ impl Default for RocbStrategyParams {
     }
 }
 
-/// Resolved ROCB periods after applying the fast/slow mapping policy.
 #[derive(Clone, Copy, Debug)]
 pub struct RocbResolvedPeriods {
     pub channel: u16,
     pub atr: u16,
 }
 
-/// Host breakout bands used by the ROCB entry and channel-exit rules.
 #[derive(Clone, Debug)]
 pub struct RocbBreakoutSignals {
     pub upper: Vec<f64>,
@@ -82,7 +80,6 @@ pub struct RocbBreakoutSignals {
     pub first_valid: usize,
 }
 
-/// Host ATR series used by the ROCB stop-distance rules.
 #[derive(Clone, Debug)]
 pub struct RocbRiskSignals {
     pub atr: Vec<f64>,
@@ -152,7 +149,6 @@ impl RocbPeriodSweepDevice {
     }
 }
 
-/// Validates ROCB parameter ranges before signal computation or backtest execution.
 pub fn validate_rocb_params(cfg: &RocbStrategyParams) -> Result<(), String> {
     if cfg.channel_period == 0 {
         return Err("ROCB channel_period must be > 0".to_string());
@@ -169,7 +165,6 @@ pub fn validate_rocb_params(cfg: &RocbStrategyParams) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolves the effective ROCB channel and ATR periods from the strategy mapping flags.
 pub fn resolve_rocb_periods(
     cfg: &RocbStrategyParams,
     fast_len: u16,
@@ -539,8 +534,6 @@ fn compute_indicator_f64(
 
     #[cfg(feature = "cuda")]
     {
-        // ROCB prefers the CUDA adapter when the descriptor advertises the route and prepared
-        // device inputs are available, but it intentionally keeps a best-effort CPU fallback.
         let prefer_gpu = backend_prefers_gpu(backend)
             && descriptor.prefers_gpu_by_speedup
             && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
@@ -573,7 +566,6 @@ fn compute_indicator_f64(
     Ok(series_to_f64(out))
 }
 
-/// Computes ROCB Donchian breakout bands on the requested backend, with best-effort CPU fallback.
 pub fn compute_rocb_breakout_signals(
     candles: &Candles,
     ma_source: &str,
@@ -626,7 +618,6 @@ pub fn compute_rocb_breakout_signals(
     })
 }
 
-/// Computes ROCB ATR-based risk signals on the requested backend, with best-effort CPU fallback.
 pub fn compute_rocb_risk_signals(
     candles: &Candles,
     ma_source: &str,
@@ -654,7 +645,6 @@ pub fn compute_rocb_risk_signals(
     Ok(RocbRiskSignals { atr, first_valid })
 }
 
-/// Computes the first bar where ROCB can safely emit a desired-position value.
 pub fn compute_rocb_start_t(
     first_valid_close: usize,
     first_valid_high: usize,
@@ -676,11 +666,6 @@ pub fn compute_rocb_start_t(
     }
 }
 
-/// Writes a full-length desired-position series into a caller-owned buffer.
-///
-/// The output length always matches `close.len()`. Prefix rows before `start_t` stay flat at `0`,
-/// and malformed indicator-shape input degrades to a flat full-length vector instead of leaving a
-/// truncated buffer behind.
 pub fn build_rocb_desired_positions_into(
     desired: &mut Vec<i32>,
     close: &[f64],

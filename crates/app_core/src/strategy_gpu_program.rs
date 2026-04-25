@@ -64,13 +64,12 @@ pub struct GpuIndicatorSlot {
 pub struct CompiledGpuPredicateProgram {
     pub schema_version: u16,
     pub profile: StrategyProfileKind,
-    /// Stable identity of the source IR, not the compiled GPU plan.
+
     pub plan_fingerprint_hex: String,
-    /// Identity of the compiled plan after backend/routing decisions.
+
     #[serde(default)]
     pub compiled_plan_fingerprint_hex: String,
-    /// Runtime executable/cache identity. This intentionally covers more than the compact uploaded
-    /// ABI payload because cache keys also depend on compiled-route shape.
+
     #[serde(default)]
     pub executable_fingerprint_hex: String,
     pub indicator_slots: Vec<GpuIndicatorSlot>,
@@ -117,20 +116,19 @@ pub struct GpuSignalBindingsAbi {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub struct GpuIndicatorSlotAbi {
     pub indicator_index: u32,
-    /// Functional route metadata encoded as 0=Cpu, 1=GpuKernel, 2=GpuSingle.
-    /// CUDA kernels reject values outside this range.
+
     pub route: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CompiledGpuPredicateProgramAbi {
     pub abi_version: u32,
-    /// Stable identity of the source IR, carried through for diagnostics and compatibility checks.
+
     pub plan_fingerprint_hex: String,
-    /// Identity of the compiled plan that produced this ABI payload.
+
     #[serde(default)]
     pub compiled_plan_fingerprint_hex: String,
-    /// Runtime executable/cache identity. This remains broader than the compact ABI payload today.
+
     #[serde(default)]
     pub executable_fingerprint_hex: String,
     pub indicator_slots: Vec<GpuIndicatorSlotAbi>,
@@ -140,8 +138,6 @@ pub struct CompiledGpuPredicateProgramAbi {
     pub signals: GpuSignalBindingsAbi,
 }
 
-// Safety: these ABI structs are `repr(C)` scalar containers with no references or drop glue.
-// The tests below are only Rust-side drift tripwires; they do not prove CUDA-side ABI agreement.
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 unsafe impl cust::memory::DeviceCopy for GpuValueOperandAbi {}
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -349,10 +345,6 @@ fn validate_program_group_index_ranges(
     Ok(())
 }
 
-/// Validates the subset of program invariants that the compact ABI encoder relies on.
-///
-/// This is intentionally local hardening only. It helps catch malformed or partially populated
-/// serialized programs before ABI encoding, but it is not a proof of full Rust/CUDA compatibility.
 pub fn validate_compiled_gpu_predicate_program_abi_inputs(
     program: &CompiledGpuPredicateProgram,
 ) -> Result<(), String> {
@@ -379,12 +371,6 @@ pub fn validate_compiled_gpu_predicate_program_abi_inputs(
     Ok(())
 }
 
-/// Encodes the compact runtime ABI for a compiler-emitted or prevalidated GPU predicate program.
-///
-/// The returned ABI keeps the existing serialized fingerprint fields unchanged:
-/// `plan_fingerprint_hex` tracks IR identity, `compiled_plan_fingerprint_hex` tracks compiled-plan
-/// identity, and `executable_fingerprint_hex` remains the broader executable/cache identity used by
-/// runtime caches today.
 pub fn compile_gpu_predicate_program_abi(
     program: &CompiledGpuPredicateProgram,
 ) -> CompiledGpuPredicateProgramAbi {

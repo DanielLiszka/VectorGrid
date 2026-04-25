@@ -92,7 +92,6 @@ fn evaluate_holdout_light(
         });
     }
 
-    // Index groups by their meta key so we can map validation results back (validation output is sorted).
     let mut idx_by_key: std::collections::HashMap<String, usize> =
         std::collections::HashMap::with_capacity(groups.len());
     for (i, g) in groups.iter().enumerate() {
@@ -116,8 +115,6 @@ fn evaluate_holdout_light(
             return Err("cancelled".to_string());
         }
 
-        // For this benchmark, we assume a single MA config across all groups, so we can evaluate
-        // all candidate representatives in one validation call per dataset.
         let g0 = &groups[0];
         let ma_source = g0.ma_source.clone();
         let fast_ma_params = g0.fast_ma_params.clone();
@@ -126,7 +123,6 @@ fn evaluate_holdout_light(
         let mut candidates: Vec<CompositeParams> = Vec::new();
         candidates.reserve(groups.len());
         for g in groups.iter() {
-            // Exact grouping ensures at least one representative; fall back to params for safety.
             let rep = g
                 .representatives
                 .get(0)
@@ -171,8 +167,7 @@ fn evaluate_holdout_light(
                 }
             };
 
-        // Accumulate per-group results for this dataset.
-        let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); groups.len()]; // (score, sharpe, max_dd, pnl)
+        let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); groups.len()];
         for cand in val_res.candidates {
             let params_v = serde_json::to_value(&cand.params).map_err(|e| e.to_string())?;
             let key = meta_group_key_for_request(
@@ -193,7 +188,6 @@ fn evaluate_holdout_light(
             local[gi].push((score, sharpe, max_dd, pnl));
         }
 
-        // Reduce multiple representatives down to one dataset-level row per group.
         for (gi, rows) in local.into_iter().enumerate() {
             if rows.is_empty() {
                 continue;
@@ -279,12 +273,8 @@ fn run_full_workflow_once(
     let mut optimize_total = Duration::ZERO;
     let mut validate_total = Duration::ZERO;
 
-    // This benchmark intentionally uses small inputs by default. The composite CPU path and
-    // validation are roughly linear in bar count on CPU, so you can re-run with larger candle
-    // counts to empirically validate scaling.
-
     let strategy = StrategyConfig {
-        long_only: false, // allow shorts to avoid degenerate all-negative holdout labels on downtrends
+        long_only: false,
         allow_flip: true,
         trade_on_next_bar: true,
         cost_preset: None,
@@ -304,7 +294,6 @@ fn run_full_workflow_once(
     let macz = MaczGateParams::default();
     let ott = OttGateParams::default();
 
-    // Build a small universe with varied drift/noise so holdout labels aren’t single-class.
     let total = train_assets.saturating_add(holdout_assets).max(2);
     let mut universe: Vec<(String, Candles)> = Vec::with_capacity(total);
     for i in 0..total {
@@ -330,7 +319,6 @@ fn run_full_workflow_once(
     let train = &universe[..train_assets.min(universe.len())];
     let holdout = &universe[train.len()..(train.len() + holdout_assets).min(universe.len())];
 
-    // 1) Per-asset: composite CPU optimization -> validation -> artifact.
     let mut artifacts: Vec<Value> = Vec::with_capacity(train.len());
     for (i, (label, candles)) in train.iter().enumerate() {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -449,7 +437,6 @@ fn run_full_workflow_once(
         }));
     }
 
-    // 2) Post-validation: meta selection.
     let meta_req = MetaSelectionRequest {
         strategy_kind: "CompositeCpu".to_string(),
         timeframe: Some("1m".to_string()),
@@ -476,7 +463,6 @@ fn run_full_workflow_once(
     let mut meta_res = meta_select_from_artifacts(&meta_req, &artifacts, None);
     let meta_select_total = meta_select_started.elapsed();
 
-    // 3) Optional: holdout evaluation (light) to create labels.
     let holdout_pairs: Vec<(&str, &Candles)> =
         holdout.iter().map(|(l, c)| (l.as_str(), c)).collect();
     let holdout_started = Instant::now();
@@ -485,7 +471,6 @@ fn run_full_workflow_once(
     let holdout_total = holdout_started.elapsed();
     meta_res.holdout = Some(holdout_summary);
 
-    // 4) Optional: ML training + apply (confidence ranking).
     let meta_artifact = json!({
         "kind": "vectorgrid_meta_selection",
         "ts": "bench_meta",
@@ -504,8 +489,6 @@ fn run_full_workflow_once(
         cfg
     };
 
-    // The benchmark uses synthetic candles. To avoid single-class label failures, we try a small
-    // set of increasingly permissive label thresholds until training succeeds.
     let attempts: &[(f64, f64)] = &[(0.75, 0.00), (0.60, -0.10), (0.50, -0.25), (0.50, -1.00)];
 
     let mut last_err: Option<String> = None;
@@ -536,7 +519,6 @@ fn run_full_workflow_once(
         )
     })?;
 
-    // Apply ML confidence (no sorting here; just compute probabilities).
     let groups = meta_artifact
         .pointer("/res/groups")
         .and_then(|v| v.as_array())
@@ -725,7 +707,6 @@ fn parse_bench_asset_count(var_name: &str, default_value: usize) -> usize {
 fn bench_e2e_workflow_with_ml(c: &mut Criterion) {
     let lens = parse_bench_lens();
 
-    // Keep defaults small so `cargo bench` stays reasonable. Increase via VTA_E2E_BENCH_LENS.
     let train_assets = parse_bench_asset_count("VTA_E2E_BENCH_TRAIN_ASSETS", 12);
     let holdout_assets = parse_bench_asset_count("VTA_E2E_BENCH_HOLDOUT_ASSETS", 8);
     let history_metas = parse_bench_asset_count("VTA_ML_HISTORY_BENCH_METAS", 32).max(2);

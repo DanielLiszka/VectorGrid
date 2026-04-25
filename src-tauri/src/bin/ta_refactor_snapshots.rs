@@ -137,7 +137,6 @@ fn main() -> Result<(), String> {
     let candles_nvda =
         read_candles_from_csv_compat(nvda_path.to_str().ok_or("invalid NVDA csv path")?)?;
 
-    // Double-MA validation snapshot
     let double_req = DoubleMaValidationRequest {
         data_id: "AAPL".to_string(),
         backend: ta_app_core::Backend::CpuOnly,
@@ -223,7 +222,6 @@ fn main() -> Result<(), String> {
         &canonicalize_json(&double_artifact),
     )?;
 
-    // Composite validation snapshots on two datasets (used for meta-select artifact set)
     let composite_candidate = CompositeParams {
         fast_ma_type: "sma".to_string(),
         slow_ma_type: "sma".to_string(),
@@ -324,7 +322,6 @@ fn main() -> Result<(), String> {
         &canonicalize_json(&composite_artifact),
     )?;
 
-    // Meta-select snapshot built from two composite artifacts
     let art_aapl = to_report_artifact(
         "CompositeMo",
         "AAPL",

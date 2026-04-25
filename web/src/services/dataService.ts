@@ -399,8 +399,7 @@ export async function browseCsv(): Promise<DataLoadResult | null> {
     if (!path) return null;
     return await loadCsv(path);
   } catch {
-    // Keep browse action non-throwing to match legacy runtime behavior.
-    return null;
+        return null;
   }
 }
 
@@ -497,8 +496,7 @@ export async function loadSampleCsv(
     if (!samplePath) return null;
     return await loadCsv(samplePath);
   } catch {
-    // Keep sample-load action non-throwing to match legacy runtime behavior.
-    return null;
+        return null;
   }
 }
 

@@ -37,11 +37,10 @@ pub enum IndicatorRouteKind {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct IndicatorComputePlan {
-    // Slot id in the strategy graph (for condition references).
     pub indicator_id: String,
     #[serde(default)]
     pub indicator_kind: Option<IndicatorKind>,
-    // Underlying VectorTA indicator id for descriptor-driven nodes.
+
     #[serde(default)]
     pub source_indicator_id: Option<String>,
     #[serde(default)]
@@ -88,10 +87,7 @@ pub struct CompiledStrategyPlan {
     pub backend: StrategyPlanBackend,
     pub profile: StrategyProfileKind,
     pub ir_schema_version: u16,
-    /// Opaque fingerprint of the serialized source IR.
-    ///
-    /// This tracks IR identity only. Downstream GPU compilation layers derive separate
-    /// compiled-plan and executable fingerprints after routing and ABI shaping decisions.
+
     pub ir_fingerprint_hex: String,
     pub indicator_plan: Vec<IndicatorComputePlan>,
     pub conditions: Vec<CompiledConditionOp>,
@@ -196,15 +192,6 @@ fn fingerprint_ir(ir: &StrategyIr) -> Result<String, String> {
     Ok(format!("{h:016x}"))
 }
 
-/// Compiles a validated [`StrategyIr`] into planner-ready routing and index structures.
-///
-/// `route_overrides` is a narrow escape hatch keyed by trimmed indicator slot id. Unknown override
-/// keys are ignored. When a key matches, the override value is trusted as-is rather than rechecked
-/// against the planner's default route policy.
-///
-/// The returned [`CompiledStrategyPlan::ir_fingerprint_hex`] intentionally preserves IR-level
-/// identity only. Callers that need compiled-plan or executable/cache identity should use the
-/// downstream GPU-program fingerprint layers instead of overloading this token.
 pub fn compile_strategy_plan(
     ir: &StrategyIr,
     backend: StrategyPlanBackend,

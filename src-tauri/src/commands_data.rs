@@ -174,8 +174,7 @@ fn find_workspace_root() -> Option<PathBuf> {
 fn load_gpu_speedups_csv() -> Result<Vec<GpuSpeedupEntry>, String> {
     let Some(root) = find_workspace_root() else {
         return Err(
-            "unable to locate workspace root for crates/app_core/data/gpu_speedups.csv"
-                .to_string(),
+            "unable to locate workspace root for crates/app_core/data/gpu_speedups.csv".to_string(),
         );
     };
     let csv_path = root
@@ -311,7 +310,6 @@ pub struct RepoDataCsvList {
 }
 
 fn find_repo_data_dir_from(start: &Path) -> Option<PathBuf> {
-    // Walk up a few levels looking for a Cargo workspace root with a sibling `data/` folder.
     for ancestor in start.ancestors().take(6) {
         if ancestor.join("Cargo.toml").is_file() && ancestor.join("data").is_dir() {
             return Some(ancestor.join("data"));
@@ -330,7 +328,7 @@ fn find_repo_data_dir() -> Option<PathBuf> {
             starts.push(p.to_path_buf());
         }
     }
-    // Dev fallback (when running from source).
+
     starts.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
 
     let mut seen: HashSet<String> = HashSet::new();
@@ -1427,7 +1425,6 @@ pub async fn polygon_download_1m_and_load(
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
     let app_identifier = app.config().identifier.clone();
 
-    // Always fetch/cache 1m candles; derive larger timeframes from that in-memory.
     let requested_tf = req
         .timeframe
         .as_deref()

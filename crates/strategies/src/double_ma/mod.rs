@@ -39,69 +39,65 @@ impl Default for DoubleMaBatchRange {
 pub struct Metrics {
     pub pnl: f64,
     pub sharpe: f64,
-    /// Sortino ratio, computed on per-bar strategy returns relative to the configured hurdle
-    /// threshold (0 by default).
+
     #[serde(default)]
     pub sortino: f64,
-    /// Downside deviation, computed on per-bar strategy returns relative to the configured hurdle
-    /// threshold (0 by default).
+
     #[serde(default)]
     pub downside_deviation: f64,
-    /// Fraction of observed bars with negative strategy return.
+
     #[serde(default)]
     pub downside_frequency: f64,
-    /// Mean absolute negative return across negative-return bars only.
+
     #[serde(default)]
     pub downside_severity: f64,
-    /// Calmar ratio, computed as pnl / max_dd (epsilon-guarded).
+
     #[serde(default)]
     pub calmar: f64,
-    /// Omega ratio, computed on per-bar strategy returns relative to the configured hurdle
-    /// threshold (0 by default).
+
     #[serde(default)]
     pub omega: f64,
-    /// Kappa-3 ratio, computed from the third lower partial moment of per-bar strategy returns
-    /// relative to the configured hurdle threshold (0 by default).
+
     #[serde(default)]
     pub kappa_tau: f64,
-    /// Volatility (std dev) of per-bar strategy returns.
+
     #[serde(default)]
     pub volatility: f64,
-    /// Ulcer index computed from percentage drawdown depth along the equity path.
+
     #[serde(default)]
     pub ulcer_index: f64,
-    /// Martin ratio computed as pnl / ulcer_index (epsilon-guarded).
+
     #[serde(default)]
     pub martin_ratio: f64,
     pub max_dd: f64,
     pub trades: u32,
     pub exposure: f64,
     pub net_exposure: f64,
-    /// Mean per-bar strategy return while long.
+
     #[serde(default)]
     pub long_mean_return: f64,
-    /// Mean per-bar strategy return while short.
+
     #[serde(default)]
     pub short_mean_return: f64,
-    /// Count of closed trades used for exact trade-distribution summaries.
+
     #[serde(default)]
     pub closed_trades: u32,
-    /// Count of winning closed trades.
+
     #[serde(default)]
     pub winning_trades: u32,
-    /// Count of losing closed trades.
+
     #[serde(default)]
     pub losing_trades: u32,
-    /// Sum of positive closed-trade returns.
+
     #[serde(default)]
     pub gross_profit: f64,
-    /// Sum of absolute negative closed-trade returns.
+
     #[serde(default)]
     pub gross_loss: f64,
-    /// Fraction of evaluated bars spent below the running equity peak.
+
     #[serde(default)]
     pub underwater_fraction: f64,
-    /// Longest contiguous underwater run in evaluated bars.
+
     #[serde(default)]
     pub max_underwater_duration_bars: u32,
 }
@@ -771,7 +767,7 @@ pub struct StrategyConfig {
     pub cooldown_bars: u16,
     #[serde(default = "default_signal_persistence_bars")]
     pub signal_persistence_bars: u16,
-    /// Compatibility fallback. When positive, this takes precedence over bps fields.
+
     pub commission: f64,
     pub eps_rel: f64,
     #[serde(default)]
@@ -2218,7 +2214,6 @@ impl DoubleMaBatchBuilder {
         expand_grid(&self.range)
     }
 
-    /// Runs the configured grid on the candle close series using the builder's MA type lists.
     pub fn run_cpu(&self, candles: &Candles) -> Vec<Metrics> {
         let combos = self.combos();
         double_ma_batch_cpu(
@@ -2231,9 +2226,6 @@ impl DoubleMaBatchBuilder {
     }
 }
 
-/// Evaluates one legacy MA-id combination against the close series.
-///
-/// The integer ids keep the historical mapping `0 = sma`, `1 = ema`, `2 = alma`.
 pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics {
     let prices = source_type(candles, "close");
     let n = prices.len();
@@ -2286,7 +2278,6 @@ pub fn eval_double_ma_one(candles: &Candles, params: &DoubleMaParams) -> Metrics
     )
 }
 
-/// Evaluates one combination against the close series using caller-supplied MA type tables.
 pub fn eval_double_ma_one_with_types(
     candles: &Candles,
     params: &DoubleMaParams,

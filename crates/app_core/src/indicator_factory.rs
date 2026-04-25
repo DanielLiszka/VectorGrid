@@ -3,16 +3,6 @@ use std::collections::HashMap;
 
 use vector_ta::utilities::data_loader::Candles;
 
-/// Row-major moving-average output matrix produced by the local CPU wrapper.
-///
-/// Contract:
-/// - `rows == periods.len()` for successful wrapper responses
-/// - `cols == candles.len()` for successful wrapper responses
-/// - values are laid out row-major, so row `i` spans `values[i * cols .. (i + 1) * cols]`
-/// - row `i` corresponds to the `i`th requested period
-///
-/// This type remains publicly constructible, so callers that bypass [`try_new`] must preserve the
-/// `rows * cols == values.len()` invariant themselves.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IndicatorMatrixF64 {
     pub rows: usize,
@@ -35,10 +25,6 @@ impl IndicatorMatrixF64 {
         Ok(Self { rows, cols, values })
     }
 
-    /// Returns the requested row slice from the row-major matrix.
-    ///
-    /// The current contract returns `None` for out-of-range rows and also for zero-width matrices,
-    /// even when `row < rows`.
     pub fn row(&self, row: usize) -> Option<&[f64]> {
         if row >= self.rows || self.cols == 0 {
             return None;
@@ -48,13 +34,6 @@ impl IndicatorMatrixF64 {
     }
 }
 
-/// CPU-only wrapper request for a moving-average batch over a uniform-step period grid.
-///
-/// The wrapper:
-/// - supports moving averages only
-/// - trims and lowercases `ma_type`
-/// - trims `ma_source` but does not lowercase it
-/// - requires `periods` to be strictly increasing with a uniform step
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MovingAverageBatchRequest {
     pub ma_type: String,
@@ -63,12 +42,6 @@ pub struct MovingAverageBatchRequest {
     pub ma_params: Option<HashMap<String, f64>>,
 }
 
-/// CPU-only moving-average batch response for [`compute_moving_average_batch_cpu`].
-///
-/// The echoed `ma_type` and `ma_source` reflect the wrapper's normalized request view:
-/// `ma_type` is trimmed and lowercased, while `ma_source` is trimmed only. The response does not
-/// echo raw or resolved `ma_params`; callers that need parameter provenance must retain the
-/// original request separately.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MovingAverageBatchResponse {
     pub ma_type: String,
@@ -103,15 +76,6 @@ fn validate_uniform_step(periods: &[u16]) -> Result<(), String> {
     Ok(())
 }
 
-/// CPU-only moving-average batch facade over `crate::double_ma`.
-///
-/// Contract:
-/// - moving-average-only; this is not a general indicator factory
-/// - validates a strictly increasing, uniform-step period grid
-/// - delegates MA math and MA-parameter interpretation to `crate::double_ma`
-/// - returns a row-major matrix whose `row(i)` corresponds to `periods[i]`
-/// - normalizes `ma_type` to trimmed lowercase and trims `ma_source`
-/// - does not echo raw or resolved `ma_params` in the response DTO
 pub fn compute_moving_average_batch_cpu(
     candles: &Candles,
     req: MovingAverageBatchRequest,

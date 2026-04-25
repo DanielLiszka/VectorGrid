@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ParetoScatter from './ParetoScatter.vue'

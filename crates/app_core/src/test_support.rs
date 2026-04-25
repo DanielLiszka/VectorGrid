@@ -1,9 +1,5 @@
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-/// Test-only coordination lock for repo-owned process-global env/state mutation.
-///
-/// This reduces interference among known writers, but it is not a general proof
-/// that environment mutation is safe under parallel multithreaded test execution.
 #[cfg(test)]
 pub(crate) fn lock_test_env() -> MutexGuard<'static, ()> {
     static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();

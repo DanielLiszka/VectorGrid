@@ -46,14 +46,6 @@ impl TradeRecord {
     }
 }
 
-/// A vectorbt-style **record array** for trades:
-/// - **SoA layout** for cache-friendly scans/filters
-/// - includes a `col` field to map records back to a parameter instance ("matrix column")
-///
-/// All columns are expected to stay the same length. `col` is the row-count anchor used by
-/// `len()`, iteration helpers, and stat scans. If `col` grows longer than a sibling vector,
-/// indexed readers such as `get()` can panic; if `col` is shorter, tail values in sibling vectors
-/// become silently unreachable until `validate()` or a debug assertion catches the mismatch.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct TradeRecords {
     pub col: Vec<u32>,
@@ -90,7 +82,6 @@ impl TradeRecords {
         Ok(out)
     }
 
-    /// Returns the row count anchored to the `col` column.
     pub fn len(&self) -> usize {
         self.debug_assert_consistent_lengths();
         self.col.len()
@@ -115,7 +106,6 @@ impl TradeRecords {
         }
     }
 
-    /// Returns the `i`th row when all SoA columns still share the same length.
     pub fn get(&self, i: usize) -> Option<TradeRecord> {
         self.debug_assert_consistent_lengths();
         if i >= self.len() {
@@ -316,7 +306,7 @@ mod tests {
         let mut recs = TradeRecords::default();
         recs.col.push(1);
         recs.entry_t.push(0);
-        // missing exit_t, etc
+
         assert!(recs.validate().is_err());
     }
 

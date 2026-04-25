@@ -53,16 +53,12 @@ pub struct PreparedDynamicCpuContext {
 pub type DynamicIndicatorStagingProgressFn<'a> =
     dyn FnMut(usize, usize, &str, crate::strategy_plan::IndicatorRouteKind, bool) + 'a;
 
-/// Preview metadata for a dynamic Double-MA strategy request.
-///
-/// `plan_fingerprint_hex` intentionally reflects the resolved IR identity that the preview was
-/// built from. It is not the compiled-plan fingerprint used by GPU executable caching.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DynamicDoubleMaStrategyIrPreview {
     pub capability: StrategyCapabilityReport,
     pub requested_backend: StrategyPlanBackend,
     pub resolved_backend: StrategyPlanBackend,
-    /// IR-level identity for the resolved preview plan.
+
     pub plan_fingerprint_hex: String,
     pub indicator_count: usize,
     pub condition_count: usize,
@@ -223,11 +219,6 @@ fn enforce_dynamic_double_ma_v1_output_refs(
     Ok(())
 }
 
-/// Enforce the product-surface limits for previewing a dynamic Double-MA strategy.
-///
-/// This is broader than runnable GPU-kernel eligibility. Passing these checks means the request is
-/// in the supported product slice, not that the resolved plan is guaranteed to satisfy the narrower
-/// `validate_dynamic_double_ma_gpu_handle_v1(...)` contract.
 fn enforce_dynamic_double_ma_preview_product_caps(
     ir: &crate::strategy_ir::StrategyIr,
 ) -> Result<(), String> {
@@ -462,11 +453,6 @@ pub(crate) fn validate_canonical_double_ma_crossover_plan_shape_v1(
     Ok(())
 }
 
-/// Validate the narrower runnable GPU-kernel contract for a resolved dynamic Double-MA handle.
-///
-/// This is intentionally stricter than the product-surface preview caps: a request can remain in
-/// the shipped dynamic product slice and still fall back to CPU because the resolved GPU handle is
-/// not runnable by the current kernel.
 pub(crate) fn validate_dynamic_double_ma_gpu_handle_v1(
     handle: &StrategyHandle,
 ) -> Result<(), String> {
@@ -597,10 +583,6 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
     })
 }
 
-/// Resolve the preview route for a dynamic Double-MA strategy request.
-///
-/// The preview first applies broad product-surface caps, then may still fall back to CPU if the
-/// resolved GPU handle fails the narrower kernel-specific eligibility checks.
 pub fn preview_dynamic_double_ma_strategy_ir(
     ir: &crate::strategy_ir::StrategyIr,
     requested_backend: StrategyPlanBackend,
@@ -806,7 +788,6 @@ fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
 }
 
 pub(crate) fn metrics_shadow_equivalent(a: &Metrics, b: &Metrics) -> bool {
-    // Keep this strict enough to catch semantic drift while tolerant to tiny fp noise.
     let tol = 1e-9;
     a.trades == b.trades
         && approx_eq(a.pnl, b.pnl, tol)
@@ -2711,7 +2692,6 @@ mod tests {
                         }],
                         output_id: Some("value".to_string()),
                     },
-                    // Duplicate compute shape to exercise cache reuse.
                     IndicatorNode {
                         id: "sma_20_b".to_string(),
                         kind: None,

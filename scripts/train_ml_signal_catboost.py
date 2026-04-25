@@ -231,8 +231,8 @@ def infer_source_export_manifest(dataset_csv: Path) -> Optional[Path]:
 
 def import_frame_dependencies() -> tuple[Any, Any]:
     try:
-        import numpy as np  # type: ignore
-        import pandas as pd  # type: ignore
+        import numpy as np
+        import pandas as pd
     except ImportError as exc:
         raise UserFacingError(
             "missing required Python dependencies for dataset loading: pandas and numpy. "
@@ -243,18 +243,18 @@ def import_frame_dependencies() -> tuple[Any, Any]:
 
 def import_training_dependencies() -> dict[str, Any]:
     try:
-        from catboost import CatBoostClassifier, Pool  # type: ignore
+        from catboost import CatBoostClassifier, Pool
     except ImportError as exc:
         raise UserFacingError(
             "missing required Python dependency 'catboost'. Install it with "
             "`python -m pip install catboost`, or use --dry-run to validate inputs only."
         ) from exc
     try:
-        import sklearn  # type: ignore
-        from sklearn.calibration import calibration_curve  # type: ignore
-        from sklearn.isotonic import IsotonicRegression  # type: ignore
-        from sklearn.linear_model import LogisticRegression  # type: ignore
-        from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score  # type: ignore
+        import sklearn
+        from sklearn.calibration import calibration_curve
+        from sklearn.isotonic import IsotonicRegression
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
     except ImportError as exc:
         raise UserFacingError(
             "missing required Python dependency 'scikit-learn'. Training uses sklearn "
@@ -400,7 +400,7 @@ def validate_split_manifest(split_manifest: dict[str, Any]) -> list[dict[str, An
 def read_dataset(dataset_csv: Path, pd: Any) -> Any:
     try:
         return pd.read_csv(dataset_csv)
-    except Exception as exc:  # pandas raises several parser-specific exceptions.
+    except Exception as exc:
         raise UserFacingError(f"failed to read dataset CSV '{dataset_csv}': {exc}") from exc
 
 

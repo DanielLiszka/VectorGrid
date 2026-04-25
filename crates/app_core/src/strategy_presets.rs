@@ -95,9 +95,6 @@ pub fn orc_strategy_for_kernel() -> StrategyConfig {
     s
 }
 
-// This is a curated subset of representative double-like presets for grouped route tests.
-// `VFCT` and `MARRT` are part of the live preset surface, but they are intentionally covered by
-// direct smoke tests below instead of this shared grouped loop.
 pub fn double_like_kernel_strategy_cases() -> Vec<(&'static str, StrategyConfig)> {
     vec![
         ("composite_trend", trend_quality_strategy_for_kernel()),

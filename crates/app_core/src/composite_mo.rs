@@ -47,7 +47,6 @@ fn maybe_emit_progress_throttled(
         return;
     }
 
-    // Keep overhead low: only consider emitting occasionally, and throttle by wall time.
     let is_final = done >= total;
     if !is_final && (done & 0x3f) != 0 {
         return;
@@ -109,11 +108,10 @@ pub struct CompositeGpuPrescanConfig {
     pub top_k: usize,
     #[serde(default = "default_prescan_window")]
     pub window: u16,
-    /// Optional predictive rescue pass: add top-K MA pairs by directional edge on a coarse MA grid.
-    /// Set to 0 to disable and keep objective-only prescan behavior.
+
     #[serde(default = "default_prescan_predictive_top_k")]
     pub predictive_top_k: usize,
-    /// Coarsening stride (in period units) for predictive rescue sampling.
+
     #[serde(default = "default_prescan_predictive_stride")]
     pub predictive_stride: u16,
     #[serde(default)]
@@ -156,7 +154,6 @@ fn default_prescan_mode() -> OptimizationMode {
 pub struct CompositeMoRequest {
     pub data_id: String,
 
-    // MA config (v1: MA types and MA params are fixed; lengths are optimized)
     pub fast_ma_type: String,
     pub slow_ma_type: String,
     #[serde(default = "default_ma_source")]
@@ -164,30 +161,21 @@ pub struct CompositeMoRequest {
     pub fast_ma_params: Option<HashMap<String, f64>>,
     pub slow_ma_params: Option<HashMap<String, f64>>,
 
-    /// Base strategy config. Individual fields can be overridden by search-space params.
     #[serde(default)]
     pub base_strategy: StrategyConfig,
     #[serde(default)]
     pub signal_mode: CompositeSignalMode,
 
-    /// Search space for optimization. If a param is omitted, the corresponding base/default value
-    /// is used.
     pub search_space: SearchSpace,
 
-    /// Multiobjective spec (maximize one, minimize one).
     pub objectives: CompositeMoObjectives,
 
-    /// Sampler configuration.
     pub sampler: CompositeMoSampler,
 
-    /// Optional constraints. Violations are handled via constrained-domination.
     pub constraints: Option<CompositeConstraints>,
 
-    /// Optional stage-0 prescan to narrow MA length domains before multiobjective optimization.
-    /// This only materially applies when `fast_len` and `slow_len` use `IntRange` domains.
     pub gpu_prescan: Option<CompositeGpuPrescanConfig>,
 
-    /// Currently ignored for CompositeMo and kept only for request-shape compatibility.
     #[serde(default)]
     pub mode: Option<OptimizationMode>,
 }
@@ -447,11 +435,9 @@ pub struct CompositeMoPrescanTelemetry {
 #[derive(Clone, Debug, Serialize)]
 pub struct CompositeMoSearchTelemetry {
     pub sampler: String,
-    /// Requested search budget. For exact-grid runs, use
-    /// `exact_grid_total_combinations` for the explored candidate count.
+
     pub requested_evaluations: usize,
-    /// Search-phase evaluations only. This excludes the final CPU `Trade22`
-    /// Pareto enrichment pass performed after search completes.
+
     pub actual_evaluations: usize,
     pub unique_evaluations: usize,
     pub duplicate_evaluations_avoided: usize,
@@ -459,14 +445,13 @@ pub struct CompositeMoSearchTelemetry {
     pub rejected_decode_or_order: usize,
     pub rejected_prescan_pair: usize,
     pub rejected_other_constraints: usize,
-    /// Execution-path label only. Pair this with `search_semantics.declared_domain` before making
-    /// any exactness claim about the searched space.
+
     pub exact_grid_used: bool,
     pub exact_grid_total_combinations: Option<usize>,
-    /// Exact CPU `Trade22` enrichment work applied after search completes.
+
     #[serde(default)]
     pub post_search_trade22_points: usize,
-    /// Wall-clock time spent in the exact CPU `Trade22` enrichment pass.
+
     #[serde(default)]
     pub post_search_trade22_runtime_ms: u64,
 }
@@ -653,8 +638,6 @@ fn parse_u16_from_choice(s: &str) -> Result<u16, String> {
 fn allowed_periods_from_domain(domain: &ParamDomain) -> Result<Vec<u16>, String> {
     match domain {
         ParamDomain::Categorical { choices } => {
-            // For categorical domains, we return the unique period set used for MA precompute.
-            // NOTE: do not use this for decoding ParamValue::Cat indices.
             let mut out: Vec<u16> = choices
                 .iter()
                 .map(|c| parse_u16_from_choice(c))
@@ -1167,7 +1150,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let start = std::time::Instant::now();
     emit_progress(progress, 0, 1, "composite_mo_prep");
 
-    // Multiobjective mode currently ignores OptimizationMode; this is a placeholder for later.
     let _ = req.mode;
 
     validate_strategy_cfg_for_optimization(&req.base_strategy)?;
@@ -1208,7 +1190,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let mut allowed_pairs_by_type: Option<AllowedPairsByType> = None;
     let mut prescan_telemetry: Option<CompositeMoPrescanTelemetry> = None;
 
-    // Safety limits: precomputing full MA matrices is expensive in RAM.
     let max_periods = 256usize;
     let to_u32_range =
         |low: i64, high: i64, step: i64, name: &str| -> Result<(u32, u32, u32), String> {
@@ -1509,7 +1490,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 ));
             }
 
-            // Rewrite domains to discrete candidate sets.
             if let Some(p) = req.search_space.params.get_mut(idx.fast_len) {
                 p.domain = ParamDomain::Categorical {
                     choices: fast_candidates.iter().map(|p| p.to_string()).collect(),
@@ -1521,7 +1501,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 };
             }
 
-            // Re-bind domains + allowed sets after rewrite.
             fast_domain = &req
                 .search_space
                 .params
@@ -1672,11 +1651,9 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let lr = compute_log_returns_f64(close);
     emit_progress(progress, 0, 1, "composite_mo_prep");
 
-    // We only need per-bar return stats if any objective uses them.
     let need_sharpe = objective_needs_return_stats(req.objectives.maximize)
         || objective_needs_return_stats(req.objectives.minimize);
 
-    // Precompute MA matrices for the allowed period sets.
     let build_ma_bank = |ma_type: &str,
                          periods: &[u16],
                          ma_params: Option<&HashMap<String, f64>>,
@@ -1978,7 +1955,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     let rejected_other_constraints = AtomicUsize::new(0);
 
     let eval_one = |values: &[ParamValue]| -> EvalOutcome<(Metrics, CompositeMoParams, f64, f64)> {
-        // Decode lengths first (and short-circuit invalid combos without computing indicators).
         let mut constraints: Vec<f64> = Vec::new();
 
         let fast_len = decode_len(
@@ -2205,7 +2181,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
         };
 
-        // HalfTrend (defaults overridden by optional params).
         let mut halftrend = default_halftrend();
         if let Some(i) = idx.halftrend_amplitude {
             if let Ok(v) = decode_u16_param(&search_space, values, i) {
@@ -2230,7 +2205,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             constraints.push(1.0);
         }
 
-        // MACZ (defaults overridden).
         let mut macz = default_macz();
         if let Some(i) = idx.macz_fast_length {
             if let Ok(v) = decode_u16_param(&search_space, values, i) {
@@ -2297,7 +2271,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             constraints.push(1.0);
         }
 
-        // OTT (defaults overridden).
         let mut ott = default_ott();
         if let Some(i) = idx.ott_period {
             if let Ok(v) = decode_u16_param(&search_space, values, i) {
@@ -2328,7 +2301,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             constraints.push(1.0);
         }
 
-        // Strategy config (base overridden).
         let mut strategy = base_strategy.clone();
         if let Some(i) = idx.strategy_commission {
             if let Ok(v) = decode_f64_param(&search_space, values, i) {
@@ -2354,7 +2326,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             constraints.push(1.0);
         }
 
-        // If structural constraints already violated, avoid expensive indicator work.
         if constraints.iter().any(|&v| v > 0.0) {
             rejected_other_constraints.fetch_add(1, Ordering::Relaxed);
             let metrics = Metrics::default();
@@ -2645,7 +2616,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             eval_static_metrics()
         };
 
-        // User constraints derived from metrics.
         if let Some(cfg) = constraints_cfg.as_ref() {
             if let Some(min_trades) = cfg.min_trades {
                 if (metrics.trades as u32) < min_trades {
@@ -2779,7 +2749,6 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                 )
                 .unwrap_or(0);
                 if fast2 != 0 && slow2 != 0 && fast2 < slow2 {
-                    // repaired
                 } else if let Some(new_slow) = min_greater_than(&slow_periods, target_fast) {
                     set_len_value(
                         values,
@@ -4217,7 +4186,6 @@ mod tests {
 
     #[test]
     fn composite_mo_gpu_prescan_narrows_large_len_ranges() {
-        // Force the prescan path by exceeding the max cached MA periods.
         let candles = make_trending_candles(800);
         let cancel = AtomicBool::new(false);
 

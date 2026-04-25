@@ -148,11 +148,7 @@ pub(crate) fn with_test_vram_budget_mb<T>(budget_mb: Option<usize>, f: impl FnOn
 }
 
 const BASE_METRICS_COUNT: usize = 7;
-// The legacy 10-field reduced contract remains available for explicitly reduced/score-only
-// cases, but the normal single-pass product route now promotes to the wider 17-field contract
-// so the additive Phase 4 metrics, including underwater summaries, ride on the default one-pass
-// path. The 22-field row is an explicit opt-in extension that adds exact trade-distribution
-// summaries on top of that full product contract.
+
 const PRODUCT_REDUCED_METRICS_COUNT: usize = 10;
 const METRICS_COUNT: usize = 17;
 const TRADE_METRICS_COUNT: usize = 22;
@@ -185,8 +181,7 @@ const METRIC_IDX_LOSING_TRADES: usize = 19;
 const METRIC_IDX_GROSS_PROFIT: usize = 20;
 const METRIC_IDX_GROSS_LOSS: usize = 21;
 const TOPK_BLOCK_ITEMS: usize = 512;
-// CUDA top-k selectors instantiate CUB block sorts with 256 threads.
-// Host launches for those selectors must keep `block_x == TOPK_BLOCK_THREADS`.
+
 const TOPK_BLOCK_THREADS: u32 = 256;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DeviceLaunchCaps {
@@ -811,7 +806,6 @@ fn choose_backtest_launch_shape_1d(
         total_items,
         device_caps,
         kernel_caps,
-        // Backtest kernels are sensitive to block shape on mid-sized ALMA workloads.
         &[64u32, 96, 128, 160, 192, 224, 256, 320, 384, 512],
     )
 }
@@ -903,8 +897,6 @@ struct KernelStrategyParams {
 
 #[inline]
 fn kernel_strategy_params(strategy: &StrategyConfig) -> KernelStrategyParams {
-    // Keep signed net-exposure enabled for every shipped GPU path so the device row layout
-    // continues to match constraint decoding for max_abs_net_exposure.
     let mut flags = STRAT_ENFORCE_FAST_LT_SLOW | STRAT_SIGNED_EXPOSURE;
     if strategy.long_only {
         flags |= STRAT_LONG_ONLY;
@@ -2504,13 +2496,6 @@ pub(crate) fn probe_uploaded_gpu_strategy_program(
     })
 }
 
-/// Device-resident preuploaded state for the Double-MA dynamic GPU path.
-///
-/// The uploaded buffers are specific to the originating CUDA device and the
-/// executable fingerprint captured at upload time. Uploading freezes matrix
-/// geometry and combo-to-dense-pair mapping, but execution still runs through
-/// the current fixed executor family rather than a fully general uploaded
-/// predicate-program runtime.
 pub struct UploadedDoubleMaDynamicProgramBatch {
     d_lr: DeviceBuffer<f32>,
     d_ret1: DeviceBuffer<f32>,
@@ -2656,11 +2641,6 @@ fn validate_uploaded_double_ma_dynamic_program_batch_geometry(
     Ok(())
 }
 
-/// Uploads a device-resident Double-MA dynamic batch for a single CUDA device.
-///
-/// The row-major MA matrices must have widths that exactly match `lr.len()`,
-/// `first_valid` must point inside that return series, and the uploaded geometry
-/// must fit the kernel-facing `i32` argument shape.
 pub fn upload_double_ma_dynamic_program_batch(
     lr: &[f32],
     fast_row_major: &[f32],
@@ -4005,10 +3985,6 @@ fn kernel_pinned_h2d_enabled() -> bool {
 
 #[inline]
 fn kernel_shortlist_slice_diagnostic_row_limit() -> usize {
-    // Full cross-mode slice diagnostics are useful for research and artifact inspection,
-    // but on the live route they trigger extra windowed reranks that do not affect the
-    // active ranking mode. Cap the diagnostic fanout by default and leave an env override
-    // for deeper profiling or offline analysis.
     env_usize("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS").unwrap_or(8)
 }
 
@@ -4525,7 +4501,7 @@ fn upload_f32_source_to_device(
             guard.push(locked);
             return Ok(dev);
         }
-        // Empty buffers are valid and should avoid async copy submission.
+
         return DeviceBuffer::from_slice(&[]).map_err(|e| e.to_string());
     }
 
@@ -4555,14 +4531,11 @@ fn kernel_force_legacy_topk_enabled() -> bool {
 
 #[inline]
 fn kernel_global_topk_enabled() -> bool {
-    // Keep top-k reductions on device by default to avoid per-tile D2H traffic.
     env_flag_enabled("VECTORBT_KERNEL_GLOBAL_TOPK", true)
 }
 
 #[inline]
 fn kernel_score_first_topk_enabled() -> bool {
-    // This remains experimental until the exact path has a true score-only backtest flow.
-    // Default to the row-first reducers and require an explicit opt-in for score-first tests.
     env_flag_enabled("VECTORBT_KERNEL_SCORE_FIRST_TOPK", false)
 }
 
@@ -5657,14 +5630,6 @@ fn kernel_finalist_profile_enabled() -> bool {
 
 #[inline]
 fn kernel_product_reduced_rows_enabled_for_objective(objective: ObjectiveKind) -> bool {
-    // Default policy: for the Sharpe/Volatility product family, prefer a single pass that
-    // emits enough metrics to skip the small-finalist replay entirely without widening all
-    // the way to the full 17-metric row contract.
-    //
-    // Env override:
-    // - Unset: enabled only for Sharpe/Volatility
-    // - Set to 1/true: enabled for all objectives
-    // - Set to 0/false: disabled for all objectives
     match env_flag_override("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS") {
         Some(v) => v,
         None => matches!(objective, ObjectiveKind::Sharpe | ObjectiveKind::Volatility),
@@ -5678,7 +5643,6 @@ fn kernel_log_dispatch_enabled() -> bool {
 
 #[inline]
 fn kernel_valid_pair_map_enabled() -> bool {
-    // Compact dense Pf*Ps launch space into valid fast<slow pairs only.
     env_flag_enabled("VECTORBT_KERNEL_VALID_PAIR_MAP", true)
 }
 
@@ -5688,8 +5652,6 @@ fn kernel_valid_pair_map_max_pairs() -> usize {
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&v| v > 0)
-        // The xlarge double-MA benchmark-hot surface is about 491k dense pairs. Keeping the
-        // default cap below that silently forces the main pass back onto dense Pf*Ps launches.
         .unwrap_or(1_000_000)
 }
 
@@ -5857,9 +5819,6 @@ fn kernel_lockstep_m7_eps0_specialize_enabled_for_pair(fast_ma: &str, slow_ma: &
 }
 
 fn kernel_metrics_pad8_enabled_for_pair(fast_ma: &str, slow_ma: &str) -> bool {
-    // Pad legacy 7-float rows to 8 floats to improve alignment/coalescing in tile buffers.
-    // Wider rows should use their natural stride.
-    // Default only for ALMA/ALMA (current proven win); env override still wins.
     if let Some(v) = env_flag_override("VECTORBT_KERNEL_METRICS_PAD8") {
         return v;
     }
@@ -5954,8 +5913,7 @@ pub(crate) fn search_metrics_count_for_optimization_with_contract(
 
     let mut metrics_count = match objective {
         ObjectiveKind::Pnl => 1,
-        // 7-row enables the faster M7 kernels while still skipping the widened product contract
-        // unless the default single-pass promotion is active.
+
         ObjectiveKind::Sharpe | ObjectiveKind::Volatility => 7,
         ObjectiveKind::MaxDrawdown | ObjectiveKind::Calmar => 3,
         ObjectiveKind::Sortino | ObjectiveKind::Omega => METRICS_COUNT,
@@ -6210,7 +6168,6 @@ pub fn vdps_generate_seed_pairs_gpu_kernel(
         return Ok(Some(Vec::new()));
     }
 
-    // Oversample to offset duplicate/invalid pairs from nearest-period projection.
     let sample_total = target_total.saturating_mul(4).max(target_total).min(16_384);
     let (elite_count, diff_count, rand_count) =
         scaled_vdps_counts(sample_total, elite_target, diff_target, rand_target);
@@ -6345,38 +6302,34 @@ fn estimate_tile_bytes(
 
     let mut bytes = 0usize;
 
-    // Input series and shared scratch.
-    bytes = bytes.saturating_add(bytes_f32(series_len)); // d_close
+    bytes = bytes.saturating_add(bytes_f32(series_len));
     if !ma_is_close {
-        bytes = bytes.saturating_add(bytes_f32(series_len)); // d_ma_buf
+        bytes = bytes.saturating_add(bytes_f32(series_len));
     }
-    bytes = bytes.saturating_add(bytes_f32(series_len)); // d_lr
-    bytes = bytes.saturating_add(bytes_f32(series_len)); // d_ret1
+    bytes = bytes.saturating_add(bytes_f32(series_len));
+    bytes = bytes.saturating_add(bytes_f32(series_len));
 
     if fast_ma == "vwma" || slow_ma == "vwma" {
-        bytes = bytes.saturating_add(bytes_f32(series_len)); // d_volume
-        bytes = bytes.saturating_add(bytes_f64(series_len).saturating_mul(2)); // pv_prefix + vol_prefix
+        bytes = bytes.saturating_add(bytes_f32(series_len));
+        bytes = bytes.saturating_add(bytes_f64(series_len).saturating_mul(2));
     }
     if fast_ma == "frama" || slow_ma == "frama" {
-        bytes = bytes.saturating_add(bytes_f32(series_len).saturating_mul(2)); // d_high + d_low
+        bytes = bytes.saturating_add(bytes_f32(series_len).saturating_mul(2));
     }
 
-    // SMA prefix (shared across sides).
     if fast_ma == "sma" || slow_ma == "sma" {
         bytes = bytes.saturating_add(bytes_f64(series_len.saturating_add(1)));
     }
 
-    // Shared scratch buffers (can be reused across fast/slow computation).
     if fast_ma == "nma" || slow_ma == "nma" {
-        bytes = bytes.saturating_add(bytes_f32(series_len)); // abs_diffs
+        bytes = bytes.saturating_add(bytes_f32(series_len));
     }
     if fast_ma == "edcf" || slow_ma == "edcf" {
-        bytes = bytes.saturating_add(bytes_f32(series_len)); // dist scratch
+        bytes = bytes.saturating_add(bytes_f32(series_len));
     }
     if fast_ma == "cora_wave" || slow_ma == "cora_wave" {
         let p_max = pf.max(ps).max(1);
         bytes = bytes.saturating_add(bytes_f32(p_max.saturating_mul(series_len)));
-        // y tmp (for smoothing)
     }
 
     let ma_matrix_mult = if kernel_fast_path_enabled(fast_ma, slow_ma) {
@@ -6385,115 +6338,110 @@ fn estimate_tile_bytes(
         2
     };
 
-    // Fast MA buffers.
-    bytes = bytes.saturating_add(bytes_i32(pf)); // periods
+    bytes = bytes.saturating_add(bytes_i32(pf));
     bytes = bytes.saturating_add(bytes_f32(
         pf.saturating_mul(series_len).saturating_mul(ma_matrix_mult),
-    )); // ma(+ma_tm) or ma_tm-only
+    ));
     if fast_ma == "alma" || fast_ma == "cwma" || fast_ma == "cora_wave" {
-        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(max_fast_period))); // weights
-        bytes = bytes.saturating_add(bytes_f32(pf)); // inv norms
+        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(max_fast_period)));
+        bytes = bytes.saturating_add(bytes_f32(pf));
     } else if fast_ma == "fwma" || fast_ma == "pwma" {
         bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(max_fast_period)));
-    // weights
     } else if fast_ma == "srwma" {
         bytes = bytes.saturating_add(bytes_f32(
             pf.saturating_mul(max_fast_period.saturating_sub(1)),
-        )); // weights
-        bytes = bytes.saturating_add(bytes_f32(pf)); // inv norms
+        ));
+        bytes = bytes.saturating_add(bytes_f32(pf));
     } else if fast_ma == "ema" || fast_ma == "mwdx" {
-        bytes = bytes.saturating_add(bytes_f32(pf)); // alphas/factors
+        bytes = bytes.saturating_add(bytes_f32(pf));
     } else if fast_ma == "zlema" {
-        bytes = bytes.saturating_add(bytes_i32(pf)); // lags
-        bytes = bytes.saturating_add(bytes_f32(pf)); // alphas
+        bytes = bytes.saturating_add(bytes_i32(pf));
+        bytes = bytes.saturating_add(bytes_f32(pf));
     } else if fast_ma == "maaq" {
-        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(2))); // fast_sc + slow_sc
+        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(2)));
     } else if fast_ma == "jma" {
-        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(3))); // alpha + (1-beta) + phase_ratio
+        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(3)));
     } else if fast_ma == "hma" {
         let max_sqrt = ((max_fast_period as f64).sqrt().floor() as usize).max(1);
-        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(max_sqrt))); // ring scratch
+        bytes = bytes.saturating_add(bytes_f32(pf.saturating_mul(max_sqrt)));
     } else if fast_ma == "vpwma" {
-        bytes = bytes.saturating_add(bytes_i32(pf)); // win lengths
+        bytes = bytes.saturating_add(bytes_i32(pf));
         bytes = bytes.saturating_add(bytes_f32(
             pf.saturating_mul(max_fast_period.saturating_sub(1)),
-        )); // weights
-        bytes = bytes.saturating_add(bytes_f32(pf)); // inv norms
+        ));
+        bytes = bytes.saturating_add(bytes_f32(pf));
     }
     if matches!(
         fast_ma,
         "jsa" | "smma" | "swma" | "trima" | "fwma" | "pwma" | "srwma"
     ) {
-        bytes = bytes.saturating_add(bytes_i32(pf)); // warm indices
+        bytes = bytes.saturating_add(bytes_i32(pf));
     } else if fast_ma == "wilders" {
-        bytes = bytes.saturating_add(bytes_i32(pf)); // warm indices
-        bytes = bytes.saturating_add(bytes_f32(pf)); // alphas
+        bytes = bytes.saturating_add(bytes_i32(pf));
+        bytes = bytes.saturating_add(bytes_f32(pf));
     } else if fast_ma == "epma" {
-        bytes = bytes.saturating_add(bytes_i32(pf)); // offsets
+        bytes = bytes.saturating_add(bytes_i32(pf));
     } else if fast_ma == "cora_wave" {
-        bytes = bytes.saturating_add(bytes_i32(pf.saturating_mul(2))); // smooth_periods + warm0s
+        bytes = bytes.saturating_add(bytes_i32(pf.saturating_mul(2)));
     } else if fast_ma == "ehlers_itrend" {
-        bytes = bytes.saturating_add(bytes_i32(pf)); // warmups
+        bytes = bytes.saturating_add(bytes_i32(pf));
     }
     if fast_ma == "frama" {
-        bytes = bytes.saturating_add(bytes_i32(pf).saturating_mul(2)); // scs + fcs
+        bytes = bytes.saturating_add(bytes_i32(pf).saturating_mul(2));
     }
 
-    // Slow MA buffers.
-    bytes = bytes.saturating_add(bytes_i32(ps)); // periods
+    bytes = bytes.saturating_add(bytes_i32(ps));
     bytes = bytes.saturating_add(bytes_f32(
         ps.saturating_mul(series_len).saturating_mul(ma_matrix_mult),
-    )); // ma(+ma_tm) or ma_tm-only
+    ));
     if slow_ma == "alma" || slow_ma == "cwma" || slow_ma == "cora_wave" {
-        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(max_slow_period))); // weights
-        bytes = bytes.saturating_add(bytes_f32(ps)); // inv norms
+        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(max_slow_period)));
+        bytes = bytes.saturating_add(bytes_f32(ps));
     } else if slow_ma == "fwma" || slow_ma == "pwma" {
         bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(max_slow_period)));
-    // weights
     } else if slow_ma == "srwma" {
         bytes = bytes.saturating_add(bytes_f32(
             ps.saturating_mul(max_slow_period.saturating_sub(1)),
-        )); // weights
-        bytes = bytes.saturating_add(bytes_f32(ps)); // inv norms
+        ));
+        bytes = bytes.saturating_add(bytes_f32(ps));
     } else if slow_ma == "ema" || slow_ma == "mwdx" {
-        bytes = bytes.saturating_add(bytes_f32(ps)); // alphas/factors
+        bytes = bytes.saturating_add(bytes_f32(ps));
     } else if slow_ma == "zlema" {
-        bytes = bytes.saturating_add(bytes_i32(ps)); // lags
-        bytes = bytes.saturating_add(bytes_f32(ps)); // alphas
+        bytes = bytes.saturating_add(bytes_i32(ps));
+        bytes = bytes.saturating_add(bytes_f32(ps));
     } else if slow_ma == "maaq" {
-        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(2))); // fast_sc + slow_sc
+        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(2)));
     } else if slow_ma == "jma" {
-        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(3))); // alpha + (1-beta) + phase_ratio
+        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(3)));
     } else if slow_ma == "hma" {
         let max_sqrt = ((max_slow_period as f64).sqrt().floor() as usize).max(1);
-        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(max_sqrt))); // ring scratch
+        bytes = bytes.saturating_add(bytes_f32(ps.saturating_mul(max_sqrt)));
     } else if slow_ma == "vpwma" {
-        bytes = bytes.saturating_add(bytes_i32(ps)); // win lengths
+        bytes = bytes.saturating_add(bytes_i32(ps));
         bytes = bytes.saturating_add(bytes_f32(
             ps.saturating_mul(max_slow_period.saturating_sub(1)),
-        )); // weights
-        bytes = bytes.saturating_add(bytes_f32(ps)); // inv norms
+        ));
+        bytes = bytes.saturating_add(bytes_f32(ps));
     }
     if matches!(
         slow_ma,
         "jsa" | "smma" | "swma" | "trima" | "fwma" | "pwma" | "srwma"
     ) {
-        bytes = bytes.saturating_add(bytes_i32(ps)); // warm indices
+        bytes = bytes.saturating_add(bytes_i32(ps));
     } else if slow_ma == "wilders" {
-        bytes = bytes.saturating_add(bytes_i32(ps)); // warm indices
-        bytes = bytes.saturating_add(bytes_f32(ps)); // alphas
+        bytes = bytes.saturating_add(bytes_i32(ps));
+        bytes = bytes.saturating_add(bytes_f32(ps));
     } else if slow_ma == "epma" {
-        bytes = bytes.saturating_add(bytes_i32(ps)); // offsets
+        bytes = bytes.saturating_add(bytes_i32(ps));
     } else if slow_ma == "cora_wave" {
-        bytes = bytes.saturating_add(bytes_i32(ps.saturating_mul(2))); // smooth_periods + warm0s
+        bytes = bytes.saturating_add(bytes_i32(ps.saturating_mul(2)));
     } else if slow_ma == "ehlers_itrend" {
-        bytes = bytes.saturating_add(bytes_i32(ps)); // warmups
+        bytes = bytes.saturating_add(bytes_i32(ps));
     }
     if slow_ma == "frama" {
-        bytes = bytes.saturating_add(bytes_i32(ps).saturating_mul(2)); // scs + fcs
+        bytes = bytes.saturating_add(bytes_i32(ps).saturating_mul(2));
     }
 
-    // Per-pair metrics tile (optionally padded to improve store/read coalescing).
     let pairs = pf.saturating_mul(ps);
     let tile_metrics_stride = effective_metrics_stride(
         metrics_count,
@@ -6502,26 +6450,24 @@ fn estimate_tile_bytes(
     );
     bytes = bytes.saturating_add(bytes_f32(pairs.saturating_mul(tile_metrics_stride)));
 
-    // Optional reductions (used only when include_all=false).
     if !include_all {
         let topk = topk_select.max(1);
         let blocks = (pairs + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
         let cand_len = blocks.saturating_mul(topk).max(topk);
 
-        bytes = bytes.saturating_add(bytes_i32(cand_len).saturating_mul(2)); // cand_a + cand_b
-        bytes = bytes.saturating_add(bytes_i32(topk).saturating_mul(2)); // top_fast + top_slow
-        bytes = bytes.saturating_add(bytes_f32(topk.saturating_mul(metrics_count))); // top_metrics
+        bytes = bytes.saturating_add(bytes_i32(cand_len).saturating_mul(2));
+        bytes = bytes.saturating_add(bytes_i32(topk).saturating_mul(2));
+        bytes = bytes.saturating_add(bytes_f32(topk.saturating_mul(metrics_count)));
         bytes = bytes.saturating_add(bytes_f32(
             topk.saturating_mul(metrics_count.saturating_add(2)),
-        )); // packed top rows
+        ));
 
         if heatmap_bins > 0 {
             let heat_len = heatmap_bins.saturating_mul(heatmap_bins);
-            bytes = bytes.saturating_add(bytes_f32(heat_len)); // heatmap
+            bytes = bytes.saturating_add(bytes_f32(heat_len));
         }
     }
 
-    // Small fudge factor for driver allocations / fragmentation.
     bytes.saturating_add(64usize * 1024 * 1024)
 }
 
@@ -9738,8 +9684,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         host_exact_combo.host_p_fast.resize(pf_tile_tm, f_pad);
         let fast_upload_signature = period_upload_signature(&host_exact_combo.host_p_fast);
         if host_exact_combo.last_fast_period_upload != Some(fast_upload_signature) {
-            // Host period vectors are pageable and mutated per tile; keep this copy
-            // synchronous to avoid host-data races with async H2D semantics.
             scratch
                 .d_fast_p
                 .as_mut()
@@ -9859,8 +9803,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             host_exact_combo.host_p_slow.resize(ps_tile_tm, s_pad);
             let slow_upload_signature = period_upload_signature(&host_exact_combo.host_p_slow);
             if host_exact_combo.last_slow_period_upload != Some(slow_upload_signature) {
-                // Host period vectors are pageable and mutated per tile; keep this copy
-                // synchronous to avoid host-data races with async H2D semantics.
                 scratch
                     .d_slow_p
                     .as_mut()
@@ -10308,9 +10250,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 backtest_lockstep.is_some(),
                             );
                         let allow_m7_exact = metrics_count == METRICS_COUNT;
-                        // Full-metric finalist reruns are tiny in pair count but still walk the
-                        // entire time axis. The M7 kernel is a much better fit here than the
-                        // generic full-metric path, so allow a recompute-only low-pair fast path.
+
                         let force_low_pair_m7 = allow_m7_exact
                             && should_force_low_pair_m7_recompute(
                                 prefer_low_pair_m7_dispatch,
@@ -11055,353 +10995,6 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     Ok(out_metrics)
 }
 
-/*
-#[allow(clippy::too_many_arguments)]
-fn replay_shadow_finalists_reduced_on_current_tile(
-    bt_stream: &Stream,
-    scratch: &mut KernelScratch,
-    host_exact_combo: &mut HostExactComboScratch,
-    finalists: &[DoubleMaParams],
-    fast_periods: &[u16],
-    slow_periods: &[u16],
-    n: usize,
-    fast_tm_rows: usize,
-    slow_tm_rows: usize,
-    regime_ptr: u64,
-    regime_use: i32,
-    regime_use_hybrid: i32,
-    regime_entry_rel: f32,
-    regime_exit_rel: f32,
-    first_valid: usize,
-    regime_first_valid: usize,
-    commission: f32,
-    eps_rel: f32,
-    hurdle_tau: f32,
-    stop_log: f32,
-    take_log: f32,
-    flags: u32,
-    metrics_count: usize,
-    device_launch_caps: DeviceLaunchCaps,
-    backtest_launch_caps: KernelLaunchCaps,
-    backtest_fn: &cust::function::Function<'_>,
-    launch_submit_elapsed: &mut Duration,
-    d2h_copy_elapsed: &mut Duration,
-    explicit_sync_elapsed: &mut Duration,
-) -> Result<Vec<Metrics>, String> {
-    if finalists.is_empty() {
-        return Ok(Vec::new());
-    }
-    let f_total = fast_periods.len();
-    let s_total = slow_periods.len();
-    if f_total == 0 || s_total == 0 {
-        return Err("shadow reduced replay requires non-empty period ranges".to_string());
-    }
-
-    let mut fast_idx: HashMap<u16, usize> = HashMap::with_capacity(f_total);
-    for (i, &p) in fast_periods.iter().enumerate() {
-        fast_idx.insert(p, i);
-    }
-    let mut slow_idx: HashMap<u16, usize> = HashMap::with_capacity(s_total);
-    for (i, &p) in slow_periods.iter().enumerate() {
-        slow_idx.insert(p, i);
-    }
-
-    host_exact_combo.tile_combo_indices.clear();
-    host_exact_combo.tile_pair_index_map.clear();
-    host_exact_combo.tile_fast_period_rows.clear();
-    host_exact_combo.tile_slow_period_rows.clear();
-    host_exact_combo.tile_fast_local_rows.clear();
-    host_exact_combo.tile_slow_local_rows.clear();
-
-    #[derive(Clone, Copy)]
-    struct ReplayTileRow {
-        combo_idx: usize,
-        pair_index: i32,
-        fast_period: i32,
-        slow_period: i32,
-        fast_local: i32,
-        slow_local: i32,
-    }
-
-    let mut replay_tile_rows: Vec<ReplayTileRow> = Vec::with_capacity(finalists.len());
-    for (combo_idx, params) in finalists.iter().enumerate() {
-        let fi = *fast_idx
-            .get(&params.fast_len)
-            .ok_or_else(|| format!("shadow replay fast_len {} missing from range", params.fast_len))?;
-        let si = *slow_idx
-            .get(&params.slow_len)
-            .ok_or_else(|| format!("shadow replay slow_len {} missing from range", params.slow_len))?;
-        replay_tile_rows.push(ReplayTileRow {
-            combo_idx,
-            pair_index: i32::try_from(fi.saturating_mul(s_total).saturating_add(si))
-                .map_err(|_| "shadow replay pair index exceeds i32::MAX".to_string())?,
-            fast_period: i32::from(params.fast_len),
-            slow_period: i32::from(params.slow_len),
-            fast_local: i32::try_from(fi)
-                .map_err(|_| "shadow replay fast local row exceeds i32::MAX".to_string())?,
-            slow_local: i32::try_from(si)
-                .map_err(|_| "shadow replay slow local row exceeds i32::MAX".to_string())?,
-        });
-    }
-    replay_tile_rows.sort_unstable_by_key(|row| (row.fast_local, row.slow_local));
-    for row in replay_tile_rows {
-        host_exact_combo.tile_combo_indices.push(row.combo_idx);
-        host_exact_combo.tile_pair_index_map.push(row.pair_index);
-        host_exact_combo.tile_fast_period_rows.push(row.fast_period);
-        host_exact_combo.tile_slow_period_rows.push(row.slow_period);
-        host_exact_combo.tile_fast_local_rows.push(row.fast_local);
-        host_exact_combo.tile_slow_local_rows.push(row.slow_local);
-    }
-
-    let launch_pairs = host_exact_combo.tile_combo_indices.len();
-    let out_len = launch_pairs
-        .checked_mul(metrics_count)
-        .ok_or_else(|| "shadow replay launch_pairs*metrics overflow".to_string())?;
-    host_exact_combo.ensure_tile_host_buf_len(out_len)?;
-
-    let pair_index_upload_signature = period_upload_signature(&host_exact_combo.tile_pair_index_map);
-    if host_exact_combo.last_pair_index_upload != Some(pair_index_upload_signature) {
-        KernelScratch::ensure_len_i32(&mut scratch.d_valid_pair_index, launch_pairs, bt_stream)?;
-        scratch
-            .d_valid_pair_index
-            .as_mut()
-            .ok_or_else(|| "missing shadow replay pair index buffer".to_string())?
-            .copy_from(&host_exact_combo.tile_pair_index_map)
-            .map_err(|e| e.to_string())?;
-        KernelScratch::ensure_len_i32(
-            &mut scratch.d_valid_pair_fast_period,
-            launch_pairs,
-            bt_stream,
-        )?;
-        scratch
-            .d_valid_pair_fast_period
-            .as_mut()
-            .ok_or_else(|| "missing shadow replay fast period buffer".to_string())?
-            .copy_from(&host_exact_combo.tile_fast_period_rows)
-            .map_err(|e| e.to_string())?;
-        KernelScratch::ensure_len_i32(
-            &mut scratch.d_valid_pair_slow_period,
-            launch_pairs,
-            bt_stream,
-        )?;
-        scratch
-            .d_valid_pair_slow_period
-            .as_mut()
-            .ok_or_else(|| "missing shadow replay slow period buffer".to_string())?
-            .copy_from(&host_exact_combo.tile_slow_period_rows)
-            .map_err(|e| e.to_string())?;
-        KernelScratch::ensure_len_i32(
-            &mut scratch.d_valid_pair_fast_local,
-            launch_pairs,
-            bt_stream,
-        )?;
-        scratch
-            .d_valid_pair_fast_local
-            .as_mut()
-            .ok_or_else(|| "missing shadow replay fast local buffer".to_string())?
-            .copy_from(&host_exact_combo.tile_fast_local_rows)
-            .map_err(|e| e.to_string())?;
-        KernelScratch::ensure_len_i32(
-            &mut scratch.d_valid_pair_slow_local,
-            launch_pairs,
-            bt_stream,
-        )?;
-        scratch
-            .d_valid_pair_slow_local
-            .as_mut()
-            .ok_or_else(|| "missing shadow replay slow local buffer".to_string())?
-            .copy_from(&host_exact_combo.tile_slow_local_rows)
-            .map_err(|e| e.to_string())?;
-        host_exact_combo.last_pair_index_upload = Some(pair_index_upload_signature);
-    }
-
-    KernelScratch::ensure_len_f32(&mut scratch.d_tile, out_len.max(1), bt_stream)?;
-
-    unsafe {
-        let mut f_ma_tm = scratch
-            .d_fast_ma_tm
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay fast TM buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut s_ma_tm = scratch
-            .d_slow_ma_tm
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay slow TM buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut lr = scratch
-            .d_lr
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay lr buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut ret1 = scratch
-            .d_ret1
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay ret1 buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut t_i = n as i32;
-        let mut pf_tile_i = f_total as i32;
-        let mut ps_tile_i = s_total as i32;
-        let mut fast_tm_stride_i = fast_tm_rows as i32;
-        let mut slow_tm_stride_i = slow_tm_rows as i32;
-        let mut pf_total_i = f_total as i32;
-        let mut ps_total_i = s_total as i32;
-        let mut f_off = 0i32;
-        let mut s_off = 0i32;
-        let mut f_per = scratch
-            .d_fast_p
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay fast period buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut s_per = scratch
-            .d_slow_p
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay slow period buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut regime_ptr = regime_ptr;
-        let mut use_regime_i = regime_use;
-        let mut use_regime_hybrid_i = regime_use_hybrid;
-        let mut regime_entry = regime_entry_rel;
-        let mut regime_exit = regime_exit_rel;
-        let mut fv = first_valid as i32;
-        let mut regime_fv = regime_first_valid as i32;
-        let mut commission = commission;
-        let mut eps_rel = eps_rel;
-        let mut hurdle_tau_f = hurdle_tau;
-        let mut stop_log = stop_log;
-        let mut take_log = take_log;
-        let mut flags_u = flags;
-        let mut m_i = metrics_count as i32;
-        let mut metrics_stride_i = metrics_count as i32;
-        let mut pair_map_ptr = scratch
-            .d_valid_pair_index
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay pair index buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut pair_fast_rows = scratch
-            .d_valid_pair_fast_period
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay fast period buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut pair_slow_rows = scratch
-            .d_valid_pair_slow_period
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay slow period buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut pair_fast_local_rows = scratch
-            .d_valid_pair_fast_local
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay fast local buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut pair_slow_local_rows = scratch
-            .d_valid_pair_slow_local
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay slow local buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-        let mut pair_count_i = launch_pairs as i32;
-        let mut compact_output_i = 1i32;
-        let mut out_ptr = scratch
-            .d_tile
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay output buffer".to_string())?
-            .as_device_ptr()
-            .as_raw();
-
-        let launch = choose_backtest_launch_shape_1d(
-            launch_pairs,
-            device_launch_caps,
-            backtest_launch_caps,
-        );
-        let args: &mut [*mut c_void] = &mut [
-            &mut f_ma_tm as *mut _ as *mut c_void,
-            &mut s_ma_tm as *mut _ as *mut c_void,
-            &mut lr as *mut _ as *mut c_void,
-            &mut ret1 as *mut _ as *mut c_void,
-            &mut t_i as *mut _ as *mut c_void,
-            &mut pf_tile_i as *mut _ as *mut c_void,
-            &mut ps_tile_i as *mut _ as *mut c_void,
-            &mut fast_tm_stride_i as *mut _ as *mut c_void,
-            &mut slow_tm_stride_i as *mut _ as *mut c_void,
-            &mut pf_total_i as *mut _ as *mut c_void,
-            &mut ps_total_i as *mut _ as *mut c_void,
-            &mut f_off as *mut _ as *mut c_void,
-            &mut s_off as *mut _ as *mut c_void,
-            &mut f_per as *mut _ as *mut c_void,
-            &mut s_per as *mut _ as *mut c_void,
-            &mut regime_ptr as *mut _ as *mut c_void,
-            &mut use_regime_i as *mut _ as *mut c_void,
-            &mut use_regime_hybrid_i as *mut _ as *mut c_void,
-            &mut regime_entry as *mut _ as *mut c_void,
-            &mut regime_exit as *mut _ as *mut c_void,
-            &mut fv as *mut _ as *mut c_void,
-            &mut regime_fv as *mut _ as *mut c_void,
-            &mut commission as *mut _ as *mut c_void,
-            &mut eps_rel as *mut _ as *mut c_void,
-            &mut hurdle_tau_f as *mut _ as *mut c_void,
-            &mut stop_log as *mut _ as *mut c_void,
-            &mut take_log as *mut _ as *mut c_void,
-            &mut flags_u as *mut _ as *mut c_void,
-            &mut m_i as *mut _ as *mut c_void,
-            &mut metrics_stride_i as *mut _ as *mut c_void,
-            &mut pair_map_ptr as *mut _ as *mut c_void,
-            &mut pair_fast_rows as *mut _ as *mut c_void,
-            &mut pair_slow_rows as *mut _ as *mut c_void,
-            &mut pair_fast_local_rows as *mut _ as *mut c_void,
-            &mut pair_slow_local_rows as *mut _ as *mut c_void,
-            &mut pair_count_i as *mut _ as *mut c_void,
-            &mut compact_output_i as *mut _ as *mut c_void,
-            &mut out_ptr as *mut _ as *mut c_void,
-        ];
-        launch_kernel_timed(
-            bt_stream,
-            backtest_fn,
-            (launch.grid_x, 1, 1),
-            (launch.block_x, 1, 1),
-            0,
-            args,
-            launch_submit_elapsed,
-        )?;
-    }
-
-    let copy_t0 = Instant::now();
-    let host_metrics = host_exact_combo.tile_host_buf.copy_device_prefix_to_host(
-        scratch
-            .d_tile
-            .as_ref()
-            .ok_or_else(|| "missing shadow replay output buffer".to_string())?,
-        out_len,
-        bt_stream,
-        explicit_sync_elapsed,
-    )?;
-    *d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(copy_t0.elapsed());
-
-    let mut out_metrics = vec![Metrics::default(); finalists.len()];
-    for (row_idx, &combo_idx) in host_exact_combo.tile_combo_indices.iter().enumerate() {
-        let base = row_idx
-            .checked_mul(metrics_count)
-            .ok_or_else(|| "shadow replay metrics base overflow".to_string())?;
-        out_metrics[combo_idx] = decode_tm_flex_metrics_row(
-            host_metrics,
-            base,
-            metrics_count,
-            flags,
-            metrics_count,
-        );
-    }
-    Ok(out_metrics)
-}
-
-*/
 #[allow(clippy::too_many_arguments)]
 fn rerank_shortlist_by_slice_robustness(
     rt: &mut CudaKernelRuntime,
@@ -12961,14 +12554,14 @@ fn optimize_double_ma_gpu_kernel_impl(
         .get_function("select_topk_from_candidates_tm_f32_v2")
         .ok();
     let _score_metric_rows = bt_module.get_function("score_metric_rows_f32").ok();
-    // These selectors still derive scores from metric rows inside CUDA.
+
     let select_topk_scored_pairs = bt_module
         .get_function("select_topk_scored_pairs_tm_f32")
         .ok();
     let select_topk_scored_pairs_v2 = bt_module
         .get_function("select_topk_scored_pairs_tm_f32_v2")
         .ok();
-    // This is the actual pre-scored candidate selector.
+
     let select_topk_scored_candidates = bt_module
         .get_function("select_topk_scored_candidates_tm_f32")
         .ok();
@@ -13276,9 +12869,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         && select_topk_rows_legacy.is_some()
         && select_topk_rows_candidates_legacy.is_some()
         && gather_topk_rows.is_some();
-    // "score-first" here still relies on the metric-scored pair selector to produce compact
-    // per-tile candidates. The true pre-scored reduction path starts at
-    // `select_topk_scored_candidates_tm_f32` once those scores already exist.
+
     let score_first_topk_supported = select_topk_scored_pairs.is_some()
         && select_topk_scored_candidates.is_some()
         && select_topk_scored_rows.is_some()
@@ -13572,8 +13163,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         0.0
     };
-    // Graph replay is currently limited to non-heatmap runs; heatmap parity can diverge
-    // between batched/unbatched when score+heatmap nodes are captured and reused.
+
     let use_cuda_graphs = !pipeline_profile_enabled
         && kernel_cuda_graphs_enabled()
         && !device_include_all
@@ -13601,8 +13191,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         );
         let f_pad = host_p_fast.last().copied().unwrap_or(2);
         host_p_fast.resize(pf_tile_tm, f_pad);
-        // Host period vectors are pageable and mutated per tile; keep this copy
-        // synchronous to avoid host-data races with async H2D semantics.
+
         let h2d_t0 = Instant::now();
         {
             let _h2d_upload_scope = crate::nvtx::scope("kernel", "h2d_upload");
@@ -13747,8 +13336,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             );
             let s_pad = host_p_slow.last().copied().unwrap_or(2);
             host_p_slow.resize(ps_tile_tm, s_pad);
-            // Host period vectors are pageable and mutated per tile; keep this copy
-            // synchronous to avoid host-data races with async H2D semantics.
+
             let h2d_t0 = Instant::now();
             {
                 let _h2d_upload_scope = crate::nvtx::scope("kernel", "h2d_upload");
@@ -13904,11 +13492,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     pair_slow_rows_ptr = cached_valid_map
                         .map(|map| map.slow_period_ptr)
                         .unwrap_or_default();
-                    // The compact local-row metadata is a proven win on the exact/windowed
-                    // replay surfaces, but on the generic product path it regressed the hot
-                    // small benchmark. Keep the compact pair map and period rows here, but
-                    // leave local-row pointers null so the baseline kernel keeps using the
-                    // older dense-pair decode path.
+
                     if use_windowed_eval {
                         pair_fast_local_rows_ptr = cached_valid_map
                             .map(|map| map.fast_local_ptr)
@@ -13920,8 +13504,6 @@ fn optimize_double_ma_gpu_kernel_impl(
                 }
 
                 if !compact_valid_pair_output {
-                    // Keep output dense (Pf*Ps*M) for downstream kernels by zero-filling
-                    // and only computing valid fast<slow pairs.
                     unsafe {
                         let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut n_i = out_len as i32;
@@ -18933,8 +18515,6 @@ mod tests {
         let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
         let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
 
-        // Default: Sharpe/Volatility now promotes to the 10-row single-pass product
-        // contract while still avoiding finalist replay.
         std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS");
         std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
         assert_eq!(
@@ -18954,7 +18534,6 @@ mod tests {
             PRODUCT_REDUCED_METRICS_COUNT
         ));
 
-        // Override disable: force legacy reduced rows.
         std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "0");
         assert_eq!(
             search_metrics_count_for_optimization(
@@ -18970,7 +18549,6 @@ mod tests {
             7
         );
 
-        // Override enable: allow any objective to widen to the reduced single-pass product rows.
         std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "1");
         assert_eq!(
             search_metrics_count_for_optimization(
@@ -19437,23 +19015,8 @@ mod tests {
     #[test]
     fn decode_full_metric_rows_restore_omega_and_derive_martin_ratio() {
         let row = vec![
-            0.15f32,  // pnl
-            7.0f32,   // trades
-            0.20f32,  // max_dd
-            0.06f32,  // mean
-            0.03f32,  // std
-            0.40f32,  // exposure
-            0.10f32,  // net_exposure
-            0.02f32,  // downside_deviation
-            0.05f32,  // ulcer_index
-            4.0f32,   // omega
-            0.25f32,  // downside_frequency
-            0.08f32,  // downside_severity
-            0.07f32,  // long_mean_return
-            -0.04f32, // short_mean_return
-            1.75f32,  // kappa_tau
-            0.35f32,  // underwater_fraction
-            12.0f32,  // max_underwater_duration_bars
+            0.15f32, 7.0f32, 0.20f32, 0.06f32, 0.03f32, 0.40f32, 0.10f32, 0.02f32, 0.05f32, 4.0f32,
+            0.25f32, 0.08f32, 0.07f32, -0.04f32, 1.75f32, 0.35f32, 12.0f32,
         ];
 
         let metrics = decode_tm_flex_metrics_row(&row, 0, METRICS_COUNT, 0.0);
@@ -19472,28 +19035,9 @@ mod tests {
     #[test]
     fn decode_trade_metric_rows_restore_trade_distribution_summaries() {
         let row = vec![
-            0.15f32,  // pnl
-            7.0f32,   // trades
-            0.20f32,  // max_dd
-            0.06f32,  // mean
-            0.03f32,  // std
-            0.40f32,  // exposure
-            0.10f32,  // net_exposure
-            0.02f32,  // downside_deviation
-            0.05f32,  // ulcer_index
-            4.0f32,   // omega
-            0.25f32,  // downside_frequency
-            0.08f32,  // downside_severity
-            0.07f32,  // long_mean_return
-            -0.04f32, // short_mean_return
-            1.75f32,  // kappa_tau
-            0.35f32,  // underwater_fraction
-            12.0f32,  // max_underwater_duration_bars
-            5.0f32,   // closed_trades
-            3.0f32,   // winning_trades
-            2.0f32,   // losing_trades
-            0.90f32,  // gross_profit
-            0.30f32,  // gross_loss
+            0.15f32, 7.0f32, 0.20f32, 0.06f32, 0.03f32, 0.40f32, 0.10f32, 0.02f32, 0.05f32, 4.0f32,
+            0.25f32, 0.08f32, 0.07f32, -0.04f32, 1.75f32, 0.35f32, 12.0f32, 5.0f32, 3.0f32, 2.0f32,
+            0.90f32, 0.30f32,
         ];
 
         let metrics = decode_tm_flex_metrics_row(&row, 0, TRADE_METRICS_COUNT, 0.0);
@@ -19509,16 +19053,7 @@ mod tests {
     #[test]
     fn decode_full_metric_rows_apply_hurdle_tau_to_sortino() {
         let row = vec![
-            0.15f32, // pnl
-            7.0f32,  // trades
-            0.20f32, // max_dd
-            0.06f32, // mean
-            0.03f32, // std
-            0.40f32, // exposure
-            0.10f32, // net_exposure
-            0.02f32, // downside_deviation (tau-adjusted)
-            0.05f32, // ulcer_index
-            4.0f32,  // omega (tau-adjusted)
+            0.15f32, 7.0f32, 0.20f32, 0.06f32, 0.03f32, 0.40f32, 0.10f32, 0.02f32, 0.05f32, 4.0f32,
         ];
 
         let metrics = decode_tm_flex_metrics_row(&row, 0, PRODUCT_REDUCED_METRICS_COUNT, 0.01);

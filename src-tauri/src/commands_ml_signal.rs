@@ -69,7 +69,7 @@ fn validate_ml_signal_context(
             .as_deref()
             .map(normalize_timeframe_label)
             .unwrap_or_default();
-        // Preserve the current permissive behavior for loaded datasets whose timeframe is unknown.
+
         if !expected.is_empty() && !actual.is_empty() && expected != actual {
             return Err(format!(
                 "validation requires timeframe '{expected}', but loaded data id has timeframe '{actual}'"

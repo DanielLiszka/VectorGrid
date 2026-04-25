@@ -30,9 +30,7 @@ pub(super) fn build_validation_shortlist_csv_text(
     }
 
     let mut lines: Vec<String> = Vec::with_capacity(rows.len().saturating_add(1));
-    // Fixed 28-column CSV contract. Keep the current textual encodings stable:
-    // `hard_gate_passed` is `true`/`false` or empty, legacy/cross shortlist flags are `1`/`0`,
-    // and `params_json` remains one escaped CSV field.
+
     lines.push("rank,approval_label,approval_reason,hard_gate_passed,legacy_shortlisted,profile_kind,params_summary,robust_score,psr,dsr,track_record_bars,min_track_record_length_bars,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,wf_sharpe_median,wf_dd_worst,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_metric_p50,cross_score,cross_pareto,bootstrap_prob_pnl_positive,perturb_pnl_mean,warning_flags,fail_reasons,params_json".to_string());
 
     for row in rows {

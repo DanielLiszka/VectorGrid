@@ -34,21 +34,48 @@ data/*.csv
 
 # Local-only documentation and AI/research working notes
 /docs/
+/.github/workflows.disabled/
 /Archive/
 /research/
 /options_research/
 /Math Review/
+/SASS research/
 /rt_cores/
 /tensor_cores/
 /strategies/
 /scripts/generate_math_review_prompt_contexts.ps1
-/scripts/baselines/ui_capture/*.png
+/scripts/generate_vectorgrid_broader_cs_prompt_bundles.mjs
+/scripts/check_migration_freeze_scope.mjs
+/scripts/check_output_parity.mjs
+/scripts/check_output_semantic_parity.mjs
+/scripts/export_baseline_samples.mjs
+/scripts/headless_output_parity_pack.json
+/scripts/output_parity_pairs.json
+/scripts/output_parity_semantic_pairs.json
+/scripts/refresh_output_parity_baseline.mjs
+/scripts/run_output_parity_check.mjs
+/scripts/run_packaged_smoke.ps1
+/scripts/capture_optimization_memory.ps1
+/scripts/post_release_telemetry_review.mjs
+/scripts/baselines/
+/src-tauri/gen/schemas/
+/src-tauri/resources/native/
+/web/playwright.config.ts
+/web/wdio.desktop.conf.ts
+/web/tsconfig.wdio.json
+/web/scripts/desktop/
+/web/scripts/capture-baseline-ui.mjs
+/web/scripts/check-a11y-smoke.mjs
+/web/e2e/
 
 # JS dependency/build outputs
 /node_modules/
 **/node_modules/
 /dist/
 /web/dist/
+/web/playwright-report/
+/web/test-results/
+/web/.vite/
 
 # Editor / OS
 .DS_Store

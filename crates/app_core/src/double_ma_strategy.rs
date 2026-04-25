@@ -16,9 +16,6 @@ fn require_positive_finite(name: &str, value: f64) -> Result<(), String> {
     }
 }
 
-// This module owns boundary validation for caller-supplied configs. Reject
-// invalid raw fields here; `StrategyConfig` accessors still own internal
-// normalization/repair for already-admitted configs and older artifacts.
 pub(crate) fn validate_strategy_cfg(cfg: &StrategyConfig) -> Result<(), String> {
     if !cfg.trade_on_next_bar {
         return Err(

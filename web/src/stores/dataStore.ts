@@ -140,7 +140,7 @@ function normalizeUnixToDateText(value: number): string {
   return formatUtcDateFromUnixMs(ms);
 }
 
-const RELATIVE_TIME_AXIS_EPOCH_CUTOFF_MS = 315_532_800_000; // 1980-01-01T00:00:00Z
+const RELATIVE_TIME_AXIS_EPOCH_CUTOFF_MS = 315_532_800_000;
 
 function isRelativeTimeAxis(meta: DataLoadResult["meta"] | null): boolean {
   const row = meta && typeof meta === "object" ? meta : null;
@@ -621,8 +621,7 @@ function selectPolygonDatasetPath(state: DataState, preferredPath = ""): void {
       (row) => row.csvPath === state.polygonSelectedPath,
     )
   ) {
-    // keep current selection
-  } else {
+      } else {
     state.polygonSelectedPath = state.polygonDatasets[0]?.csvPath || "";
   }
   const selected =

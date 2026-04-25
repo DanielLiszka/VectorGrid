@@ -32,18 +32,12 @@ use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::Candles;
 
 const VCET_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE;
-// Keep these Rust-side bits aligned with the shared `double_crossover.cu` strategy ABI.
+
 const STRAT_LONG_ONLY: u32 = 1u32 << 0;
 const STRAT_NO_FLIP: u32 = 1u32 << 1;
 const STRAT_TRADE_ON_NEXT_BAR: u32 = 1u32 << 2;
 const STRAT_SIGNED_EXPOSURE: u32 = 1u32 << 4;
 
-/// Borrowed DTO for the low-level VCET CUDA entrypoint.
-///
-/// All device pointers in this struct must belong to the same CUDA device identified by the
-/// `device_id` argument passed to `eval_vcet_metrics_gpu_kernel_device_rows`. That entrypoint
-/// makes its cached context current before launch; callers must not mix pointers from another
-/// device/context. The pointer owners must remain alive until the entrypoint returns.
 pub struct VcetGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
     pub close_device_ptr: u64,
@@ -55,9 +49,6 @@ pub struct VcetGpuDeviceSignalMatrices<'a> {
     pub ce_rows: usize,
 }
 
-/// Borrowed host-side combo descriptors for the low-level VCET CUDA entrypoint.
-///
-/// The combo slices must remain alive until `eval_vcet_metrics_gpu_kernel_device_rows` returns.
 pub struct VcetGpuComboBatch<'a> {
     pub vidya_row_index: &'a [i32],
     pub ce_row_index: &'a [i32],
@@ -155,10 +146,6 @@ impl VcetGpuOwnedSignalTables {
     }
 }
 
-/// Prepared VCET GPU batch bound to the CUDA device used during `prepare()`.
-///
-/// The owned signal tables keep the underlying device allocations alive for later
-/// `eval_metrics()` calls on that same device.
 pub struct PreparedVcetGpuKernelBatch {
     prepared_device_id: u32,
     prepared_cuda_inputs: PreparedCudaIndicatorInputs,
@@ -641,7 +628,7 @@ fn ensure_resident_close_lr<'a>(
             let close_ptr = d_close.as_device_ptr().as_raw();
             (close_ptr, Some(d_close))
         };
-        // The kernel fully overwrites this log-return buffer before any read observes it.
+
         let mut d_lr = unsafe { DeviceBuffer::<f32>::uninitialized(signals.cols) }
             .map_err(|e| e.to_string())?;
         launch_compute_log_returns_f32(rt, close_ptr, &mut d_lr, signals.cols)?;
@@ -662,12 +649,6 @@ fn decode_metrics_row(row: &[f32]) -> Metrics {
     decode_non_double_ma_gpu_metrics_row(row)
 }
 
-/// Evaluates a borrowed VCET device-row batch on `device_id`.
-///
-/// Contract:
-/// - `signals.close_device_ptr` and every row pointer must reference allocations on `device_id`.
-/// - This function switches the cached runtime context for `device_id` to current before launch.
-/// - Any allocation owning those device pointers must outlive this call.
 pub fn eval_vcet_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &VcetGpuDeviceSignalMatrices<'_>,

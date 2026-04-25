@@ -2341,8 +2341,6 @@ impl<'a> CatBoostModelHandle<'a> {
         }
         let pointers: Vec<*const f32> = float_features_transposed
             .iter()
-            // Bounds are checked above for every column; CatBoost reads
-            // `doc_count` contiguous values from each batch start pointer.
             .map(|column| unsafe { column.as_ptr().add(start) })
             .collect();
         let mut out = vec![0.0_f64; doc_count];
@@ -4869,10 +4867,6 @@ fn summarize_ml_signal_boundary_diagnostics(
     })
 }
 
-// Distinguishes "no new request on this bar" from an explicit flat/0 request.
-// The sentinel keeps request-word semantics intact so `fill_desired_positions`
-// can preserve the current target through silent bars while still allowing
-// `exit_on_flat` to react to an explicit flat request.
 const ML_SIGNAL_NO_REQUEST: i32 = i32::MIN;
 
 #[derive(Clone, Copy, Default)]
@@ -4936,8 +4930,6 @@ fn fill_requested_targets(
     params: &MlSignalPolicyParams,
     requested: &mut [i32],
 ) {
-    // Start every bar in the no-request state. Only explicit score-derived
-    // targets overwrite the sentinel; absent scores do not imply flat.
     requested.fill(ML_SIGNAL_NO_REQUEST);
     for (idx, point) in score_points.iter().copied().enumerate() {
         let Some(target) = score_target(point, params) else {
@@ -5055,9 +5047,6 @@ fn build_desired_positions(
 }
 
 fn neutralize_ml_signal_execution_overlays(strategy: &StrategyConfig) -> StrategyConfig {
-    // `fill_desired_positions` has already applied ML-policy persistence,
-    // cooldown, and flip/exit behavior. `iterative_sim` must therefore receive
-    // a neutralized strategy so those overlays are not double-applied.
     let mut normalized = strategy.clone();
     normalized.allow_flip = true;
     normalized.cooldown_bars = 0;
@@ -5420,10 +5409,7 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
     validation
         .candidates
         .sort_by(|a, b| b.robust_score.total_cmp(&a.robust_score));
-    // Exhaustive-sweep contract: evaluate the full Cartesian grid, rank the
-    // full candidate set by robust score, truncate to retained `top_k`, then
-    // rebuild the run verdict from the retained shortlist while preserving the
-    // original `sweep_size` in `candidates_tested`.
+
     if req.top_k > 0 && validation.candidates.len() > req.top_k {
         validation.candidates.truncate(req.top_k);
     }

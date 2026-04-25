@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useTaskLifecycleSummary } from './useTaskLifecycleSummary'
 import { useTaskStore } from '../stores/taskStore'
