@@ -76,7 +76,7 @@ const GPU_KERNEL_PREFERRED_MAS: &[&str] = &[
     "zlema",
 ];
 
-const GPU_SPEEDUPS_CSV_EMBEDDED: &str = include_str!("../../../gpu_speedups.csv");
+const GPU_SPEEDUPS_CSV_EMBEDDED: &str = include_str!("../data/gpu_speedups.csv");
 static GPU_SPEEDUP_INDICATOR_IDS: OnceLock<BTreeSet<String>> = OnceLock::new();
 
 #[inline]

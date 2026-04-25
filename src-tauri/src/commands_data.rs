@@ -173,9 +173,16 @@ fn find_workspace_root() -> Option<PathBuf> {
 
 fn load_gpu_speedups_csv() -> Result<Vec<GpuSpeedupEntry>, String> {
     let Some(root) = find_workspace_root() else {
-        return Err("unable to locate workspace root for gpu_speedups.csv".to_string());
+        return Err(
+            "unable to locate workspace root for crates/app_core/data/gpu_speedups.csv"
+                .to_string(),
+        );
     };
-    let csv_path = root.join("gpu_speedups.csv");
+    let csv_path = root
+        .join("crates")
+        .join("app_core")
+        .join("data")
+        .join("gpu_speedups.csv");
     if !csv_path.is_file() {
         return Err(format!(
             "gpu speedup table not found: {}",

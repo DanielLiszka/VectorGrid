@@ -23,6 +23,33 @@ data/*.csv
 # Logs
 *.log
 
+# Local secrets and machine-specific configuration
+/.env
+/.env.*
+!.env.example
+/AGENTS.md
+/msedgedriver.exe
+/msedgedriver
+/nvlog.config
+
+# Local-only documentation and AI/research working notes
+/docs/
+/Archive/
+/research/
+/options_research/
+/Math Review/
+/rt_cores/
+/tensor_cores/
+/strategies/
+/scripts/generate_math_review_prompt_contexts.ps1
+/scripts/baselines/ui_capture/*.png
+
+# JS dependency/build outputs
+/node_modules/
+**/node_modules/
+/dist/
+/web/dist/
+
 # Editor / OS
 .DS_Store
 Thumbs.db
@@ -49,10 +76,3 @@ tmp_*.png
 
 # Preserved local run / benchmark / profiling artifacts
 /output/
-
-# Generated profiler captures in research trees
-SASS research/**/profiling/**/*.ncu-rep
-SASS research/**/profiling/**/*.nsys-rep
-SASS research/**/profiling/**/*.qdrep
-SASS research/**/profiling/**/*.qdstrm
-SASS research/**/profiling/**/*.sqlite

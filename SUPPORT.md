@@ -11,8 +11,7 @@ Use GitHub Issues for:
 Before opening an issue, check:
 
 - `README.md`
-- `REPO_MAP.md`
-- `RELEASE.md`
+- existing open and closed GitHub Issues
 
 ## What To Include
 

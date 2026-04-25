@@ -2,6 +2,12 @@
 
 Vue + Vite frontend workspace for the Tauri desktop app.
 
+## Public Status
+
+This frontend is currently internal work-in-progress. It remains in the repository so the backend/frontend contract is visible, but it is not a supported public application for the current backend/CLI preview release.
+
+For public usage, start from the root `README.md` backend CLI commands. Use the commands below only when intentionally working on the frontend.
+
 ## Commands
 
 ```powershell

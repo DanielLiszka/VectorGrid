@@ -9,8 +9,6 @@ This project is maintained by a single owner and the contribution bar is intenti
 Read these first:
 
 - `README.md` for product scope and the public quality bar
-- `REPO_MAP.md` for file ownership and workflow routing
-- `RELEASE.md` for release variants, packaging notes, and public support posture
 
 If you are proposing a larger workflow change, open an issue first so the shape can be agreed before significant implementation work starts.
 
@@ -75,8 +73,7 @@ If you intentionally use a narrower command, say why.
 When behavior changes, update the public docs that users and contributors actually rely on:
 
 - `README.md`
-- `REPO_MAP.md`
-- `RELEASE.md`
+- adjacent crate, script, or frontend documentation when that surface needs it
 
 Do not commit large generated artifacts, local benchmark byproducts, or local profiler captures unless the change explicitly requires a checked-in artifact and the reason is documented in the pull request.
 

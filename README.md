@@ -1,8 +1,17 @@
 # VectorGrid
 
-GPU-accelerated Tauri desktop app for exact-grid trading strategy optimization and validation.
+GPU-accelerated Rust backend and CLI for exact-grid trading strategy optimization and validation.
 
-The desktop product and the benchmarked execution engine are both referred to as **VectorGrid** in this repository. `VectorBT` is mentioned only for explicit external benchmark comparisons.
+The original desktop product and the benchmarked execution engine are both referred to as **VectorGrid** in this repository. `VectorBT` is mentioned only for explicit external benchmark comparisons.
+
+## Public Status
+
+This repository is currently published as a **backend/CLI preview**.
+
+- The supported public surface is the Rust backend, CLI entry points, benchmark harnesses, and verification scripts.
+- The Vue/Tauri frontend source remains in the tree for transparency and future development, but it is not a supported public application yet.
+- Do not treat `web/`, `npm run dev`, `npm run build`, `cargo run -p ta_desktop_demo_app`, or Tauri packaging as the public quick-start path for this release.
+- No financial, trading, broker, paper-trading, or live-execution workflow in this repo should be treated as production advice or a production trading system.
 
 ## Stored Benchmark Snapshots
 
@@ -38,10 +47,6 @@ Reference ratios using the stored VectorBT artifact:
 - `2452x` faster than the last stored VectorBT CPU workflow for that scenario
 - `148x` faster than the refreshed VectorGrid CPU path on the same scenario
 
-![VectorGrid vs VectorBT 250k benchmark chart](docs/assets/benchmark-double-ma-250k.svg)
-
-_The chart above is the earlier March public `250,000`-pair warm app-path snapshot. The bullets above lead with the two VectorGrid-only refreshes plus their historical VectorBT references, while the chart remains the earlier public March snapshot._
-
 **Stored benchmark snapshots**
 
 | Scenario | VectorGrid GPU kernel | VectorGrid CPU | VectorBT CPU |
@@ -71,14 +76,14 @@ Use the warm app-path numbers only for scenario-matched saved-snapshot compariso
 
 Local preserved benchmark, profiling, and report artifacts now belong under `output/`. Treat `target/` as disposable Cargo/build scratch that can be deleted between runs without intentionally preserving historical evidence.
 
-## What The App Does
+## What The Backend Does
 
 - Exact-grid optimization for trading strategies, with a mature GPU path for the `Double MA` family.
 - GPU-backed validation coverage for the active supported strategy families, including walk-forward and related validation flows.
 - CPU fallback support throughout the product.
 - Warm in-memory and VRAM-resident execution paths designed for repeated optimization and validation runs on the same dataset.
-- Desktop UI for data loading, optimization, shortlist review, heatmaps, validation, history, and export/report workflows.
-- Execution workspace for signal dry-runs, local paper simulation, and broker-armed Alpaca paper/live workflows. Treat this as operator tooling, not financial advice; live broker use requires explicit credentials, current broker review, and user responsibility for all orders submitted.
+
+The desktop UI and execution workspace are not part of the public supported surface yet. They remain in source form so the backend/frontend contract is inspectable while the frontend is being reworked.
 
 ## Current GPU Coverage
 
@@ -90,45 +95,54 @@ Broadly, the repo is in a good backend state for the current target set.
 - `VCC` remains parity-gated.
 - `CompositeMo` remains CPU-bound.
 
-For the current detailed tracker set, see:
+The README tracks the public backend coverage status. Internal tracker history and research notes are intentionally kept out of the public source tree.
 
-- [OPEN_IMPLEMENTATION_COMPLETION_TRACKER_2026-03-12.md](research/OPEN_IMPLEMENTATION_COMPLETION_TRACKER_2026-03-12.md)
-- [GPU_VALIDATION_MIGRATION_PLAN_2026-03-10.md](research/GPU_VALIDATION_MIGRATION_PLAN_2026-03-10.md)
-- [VALIDATION_HARDENING_PLAN_2026-03-10.md](research/VALIDATION_HARDENING_PLAN_2026-03-10.md)
-- [STRATEGY_INDICATOR_GPU_COVERAGE_INVENTORY_2026-03-10.md](research/STRATEGY_INDICATOR_GPU_COVERAGE_INVENTORY_2026-03-10.md)
-
-## Quick Start
+## Backend Quick Start
 
 Toolchain posture:
 
 - the repo now pins Rust via `rust-toolchain.toml`
 - expected channel remains `stable`
 
-Install frontend dependencies:
+Run a CPU-only synthetic `Double MA` optimization through the backend CLI:
 
 ```powershell
-cd web
-npm install
+cargo run -p ta_app_core --features cli --bin ta_cli -- `
+  --backend cpu `
+  --synth-len 1000 `
+  --fast-ma alma `
+  --slow-ma alma `
+  --fast-period 5:15:5 `
+  --slow-period 20:40:10 `
+  --heatmap-bins 0 `
+  --top-k 3
 ```
 
-Run the app from the repo root:
+Build the backend workspace without CUDA:
 
 ```powershell
-npm --prefix web run build
-cargo run -p ta_desktop_demo_app --release --features cuda,cuda-backtest-kernel
+cargo check -p ta_app_core --features cli
 ```
 
-CPU-only app run:
+Optional GPU-kernel CLI run, for machines with a working NVIDIA/CUDA runtime:
 
 ```powershell
-cargo run -p ta_desktop_demo_app --release
+cargo run -p ta_app_core --release --features cli,cuda,cuda-backtest-kernel --bin ta_cli -- `
+  --backend gpu-kernel `
+  --synth-len 200000 `
+  --fast-ma alma `
+  --slow-ma alma `
+  --fast-period 5:50:1 `
+  --slow-period 20:200:5 `
+  --heatmap-bins 0 `
+  --top-k 10
 ```
 
-For Windows build variants, PTX packaging, and public release posture, use [RELEASE.md](RELEASE.md).
+The Tauri desktop app can still be built by maintainers, but it is intentionally not documented as a supported public run path in this backend-preview release.
 
 ## Local Release Candidate Gate
 
-Use the local release-candidate wrapper when you want one orchestrated command that composes the repo-quality lane, parity checks, workflow regression, variant-aware bundle build, manifest generation, and optional packaged smoke:
+The release-candidate wrapper is maintainer-oriented. It still exercises desktop/frontend packaging paths and should not be read as the public quick-start path:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_release_candidate_gate.ps1 -Variant cpu
@@ -157,13 +171,20 @@ Local release-candidate outputs are written under `output/release_candidates/`.
 
 ## Local Quality Gate
 
-Use the repo-level quality gate before handoff for broad non-options changes and public-facing cleanup:
+For backend-preview changes, start with the Rust backend checks:
+
+```powershell
+cargo check -p ta_app_core --features cli
+cargo test -p ta_app_core
+```
+
+Use the repo-level quality gate before handoff for broad maintainer changes and public-facing cleanup:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1
 ```
 
-The default lane runs:
+The full maintainer lane still runs frontend checks because the source remains in-tree:
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace`
@@ -199,8 +220,6 @@ powershell -ExecutionPolicy Bypass -File scripts/run_execution_safety_gate.ps1
 
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 
-For contributor-facing routing, verification ownership, and the broader workflow map, use `REPO_MAP.md` rather than expanding this README into a routing document.
-
 For public contribution, support, security-reporting, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, and `LICENSE`.
 
 ## Reproduce The Benchmark
@@ -235,20 +254,7 @@ Each faceoff run now writes the lockfile hash plus same-interpreter Python prove
 - `summary.json` `environment.python.requirements_lock`
 - `summary.json` `environment.python.pip`
 
-Preserved faceoff artifacts now belong under `output/benchmarks/`. Older historical snapshots may still exist under legacy `target/...` paths from before this convention.
-
-- latest VectorGrid-only refreshes:
-  - `output/benchmarks/vectorgrid_app_faceoff_only_20260416/`
-  - `output/benchmarks/vectorgrid_app_faceoff_only_250k_20260416/`
-- fastest saved `58,300`-pair snapshot:
-  - `output/benchmarks/vectorgrid_app_faceoff_only_20260313/`
-  - `output/benchmarks/vectorbt_vs_vectorgrid_faceoff_58300_rerun/`
-- latest saved `250,000`-pair rerun set:
-  - `output/benchmarks/vectorbt_vs_vectorgrid_manual_rerun_2026-04-03/`
-  - `output/benchmarks/vectorbt_vs_vectorgrid_faceoff_rerun_2026-04-03/`
-- March public `250,000`-pair chart snapshot:
-  - `output/benchmarks/vectorgrid_app_faceoff_only_250k_20260313/`
-  - `output/benchmarks/vectorbt_only_faceoff_250k_20260313/`
+New faceoff artifacts belong under `output/benchmarks/`, which is intentionally ignored. The rows above are historical snapshots; rerun the matching scenario before presenting the numbers as current.
 
 ## Performance Gates And Profiling
 
@@ -278,16 +284,15 @@ powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_ncu.ps1
 
 ## Repo Layout
 
-- `Archive/`: retired implementation plans, review packets, prompt packs, and historical trackers moved out of the repo root
 - `src-tauri/`: Tauri app crate, commands, desktop integration
 - `crates/app_core/`: optimization, validation, CUDA/runtime plumbing
 - `crates/strategies/`: strategy configuration and shared strategy logic
 - `crates/optimizer/`: optimizer support crate
-- `web/`: Vue 3 + Vite frontend
-- `research/`: trackers, migration plans, benchmark notes, and implementation docs
+- `web/`: Vue 3 + Vite frontend source, included but not supported as a public application in this release
 
 ## Notes
 
 - Keep CPU-only builds working; CUDA is optional at build time.
+- Treat the frontend/Tauri app as internal work-in-progress until the public status section says otherwise.
 - For CUDA backtest-kernel work, use the repo perf gates and Nsight before drawing conclusions from single ad-hoc timings.
-- The current benchmark chart is intentionally static and explicit. It is meant to be readable and honest in a GitHub README without relying on video playback.
+- The benchmark table is intentionally static and explicit. It is meant to be readable and honest in a GitHub README without relying on generated media.

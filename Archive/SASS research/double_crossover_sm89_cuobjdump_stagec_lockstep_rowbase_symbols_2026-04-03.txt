@@ -1,4 +1,0 @@
-
-SASS text section 47 : Rust-double_crossover.sm_89-double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm.sm_89.elf.bin
-SASS text section 55 : Rust-double_crossover.sm_89-double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm.sm_89.elf.bin
-

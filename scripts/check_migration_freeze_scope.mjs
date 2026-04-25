@@ -7,7 +7,6 @@ import path from 'node:path'
 
 const ALLOWED_EXACT = new Set([
   'README.md',
-  'RELEASE.md',
   'src-tauri/tauri.conf.json',
   'src-tauri/tauri.windows.conf.json',
   'tauri.conf.json',
@@ -24,7 +23,7 @@ const ALLOWED_PREFIXES = ['web/', 'scripts/baselines/']
 const USAGE_NOTE = [
   'Migration freeze scope helper:',
   '- use this only during an explicitly declared migration or stabilization window',
-  '- keep allowlist changes paired with the matching human-readable note in RELEASE.md/REPO_MAP.md',
+  '- keep allowlist changes paired with the matching human-readable note in README.md or adjacent in-tree docs',
   '- this is not a general repo-wide gate',
 ].join('\n')
 

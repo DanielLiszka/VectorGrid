@@ -1,6 +1,0 @@
-xlarge_shortlist_full17_alma | route=gpu_kernel.path=row_first_global_topk | gpu_kernel.metrics_count=17 | gpu_kernel.tile_metrics_stride=17 | runtime_ms mean/min/max=350.67/345/359 | wall_ms_mean=350.67
-xlarge_shortlist_trade22_alma | route=gpu_kernel.path=row_first_global_topk | gpu_kernel.metrics_count=22 | gpu_kernel.tile_metrics_stride=22 | runtime_ms mean/min/max=344.33/338/348 | wall_ms_mean=344.33
-large_full17_row_first_alma | route=gpu_kernel.path=row_first_global_topk | gpu_kernel.metrics_count=17 | gpu_kernel.tile_metrics_stride=17 | runtime_ms mean/min/max=69.67/69/71 | wall_ms_mean=69.67
-large_full17_score_first_alma | route=gpu_kernel.path=score_first_global_topk | gpu_kernel.metrics_count=17 | gpu_kernel.tile_metrics_stride=17 | runtime_ms mean/min/max=124.33/123/125 | wall_ms_mean=124.33
-large_trade22_row_first_alma | route=gpu_kernel.path=row_first_global_topk | gpu_kernel.metrics_count=22 | gpu_kernel.tile_metrics_stride=22 | runtime_ms mean/min/max=75/71/77 | wall_ms_mean=75
-large_trade22_score_first_alma | route=gpu_kernel.path=score_first_global_topk | gpu_kernel.metrics_count=22 | gpu_kernel.tile_metrics_stride=22 | runtime_ms mean/min/max=125.67/123/130 | wall_ms_mean=125.67
