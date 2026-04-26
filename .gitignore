@@ -38,6 +38,8 @@ data/*.csv
 /docs/*
 !/docs/REPO_MAP.md
 !/docs/frontend_end_to_end_qa_automation_plan.md
+!/docs/frontend_premium_desktop_ui_ux_implementation_plan_2026-04-26.md
+!/docs/trade22_cuda_device_shortlist_implementation_guide.md
 /.github/workflows.disabled/
 /Archive/
 /research/

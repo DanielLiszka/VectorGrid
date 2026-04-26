@@ -38,7 +38,8 @@ export function isOptimizeDockVisible(state: ShellDockState): boolean {
 
 export function isValidationDockVisible(state: ShellDockState): boolean {
   const workspace = normalize(state.workspace)
+  const workflow = normalize(state.workflow)
   const resultsTab = normalize(state.resultsTab)
   const mode = normalize(state.mode)
-  return workspace === 'workflow' && resultsTab === 'validate' && mode !== 'ml-signal'
+  return workspace === 'workflow' && workflow !== 'validate' && resultsTab === 'validate' && mode !== 'ml-signal'
 }

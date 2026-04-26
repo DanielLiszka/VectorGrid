@@ -439,8 +439,8 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: stretch;
-  gap: 0.5rem;
-  padding: 0.45rem 0.7rem 0.4rem;
+  gap: 0.42rem;
+  padding: 0.34rem 0.62rem 0.32rem;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   background: color-mix(in oklab, var(--surface-shell) 90%, var(--header-bg));
   backdrop-filter: blur(8px);
@@ -468,7 +468,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  gap: 0.08rem;
+  gap: 0.04rem;
   min-width: 260px;
 }
 
@@ -495,7 +495,7 @@ onBeforeUnmount(() => {
 
 .titlebarSubtitle {
   max-width: 56ch;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -510,12 +510,12 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.42rem;
+  gap: 0.34rem;
 }
 
 .titlebarTool,
 .windowControl {
-  min-height: 34px;
+  min-height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -527,8 +527,8 @@ onBeforeUnmount(() => {
 }
 
 .titlebarTool {
-  padding: 0.42rem 0.62rem;
-  font-size: 0.74rem;
+  padding: 0.34rem 0.56rem;
+  font-size: 0.72rem;
   white-space: nowrap;
 }
 
@@ -558,8 +558,8 @@ onBeforeUnmount(() => {
 .windowControls {
   display: inline-flex;
   align-items: center;
-  gap: 0.28rem;
-  margin-left: 0.2rem;
+  gap: 0.22rem;
+  margin-left: 0.16rem;
 }
 
 .windowControls.unavailable {
@@ -567,7 +567,7 @@ onBeforeUnmount(() => {
 }
 
 .windowControl {
-  width: 34px;
+  width: 32px;
   padding: 0;
 }
 
@@ -598,11 +598,13 @@ onBeforeUnmount(() => {
 
 @media (max-width: 760px) {
   .desktopTitlebar {
-    height: 48px;
-    gap: 0.35rem;
+    height: 44px;
+    gap: 0.26rem;
+    padding-inline: 0.42rem;
   }
 
   .titlebarSubtitle,
+  .titlebarWorkspace,
   .titlebarToolLabel {
     display: none;
   }
@@ -612,8 +614,13 @@ onBeforeUnmount(() => {
   }
 
   .titlebarTool {
-    width: 34px;
+    width: 30px;
     padding: 0;
+  }
+
+  .windowControl {
+    width: 30px;
+    min-height: 30px;
   }
 }
 

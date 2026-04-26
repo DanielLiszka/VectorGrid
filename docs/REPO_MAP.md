@@ -677,6 +677,12 @@ The frontend is a Vue + Pinia workspace app, not a page-routed SPA.
   - app shell, lazy panel router, and mount point for global overlays/bridges including the startup overlay
 - `web/src/components/VueWorkspaceShell.vue`
   - top-level workspace/workflow shell
+- `web/src/components/workbench/WorkbenchShell.vue`
+  - opt-in premium workbench shell enabled by localStorage flag `vta_workbench_shell_v1=1`; default production shell remains `VueWorkspaceShell`
+- `web/src/components/workbench/ResearchCockpit.vue`
+  - flagged Research workbench overview, backed by `web/src/composables/useResearchCockpitModel.ts`
+- `web/src/components/workbench/WorkbenchInspector.vue`
+  - flagged right-side workbench inspector for selection, validation, history, tasks, and diagnostics context
 - `web/src/stores/workflowStore.ts`
   - core workflow/tab state machine
 
@@ -732,6 +738,12 @@ These are good first files when the task is startup flow, global shortcuts, quic
   - lazy async panel registry for workspace panels such as `DataWorkspacePanel`, `OptimizeWorkspacePanel`, `MetaWorkspacePanel`, `HistoryWorkspacePanel`, `ExecutionWorkspacePanel`, and `SettingsWorkspacePanel`
 - `web/src/components/VueWorkspaceShell.vue`
   - owns the top-level workspace shell plus the control/result mount slots that decide where those panels render
+- `web/src/components/workbench/WorkbenchShell.vue`
+  - owns the feature-flagged workbench rail, cockpit placement, inspector placement, and action-bar host while reusing the same panel mount IDs as the default shell
+- `web/src/components/workbench/ResearchCockpit.vue`
+  - owns the flagged Research cockpit cards and workflow-step shortcuts; use `web/src/composables/useResearchCockpitModel.ts` for derived cockpit state
+- `web/src/components/workbench/WorkbenchInspector.vue`
+  - owns mode tabs and right-inspector actions; use `web/src/utils/inspectorModel.ts` for inspector state shape and action IDs
 - `web/src/components/MetaWorkspacePanel.vue`
   - owns aggregate-subworkspace switching for `meta`, `batch`, `saved`, and `compare`
   - compare now surfaces selected baseline provenance directly in-panel while keeping compare summary store-driven
@@ -938,6 +950,12 @@ For command-palette and quick-action behavior, start with:
   - best high-level file for the current shared dense-table model
 - `web/src/composables/usePersistedMatrixColumnState.ts`
   - best high-level file for current persisted dense-table column posture across Top, Validation, and Meta
+- `web/src/composables/usePersistedTableDensity.ts`
+  - shared persistent compact/comfortable/spacious density state for dense table and saved-list surfaces
+- `web/src/components/ui/AppDataTableShell.vue`
+  - shared dense-table chrome, toolbar contract, empty state, density classing, and keyboard-hint surface
+- `web/src/components/ui/AppTableDensityControl.vue`
+  - segmented density control used by Top, Validation, and History saved-run table surfaces
 - `web/src/components/OptimizeWorkspacePanel.vue`
   - dense control-surface summary of what optimization UI currently exposes
 

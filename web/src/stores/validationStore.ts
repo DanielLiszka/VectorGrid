@@ -318,7 +318,7 @@ interface ValidationState {
   validationWarningSummary: string
   validationReoptMeta: string
   validationShortlistMeta: string
-  validationColumns: { label: string; alignLeft: boolean }[]
+  validationColumns: { key?: string; label: string; alignLeft: boolean }[]
   validationRows: { cells: { text: string; className: string; title: string }[] }[]
   validationOutputPreview: string
   crossMeta: string

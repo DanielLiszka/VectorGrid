@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useEventListener } from '@vueuse/core'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -7,7 +7,18 @@ import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
-import { dispatchSharedShellShortcut } from '../utils/shellShortcutRegistry'
+import {
+  createSharedShellShortcutCommands,
+  dispatchSharedShellShortcut,
+  type SharedShellShortcutContext,
+} from '../utils/shellShortcutRegistry'
+import { listenEvent } from '../tauri/events'
+
+interface NativeShellCommandPayload {
+  commandId?: unknown
+  command_id?: unknown
+  source?: unknown
+}
 
 const analysisStore = useAnalysisStore()
 const commandActionStore = useCommandActionStore()
@@ -40,6 +51,63 @@ function closeCommandPalette(): void {
 
 function isPolygonModalOpen(): boolean {
   return polygonOpen.value
+}
+
+function sharedShellShortcutContext(): SharedShellShortcutContext {
+  return {
+    canRun: canRun.value,
+    canValidate: canValidate.value,
+    canBrowseCsv: canBrowseCsv.value,
+    canPolygonOpen: canPolygonOpen.value,
+    canExportCsv: canExportCsv.value,
+    canExportJson: canExportJson.value,
+    canOpenLatestReport: canOpenLatestReport.value,
+    canOpenLatestMetaReport: canOpenLatestMetaReport.value,
+    browseCsv: () => {
+      commandActionStore.browseCsv()
+    },
+    openPolygon: () => {
+      commandActionStore.openPolygon()
+    },
+    toggleControls: () => {
+      commandActionStore.toggleControls()
+    },
+    runOptimization: () => {
+      commandActionStore.runOptimization()
+    },
+    validateOptimization: () => {
+      commandActionStore.validateOptimization()
+    },
+    exportTopCsv: () => {
+      commandActionStore.exportTopCsv()
+    },
+    exportTopJson: () => {
+      commandActionStore.exportTopJson()
+    },
+    openLatestReport: () => {
+      commandActionStore.openLatestReport()
+    },
+    openLatestMetaReport: () => {
+      commandActionStore.openLatestMetaReport()
+    },
+  }
+}
+
+function nativeShellCommandId(payload: NativeShellCommandPayload): string {
+  return String(payload.commandId ?? payload.command_id ?? '').trim()
+}
+
+function runNativeShellCommand(payload: NativeShellCommandPayload): void {
+  const commandId = nativeShellCommandId(payload)
+  if (!commandId) return
+  if (commandId === 'open_command_palette') {
+    commandPaletteStore.openPalette()
+    return
+  }
+  const command = createSharedShellShortcutCommands(sharedShellShortcutContext())
+    .find((item) => item.id === commandId)
+  if (!command?.enabled) return
+  command.run()
 }
 
 function onKeydown(e: KeyboardEvent): void {
@@ -78,43 +146,7 @@ function onKeydown(e: KeyboardEvent): void {
     if (isMultilineEditorTarget(document.activeElement as Element | null) && !e.shiftKey) return
   }
 
-  if (dispatchSharedShellShortcut(e, {
-    canRun: canRun.value,
-    canValidate: canValidate.value,
-    canBrowseCsv: canBrowseCsv.value,
-    canPolygonOpen: canPolygonOpen.value,
-    canExportCsv: canExportCsv.value,
-    canExportJson: canExportJson.value,
-    canOpenLatestReport: canOpenLatestReport.value,
-    canOpenLatestMetaReport: canOpenLatestMetaReport.value,
-    browseCsv: () => {
-      commandActionStore.browseCsv()
-    },
-    openPolygon: () => {
-      commandActionStore.openPolygon()
-    },
-    toggleControls: () => {
-      commandActionStore.toggleControls()
-    },
-    runOptimization: () => {
-      commandActionStore.runOptimization()
-    },
-    validateOptimization: () => {
-      commandActionStore.validateOptimization()
-    },
-    exportTopCsv: () => {
-      commandActionStore.exportTopCsv()
-    },
-    exportTopJson: () => {
-      commandActionStore.exportTopJson()
-    },
-    openLatestReport: () => {
-      commandActionStore.openLatestReport()
-    },
-    openLatestMetaReport: () => {
-      commandActionStore.openLatestMetaReport()
-    },
-  })) return
+  if (dispatchSharedShellShortcut(e, sharedShellShortcutContext())) return
 
   if (!mod) {
     const isPrev = lower === 'k' || key === 'ArrowUp'
@@ -135,6 +167,25 @@ function onKeydown(e: KeyboardEvent): void {
 if (typeof document !== 'undefined') {
   useEventListener(document, 'keydown', onKeydown, { capture: true })
 }
+
+let nativeShellCommandOff: (() => void) | null = null
+
+onMounted(() => {
+  void listenEvent<NativeShellCommandPayload>('shell-command', (payload) => {
+    runNativeShellCommand(payload || {})
+  })
+    .then((off) => {
+      nativeShellCommandOff = off
+    })
+    .catch(() => {
+      nativeShellCommandOff = null
+    })
+})
+
+onBeforeUnmount(() => {
+  nativeShellCommandOff?.()
+  nativeShellCommandOff = null
+})
 </script>
 
 <template></template>

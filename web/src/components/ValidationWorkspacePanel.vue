@@ -6,23 +6,34 @@ import {
   useHeadlessMatrixTable,
   type MatrixColumnMeta,
 } from '../composables/useHeadlessMatrixTable'
-import { usePersistedMatrixColumnState } from '../composables/usePersistedMatrixColumnState'
+import {
+  usePersistedMatrixColumnState,
+  type MatrixColumnViewPreset,
+} from '../composables/usePersistedMatrixColumnState'
+import { usePersistedTableDensity } from '../composables/usePersistedTableDensity'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import ContextHelpTip from './ContextHelpTip.vue'
 import AppDataTableShell from './ui/AppDataTableShell.vue'
+import AppTableDensityControl from './ui/AppTableDensityControl.vue'
+import AppTableViewPresetControl from './ui/AppTableViewPresetControl.vue'
+import type { TableViewPresetOption } from './ui/tableViewPresets'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import {
   previewValidationAdmissionComparisonFromStores,
   previewValidationExecutionSummaryFromStores,
 } from '../services/validationService'
-import { VALIDATION_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
+import {
+  VALIDATION_RESULTS_TABLE_DENSITY_KEY,
+  VALIDATION_RESULTS_TABLE_STATE_KEY,
+} from '../utils/core/storageKeys'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface ValidationColumn {
+  key?: string
   label: string
   alignLeft: boolean
 }
@@ -37,12 +48,57 @@ interface ValidationRow {
   cells: ValidationCell[]
 }
 
+interface ValidationRowDetailItem {
+  key: string
+  label: string
+  text: string
+  title: string
+  className: string
+}
+
 interface CrossDatasetItem {
   path: string
   label: string
   meta: string
   checked: boolean
   disabled: boolean
+}
+
+type ValidationViewPresetId = 'default' | 'gates' | 'risk'
+
+const VALIDATION_VIEW_PRESETS: readonly TableViewPresetOption[] = [
+  { id: 'default', label: 'Default', summary: 'Original validation table order.' },
+  { id: 'gates', label: 'Gates', summary: 'Prioritize admission gates and Pareto signals.' },
+  { id: 'risk', label: 'Risk', summary: 'Prioritize robust score, probabilities, and risk metrics.' },
+]
+
+const VALIDATION_VIEW_PRESET_KEYS: Record<ValidationViewPresetId, readonly string[]> = {
+  default: [],
+  gates: [
+    'rank',
+    'gate',
+    'robust_pareto',
+    'cross',
+    'cross_pareto',
+    'psr',
+    'dsr',
+    'cscv_rank',
+    'fast',
+    'slow',
+  ],
+  risk: [
+    'rank',
+    'robust',
+    'psr',
+    'dsr',
+    'sharpe',
+    'max_dd',
+    'pnl',
+    'trades',
+    'gate',
+    'fast',
+    'slow',
+  ],
 }
 
 const validationStore = useValidationStore()
@@ -170,6 +226,7 @@ const crossEnableDraft = ref(false)
 const crossMaxDraft = ref('6')
 const crossModeDraft = ref('auto')
 const crossSearchDraft = ref('')
+const selectedValidationRowIndex = ref(0)
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'validate')
 const showValidationResults = computed(() => validationStage.value === 'ready')
@@ -181,12 +238,17 @@ const {
   visibleCount: visibleColumnCount,
   hiddenCount: hiddenColumnCount,
   canRestoreDefaults,
+  allColumnKeys,
+  orderedColumns,
+  orderedVisibleColumnKeys,
   toggleColumnVisibility,
   restoreDefaultColumns,
   canHideColumn,
+  applyColumnViewPreset,
 } = usePersistedMatrixColumnState(renderedColumns, VALIDATION_RESULTS_TABLE_STATE_KEY)
+const { tableDensity } = usePersistedTableDensity(VALIDATION_RESULTS_TABLE_DENSITY_KEY)
 const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
-  renderedColumns,
+  orderedColumns,
   renderedRows,
   { columnVisibility },
 )
@@ -233,6 +295,87 @@ const columnVisibilityHint = computed(() => {
   }
   return 'Hide secondary result columns when you want a tighter validation review pass.'
 })
+const selectedValidationRow = computed(() => renderedRows.value[selectedValidationRowIndex.value] ?? null)
+const selectedValidationRowLabel = computed(() => {
+  const total = renderedRows.value.length
+  if (!total || !selectedValidationRow.value) return 'No row selected'
+  return `Row ${selectedValidationRowIndex.value + 1} of ${total}`
+})
+const validationColumnDetailByKey = computed(() => {
+  const out = new Map<string, { label: string; sourceColumnIndex: number }>()
+  orderedColumns.value.forEach((column, displayIndex) => {
+    const typedColumn = column as ValidationColumn & { sourceColumnIndex?: number }
+    const sourceColumnIndex = Number.isFinite(Number(typedColumn.sourceColumnIndex))
+      ? Number(typedColumn.sourceColumnIndex)
+      : displayIndex
+    const key = String(typedColumn.key || `col_${sourceColumnIndex}`).trim()
+    if (!key) return
+    out.set(key, {
+      label: String(typedColumn.label || key).trim() || key,
+      sourceColumnIndex,
+    })
+  })
+  return out
+})
+const selectedValidationRowDetails = computed<ValidationRowDetailItem[]>(() => {
+  const row = selectedValidationRow.value
+  if (!row) return []
+  return orderedVisibleColumnKeys.value
+    .map((key) => {
+      const column = validationColumnDetailByKey.value.get(key)
+      if (!column) return null
+      const cell = row.cells[column.sourceColumnIndex]
+      if (!cell) return null
+      return {
+        key,
+        label: column.label,
+        text: String(cell.text || '').trim() || '—',
+        title: String(cell.title || '').trim(),
+        className: String(cell.className || '').trim(),
+      }
+    })
+    .filter((item): item is ValidationRowDetailItem => item !== null)
+})
+
+function validationViewPresetFor(presetId: ValidationViewPresetId): MatrixColumnViewPreset {
+  if (presetId === 'default') {
+    return {
+      visibleColumnKeys: allColumnKeys.value,
+      columnOrderKeys: allColumnKeys.value,
+    }
+  }
+  const orderedKeys = VALIDATION_VIEW_PRESET_KEYS[presetId].filter((key) => allColumnKeys.value.includes(key))
+  const fallbackKeys = allColumnKeys.value.filter((key) => !orderedKeys.includes(key))
+  return {
+    visibleColumnKeys: orderedKeys.length ? orderedKeys : allColumnKeys.value,
+    columnOrderKeys: [...orderedKeys, ...fallbackKeys],
+  }
+}
+
+const activeValidationViewPresetId = computed<ValidationViewPresetId>(() => {
+  const visibleKey = orderedVisibleColumnKeys.value.join('|')
+  if (visibleKey === validationViewPresetFor('gates').visibleColumnKeys?.join('|')) return 'gates'
+  if (visibleKey === validationViewPresetFor('risk').visibleColumnKeys?.join('|')) return 'risk'
+  return 'default'
+})
+
+function applyValidationViewPreset(presetId: string): void {
+  if (presetId !== 'default' && presetId !== 'gates' && presetId !== 'risk') return
+  applyColumnViewPreset(validationViewPresetFor(presetId))
+}
+
+watch(
+  renderedRows,
+  (rows) => {
+    if (!rows.length) {
+      selectedValidationRowIndex.value = 0
+      return
+    }
+    if (selectedValidationRowIndex.value < rows.length) return
+    selectedValidationRowIndex.value = rows.length - 1
+  },
+  { immediate: true },
+)
 
 watch(
   () => [
@@ -434,6 +577,21 @@ function headerMeta(header: Header<ValidationRow, unknown>): MatrixColumnMeta {
 
 function validationCellPayload(cell: Cell<ValidationRow, unknown>): ValidationCell {
   return cell.getValue() as ValidationCell
+}
+
+function selectValidationRow(index: number): void {
+  if (index < 0 || index >= renderedRows.value.length) return
+  selectedValidationRowIndex.value = index
+}
+
+function isSelectedValidationRow(index: number): boolean {
+  return selectedValidationRowIndex.value === index
+}
+
+function onValidationRowKeydown(event: KeyboardEvent, index: number): void {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  selectValidationRow(index)
 }
 
 function validationColumnToggleId(columnKey: string): string {
@@ -1112,42 +1270,58 @@ onBeforeUnmount(() => {
           :summary="validationTableShellSummary"
           :row-count="Number(tableRowCount || 0)"
           :viewport="false"
+          :density="tableDensity"
+          toolbar-label="Validation result table controls"
           aria-label="Validation results table shell"
           keyboard-hint="Validation rows are virtualized; spacer rows are hidden from assistive technology."
         >
           <template #controls>
-            <details v-if="renderedColumns.length > 0" class="columnDetails">
-              <summary class="columnDetailsSummary">
-                <span>Visible columns</span>
-                <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
-              </summary>
-              <div class="columnDetailsBody">
-                <div class="panelMuted">{{ columnVisibilityHint }}</div>
-                <div class="columnToggleGrid" role="group" aria-label="Visible validation result columns">
-                  <label
-                    v-for="column in columnOptions"
-                    :key="column.key"
-                    class="columnToggle"
-                    :class="{ disabled: !canHideColumn(column.key) && column.visible }"
-                    :for="validationColumnToggleId(column.key)"
-                  >
-                    <input
-                      :id="validationColumnToggleId(column.key)"
-                      type="checkbox"
-                      :checked="column.visible"
-                      :disabled="!canHideColumn(column.key) && column.visible"
-                      @change="toggleColumnVisibility(column.key)"
-                    />
-                    <span>{{ column.label }}</span>
-                  </label>
+            <div class="tableControlBar">
+              <AppTableViewPresetControl
+                :presets="VALIDATION_VIEW_PRESETS"
+                :active-preset-id="activeValidationViewPresetId"
+                label="Validation view"
+                qa-prefix="validation.table.view"
+                @apply="applyValidationViewPreset"
+              />
+              <details v-if="renderedColumns.length > 0" class="columnDetails">
+                <summary class="columnDetailsSummary">
+                  <span>Visible columns</span>
+                  <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+                </summary>
+                <div class="columnDetailsBody">
+                  <div class="panelMuted">{{ columnVisibilityHint }}</div>
+                  <div class="columnToggleGrid" role="group" aria-label="Visible validation result columns">
+                    <label
+                      v-for="column in columnOptions"
+                      :key="column.key"
+                      class="columnToggle"
+                      :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                      :for="validationColumnToggleId(column.key)"
+                    >
+                      <input
+                        :id="validationColumnToggleId(column.key)"
+                        type="checkbox"
+                        :checked="column.visible"
+                        :disabled="!canHideColumn(column.key) && column.visible"
+                        @change="toggleColumnVisibility(column.key)"
+                      />
+                      <span>{{ column.label }}</span>
+                    </label>
+                  </div>
+                  <div class="actions columnDetailsActions">
+                    <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                      Restore defaults
+                    </button>
+                  </div>
                 </div>
-                <div class="actions columnDetailsActions">
-                  <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
-                    Restore defaults
-                  </button>
-                </div>
-              </div>
-            </details>
+              </details>
+              <AppTableDensityControl
+                v-model:density="tableDensity"
+                label="Validation density"
+                qa-prefix="validation.table.density"
+              />
+            </div>
           </template>
           <div
             ref="tableScrollElementRef"
@@ -1175,7 +1349,16 @@ onBeforeUnmount(() => {
                 <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
                   <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
                 </tr>
-                <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
+                <tr
+                  v-for="virtualRow in virtualRows"
+                  :key="virtualRow.row.id"
+                  class="selectableRow"
+                  :class="{ selected: isSelectedValidationRow(virtualRow.index) }"
+                  tabindex="0"
+                  :aria-selected="isSelectedValidationRow(virtualRow.index) ? 'true' : 'false'"
+                  @click="selectValidationRow(virtualRow.index)"
+                  @keydown="onValidationRowKeydown($event, virtualRow.index)"
+                >
                   <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
                     <td
                       :class="validationCellPayload(cell).className"
@@ -1191,6 +1374,28 @@ onBeforeUnmount(() => {
               </tbody>
             </table>
           </div>
+          <section
+            v-if="selectedValidationRowDetails.length > 0"
+            class="validationRowInspector"
+            aria-label="Selected validation row details"
+            data-qa-panel="validation.rowDetail"
+          >
+            <header class="rowInspectorHeader">
+              <span class="panelEyebrow">Selected row</span>
+              <strong class="mono">{{ selectedValidationRowLabel }}</strong>
+            </header>
+            <div class="rowInspectorGrid">
+              <div
+                v-for="item in selectedValidationRowDetails"
+                :key="item.key"
+                class="rowInspectorItem"
+                :data-qa-state="`validation.rowDetail.${item.key}`"
+              >
+                <span>{{ item.label }}</span>
+                <strong class="mono" :class="item.className" :title="item.title || undefined">{{ item.text }}</strong>
+              </div>
+            </div>
+          </section>
         </AppDataTableShell>
       </section>
 
@@ -1342,6 +1547,15 @@ onBeforeUnmount(() => {
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
 }
 
+.tableControlBar {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
 .columnDetails[open] {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 38%, var(--border));
   background: color-mix(in oklab, var(--surface-working) 94%, var(--panel-footer));
@@ -1444,6 +1658,79 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
+.validationTableVue tbody tr.selectableRow {
+  cursor: pointer;
+}
+
+.validationTableVue tbody tr.selectableRow:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--panel-focus-edge) 76%, var(--accent));
+  outline-offset: -2px;
+}
+
+.validationTableVue tbody tr.selectableRow.selected td {
+  background: color-mix(in oklab, var(--selection-fill) 74%, transparent);
+  box-shadow: inset 3px 0 0 var(--selection-rail);
+}
+
+.validationRowInspector {
+  margin-top: 0.55rem;
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface-sunken) 92%, var(--panel));
+  padding: 0.58rem 0.62rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.rowInspectorHeader {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.rowInspectorHeader strong {
+  font-size: 0.76rem;
+  color: var(--muted-strong);
+}
+
+.rowInspectorGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.42rem;
+}
+
+.rowInspectorItem {
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
+  padding: 0.42rem 0.46rem;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.rowInspectorItem span {
+  min-width: 0;
+  color: var(--muted-soft);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowInspectorItem strong {
+  min-width: 0;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .preview {
   margin-top: 0.45rem;
   max-height: 220px;
@@ -1496,9 +1783,18 @@ onBeforeUnmount(() => {
   .columnToggleGrid {
     grid-template-columns: 1fr 1fr;
   }
+
+  .rowInspectorGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 680px) {
+  .tableControlBar {
+    display: grid;
+    justify-content: stretch;
+  }
+
   .gridFive,
   .gridFour,
   .gridThree {
@@ -1506,6 +1802,10 @@ onBeforeUnmount(() => {
   }
 
   .columnToggleGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .rowInspectorGrid {
     grid-template-columns: 1fr;
   }
 }

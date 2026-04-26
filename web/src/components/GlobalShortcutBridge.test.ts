@@ -8,15 +8,33 @@ import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 
+const tauriEventsMock = vi.hoisted(() => ({
+  off: vi.fn(),
+  listenEvent: vi.fn(),
+}))
+
+vi.mock('../tauri/events', () => ({
+  listenEvent: tauriEventsMock.listenEvent,
+}))
+
 function dispatchKeydown(options: KeyboardEventInit): void {
   const event = new KeyboardEvent('keydown', { bubbles: true, ...options })
   document.dispatchEvent(event)
+}
+
+function nativeShellCommandHandler(): (payload: unknown) => void {
+  const call = tauriEventsMock.listenEvent.mock.calls.find(([event]) => event === 'shell-command')
+  expect(call).toBeDefined()
+  return call?.[1] as (payload: unknown) => void
 }
 
 describe('GlobalShortcutBridge', () => {
   beforeEach(() => {
     localStorage.clear()
     document.body.innerHTML = ''
+    tauriEventsMock.listenEvent.mockClear()
+    tauriEventsMock.off.mockClear()
+    tauriEventsMock.listenEvent.mockImplementation(async () => tauriEventsMock.off)
   })
 
   afterEach(() => {
@@ -166,5 +184,30 @@ describe('GlobalShortcutBridge', () => {
 
     expect(runSpy).not.toHaveBeenCalled()
     wrapper.unmount()
+  })
+
+  it('routes native shell-command events through the shared command inventory', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const optimizeStore = useOptimizeStore(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    const actionStore = useCommandActionStore(pinia)
+    optimizeStore.$patch({ runDisabled: false })
+    const openPaletteSpy = vi.spyOn(paletteStore, 'openPalette')
+    const runSpy = vi.spyOn(actionStore, 'runOptimization').mockImplementation(() => {})
+
+    const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
+    await Promise.resolve()
+
+    const handler = nativeShellCommandHandler()
+    handler({ commandId: 'open_command_palette', source: 'native-menu' })
+    handler({ commandId: 'run', source: 'native-menu' })
+
+    expect(openPaletteSpy).toHaveBeenCalledTimes(1)
+    expect(runSpy).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+    await Promise.resolve()
+    expect(tauriEventsMock.off).toHaveBeenCalledTimes(1)
   })
 })

@@ -10,6 +10,7 @@ import {
 import { storeToRefs } from "pinia";
 import { useDebounceFn } from "@vueuse/core";
 import { useShellMount } from "../composables/useShellMount";
+import { usePersistedTableDensity } from "../composables/usePersistedTableDensity";
 import { useUiReadiness } from "../composables/useUiReadiness";
 import { useVirtualTableRows } from "../composables/useVirtualTableRows";
 import { useHistoryStore } from "../stores/historyStore";
@@ -19,11 +20,13 @@ import {
   formatRouteProvenanceCompact,
   type RouteProvenanceSummary,
 } from "../utils/core/runArtifactReview";
+import { HISTORY_SAVED_RUNS_TABLE_DENSITY_KEY } from "../utils/core/storageKeys";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
 import OptionsExpressionPanel from "./OptionsExpressionPanel.vue";
 import AppDataTableShell from "./ui/AppDataTableShell.vue";
+import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
 
 const historyStore = useHistoryStore();
 const workflowStore = useWorkflowStore();
@@ -164,6 +167,9 @@ const {
   overscan: 8,
   getItemKey: (_index, row) => String(row.path || _index).trim() || _index,
 });
+const { tableDensity: savedRunsTableDensity } = usePersistedTableDensity(
+  HISTORY_SAVED_RUNS_TABLE_DENSITY_KEY,
+);
 const historySummaryChips = computed(() => {
   const chips = [
     `${visibleSessionRuns.value.length} session runs`,
@@ -595,50 +601,6 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div class="row">
-            <div>
-              <label for="vueSavedRunsSearch">Saved run search</label>
-              <input
-                id="vueSavedRunsSearch"
-                type="text"
-                :value="searchDraft"
-                placeholder="strategy, dataset, tag, artifact…"
-                @input="
-                  onSavedSearch(
-                    String(($event.target as HTMLInputElement).value || ''),
-                  )
-                "
-              />
-              <div class="panelMuted fieldHint">
-                Filters Saved Runs only. Use Ctrl+K for global commands and
-                navigation.
-              </div>
-            </div>
-            <div>
-              <label for="vueSavedRunsTags">Tags</label>
-              <div class="inputWithAction">
-                <input
-                  id="vueSavedRunsTags"
-                  type="text"
-                  :value="tagsDraft"
-                  placeholder="aapl,1m,robust"
-                  @input="
-                    onSavedTags(
-                      String(($event.target as HTMLInputElement).value || ''),
-                    )
-                  "
-                />
-                <button
-                  type="button"
-                  :disabled="!canSaveSavedRunTags"
-                  @click="saveSavedRunTags"
-                >
-                  Save
-                </button>
-              </div>
-            </div>
-          </div>
-
           <div
             class="sectionMeta panelMuted metaLine mono panelNumeric"
             role="status"
@@ -654,11 +616,65 @@ onBeforeUnmount(() => {
             :summary="savedRunsSearchSummary"
             :row-count="visibleSavedRuns.length"
             :viewport="false"
+            :density="savedRunsTableDensity"
+            toolbar-label="Saved run library controls"
             aria-label="Saved run artifacts shell"
             empty-title="No saved runs match the current filters."
             empty-body="Broaden the saved-run search, clear tag filters, or refresh the run library."
             keyboard-hint="Use arrow keys, Home, and End to move through saved run artifacts."
           >
+            <template #controls>
+              <div class="historyTableToolbar">
+                <div class="historySearchFields">
+                  <div>
+                    <label for="vueSavedRunsSearch">Saved run search</label>
+                    <input
+                      id="vueSavedRunsSearch"
+                      type="text"
+                      :value="searchDraft"
+                      placeholder="strategy, dataset, tag, artifact…"
+                      @input="
+                        onSavedSearch(
+                          String(($event.target as HTMLInputElement).value || ''),
+                        )
+                      "
+                    />
+                    <div class="panelMuted fieldHint">
+                      Filters Saved Runs only. Use Ctrl+K for global commands and
+                      navigation.
+                    </div>
+                  </div>
+                  <div>
+                    <label for="vueSavedRunsTags">Tags</label>
+                    <div class="inputWithAction">
+                      <input
+                        id="vueSavedRunsTags"
+                        type="text"
+                        :value="tagsDraft"
+                        placeholder="aapl,1m,robust"
+                        @input="
+                          onSavedTags(
+                            String(($event.target as HTMLInputElement).value || ''),
+                          )
+                        "
+                      />
+                      <button
+                        type="button"
+                        :disabled="!canSaveSavedRunTags"
+                        @click="saveSavedRunTags"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <AppTableDensityControl
+                  v-model:density="savedRunsTableDensity"
+                  label="Library density"
+                  qa-prefix="history.savedRuns.density"
+                />
+              </div>
+            </template>
             <ul
               ref="savedRunsScrollElementRef"
               class="runList savedRunList overflowShadowY surfaceWorking"
@@ -1113,7 +1129,16 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
 }
 
-.row {
+.historyTableToolbar {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.historySearchFields {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.6rem;
@@ -1318,6 +1343,11 @@ pre {
 
 @media (max-width: 980px) {
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .historyTableToolbar,
+  .historySearchFields {
     grid-template-columns: 1fr;
   }
 

@@ -10,7 +10,9 @@ This suite fills the gap between:
 - broad browser scripts such as `a11y:smoke` and `baseline:ui`
 - the real-shell WDIO desktop smoke harness
 
-Browser workflow QA should prove app-level journeys that are easier to express in a real browser than in component tests, while staying lighter and more deterministic than desktop smoke. The broader QA lane now includes action-selector inventory, responsive workflow checks, and regression repro specs.
+Browser workflow QA should prove app-level journeys that are easier to express in a real browser than in component tests, while staying lighter and more deterministic than desktop smoke. The broader QA lane now includes action-selector inventory, responsive workflow checks, shell layout regression budgets, and regression repro specs.
+
+Scenario fixtures are strict in both directions: unexpected mocked Tauri invokes fail in the mock layer, and any fixture `expectedInvokes` entry must be observed before the workflow can pass.
 
 Manual accessibility review guidance for the same non-options surfaces lives in [accessibility-review-matrix.md](../accessibility-review-matrix.md). Use browser review as the default manual slice unless the change crosses into native desktop behavior.
 
@@ -42,8 +44,10 @@ The workflow commands:
 - overlay focus-return journeys
 - one representative dense-surface browser interaction when a UI modernization slice changes forms or results
 - action manifest drift for visible `data-qa-action` controls
+- shell layout budgets for dense desktop, laptop, and compact mobile viewports
 - known regression repros that should be exercised by clicking the actual UI
 - non-destructive exploratory navigation sweeps across safe shell and overlay actions
+- command observation for user journeys where a button must dispatch a specific Tauri command
 
 ## What this suite should not own
 

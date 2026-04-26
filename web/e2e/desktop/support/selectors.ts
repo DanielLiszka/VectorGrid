@@ -4,6 +4,7 @@ export const shellSelectors = {
   titlebar: '[aria-label="Desktop titlebar"]',
   shellHeader: '[aria-label="Workspace shell header"]',
   workspaceBar: '#workspaceBar',
+  workflowStepBar: '#workflowStepBar',
   runFooter: '#runFooterShell',
   liveGrid: '#liveShellGrid',
   settingsGrid: '#settingsShellGrid',
@@ -43,6 +44,18 @@ export const taskCenterSelectors = {
   recentOutcomesSection: '[aria-label="Task center recent outcomes"]',
   eventsSection: '[aria-label="Task center events"]',
   timelineSection: '[aria-label="Task center timeline"]',
+} as const
+
+export const workbenchSelectors = {
+  root: '[data-qa-shell="workbench"]',
+  rail: '[data-qa-panel="workbench.rail"]',
+  researchCockpit: '[data-qa-panel="workbench.researchCockpit"]',
+  inspector: '[data-qa-panel="workbench.inspector"]',
+  actionBar: '[data-qa-panel="workbench.actionBar"]',
+  inspectorActiveMode: '[data-qa-state="workbench.inspector.activeMode"]',
+  inspectorToggle: '[data-qa-action="workbench.inspector.toggle"]',
+  inspectorSection: (id: string) => `[data-qa-state="workbench.inspector.section.${id}"]`,
+  cockpitCard: (id: string) => `[data-qa-state="workbench.cockpit.card.${id}"]`,
 } as const
 
 export function workspaceTabSelector(key: WorkspaceKey): string {

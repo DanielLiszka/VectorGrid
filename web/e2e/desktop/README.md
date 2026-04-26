@@ -114,7 +114,7 @@ Desktop smoke should continue to own:
 - real launch into the Tauri shell
 - shell readiness in the native runtime
 - titlebar and native window-control presence
-- workspace, command-palette, task-center, and settings reachability in the real shell
+- workflow, library, aggregate, diagnostics, live, settings, command-palette, and task-center reachability in the real shell
 - native-shell portions of the manual accessibility review matrix when titlebar, geometry, notifications, or open/reveal path flows change
 
 Desktop smoke should not become the primary proof layer for:

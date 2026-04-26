@@ -74,4 +74,34 @@ describe("useHeadlessMatrixTable", () => {
       rowModelRows.value[0]?.getVisibleCells().map((cell) => cell.column.id),
     ).toEqual(["rank", "name"]);
   });
+
+  it("keeps source cell access stable when display columns are reordered", () => {
+    const columns = ref([
+      { key: "pnl", label: "PnL", alignLeft: false, sort: "" as const, sourceColumnIndex: 2 },
+      { key: "rank", label: "#", alignLeft: true, sort: "asc" as const, sourceColumnIndex: 0 },
+      { key: "name", label: "Name", alignLeft: true, sort: "" as const, sourceColumnIndex: 1 },
+    ]);
+    const rows = ref([
+      {
+        selected: false,
+        cells: [
+          { text: "1", className: "mono left", title: "" },
+          { text: "candidate_a", className: "left", title: "candidate_a" },
+          { text: "12.5", className: "mono", title: "12.5000" },
+        ],
+      },
+    ]);
+
+    const { rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
+      computed(() => columns.value),
+      computed(() => rows.value),
+    );
+
+    expect(visibleLeafColumns.value.map((column) => column.id)).toEqual(["pnl", "rank", "name"]);
+    expect(rowModelRows.value[0]?.getVisibleCells().map((cell) => (cell.getValue() as { text: string }).text)).toEqual([
+      "12.5",
+      "1",
+      "candidate_a",
+    ]);
+  });
 });

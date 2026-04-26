@@ -22,6 +22,11 @@ export interface WorkflowCase {
   run: (ctx: WorkflowContext) => Promise<void>
 }
 
+export interface TauriInvokeLogEntry {
+  command: string
+  args: Record<string, unknown>
+}
+
 export async function gotoMockedShellWithScenario(
   page: Page,
   context: BrowserContext,
@@ -50,7 +55,9 @@ export async function gotoMockedShellWithScenario(
     holdStartupOverlay: true,
     commandResults: scenario.commandResults,
   })
-  await page.goto('/', { waitUntil: 'networkidle' })
+  const urlSearch = String(scenario.urlSearch || '').trim()
+  const targetUrl = urlSearch ? `/${urlSearch.startsWith('?') ? urlSearch : `?${urlSearch}`}` : '/'
+  await page.goto(targetUrl, { waitUntil: 'networkidle' })
   await dismissStartupOverlay(page)
   await waitForShellReady(page)
 }
@@ -71,10 +78,30 @@ export function defineWorkflow(testCase: WorkflowCase): void {
     }
 
     await testCase.run(ctx)
+    if (testCase.scenario.expectedInvokes?.length) {
+      const invokes = await page.evaluate(() =>
+        ((window as typeof window & { __VTA_TEST_INVOKES?: string[] }).__VTA_TEST_INVOKES || []).slice(),
+      )
+      const missingInvokes = testCase.scenario.expectedInvokes.filter((command) => !invokes.includes(command))
+      expect(missingInvokes, `missing expected Tauri invokes for scenario ${testCase.scenario.name}`).toEqual([])
+    }
     await guard.assertClean()
   })
 }
 
 export async function expectActionVisible(page: Page, actionId: string): Promise<void> {
   await expect(page.locator(`[data-qa-action="${actionId}"]`).first()).toBeVisible()
+}
+
+export async function readTauriInvokeLog(page: Page): Promise<TauriInvokeLogEntry[]> {
+  return page.evaluate(() =>
+    (
+      (window as typeof window & {
+        __VTA_TEST_INVOKE_LOG?: Array<{ command: string; args: Record<string, unknown> }>
+      }).__VTA_TEST_INVOKE_LOG || []
+    ).map((entry) => ({
+      command: String(entry.command || ''),
+      args: entry.args && typeof entry.args === 'object' ? entry.args : {},
+    })),
+  )
 }

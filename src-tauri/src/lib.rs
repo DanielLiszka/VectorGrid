@@ -1,6 +1,7 @@
 pub mod broker_paper;
 pub mod commands;
 pub mod data_cache;
+pub mod desktop_menu;
 pub mod execution_mocks;
 pub mod execution_policy;
 pub mod execution_quantity;
@@ -90,6 +91,9 @@ pub fn run_tauri() {
             if let Err(error) = window.show() {
                 log::error!("failed to show main window: {error}");
                 return Err(error.into());
+            }
+            if let Err(error) = desktop_menu::install_desktop_menu(app.handle()) {
+                log::warn!("failed to install desktop menu: {error}");
             }
 
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

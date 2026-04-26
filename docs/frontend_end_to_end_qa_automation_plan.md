@@ -584,9 +584,9 @@ Exit criteria:
 
 - [ ] Add `data-qa-action` to all primary shell, workflow, result, live, and settings controls.
 - [ ] Add `data-qa-panel` and `data-qa-state` to high-signal assertions.
-- [ ] Add `actionCoverageManifest.ts`.
-- [ ] Add action coverage test/report.
-- [ ] Require every required action to be covered or waived.
+- [x] Add `actionCoverageManifest.ts`.
+- [x] Add action coverage test/report.
+- [x] Require every required action to be covered or waived.
 
 Exit criteria:
 
@@ -599,7 +599,7 @@ Exit criteria:
 - [ ] Implement data workflows.
 - [ ] Implement strategy configuration workflows.
 - [ ] Implement optimization workflows.
-- [ ] Implement validation workflows.
+- [x] Implement baseline validation workflows for both dataset-mismatch failure and conventional validation success.
 - [ ] Implement analysis/result review workflows.
 - [ ] Implement library/artifact workflows.
 - [ ] Add compact viewport coverage for critical overlays and workflow navigation.
@@ -613,7 +613,7 @@ Exit criteria:
 
 - [ ] Add aggregate/meta workflows.
 - [ ] Add ML Signal workflows.
-- [ ] Add options-expression workflows.
+- [x] Add baseline options-expression validation workflow for saved artifact preview/run/reveal.
 - [ ] Add live execution workflows.
 - [ ] Add settings/diagnostics workflows.
 - [ ] Add representative failure/recovery cases for each advanced surface.
@@ -624,8 +624,8 @@ Exit criteria:
 
 ### Phase 5: Desktop Shell Reinforcement
 
-- [ ] Keep desktop smoke focused on native shell proof.
-- [ ] Add one desktop spec that confirms the browser workflow-critical workspaces are reachable in the real shell.
+- [x] Keep desktop smoke focused on native shell proof.
+- [x] Add one desktop spec that confirms the browser workflow-critical workspaces are reachable in the real shell.
 - [ ] Add packaged smoke documentation for release candidate use.
 - [ ] Keep geometry opt-in until stable enough for default release gates.
 

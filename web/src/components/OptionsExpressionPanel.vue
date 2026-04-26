@@ -4551,6 +4551,7 @@ function focusTupleIndex(index: number): void {
         <button
           type="button"
           :disabled="artifactsBusy"
+          data-qa-action="options.artifacts.refresh"
           @click="store.refreshArtifacts()"
         >
           Refresh artifacts
@@ -4558,6 +4559,7 @@ function focusTupleIndex(index: number): void {
         <button
           type="button"
           :disabled="loadBusy || !selectedArtifactPath"
+          data-qa-action="options.artifacts.load"
           @click="store.loadArtifact()"
         >
           Load selected artifact
@@ -4565,6 +4567,7 @@ function focusTupleIndex(index: number): void {
         <button
           type="button"
           :disabled="!activeArtifactPath"
+          data-qa-action="options.artifacts.revealActive"
           @click="store.revealActiveArtifact()"
         >
           Reveal artifact

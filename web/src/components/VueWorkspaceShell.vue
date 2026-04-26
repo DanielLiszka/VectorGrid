@@ -1114,9 +1114,9 @@ onBeforeUnmount(() => {
 .shellHeader {
   border-bottom: 1px solid var(--border);
   background: color-mix(in oklab, var(--header-bg) 92%, var(--surface-shell));
-  padding: 0.85rem 1rem 0.8rem;
+  padding: 0.55rem 0.8rem 0.5rem;
   display: grid;
-  gap: 0.5rem;
+  gap: 0.34rem;
   box-shadow: 0 8px 18px color-mix(in srgb, rgb(var(--shadow-overflow-rgb) / 0.14) 72%, transparent);
 }
 
@@ -1124,7 +1124,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem 0.95rem;
+  gap: 0.24rem 0.7rem;
 }
 
 .brandBlock {
@@ -1136,13 +1136,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem 0.65rem;
+  gap: 0.24rem 0.52rem;
   min-width: 0;
 }
 
 .brandRow h1 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 0.95rem;
   letter-spacing: 0.01em;
 }
 
@@ -1150,13 +1150,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.42rem;
 }
 
 .workspaceBar {
   flex: 1 1 42rem;
   min-width: 0;
-  padding: 0.24rem 0.28rem 0.18rem;
+  padding: 0.16rem 0.2rem 0.14rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
@@ -1164,7 +1164,7 @@ onBeforeUnmount(() => {
 
 .uiModeBar {
   flex: 0 0 auto;
-  padding: 0.24rem 0.28rem 0.18rem;
+  padding: 0.16rem 0.2rem 0.14rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
@@ -1172,14 +1172,14 @@ onBeforeUnmount(() => {
 
 .modeBar {
   flex: 0 0 auto;
-  padding: 0.24rem 0.28rem 0.18rem;
+  padding: 0.16rem 0.2rem 0.14rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
 }
 
 .workflowStepBar {
-  padding: 0.22rem 0.28rem 0.16rem;
+  padding: 0.16rem 0.2rem 0.14rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-sunken) 92%, var(--panel));
@@ -1187,7 +1187,7 @@ onBeforeUnmount(() => {
 
 .subtitle {
   align-self: baseline;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   line-height: 1.3;
   color: color-mix(in oklab, var(--muted) 88%, var(--text));
   white-space: nowrap;
@@ -1204,8 +1204,8 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 42%, var(--border));
   border-radius: 999px;
   background: color-mix(in oklab, var(--surface-working) 88%, var(--panel));
-  padding: 0.2rem 0.55rem;
-  font-size: 0.7rem;
+  padding: 0.14rem 0.45rem;
+  font-size: 0.68rem;
   line-height: 1.2;
   color: var(--muted-strong);
 }
@@ -1218,11 +1218,11 @@ onBeforeUnmount(() => {
 
 .taskCenterLauncher {
   margin-left: auto;
-  min-height: 38px;
+  min-height: 34px;
   display: inline-flex;
   align-items: center;
-  gap: 0.58rem;
-  padding: 0.38rem 0.66rem;
+  gap: 0.46rem;
+  padding: 0.3rem 0.56rem;
   border-radius: 10px;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   background: color-mix(in oklab, var(--surface-shell) 88%, var(--panel));
@@ -1280,7 +1280,7 @@ onBeforeUnmount(() => {
 .tabsRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.28rem;
 }
 
 .tabBtn {
@@ -1288,8 +1288,8 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   background: transparent;
   color: inherit;
-  font-size: 0.76rem;
-  padding: 0.38rem 0.7rem;
+  font-size: 0.74rem;
+  padding: 0.3rem 0.58rem;
   font-weight: 600;
   transition:
     background-color var(--motion-fast) var(--ease-standard),
@@ -1300,7 +1300,7 @@ onBeforeUnmount(() => {
 }
 
 .modeBtn {
-  min-width: 7.25rem;
+  min-width: 6.65rem;
 }
 
 .tabBtn.active {
@@ -1319,108 +1319,25 @@ onBeforeUnmount(() => {
   position: relative;
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0.32rem;
-  padding: 0.24rem;
+  gap: 0.24rem;
+  padding: 0.16rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  border-radius: 12px;
+  border-radius: 10px;
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--surface-shell));
 }
 
-.contextCard {
-  min-width: 0;
-  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  border-radius: 10px;
-  background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
-  padding: 0.34rem 0.48rem;
-  display: grid;
-  gap: 0.08rem;
-  transition:
-    background-color var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard),
-    transform var(--motion-fast) var(--ease-standard);
-}
-
-.contextCard.current {
-  border-color: color-mix(in oklab, var(--panel-focus-edge) 74%, var(--border));
-  background: linear-gradient(
-    145deg,
-    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
-    color-mix(in oklab, var(--panel-footer) 92%, var(--surface-working))
-  );
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--panel-focus-edge) 16%, transparent);
-}
-
 .contextKey {
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
+  font-size: 0.57rem;
+  letter-spacing: 0.07em;
   color: var(--muted);
   text-transform: uppercase;
 }
 
 .contextValue {
-  font-size: 0.73rem;
+  font-size: 0.72rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.contextOverflow {
-  position: relative;
-}
-
-.contextOverflowSummary {
-  min-height: 100%;
-  list-style: none;
-  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  border-radius: 10px;
-  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
-  padding: 0.34rem 0.48rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  cursor: pointer;
-}
-
-.contextOverflowSummary::-webkit-details-marker {
-  display: none;
-}
-
-.contextOverflowBody {
-  min-width: 0;
-  display: grid;
-  gap: 0.08rem;
-}
-
-.contextOverflowIcon {
-  flex: 0 0 auto;
-  color: var(--muted);
-  transition: transform var(--motion-fast) var(--ease-standard);
-}
-
-.contextOverflow[open] .contextOverflowSummary {
-  border-color: color-mix(in oklab, var(--panel-focus-edge) 70%, var(--border));
-  background: color-mix(in oklab, var(--surface-focus) 88%, var(--panel));
-}
-
-.contextOverflow[open] .contextOverflowIcon {
-  transform: rotate(180deg);
-}
-
-.contextOverflowPanel {
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  right: 0;
-  z-index: 6;
-  min-width: min(22rem, calc(100vw - 2rem));
-  display: grid;
-  gap: 0.32rem;
-  padding: 0.35rem;
-  border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--surface-overlay) 94%, var(--panel));
-  box-shadow: var(--shadow-md);
 }
 
 .shellMain {
@@ -1448,8 +1365,8 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(420px, 34%) 14px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  gap: 1rem;
-  padding: 1rem;
+  gap: 0.75rem;
+  padding: 0.75rem;
   align-items: stretch;
   align-content: stretch;
   box-sizing: border-box;
@@ -1470,16 +1387,16 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--panel);
   display: grid;
   align-content: start;
-  gap: 0.7rem;
+  gap: 0.55rem;
   box-shadow: var(--shadow-sm);
 }
 
 .controlsColumn {
-  padding: 0.95rem;
+  padding: 0.72rem;
   background:
     linear-gradient(
       180deg,
@@ -1489,7 +1406,7 @@ onBeforeUnmount(() => {
 }
 
 .resultsColumn {
-  padding: 0.8rem;
+  padding: 0.68rem;
   background:
     linear-gradient(
       180deg,
@@ -1587,10 +1504,10 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 12px;
   background: color-mix(in oklab, var(--panel) 98%, var(--surface));
-  margin: 1rem;
-  padding: 1rem;
+  margin: 0.75rem;
+  padding: 0.75rem;
   display: grid;
   gap: 0.9rem;
   box-shadow: var(--shadow-sm);
@@ -1609,7 +1526,7 @@ onBeforeUnmount(() => {
   border-radius: 14px;
   padding: 0.8rem 0.9rem;
   display: grid;
-  gap: 0.7rem;
+  gap: 0.55rem;
   background: color-mix(in oklab, var(--surface-working) 94%, var(--surface-shell));
 }
 
@@ -1647,7 +1564,7 @@ onBeforeUnmount(() => {
 #runFooterShell {
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel-footer) 98%, var(--surface));
-  padding: 0.55rem 0.9rem;
+  padding: 0.36rem 0.72rem;
   box-shadow: 0 -8px 20px color-mix(in srgb, var(--accent-soft) 10%, transparent);
 }
 
@@ -1675,6 +1592,7 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .workspaceBarRow {
     align-items: stretch;
+    gap: 0.36rem;
   }
 
   .workspaceBar,
@@ -1703,42 +1621,120 @@ onBeforeUnmount(() => {
 
 @media (max-width: 760px) {
   .shellHeader {
-    padding: 0.8rem 0.75rem 0.7rem;
+    padding: 0.44rem 0.5rem 0.42rem;
+    overflow: hidden;
   }
 
   .brandRow {
-    flex-direction: column;
+    align-items: center;
+  }
+
+  .brandBlock,
+  .shellPostureChip {
+    display: none;
   }
 
   .subtitle {
     max-width: 100%;
   }
 
-  .taskCenterLauncher {
+  .workspaceBarRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .uiModeBar,
+  .workspaceBar,
+  .workflowStepBar {
+    display: grid;
+    gap: 0.16rem;
     width: 100%;
-    justify-content: space-between;
+    box-sizing: border-box;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .modeBar {
+    display: grid;
+    gap: 0.16rem;
+    width: 100%;
+    box-sizing: border-box;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .uiModeBar,
+  .workspaceBar {
+    grid-column: 1 / -1;
+  }
+
+  .modeBar {
+    grid-column: 1 / 2;
+  }
+
+  .uiModeBar,
+  .modeBar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspaceBar,
+  .workflowStepBar {
+    grid-template-columns: repeat(auto-fit, minmax(min(6.35rem, 100%), 1fr));
+  }
+
+  .uiModeBar .tabBtn,
+  .workspaceBar .tabBtn,
+  .modeBar .tabBtn,
+  .workflowStepBar .tabBtn {
+    min-width: 0;
+    width: 100%;
+    min-height: 30px;
+    padding: 0.28rem 0.32rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .uiModeBar .modeBtn,
+  .modeBar .modeBtn {
+    min-width: 0;
+  }
+
+  .workflowStepBar .tabBtn {
+    font-size: 0.69rem;
+  }
+
+  .taskCenterLauncher {
+    grid-column: 2 / 3;
+    justify-self: start;
+    align-self: stretch;
+    width: 38px;
+    min-height: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .taskCenterLauncherBody {
+    display: none;
   }
 
   .contextStrip {
-    grid-template-columns: 1fr;
-  }
-
-  .contextOverflowPanel {
-    left: 0;
-    right: auto;
-    min-width: min(100%, 22rem);
+    display: flex;
+    grid-template-columns: none;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
 
   .workspaceGrid {
-    padding: 0.75rem;
-    gap: 0.75rem;
+    padding: 0.5rem;
+    gap: 0.5rem;
   }
 
   #guidedShellGrid,
   #settingsShellGrid,
   #liveShellGrid {
-    margin: 0.75rem;
-    padding: 0.75rem;
+    margin: 0.5rem;
+    padding: 0.5rem;
   }
 
   .liveSupportGrid {
@@ -1746,7 +1742,7 @@ onBeforeUnmount(() => {
   }
 
   #runFooterShell {
-    padding: 0.7rem 0.75rem;
+    padding: 0.42rem 0.5rem;
   }
 }
 </style>

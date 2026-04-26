@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import AppEmptyState from './AppEmptyState.vue'
+import { normalizeTableDensity, type TableDensity } from '../../composables/usePersistedTableDensity'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     title: string
     summary?: string
@@ -12,6 +14,8 @@ withDefaults(
     emptyBody?: string
     keyboardHint?: string
     viewport?: boolean
+    toolbarLabel?: string
+    density?: TableDensity
   }>(),
   {
     summary: '',
@@ -22,12 +26,23 @@ withDefaults(
     emptyBody: '',
     keyboardHint: '',
     viewport: true,
+    toolbarLabel: '',
+    density: 'comfortable',
   },
 )
+
+const tableDensity = computed(() => normalizeTableDensity(props.density))
+const controlsLabel = computed(() => props.toolbarLabel || `${props.title} controls`)
 </script>
 
 <template>
-  <section class="appDataTableShell" :aria-label="ariaLabel || title" :aria-busy="busy ? 'true' : undefined">
+  <section
+    class="appDataTableShell"
+    :class="`density-${tableDensity}`"
+    :aria-label="ariaLabel || title"
+    :aria-busy="busy ? 'true' : undefined"
+    :data-table-density="tableDensity"
+  >
     <header class="appDataTableHeader">
       <div class="appDataTableTitleBlock">
         <h3 class="appDataTableTitle">{{ title }}</h3>
@@ -38,7 +53,12 @@ withDefaults(
       </div>
     </header>
 
-    <div v-if="$slots.controls" class="appDataTableControls">
+    <div
+      v-if="$slots.controls"
+      class="appDataTableControls"
+      role="toolbar"
+      :aria-label="controlsLabel"
+    >
       <slot name="controls" />
     </div>
 
@@ -117,6 +137,14 @@ withDefaults(
 .appDataTableControls {
   align-items: center;
   justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 0.35rem;
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel) 96%, var(--surface));
+  box-shadow: var(--shadow-inline);
 }
 
 .appDataTableViewport {
@@ -146,6 +174,46 @@ withDefaults(
 
 .mono {
   font-family: var(--mono);
+}
+
+.appDataTableShell.density-compact {
+  gap: 0.45rem;
+}
+
+.appDataTableShell.density-spacious {
+  gap: 0.85rem;
+}
+
+.appDataTableShell.density-compact :deep(th),
+.appDataTableShell.density-compact :deep(td) {
+  padding-top: 0.34rem;
+  padding-bottom: 0.34rem;
+}
+
+.appDataTableShell.density-spacious :deep(th),
+.appDataTableShell.density-spacious :deep(td) {
+  padding-top: 0.68rem;
+  padding-bottom: 0.68rem;
+}
+
+.appDataTableShell.density-compact :deep(.runListButton) {
+  padding-top: 0.48rem;
+  padding-bottom: 0.48rem;
+}
+
+.appDataTableShell.density-spacious :deep(.runListButton) {
+  padding-top: 0.78rem;
+  padding-bottom: 0.78rem;
+}
+
+.appDataTableShell.density-compact :deep(.pillRow),
+.appDataTableShell.density-compact :deep(.runListSecondary) {
+  margin-top: 0.2rem;
+}
+
+.appDataTableShell.density-spacious :deep(.pillRow),
+.appDataTableShell.density-spacious :deep(.runListSecondary) {
+  margin-top: 0.42rem;
 }
 
 @media (max-width: 760px) {

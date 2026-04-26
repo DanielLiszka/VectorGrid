@@ -290,6 +290,7 @@ interface WorkflowValidationArtifactSnapshot {
 }
 
 interface ValidationTableColumn {
+  key?: string;
   label: string;
   alignLeft: boolean;
 }
@@ -2317,21 +2318,21 @@ function buildValidationShortlistMetaText(
 
 function buildValidationTableColumns(): ValidationTableColumn[] {
   return [
-    { label: "#", alignLeft: true },
-    { label: "Fast", alignLeft: true },
-    { label: "Slow", alignLeft: true },
-    { label: "Robust", alignLeft: false },
-    { label: "PSR", alignLeft: false },
-    { label: "DSR", alignLeft: false },
-    { label: "CSCV Rank", alignLeft: false },
-    { label: "Gate", alignLeft: true },
-    { label: "Robust Pareto", alignLeft: true },
-    { label: "Cross", alignLeft: false },
-    { label: "Cross Pareto", alignLeft: true },
-    { label: "PnL", alignLeft: false },
-    { label: "Sharpe", alignLeft: false },
-    { label: "Max DD", alignLeft: false },
-    { label: "Trades", alignLeft: false },
+    { key: "rank", label: "#", alignLeft: true },
+    { key: "fast", label: "Fast", alignLeft: true },
+    { key: "slow", label: "Slow", alignLeft: true },
+    { key: "robust", label: "Robust", alignLeft: false },
+    { key: "psr", label: "PSR", alignLeft: false },
+    { key: "dsr", label: "DSR", alignLeft: false },
+    { key: "cscv_rank", label: "CSCV Rank", alignLeft: false },
+    { key: "gate", label: "Gate", alignLeft: true },
+    { key: "robust_pareto", label: "Robust Pareto", alignLeft: true },
+    { key: "cross", label: "Cross", alignLeft: false },
+    { key: "cross_pareto", label: "Cross Pareto", alignLeft: true },
+    { key: "pnl", label: "PnL", alignLeft: false },
+    { key: "sharpe", label: "Sharpe", alignLeft: false },
+    { key: "max_dd", label: "Max DD", alignLeft: false },
+    { key: "trades", label: "Trades", alignLeft: false },
   ];
 }
 

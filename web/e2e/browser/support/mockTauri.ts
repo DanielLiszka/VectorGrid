@@ -25,6 +25,7 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
     const handlers: Record<string, number[]> = {}
     const callbacks: Record<number, unknown> = {}
     const invokeLog: string[] = []
+    const invokeLogEntries: Array<{ command: string; args: Record<string, unknown> }> = []
     let nextCallbackId = 1
 
     const addListener = (event: string, callbackId: number) => {
@@ -59,6 +60,14 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
       const key = String(command ?? '')
       invokeLog.push(key)
+      try {
+        invokeLogEntries.push({
+          command: key,
+          args: JSON.parse(JSON.stringify(args ?? {})) as Record<string, unknown>,
+        })
+      } catch {
+        invokeLogEntries.push({ command: key, args })
+      }
       if (key === 'plugin:event|listen') {
         return addListener(String(args.event || ''), Number(args.handler))
       }
@@ -155,6 +164,11 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
       emitEvent(event, payload)
     }
     ;(window as typeof window & { __VTA_TEST_INVOKES?: string[] }).__VTA_TEST_INVOKES = invokeLog
+    ;(
+      window as typeof window & {
+        __VTA_TEST_INVOKE_LOG?: Array<{ command: string; args: Record<string, unknown> }>
+      }
+    ).__VTA_TEST_INVOKE_LOG = invokeLogEntries
   }, {
     hold: holdStartupOverlay,
     holdKey: HOLD_STORAGE_KEY,

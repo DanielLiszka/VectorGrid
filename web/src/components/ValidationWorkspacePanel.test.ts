@@ -430,10 +430,11 @@ describe('ValidationWorkspacePanel', () => {
       'Cross',
       'Sharpe',
     ])
-
+    expect(document.querySelector('[data-qa-panel="validation.rowDetail"]')?.textContent).toContain('Row 1 of 1')
+    expect(document.querySelector('[data-qa-state="validation.rowDetail.col_0"]')?.textContent).toContain('pass')
+    expect(document.querySelector('[data-qa-state="validation.rowDetail.col_2"]')?.textContent).toContain('1.2400')
     wrapper.unmount()
   })
-
   it('persists visible validation result columns and restores defaults', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -504,5 +505,71 @@ describe('ValidationWorkspacePanel', () => {
     )
     expect(restoredHeaderText).toEqual(['Route', 'Warning', 'Score'])
     expect(localStorage.getItem(VALIDATION_RESULTS_TABLE_STATE_KEY)).toBeNull()
+  })
+
+  it('applies built-in validation table presets without misaligning row cells', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const validationStore = useValidationStore(pinia)
+    workflow.selectResultsTab('validate', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    validationStore.tableRowCount = 1
+    validationStore.tableVisible = true
+    validationStore.validationColumns = [
+      { key: 'rank', label: '#', alignLeft: true },
+      { key: 'fast', label: 'Fast', alignLeft: true },
+      { key: 'slow', label: 'Slow', alignLeft: true },
+      { key: 'psr', label: 'PSR', alignLeft: false },
+      { key: 'dsr', label: 'DSR', alignLeft: false },
+      { key: 'gate', label: 'Gate', alignLeft: true },
+      { key: 'robust_pareto', label: 'Robust Pareto', alignLeft: true },
+      { key: 'cross', label: 'Cross', alignLeft: false },
+    ]
+    validationStore.validationRows = [
+      {
+        cells: [
+          { text: '1', className: 'left', title: '1' },
+          { text: 'fast=8', className: 'left', title: 'fast=8' },
+          { text: 'slow=24', className: 'left', title: 'slow=24' },
+          { text: '0.91', className: '', title: '0.91' },
+          { text: '0.87', className: '', title: '0.87' },
+          { text: 'pass', className: 'left', title: 'pass' },
+          { text: 'frontier', className: 'left', title: 'frontier' },
+          { text: '3/4', className: '', title: '3/4' },
+        ],
+      },
+    ]
+
+    mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    document.querySelector<HTMLButtonElement>('[data-qa="validation.table.view.gates"]')?.click()
+    await flushPanel()
+
+    expect(Array.from(document.querySelectorAll('th')).map((cell) => String(cell.textContent || '').trim())).toEqual([
+      '#',
+      'Gate',
+      'Robust Pareto',
+      'Cross',
+      'PSR',
+      'DSR',
+      'Fast',
+      'Slow',
+    ])
+    expect(localStorage.getItem(VALIDATION_RESULTS_TABLE_STATE_KEY)).toContain(
+      '"columnOrderKeys":["rank","gate","robust_pareto","cross","psr","dsr","fast","slow"]',
+    )
+    expect(document.querySelector('[data-qa-panel="validation.rowDetail"]')?.textContent).toContain('Row 1 of 1')
+    expect(document.querySelector('[data-qa-state="validation.rowDetail.gate"]')?.textContent).toContain('pass')
+    expect(document.querySelector('[data-qa-state="validation.rowDetail.robust_pareto"]')?.textContent).toContain('frontier')
+    expect(document.querySelector('[data-qa-state="validation.rowDetail.cross"]')?.textContent).toContain('3/4')
   })
 })

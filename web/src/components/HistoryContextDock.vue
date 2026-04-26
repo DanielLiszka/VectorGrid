@@ -51,11 +51,11 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
     </div>
     <div class="actions">
       <button type="button" @click="history.applySession()">Apply session</button>
-      <button type="button" @click="history.refreshSavedRuns()">Refresh saved</button>
-      <button type="button" @click="history.loadSavedRun(savedSelectedValue)">Load saved</button>
-      <button type="button" @click="history.applySavedRun(savedSelectedValue)">Apply saved</button>
+      <button type="button" data-qa-action="library.savedRun.refresh" @click="history.refreshSavedRuns()">Refresh saved</button>
+      <button type="button" data-qa-action="library.savedRun.load" @click="history.loadSavedRun(savedSelectedValue)">Load saved</button>
+      <button type="button" data-qa-action="library.savedRun.apply" @click="history.applySavedRun(savedSelectedValue)">Apply saved</button>
       <button type="button" @click="history.clearSession()">Clear session</button>
-      <button type="button" @click="history.openRunsDir()">Open runs dir</button>
+      <button type="button" data-qa-action="library.runsDir.open" @click="history.openRunsDir()">Open runs dir</button>
     </div>
   </aside>
 </template>
@@ -80,9 +80,11 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
   --dock-action-text: color-mix(in oklab, var(--dock-accent-ink) 82%, var(--dock-text));
   position: fixed;
   right: 10px;
-  bottom: 442px;
+  top: calc(var(--desktop-titlebar-h, 52px) + 198px);
   z-index: 4036;
   width: min(430px, calc(100vw - 20px));
+  max-height: calc(100vh - var(--desktop-titlebar-h, 52px) - 220px);
+  overflow: auto;
   border-radius: 12px;
   border: 1px solid var(--dock-border);
   background: var(--dock-surface);
@@ -165,7 +167,9 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
     left: 8px;
     right: 8px;
     width: auto;
+    top: auto;
     bottom: 8px;
+    max-height: min(70vh, 28rem);
   }
 }
 

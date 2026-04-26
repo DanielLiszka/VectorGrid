@@ -16,6 +16,7 @@ describe('desktop shell readiness', () => {
     expect(workspaceText).toContain('Library')
     expect(workspaceText).toContain('Aggregate')
     expect(workspaceText).toContain('Diagnostics')
+    expect(workspaceText).toContain('Live')
     expect(workspaceText).toContain('Settings')
   })
 })

@@ -280,13 +280,13 @@ function openTaskCenterDetails(): void {
   display: grid;
   grid-template-columns: minmax(18rem, 0.95fr) minmax(18rem, 1.35fr) auto;
   align-items: center;
-  gap: 0.8rem;
+  gap: 0.5rem;
 }
 
 .statusLead {
   min-width: 0;
   display: grid;
-  gap: 0.24rem;
+  gap: 0.18rem;
 }
 
 .statusHeading {
@@ -325,7 +325,7 @@ function openTaskCenterDetails(): void {
   color: var(--muted-strong);
   font-size: 0.74rem;
   line-height: 1.2;
-  padding: 0.28rem 0.58rem;
+  padding: 0.2rem 0.5rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -342,7 +342,7 @@ function openTaskCenterDetails(): void {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.34rem 0.45rem;
+  gap: 0.26rem 0.36rem;
 }
 
 .statusCopy {
@@ -373,6 +373,9 @@ function openTaskCenterDetails(): void {
   .statusBody {
     grid-column: 1 / -1;
     order: 3;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    max-height: 1.75rem;
   }
 }
 
@@ -384,7 +387,11 @@ function openTaskCenterDetails(): void {
 
   .summaryPill,
   .statusCopy {
-    white-space: normal;
+    white-space: nowrap;
+  }
+
+  .statusBody {
+    display: none;
   }
 
   .statusActions {

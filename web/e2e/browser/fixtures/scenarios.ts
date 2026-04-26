@@ -1,6 +1,7 @@
 export interface MockTauriScenario {
   name: string
   description: string
+  urlSearch?: string
   localStorage?: Record<string, string>
   sessionStorage?: Record<string, string>
   commandResults: Record<string, unknown>
@@ -109,6 +110,16 @@ export const emptyAppScenario: MockTauriScenario = {
   },
 }
 
+export const premiumWorkbenchScenario: MockTauriScenario = {
+  ...emptyAppScenario,
+  name: 'premium-workbench',
+  description: 'Fresh app with the opt-in premium workbench shell enabled through launch query parameters.',
+  urlSearch: '?workbench_shell=1',
+  localStorage: {
+    ...emptyAppScenario.localStorage,
+  },
+}
+
 export const validationDatasetMismatchScenario: MockTauriScenario = {
   name: 'validation-dataset-mismatch',
   description: 'A saved optimization artifact is loaded without its matching dataset.',
@@ -190,6 +201,174 @@ export const validationDatasetMismatchScenario: MockTauriScenario = {
     list_live_session_artifacts: [],
     load_live_session_artifact_detail: null,
   },
+}
+
+const validationSuccessRunPath = 'C:/runs/vectorgrid_run_validation_success.json'
+const validationSuccessCsvPath = 'C:/fixtures/aapl_1m.csv'
+const validationSuccessDatasetMeta = {
+  csv_path: validationSuccessCsvPath,
+  timeframe: '1m',
+  len: 5000,
+  symbol: 'AAPL',
+  label: 'AAPL fixture',
+  has_open: true,
+  has_high: true,
+  has_low: true,
+  has_close: true,
+  has_volume: true,
+  min_ts: 1904164200000,
+  max_ts: 1904250600000,
+}
+
+const validationSuccessRunReq = {
+  strategy_kind: 'DoubleMa',
+  data_id: 'fixture_aapl_1m',
+  fast_start: 8,
+  fast_end: 10,
+  fast_step: 1,
+  slow_start: 32,
+  slow_end: 36,
+  slow_step: 2,
+  fast_ma_types: ['sma'],
+  slow_ma_types: ['sma'],
+}
+
+const validationSuccessRunRes = {
+  best_params: {
+    fast_len: 8,
+    slow_len: 32,
+    fast_ma_type: 'sma',
+    slow_ma_type: 'sma',
+  },
+  best_metrics: {
+    pnl: 0.12,
+    sharpe: 1.4,
+    max_dd: -0.05,
+    trades: 18,
+  },
+  top: [
+    [
+      {
+        fast_len: 8,
+        slow_len: 32,
+        fast_ma_type: 'sma',
+        slow_ma_type: 'sma',
+      },
+      {
+        pnl: 0.12,
+        sharpe: 1.4,
+        max_dd: -0.05,
+        trades: 18,
+      },
+    ],
+  ],
+  runtime_ms: 84,
+  backend_used: 'cpu',
+  backend_route: 'CpuOnly',
+}
+
+const validationSuccessRunArtifact = {
+  ts: '2026-04-11T12:00:00Z',
+  artifact_path: validationSuccessRunPath,
+  report_xlsx_path: '',
+  report_xlsx_exists: false,
+  csv_path: validationSuccessCsvPath,
+  dataset_meta: validationSuccessDatasetMeta,
+  tags: ['qa', 'validation'],
+  req: validationSuccessRunReq,
+  res: validationSuccessRunRes,
+}
+
+const validationSuccessResult = {
+  backend_used: 'Cpu',
+  backend_route: 'CpuOnly',
+  backend_fallback_reason: '',
+  runtime_ms: 42,
+  candidates: [
+    {
+      params: {
+        fast_len: 8,
+        slow_len: 32,
+        fast_ma_type: 'sma',
+        slow_ma_type: 'sma',
+      },
+      in_sample: {
+        pnl: 0.12,
+        sharpe: 1.4,
+        max_dd: -0.05,
+        trades: 18,
+      },
+      robust_score: 1.21,
+      psr: 0.91,
+      dsr: 0.84,
+      robust_pareto: true,
+      validation_verdict: {
+        passed: true,
+        approved: true,
+        final_recommendation: 'approved',
+      },
+    },
+  ],
+  cross_ticker: { datasets: [] },
+  run_verdict: {
+    passed: true,
+    approved: true,
+    candidates_tested: 1,
+    candidates_survived_hard_gates: 1,
+    approved_candidate_count: 1,
+    first_approved_rank: 1,
+    final_recommendation: 'approved',
+  },
+}
+
+export const validationSuccessScenario: MockTauriScenario = {
+  name: 'validation-success',
+  description: 'A saved DoubleMa run and matching loaded sample dataset can complete validation.',
+  localStorage: {
+    vta_ui_mode_v1: 'advanced',
+  },
+  commandResults: {
+    ...baseCommandResults,
+    load_latest_run_artifact_summary: {
+      ts: '2026-04-11T12:00:00Z',
+      path: validationSuccessRunPath,
+      csv_path: validationSuccessCsvPath,
+      tags: ['qa', 'validation'],
+    },
+    load_latest_run_artifact_hydration: {
+      summary: {
+        ts: '2026-04-11T12:00:00Z',
+        path: validationSuccessRunPath,
+        csv_path: validationSuccessCsvPath,
+        tags: ['qa', 'validation'],
+      },
+      hydration: {
+        currentRun: validationSuccessRunArtifact,
+        currentValidation: null,
+      },
+    },
+    load_price_data: {
+      id: 'fixture_aapl_1m',
+      meta: validationSuccessDatasetMeta,
+      cache_hit: true,
+      cache_path: 'C:/VectorGridData/cache/aapl_1m.vta',
+      load_source: 'binary_cache',
+    },
+    run_double_ma_validation: validationSuccessResult,
+    save_run_artifact: {
+      path: validationSuccessRunPath,
+      bytes: 73728,
+    },
+    list_run_artifacts: [],
+    list_live_session_artifacts: [],
+    load_live_session_artifact_detail: null,
+  },
+  expectedInvokes: [
+    'load_latest_run_artifact_hydration',
+    'load_price_data',
+    'run_double_ma_validation',
+    'save_run_artifact',
+  ],
 }
 
 const optionsParentRunPath = 'C:/runs/vectorgrid_options_parent.json'

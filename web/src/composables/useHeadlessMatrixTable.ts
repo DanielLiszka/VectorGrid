@@ -11,6 +11,7 @@ export interface MatrixColumnLike {
   alignLeft?: boolean;
   key?: string;
   sort?: "" | "asc" | "desc";
+  sourceColumnIndex?: number;
 }
 
 export interface MatrixCellLike {
@@ -40,6 +41,7 @@ export interface MatrixColumnMeta {
 
 export interface ResolvedMatrixColumnMeta extends MatrixColumnMeta {
   columnIndex: number;
+  sourceColumnIndex: number;
 }
 
 export interface HeadlessMatrixTableOptions {
@@ -60,12 +62,16 @@ export function resolveMatrixColumnMeta(
     String(column.label || "").trim() || `Column ${columnIndex + 1}`;
   const sort =
     column.sort === "asc" || column.sort === "desc" ? column.sort : "";
+  const sourceColumnIndex = Number.isInteger(column.sourceColumnIndex)
+    ? Number(column.sourceColumnIndex)
+    : columnIndex;
 
   return {
     alignLeft: !!column.alignLeft,
     columnKey,
     columnLabel,
     columnIndex,
+    sourceColumnIndex,
     sort,
   };
 }
@@ -85,7 +91,7 @@ export function useHeadlessMatrixTable<
       return {
         id: columnMeta.columnKey,
         header: columnMeta.columnLabel,
-        accessorFn: (row) => row.cells[columnIndex] ?? fallbackCell(),
+        accessorFn: (row) => row.cells[columnMeta.sourceColumnIndex] ?? fallbackCell(),
         meta: columnMeta satisfies MatrixColumnMeta,
         cell: (context: CellContext<TRow, MatrixCellPayload>) =>
           context.getValue() ?? fallbackCell(),

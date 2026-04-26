@@ -79,7 +79,7 @@ export async function waitForShellReady(timeout = 30000): Promise<void> {
       async () => {
         const workspaceBar = await $(shellSelectors.workspaceBar)
         const text = await workspaceBar.getText()
-        return ['Research', 'Library', 'Aggregate', 'Diagnostics', 'Settings'].every((label) =>
+        return ['Research', 'Library', 'Aggregate', 'Diagnostics', 'Live', 'Settings'].every((label) =>
           text.includes(label),
         )
       },

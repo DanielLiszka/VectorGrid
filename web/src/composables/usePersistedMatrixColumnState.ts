@@ -12,11 +12,18 @@ import {
 interface PersistedMatrixColumnStateShape {
   visibleColumnKeys: string[];
   knownColumnKeys?: string[];
+  columnOrderKeys?: string[];
 }
 
 interface PersistedMatrixColumnOption {
   key: string;
   label: string;
+  visible?: boolean;
+}
+
+export interface MatrixColumnViewPreset {
+  visibleColumnKeys?: readonly string[];
+  columnOrderKeys?: readonly string[];
 }
 
 function dedupeKeys(keys: readonly string[]): string[] {
@@ -48,6 +55,17 @@ function sanitizeVisibleColumnKeys(
   return allColumnKeys.filter((key) => visible.has(key));
 }
 
+function sanitizeColumnOrderKeys(
+  candidateKeys: readonly string[] | null | undefined,
+  allColumnKeys: readonly string[],
+): string[] {
+  if (!allColumnKeys.length) return [];
+  const allowed = new Set(allColumnKeys);
+  const ordered = dedupeKeys(candidateKeys ?? []).filter((key) => allowed.has(key));
+  const missing = allColumnKeys.filter((key) => !ordered.includes(key));
+  return [...ordered, ...missing];
+}
+
 function readPersistedColumnState(
   storageKey: string,
 ): PersistedMatrixColumnStateShape | null {
@@ -60,6 +78,9 @@ function readPersistedColumnState(
     knownColumnKeys: Array.isArray(persisted.knownColumnKeys)
       ? persisted.knownColumnKeys.map((value) => String(value || "").trim())
       : [],
+    columnOrderKeys: Array.isArray(persisted.columnOrderKeys)
+      ? persisted.columnOrderKeys.map((value) => String(value || "").trim())
+      : [],
   };
 }
 
@@ -68,6 +89,7 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
   storageKey: string,
 ) {
   const visibleColumnKeys = ref<string[]>([]);
+  const columnOrderKeys = ref<string[]>([]);
 
   const allColumnOptions = computed<PersistedMatrixColumnOption[]>(() =>
     columns.value.map((column, columnIndex) => {
@@ -80,16 +102,19 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
     allColumnOptions.value.map((column) => column.key),
   );
 
-  function persistVisibleKeys(nextKeys: string[]): void {
+  function persistState(nextVisibleKeys: string[], nextColumnOrderKeys: string[]): void {
     const normalized = sanitizeVisibleColumnKeys(
-      nextKeys,
+      nextVisibleKeys,
       allColumnKeys.value,
       allColumnKeys.value,
     );
+    const normalizedOrder = sanitizeColumnOrderKeys(nextColumnOrderKeys, allColumnKeys.value);
     visibleColumnKeys.value = normalized;
+    columnOrderKeys.value = normalizedOrder;
     const matchesDefault =
       normalized.length === allColumnKeys.value.length &&
-      normalized.every((key, index) => key === allColumnKeys.value[index]);
+      normalized.every((key, index) => key === allColumnKeys.value[index]) &&
+      normalizedOrder.every((key, index) => key === allColumnKeys.value[index]);
     if (matchesDefault) {
       removeStorageKey(storageKey);
       return;
@@ -97,7 +122,16 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
     writeStorageJson(storageKey, {
       visibleColumnKeys: normalized,
       knownColumnKeys: allColumnKeys.value,
+      columnOrderKeys: normalizedOrder,
     } satisfies PersistedMatrixColumnStateShape);
+  }
+
+  function persistVisibleKeys(nextKeys: string[]): void {
+    persistState(nextKeys, columnOrderKeys.value);
+  }
+
+  function persistColumnOrderKeys(nextKeys: string[]): void {
+    persistState(visibleColumnKeys.value, nextKeys);
   }
 
   watch(
@@ -109,6 +143,12 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
           ? visibleColumnKeys.value
           : persisted?.visibleColumnKeys,
         persisted?.knownColumnKeys,
+        nextColumnKeys,
+      );
+      columnOrderKeys.value = sanitizeColumnOrderKeys(
+        columnOrderKeys.value.length
+          ? columnOrderKeys.value
+          : persisted?.columnOrderKeys,
         nextColumnKeys,
       );
     },
@@ -123,11 +163,35 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
     return Object.fromEntries(hiddenEntries);
   });
 
+  const orderedColumnOptions = computed(() => {
+    const byKey = new Map(allColumnOptions.value.map((column) => [column.key, column]));
+    return columnOrderKeys.value
+      .map((key) => byKey.get(key))
+      .filter((column): column is PersistedMatrixColumnOption => !!column);
+  });
   const columnOptions = computed(() =>
-    allColumnOptions.value.map((column) => ({
+    orderedColumnOptions.value.map((column) => ({
       ...column,
       visible: visibleColumnKeySet.value.has(column.key),
     })),
+  );
+  const orderedVisibleColumnKeys = computed(() =>
+    columnOrderKeys.value.filter((key) => visibleColumnKeySet.value.has(key)),
+  );
+  const sourceColumnIndexByKey = computed(
+    () => new Map(allColumnKeys.value.map((key, index) => [key, index] as const)),
+  );
+  const orderedColumns = computed(() =>
+    columnOrderKeys.value
+      .map((key) => {
+        const sourceColumnIndex = sourceColumnIndexByKey.value.get(key);
+        if (sourceColumnIndex == null) return null;
+        return {
+          ...columns.value[sourceColumnIndex],
+          sourceColumnIndex,
+        };
+      })
+      .filter((column): column is TColumn & { sourceColumnIndex: number } => !!column),
   );
 
   const visibleCount = computed(() => visibleColumnKeys.value.length);
@@ -139,9 +203,12 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
       hiddenCount.value > 0 ||
       visibleColumnKeys.value.some(
         (key, index) => key !== allColumnKeys.value[index],
+      ) ||
+      columnOrderKeys.value.some(
+        (key, index) => key !== allColumnKeys.value[index],
       ),
   );
-  const leadVisibleColumnKey = computed(() => visibleColumnKeys.value[0] ?? "");
+  const leadVisibleColumnKey = computed(() => orderedVisibleColumnKeys.value[0] ?? "");
 
   function setColumnVisibility(columnKey: string, visible: boolean): void {
     const normalizedKey = String(columnKey || "").trim();
@@ -164,7 +231,18 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
   }
 
   function restoreDefaultColumns(): void {
-    persistVisibleKeys(allColumnKeys.value);
+    persistState(allColumnKeys.value, allColumnKeys.value);
+  }
+
+  function setColumnOrder(nextColumnKeys: readonly string[]): void {
+    persistColumnOrderKeys([...nextColumnKeys]);
+  }
+
+  function applyColumnViewPreset(preset: MatrixColumnViewPreset): void {
+    persistState(
+      [...(preset.visibleColumnKeys ?? allColumnKeys.value)],
+      [...(preset.columnOrderKeys ?? allColumnKeys.value)],
+    );
   }
 
   function canHideColumn(columnKey: string): boolean {
@@ -174,11 +252,17 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
   return {
     columnOptions,
     columnVisibility,
+    allColumnKeys,
+    orderedColumns,
+    columnOrderKeys,
     visibleColumnKeys,
+    orderedVisibleColumnKeys,
     visibleCount,
     hiddenCount,
     canRestoreDefaults,
     leadVisibleColumnKey,
+    setColumnOrder,
+    applyColumnViewPreset,
     toggleColumnVisibility,
     restoreDefaultColumns,
     canHideColumn,

@@ -596,6 +596,71 @@ describe('TopWorkspacePanel', () => {
     expect(pinSpy).toHaveBeenCalledWith(0)
   })
 
+  it('applies built-in top table presets without misaligning row cells', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    analysisStore.topColumns = [
+      { key: 'rank', label: '#', sort: '', alignLeft: true },
+      { key: 'name', label: 'Name', sort: '', alignLeft: true },
+      { key: 'pnl', label: 'PnL', sort: '', alignLeft: false },
+      { key: 'sharpe', label: 'Sharpe', sort: '', alignLeft: false },
+      { key: 'max_dd', label: 'MaxDD', sort: '', alignLeft: false },
+      { key: 'trades', label: 'Trades', sort: '', alignLeft: false },
+      { key: 'exposure', label: 'Expo', sort: '', alignLeft: false },
+    ]
+    analysisStore.topTableRows = [
+      {
+        rowId: 'candidate_a',
+        selected: true,
+        cells: [
+          { text: '1', className: 'left', title: '1' },
+          { text: 'row 1', className: 'left', title: 'row 1' },
+          { text: '100', className: '', title: '100' },
+          { text: '2.1', className: '', title: '2.1' },
+          { text: '-5', className: '', title: '-5' },
+          { text: '8', className: '', title: '8' },
+          { text: '0.44', className: '', title: '0.44' },
+        ],
+      },
+    ]
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    document.querySelector<HTMLButtonElement>('[data-qa="top.table.view.risk"]')?.click()
+    await nextTick()
+    await nextTick()
+
+    expect(Array.from(document.querySelectorAll('th')).map((cell) => String(cell.textContent || '').trim())).toEqual([
+      '#',
+      'PnL',
+      'Sharpe',
+      'MaxDD',
+      'Trades',
+      'Expo',
+    ])
+    expect(Array.from(document.querySelectorAll('tbody td')).map((cell) => String(cell.textContent || '').trim())).toEqual([
+      '1Pin',
+      '100',
+      '2.1',
+      '-5',
+      '8',
+      '0.44',
+    ])
+    expect(localStorage.getItem(TOP_RESULTS_TABLE_STATE_KEY)).toContain('"columnOrderKeys":["rank","pnl","sharpe","max_dd","trades","exposure","name"]')
+  })
+
   it('routes current-candidate actions into drilldown and overview while keeping compare below the ranked table', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

@@ -7,14 +7,18 @@ import {
   useHeadlessMatrixTable,
   type MatrixColumnMeta,
 } from '../composables/useHeadlessMatrixTable'
-import { usePersistedMatrixColumnState } from '../composables/usePersistedMatrixColumnState'
+import {
+  usePersistedMatrixColumnState,
+  type MatrixColumnViewPreset,
+} from '../composables/usePersistedMatrixColumnState'
+import { usePersistedTableDensity } from '../composables/usePersistedTableDensity'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
-import { TOP_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
+import { TOP_RESULTS_TABLE_DENSITY_KEY, TOP_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
 import {
   compareCandidateFocusIcon,
   compareCandidatesIcon,
@@ -24,6 +28,9 @@ import {
 import { compareActionIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import AppDataTableShell from './ui/AppDataTableShell.vue'
+import AppTableDensityControl from './ui/AppTableDensityControl.vue'
+import AppTableViewPresetControl from './ui/AppTableViewPresetControl.vue'
+import type { TableViewPresetOption } from './ui/tableViewPresets'
 
 interface TopColumn {
   key: string
@@ -42,6 +49,35 @@ interface TopRow {
   rowId?: string
   selected: boolean
   cells: TopCell[]
+}
+
+type TopViewPresetId = 'default' | 'risk' | 'score'
+
+const TOP_VIEW_PRESETS: readonly TableViewPresetOption[] = [
+  { id: 'default', label: 'Default', summary: 'Original shortlist column order.' },
+  { id: 'risk', label: 'Risk', summary: 'Prioritize PnL, Sharpe, drawdown, trades, and exposure.' },
+  { id: 'score', label: 'Score', summary: 'Prioritize objective and derived score columns.' },
+]
+
+const TOP_VIEW_PRESET_KEYS: Record<TopViewPresetId, readonly string[]> = {
+  default: [],
+  risk: ['rank', 'pnl', 'ret_pct', 'sharpe', 'max_dd', 'trades', 'exposure', 'fast', 'slow'],
+  score: [
+    'rank',
+    'score',
+    'maximize_value',
+    'minimize_value',
+    'violation',
+    'active_mean',
+    'active_sortino',
+    'drawdown_chronicity',
+    'robustness_margin',
+    'fast',
+    'slow',
+    'pnl',
+    'sharpe',
+    'max_dd',
+  ],
 }
 
 const analysisStore = useAnalysisStore()
@@ -95,12 +131,17 @@ const {
   hiddenCount: hiddenColumnCount,
   canRestoreDefaults,
   leadVisibleColumnKey,
+  allColumnKeys,
+  orderedColumns,
+  orderedVisibleColumnKeys,
   toggleColumnVisibility,
   restoreDefaultColumns,
   canHideColumn,
+  applyColumnViewPreset,
 } = usePersistedMatrixColumnState(renderedColumns, TOP_RESULTS_TABLE_STATE_KEY)
+const { tableDensity } = usePersistedTableDensity(TOP_RESULTS_TABLE_DENSITY_KEY)
 const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
-  renderedColumns,
+  orderedColumns,
   renderedRows,
   { columnVisibility },
 )
@@ -170,6 +211,32 @@ const columnVisibilityHint = computed(() => {
   }
   return 'Hide lower-signal metrics to keep the shortlist focused without changing the selected candidate context.'
 })
+function topViewPresetFor(presetId: TopViewPresetId): MatrixColumnViewPreset {
+  if (presetId === 'default') {
+    return {
+      visibleColumnKeys: allColumnKeys.value,
+      columnOrderKeys: allColumnKeys.value,
+    }
+  }
+  const orderedKeys = TOP_VIEW_PRESET_KEYS[presetId].filter((key) => allColumnKeys.value.includes(key))
+  const fallbackKeys = allColumnKeys.value.filter((key) => !orderedKeys.includes(key))
+  return {
+    visibleColumnKeys: orderedKeys.length ? orderedKeys : allColumnKeys.value,
+    columnOrderKeys: [...orderedKeys, ...fallbackKeys],
+  }
+}
+
+const activeTopViewPresetId = computed<TopViewPresetId>(() => {
+  const visibleKey = orderedVisibleColumnKeys.value.join('|')
+  if (visibleKey === topViewPresetFor('risk').visibleColumnKeys?.join('|')) return 'risk'
+  if (visibleKey === topViewPresetFor('score').visibleColumnKeys?.join('|')) return 'score'
+  return 'default'
+})
+
+function applyTopViewPreset(presetId: string): void {
+  if (presetId !== 'default' && presetId !== 'risk' && presetId !== 'score') return
+  applyColumnViewPreset(topViewPresetFor(presetId))
+}
 const selectedTopIndex = computed(() => renderedRows.value.findIndex((row) => row.selected))
 const fallbackSelectedTopTitle = computed(() => {
   const selectedIndex = selectedTopIndex.value
@@ -606,42 +673,58 @@ onBeforeUnmount(() => {
           :summary="topTableShellSummary"
           :row-count="renderedRows.length"
           :viewport="false"
+          :density="tableDensity"
+          toolbar-label="Ranked candidate table controls"
           aria-label="Top optimization results table shell"
           keyboard-hint="Use arrow keys to move between rows, Enter to open Drilldown, and P to pin a candidate."
         >
           <template #controls>
-            <details v-if="renderedColumns.length > 0" class="columnDetails">
-              <summary class="columnDetailsSummary">
-                <span>Visible columns</span>
-                <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
-              </summary>
-              <div class="columnDetailsBody">
-                <div class="panelMuted">{{ columnVisibilityHint }}</div>
-                <div class="columnToggleGrid" role="group" aria-label="Visible top result columns">
-                  <label
-                    v-for="column in columnOptions"
-                    :key="column.key"
-                    class="columnToggle"
-                    :class="{ disabled: !canHideColumn(column.key) && column.visible }"
-                    :for="topColumnToggleId(column.key)"
-                  >
-                    <input
-                      :id="topColumnToggleId(column.key)"
-                      type="checkbox"
-                      :checked="column.visible"
-                      :disabled="!canHideColumn(column.key) && column.visible"
-                      @change="toggleColumnVisibility(column.key)"
-                    />
-                    <span>{{ column.label }}</span>
-                  </label>
+            <div class="tableControlBar">
+              <AppTableViewPresetControl
+                :presets="TOP_VIEW_PRESETS"
+                :active-preset-id="activeTopViewPresetId"
+                label="Top view"
+                qa-prefix="top.table.view"
+                @apply="applyTopViewPreset"
+              />
+              <details v-if="renderedColumns.length > 0" class="columnDetails">
+                <summary class="columnDetailsSummary">
+                  <span>Visible columns</span>
+                  <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+                </summary>
+                <div class="columnDetailsBody">
+                  <div class="panelMuted">{{ columnVisibilityHint }}</div>
+                  <div class="columnToggleGrid" role="group" aria-label="Visible top result columns">
+                    <label
+                      v-for="column in columnOptions"
+                      :key="column.key"
+                      class="columnToggle"
+                      :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                      :for="topColumnToggleId(column.key)"
+                    >
+                      <input
+                        :id="topColumnToggleId(column.key)"
+                        type="checkbox"
+                        :checked="column.visible"
+                        :disabled="!canHideColumn(column.key) && column.visible"
+                        @change="toggleColumnVisibility(column.key)"
+                      />
+                      <span>{{ column.label }}</span>
+                    </label>
+                  </div>
+                  <div class="actions columnDetailsActions">
+                    <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                      Restore defaults
+                    </button>
+                  </div>
                 </div>
-                <div class="actions columnDetailsActions">
-                  <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
-                    Restore defaults
-                  </button>
-                </div>
-              </div>
-            </details>
+              </details>
+              <AppTableDensityControl
+                v-model:density="tableDensity"
+                label="Top density"
+                qa-prefix="top.table.density"
+              />
+            </div>
           </template>
           <div
             ref="tableScrollElementRef"
@@ -843,6 +926,15 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
+}
+
+.tableControlBar {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
 }
 
 .columnDetails[open] {
@@ -1124,6 +1216,11 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 680px) {
+  .tableControlBar {
+    display: grid;
+    justify-content: stretch;
+  }
+
   .gridFive {
     grid-template-columns: 1fr;
   }

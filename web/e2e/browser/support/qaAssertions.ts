@@ -49,7 +49,10 @@ export function installQaGuards(page: Page, options: QaGuardOptions = {}): QaGua
 }
 
 export async function expectNoHorizontalDocumentOverflow(page: Page): Promise<void> {
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  const overflow = await page.evaluate(() => Math.max(
+    document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    document.body.scrollWidth - window.innerWidth,
+  ))
   expect(overflow, 'document horizontal overflow px').toBeLessThanOrEqual(2)
 }
 

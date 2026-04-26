@@ -11,6 +11,8 @@ describe('AppDataTableShell', () => {
         summary: '128 rows · sorted by return',
         rowCount: 128,
         keyboardHint: 'Use arrow keys to move between rows.',
+        toolbarLabel: 'Top candidates table controls',
+        density: 'compact',
       },
       slots: {
         actions: '<button type="button">Export</button>',
@@ -23,6 +25,9 @@ describe('AppDataTableShell', () => {
     expect(wrapper.get('.appDataTableSummary').text()).toContain('128 rows')
     expect(wrapper.find('.appDataTableActions button').text()).toBe('Export')
     expect(wrapper.find('.appDataTableControls button').text()).toBe('Columns')
+    expect(wrapper.get('.appDataTableControls').attributes('role')).toBe('toolbar')
+    expect(wrapper.get('.appDataTableControls').attributes('aria-label')).toBe('Top candidates table controls')
+    expect(wrapper.get('.appDataTableShell').attributes('data-table-density')).toBe('compact')
     expect(wrapper.get('.appDataTableViewport').text()).toContain('Candidate 1')
     expect(wrapper.get('.appDataTableHint').text()).toContain('arrow keys')
   })

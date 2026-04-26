@@ -5,7 +5,7 @@
   --radius-card: 14px;
   --radius-control: 10px;
   --controls-w: 420px;
-  --desktop-titlebar-h: 52px;
+  --desktop-titlebar-h: 48px;
   --text-xs: 0.76rem;
   --text-sm: 0.82rem;
   --text-md: 0.86rem;
@@ -1456,7 +1456,7 @@ button:disabled {
 
 @media (max-width: 760px) {
   :root {
-    --desktop-titlebar-h: 48px;
+    --desktop-titlebar-h: 44px;
   }
 
   .bestGrid {
