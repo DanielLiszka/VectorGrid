@@ -2487,6 +2487,21 @@ mod tests {
         text
     }
 
+    fn all_xml(bytes: &[u8]) -> String {
+        let mut zip = ZipArchive::new(Cursor::new(bytes)).expect("zip archive");
+        let mut out = String::new();
+        for idx in 0..zip.len() {
+            let mut file = zip.by_index(idx).expect("zip entry");
+            if !file.name().ends_with(".xml") {
+                continue;
+            }
+            let mut text = String::new();
+            file.read_to_string(&mut text).expect("read xml entry");
+            out.push_str(&text);
+        }
+        out
+    }
+
     #[test]
     fn validation_report_workbook_contains_expected_sheets_and_charts() {
         let report = serde_json::json!({
@@ -2557,6 +2572,62 @@ mod tests {
         assert!(workbook.contains("Distributions"));
         assert!(workbook.contains("Audit Data"));
         assert!(workbook.contains("Dashboard"));
+    }
+
+    #[test]
+    fn validation_report_xlsx_uses_monte_carlo_when_legacy_bootstrap_is_absent() {
+        let report = serde_json::json!({
+          "version": 1,
+          "kind": "vectorgrid_report",
+          "ts": "2026-03-13T00:00:00Z",
+          "run": { "req": { "strategy_kind": "DoubleMa" } },
+          "validation": {
+            "req": {
+              "monte_carlo": {
+                "schema_version": 1,
+                "simulations": 500,
+                "modes": ["trade_iid"]
+              }
+            },
+            "res": {
+              "data_id": "BTCUSD_1h",
+              "backend_used": "CpuOnly",
+              "backend_route": "CpuOnly",
+              "run_verdict": { "passed": true, "approved": true, "approved_candidate_count": 1 },
+              "candidates": [{
+                "params": { "fast_ma_type": "ema", "fast_len": 10, "slow_ma_type": "sma", "slow_len": 30 },
+                "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.2, "trades": 10 },
+                "monte_carlo": {
+                  "schema_version": 1,
+                  "simulations": 500,
+                  "trade_count": 10,
+                  "tail_alpha": 0.05,
+                  "modes": {
+                    "trade_iid": {
+                      "simulations": 500,
+                      "prob_pnl_positive": 0.77,
+                      "pnl_p05": -0.11,
+                      "pnl_tail_mean_p05": -0.13,
+                      "pnl_p50": 0.22,
+                      "pnl_p95": 0.44,
+                      "max_dd_p50": 0.2,
+                      "max_dd_p95": 0.33,
+                      "max_dd_tail_mean_p95": 0.36
+                    }
+                  },
+                  "advisory": { "passed": true }
+                },
+                "validation_verdict": { "passed": true, "warning_flags": [], "fail_reasons": [] },
+                "robust_score": 1.23
+              }]
+            }
+          }
+        });
+
+        let bytes = build_validation_report_xlsx(&report, Some(25)).expect("xlsx");
+        let xml = all_xml(&bytes);
+        assert!(xml.contains("iid-only closed-trade bootstrap"));
+        assert!(xml.contains("IID only"));
     }
 
     #[test]

@@ -98,6 +98,14 @@ describe("validationRequestBuilder", () => {
       simulations: 500,
       stationary_mean_block_len: 9,
     });
+    expect(req.monte_carlo).toEqual({
+      schema_version: 1,
+      simulations: 500,
+      modes: ["trade_iid", "trade_stationary"],
+      stationary_mean_block_len: 9,
+      distribution_bins: 40,
+      tail_alpha: 0.05,
+    });
     expect(req.cscv_pbo).toEqual({
       slices: 16,
       max_combinations: 50000,
@@ -1518,6 +1526,14 @@ describe("validationRequestBuilder", () => {
     expect(req.trade_bootstrap).toEqual({
       simulations: 400,
       stationary_mean_block_len: 0,
+    });
+    expect(req.monte_carlo).toEqual({
+      schema_version: 1,
+      simulations: 400,
+      modes: ["trade_iid"],
+      stationary_mean_block_len: 0,
+      distribution_bins: 40,
+      tail_alpha: 0.05,
     });
     const summary = buildValidationCapabilitySummary(req);
     expect(summary.moduleSummary).toContain("trade bootstrap iid-only");

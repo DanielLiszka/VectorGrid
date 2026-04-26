@@ -1,6 +1,7 @@
 use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ValidationArtifactContext {
@@ -104,6 +105,22 @@ fn default_spa_benchmark() -> SpaBenchmarkKind {
 
 fn default_mc_sims() -> usize {
     500
+}
+
+fn default_monte_carlo_schema_version() -> u16 {
+    1
+}
+
+fn default_monte_carlo_modes() -> Vec<MonteCarloMode> {
+    vec![MonteCarloMode::TradeIid, MonteCarloMode::TradeStationary]
+}
+
+fn default_monte_carlo_distribution_bins() -> usize {
+    40
+}
+
+fn default_monte_carlo_tail_alpha() -> f64 {
+    0.05
 }
 
 fn default_cross_max_datasets() -> usize {
@@ -350,6 +367,147 @@ pub struct TradeBootstrapStats {
     pub stationary_max_dd_tail_mean_p95: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum MonteCarloMode {
+    TradeIid,
+    TradeStationary,
+}
+
+impl MonteCarloMode {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::TradeIid => "trade_iid",
+            Self::TradeStationary => "trade_stationary",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MonteCarloThresholdConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_prob_pnl_positive: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_pnl_p05: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_drawdown_p95: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_trade_count: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MonteCarloValidationConfig {
+    #[serde(default = "default_monte_carlo_schema_version")]
+    pub schema_version: u16,
+    #[serde(default = "default_mc_sims")]
+    pub simulations: usize,
+    #[serde(default = "default_monte_carlo_modes")]
+    pub modes: Vec<MonteCarloMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stationary_mean_block_len: Option<usize>,
+    #[serde(default = "default_monte_carlo_distribution_bins")]
+    pub distribution_bins: usize,
+    #[serde(default = "default_monte_carlo_tail_alpha")]
+    pub tail_alpha: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn: Option<MonteCarloThresholdConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<MonteCarloThresholdConfig>,
+}
+
+impl MonteCarloValidationConfig {
+    pub fn from_trade_bootstrap(cfg: &TradeBootstrapConfig) -> Self {
+        let modes = if cfg.stationary_mean_block_len == Some(0) {
+            vec![MonteCarloMode::TradeIid]
+        } else {
+            default_monte_carlo_modes()
+        };
+        Self {
+            schema_version: default_monte_carlo_schema_version(),
+            simulations: cfg.simulations,
+            modes,
+            stationary_mean_block_len: cfg.stationary_mean_block_len,
+            distribution_bins: default_monte_carlo_distribution_bins(),
+            tail_alpha: default_monte_carlo_tail_alpha(),
+            warn: None,
+            gate: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MonteCarloDistributionBins {
+    pub min: f64,
+    pub max: f64,
+    pub counts: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MonteCarloModeStats {
+    pub simulations: usize,
+    pub prob_pnl_positive: f64,
+    pub pnl_p05: f64,
+    pub pnl_tail_mean_p05: f64,
+    pub pnl_p50: f64,
+    pub pnl_p95: f64,
+    pub max_dd_p50: f64,
+    pub max_dd_p95: f64,
+    pub max_dd_tail_mean_p95: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stationary_mean_block_len: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pnl_histogram: Option<MonteCarloDistributionBins>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drawdown_histogram: Option<MonteCarloDistributionBins>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct MonteCarloAdvisory {
+    pub passed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warning_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fail_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MonteCarloValidationStats {
+    pub schema_version: u16,
+    pub simulations: usize,
+    pub trade_count: usize,
+    pub tail_alpha: f64,
+    pub modes: BTreeMap<String, MonteCarloModeStats>,
+    pub advisory: MonteCarloAdvisory,
+}
+
+impl MonteCarloValidationStats {
+    pub fn to_trade_bootstrap_stats(&self) -> TradeBootstrapStats {
+        let iid = self.modes.get(MonteCarloMode::TradeIid.as_key());
+        let stationary = self.modes.get(MonteCarloMode::TradeStationary.as_key());
+        TradeBootstrapStats {
+            simulations: self.simulations,
+            trade_count: self.trade_count,
+            prob_pnl_positive: iid.map(|stats| stats.prob_pnl_positive).unwrap_or(0.0),
+            pnl_p05: iid.map(|stats| stats.pnl_p05).unwrap_or(0.0),
+            pnl_tail_mean_p05: iid.map(|stats| stats.pnl_tail_mean_p05).unwrap_or(0.0),
+            pnl_p50: iid.map(|stats| stats.pnl_p50).unwrap_or(0.0),
+            pnl_p95: iid.map(|stats| stats.pnl_p95).unwrap_or(0.0),
+            max_dd_p50: iid.map(|stats| stats.max_dd_p50).unwrap_or(0.0),
+            max_dd_p95: iid.map(|stats| stats.max_dd_p95).unwrap_or(0.0),
+            max_dd_tail_mean_p95: iid.map(|stats| stats.max_dd_tail_mean_p95).unwrap_or(0.0),
+            stationary_mean_block_len: stationary.and_then(|stats| stats.stationary_mean_block_len),
+            stationary_prob_pnl_positive: stationary.map(|stats| stats.prob_pnl_positive),
+            stationary_pnl_p05: stationary.map(|stats| stats.pnl_p05),
+            stationary_pnl_tail_mean_p05: stationary.map(|stats| stats.pnl_tail_mean_p05),
+            stationary_pnl_p50: stationary.map(|stats| stats.pnl_p50),
+            stationary_pnl_p95: stationary.map(|stats| stats.pnl_p95),
+            stationary_max_dd_p50: stationary.map(|stats| stats.max_dd_p50),
+            stationary_max_dd_p95: stationary.map(|stats| stats.max_dd_p95),
+            stationary_max_dd_tail_mean_p95: stationary.map(|stats| stats.max_dd_tail_mean_p95),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CrossTickerDataset {
     pub csv_path: String,
@@ -448,6 +606,10 @@ pub struct ValidationSemanticsProvenance {
     pub cscv_selected_candidate_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cscv_skipped_reason: Option<String>,
+    #[serde(default)]
+    pub monte_carlo_coverage_state: String,
+    #[serde(default)]
+    pub monte_carlo_policy: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_mode: Option<CrossTickerMode>,
 

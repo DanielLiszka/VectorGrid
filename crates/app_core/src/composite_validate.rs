@@ -180,11 +180,11 @@ use crate::validation_shared::{canonical_json_eq, canonical_json_key_bytes};
 use crate::validation_shared::{canonical_json_key, ValidationAuxWorkMask};
 pub use crate::validation_shared::{
     CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta, CrossTickerGateConfig,
-    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
-    ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
-    SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, ValidationArtifactContext, ValidationSemanticsProvenance,
-    WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
+    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, MonteCarloValidationConfig,
+    MonteCarloValidationStats, PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional,
+    ReoptWalkForwardStats, ReoptWalkForwardWindowStats, SpaBenchmarkKind, SpaConfigOptional,
+    SpaValidationStats, TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
+    ValidationSemanticsProvenance, WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
 };
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -691,7 +691,7 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
             );
         }
     }
-    if req.trade_bootstrap.is_some() {
+    if req.trade_bootstrap.is_some() || req.monte_carlo.is_some() {
         let supports_trade_bootstrap = req
             .candidates
             .first()
@@ -711,7 +711,7 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
             .unwrap_or(false);
         if !supports_trade_bootstrap {
             return Some(
-                "GPU fixed-candidate composite validation does not support trade bootstrap yet"
+                "GPU fixed-candidate composite validation does not support Monte Carlo trade bootstrap yet"
                     .to_string(),
             );
         }
@@ -9545,6 +9545,8 @@ pub struct CompositeValidationRequest {
     #[serde(default)]
     pub trade_bootstrap: Option<TradeBootstrapConfig>,
     #[serde(default)]
+    pub monte_carlo: Option<MonteCarloValidationConfig>,
+    #[serde(default)]
     pub cross_ticker: Option<CrossTickerConfig>,
     #[serde(default)]
     pub cscv_pbo: Option<CscvPboConfig>,
@@ -9591,6 +9593,8 @@ pub struct CompositeValidationCandidateResult {
     pub perturb: Option<PerturbStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trade_bootstrap: Option<TradeBootstrapStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monte_carlo: Option<MonteCarloValidationStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub regime_slice_robustness: Option<RegimeSliceRobustnessStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -9678,6 +9682,10 @@ impl ValidationPostCandidate for CompositeValidationCandidateResult {
 
     fn set_cscv_pbo(&mut self, v: Option<CscvCandidatePboStats>) {
         self.cscv_pbo = v;
+    }
+
+    fn monte_carlo_stats(&self) -> Option<&MonteCarloValidationStats> {
+        self.monte_carlo.as_ref()
     }
 
     fn validation_verdict(&self) -> &ValidationCandidateVerdict {
@@ -12129,6 +12137,7 @@ fn compute_gpu_perturb_stats_for_composite_candidate(
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -12261,7 +12270,11 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
     let seed = req.seed;
     let walk_cfg = req.walk_forward.clone();
     let perturb_cfg = req.perturb.clone();
-    let mc_cfg = req.trade_bootstrap.clone();
+    let monte_carlo_cfg = req.monte_carlo.clone().or_else(|| {
+        req.trade_bootstrap
+            .as_ref()
+            .map(MonteCarloValidationConfig::from_trade_bootstrap)
+    });
     let ma_source = req.ma_source.clone();
     let fast_ma_params = req.fast_ma_params.clone();
     let slow_ma_params = req.slow_ma_params.clone();
@@ -12356,7 +12369,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                 } else {
                     None
                 };
-                let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
+                let monte_carlo = if let Some(cfg) = monte_carlo_cfg.as_ref() {
                     let series = build_candidate_series(
                         candles,
                         &lr,
@@ -12372,12 +12385,17 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                         prepared_cuda_inputs.as_ref(),
                     )?;
                     let trades = trades_for_series(&series);
-                    Some(crate::validation_pipeline::compute_trade_bootstrap_stats(
-                        &trades, cfg, rng,
-                    ))
+                    Some(
+                        crate::validation_pipeline::compute_monte_carlo_validation_stats(
+                            &trades, cfg, rng,
+                        ),
+                    )
                 } else {
                     None
                 };
+                let trade_bootstrap = monte_carlo
+                    .as_ref()
+                    .map(MonteCarloValidationStats::to_trade_bootstrap_stats);
                 let robust_score = crate::validation_pipeline::robust_score_from_metrics(
                     &in_sample,
                     walk_forward.as_ref(),
@@ -12414,6 +12432,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                         walk_forward,
                         perturb,
                         trade_bootstrap,
+                        monte_carlo,
                         regime_slice_robustness: None,
                         friction_stress: None,
                         cross_ticker: None,
@@ -12498,14 +12517,19 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                 None
             };
 
-            let trade_bootstrap = if let Some(cfg) = mc_cfg.as_ref() {
+            let monte_carlo = if let Some(cfg) = monte_carlo_cfg.as_ref() {
                 let trades = trades_for_series(&series);
-                Some(crate::validation_pipeline::compute_trade_bootstrap_stats(
-                    &trades, cfg, rng,
-                ))
+                Some(
+                    crate::validation_pipeline::compute_monte_carlo_validation_stats(
+                        &trades, cfg, rng,
+                    ),
+                )
             } else {
                 None
             };
+            let trade_bootstrap = monte_carlo
+                .as_ref()
+                .map(MonteCarloValidationStats::to_trade_bootstrap_stats);
 
             let (iterative_in_sample, iterative_delta) =
                 crate::validation_pipeline::maybe_run_iterative_validation(
@@ -12543,6 +12567,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
                     walk_forward,
                     perturb,
                     trade_bootstrap,
+                    monte_carlo,
                     regime_slice_robustness: None,
                     friction_stress: None,
                     cross_ticker: None,
@@ -13793,6 +13818,7 @@ mod tests {
                 simulations: 50,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13836,6 +13862,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13909,6 +13936,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -13961,6 +13989,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -14017,6 +14046,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 8,
@@ -14101,6 +14131,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -14170,6 +14201,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -14248,6 +14280,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -14313,6 +14346,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -14391,6 +14425,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -14468,6 +14503,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -14536,6 +14572,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -14604,6 +14641,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -14666,6 +14704,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -14722,6 +14761,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -14823,6 +14863,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -14953,6 +14994,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15040,6 +15082,7 @@ mod tests {
                 simulations: 24,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15118,6 +15161,7 @@ mod tests {
                 flip_bool_prob: 0.0,
             }),
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15191,6 +15235,7 @@ mod tests {
                 simulations: 24,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15263,6 +15308,7 @@ mod tests {
                 simulations: 24,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15335,6 +15381,7 @@ mod tests {
                 simulations: 24,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15407,6 +15454,7 @@ mod tests {
                 simulations: 24,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15484,6 +15532,7 @@ mod tests {
                 simulations: 24,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -15579,6 +15628,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15621,6 +15671,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15671,6 +15722,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15732,6 +15784,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -15815,6 +15868,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -15882,6 +15936,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -15945,6 +16000,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16036,6 +16092,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -16194,6 +16251,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16259,6 +16317,7 @@ mod tests {
                 simulations: 200,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16338,6 +16397,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -16416,6 +16476,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16543,6 +16604,7 @@ mod tests {
                     simulations: 64,
                     stationary_mean_block_len: Some(6),
                 }),
+                monte_carlo: None,
                 cross_ticker: None,
                 cscv_pbo: Some(CscvPboConfig {
                     slices: 6,
@@ -16669,6 +16731,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16793,6 +16856,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -16960,6 +17024,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17077,6 +17142,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17153,6 +17219,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17238,6 +17305,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17306,6 +17374,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17374,6 +17443,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17442,6 +17512,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17492,6 +17563,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17587,6 +17659,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17692,6 +17765,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17808,6 +17882,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -17917,6 +17992,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -18047,6 +18123,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -18188,6 +18265,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -18277,6 +18355,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -18396,6 +18475,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -18596,6 +18676,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -18730,6 +18811,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -18864,6 +18946,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -18998,6 +19081,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -19134,6 +19218,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -19242,6 +19327,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -19371,6 +19457,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -19492,6 +19579,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -19580,6 +19668,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -19681,6 +19770,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -19775,6 +19865,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -19900,6 +19991,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -20009,6 +20101,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -20138,6 +20231,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -20259,6 +20353,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -20347,6 +20442,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -20466,6 +20562,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -20623,6 +20720,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -20717,6 +20815,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -20778,6 +20877,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -20857,6 +20957,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -20927,6 +21028,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -20991,6 +21093,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -21625,6 +21728,7 @@ mod tests {
                 flip_bool_prob: 0.1,
             }),
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -21739,6 +21843,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -21806,6 +21911,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -21870,6 +21976,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -21932,6 +22039,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -21991,6 +22099,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -22097,6 +22206,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -22161,6 +22271,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -22211,6 +22322,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -22272,6 +22384,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -22350,6 +22463,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -22417,6 +22531,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -22480,6 +22595,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -22563,6 +22679,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -22619,6 +22736,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -22679,6 +22797,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -22739,6 +22858,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -22796,6 +22916,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -22853,6 +22974,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -22903,6 +23025,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -22970,6 +23093,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23028,6 +23152,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23068,6 +23193,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23131,6 +23257,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23210,6 +23337,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23271,6 +23399,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 6,
@@ -23347,6 +23476,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -23416,6 +23546,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23479,6 +23610,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 6,
@@ -23549,6 +23681,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -23627,6 +23760,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23662,6 +23796,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23726,6 +23861,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23776,6 +23912,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -23837,6 +23974,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -23915,6 +24053,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -23982,6 +24121,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24045,6 +24185,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24128,6 +24269,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -24178,6 +24320,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24216,6 +24359,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24279,6 +24423,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24358,6 +24503,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24421,6 +24567,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24499,6 +24646,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24570,6 +24718,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 6,
@@ -24646,6 +24795,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -24715,6 +24865,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -24778,6 +24929,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 6,
@@ -24848,6 +25000,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -24925,6 +25078,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -24984,6 +25138,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25043,6 +25198,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25108,6 +25264,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25173,6 +25330,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25232,6 +25390,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25291,6 +25450,7 @@ mod tests {
                 simulations: 128,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25356,6 +25516,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25421,6 +25582,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -25482,6 +25644,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -25584,6 +25747,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -25640,6 +25804,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(crate::cscv_pbo::CscvPboConfig {
                 slices: 4,
@@ -25718,6 +25883,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: Some(SpaConfigOptional {
@@ -25785,6 +25951,7 @@ mod tests {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -25848,6 +26015,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,

@@ -649,6 +649,7 @@ fn make_validation_request(
                 BootstrapModeArg::IidOnly => Some(0),
             },
         }),
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: case.cscv_pbo.then_some(CscvPboConfig {
             slices: cli.cscv_slices,
@@ -1055,6 +1056,7 @@ fn main() -> Result<(), String> {
                                 cross_spa.clone(),
                                 cross_perturb.clone(),
                                 cross_trade_bootstrap.clone(),
+                                None,
                                 cross_cscv_pbo.clone(),
                                 cli.seed,
                                 &cli.cache_dir,

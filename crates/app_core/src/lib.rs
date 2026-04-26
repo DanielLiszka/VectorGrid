@@ -150,7 +150,9 @@ pub use double_ma_validate::{
 
 pub use validation_shared::{
     CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta, CrossTickerGateConfig,
-    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
+    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, MonteCarloAdvisory,
+    MonteCarloDistributionBins, MonteCarloMode, MonteCarloModeStats, MonteCarloThresholdConfig,
+    MonteCarloValidationConfig, MonteCarloValidationStats, PerturbConfig, PerturbStats,
     ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
     TradeBootstrapStats, ValidationAdmissionHeadProvenance, ValidationAdmissionPolicy,

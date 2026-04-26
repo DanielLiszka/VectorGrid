@@ -806,6 +806,7 @@ fn run_validation_with_preset(
         spa: Some(preset.spa.clone()),
         perturb: None,
         trade_bootstrap: None,
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: Some(CscvPboConfig {
             slices: preset.cscv_pbo.slices,
@@ -1197,6 +1198,7 @@ fn evaluate_validation_top_candidate_holdout(
         spa: None,
         perturb: None,
         trade_bootstrap: None,
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: None,
         seed: 1,
@@ -1397,6 +1399,7 @@ fn evaluate_optimization_winner_holdout(
         spa: None,
         perturb: None,
         trade_bootstrap: None,
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: None,
         seed: 1,

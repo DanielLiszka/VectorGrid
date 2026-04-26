@@ -15,7 +15,8 @@ use std::time::Instant;
 
 use crate::iterative_sim::{IterativeSimConfig, ValidationEngine};
 use crate::validation_shared::{
-    canonical_json_value_key, PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional,
+    canonical_json_value_key, MonteCarloValidationConfig, PerturbConfig, TradeBootstrapConfig,
+    WalkForwardConfigOptional,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,6 +159,8 @@ pub struct MetaHoldoutValidationConfig {
     pub perturb: Option<PerturbConfig>,
     #[serde(default)]
     pub trade_bootstrap: Option<TradeBootstrapConfig>,
+    #[serde(default)]
+    pub monte_carlo: Option<MonteCarloValidationConfig>,
     #[serde(default = "default_holdout_seed")]
     pub seed: u64,
     #[serde(default)]

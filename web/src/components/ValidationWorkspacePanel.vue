@@ -112,6 +112,8 @@ const {
   validationCategorySummary,
   validationAuxCpuSummary,
   validationBootstrapSummary,
+  validationMonteCarloSummary,
+  validationMonteCarloHistogram,
   validationRegimeSummary,
   validationFrictionSummary,
   validationCrossSummary,
@@ -268,6 +270,17 @@ const {
   },
 )
 const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
+const renderedMonteCarloHistogram = computed(() =>
+  (Array.isArray(validationMonteCarloHistogram.value)
+    ? validationMonteCarloHistogram.value
+    : []) as Array<{ label: string; count: number; pct: number }>,
+)
+const monteCarloHistogramMaxCount = computed(() =>
+  renderedMonteCarloHistogram.value.reduce(
+    (max, bar) => Math.max(max, Number(bar.count || 0)),
+    0,
+  ),
+)
 const {
   scrollElementRef: tableScrollElementRef,
   virtualRows,
@@ -1327,6 +1340,10 @@ onBeforeUnmount(() => {
               <div class="metaLine mono">{{ validationBootstrapSummary }}</div>
             </div>
             <div>
+              <label>Monte Carlo</label>
+              <div class="metaLine mono">{{ validationMonteCarloSummary }}</div>
+            </div>
+            <div>
               <label>Regime</label>
               <div class="metaLine mono">{{ validationRegimeSummary }}</div>
             </div>
@@ -1352,6 +1369,19 @@ onBeforeUnmount(() => {
             <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
             <div class="metaLine mono">{{ validationShortlistMeta }}</div>
             <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
+          </div>
+          <div
+            v-if="renderedMonteCarloHistogram.length > 0"
+            class="monteCarloHistogram"
+            aria-label="Top candidate Monte Carlo PnL distribution"
+          >
+            <div
+              v-for="(bar, index) in renderedMonteCarloHistogram"
+              :key="`mc_hist_${index}`"
+              class="monteCarloHistogramBar"
+              :style="{ height: `${Math.max(4, Math.round((Number(bar.count || 0) / Math.max(1, monteCarloHistogramMaxCount)) * 42))}px` }"
+              :title="`${bar.label}: ${bar.count} (${(Number(bar.pct || 0) * 100).toFixed(1)}%)`"
+            ></div>
           </div>
         </div>
         <AppDataTableShell
@@ -1626,6 +1656,22 @@ onBeforeUnmount(() => {
   gap: 0.22rem;
   padding-top: 0.35rem;
   border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+}
+
+.monteCarloHistogram {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4px, 1fr));
+  align-items: end;
+  gap: 2px;
+  padding-top: 0.45rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+}
+
+.monteCarloHistogramBar {
+  min-width: 4px;
+  border-radius: 2px 2px 0 0;
+  background: color-mix(in oklab, var(--accent) 72%, var(--surface-working));
 }
 
 .compactMetaGrid {

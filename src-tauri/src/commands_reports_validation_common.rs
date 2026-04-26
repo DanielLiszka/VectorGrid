@@ -308,6 +308,63 @@ fn opt_u64(v: &Value, ptr: &str) -> Option<u64> {
     v.pointer(ptr).and_then(|x| x.as_u64())
 }
 
+fn first_opt_f64(v: &Value, ptrs: &[&str]) -> Option<f64> {
+    ptrs.iter().find_map(|ptr| opt_f64(v, ptr))
+}
+
+fn first_opt_u64(v: &Value, ptrs: &[&str]) -> Option<u64> {
+    ptrs.iter().find_map(|ptr| opt_u64(v, ptr))
+}
+
+fn active_monte_carlo_request(validation_req: &Value) -> Option<&Value> {
+    validation_req
+        .get("trade_bootstrap")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            validation_req
+                .get("monte_carlo")
+                .filter(|value| !value.is_null())
+        })
+}
+
+fn validation_module_enabled(validation_req: &Value, module: &str) -> bool {
+    if module == "trade_bootstrap" {
+        active_monte_carlo_request(validation_req).is_some()
+    } else {
+        validation_req
+            .get(module)
+            .is_some_and(|value| !value.is_null())
+    }
+}
+
+fn monte_carlo_request_has_mode(request: &Value, mode: &str) -> bool {
+    request
+        .get("modes")
+        .and_then(Value::as_array)
+        .is_some_and(|modes| modes.iter().any(|value| value.as_str() == Some(mode)))
+}
+
+fn bootstrap_iid_metric(cand: &Value, legacy_ptr: &str, mode_field: &str) -> Option<f64> {
+    let monte_carlo_ptr = format!("/monte_carlo/modes/trade_iid/{mode_field}");
+    first_opt_f64(cand, &[legacy_ptr, monte_carlo_ptr.as_str()])
+}
+
+fn bootstrap_stationary_metric(cand: &Value, legacy_ptr: &str, mode_field: &str) -> Option<f64> {
+    let monte_carlo_ptr = format!("/monte_carlo/modes/trade_stationary/{mode_field}");
+    first_opt_f64(cand, &[legacy_ptr, monte_carlo_ptr.as_str()])
+}
+
+fn bootstrap_stationary_block_len(cand: &Value) -> Option<usize> {
+    first_opt_u64(
+        cand,
+        &[
+            "/trade_bootstrap/stationary_mean_block_len",
+            "/monte_carlo/modes/trade_stationary/stationary_mean_block_len",
+        ],
+    )
+    .map(|v| v as usize)
+}
+
 fn derive_friction_flag(pass_frac: Option<f64>, max_rank_drift: Option<usize>) -> String {
     match (pass_frac, max_rank_drift) {
         (Some(pass_frac), Some(max_rank_drift)) if pass_frac < 1.0 || max_rank_drift >= 2 => {
@@ -431,20 +488,20 @@ fn normalize_regime_support_label(label: &str) -> String {
 }
 
 fn build_bootstrap_mode_summary(validation_req: Option<&Value>) -> String {
-    let Some(trade_bootstrap) = validation_req
-        .and_then(|value| value.get("trade_bootstrap"))
-        .filter(|value| !value.is_null())
-    else {
+    let Some(request) = validation_req.and_then(active_monte_carlo_request) else {
         return "-".to_string();
     };
-    if trade_bootstrap
+    if request
         .get("stationary_mean_block_len")
         .and_then(Value::as_u64)
         == Some(0)
+        || (request.get("modes").is_some()
+            && monte_carlo_request_has_mode(request, "trade_iid")
+            && !monte_carlo_request_has_mode(request, "trade_stationary"))
     {
         return "iid-only closed-trade bootstrap".to_string();
     }
-    let stat_block = trade_bootstrap
+    let stat_block = request
         .get("stationary_mean_block_len")
         .and_then(Value::as_u64)
         .filter(|value| *value > 0)
@@ -1747,10 +1804,7 @@ fn describe_aux_cpu_tails(validation_req: &Value) -> Vec<String> {
     if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
         aux_cpu.push("perturb".to_string());
     }
-    if let Some(bootstrap) = validation_req
-        .get("trade_bootstrap")
-        .filter(|v| !v.is_null())
-    {
+    if let Some(bootstrap) = active_monte_carlo_request(validation_req) {
         if bootstrap
             .get("stationary_mean_block_len")
             .and_then(Value::as_u64)
@@ -1783,10 +1837,7 @@ fn describe_composite_gpu_native_optional_modules(validation_req: &Value) -> Vec
     if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
         modules.push("perturb".to_string());
     }
-    if let Some(bootstrap) = validation_req
-        .get("trade_bootstrap")
-        .filter(|v| !v.is_null())
-    {
+    if let Some(bootstrap) = active_monte_carlo_request(validation_req) {
         if bootstrap
             .get("stationary_mean_block_len")
             .and_then(Value::as_u64)
@@ -1818,10 +1869,7 @@ fn describe_disabled_modules(validation_req: &Value) -> Vec<String> {
         "trade_bootstrap",
         "cross_ticker",
     ] {
-        if !validation_req
-            .get(module)
-            .is_some_and(|value| !value.is_null())
-        {
+        if !validation_module_enabled(validation_req, module) {
             disabled.push(module.to_string());
         }
     }
@@ -1920,10 +1968,7 @@ fn enabled_execution_category_modules(validation_req: &Value) -> Vec<&'static st
     if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
         modules.push("perturb");
     }
-    if validation_req
-        .get("trade_bootstrap")
-        .is_some_and(|v| !v.is_null())
-    {
+    if validation_module_enabled(validation_req, "trade_bootstrap") {
         modules.push("trade_bootstrap");
     }
     modules
@@ -1981,10 +2026,7 @@ fn build_expected_execution_category_summary(
         if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
             gpu_tail.push("perturb");
         }
-        if validation_req
-            .get("trade_bootstrap")
-            .is_some_and(|v| !v.is_null())
-        {
+        if validation_module_enabled(validation_req, "trade_bootstrap") {
             gpu_tail.push("trade_bootstrap");
         }
         return format_execution_category_summary(vec![
@@ -2031,10 +2073,7 @@ fn build_expected_execution_category_summary(
             gpu_tail.push("perturb");
         }
     }
-    if validation_req
-        .get("trade_bootstrap")
-        .is_some_and(|v| !v.is_null())
-    {
+    if validation_module_enabled(validation_req, "trade_bootstrap") {
         if gpu_native_advanced {
             gpu_native.push("trade_bootstrap");
         } else {
@@ -2636,6 +2675,25 @@ fn build_rows(validation_res: &Value) -> Result<(Vec<ExportCandidateRow>, bool),
             let sharpe = opt_f64(cand, "/in_sample/sharpe").unwrap_or(0.0);
             let wf_sharpe_median = opt_f64(cand, "/walk_forward/sharpe_median");
             let wf_pnl_median = opt_f64(cand, "/walk_forward/pnl_median");
+            let bootstrap_prob_pnl_positive = bootstrap_iid_metric(
+                cand,
+                "/trade_bootstrap/prob_pnl_positive",
+                "prob_pnl_positive",
+            );
+            let bootstrap_pnl_p05 =
+                bootstrap_iid_metric(cand, "/trade_bootstrap/pnl_p05", "pnl_p05");
+            let bootstrap_pnl_p50 =
+                bootstrap_iid_metric(cand, "/trade_bootstrap/pnl_p50", "pnl_p50");
+            let bootstrap_dd_p95 =
+                bootstrap_iid_metric(cand, "/trade_bootstrap/max_dd_p95", "max_dd_p95");
+            let bootstrap_stationary_mean_block_len = bootstrap_stationary_block_len(cand);
+            let bootstrap_stationary_pnl_p05 =
+                bootstrap_stationary_metric(cand, "/trade_bootstrap/stationary_pnl_p05", "pnl_p05");
+            let bootstrap_stationary_dd_p95 = bootstrap_stationary_metric(
+                cand,
+                "/trade_bootstrap/stationary_max_dd_p95",
+                "max_dd_p95",
+            );
             let regime_bucket_rows = parse_regime_bucket_rows(cand);
             let regime_stable_bucket_count =
                 opt_u64(cand, "/regime_slice_robustness/stable_bucket_count").map(|v| v as usize);
@@ -2717,20 +2775,13 @@ fn build_rows(validation_res: &Value) -> Result<(Vec<ExportCandidateRow>, bool),
                 cscv_selected_frac: opt_f64(cand, "/cscv_pbo/is_selected_frac"),
                 cscv_oos_rank_frac_p50: opt_f64(cand, "/cscv_pbo/oos_rank_frac_p50"),
                 cscv_oos_metric_p50: opt_f64(cand, "/cscv_pbo/oos_metric_p50"),
-                bootstrap_prob_pnl_positive: opt_f64(cand, "/trade_bootstrap/prob_pnl_positive"),
-                bootstrap_pnl_p05: opt_f64(cand, "/trade_bootstrap/pnl_p05"),
-                bootstrap_pnl_p50: opt_f64(cand, "/trade_bootstrap/pnl_p50"),
-                bootstrap_dd_p95: opt_f64(cand, "/trade_bootstrap/max_dd_p95"),
-                bootstrap_stationary_mean_block_len: opt_u64(
-                    cand,
-                    "/trade_bootstrap/stationary_mean_block_len",
-                )
-                .map(|v| v as usize),
-                bootstrap_stationary_pnl_p05: opt_f64(cand, "/trade_bootstrap/stationary_pnl_p05"),
-                bootstrap_stationary_dd_p95: opt_f64(
-                    cand,
-                    "/trade_bootstrap/stationary_max_dd_p95",
-                ),
+                bootstrap_prob_pnl_positive,
+                bootstrap_pnl_p05,
+                bootstrap_pnl_p50,
+                bootstrap_dd_p95,
+                bootstrap_stationary_mean_block_len,
+                bootstrap_stationary_pnl_p05,
+                bootstrap_stationary_dd_p95,
                 perturb_pnl_worst: opt_f64(cand, "/perturb/pnl_worst"),
                 perturb_pnl_mean: opt_f64(cand, "/perturb/pnl_mean"),
                 perturb_positive_frac: opt_f64(cand, "/perturb/pnl_positive_frac"),
@@ -3300,6 +3351,62 @@ mod tests {
         assert!(verdict.passed);
         assert!(!verdict.approved);
         assert_eq!(verdict.approved_candidate_count, 2);
+    }
+
+    #[test]
+    fn rows_derive_legacy_bootstrap_metrics_from_monte_carlo_when_absent() {
+        let validation_res = json!({
+          "data_id": "mc",
+          "run_verdict": { "passed": true, "approved": true },
+          "candidates": [{
+            "params": { "fast_len": 10, "slow_len": 40 },
+            "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+            "robust_score": 1.23,
+            "validation_verdict": { "passed": true, "warning_flags": [], "fail_reasons": [] },
+            "monte_carlo": {
+              "schema_version": 1,
+              "simulations": 500,
+              "trade_count": 12,
+              "tail_alpha": 0.05,
+              "modes": {
+                "trade_iid": {
+                  "simulations": 500,
+                  "prob_pnl_positive": 0.77,
+                  "pnl_p05": -0.11,
+                  "pnl_tail_mean_p05": -0.13,
+                  "pnl_p50": 0.22,
+                  "pnl_p95": 0.44,
+                  "max_dd_p50": 0.2,
+                  "max_dd_p95": 0.33,
+                  "max_dd_tail_mean_p95": 0.36
+                },
+                "trade_stationary": {
+                  "simulations": 500,
+                  "prob_pnl_positive": 0.7,
+                  "pnl_p05": -0.2,
+                  "pnl_tail_mean_p05": -0.24,
+                  "pnl_p50": 0.18,
+                  "pnl_p95": 0.39,
+                  "max_dd_p50": 0.25,
+                  "max_dd_p95": 0.41,
+                  "max_dd_tail_mean_p95": 0.45,
+                  "stationary_mean_block_len": 8
+                }
+              },
+              "advisory": { "passed": true }
+            }
+          }]
+        });
+
+        let model = build_model_from_validation_res(&validation_res, Some(10)).expect("model");
+        let row = model.all_rows.first().expect("row");
+        assert_eq!(row.bootstrap_prob_pnl_positive, Some(0.77));
+        assert_eq!(row.bootstrap_pnl_p05, Some(-0.11));
+        assert_eq!(row.bootstrap_pnl_p50, Some(0.22));
+        assert_eq!(row.bootstrap_dd_p95, Some(0.33));
+        assert_eq!(row.bootstrap_stationary_mean_block_len, Some(8));
+        assert_eq!(row.bootstrap_stationary_pnl_p05, Some(-0.2));
+        assert_eq!(row.bootstrap_stationary_dd_p95, Some(0.41));
     }
 
     #[test]

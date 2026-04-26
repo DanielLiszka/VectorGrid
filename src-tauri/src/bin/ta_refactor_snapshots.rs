@@ -181,6 +181,7 @@ fn main() -> Result<(), String> {
             simulations: 128,
             stationary_mean_block_len: None,
         }),
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: Some(CscvPboConfig {
             slices: 8,
@@ -271,6 +272,7 @@ fn main() -> Result<(), String> {
             simulations: 128,
             stationary_mean_block_len: None,
         }),
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: Some(CscvPboConfig {
             slices: 8,

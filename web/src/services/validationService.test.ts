@@ -358,6 +358,151 @@ describe("validationService", () => {
     );
   });
 
+  it("sends additive Monte Carlo config and surfaces top-candidate distribution", async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_validation") {
+        return {
+          backend_used: "Gpu",
+          backend_route: "GpuKernel",
+          runtime_ms: 42,
+          candidates: [
+            {
+              score: 1,
+              robust_score: 1.2,
+              robust_pareto: true,
+              monte_carlo: {
+                schema_version: 1,
+                simulations: 400,
+                trade_count: 18,
+                tail_alpha: 0.05,
+                modes: {
+                  trade_iid: {
+                    simulations: 400,
+                    prob_pnl_positive: 0.82,
+                    pnl_p05: -0.08,
+                    pnl_tail_mean_p05: -0.11,
+                    pnl_p50: 0.12,
+                    pnl_p95: 0.34,
+                    max_dd_p50: 0.12,
+                    max_dd_p95: 0.28,
+                    max_dd_tail_mean_p95: 0.31,
+                    pnl_histogram: { min: -0.2, max: 0.4, counts: [1, 3, 6] },
+                  },
+                  trade_stationary: {
+                    simulations: 400,
+                    prob_pnl_positive: 0.76,
+                    pnl_p05: -0.1,
+                    pnl_tail_mean_p05: -0.14,
+                    pnl_p50: 0.09,
+                    pnl_p95: 0.29,
+                    max_dd_p50: 0.14,
+                    max_dd_p95: 0.33,
+                    max_dd_tail_mean_p95: 0.37,
+                    stationary_mean_block_len: 9,
+                    pnl_histogram: { min: -0.3, max: 0.3, counts: [2, 5, 3] },
+                  },
+                },
+                advisory: { passed: true, warning_flags: [], fail_reasons: [] },
+              },
+              trade_bootstrap: {
+                simulations: 400,
+                trade_count: 18,
+                prob_pnl_positive: 0.82,
+                pnl_p05: -0.08,
+                pnl_p50: 0.12,
+                max_dd_p95: 0.28,
+              },
+            },
+          ],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: "single_candidate_supported",
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return {
+          path: "runs/vectorgrid_run_validation_mc.json",
+          bytes: 256,
+        };
+      }
+      return {};
+    });
+    (pinia.state.value as Record<string, unknown>).validation = {
+      candidates: "4",
+      seed: "1",
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: true,
+      mcSims: "400",
+      mcMode: "compare",
+      mcBlockLen: "9",
+      cscvEnable: false,
+      crossEnable: false,
+    };
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-04-26T12:00:00Z",
+        req: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-mc",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          ma_source: "close",
+          fast_ma_types: ["sma"],
+          slow_ma_types: ["ema"],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: "sma",
+                slow_ma_type: "ema",
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    });
+
+    await runValidation({ switchTab: false });
+
+    const req = firstValidationRequest();
+    expect(req.trade_bootstrap).toEqual({
+      simulations: 400,
+      stationary_mean_block_len: 9,
+    });
+    expect(req.monte_carlo).toEqual({
+      schema_version: 1,
+      simulations: 400,
+      modes: ["trade_iid", "trade_stationary"],
+      stationary_mean_block_len: 9,
+      distribution_bins: 40,
+      tail_alpha: 0.05,
+    });
+    const validationState = (pinia.state.value as Record<string, unknown>)
+      .validation as Record<string, unknown>;
+    expect(String(validationState.validationMonteCarloSummary || "")).toContain(
+      "stationary",
+    );
+    expect(String(validationState.validationMonteCarloSummary || "")).toContain(
+      "p_pos=76.0%",
+    );
+    expect(validationState.validationMonteCarloHistogram).toEqual([
+      expect.objectContaining({ count: 2 }),
+      expect.objectContaining({ count: 5 }),
+      expect.objectContaining({ count: 3 }),
+    ]);
+  });
+
   it("previews legacy and improved admission against the same source artifact", () => {
     const dataStore = useDataStore(pinia);
     const validationStore = useValidationStore(pinia);

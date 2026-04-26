@@ -198,6 +198,176 @@ function buildBootstrapSummary(raw: unknown): string {
     : "iid + stationary closed-trade compare • stat block=auto";
 }
 
+interface ValidationMonteCarloHistogramBar {
+  label: string;
+  count: number;
+  pct: number;
+}
+
+interface ValidationMonteCarloSummary {
+  summary: string;
+  histogram: ValidationMonteCarloHistogramBar[];
+}
+
+function primaryMonteCarloMode(
+  monteCarlo: Record<string, unknown>,
+): { key: string; stats: Record<string, unknown> } | null {
+  const modes = asRecord(monteCarlo.modes);
+  if (!modes) return null;
+  for (const key of ["trade_stationary", "trade_iid"]) {
+    const stats = asRecord(modes[key]);
+    if (stats) return { key, stats };
+  }
+  for (const [key, value] of Object.entries(modes)) {
+    const stats = asRecord(value);
+    if (stats) return { key, stats };
+  }
+  return null;
+}
+
+function formatMonteCarloModeLabel(key: string): string {
+  if (key === "trade_stationary") return "stationary";
+  if (key === "trade_iid") return "iid";
+  return key.replace(/_/g, " ");
+}
+
+function buildMonteCarloHistogramBars(
+  histogram: Record<string, unknown> | null,
+): ValidationMonteCarloHistogramBar[] {
+  const counts = Array.isArray(histogram?.counts) ? histogram.counts : [];
+  if (!counts.length) return [];
+  const min = Number(histogram?.min ?? Number.NaN);
+  const max = Number(histogram?.max ?? Number.NaN);
+  const total = counts.reduce((sum, value) => {
+    const count = Math.max(0, Math.floor(Number(value ?? 0)));
+    return sum + count;
+  }, 0);
+  const span = Number.isFinite(min) && Number.isFinite(max) ? max - min : 0;
+  return counts.map((value, index) => {
+    const count = Math.max(0, Math.floor(Number(value ?? 0)));
+    const left =
+      Number.isFinite(min) && Number.isFinite(span)
+        ? min + (span * index) / counts.length
+        : Number.NaN;
+    const right =
+      Number.isFinite(min) && Number.isFinite(span)
+        ? min + (span * (index + 1)) / counts.length
+        : Number.NaN;
+    const label =
+      Number.isFinite(left) && Number.isFinite(right)
+        ? `${left.toFixed(3)} to ${right.toFixed(3)}`
+        : `bin ${index + 1}`;
+    return {
+      label,
+      count,
+      pct: total > 0 ? count / total : 0,
+    };
+  });
+}
+
+function buildLegacyTradeBootstrapMonteCarloSummary(
+  tradeBootstrap: Record<string, unknown>,
+): ValidationMonteCarloSummary {
+  const stationaryProb = Number(
+    tradeBootstrap.stationary_prob_pnl_positive ?? Number.NaN,
+  );
+  const iidProb = Number(tradeBootstrap.prob_pnl_positive ?? Number.NaN);
+  const hasStationary = Number.isFinite(stationaryProb);
+  const prefix = hasStationary ? "stationary legacy" : "iid legacy";
+  const prob = hasStationary ? stationaryProb : iidProb;
+  const pnlP05 = Number(
+    hasStationary
+      ? tradeBootstrap.stationary_pnl_p05
+      : tradeBootstrap.pnl_p05,
+  );
+  const pnlP50 = Number(
+    hasStationary
+      ? tradeBootstrap.stationary_pnl_p50
+      : tradeBootstrap.pnl_p50,
+  );
+  const maxDdP95 = Number(
+    hasStationary
+      ? tradeBootstrap.stationary_max_dd_p95
+      : tradeBootstrap.max_dd_p95,
+  );
+  const simulations = Math.max(
+    0,
+    Math.floor(Number(tradeBootstrap.simulations ?? 0)),
+  );
+  const tradeCount = Math.max(
+    0,
+    Math.floor(Number(tradeBootstrap.trade_count ?? 0)),
+  );
+  return {
+    summary:
+      `${prefix} • sims=${simulations} • trades=${tradeCount}` +
+      `${Number.isFinite(prob) ? ` • p_pos=${fmtPct(prob, 1)}` : ""}` +
+      `${Number.isFinite(pnlP05) ? ` • pnl_p05=${fmtFixed(pnlP05, 3)}` : ""}` +
+      `${Number.isFinite(pnlP50) ? ` • pnl_p50=${fmtFixed(pnlP50, 3)}` : ""}` +
+      `${Number.isFinite(maxDdP95) ? ` • dd_p95=${fmtFixed(maxDdP95, 3)}` : ""}`,
+    histogram: [],
+  };
+}
+
+function buildMonteCarloValidationSummary(
+  result: unknown,
+): ValidationMonteCarloSummary {
+  const candidate = topValidationCandidateRecord(result);
+  const monteCarlo = asRecord(candidate?.monte_carlo);
+  if (monteCarlo) {
+    const primary = primaryMonteCarloMode(monteCarlo);
+    const advisory = asRecord(monteCarlo.advisory);
+    const warnings = Array.isArray(advisory?.warning_flags)
+      ? advisory.warning_flags.map((entry) => normalizeText(entry))
+      : [];
+    const failures = Array.isArray(advisory?.fail_reasons)
+      ? advisory.fail_reasons.map((entry) => normalizeText(entry))
+      : [];
+    const advisoryNote =
+      failures.find((entry) => entry.length > 0) ||
+      warnings.find((entry) => entry.length > 0) ||
+      "";
+    if (!primary) {
+      return {
+        summary: `monte carlo • sims=${Math.max(0, Math.floor(Number(monteCarlo.simulations ?? 0)))} • trades=${Math.max(0, Math.floor(Number(monteCarlo.trade_count ?? 0)))} • no distribution`,
+        histogram: [],
+      };
+    }
+    const stats = primary.stats;
+    const mode = formatMonteCarloModeLabel(primary.key);
+    const simulations = Math.max(
+      0,
+      Math.floor(Number(stats.simulations ?? monteCarlo.simulations ?? 0)),
+    );
+    const tradeCount = Math.max(
+      0,
+      Math.floor(Number(monteCarlo.trade_count ?? 0)),
+    );
+    const prob = Number(stats.prob_pnl_positive ?? Number.NaN);
+    const pnlP05 = Number(stats.pnl_p05 ?? Number.NaN);
+    const pnlP50 = Number(stats.pnl_p50 ?? Number.NaN);
+    const maxDdP95 = Number(stats.max_dd_p95 ?? Number.NaN);
+    const passed = asRecord(monteCarlo.advisory)?.passed;
+    const verdict = typeof passed === "boolean" ? (passed ? "pass" : "fail") : "";
+    return {
+      summary:
+        `${mode} • sims=${simulations} • trades=${tradeCount}` +
+        `${Number.isFinite(prob) ? ` • p_pos=${fmtPct(prob, 1)}` : ""}` +
+        `${Number.isFinite(pnlP05) ? ` • pnl_p05=${fmtFixed(pnlP05, 3)}` : ""}` +
+        `${Number.isFinite(pnlP50) ? ` • pnl_p50=${fmtFixed(pnlP50, 3)}` : ""}` +
+        `${Number.isFinite(maxDdP95) ? ` • dd_p95=${fmtFixed(maxDdP95, 3)}` : ""}` +
+        `${verdict ? ` • ${verdict}` : ""}` +
+        `${advisoryNote ? ` • ${advisoryNote}` : ""}`,
+      histogram: buildMonteCarloHistogramBars(asRecord(stats.pnl_histogram)),
+    };
+  }
+  const tradeBootstrap = asRecord(candidate?.trade_bootstrap);
+  if (tradeBootstrap) {
+    return buildLegacyTradeBootstrapMonteCarloSummary(tradeBootstrap);
+  }
+  return { summary: "not run", histogram: [] };
+}
+
 function resolveValidationCommand(
   runReq: unknown,
 ): "run_double_ma_validation" | "run_composite_validation" {
@@ -1625,6 +1795,8 @@ function enabledExecutionCategoryModules(
   if (req?.perturb && typeof req.perturb === "object") modules.push("perturb");
   if (req?.trade_bootstrap && typeof req.trade_bootstrap === "object")
     modules.push("trade_bootstrap");
+  else if (req?.monte_carlo && typeof req.monte_carlo === "object")
+    modules.push("monte_carlo");
   return modules;
 }
 
@@ -1684,6 +1856,11 @@ function buildActualValidationCategorySummary(
       (gpuNativeAdvancedKind ? gpuNative : gpuMainCpuTail).push(
         "trade_bootstrap",
       );
+    } else if (
+      validationReq?.monte_carlo &&
+      typeof validationReq.monte_carlo === "object"
+    ) {
+      (gpuNativeAdvancedKind ? gpuNative : gpuMainCpuTail).push("monte_carlo");
     }
     return formatExecutionCategorySummary([
       ["GPU-native", gpuNative],
@@ -1713,6 +1890,11 @@ function buildActualValidationCategorySummary(
     typeof validationReq.trade_bootstrap === "object"
   )
     gpuMainCpuTail.push("trade_bootstrap");
+  else if (
+    validationReq?.monte_carlo &&
+    typeof validationReq.monte_carlo === "object"
+  )
+    gpuMainCpuTail.push("monte_carlo");
   return formatExecutionCategorySummary([
     ["GPU-native", gpuNative],
     ["GPU main + CPU tail", gpuMainCpuTail],
@@ -1782,6 +1964,8 @@ function buildValidationExecutionSummary(
   categorySummary: string;
   auxCpuSummary: string;
   bootstrapSummary: string;
+  monteCarloSummary: string;
+  monteCarloHistogram: ValidationMonteCarloHistogramBar[];
   regimeSummary: string;
   frictionSummary: string;
   crossSummary: string;
@@ -1853,6 +2037,12 @@ function buildValidationExecutionSummary(
           describeTradeBootstrapRequestConfig(req.trade_bootstrap),
         );
       }
+    } else if (req?.monte_carlo && typeof req.monte_carlo === "object") {
+      if (isDoubleLike || !compositeGpuNativeAdvanced) {
+        actualAuxCpuTails.push(
+          describeTradeBootstrapRequestConfig(req.monte_carlo),
+        );
+      }
     }
   }
   const routeSummaryBase = routeNoteSummary
@@ -1875,7 +2065,10 @@ function buildValidationExecutionSummary(
     strategyKind,
   );
 
-  const bootstrapSummary = buildBootstrapSummary(req?.trade_bootstrap);
+  const bootstrapSummary = buildBootstrapSummary(
+    req?.monte_carlo ?? req?.trade_bootstrap,
+  );
+  const monteCarlo = buildMonteCarloValidationSummary(result);
   const regimeSummary = buildValidationRegimeSummary(result);
   const frictionSummary = buildValidationFrictionSummary(result);
 
@@ -1962,6 +2155,8 @@ function buildValidationExecutionSummary(
     categorySummary,
     auxCpuSummary,
     bootstrapSummary,
+    monteCarloSummary: monteCarlo.summary,
+    monteCarloHistogram: monteCarlo.histogram,
     regimeSummary,
     frictionSummary,
     crossSummary,
@@ -2691,6 +2886,8 @@ export async function runValidation(
     validationCategorySummary: "-",
     validationAuxCpuSummary: "-",
     validationBootstrapSummary: "-",
+    validationMonteCarloSummary: "not run",
+    validationMonteCarloHistogram: [],
     validationRegimeSummary: "-",
     validationFrictionSummary: "-",
     validationCrossSummary: "-",
@@ -2856,6 +3053,8 @@ export async function runValidation(
       validationCategorySummary: executionSummary.categorySummary,
       validationAuxCpuSummary: executionSummary.auxCpuSummary,
       validationBootstrapSummary: executionSummary.bootstrapSummary,
+      validationMonteCarloSummary: executionSummary.monteCarloSummary,
+      validationMonteCarloHistogram: executionSummary.monteCarloHistogram,
       validationRegimeSummary: executionSummary.regimeSummary,
       validationFrictionSummary: executionSummary.frictionSummary,
       validationCrossSummary: executionSummary.crossSummary,
@@ -2892,6 +3091,8 @@ export async function runValidation(
       validationCategorySummary: "-",
       validationAuxCpuSummary: "-",
       validationBootstrapSummary: "-",
+      validationMonteCarloSummary: "not run",
+      validationMonteCarloHistogram: [],
       validationRegimeSummary: "-",
       validationFrictionSummary: "-",
       validationCrossSummary: "-",

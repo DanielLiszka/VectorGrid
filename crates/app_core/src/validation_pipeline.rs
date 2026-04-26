@@ -9,7 +9,9 @@ use crate::iterative_sim::{
 use crate::progress::ProgressSink;
 use crate::stats_common::{worst_max, worst_min, worst_min_u32};
 use crate::validation_shared::{
-    CrossTickerValidationSummary, PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional,
+    CrossTickerValidationSummary, MonteCarloAdvisory, MonteCarloDistributionBins, MonteCarloMode,
+    MonteCarloModeStats, MonteCarloThresholdConfig, MonteCarloValidationConfig,
+    MonteCarloValidationStats, PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional,
     ReoptWalkForwardStats, ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats,
     TradeBootstrapConfig, TradeBootstrapStats, ValidationSemanticsProvenance,
     WalkForwardConfigOptional, WalkForwardStats,
@@ -19,6 +21,7 @@ use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
@@ -116,6 +119,9 @@ pub trait ValidationPostCandidate {
     fn set_robust_score(&mut self, v: f64);
     fn set_robust_pareto(&mut self, v: bool);
     fn set_cscv_pbo(&mut self, v: Option<CscvCandidatePboStats>);
+    fn monte_carlo_stats(&self) -> Option<&MonteCarloValidationStats> {
+        None
+    }
     fn validation_verdict(&self) -> &ValidationCandidateVerdict;
     fn set_validation_verdict(&mut self, v: ValidationCandidateVerdict);
 }
@@ -479,6 +485,26 @@ pub fn apply_candidate_hard_gates<C: ValidationPostCandidate>(
         verdict
             .warning_flags
             .extend(risk_warning_flags_from_metrics(base_metrics, walk_forward));
+        if let Some(monte_carlo) = cand.monte_carlo_stats() {
+            for flag in &monte_carlo.advisory.warning_flags {
+                if !verdict
+                    .warning_flags
+                    .iter()
+                    .any(|existing| existing == flag)
+                {
+                    verdict.warning_flags.push(flag.clone());
+                }
+            }
+            for reason in &monte_carlo.advisory.fail_reasons {
+                if !verdict
+                    .fail_reasons
+                    .iter()
+                    .any(|existing| existing == reason)
+                {
+                    verdict.fail_reasons.push(reason.clone());
+                }
+            }
+        }
 
         verdict.passed = verdict.fail_reasons.is_empty();
         cand.set_validation_verdict(verdict);
@@ -690,6 +716,44 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
     } else {
         "selected_candidates_present"
     };
+    let monte_carlo_candidates_with_stats = out
+        .iter()
+        .filter(|cand| cand.monte_carlo_stats().is_some())
+        .count();
+    let monte_carlo_candidates_with_modes = out
+        .iter()
+        .filter(|cand| {
+            cand.monte_carlo_stats()
+                .map(|stats| !stats.modes.is_empty())
+                .unwrap_or(false)
+        })
+        .count();
+    let monte_carlo_coverage_state = if monte_carlo_candidates_with_stats == 0 {
+        "not_requested"
+    } else if monte_carlo_candidates_with_modes == 0 {
+        "skipped_no_closed_trades"
+    } else if monte_carlo_candidates_with_stats < out.len() {
+        "partial"
+    } else {
+        "evaluated"
+    };
+    let monte_carlo_policy = out
+        .iter()
+        .filter_map(|cand| cand.monte_carlo_stats())
+        .find_map(|stats| {
+            if !stats.advisory.fail_reasons.is_empty() {
+                Some("hard_gate")
+            } else if !stats.advisory.warning_flags.is_empty() {
+                Some("advisory")
+            } else {
+                None
+            }
+        })
+        .unwrap_or(if monte_carlo_candidates_with_stats > 0 {
+            "evidence_only"
+        } else {
+            "not_requested"
+        });
     let (cross_evidence_depth, cross_modules_preserved, cross_modules_omitted) =
         match cross_summary.map(|summary| &summary.mode) {
             Some(crate::validation_shared::CrossTickerMode::Lightweight) => (
@@ -701,6 +765,7 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
                     "spa",
                     "perturb",
                     "trade_bootstrap",
+                    "monte_carlo",
                     "cscv_pbo",
                     "hard_gates",
                 ]
@@ -720,6 +785,7 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
                     "spa",
                     "perturb",
                     "trade_bootstrap",
+                    "monte_carlo",
                 ]
                 .into_iter()
                 .map(str::to_string)
@@ -733,6 +799,7 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
                     "spa",
                     "perturb",
                     "trade_bootstrap",
+                    "monte_carlo",
                     "cscv_pbo",
                     "hard_gates",
                     "psr_dsr",
@@ -758,6 +825,8 @@ pub fn build_validation_semantics_provenance<C: ValidationPostCandidate>(
         cscv_selection_state: cscv_selection_state.to_string(),
         cscv_selected_candidate_count,
         cscv_skipped_reason: cscv_pbo.and_then(|result| result.skipped_reason.clone()),
+        monte_carlo_coverage_state: monte_carlo_coverage_state.to_string(),
+        monte_carlo_policy: monte_carlo_policy.to_string(),
         cross_mode: cross_summary.map(|summary| summary.mode.clone()),
         cross_evidence_depth,
         cross_modules_preserved,
@@ -1567,38 +1636,92 @@ where
     }))
 }
 
-pub fn compute_trade_bootstrap_stats(
-    trades: &[Trade],
-    cfg: &TradeBootstrapConfig,
-    rng: &mut StdRng,
-) -> TradeBootstrapStats {
-    let simulations = cfg.simulations.min(50_000);
-    let closed: Vec<f64> = trades.iter().filter(|t| !t.open).map(|t| t.pnl).collect();
-    let trade_count = closed.len();
-    if simulations == 0 || trade_count == 0 {
-        return TradeBootstrapStats {
-            simulations,
-            trade_count,
-            prob_pnl_positive: 0.0,
-            pnl_p05: 0.0,
-            pnl_tail_mean_p05: 0.0,
-            pnl_p50: 0.0,
-            pnl_p95: 0.0,
-            max_dd_p50: 0.0,
-            max_dd_p95: 0.0,
-            max_dd_tail_mean_p95: 0.0,
-            stationary_mean_block_len: None,
-            stationary_prob_pnl_positive: None,
-            stationary_pnl_p05: None,
-            stationary_pnl_tail_mean_p05: None,
-            stationary_pnl_p50: None,
-            stationary_pnl_p95: None,
-            stationary_max_dd_p50: None,
-            stationary_max_dd_p95: None,
-            stationary_max_dd_tail_mean_p95: None,
-        };
+fn sanitized_monte_carlo_modes(cfg: &MonteCarloValidationConfig) -> Vec<MonteCarloMode> {
+    let source = if cfg.modes.is_empty() {
+        vec![MonteCarloMode::TradeIid, MonteCarloMode::TradeStationary]
+    } else {
+        cfg.modes.clone()
+    };
+    let mut out: Vec<MonteCarloMode> = Vec::with_capacity(source.len());
+    for mode in source {
+        if !out.iter().any(|existing| *existing == mode) {
+            out.push(mode);
+        }
     }
+    out
+}
 
+fn monte_carlo_histogram(values: &[f64], bins: usize) -> Option<MonteCarloDistributionBins> {
+    let bins = bins.clamp(4, 200);
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for &value in values {
+        if value.is_finite() {
+            min = min.min(value);
+            max = max.max(value);
+        }
+    }
+    if !min.is_finite() || !max.is_finite() {
+        return None;
+    }
+    let mut counts = vec![0usize; bins];
+    if (max - min).abs() <= 1.0e-12 {
+        counts[0] = values.iter().filter(|value| value.is_finite()).count();
+        return Some(MonteCarloDistributionBins { min, max, counts });
+    }
+    let span = max - min;
+    for &value in values {
+        if !value.is_finite() {
+            continue;
+        }
+        let idx = (((value - min) / span) * bins as f64).floor() as usize;
+        counts[idx.min(bins - 1)] += 1;
+    }
+    Some(MonteCarloDistributionBins { min, max, counts })
+}
+
+fn summarize_monte_carlo_mode(
+    simulations: usize,
+    pos: usize,
+    pnls: &mut [f64],
+    dds: &mut [f64],
+    stationary_mean_block_len: Option<usize>,
+    distribution_bins: usize,
+) -> MonteCarloModeStats {
+    let pnl_p05 = select_quantile_in_place(pnls, 0.05);
+    let pnl_tail_mean_p05 = select_lower_tail_mean_in_place(pnls, 0.05);
+    let pnl_p50 = select_quantile_in_place(pnls, 0.5);
+    let pnl_p95 = select_quantile_in_place(pnls, 0.95);
+    let max_dd_p50 = select_quantile_in_place(dds, 0.5);
+    let max_dd_p95 = select_quantile_in_place(dds, 0.95);
+    let max_dd_tail_mean_p95 = select_upper_tail_mean_in_place(dds, 0.95);
+    MonteCarloModeStats {
+        simulations,
+        prob_pnl_positive: if simulations > 0 {
+            pos as f64 / simulations as f64
+        } else {
+            0.0
+        },
+        pnl_p05,
+        pnl_tail_mean_p05,
+        pnl_p50,
+        pnl_p95,
+        max_dd_p50,
+        max_dd_p95,
+        max_dd_tail_mean_p95,
+        stationary_mean_block_len,
+        pnl_histogram: monte_carlo_histogram(pnls, distribution_bins),
+        drawdown_histogram: monte_carlo_histogram(dds, distribution_bins),
+    }
+}
+
+fn compute_iid_closed_trade_monte_carlo(
+    closed: &[f64],
+    simulations: usize,
+    distribution_bins: usize,
+    rng: &mut StdRng,
+) -> MonteCarloModeStats {
+    let trade_count = closed.len();
     let mut pnls: Vec<f64> = Vec::with_capacity(simulations);
     let mut dds: Vec<f64> = Vec::with_capacity(simulations);
     let mut pos = 0usize;
@@ -1625,43 +1748,27 @@ pub fn compute_trade_bootstrap_stats(
         pnls.push(pnl);
         dds.push(max_dd);
     }
-    let pnl_p05 = select_quantile_in_place(&mut pnls, 0.05);
-    let pnl_tail_mean_p05 = select_lower_tail_mean_in_place(&mut pnls, 0.05);
-    let pnl_p50 = select_quantile_in_place(&mut pnls, 0.5);
-    let pnl_p95 = select_quantile_in_place(&mut pnls, 0.95);
-    let max_dd_p50 = select_quantile_in_place(&mut dds, 0.5);
-    let max_dd_p95 = select_quantile_in_place(&mut dds, 0.95);
-    let max_dd_tail_mean_p95 = select_upper_tail_mean_in_place(&mut dds, 0.95);
-    if cfg.stationary_mean_block_len == Some(0) {
-        return TradeBootstrapStats {
-            simulations,
-            trade_count,
-            prob_pnl_positive: pos as f64 / simulations as f64,
-            pnl_p05,
-            pnl_tail_mean_p05,
-            pnl_p50,
-            pnl_p95,
-            max_dd_p50,
-            max_dd_p95,
-            max_dd_tail_mean_p95,
-            stationary_mean_block_len: None,
-            stationary_prob_pnl_positive: None,
-            stationary_pnl_p05: None,
-            stationary_pnl_tail_mean_p05: None,
-            stationary_pnl_p50: None,
-            stationary_pnl_p95: None,
-            stationary_max_dd_p50: None,
-            stationary_max_dd_p95: None,
-            stationary_max_dd_tail_mean_p95: None,
-        };
-    }
-    let stationary_mean_block_len = cfg
-        .stationary_mean_block_len
-        .map(|value| value.clamp(1, trade_count.max(1)))
-        .unwrap_or_else(|| trade_bootstrap_stationary_mean_block_len(trade_count));
-    let mut stationary_pnls: Vec<f64> = Vec::with_capacity(simulations);
-    let mut stationary_dds: Vec<f64> = Vec::with_capacity(simulations);
-    let mut stationary_pos = 0usize;
+    summarize_monte_carlo_mode(
+        simulations,
+        pos,
+        &mut pnls,
+        &mut dds,
+        None,
+        distribution_bins,
+    )
+}
+
+fn compute_stationary_closed_trade_monte_carlo(
+    closed: &[f64],
+    simulations: usize,
+    stationary_mean_block_len: usize,
+    distribution_bins: usize,
+    rng: &mut StdRng,
+) -> MonteCarloModeStats {
+    let trade_count = closed.len();
+    let mut pnls: Vec<f64> = Vec::with_capacity(simulations);
+    let mut dds: Vec<f64> = Vec::with_capacity(simulations);
+    let mut pos = 0usize;
     let mut stationary_scratch = StationaryBootstrapScratch::default();
     for _ in 0..simulations {
         let indices = stationary_scratch.indices(trade_count, stationary_mean_block_len, rng);
@@ -1681,40 +1788,142 @@ pub fn compute_trade_bootstrap_stats(
         }
         let pnl = eq - 1.0;
         if pnl > 0.0 {
-            stationary_pos += 1;
+            pos += 1;
         }
-        stationary_pnls.push(pnl);
-        stationary_dds.push(max_dd);
+        pnls.push(pnl);
+        dds.push(max_dd);
     }
-    let stationary_pnl_p05 = select_quantile_in_place(&mut stationary_pnls, 0.05);
-    let stationary_pnl_tail_mean_p05 = select_lower_tail_mean_in_place(&mut stationary_pnls, 0.05);
-    let stationary_pnl_p50 = select_quantile_in_place(&mut stationary_pnls, 0.5);
-    let stationary_pnl_p95 = select_quantile_in_place(&mut stationary_pnls, 0.95);
-    let stationary_max_dd_p50 = select_quantile_in_place(&mut stationary_dds, 0.5);
-    let stationary_max_dd_p95 = select_quantile_in_place(&mut stationary_dds, 0.95);
-    let stationary_max_dd_tail_mean_p95 =
-        select_upper_tail_mean_in_place(&mut stationary_dds, 0.95);
-    TradeBootstrapStats {
+    summarize_monte_carlo_mode(
+        simulations,
+        pos,
+        &mut pnls,
+        &mut dds,
+        Some(stationary_mean_block_len),
+        distribution_bins,
+    )
+}
+
+fn apply_monte_carlo_thresholds(
+    stats: Option<&MonteCarloModeStats>,
+    trade_count: usize,
+    cfg: &MonteCarloThresholdConfig,
+    out: &mut Vec<String>,
+    prefix: &str,
+) {
+    if let Some(min_trade_count) = cfg.min_trade_count {
+        if trade_count < min_trade_count {
+            out.push(format!(
+                "{prefix}_low_trade_count:{trade_count}/{min_trade_count}"
+            ));
+        }
+    }
+    let Some(stats) = stats else {
+        return;
+    };
+    if let Some(thr) = cfg.min_prob_pnl_positive {
+        if !stats.prob_pnl_positive.is_finite() || stats.prob_pnl_positive < thr {
+            out.push(format!("{prefix}_low_profit_probability:{thr:.2}"));
+        }
+    }
+    if let Some(thr) = cfg.min_pnl_p05 {
+        if !stats.pnl_p05.is_finite() || stats.pnl_p05 < thr {
+            out.push(format!("{prefix}_left_tail_loss:{thr:.6}"));
+        }
+    }
+    if let Some(thr) = cfg.max_drawdown_p95 {
+        if !stats.max_dd_p95.is_finite() || stats.max_dd_p95 > thr {
+            out.push(format!("{prefix}_drawdown_tail:{thr:.6}"));
+        }
+    }
+}
+
+fn monte_carlo_advisory(
+    cfg: &MonteCarloValidationConfig,
+    trade_count: usize,
+    modes: &BTreeMap<String, MonteCarloModeStats>,
+) -> MonteCarloAdvisory {
+    let primary = modes
+        .get(MonteCarloMode::TradeStationary.as_key())
+        .or_else(|| modes.get(MonteCarloMode::TradeIid.as_key()));
+    let mut warning_flags = Vec::new();
+    let mut fail_reasons = Vec::new();
+    if let Some(warn) = cfg.warn.as_ref() {
+        apply_monte_carlo_thresholds(
+            primary,
+            trade_count,
+            warn,
+            &mut warning_flags,
+            "monte_carlo",
+        );
+    }
+    if let Some(gate) = cfg.gate.as_ref() {
+        apply_monte_carlo_thresholds(primary, trade_count, gate, &mut fail_reasons, "monte_carlo");
+    }
+    MonteCarloAdvisory {
+        passed: fail_reasons.is_empty(),
+        warning_flags,
+        fail_reasons,
+    }
+}
+
+pub fn compute_monte_carlo_validation_stats(
+    trades: &[Trade],
+    cfg: &MonteCarloValidationConfig,
+    rng: &mut StdRng,
+) -> MonteCarloValidationStats {
+    let simulations = cfg.simulations.min(50_000);
+    let closed: Vec<f64> = trades.iter().filter(|t| !t.open).map(|t| t.pnl).collect();
+    let trade_count = closed.len();
+    let tail_alpha = cfg.tail_alpha.clamp(0.001, 0.25);
+    let distribution_bins = cfg.distribution_bins.clamp(4, 200);
+    let mut modes: BTreeMap<String, MonteCarloModeStats> = BTreeMap::new();
+    if simulations > 0 && trade_count > 0 {
+        for mode in sanitized_monte_carlo_modes(cfg) {
+            match mode {
+                MonteCarloMode::TradeIid => {
+                    let stats = compute_iid_closed_trade_monte_carlo(
+                        &closed,
+                        simulations,
+                        distribution_bins,
+                        rng,
+                    );
+                    modes.insert(mode.as_key().to_string(), stats);
+                }
+                MonteCarloMode::TradeStationary => {
+                    let block_len = cfg
+                        .stationary_mean_block_len
+                        .map(|value| value.clamp(1, trade_count.max(1)))
+                        .unwrap_or_else(|| trade_bootstrap_stationary_mean_block_len(trade_count));
+                    let stats = compute_stationary_closed_trade_monte_carlo(
+                        &closed,
+                        simulations,
+                        block_len,
+                        distribution_bins,
+                        rng,
+                    );
+                    modes.insert(mode.as_key().to_string(), stats);
+                }
+            }
+        }
+    }
+    let advisory = monte_carlo_advisory(cfg, trade_count, &modes);
+    MonteCarloValidationStats {
+        schema_version: cfg.schema_version.max(1),
         simulations,
         trade_count,
-        prob_pnl_positive: pos as f64 / simulations as f64,
-        pnl_p05,
-        pnl_tail_mean_p05,
-        pnl_p50,
-        pnl_p95,
-        max_dd_p50,
-        max_dd_p95,
-        max_dd_tail_mean_p95,
-        stationary_mean_block_len: Some(stationary_mean_block_len),
-        stationary_prob_pnl_positive: Some(stationary_pos as f64 / simulations as f64),
-        stationary_pnl_p05: Some(stationary_pnl_p05),
-        stationary_pnl_tail_mean_p05: Some(stationary_pnl_tail_mean_p05),
-        stationary_pnl_p50: Some(stationary_pnl_p50),
-        stationary_pnl_p95: Some(stationary_pnl_p95),
-        stationary_max_dd_p50: Some(stationary_max_dd_p50),
-        stationary_max_dd_p95: Some(stationary_max_dd_p95),
-        stationary_max_dd_tail_mean_p95: Some(stationary_max_dd_tail_mean_p95),
+        tail_alpha,
+        modes,
+        advisory,
     }
+}
+
+pub fn compute_trade_bootstrap_stats(
+    trades: &[Trade],
+    cfg: &TradeBootstrapConfig,
+    rng: &mut StdRng,
+) -> TradeBootstrapStats {
+    let mc_cfg = MonteCarloValidationConfig::from_trade_bootstrap(cfg);
+    compute_monte_carlo_validation_stats(trades, &mc_cfg, rng).to_trade_bootstrap_stats()
 }
 
 fn trade_bootstrap_stationary_mean_block_len(trade_count: usize) -> usize {
@@ -2920,6 +3129,89 @@ mod tests {
         assert!(stats.stationary_pnl_tail_mean_p05.is_none());
         assert!(stats.stationary_max_dd_p95.is_none());
         assert!(stats.stationary_max_dd_tail_mean_p95.is_none());
+    }
+
+    #[test]
+    fn monte_carlo_stats_include_modes_histograms_and_legacy_projection() {
+        let trades = vec![
+            Trade {
+                entry_t: 0,
+                exit_t: 1,
+                direction: 1,
+                pnl: 0.05,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 2,
+                exit_t: 3,
+                direction: 1,
+                pnl: -0.02,
+                bars: 1,
+                open: false,
+            },
+            Trade {
+                entry_t: 4,
+                exit_t: 6,
+                direction: -1,
+                pnl: 0.03,
+                bars: 2,
+                open: false,
+            },
+        ];
+        let cfg = MonteCarloValidationConfig {
+            schema_version: 1,
+            simulations: 48,
+            modes: vec![MonteCarloMode::TradeIid, MonteCarloMode::TradeStationary],
+            stationary_mean_block_len: Some(2),
+            distribution_bins: 12,
+            tail_alpha: 0.05,
+            warn: Some(MonteCarloThresholdConfig {
+                min_trade_count: Some(4),
+                ..MonteCarloThresholdConfig::default()
+            }),
+            gate: None,
+        };
+        let mut rng = StdRng::seed_from_u64(123);
+        let stats = compute_monte_carlo_validation_stats(&trades, &cfg, &mut rng);
+
+        assert_eq!(stats.simulations, 48);
+        assert_eq!(stats.trade_count, 3);
+        assert!(stats.modes.contains_key(MonteCarloMode::TradeIid.as_key()));
+        assert!(stats
+            .modes
+            .contains_key(MonteCarloMode::TradeStationary.as_key()));
+        let iid = stats
+            .modes
+            .get(MonteCarloMode::TradeIid.as_key())
+            .expect("iid mode");
+        assert_eq!(
+            iid.pnl_histogram
+                .as_ref()
+                .expect("pnl histogram")
+                .counts
+                .len(),
+            12
+        );
+        assert_eq!(
+            iid.drawdown_histogram
+                .as_ref()
+                .expect("drawdown histogram")
+                .counts
+                .len(),
+            12
+        );
+        assert!(stats
+            .advisory
+            .warning_flags
+            .iter()
+            .any(|flag| flag.starts_with("monte_carlo_low_trade_count:")));
+
+        let legacy = stats.to_trade_bootstrap_stats();
+        assert_eq!(legacy.simulations, stats.simulations);
+        assert_eq!(legacy.trade_count, stats.trade_count);
+        assert!(legacy.stationary_pnl_p05.is_some());
+        assert!(legacy.stationary_max_dd_p95.is_some());
     }
 
     #[test]

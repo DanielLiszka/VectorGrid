@@ -549,6 +549,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
         spa: None,
         perturb: None,
         trade_bootstrap: None,
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: None,
         seed: 123,
@@ -699,6 +700,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,
@@ -831,6 +833,7 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
             spa: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 8,
@@ -964,6 +967,7 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
             }),
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(CscvPboConfig {
                 slices: 6,

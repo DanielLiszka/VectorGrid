@@ -149,6 +149,14 @@ export interface ValidationRequestPayload {
     simulations: number;
     stationary_mean_block_len?: number;
   } | null;
+  monte_carlo: {
+    schema_version: number;
+    simulations: number;
+    modes: Array<"trade_iid" | "trade_stationary">;
+    stationary_mean_block_len?: number;
+    distribution_bins: number;
+    tail_alpha: number;
+  } | null;
   cross_ticker: {
     max_datasets: number;
     mode: "lightweight" | "preserved_finalists" | "full_stack";
@@ -1704,6 +1712,27 @@ export function buildValidationRequest(
           : { simulations };
       })()
     : null;
+  const monte_carlo = trade_bootstrap
+    ? {
+        schema_version: 1,
+        simulations: trade_bootstrap.simulations,
+        modes:
+          trade_bootstrap.stationary_mean_block_len === 0
+            ? (["trade_iid"] as Array<"trade_iid" | "trade_stationary">)
+            : ([
+                "trade_iid",
+                "trade_stationary",
+              ] as Array<"trade_iid" | "trade_stationary">),
+        ...(trade_bootstrap.stationary_mean_block_len != null
+          ? {
+              stationary_mean_block_len:
+                trade_bootstrap.stationary_mean_block_len,
+            }
+          : {}),
+        distribution_bins: 40,
+        tail_alpha: 0.05,
+      }
+    : null;
 
   const cscv_pbo = inputs.cscvEnable
     ? (() => {
@@ -1743,6 +1772,7 @@ export function buildValidationRequest(
     spa,
     perturb,
     trade_bootstrap,
+    monte_carlo,
     cross_ticker,
     cscv_pbo,
     seed,

@@ -4159,6 +4159,27 @@ static __device__ __forceinline__ void zero_metrics_row_fixed_f32(
     }
 }
 
+static __device__ __forceinline__ void nan_metrics_row_f32(
+    float* __restrict__ metrics_out,
+    size_t base,
+    int M)
+{
+    for (int i = 0; i < M; ++i) {
+        metrics_out[base + (size_t)i] = NAN;
+    }
+}
+
+template <int N>
+static __device__ __forceinline__ void nan_metrics_row_fixed_f32(
+    float* __restrict__ metrics_out,
+    size_t base)
+{
+#pragma unroll
+    for (int i = 0; i < N; ++i) {
+        metrics_out[base + (size_t)i] = NAN;
+    }
+}
+
 template <int N>
 static __device__ __forceinline__ void store_metrics_row_fixed_f32(
     float* __restrict__ metrics_out,
@@ -4310,7 +4331,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
-    float* __restrict__ metrics_out
+    float* __restrict__ metrics_out,
+    float max_log_dd_prune = INFINITY,
+    unsigned long long* __restrict__ prune_counters = nullptr
 ){
     const int effective_m = (FIXED_M > 0) ? FIXED_M : M;
     static constexpr int fixed_metrics_stride =
@@ -4336,6 +4359,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const int need_kappa_tau = DENSE_FIXED_STRIDE
         ? ((SCORE_ONLY_SHARPE || fixed_metrics_stride <= 14) ? 0 : 1)
         : (SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? (metrics_stride > 14) : ((FIXED_M > 0) ? (FIXED_M > 14) : (M > 14))));
+    const bool enable_maxdd_prune =
+        !SCORE_ONLY_SHARPE && need_max_dd && isfinite(max_log_dd_prune) && max_log_dd_prune >= 0.0f;
+    const float max_log_dd_prune_slack = 1.0e-7f;
     const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
     const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
     const int use_risk_runtime = use_stop || use_take;
@@ -4507,6 +4533,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         int losing_trades = 0;
         float gross_profit = 0.0f;
         float gross_loss = 0.0f;
+        bool pruned_by_maxdd = false;
+        int prune_trigger_t = -1;
         const bool need_step_returns =
             need_stats || need_downside_dev || need_omega || need_kappa_tau;
     const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
@@ -4616,6 +4644,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     if (log_eq > log_peak) log_peak = log_eq;                                        \
                     const float dd_log = log_peak - log_eq;                                          \
                     if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;                    \
+                    if (enable_maxdd_prune && max_log_dd > max_log_dd_prune + max_log_dd_prune_slack) { \
+                        pruned_by_maxdd = true;                                                      \
+                        if (prune_trigger_t < 0) prune_trigger_t = (T_SIG_VALUE) + trade_offset;     \
+                    }                                                                                \
                     if (need_underwater) {                                                           \
                         if (dd_log > 0.0f) {                                                         \
                             underwater_bars += 1;                                                    \
@@ -4702,8 +4734,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         }
                     }
                     PROCESS_NO_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                    if (pruned_by_maxdd) break;
                 }
-                if (loop_start < end_t) {
+                if (!pruned_by_maxdd && loop_start < end_t) {
                     const int t = end_t - 1;
                     const int t_sig = t - trade_offset;
                     const float f = fast_cur;
@@ -4739,6 +4772,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         ret1_t = (ret1 != nullptr) ? ld_ro_1d(ret1, (size_t)t) : expm1f(lr_t);
                     }
                     PROCESS_NO_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                    if (pruned_by_maxdd) break;
                 }
             }
 #undef PROCESS_NO_RISK_BAR
@@ -4844,6 +4878,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     if (log_eq > log_peak) log_peak = log_eq;                                        \
                     const float dd_log = log_peak - log_eq;                                          \
                     if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;                    \
+                    if (enable_maxdd_prune && max_log_dd > max_log_dd_prune + max_log_dd_prune_slack) { \
+                        pruned_by_maxdd = true;                                                      \
+                        if (prune_trigger_t < 0) prune_trigger_t = (T_SIG_VALUE) + trade_offset;     \
+                    }                                                                                \
                     if (need_underwater) {                                                           \
                         if (dd_log > 0.0f) {                                                         \
                             underwater_bars += 1;                                                    \
@@ -4932,8 +4970,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         }
                     }
                     PROCESS_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                    if (pruned_by_maxdd) break;
                 }
-                if (loop_start < end_t) {
+                if (!pruned_by_maxdd && loop_start < end_t) {
                     const int t = end_t - 1;
                     const int t_sig = t - trade_offset;
                     const float f = fast_cur;
@@ -4969,9 +5008,32 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         ret1_t = (ret1 != nullptr) ? ld_ro_1d(ret1, (size_t)t) : expm1f(lr_t);
                     }
                     PROCESS_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                    if (pruned_by_maxdd) break;
                 }
             }
 #undef PROCESS_RISK_BAR
+        }
+
+        if (pruned_by_maxdd) {
+            if (prune_counters != nullptr) {
+                atomicAdd(&prune_counters[0], 1ULL);
+                const unsigned long long skipped =
+                    (prune_trigger_t >= 0 && (prune_trigger_t + 1) < end_t)
+                        ? (unsigned long long)(end_t - prune_trigger_t - 1)
+                        : 0ULL;
+                atomicAdd(&prune_counters[1], skipped);
+            }
+            if constexpr (SCORE_ONLY_SHARPE) {
+                metrics_out[row_idx] = NEG_INF_F;
+            } else if constexpr (FIXED_M > 0) {
+                nan_metrics_row_fixed_f32<FIXED_M>(metrics_out, base);
+            } else {
+                const int prune_write_m = DENSE_FIXED_STRIDE
+                    ? fixed_metrics_stride
+                    : (FULL_M7 ? metrics_stride : effective_m);
+                nan_metrics_row_f32(metrics_out, base, prune_write_m);
+            }
+            continue;
         }
 
         const float variance = (need_std && n > 1) ? (m2 / (float)(n - 1)) : 0.0f;
@@ -5145,7 +5207,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
-    float* __restrict__ metrics_out
+    float* __restrict__ metrics_out,
+    float max_log_dd_prune = INFINITY,
+    unsigned long long* __restrict__ prune_counters = nullptr
 ){
     double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, WALK_SERIES_PTRS, SCORE_ONLY_SHARPE, DENSE_FIXED_STRIDE, false>(
         fast_ma_T, slow_ma_T, lr, ret1,
@@ -5157,7 +5221,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         nullptr, nullptr,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride,
         pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows,
-        compact_slow_local_rows, pair_count, compact_output, metrics_out
+        compact_slow_local_rows, pair_count, compact_output, metrics_out, max_log_dd_prune,
+        prune_counters
     );
 }
 
@@ -5338,6 +5403,55 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32(
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_prune_maxdd(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out,
+    float max_log_dd_prune,
+    unsigned long long* __restrict__ prune_counters
+){
+    double_cross_backtest_tm_flex_f32_body<false, false, false>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out, max_log_dd_prune, prune_counters
     );
 }
 
@@ -6378,6 +6492,106 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22(
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_prune_maxdd(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out,
+    float max_log_dd_prune,
+    unsigned long long* __restrict__ prune_counters
+){
+    (void)M;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 17, true>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out, max_log_dd_prune, prune_counters
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_prune_maxdd(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out,
+    float max_log_dd_prune,
+    unsigned long long* __restrict__ prune_counters
+){
+    (void)M;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 22, true>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out, max_log_dd_prune, prune_counters
     );
 }
 
@@ -8653,6 +8867,305 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
 
 
 
+#define ROW_SCORE_OBJECTIVE_BASE 100
+
+extern "C" __global__
+void double_cross_row_score_heads_abi_v1(int* __restrict__ objective_base_out) {
+    if (threadIdx.x == 0 && blockIdx.x == 0 && objective_base_out != nullptr) {
+        *objective_base_out = ROW_SCORE_OBJECTIVE_BASE;
+    }
+}
+
+static __device__ __forceinline__ float score_clip_signed_f32(float value) {
+    if (!isfinite(value)) return 0.0f;
+    return fminf(4.0f, fmaxf(-4.0f, value));
+}
+
+static __device__ __forceinline__ float score_clip_penalty_f32(float value) {
+    if (!isfinite(value)) return 0.0f;
+    return fminf(4.0f, fmaxf(0.0f, value));
+}
+
+static __device__ __forceinline__ float score_asinh_scaled_f32(float value, float scale) {
+    if (!isfinite(value) || !isfinite(scale) || scale <= 0.0f) return 0.0f;
+    return score_clip_signed_f32(asinhf(value / scale));
+}
+
+static __device__ __forceinline__ float score_log_ratio_f32(float value) {
+    if (!isfinite(value)) return 0.0f;
+    return score_clip_signed_f32(logf(fmaxf(value, 1.0e-12f)));
+}
+
+static __device__ __forceinline__ float score_log1p_penalty_f32(float value, float scale) {
+    if (!isfinite(value) || !isfinite(scale) || scale <= 0.0f) return 0.0f;
+    return score_clip_penalty_f32(log1pf(fmaxf(value, 0.0f) / scale));
+}
+
+static __device__ __forceinline__ float score_trade_utility_f32(float trades, float target) {
+    if (!isfinite(target) || target <= 0.0f) return 0.0f;
+    const float util = log1pf(fmaxf(trades, 0.0f)) / log1pf(target);
+    return fminf(1.0f, fmaxf(0.0f, util));
+}
+
+static __device__ __forceinline__ float score_calmar_from_components_f32(float pnl, float max_dd) {
+    if (!isfinite(pnl) || !isfinite(max_dd)) return 0.0f;
+    const float clamp_max = 1.0e6f;
+    float raw = 0.0f;
+    if (max_dd > 1.0e-12f) {
+        raw = pnl / max_dd;
+    } else if (pnl > 0.0f) {
+        raw = clamp_max;
+    } else if (pnl < 0.0f) {
+        raw = -clamp_max;
+    }
+    return fminf(clamp_max, fmaxf(-clamp_max, raw));
+}
+
+struct RowScoreMetrics10F32 {
+    float pnl;
+    float trades;
+    float max_dd;
+    float mean;
+    float volatility;
+    float sharpe;
+    float calmar;
+    float exposure;
+    float net_exposure;
+    float downside_deviation;
+    float ulcer_index;
+    float omega;
+};
+
+static __device__ __forceinline__ bool load_row_score_metrics10_f32(
+    const float* __restrict__ metrics,
+    size_t base,
+    int M,
+    RowScoreMetrics10F32* out
+) {
+    if (M < 10 || out == nullptr) return false;
+    const bool search_row = metrics_row_uses_log_space_f32(M);
+    const float raw_pnl = metrics[base + 0];
+    const float raw_max_dd = metrics[base + 2];
+    out->pnl = search_row ? expm1f(raw_pnl) : raw_pnl;
+    out->trades = metrics[base + 1];
+    out->max_dd = search_row ? -expm1f(-raw_max_dd) : raw_max_dd;
+    out->mean = metrics[base + 3];
+    out->volatility = metrics[base + 4];
+    out->sharpe = (isfinite(out->mean) && isfinite(out->volatility) && out->volatility > 0.0f)
+        ? (out->mean / out->volatility)
+        : 0.0f;
+    out->calmar = score_calmar_from_components_f32(out->pnl, out->max_dd);
+    out->exposure = metrics[base + 5];
+    out->net_exposure = metrics[base + 6];
+    out->downside_deviation = metrics[base + 7];
+    out->ulcer_index = metrics[base + 8];
+    out->omega = metrics[base + 9];
+    return isfinite(out->pnl)
+        && isfinite(out->trades)
+        && isfinite(out->max_dd)
+        && isfinite(out->mean)
+        && isfinite(out->volatility)
+        && isfinite(out->sharpe)
+        && isfinite(out->calmar)
+        && isfinite(out->exposure)
+        && isfinite(out->net_exposure)
+        && isfinite(out->downside_deviation)
+        && isfinite(out->ulcer_index)
+        && isfinite(out->omega);
+}
+
+static __device__ __forceinline__ float derived_active_mean_score_f32(
+    const RowScoreMetrics10F32& m
+) {
+    const float exposure = fmaxf(m.exposure, 1.0e-12f);
+    if (!isfinite(exposure) || exposure <= 1.0e-12f) return 0.0f;
+    return (m.sharpe * m.volatility) / exposure;
+}
+
+static __device__ __forceinline__ float derived_active_downside_deviation_score_f32(
+    const RowScoreMetrics10F32& m
+) {
+    const float exposure = fmaxf(m.exposure, 1.0e-12f);
+    if (!isfinite(exposure) || exposure <= 1.0e-12f) return 0.0f;
+    return m.downside_deviation / sqrtf(exposure);
+}
+
+static __device__ __forceinline__ float derived_active_sortino_score_f32(
+    const RowScoreMetrics10F32& m
+) {
+    const float mean = derived_active_mean_score_f32(m);
+    const float denom = derived_active_downside_deviation_score_f32(m);
+    if (denom > 1.0e-12f) return mean / denom;
+    if (mean > 0.0f) return 1.0e6f;
+    if (mean < 0.0f) return -1.0e6f;
+    return 0.0f;
+}
+
+static __device__ __forceinline__ float derived_drawdown_chronicity_score_f32(
+    const RowScoreMetrics10F32& m
+) {
+    if (m.max_dd > 1.0e-12f) {
+        return fminf(4.0f, fmaxf(0.0f, m.ulcer_index / m.max_dd));
+    }
+    return 0.0f;
+}
+
+static __device__ __forceinline__ float derived_downside_share_score_f32(
+    const RowScoreMetrics10F32& m
+) {
+    if (m.volatility > 1.0e-12f) {
+        return fminf(4.0f, fmaxf(0.0f, m.downside_deviation / m.volatility));
+    }
+    return 0.0f;
+}
+
+static __device__ __forceinline__ float derived_directional_bias_score_f32(
+    const RowScoreMetrics10F32& m
+) {
+    const float exposure = fmaxf(m.exposure, 1.0e-12f);
+    if (!isfinite(exposure) || exposure <= 1.0e-12f) return 0.0f;
+    return fminf(1.0f, fmaxf(0.0f, fabsf(m.net_exposure) / exposure));
+}
+
+static __device__ __forceinline__ float score_exposure_penalty_f32(
+    const RowScoreMetrics10F32& m
+) {
+    const float exposure = fmaxf(fabsf(m.exposure), 0.0f);
+    const float net = fmaxf(fabsf(m.net_exposure), 0.0f);
+    const float penalty =
+        fmaxf(0.10f - exposure, 0.0f) / 0.10f +
+        fmaxf(exposure - 0.95f, 0.0f) / 0.10f +
+        fmaxf(net - 0.35f, 0.0f) / 0.20f;
+    return score_clip_penalty_f32(penalty);
+}
+
+static __device__ __forceinline__ float score_downside_shape_penalty_f32(
+    const RowScoreMetrics10F32& m
+) {
+    const float downside_share = derived_downside_share_score_f32(m);
+    return score_clip_penalty_f32(fmaxf(downside_share - 0.75f, 0.0f) / 0.25f);
+}
+
+static __device__ __forceinline__ float balanced_risk_adjusted_10_score_f32(
+    const RowScoreMetrics10F32& m
+) {
+    const float sharpe_u = score_asinh_scaled_f32(m.sharpe, 1.0f);
+    const float active_sortino_u = score_asinh_scaled_f32(derived_active_sortino_score_f32(m), 1.25f);
+    const float omega_u = score_log_ratio_f32(m.omega);
+    const float calmar_u = score_asinh_scaled_f32(m.calmar, 1.0f);
+    const float trade_u = score_trade_utility_f32(m.trades, 40.0f);
+    const float max_dd_p = score_log1p_penalty_f32(m.max_dd, 0.10f);
+    const float ulcer_p = score_log1p_penalty_f32(m.ulcer_index, 0.05f);
+    const float chronicity_p = fminf(1.0f, fmaxf(0.0f, derived_drawdown_chronicity_score_f32(m)));
+    const float exposure_p = score_exposure_penalty_f32(m);
+    const float downside_p = score_downside_shape_penalty_f32(m);
+
+    return 0.42f * sharpe_u + 0.20f * active_sortino_u + 0.12f * omega_u +
+        0.08f * calmar_u + 0.08f * trade_u -
+        0.16f * max_dd_p - 0.10f * ulcer_p - 0.08f * chronicity_p -
+        0.06f * exposure_p - 0.04f * downside_p;
+}
+
+static __device__ __forceinline__ float row_score_mode_score_f32(
+    const float* __restrict__ metrics,
+    size_t base,
+    int M,
+    int mode
+) {
+    RowScoreMetrics10F32 m;
+    if (!load_row_score_metrics10_f32(metrics, base, M, &m)) return NEG_INF_F;
+
+    const float sharpe_u = score_asinh_scaled_f32(m.sharpe, 1.0f);
+    const float active_mean_u = score_asinh_scaled_f32(derived_active_mean_score_f32(m), 0.12f);
+    const float active_sortino_u = score_asinh_scaled_f32(derived_active_sortino_score_f32(m), 1.25f);
+    const float omega_u = score_log_ratio_f32(m.omega);
+    const float calmar_u = score_asinh_scaled_f32(m.calmar, 1.0f);
+    const float max_dd_p = score_log1p_penalty_f32(m.max_dd, 0.10f);
+    const float ulcer_p = score_log1p_penalty_f32(m.ulcer_index, 0.05f);
+    const float chronicity = derived_drawdown_chronicity_score_f32(m);
+    const float chronicity_p = fminf(1.0f, fmaxf(0.0f, chronicity));
+    const float exposure_p = score_exposure_penalty_f32(m);
+    const float downside_p = score_downside_shape_penalty_f32(m);
+    float score = NEG_INF_F;
+
+    if (mode == 1) {
+        score = balanced_risk_adjusted_10_score_f32(m);
+    } else if (mode == 2) {
+        const float trade_u = score_trade_utility_f32(m.trades, 40.0f);
+        const float balanced = 0.34f * sharpe_u + 0.15f * active_mean_u +
+            0.15f * active_sortino_u + 0.11f * omega_u + 0.09f * calmar_u +
+            0.06f * trade_u - 0.15f * max_dd_p - 0.10f * ulcer_p -
+            0.07f * chronicity_p - 0.05f * exposure_p - 0.03f * downside_p;
+        const float path_guard = 0.28f * sharpe_u + 0.10f * active_mean_u +
+            0.12f * active_sortino_u + 0.11f * omega_u + 0.18f * calmar_u +
+            0.04f * trade_u - 0.22f * max_dd_p - 0.15f * ulcer_p -
+            0.12f * chronicity_p - 0.05f * exposure_p - 0.04f * downside_p;
+        const float fragility_guard = 0.30f * sharpe_u + 0.12f * active_mean_u +
+            0.18f * active_sortino_u + 0.15f * omega_u + 0.10f * calmar_u +
+            0.05f * trade_u - 0.16f * max_dd_p - 0.12f * ulcer_p -
+            0.08f * chronicity_p - 0.05f * exposure_p - 0.11f * downside_p;
+        score = fminf(balanced, fminf(path_guard, fragility_guard));
+    } else if (mode == 3) {
+        const float base_score = balanced_risk_adjusted_10_score_f32(m);
+        const float exposure = fminf(1.0f, fmaxf(0.0f, m.exposure));
+        const float support_units = fmaxf(1.0f, 1.0f + fmaxf(m.trades, 0.0f) + 80.0f * exposure);
+        const float shrink_penalty = 1.2f / sqrtf(support_units);
+        const float chronicity_penalty = 0.10f * chronicity_p;
+        const float downside_penalty = 0.12f * downside_p;
+        score = base_score - shrink_penalty - chronicity_penalty - downside_penalty;
+    } else if (mode == 4) {
+        const float trade_u = score_trade_utility_f32(m.trades, 36.0f);
+        const float chronicity_penalty = 0.18f * chronicity_p;
+        const float exposure_penalty = 0.12f * exposure_p;
+        const float downside_penalty = 0.12f * downside_p;
+        score = 0.58f * active_sortino_u + 0.12f * omega_u +
+            0.08f * calmar_u + 0.06f * trade_u -
+            0.18f * max_dd_p - 0.10f * ulcer_p -
+            chronicity_penalty - exposure_penalty - downside_penalty;
+    } else if (mode == 5) {
+        const float trade_u = score_trade_utility_f32(m.trades, 32.0f);
+        const float asymmetry_gap = score_clip_signed_f32(omega_u - 0.65f * sharpe_u);
+        const float directional_p = 0.08f * fminf(1.0f, fmaxf(0.0f, derived_directional_bias_score_f32(m)));
+        score = 0.36f * asymmetry_gap + 0.20f * active_sortino_u +
+            0.14f * omega_u + 0.10f * calmar_u + 0.06f * trade_u -
+            0.18f * max_dd_p - 0.10f * ulcer_p -
+            0.14f * chronicity_p - 0.10f * downside_p -
+            0.08f * exposure_p - directional_p;
+    } else if (mode == 6) {
+        float margins[10];
+        margins[0] = score_clip_signed_f32((m.sharpe - 0.90f) / 0.45f);
+        margins[1] = score_clip_signed_f32((derived_active_sortino_score_f32(m) - 1.25f) / 0.70f);
+        margins[2] = score_clip_signed_f32((m.omega - 1.05f) / 0.20f);
+        margins[3] = score_clip_signed_f32((m.calmar - 0.65f) / 0.35f);
+        margins[4] = score_clip_signed_f32((score_trade_utility_f32(m.trades, 24.0f) - 0.35f) / 0.18f);
+        margins[5] = score_clip_signed_f32((0.22f - m.max_dd) / 0.08f);
+        margins[6] = score_clip_signed_f32((0.10f - m.ulcer_index) / 0.04f);
+        margins[7] = score_clip_signed_f32((0.70f - chronicity) / 0.20f);
+        margins[8] = score_clip_signed_f32((0.70f - downside_p) / 0.35f);
+        margins[9] = score_clip_signed_f32((0.70f - exposure_p) / 0.35f);
+
+        float anchor = margins[0];
+        float mean_margin = 0.0f;
+        #pragma unroll
+        for (int i = 0; i < 10; ++i) {
+            anchor = fminf(anchor, margins[i]);
+            mean_margin += margins[i];
+        }
+        mean_margin /= 10.0f;
+        float sum_exp = 0.0f;
+        #pragma unroll
+        for (int i = 0; i < 10; ++i) {
+            sum_exp += expf(-(margins[i] - anchor) / 0.55f);
+        }
+        const float soft_margin = (isfinite(sum_exp) && sum_exp > 0.0f)
+            ? score_clip_signed_f32(anchor - 0.55f * logf(sum_exp))
+            : anchor;
+        score = 0.72f * soft_margin + 0.28f * mean_margin;
+    }
+
+    return isfinite(score) ? score : NEG_INF_F;
+}
+
 static __device__ __forceinline__ float objective_score_f32(
     const float* __restrict__ metrics,
     size_t base,
@@ -8663,6 +9176,9 @@ static __device__ __forceinline__ float objective_score_f32(
     // objective: 0 = pnl, 1 = sharpe, 2 = -max_dd, 3 = calmar, 4 = -volatility,
     // 5 = sortino, 6 = omega
     const float clamp_max = 1.0e6f;
+    if (objective > ROW_SCORE_OBJECTIVE_BASE) {
+        return row_score_mode_score_f32(metrics, base, M, objective - ROW_SCORE_OBJECTIVE_BASE);
+    }
     if (objective == 0) {
         if (M <= 0) return NEG_INF_F;
         const bool search_row = metrics_row_uses_log_space_f32(M);

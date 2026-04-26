@@ -352,6 +352,7 @@ pub(crate) fn merge_vdps_telemetry(
         cur.quality_check_best_score_regret = None;
         cur.quality_check_exact_winner_rank = None;
         cur.quality_check_holdout_regret = None;
+        cur.quality_check_holdout_regret_unavailable_reason = None;
         cur.quality_check_speedup_vs_exact = None;
         cur.quality_check_baseline_runtime_ms = None;
         cur.quality_check_baseline_backend = None;

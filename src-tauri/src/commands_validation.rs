@@ -389,6 +389,7 @@ pub async fn run_composite_validation(
         let spa = base_req.spa.clone();
         let perturb = base_req.perturb.clone();
         let trade_bootstrap = base_req.trade_bootstrap.clone();
+        let monte_carlo = base_req.monte_carlo.clone();
         let seed = base_req.seed;
         let cscv_pbo = base_req.cscv_pbo.clone();
         let validation_engine = base_req.validation_engine;
@@ -420,6 +421,7 @@ pub async fn run_composite_validation(
                 spa,
                 perturb,
                 trade_bootstrap,
+                monte_carlo,
                 seed,
                 &app_cache_dir,
                 cancel2.as_ref(),
@@ -476,6 +478,7 @@ pub(crate) fn apply_cross_ticker_validation(
         None,
         None,
         None,
+        None,
         seed,
         app_cache_dir,
         cancel,
@@ -504,6 +507,7 @@ fn apply_cross_ticker_validation_with_stack(
     spa: Option<ta_app_core::SpaConfigOptional>,
     perturb: Option<ta_app_core::PerturbConfig>,
     trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    monte_carlo: Option<ta_app_core::MonteCarloValidationConfig>,
     seed: u64,
     app_cache_dir: &Path,
     cancel: &std::sync::atomic::AtomicBool,
@@ -568,6 +572,11 @@ fn apply_cross_ticker_validation_with_stack(
                 },
                 if full_stack_cross_mode {
                     trade_bootstrap.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    monte_carlo.clone()
                 } else {
                     None
                 },
@@ -650,6 +659,7 @@ fn build_composite_cross_ticker_request(
     spa: Option<ta_app_core::SpaConfigOptional>,
     perturb: Option<ta_app_core::PerturbConfig>,
     trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    monte_carlo: Option<ta_app_core::MonteCarloValidationConfig>,
     seed: u64,
     validation_engine: ta_app_core::ValidationEngine,
     iterative_cfg: ta_app_core::IterativeSimConfig,
@@ -672,6 +682,7 @@ fn build_composite_cross_ticker_request(
         spa,
         perturb,
         trade_bootstrap,
+        monte_carlo,
         cross_ticker: None,
         cscv_pbo,
         seed,
@@ -732,6 +743,7 @@ pub async fn run_double_ma_validation(
         let spa = base_req.spa.clone();
         let perturb = base_req.perturb.clone();
         let trade_bootstrap = base_req.trade_bootstrap.clone();
+        let monte_carlo = base_req.monte_carlo.clone();
         let cscv_pbo = base_req.cscv_pbo.clone();
         let seed = base_req.seed;
         let validation_engine = base_req.validation_engine;
@@ -763,6 +775,7 @@ pub async fn run_double_ma_validation(
                 spa,
                 perturb,
                 trade_bootstrap,
+                monte_carlo,
                 cscv_pbo,
                 seed,
                 &app_cache_dir,
@@ -797,6 +810,7 @@ fn apply_cross_ticker_validation_double_ma(
     spa: Option<ta_app_core::SpaConfigOptional>,
     perturb: Option<ta_app_core::PerturbConfig>,
     trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    monte_carlo: Option<ta_app_core::MonteCarloValidationConfig>,
     cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     app_cache_dir: &Path,
@@ -861,6 +875,11 @@ fn apply_cross_ticker_validation_double_ma(
                 },
                 if full_stack_cross_mode {
                     trade_bootstrap.clone()
+                } else {
+                    None
+                },
+                if full_stack_cross_mode {
+                    monte_carlo.clone()
                 } else {
                     None
                 },
@@ -985,6 +1004,7 @@ fn build_double_ma_cross_ticker_request(
     spa: Option<ta_app_core::SpaConfigOptional>,
     perturb: Option<ta_app_core::PerturbConfig>,
     trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    monte_carlo: Option<ta_app_core::MonteCarloValidationConfig>,
     cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     validation_engine: ta_app_core::ValidationEngine,
@@ -1007,6 +1027,7 @@ fn build_double_ma_cross_ticker_request(
         spa,
         perturb,
         trade_bootstrap,
+        monte_carlo,
         cross_ticker: None,
         cscv_pbo,
         seed,
@@ -1035,6 +1056,7 @@ pub fn apply_cross_ticker_validation_double_ma_headless(
     spa: Option<ta_app_core::SpaConfigOptional>,
     perturb: Option<ta_app_core::PerturbConfig>,
     trade_bootstrap: Option<ta_app_core::TradeBootstrapConfig>,
+    monte_carlo: Option<ta_app_core::MonteCarloValidationConfig>,
     cscv_pbo: Option<ta_app_core::CscvPboConfig>,
     seed: u64,
     app_cache_dir: &Path,
@@ -1060,6 +1082,7 @@ pub fn apply_cross_ticker_validation_double_ma_headless(
         spa,
         perturb,
         trade_bootstrap,
+        monte_carlo,
         cscv_pbo,
         seed,
         app_cache_dir,
@@ -1784,6 +1807,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -1829,6 +1853,7 @@ mod tests {
             &candles,
             ta_app_core::Backend::CpuOnly,
             "close",
+            None,
             None,
             None,
             None,
@@ -1883,6 +1908,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -1924,6 +1950,7 @@ mod tests {
             &candles,
             ta_app_core::Backend::CpuOnly,
             "close",
+            None,
             None,
             None,
             None,
@@ -1975,6 +2002,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -2023,6 +2051,7 @@ mod tests {
             &candles,
             ta_app_core::Backend::CpuOnly,
             "close",
+            None,
             None,
             None,
             None,
@@ -2100,6 +2129,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: cscv_pbo.clone(),
             spa: None,
@@ -2143,6 +2173,7 @@ mod tests {
             None,
             None,
             walk_forward,
+            None,
             None,
             None,
             None,
@@ -2211,6 +2242,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -2321,6 +2353,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: Some(ta_app_core::CscvPboConfig {
                 slices: 8,
@@ -2439,6 +2472,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -2556,6 +2590,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -2660,6 +2695,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             11,
             ta_app_core::ValidationEngine::Vectorized,
             ta_app_core::IterativeSimConfig::default(),
@@ -2712,6 +2748,7 @@ mod tests {
             }],
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
+            None,
             None,
             None,
             None,
@@ -2772,6 +2809,7 @@ mod tests {
             }],
             ta_app_core::Backend::GpuKernel { device_id: 0 },
             "close",
+            None,
             None,
             None,
             None,
@@ -2860,6 +2898,7 @@ mod tests {
                 simulations: 64,
                 stationary_mean_block_len: None,
             }),
+            None,
             Some(ta_app_core::CscvPboConfig {
                 slices: 8,
                 max_combinations: 256,
@@ -2928,6 +2967,7 @@ mod tests {
                         walk_forward: None,
                         perturb: None,
                         trade_bootstrap: None,
+                        monte_carlo: None,
                         regime_slice_robustness: None,
                         friction_stress: None,
                         entry_margin_fragility: None,
@@ -3003,6 +3043,7 @@ mod tests {
                         walk_forward: None,
                         perturb: None,
                         trade_bootstrap: None,
+                        monte_carlo: None,
                         regime_slice_robustness: None,
                         friction_stress: None,
                         cross_ticker: None,
@@ -3066,6 +3107,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3172,6 +3214,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3278,6 +3321,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3384,6 +3428,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3490,6 +3535,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3596,6 +3642,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3702,6 +3749,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3808,6 +3856,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,
@@ -3914,6 +3963,7 @@ mod tests {
             reopt_walk_forward: None,
             perturb: None,
             trade_bootstrap: None,
+            monte_carlo: None,
             cross_ticker: None,
             cscv_pbo: None,
             spa: None,

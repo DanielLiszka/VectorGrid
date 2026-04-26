@@ -945,6 +945,8 @@ pub struct VdpsTelemetry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_check_holdout_regret: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_check_holdout_regret_unavailable_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_check_speedup_vs_exact: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality_check_baseline_runtime_ms: Option<u64>,
@@ -7431,6 +7433,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                 let mut quality_check_best_score_regret: Option<f64> = None;
                 let mut quality_check_exact_winner_rank: Option<usize> = None;
                 let mut quality_check_holdout_regret: Option<f64> = None;
+                let mut quality_check_holdout_regret_unavailable_reason: Option<String> = None;
                 let mut quality_check_speedup_vs_exact: Option<f64> = None;
                 let mut quality_check_baseline_runtime_ms: Option<u64> = None;
                 let mut quality_check_baseline_backend: Option<BackendUsed> = None;
@@ -7548,6 +7551,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                             })
                             .map(|idx| idx.saturating_add(1));
                         quality_check_holdout_regret = None;
+                        quality_check_holdout_regret_unavailable_reason =
+                            Some("no_holdout_evaluation_context".to_string());
                     }
                 }
                 let vdps = VdpsTelemetry {
@@ -7573,6 +7578,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                     quality_check_best_score_regret,
                     quality_check_exact_winner_rank,
                     quality_check_holdout_regret,
+                    quality_check_holdout_regret_unavailable_reason,
                     quality_check_speedup_vs_exact,
                     quality_check_baseline_runtime_ms,
                     quality_check_baseline_backend,
@@ -21689,6 +21695,11 @@ mod tests {
         assert!(exact_winner_rank >= 1);
         assert!(speedup_vs_exact.is_finite() && speedup_vs_exact > 0.0);
         assert!(vdps.quality_check_holdout_regret.is_none());
+        assert_eq!(
+            vdps.quality_check_holdout_regret_unavailable_reason
+                .as_deref(),
+            Some("no_holdout_evaluation_context")
+        );
         assert!(baseline_pairs > 0);
         assert!(baseline_ms > 0);
     }
@@ -25904,6 +25915,180 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn gpu_kernel_trade22_shortlist_union_modes_match_exhaustive_host_union_modes() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_global_topk = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_force_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+
+        let candles = make_choppy_candles(6000);
+        let cancel = AtomicBool::new(false);
+        let top_k = 5usize;
+        let base_req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "trade22-union".to_string(),
+            fast_range: (5, 24, 1),
+            slow_range: (15, 80, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(0),
+            include_all: Some(true),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: true,
+            metric_contract: Some(DoubleMaMetricContract::Trade22),
+            hurdle_tau: None,
+        };
+
+        let exhaustive = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("Trade22 exhaustive GPU run");
+        assert_eq!(
+            exhaustive.metric_surface_kind.as_deref(),
+            Some("trade22"),
+            "oracle should preserve the Trade22 metric surface"
+        );
+        let all_rows = exhaustive
+            .all
+            .clone()
+            .expect("include_all=true should retain the full Trade22 candidate set");
+
+        let mut union_rows: Vec<(DoubleMaParamsResolved, Metrics)> = Vec::new();
+        let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
+        for head_objective in [
+            ObjectiveKind::Sharpe,
+            ObjectiveKind::Pnl,
+            ObjectiveKind::Omega,
+        ] {
+            let mut ranked = all_rows.clone();
+            ranked.sort_by(|a, b| {
+                let sa = objective_score(&a.1, head_objective);
+                let sb = objective_score(&b.1, head_objective);
+                sb.total_cmp(&sa)
+            });
+            for (params, metrics) in ranked.into_iter().take(top_k) {
+                let key = (params.fast_len, params.slow_len);
+                if seen.insert(key) {
+                    union_rows.push((params, metrics));
+                }
+            }
+        }
+        let union_rows_kernel: Vec<(ta_strategies::double_ma::DoubleMaParams, Metrics)> =
+            union_rows
+                .iter()
+                .map(|(params, metrics)| {
+                    (
+                        ta_strategies::double_ma::DoubleMaParams {
+                            fast_len: params.fast_len,
+                            slow_len: params.slow_len,
+                            fast_ma_id: 0,
+                            slow_ma_id: 0,
+                        },
+                        metrics.clone(),
+                    )
+                })
+                .collect();
+
+        for mode in [
+            DoubleMaShortlistUnionMode::Lexicographic,
+            DoubleMaShortlistUnionMode::Pareto,
+            DoubleMaShortlistUnionMode::EpsilonFront,
+            DoubleMaShortlistUnionMode::WeightedRank,
+        ] {
+            let req_union = DoubleMaRequest {
+                data_id: format!("trade22-union-{mode:?}"),
+                top_k: Some(top_k),
+                include_all: Some(false),
+                extra_shortlist_objectives: Some(vec![ObjectiveKind::Pnl, ObjectiveKind::Omega]),
+                shortlist_union_mode: Some(mode),
+                ..base_req.clone()
+            };
+
+            let union_result = run_double_ma_optimization_blocking_with_candles(
+                req_union, &candles, &cancel, None,
+            )
+            .unwrap_or_else(|err| panic!("Trade22 shortlist union run ({mode:?}): {err}"));
+
+            let reranked = crate::gpu_backtest_kernel::rerank_shortlist_by_union_mode(
+                &union_rows_kernel,
+                ObjectiveKind::Sharpe,
+                &[ObjectiveKind::Pnl, ObjectiveKind::Omega],
+                mode,
+            );
+            let expected_keys: Vec<(u16, u16)> = reranked
+                .iter()
+                .take(top_k)
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+            let actual_keys: Vec<(u16, u16)> = union_result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+
+            assert_eq!(
+                actual_keys, expected_keys,
+                "Trade22 shortlist union mode should match the exhaustive host rerank for {mode:?}"
+            );
+            assert_eq!(union_result.metric_surface_kind.as_deref(), Some("trade22"));
+            assert!(
+                union_result
+                    .route_diagnostics
+                    .as_ref()
+                    .is_some_and(|diags| diags
+                        .iter()
+                        .any(|line| line == "gpu_kernel.path=row_first_global_topk")),
+                "Trade22 union should stay on row-first global top-k, got {:?}",
+                union_result.route_diagnostics
+            );
+            assert!(union_result.top.iter().all(|(_, metrics)| {
+                metrics.closed_trades >= metrics.winning_trades + metrics.losing_trades
+            }));
+        }
+
+        match prev_global_topk {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_force_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn gpu_kernel_shortlist_slice_request_matches_exhaustive_host_union() {
         if !cuda_available() {
             return;
@@ -27186,6 +27371,322 @@ mod tests {
         assert_gpu_kernel_score_first_topk_matches_row_first_on_narrow_exact_surface(
             DoubleMaMetricContract::Trade22,
             true,
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_trade22_row_score_heads_match_include_all_score_modes() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+
+        let prev_global = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+        let prev_row_score = std::env::var("VECTORBT_KERNEL_ROW_SCORE_HEADS").ok();
+        let prev_score_first = std::env::var("VECTORBT_KERNEL_SCORE_FIRST_TOPK").ok();
+
+        let candles = make_choppy_candles(4_000);
+        let cancel = AtomicBool::new(false);
+        let mut req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 24, 1),
+            slow_range: (10, 52, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(8),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: true,
+            metric_contract: Some(DoubleMaMetricContract::Trade22),
+            hurdle_tau: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "0");
+
+        let modes = [
+            DoubleMaScoreMode::BalancedRiskAdjusted10,
+            DoubleMaScoreMode::AdversarialEnvelope10,
+            DoubleMaScoreMode::SupportShrunk10,
+            DoubleMaScoreMode::ActiveSortino10,
+            DoubleMaScoreMode::OmegaVsSharpe10,
+            DoubleMaScoreMode::RobustMargin10,
+        ];
+
+        for mode in modes {
+            req.score_mode = Some(mode);
+            std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", "0");
+            let include_all_score = run_double_ma_optimization_blocking_with_candles(
+                req.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("include-all score-mode run failed for {mode:?}: {e}"));
+
+            std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", "1");
+            let row_score = run_double_ma_optimization_blocking_with_candles(
+                req.clone(),
+                &candles,
+                &cancel,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("row-score head run failed for {mode:?}: {e}"));
+
+            let diags = row_score
+                .route_diagnostics
+                .as_ref()
+                .expect("row-score route diagnostics payload");
+            assert!(
+                diags
+                    .iter()
+                    .any(|line| line == "gpu_kernel.path=row_first_global_topk_row_score_heads"),
+                "expected row-score path for {mode:?}, got {diags:?}"
+            );
+            assert!(
+                diags
+                    .iter()
+                    .any(|line| line == "gpu_kernel.row_score_heads_mode=true"),
+                "expected row_score_heads_mode=true for {mode:?}, got {diags:?}"
+            );
+            assert_eq!(
+                row_score.metric_surface_kind.as_deref(),
+                Some("trade22"),
+                "row-score path must preserve Trade22 metric surface for {mode:?}"
+            );
+
+            assert_eq!(
+                (
+                    include_all_score.best_params.fast_len,
+                    include_all_score.best_params.slow_len
+                ),
+                (
+                    row_score.best_params.fast_len,
+                    row_score.best_params.slow_len
+                ),
+                "best params mismatch for {mode:?}"
+            );
+            let score_fn = score_mode_score_fn(Some(mode)).expect("row-only score fn");
+            let expected_score = score_fn(&include_all_score.best_metrics);
+            let actual_score = score_fn(&row_score.best_metrics);
+            assert!(
+                (expected_score - actual_score).abs() <= 1e-6,
+                "best score mismatch for {mode:?}: include_all={expected_score} row_score={actual_score}"
+            );
+            assert_eq!(
+                include_all_score.best_metrics.closed_trades, row_score.best_metrics.closed_trades,
+                "Trade22 closed_trades mismatch for {mode:?}"
+            );
+            assert_eq!(
+                include_all_score.best_metrics.winning_trades,
+                row_score.best_metrics.winning_trades,
+                "Trade22 winning_trades mismatch for {mode:?}"
+            );
+            assert_eq!(
+                include_all_score.best_metrics.losing_trades, row_score.best_metrics.losing_trades,
+                "Trade22 losing_trades mismatch for {mode:?}"
+            );
+
+            let include_all_top: Vec<(u16, u16)> = include_all_score
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+            let row_score_top: Vec<(u16, u16)> = row_score
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect();
+            assert_eq!(
+                include_all_top, row_score_top,
+                "top rows mismatch for {mode:?}"
+            );
+        }
+
+        match prev_global {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+        match prev_row_score {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_ROW_SCORE_HEADS"),
+        }
+        match prev_score_first {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_exact_pruning_matches_unpruned_trade22_surface() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+
+        let prev_global = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+        let prev_pruning = std::env::var("VECTORBT_KERNEL_EXACT_PRUNING").ok();
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+        let constraints = DoubleMaConstraints {
+            min_trades: Some(1),
+            max_drawdown: Some(0.35),
+            ..Default::default()
+        };
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 60, 1),
+            slow_range: (10, 120, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(20),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: Some(constraints.clone()),
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: true,
+            metric_contract: Some(DoubleMaMetricContract::Trade22),
+            hurdle_tau: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+
+        std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", "0");
+        let unpruned =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("unpruned trade22 gpu-kernel");
+
+        std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", "1");
+        let pruned = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("exact-pruned trade22 gpu-kernel");
+
+        match prev_global {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+        match prev_pruning {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_EXACT_PRUNING"),
+        }
+
+        let pruned_diags = pruned
+            .route_diagnostics
+            .as_ref()
+            .expect("pruned route diagnostics");
+        assert!(
+            pruned_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.path=row_first_global_topk_exact_pruning"),
+            "expected exact-pruning route, got {pruned_diags:?}"
+        );
+        assert!(
+            pruned_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.exact_pruning_mode=true"),
+            "expected exact_pruning_mode=true, got {pruned_diags:?}"
+        );
+        assert!(
+            pruned_diags
+                .iter()
+                .any(|line| line.starts_with("gpu_kernel.exact_pruning_pruned_candidates=")),
+            "expected exact-pruning candidate counter, got {pruned_diags:?}"
+        );
+        assert!(
+            pruned_diags
+                .iter()
+                .any(|line| line.starts_with("gpu_kernel.exact_pruning_skipped_bars=")),
+            "expected exact-pruning skipped-bar counter, got {pruned_diags:?}"
+        );
+
+        assert_eq!(unpruned.best_params.fast_len, pruned.best_params.fast_len);
+        assert_eq!(unpruned.best_params.slow_len, pruned.best_params.slow_len);
+        assert!((unpruned.best_metrics.sharpe - pruned.best_metrics.sharpe).abs() <= 1e-6);
+        assert!((unpruned.best_metrics.pnl - pruned.best_metrics.pnl).abs() <= 1e-6);
+        assert_eq!(
+            unpruned.best_metrics.closed_trades,
+            pruned.best_metrics.closed_trades
+        );
+        assert_eq!(
+            unpruned.best_metrics.winning_trades,
+            pruned.best_metrics.winning_trades
+        );
+        assert_eq!(
+            unpruned.best_metrics.losing_trades,
+            pruned.best_metrics.losing_trades
+        );
+        assert!(
+            (unpruned.best_metrics.gross_profit - pruned.best_metrics.gross_profit).abs() <= 1e-6
+        );
+        assert!((unpruned.best_metrics.gross_loss - pruned.best_metrics.gross_loss).abs() <= 1e-6);
+        assert!(
+            pruned
+                .top
+                .iter()
+                .all(|(_, metrics)| metrics_pass_constraints(metrics, Some(&constraints))),
+            "exact-pruned Trade22 top rows violated constraints"
         );
     }
 

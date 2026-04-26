@@ -24,8 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use ta_app_core::{
     progress::{DoubleMaCampaignVramPrefetchFeedback, DoubleMaProgressPayload, ProgressSink},
-    Backend, BackendUsed, CrossTickerConfig, CscvPboConfig, PerturbConfig,
-    ReoptWalkForwardConfigOptional, SpaConfigOptional, TradeBootstrapConfig,
+    Backend, BackendUsed, CrossTickerConfig, CscvPboConfig, MonteCarloValidationConfig,
+    PerturbConfig, ReoptWalkForwardConfigOptional, SpaConfigOptional, TradeBootstrapConfig,
     ValidationAdmissionHeadProvenance, ValidationAdmissionPolicy, ValidationAdmissionProvenance,
     ValidationArtifactContext, WalkForwardConfigOptional,
 };
@@ -93,6 +93,8 @@ pub struct ResearchCampaignValidationConfig {
     pub perturb: Option<PerturbConfig>,
     #[serde(default)]
     pub trade_bootstrap: Option<TradeBootstrapConfig>,
+    #[serde(default)]
+    pub monte_carlo: Option<MonteCarloValidationConfig>,
     #[serde(default)]
     pub cross_ticker: Option<CrossTickerConfig>,
     #[serde(default)]
@@ -1922,6 +1924,7 @@ fn build_validation_request_value(
         "spa": validation_cfg.spa,
         "perturb": validation_cfg.perturb,
         "trade_bootstrap": validation_cfg.trade_bootstrap,
+        "monte_carlo": validation_cfg.monte_carlo,
         "cross_ticker": validation_cfg.cross_ticker,
         "cscv_pbo": cscv_pbo_to_value(validation_cfg.cscv_pbo.as_ref()),
         "seed": validation_cfg.seed,
@@ -1985,6 +1988,7 @@ fn build_request_summary_value(
             "spa": req.validation_config.spa,
             "perturb": req.validation_config.perturb,
             "trade_bootstrap": req.validation_config.trade_bootstrap,
+            "monte_carlo": req.validation_config.monte_carlo,
             "cross_ticker": req.validation_config.cross_ticker,
             "cscv_pbo": cscv_pbo_to_value(req.validation_config.cscv_pbo.as_ref()),
             "min_psr": req.validation_config.min_psr,

@@ -3335,6 +3335,7 @@ fn build_prepared_holdout_batches(
     hv_wf: Option<ta_app_core::WalkForwardConfigOptional>,
     hv_perturb: Option<ta_app_core::PerturbConfig>,
     hv_mc: Option<ta_app_core::TradeBootstrapConfig>,
+    hv_monte_carlo: Option<ta_app_core::MonteCarloValidationConfig>,
     hv_engine: ta_app_core::ValidationEngine,
     hv_iterative: ta_app_core::IterativeSimConfig,
 ) -> Result<Vec<PreparedHoldoutBatch>, String> {
@@ -3414,6 +3415,7 @@ fn build_prepared_holdout_batches(
                         spa: None,
                         perturb: hv_perturb.clone(),
                         trade_bootstrap: hv_mc.clone(),
+                        monte_carlo: hv_monte_carlo.clone(),
                         cross_ticker: None,
                         cscv_pbo: None,
                         seed: hv_seed,
@@ -3480,6 +3482,7 @@ fn build_prepared_holdout_batches(
                         spa: None,
                         perturb: hv_perturb.clone(),
                         trade_bootstrap: hv_mc.clone(),
+                        monte_carlo: hv_monte_carlo.clone(),
                         cross_ticker: None,
                         cscv_pbo: None,
                         seed: hv_seed,
@@ -3678,19 +3681,21 @@ fn apply_holdout_evaluation(
     }
 
     let heavy = matches!(req.holdout_mode, ta_app_core::MetaHoldoutMode::Heavy);
-    let (hv_seed, hv_wf, hv_perturb, hv_mc, hv_engine, hv_iterative) = if heavy {
+    let (hv_seed, hv_wf, hv_perturb, hv_mc, hv_monte_carlo, hv_engine, hv_iterative) = if heavy {
         if let Some(cfg) = req.holdout_validation.clone() {
             (
                 cfg.seed,
                 cfg.walk_forward,
                 cfg.perturb,
                 cfg.trade_bootstrap,
+                cfg.monte_carlo,
                 cfg.validation_engine,
                 cfg.iterative,
             )
         } else {
             (
                 1u64,
+                None,
                 None,
                 None,
                 None,
@@ -3701,6 +3706,7 @@ fn apply_holdout_evaluation(
     } else {
         (
             1u64,
+            None,
             None,
             None,
             None,
@@ -3744,6 +3750,7 @@ fn apply_holdout_evaluation(
         hv_wf.clone(),
         hv_perturb.clone(),
         hv_mc.clone(),
+        hv_monte_carlo.clone(),
         hv_engine,
         hv_iterative.clone(),
     )?;
@@ -5257,6 +5264,7 @@ mod tests {
             &active,
             &dense,
             1,
+            None,
             None,
             None,
             None,

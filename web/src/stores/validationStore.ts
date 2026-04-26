@@ -79,6 +79,12 @@ interface CrossSelectionChange {
   checked: boolean
 }
 
+interface ValidationMonteCarloHistogramBar {
+  label: string
+  count: number
+  pct: number
+}
+
 function applyCrossSelection(
   rows: CrossDatasetEntry[],
   tokens: string[],
@@ -311,6 +317,8 @@ interface ValidationState {
   validationCategorySummary: string
   validationAuxCpuSummary: string
   validationBootstrapSummary: string
+  validationMonteCarloSummary: string
+  validationMonteCarloHistogram: ValidationMonteCarloHistogramBar[]
   validationRegimeSummary: string
   validationFrictionSummary: string
   validationCrossSummary: string
@@ -389,6 +397,8 @@ export const useValidationStore = defineStore('validation', {
     validationCategorySummary: '-',
     validationAuxCpuSummary: '-',
     validationBootstrapSummary: '-',
+    validationMonteCarloSummary: 'not run',
+    validationMonteCarloHistogram: [],
     validationRegimeSummary: '-',
     validationFrictionSummary: '-',
     validationCrossSummary: '-',
@@ -467,6 +477,8 @@ export const useValidationStore = defineStore('validation', {
       this.validationCategorySummary = String(snapshot.validationCategorySummary ?? this.validationCategorySummary ?? '-').trim() || '-'
       this.validationAuxCpuSummary = String(snapshot.validationAuxCpuSummary ?? this.validationAuxCpuSummary ?? '-').trim() || '-'
       this.validationBootstrapSummary = String(snapshot.validationBootstrapSummary ?? this.validationBootstrapSummary ?? '-').trim() || '-'
+      this.validationMonteCarloSummary = String(snapshot.validationMonteCarloSummary ?? this.validationMonteCarloSummary ?? 'not run').trim() || 'not run'
+      this.validationMonteCarloHistogram = rawArray(snapshot.validationMonteCarloHistogram, this.validationMonteCarloHistogram)
       this.validationRegimeSummary = String(snapshot.validationRegimeSummary ?? this.validationRegimeSummary ?? '-').trim() || '-'
       this.validationFrictionSummary = String(snapshot.validationFrictionSummary ?? this.validationFrictionSummary ?? '-').trim() || '-'
       this.validationCrossSummary = String(snapshot.validationCrossSummary ?? this.validationCrossSummary ?? '-').trim() || '-'

@@ -153,6 +153,7 @@ const PRODUCT_REDUCED_METRICS_COUNT: usize = 10;
 const METRICS_COUNT: usize = 17;
 const TRADE_METRICS_COUNT: usize = 22;
 const EXTRA_SHORTLIST_MAX_HEADS: usize = 3;
+const ROW_SCORE_OBJECTIVE_BASE: i32 = 100;
 const EXTRA_SHORTLIST_REQUEST_FIELD: &str = "extra_shortlist_objectives";
 const SHORTLIST_CONFIDENCE_REQUEST_FIELD: &str = "shortlist_confidence_mode";
 const SHORTLIST_UNION_REQUEST_FIELD: &str = "shortlist_union_mode";
@@ -1812,9 +1813,12 @@ enum CachedKernelKey {
     ComputeReturns,
     TransposeRowToTm,
     DoubleCrossBacktest,
+    DoubleCrossBacktestPruneMaxdd,
     DoubleCrossBacktestM7,
     DoubleCrossBacktestM17,
+    DoubleCrossBacktestM17PruneMaxdd,
     DoubleCrossBacktestM22,
+    DoubleCrossBacktestM22PruneMaxdd,
     DoubleCrossBacktestLockstep,
     DoubleCrossBacktestLockstepM7,
     DoubleCrossBacktestLockstepM17,
@@ -2031,6 +2035,14 @@ fn clear_last_route_diagnostics() {
 fn record_last_route_diagnostics(diag: Vec<String>) {
     LAST_ROUTE_DIAGNOSTICS.with(|cell| {
         *cell.borrow_mut() = Some(diag);
+    });
+}
+
+fn append_last_route_diagnostics(entries: impl IntoIterator<Item = String>) {
+    LAST_ROUTE_DIAGNOSTICS.with(|cell| {
+        if let Some(diag) = cell.borrow_mut().as_mut() {
+            diag.extend(entries);
+        }
     });
 }
 
@@ -4539,6 +4551,167 @@ fn kernel_score_first_topk_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_SCORE_FIRST_TOPK", false)
 }
 
+#[inline]
+fn kernel_row_score_heads_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_ROW_SCORE_HEADS", false)
+}
+
+#[inline]
+fn kernel_exact_pruning_enabled() -> bool {
+    env_flag_enabled("VECTORBT_KERNEL_EXACT_PRUNING", false)
+}
+
+#[inline]
+fn row_score_mode_objective_index(score_mode: Option<DoubleMaScoreMode>) -> Option<i32> {
+    let mode = match score_mode {
+        Some(DoubleMaScoreMode::BalancedRiskAdjusted10) => 1,
+        Some(DoubleMaScoreMode::AdversarialEnvelope10) => 2,
+        Some(DoubleMaScoreMode::SupportShrunk10) => 3,
+        Some(DoubleMaScoreMode::ActiveSortino10) => 4,
+        Some(DoubleMaScoreMode::OmegaVsSharpe10) => 5,
+        Some(DoubleMaScoreMode::RobustMargin10) => 6,
+        Some(DoubleMaScoreMode::EffectiveSampleLcb10) | None => return None,
+    };
+    Some(ROW_SCORE_OBJECTIVE_BASE + mode)
+}
+
+#[inline]
+fn row_score_heads_preselect_candidate(
+    row_score_env_enabled: bool,
+    score_mode: Option<DoubleMaScoreMode>,
+    include_all: bool,
+    export_enabled: bool,
+    extra_shortlist_enabled: bool,
+    shortlist_confidence_mode: Option<ShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<ShortlistSliceMode>,
+    constraints_present: bool,
+    eval_range: Option<(usize, usize)>,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    heatmap_bins: usize,
+    top_k: usize,
+) -> bool {
+    row_score_env_enabled
+        && row_score_mode_objective_index(score_mode).is_some()
+        && !include_all
+        && !export_enabled
+        && !extra_shortlist_enabled
+        && shortlist_confidence_mode.is_none()
+        && shortlist_union_mode.is_none()
+        && shortlist_slice_mode.is_none()
+        && !constraints_present
+        && eval_range.is_none()
+        && !fast_precomputed_enabled
+        && !slow_precomputed_enabled
+        && heatmap_bins == 0
+        && top_k > 0
+}
+
+#[inline]
+fn max_drawdown_constraint_to_log_space(max_dd: f64) -> Option<f32> {
+    if !max_dd.is_finite() || max_dd >= 1.0 {
+        return None;
+    }
+    if max_dd <= 0.0 {
+        return Some(0.0);
+    }
+    Some((-(1.0 - max_dd).ln()) as f32)
+}
+
+#[inline]
+fn exact_pruning_max_log_dd_threshold(constraints: Option<&DoubleMaConstraints>) -> Option<f32> {
+    constraints
+        .and_then(|cfg| cfg.max_drawdown)
+        .and_then(max_drawdown_constraint_to_log_space)
+        .filter(|v| v.is_finite())
+}
+
+fn exact_pruning_blockers(
+    exact_pruning_env_enabled: bool,
+    global_topk_mode: bool,
+    exact_pruning_symbols_available: bool,
+    exact_pruning_max_log_dd: Option<f32>,
+    constraints_on_device: bool,
+    device_include_all: bool,
+    export_enabled: bool,
+    host_filter_mode: bool,
+    eval_range: Option<(usize, usize)>,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    heatmap_bins: usize,
+) -> Vec<&'static str> {
+    let mut blockers = Vec::new();
+    if !exact_pruning_env_enabled {
+        blockers.push("env_disabled");
+    }
+    if !global_topk_mode {
+        blockers.push("global_topk_disabled");
+    }
+    if !exact_pruning_symbols_available {
+        blockers.push("exact_pruning_symbols_unavailable");
+    }
+    if exact_pruning_max_log_dd.is_none() {
+        blockers.push("no_prunable_max_drawdown");
+    }
+    if !constraints_on_device {
+        blockers.push("device_constraints_unavailable");
+    }
+    if device_include_all {
+        blockers.push("device_include_all");
+    }
+    if export_enabled {
+        blockers.push("export_enabled");
+    }
+    if host_filter_mode {
+        blockers.push("host_filter_mode");
+    }
+    if eval_range.is_some() {
+        blockers.push("eval_range_set");
+    }
+    if fast_precomputed_enabled {
+        blockers.push("fast_precomputed_enabled");
+    }
+    if slow_precomputed_enabled {
+        blockers.push("slow_precomputed_enabled");
+    }
+    if heatmap_bins != 0 {
+        blockers.push("heatmap_bins_nonzero");
+    }
+    blockers
+}
+
+#[inline]
+fn should_use_exact_pruning_mode(
+    global_topk_mode: bool,
+    exact_pruning_symbols_available: bool,
+    exact_pruning_max_log_dd: Option<f32>,
+    constraints_on_device: bool,
+    device_include_all: bool,
+    export_enabled: bool,
+    host_filter_mode: bool,
+    eval_range: Option<(usize, usize)>,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    heatmap_bins: usize,
+) -> bool {
+    exact_pruning_blockers(
+        kernel_exact_pruning_enabled(),
+        global_topk_mode,
+        exact_pruning_symbols_available,
+        exact_pruning_max_log_dd,
+        constraints_on_device,
+        device_include_all,
+        export_enabled,
+        host_filter_mode,
+        eval_range,
+        fast_precomputed_enabled,
+        slow_precomputed_enabled,
+        heatmap_bins,
+    )
+    .is_empty()
+}
+
 fn score_first_topk_blockers(
     score_first_env_enabled: bool,
     global_topk_mode: bool,
@@ -4636,6 +4809,117 @@ fn should_use_score_first_topk_mode(
     .is_empty()
 }
 
+fn row_score_heads_blockers(
+    row_score_env_enabled: bool,
+    global_topk_mode: bool,
+    score_mode: Option<DoubleMaScoreMode>,
+    metrics_count: usize,
+    include_all: bool,
+    export_enabled: bool,
+    extra_shortlist_enabled: bool,
+    shortlist_confidence_mode: Option<ShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<ShortlistSliceMode>,
+    constraints_present: bool,
+    eval_range: Option<(usize, usize)>,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    heatmap_bins: usize,
+    top_k: usize,
+) -> Vec<&'static str> {
+    let mut blockers = Vec::new();
+    if !row_score_env_enabled {
+        blockers.push("env_disabled");
+    }
+    if !global_topk_mode {
+        blockers.push("global_topk_disabled");
+    }
+    if score_mode.is_none() {
+        blockers.push("score_mode_unset");
+    } else if row_score_mode_objective_index(score_mode).is_none() {
+        blockers.push("score_mode_not_row_only");
+    }
+    if metrics_count < PRODUCT_REDUCED_METRICS_COUNT {
+        blockers.push("metrics_contract_below_product10");
+    }
+    if include_all {
+        blockers.push("include_all");
+    }
+    if export_enabled {
+        blockers.push("export_enabled");
+    }
+    if extra_shortlist_enabled {
+        blockers.push("extra_shortlist_enabled");
+    }
+    if shortlist_confidence_mode.is_some() {
+        blockers.push("shortlist_confidence_enabled");
+    }
+    if shortlist_union_mode.is_some() {
+        blockers.push("shortlist_union_enabled");
+    }
+    if shortlist_slice_mode.is_some() {
+        blockers.push("shortlist_slice_enabled");
+    }
+    if constraints_present {
+        blockers.push("constraints_present");
+    }
+    if eval_range.is_some() {
+        blockers.push("eval_range_set");
+    }
+    if fast_precomputed_enabled {
+        blockers.push("fast_precomputed_enabled");
+    }
+    if slow_precomputed_enabled {
+        blockers.push("slow_precomputed_enabled");
+    }
+    if heatmap_bins != 0 {
+        blockers.push("heatmap_bins_nonzero");
+    }
+    if top_k == 0 {
+        blockers.push("top_k_zero");
+    }
+    blockers
+}
+
+#[inline]
+fn should_use_row_score_heads_mode(
+    global_topk_mode: bool,
+    score_mode: Option<DoubleMaScoreMode>,
+    metrics_count: usize,
+    include_all: bool,
+    export_enabled: bool,
+    extra_shortlist_enabled: bool,
+    shortlist_confidence_mode: Option<ShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<ShortlistSliceMode>,
+    constraints_present: bool,
+    eval_range: Option<(usize, usize)>,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    heatmap_bins: usize,
+    top_k: usize,
+) -> bool {
+    row_score_heads_blockers(
+        kernel_row_score_heads_enabled(),
+        global_topk_mode,
+        score_mode,
+        metrics_count,
+        include_all,
+        export_enabled,
+        extra_shortlist_enabled,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        constraints_present,
+        eval_range,
+        fast_precomputed_enabled,
+        slow_precomputed_enabled,
+        heatmap_bins,
+        top_k,
+    )
+    .is_empty()
+}
+
 fn build_gpu_kernel_route_diagnostics(
     device_include_all: bool,
     export_enabled: bool,
@@ -4645,9 +4929,18 @@ fn build_gpu_kernel_route_diagnostics(
     score_first_env_enabled: bool,
     score_first_symbols_available: bool,
     score_first_topk_mode: bool,
+    row_score_heads_env_enabled: bool,
+    row_score_heads_mode: bool,
+    row_score_heads_objective_i: Option<i32>,
+    exact_pruning_env_enabled: bool,
+    exact_pruning_symbols_available: bool,
+    exact_pruning_mode: bool,
+    exact_pruning_max_log_dd: Option<f32>,
     metrics_count: usize,
     tile_metrics_stride: usize,
     score_first_blockers: &[&str],
+    row_score_heads_blockers: &[&str],
+    exact_pruning_blockers: &[&str],
 ) -> Vec<String> {
     let path = if device_include_all {
         "device_include_all"
@@ -4655,6 +4948,10 @@ fn build_gpu_kernel_route_diagnostics(
         "export_all"
     } else if host_filter_mode {
         "host_filter_mode"
+    } else if global_topk_mode && row_score_heads_mode {
+        "row_first_global_topk_row_score_heads"
+    } else if global_topk_mode && exact_pruning_mode {
+        "row_first_global_topk_exact_pruning"
     } else if global_topk_mode && score_first_topk_mode {
         "score_first_global_topk"
     } else if global_topk_mode {
@@ -4668,6 +4965,22 @@ fn build_gpu_kernel_route_diagnostics(
     } else {
         score_first_blockers.join(",")
     };
+    let row_score_heads_blockers = if row_score_heads_blockers.is_empty() {
+        "none".to_string()
+    } else {
+        row_score_heads_blockers.join(",")
+    };
+    let exact_pruning_blockers = if exact_pruning_blockers.is_empty() {
+        "none".to_string()
+    } else {
+        exact_pruning_blockers.join(",")
+    };
+    let exact_pruning_max_log_dd = exact_pruning_max_log_dd
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let row_score_heads_objective_i = row_score_heads_objective_i
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "none".to_string());
 
     vec![
         format!("gpu_kernel.path={path}"),
@@ -4680,6 +4993,15 @@ fn build_gpu_kernel_route_diagnostics(
         format!("gpu_kernel.score_first_symbols_available={score_first_symbols_available}"),
         format!("gpu_kernel.score_first_mode={score_first_topk_mode}"),
         format!("gpu_kernel.score_first_blockers={score_first_blockers}"),
+        format!("gpu_kernel.row_score_heads_env_enabled={row_score_heads_env_enabled}"),
+        format!("gpu_kernel.row_score_heads_mode={row_score_heads_mode}"),
+        format!("gpu_kernel.row_score_heads_objective_i={row_score_heads_objective_i}"),
+        format!("gpu_kernel.row_score_heads_blockers={row_score_heads_blockers}"),
+        format!("gpu_kernel.exact_pruning_env_enabled={exact_pruning_env_enabled}"),
+        format!("gpu_kernel.exact_pruning_symbols_available={exact_pruning_symbols_available}"),
+        format!("gpu_kernel.exact_pruning_mode={exact_pruning_mode}"),
+        format!("gpu_kernel.exact_pruning_blockers={exact_pruning_blockers}"),
+        format!("gpu_kernel.exact_pruning_max_log_dd={exact_pruning_max_log_dd}"),
         format!("gpu_kernel.metrics_count={metrics_count}"),
         format!("gpu_kernel.tile_metrics_stride={tile_metrics_stride}"),
     ]
@@ -11975,7 +12297,26 @@ fn optimize_double_ma_gpu_kernel_impl(
             "{SHORTLIST_SLICE_BENCHMARK_REQUEST_FIELD} requires {SHORTLIST_SLICE_MODE_REQUEST_FIELD} to be set"
         ));
     }
-    let device_include_all = include_all || score_mode.is_some();
+    let export_path = export_all_csv_path.map(str::trim).filter(|s| !s.is_empty());
+    let export_enabled = export_path.is_some();
+    let row_score_heads_env_enabled = kernel_row_score_heads_enabled();
+    let row_score_heads_preselect = row_score_heads_preselect_candidate(
+        row_score_heads_env_enabled,
+        score_mode,
+        include_all,
+        export_enabled,
+        extra_shortlist_enabled,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        constraints.is_some(),
+        eval_range,
+        fast_precomputed.is_some(),
+        slow_precomputed.is_some(),
+        heatmap_bins,
+        top_k,
+    );
+    let device_include_all = include_all || (score_mode.is_some() && !row_score_heads_preselect);
     let pipeline_profile_enabled = kernel_pipeline_profile_enabled();
     let mut pipeline_profile = if pipeline_profile_enabled {
         Some(PipelineTimingProfile::default())
@@ -11997,7 +12338,6 @@ fn optimize_double_ma_gpu_kernel_impl(
     let mut graph_capture_elapsed = Duration::ZERO;
     let mut graph_replay_count = 0u64;
 
-    let export_path = export_all_csv_path.map(str::trim).filter(|s| !s.is_empty());
     if export_path.is_some() && include_all {
         return Err(
             "export_all_csv_path requires include_all=false (stream export avoids huge RAM usage)"
@@ -12020,7 +12360,6 @@ fn optimize_double_ma_gpu_kernel_impl(
             "{SHORTLIST_UNION_REQUEST_FIELD} currently requires export_all_csv_path to be unset"
         ));
     }
-    let export_enabled = export_path.is_some();
     let mut export_writer: Option<BufWriter<File>> = if let Some(path) = export_path {
         let f = File::create(path)
             .map_err(|e| format!("failed to create export file '{path}': {e}"))?;
@@ -12370,6 +12709,15 @@ fn optimize_double_ma_gpu_kernel_impl(
     let backtest_m22 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m22")
         .ok();
+    let backtest_prune_maxdd = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_prune_maxdd")
+        .ok();
+    let backtest_m17_prune_maxdd = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_prune_maxdd")
+        .ok();
+    let backtest_m22_prune_maxdd = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_prune_maxdd")
+        .ok();
     let backtest_m17_regime_off_norisk = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk")
         .ok();
@@ -12610,6 +12958,15 @@ fn optimize_double_ma_gpu_kernel_impl(
     let backtest_m22_launch_caps = backtest_m22
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM22, f));
+    let backtest_prune_maxdd_launch_caps = backtest_prune_maxdd
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestPruneMaxdd, f));
+    let backtest_m17_prune_maxdd_launch_caps = backtest_m17_prune_maxdd
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM17PruneMaxdd, f));
+    let backtest_m22_prune_maxdd_launch_caps = backtest_m22_prune_maxdd
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM22PruneMaxdd, f));
     let backtest_lockstep_launch_caps = backtest_lockstep
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
@@ -12908,6 +13265,77 @@ fn optimize_double_ma_gpu_kernel_impl(
         slow_precomputed.is_some(),
         heatmap_bins,
     );
+    let row_score_heads_objective_i = row_score_mode_objective_index(score_mode);
+    let row_score_heads_blocker_list = row_score_heads_blockers(
+        row_score_heads_env_enabled,
+        global_topk_mode,
+        score_mode,
+        metrics_count,
+        include_all,
+        export_enabled,
+        extra_shortlist_enabled,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        constraints.is_some(),
+        eval_range,
+        fast_precomputed.is_some(),
+        slow_precomputed.is_some(),
+        heatmap_bins,
+        top_k,
+    );
+    let row_score_heads_mode = should_use_row_score_heads_mode(
+        global_topk_mode,
+        score_mode,
+        metrics_count,
+        include_all,
+        export_enabled,
+        extra_shortlist_enabled,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        constraints.is_some(),
+        eval_range,
+        fast_precomputed.is_some(),
+        slow_precomputed.is_some(),
+        heatmap_bins,
+        top_k,
+    );
+    let primary_objective_i = if row_score_heads_mode {
+        row_score_heads_objective_i.unwrap_or(objective_i)
+    } else {
+        objective_i
+    };
+    let exact_pruning_symbols_available = backtest_prune_maxdd.is_some();
+    let exact_pruning_env_enabled = kernel_exact_pruning_enabled();
+    let exact_pruning_max_log_dd = exact_pruning_max_log_dd_threshold(constraints);
+    let exact_pruning_blocker_list = exact_pruning_blockers(
+        exact_pruning_env_enabled,
+        global_topk_mode,
+        exact_pruning_symbols_available,
+        exact_pruning_max_log_dd,
+        constraints_on_device,
+        device_include_all,
+        export_enabled,
+        host_filter_mode,
+        eval_range,
+        fast_precomputed.is_some(),
+        slow_precomputed.is_some(),
+        heatmap_bins,
+    );
+    let exact_pruning_mode = should_use_exact_pruning_mode(
+        global_topk_mode,
+        exact_pruning_symbols_available,
+        exact_pruning_max_log_dd,
+        constraints_on_device,
+        device_include_all,
+        export_enabled,
+        host_filter_mode,
+        eval_range,
+        fast_precomputed.is_some(),
+        slow_precomputed.is_some(),
+        heatmap_bins,
+    );
     record_last_route_diagnostics(build_gpu_kernel_route_diagnostics(
         device_include_all,
         export_enabled,
@@ -12917,10 +13345,41 @@ fn optimize_double_ma_gpu_kernel_impl(
         score_first_env_enabled,
         score_first_topk_supported,
         score_first_topk_mode,
+        row_score_heads_env_enabled,
+        row_score_heads_mode,
+        row_score_heads_objective_i,
+        exact_pruning_env_enabled,
+        exact_pruning_symbols_available,
+        exact_pruning_mode,
+        exact_pruning_max_log_dd,
         metrics_count,
         tile_metrics_stride,
         &score_first_blockers,
+        &row_score_heads_blocker_list,
+        &exact_pruning_blocker_list,
     ));
+    if row_score_heads_preselect && !row_score_heads_mode {
+        let blockers = if row_score_heads_blocker_list.is_empty() {
+            "none".to_string()
+        } else {
+            row_score_heads_blocker_list.join(",")
+        };
+        return Err(format!(
+            "row-score heads were preselected but the GPU row-score route is unavailable ({blockers})"
+        ));
+    }
+    let exact_pruning_counters = if exact_pruning_mode {
+        Some(
+            DeviceBuffer::from_slice(&[0_u64, 0_u64])
+                .map_err(|e| format!("allocate exact-pruning counters: {e}"))?,
+        )
+    } else {
+        None
+    };
+    let exact_pruning_counters_ptr = exact_pruning_counters
+        .as_ref()
+        .map(|counters| counters.as_device_ptr().as_raw())
+        .unwrap_or(0);
     let global_constraints_on_device =
         constraints.is_some() && global_topk_mode && row_select_v2_supported;
     if extra_shortlist_enabled && !global_topk_mode {
@@ -13615,14 +14074,16 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 _ => false,
                             };
 
-                        let use_lockstep_time = !use_windowed_eval
+                        let use_lockstep_time = !exact_pruning_mode
+                            && !use_windowed_eval
                             && kernel_should_use_lockstep_time(
                                 launch_pairs,
                                 n,
                                 max_start_t,
                                 backtest_lockstep.is_some(),
                             );
-                        let use_m7 = !use_windowed_eval
+                        let use_m7 = !exact_pruning_mode
+                            && !use_windowed_eval
                             && !prefer_full_metric_specialization
                             && kernel_should_use_m7_specialize(
                                 launch_pairs,
@@ -13645,7 +14106,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                             );
                         let use_lockstep_m10_product = use_lockstep_m7
                             && fixed_metrics_contract == Some(PRODUCT_REDUCED_METRICS_COUNT);
-                        let use_fast_warp_dedup = !use_windowed_eval
+                        let use_fast_warp_dedup = !exact_pruning_mode
+                            && !use_windowed_eval
                             && !use_lockstep_time
                             && fast_warp_dedup_enabled
                             && launch_pairs >= fast_warp_dedup_min_pairs
@@ -13674,40 +14136,59 @@ fn optimize_double_ma_gpu_kernel_impl(
                             fixed_contract_dispatch == FixedContractDispatchKind::LockstepM22;
                         let use_m17 = fixed_contract_dispatch == FixedContractDispatchKind::M17;
                         let use_m22 = fixed_contract_dispatch == FixedContractDispatchKind::M22;
-                        let launch_caps =
-                            if use_windowed_m17 || use_windowed_m22 || use_windowed_eval {
-                                backtest_launch_caps
-                            } else if use_lockstep_m7 {
-                                backtest_lockstep_m7_launch_caps
-                                    .or(backtest_lockstep_launch_caps)
+                        let launch_caps = if exact_pruning_mode {
+                            if use_m17 {
+                                backtest_m17_prune_maxdd_launch_caps
+                                    .or(backtest_prune_maxdd_launch_caps)
                                     .unwrap_or(backtest_launch_caps)
-                            } else if use_lockstep_m17 {
-                                backtest_lockstep_m17_launch_caps
-                                    .or(backtest_lockstep_launch_caps)
-                                    .unwrap_or(backtest_launch_caps)
-                            } else if use_lockstep_m22 {
-                                backtest_lockstep_m22_launch_caps
-                                    .or(backtest_lockstep_launch_caps)
-                                    .unwrap_or(backtest_launch_caps)
-                            } else if use_lockstep_time {
-                                backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
-                            } else if use_fast_warp_dedup {
-                                backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
-                            } else if use_m17 {
-                                backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
                             } else if use_m22 {
-                                backtest_m22_launch_caps.unwrap_or(backtest_launch_caps)
-                            } else if use_m7 {
-                                backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
+                                backtest_m22_prune_maxdd_launch_caps
+                                    .or(backtest_prune_maxdd_launch_caps)
+                                    .unwrap_or(backtest_launch_caps)
                             } else {
-                                backtest_launch_caps
-                            };
+                                backtest_prune_maxdd_launch_caps.unwrap_or(backtest_launch_caps)
+                            }
+                        } else if use_windowed_m17 || use_windowed_m22 || use_windowed_eval {
+                            backtest_launch_caps
+                        } else if use_lockstep_m7 {
+                            backtest_lockstep_m7_launch_caps
+                                .or(backtest_lockstep_launch_caps)
+                                .unwrap_or(backtest_launch_caps)
+                        } else if use_lockstep_m17 {
+                            backtest_lockstep_m17_launch_caps
+                                .or(backtest_lockstep_launch_caps)
+                                .unwrap_or(backtest_launch_caps)
+                        } else if use_lockstep_m22 {
+                            backtest_lockstep_m22_launch_caps
+                                .or(backtest_lockstep_launch_caps)
+                                .unwrap_or(backtest_launch_caps)
+                        } else if use_lockstep_time {
+                            backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_fast_warp_dedup {
+                            backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_m17 {
+                            backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_m22 {
+                            backtest_m22_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_m7 {
+                            backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else {
+                            backtest_launch_caps
+                        };
                         let launch = choose_backtest_launch_shape_1d(
                             launch_pairs,
                             device_launch_caps,
                             launch_caps,
                         );
-                        let dispatch_label = if use_windowed_eval {
+                        let dispatch_label = if exact_pruning_mode {
+                            if use_m17 {
+                                "m17_prune_maxdd"
+                            } else if use_m22 {
+                                "m22_prune_maxdd"
+                            } else {
+                                "baseline_prune_maxdd"
+                            }
+                        } else if use_windowed_eval {
                             if use_windowed_m17 {
                                 "windowed_m17"
                             } else if use_windowed_m22 {
@@ -13767,7 +14248,23 @@ fn optimize_double_ma_gpu_kernel_impl(
                             zero_commission_mode,
                             eps_zero_mode,
                         );
-                        let backtest_fn = if use_windowed_eval {
+                        let backtest_fn = if exact_pruning_mode {
+                            if use_m17 {
+                                backtest_m17_prune_maxdd
+                                    .as_ref()
+                                    .or(backtest_prune_maxdd.as_ref())
+                                    .expect("checked exact-pruning m17 kernel availability")
+                            } else if use_m22 {
+                                backtest_m22_prune_maxdd
+                                    .as_ref()
+                                    .or(backtest_prune_maxdd.as_ref())
+                                    .expect("checked exact-pruning m22 kernel availability")
+                            } else {
+                                backtest_prune_maxdd
+                                    .as_ref()
+                                    .expect("checked exact-pruning kernel availability")
+                            }
+                        } else if use_windowed_eval {
                             if use_windowed_m17 {
                                 match fixed_contract_flavor {
                                     FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
@@ -14280,6 +14777,61 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 args,
                                 &mut launch_submit_elapsed,
                             )?;
+                        } else if exact_pruning_mode {
+                            let mut prune_max_log_dd =
+                                exact_pruning_max_log_dd.unwrap_or(f32::INFINITY);
+                            let mut prune_counters_ptr = exact_pruning_counters_ptr;
+                            let args: &mut [*mut c_void] = &mut [
+                                &mut f_ma_tm as *mut _ as *mut c_void,
+                                &mut s_ma_tm as *mut _ as *mut c_void,
+                                &mut lr as *mut _ as *mut c_void,
+                                &mut ret1 as *mut _ as *mut c_void,
+                                &mut t_i as *mut _ as *mut c_void,
+                                &mut pf_tile_i as *mut _ as *mut c_void,
+                                &mut ps_tile_i as *mut _ as *mut c_void,
+                                &mut fast_tm_stride_i as *mut _ as *mut c_void,
+                                &mut slow_tm_stride_i as *mut _ as *mut c_void,
+                                &mut pf_total_i as *mut _ as *mut c_void,
+                                &mut ps_total_i as *mut _ as *mut c_void,
+                                &mut f_off as *mut _ as *mut c_void,
+                                &mut s_off as *mut _ as *mut c_void,
+                                &mut f_per as *mut _ as *mut c_void,
+                                &mut s_per as *mut _ as *mut c_void,
+                                &mut regime_ptr as *mut _ as *mut c_void,
+                                &mut use_regime_i as *mut _ as *mut c_void,
+                                &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+                                &mut regime_entry as *mut _ as *mut c_void,
+                                &mut regime_exit as *mut _ as *mut c_void,
+                                &mut fv as *mut _ as *mut c_void,
+                                &mut regime_fv as *mut _ as *mut c_void,
+                                &mut commission as *mut _ as *mut c_void,
+                                &mut eps_rel as *mut _ as *mut c_void,
+                                &mut hurdle_tau_f as *mut _ as *mut c_void,
+                                &mut stop_log as *mut _ as *mut c_void,
+                                &mut take_log as *mut _ as *mut c_void,
+                                &mut flags_u as *mut _ as *mut c_void,
+                                &mut m_i as *mut _ as *mut c_void,
+                                &mut metrics_stride_i as *mut _ as *mut c_void,
+                                &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_fast_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_rows as *mut _ as *mut c_void,
+                                &mut pair_fast_local_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_local_rows as *mut _ as *mut c_void,
+                                &mut pair_count_i as *mut _ as *mut c_void,
+                                &mut compact_output_i as *mut _ as *mut c_void,
+                                &mut out_ptr as *mut _ as *mut c_void,
+                                &mut prune_max_log_dd as *mut _ as *mut c_void,
+                                &mut prune_counters_ptr as *mut _ as *mut c_void,
+                            ];
+                            launch_kernel_timed(
+                                bt_stream,
+                                backtest_fn,
+                                (grid_x, 1, 1),
+                                (block_x, 1, 1),
+                                0,
+                                args,
+                                &mut launch_submit_elapsed,
+                            )?;
                         } else {
                             let args: &mut [*mut c_void] = &mut [
                                 &mut f_ma_tm as *mut _ as *mut c_void,
@@ -14742,7 +15294,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         pf,
                         ps,
                         topk_select,
-                        objective_i,
+                        primary_objective_i,
                         hurdle_tau,
                         compact_valid_pair_output,
                         pair_index_map_ptr,
@@ -14773,7 +15325,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         pf,
                         ps,
                         topk_select,
-                        objective_i,
+                        primary_objective_i,
                         hurdle_tau,
                         compact_valid_pair_output,
                         pair_index_map_ptr,
@@ -14853,7 +15405,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             global_rows_cap,
                             metrics_count,
                             metrics_count,
-                            objective_i,
+                            primary_objective_i,
                             hurdle_tau,
                             topk_select,
                             global_constraints_on_device,
@@ -15589,6 +16141,17 @@ fn optimize_double_ma_gpu_kernel_impl(
         }
     }
 
+    if let Some(counters) = exact_pruning_counters.as_ref() {
+        let mut host = [0_u64; 2];
+        let d2h_t0 = Instant::now();
+        counters.copy_to(&mut host).map_err(|e| e.to_string())?;
+        d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+        append_last_route_diagnostics([
+            format!("gpu_kernel.exact_pruning_pruned_candidates={}", host[0]),
+            format!("gpu_kernel.exact_pruning_skipped_bars={}", host[1]),
+        ]);
+    }
+
     if let Some(w) = export_writer.as_mut() {
         let export_flush_t0 = Instant::now();
         w.flush().map_err(|e| e.to_string())?;
@@ -15717,24 +16280,29 @@ mod tests {
         choose_fixed_contract_dispatch_kind, choose_fixed_contract_kernel_flavor,
         compute_shortlist_slice_benchmark_relative_summary, decode_tm_flex_metrics_row,
         effective_metrics_stride, effective_sample_lcb_10_pair_score,
-        eval_double_ma_dynamic_program_precomputed_gpu_kernel, finalist_recompute_eval_range,
+        eval_double_ma_dynamic_program_precomputed_gpu_kernel, exact_pruning_blockers,
+        exact_pruning_max_log_dd_threshold, finalist_recompute_eval_range,
         fixed_metrics_contract_rows, install_effective_sample_score_context,
-        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
-        kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled, kernel_score_first_topk_enabled,
+        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_exact_pruning_enabled,
+        kernel_extra_shortlist_objectives, kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled,
+        kernel_row_score_heads_enabled, kernel_score_first_topk_enabled,
         kernel_shortlist_confidence_mode, kernel_shortlist_slice_benchmark,
         kernel_shortlist_slice_diagnostic_row_limit, kernel_shortlist_slice_mode,
         kernel_shortlist_union_mode, kernel_should_use_lockstep_time,
         kernel_should_use_m7_specialize, kernel_strategy_params,
-        max_drawdown_constraint_to_search_space, normalize_topk_select_for_device,
-        rerank_shortlist_by_confidence, rerank_shortlist_by_union_mode, score_first_topk_blockers,
-        search_metrics_count_for_optimization, search_metrics_count_for_optimization_with_contract,
-        search_rows_use_log_space, shortlist_candidate_track_record_bars, shortlist_slice_ranges,
+        max_drawdown_constraint_to_log_space, max_drawdown_constraint_to_search_space,
+        normalize_topk_select_for_device, rerank_shortlist_by_confidence,
+        rerank_shortlist_by_union_mode, row_score_heads_blockers, row_score_mode_objective_index,
+        score_first_topk_blockers, search_metrics_count_for_optimization,
+        search_metrics_count_for_optimization_with_contract, search_rows_use_log_space,
+        shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
+        should_use_exact_pruning_mode, should_use_row_score_heads_mode,
         should_use_score_first_topk_mode, upload_double_ma_dynamic_program_batch,
         validate_uploaded_double_ma_dynamic_program_batch_geometry, EffectiveSampleScoreContext,
         FixedContractDispatchKind, FixedContractKernelFlavor, ShortlistConfidenceMode,
-        ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, STRAT_SIGNED_EXPOSURE,
-        TOPK_BLOCK_THREADS, TRADE_METRICS_COUNT,
+        ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, ROW_SCORE_OBJECTIVE_BASE,
+        STRAT_SIGNED_EXPOSURE, TOPK_BLOCK_THREADS, TRADE_METRICS_COUNT,
     };
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
@@ -16826,6 +17394,52 @@ mod tests {
     }
 
     #[test]
+    fn kernel_row_score_heads_flag_defaults_to_disabled_and_parses_true() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_ROW_SCORE_HEADS").ok();
+
+        std::env::remove_var("VECTORBT_KERNEL_ROW_SCORE_HEADS");
+        assert!(!kernel_row_score_heads_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", "0");
+        assert!(!kernel_row_score_heads_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", "false");
+        assert!(!kernel_row_score_heads_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", "1");
+        assert!(kernel_row_score_heads_enabled());
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_ROW_SCORE_HEADS"),
+        }
+    }
+
+    #[test]
+    fn kernel_exact_pruning_flag_defaults_to_disabled_and_parses_true() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_EXACT_PRUNING").ok();
+
+        std::env::remove_var("VECTORBT_KERNEL_EXACT_PRUNING");
+        assert!(!kernel_exact_pruning_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", "0");
+        assert!(!kernel_exact_pruning_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", "false");
+        assert!(!kernel_exact_pruning_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", "1");
+        assert!(kernel_exact_pruning_enabled());
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_EXACT_PRUNING"),
+        }
+    }
+
+    #[test]
     fn score_first_topk_mode_requires_narrow_exact_surface() {
         let _guard = lock_env();
         let prev = std::env::var("VECTORBT_KERNEL_SCORE_FIRST_TOPK").ok();
@@ -17052,6 +17666,217 @@ mod tests {
     }
 
     #[test]
+    fn row_score_heads_mode_requires_row_only_score_mode_and_global_topk() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_ROW_SCORE_HEADS").ok();
+        std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", "1");
+
+        assert_eq!(
+            row_score_mode_objective_index(Some(DoubleMaScoreMode::BalancedRiskAdjusted10)),
+            Some(ROW_SCORE_OBJECTIVE_BASE + 1)
+        );
+        assert_eq!(
+            row_score_mode_objective_index(Some(DoubleMaScoreMode::RobustMargin10)),
+            Some(ROW_SCORE_OBJECTIVE_BASE + 6)
+        );
+        assert_eq!(
+            row_score_mode_objective_index(Some(DoubleMaScoreMode::EffectiveSampleLcb10)),
+            None
+        );
+        assert!(should_use_row_score_heads_mode(
+            true,
+            Some(DoubleMaScoreMode::SupportShrunk10),
+            PRODUCT_REDUCED_METRICS_COUNT,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            false,
+            0,
+            20,
+        ));
+        assert!(!should_use_row_score_heads_mode(
+            true,
+            Some(DoubleMaScoreMode::EffectiveSampleLcb10),
+            PRODUCT_REDUCED_METRICS_COUNT,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            false,
+            0,
+            20,
+        ));
+        assert!(!should_use_row_score_heads_mode(
+            false,
+            Some(DoubleMaScoreMode::SupportShrunk10),
+            PRODUCT_REDUCED_METRICS_COUNT,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            false,
+            0,
+            20,
+        ));
+        assert!(!should_use_row_score_heads_mode(
+            true,
+            Some(DoubleMaScoreMode::SupportShrunk10),
+            7,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            false,
+            0,
+            20,
+        ));
+        assert!(!should_use_row_score_heads_mode(
+            true,
+            Some(DoubleMaScoreMode::SupportShrunk10),
+            PRODUCT_REDUCED_METRICS_COUNT,
+            true,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            false,
+            0,
+            20,
+        ));
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_ROW_SCORE_HEADS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_ROW_SCORE_HEADS"),
+        }
+    }
+
+    #[test]
+    fn exact_pruning_mode_requires_prunable_device_max_drawdown_constraint() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_EXACT_PRUNING").ok();
+        std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", "1");
+
+        let constraints = DoubleMaConstraints {
+            max_drawdown: Some(0.25),
+            ..Default::default()
+        };
+        let threshold = exact_pruning_max_log_dd_threshold(Some(&constraints));
+        assert!(threshold.is_some());
+        assert!(should_use_exact_pruning_mode(
+            true, true, threshold, true, false, false, false, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, None, true, false, false, false, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, threshold, false, false, false, false, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, threshold, true, true, false, false, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            false, true, threshold, true, false, false, false, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, false, threshold, true, false, false, false, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true,
+            true,
+            threshold,
+            true,
+            false,
+            false,
+            false,
+            Some((10, 100)),
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, threshold, true, false, true, false, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, threshold, true, false, false, true, None, false, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, threshold, true, false, false, false, None, true, false, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, threshold, true, false, false, false, None, false, true, 0,
+        ));
+        assert!(!should_use_exact_pruning_mode(
+            true, true, threshold, true, false, false, false, None, false, false, 16,
+        ));
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_EXACT_PRUNING", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_EXACT_PRUNING"),
+        }
+    }
+
+    #[test]
+    fn exact_pruning_blockers_explain_row_first_fallback() {
+        let blockers = exact_pruning_blockers(
+            false,
+            false,
+            false,
+            None,
+            false,
+            true,
+            true,
+            true,
+            Some((100, 200)),
+            true,
+            true,
+            32,
+        );
+
+        assert_eq!(
+            blockers,
+            vec![
+                "env_disabled",
+                "global_topk_disabled",
+                "exact_pruning_symbols_unavailable",
+                "no_prunable_max_drawdown",
+                "device_constraints_unavailable",
+                "device_include_all",
+                "export_enabled",
+                "host_filter_mode",
+                "eval_range_set",
+                "fast_precomputed_enabled",
+                "slow_precomputed_enabled",
+                "heatmap_bins_nonzero",
+            ]
+        );
+    }
+
+    #[test]
     fn score_first_topk_blockers_explain_why_row_first_fallback_is_used() {
         let blockers = score_first_topk_blockers(
             false,
@@ -17087,6 +17912,50 @@ mod tests {
                 "fast_precomputed_enabled",
                 "slow_precomputed_enabled",
                 "heatmap_bins_nonzero",
+            ]
+        );
+    }
+
+    #[test]
+    fn row_score_heads_blockers_explain_why_include_all_fallback_is_used() {
+        let blockers = row_score_heads_blockers(
+            false,
+            false,
+            Some(DoubleMaScoreMode::EffectiveSampleLcb10),
+            7,
+            true,
+            true,
+            true,
+            Some(ShortlistConfidenceMode::Psr),
+            Some(DoubleMaShortlistUnionMode::Pareto),
+            Some(ShortlistSliceMode::Halves),
+            true,
+            Some((100, 200)),
+            true,
+            true,
+            32,
+            0,
+        );
+
+        assert_eq!(
+            blockers,
+            vec![
+                "env_disabled",
+                "global_topk_disabled",
+                "score_mode_not_row_only",
+                "metrics_contract_below_product10",
+                "include_all",
+                "export_enabled",
+                "extra_shortlist_enabled",
+                "shortlist_confidence_enabled",
+                "shortlist_union_enabled",
+                "shortlist_slice_enabled",
+                "constraints_present",
+                "eval_range_set",
+                "fast_precomputed_enabled",
+                "slow_precomputed_enabled",
+                "heatmap_bins_nonzero",
+                "top_k_zero",
             ]
         );
     }
@@ -19099,8 +19968,11 @@ mod tests {
         let search = max_drawdown_constraint_to_search_space(0.25, 3);
         let expected = (-(1.0f64 - 0.25).ln()) as f32;
         assert!((search - expected).abs() < 1e-6);
+        assert!((max_drawdown_constraint_to_log_space(0.25).unwrap() - expected).abs() < 1e-6);
+        assert_eq!(max_drawdown_constraint_to_log_space(0.0), Some(0.0));
 
         assert!(max_drawdown_constraint_to_search_space(1.0, 3).is_infinite());
+        assert_eq!(max_drawdown_constraint_to_log_space(1.0), None);
     }
 
     #[test]

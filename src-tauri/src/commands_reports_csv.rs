@@ -337,6 +337,50 @@ mod tests {
     }
 
     #[test]
+    fn shortlist_csv_uses_monte_carlo_trade_iid_for_legacy_bootstrap_column() {
+        let validation_res = json!({
+          "data_id": "test",
+          "run_verdict": { "passed": true, "approved": true },
+          "candidates": [{
+            "params": { "fast_len": 10, "slow_len": 40 },
+            "in_sample": { "pnl": 1.5, "sharpe": 2.5, "max_dd": 0.25, "trades": 12 },
+            "robust_score": 1.23,
+            "monte_carlo": {
+              "schema_version": 1,
+              "simulations": 500,
+              "trade_count": 12,
+              "tail_alpha": 0.05,
+              "modes": {
+                "trade_iid": {
+                  "simulations": 500,
+                  "prob_pnl_positive": 0.77,
+                  "pnl_p05": -0.11,
+                  "pnl_tail_mean_p05": -0.13,
+                  "pnl_p50": 0.22,
+                  "pnl_p95": 0.44,
+                  "max_dd_p50": 0.2,
+                  "max_dd_p95": 0.33,
+                  "max_dd_tail_mean_p95": 0.36
+                }
+              },
+              "advisory": { "passed": true }
+            },
+            "validation_verdict": {
+              "passed": true,
+              "warning_flags": [],
+              "fail_reasons": []
+            }
+          }]
+        });
+
+        let csv = build_validation_shortlist_csv_text(&validation_res).expect("csv");
+        let records = parse_csv_records(&csv);
+
+        assert_eq!(records[0][23], "bootstrap_prob_pnl_positive");
+        assert_eq!(records[1][23], "0.77");
+    }
+
+    #[test]
     fn shortlist_csv_errors_when_candidates_are_missing() {
         let validation_res = json!({
           "data_id": "test"

@@ -93,6 +93,7 @@ fn base_request(candidates: Vec<DoubleMaValidationParams>) -> DoubleMaValidation
         spa: None,
         perturb: None,
         trade_bootstrap: None,
+        monte_carlo: None,
         cross_ticker: None,
         cscv_pbo: None,
         seed: 123,
