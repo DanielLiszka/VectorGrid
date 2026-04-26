@@ -75,4 +75,53 @@ describe('usePersistedMatrixColumnState', () => {
     expect(state.columnOrderKeys.value).toEqual(['name', 'rank', 'pnl'])
     expect(state.orderedColumns.value.map((column) => column.sourceColumnIndex)).toEqual([1, 0, 2])
   })
+
+  it('persists sanitized column widths with the existing column layout state', async () => {
+    localStorage.setItem('matrix_columns', JSON.stringify({
+      visibleColumnKeys: ['rank', 'name', 'pnl'],
+      knownColumnKeys: ['rank', 'name', 'pnl'],
+      columnOrderKeys: ['rank', 'name', 'pnl'],
+      columnWidths: {
+        rank: 12,
+        pnl: 5000,
+        stale: 220,
+        name: 'wide',
+      },
+    }))
+
+    const columns = ref([
+      { key: 'rank', label: '#' },
+      { key: 'name', label: 'Name' },
+      { key: 'pnl', label: 'PnL' },
+    ])
+
+    const state = usePersistedMatrixColumnState(columns, 'matrix_columns')
+
+    expect(state.columnWidths.value).toEqual({ rank: 48, pnl: 960 })
+    expect(state.canRestoreDefaults.value).toBe(true)
+    expect(state.columnWidthStyle('rank')).toEqual({
+      width: '48px',
+      minWidth: '48px',
+      maxWidth: '48px',
+    })
+
+    state.setColumnWidth('name', 184.4)
+    await nextTick()
+
+    expect(state.columnWidths.value).toEqual({ rank: 48, pnl: 960, name: 184 })
+    expect(JSON.parse(localStorage.getItem('matrix_columns') || '{}')).toMatchObject({
+      columnWidths: { rank: 48, pnl: 960, name: 184 },
+    })
+
+    state.clearColumnWidth('rank')
+    await nextTick()
+
+    expect(state.columnWidths.value).toEqual({ pnl: 960, name: 184 })
+
+    state.restoreDefaultColumns()
+    await nextTick()
+
+    expect(state.columnWidths.value).toEqual({})
+    expect(localStorage.getItem('matrix_columns')).toBeNull()
+  })
 })

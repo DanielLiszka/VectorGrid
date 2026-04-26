@@ -231,7 +231,9 @@ These crates are smaller than `app_core`, but they are part of the real executio
 - `web/package.json`
   - Node toolchain requirements, frontend scripts, generated-command checks, parity scripts, and request-builder benchmark entrypoints
 - `scripts/run_repo_quality_gate.ps1`
-  - canonical local-first static-analysis lane for broad non-options work: Rust fmt/check/clippy plus web lint/typecheck, with optional desktop typecheck and workspace tests
+  - canonical local-first static-analysis lane for broad non-options work: Rust fmt/check/clippy plus web lint/typecheck, with optional desktop typecheck, browser E2E QA, desktop smoke, and workspace tests
+- `scripts/run_frontend_e2e_gate.ps1`
+  - build-once frontend browser QA lane for workbench smoke, action coverage, core workflow E2E, and optional responsive/regression/a11y/baseline/exploratory slices; `-IncludeFullWorkflow` runs the full browser spec set instead of the sliced lane
 - `web/scripts/check-a11y-smoke.mjs`
   - Playwright + axe smoke coverage for the shipped desktop shell surfaces
 - `docs/frontend_end_to_end_qa_automation_plan.md`
@@ -256,6 +258,9 @@ Current local quality gate to know:
 - `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1`
   - use for broad non-options code-quality validation before handoff
   - add `-IncludeDesktopTypecheck` when desktop harness files move
+  - add `-IncludeBrowserWorkflowQa` for the build-once browser QA bundle after frontend workflow or shell changes
+  - add `-IncludeBrowserResponsiveE2E` and `-IncludeBrowserRegressionE2E` when responsive layout, rollback behavior, or regression specs move
+  - add `-IncludeDesktopSmoke` only on machines with the Tauri/WebDriver desktop smoke setup
   - add `-IncludeWorkspaceTests` for higher-risk backend or cross-layer changes
 
 Current verification order to know:
@@ -678,7 +683,7 @@ The frontend is a Vue + Pinia workspace app, not a page-routed SPA.
 - `web/src/components/VueWorkspaceShell.vue`
   - top-level workspace/workflow shell
 - `web/src/components/workbench/WorkbenchShell.vue`
-  - opt-in premium workbench shell enabled by localStorage flag `vta_workbench_shell_v1=1`; default production shell remains `VueWorkspaceShell`
+  - premium workbench shell is the default desktop shell; legacy `VueWorkspaceShell` remains reachable through `?workbench_shell=0` or localStorage `vta_workbench_shell_v1=0` as a rollback path
 - `web/src/components/workbench/ResearchCockpit.vue`
   - flagged Research workbench overview, backed by `web/src/composables/useResearchCockpitModel.ts`
 - `web/src/components/workbench/WorkbenchInspector.vue`
@@ -737,11 +742,11 @@ These are good first files when the task is startup flow, global shortcuts, quic
 - `web/src/App.vue`
   - lazy async panel registry for workspace panels such as `DataWorkspacePanel`, `OptimizeWorkspacePanel`, `MetaWorkspacePanel`, `HistoryWorkspacePanel`, `ExecutionWorkspacePanel`, and `SettingsWorkspacePanel`
 - `web/src/components/VueWorkspaceShell.vue`
-  - owns the top-level workspace shell plus the control/result mount slots that decide where those panels render
+  - legacy rollback shell reachable through the explicit workbench opt-out; still owns the old control/result mount slots
 - `web/src/components/workbench/WorkbenchShell.vue`
-  - owns the feature-flagged workbench rail, cockpit placement, inspector placement, and action-bar host while reusing the same panel mount IDs as the default shell
+  - owns the default workbench rail, cockpit placement, inspector placement, and action-bar host while reusing the same panel mount IDs as the legacy shell
 - `web/src/components/workbench/ResearchCockpit.vue`
-  - owns the flagged Research cockpit cards and workflow-step shortcuts; use `web/src/composables/useResearchCockpitModel.ts` for derived cockpit state
+  - owns the Research cockpit cards and workflow-step shortcuts; use `web/src/composables/useResearchCockpitModel.ts` for derived cockpit state
 - `web/src/components/workbench/WorkbenchInspector.vue`
   - owns mode tabs and right-inspector actions; use `web/src/utils/inspectorModel.ts` for inspector state shape and action IDs
 - `web/src/components/MetaWorkspacePanel.vue`

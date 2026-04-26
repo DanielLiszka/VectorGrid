@@ -1,6 +1,9 @@
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { describe, expect, it } from "vitest";
-import { useHeadlessMatrixTable } from "./useHeadlessMatrixTable";
+import {
+  useHeadlessMatrixTable,
+  type MatrixColumnMeta,
+} from "./useHeadlessMatrixTable";
 
 describe("useHeadlessMatrixTable", () => {
   it("builds stable header and row models from matrix-style input", () => {
@@ -103,5 +106,101 @@ describe("useHeadlessMatrixTable", () => {
       "1",
       "candidate_a",
     ]);
+  });
+
+  it("supports client-side sortable matrix columns when enabled", async () => {
+    const columns = ref([
+      { key: "name", label: "Name", alignLeft: true, sort: "asc" as const },
+      { key: "pnl", label: "PnL", alignLeft: false, sort: "" as const },
+    ]);
+    const rows = ref([
+      {
+        rowId: "b",
+        cells: [
+          { text: "Beta", className: "left", title: "Beta" },
+          { text: "12.5", className: "mono", title: "12.5000" },
+        ],
+      },
+      {
+        rowId: "a",
+        cells: [
+          { text: "Alpha", className: "left", title: "Alpha" },
+          { text: "3.0", className: "mono", title: "3.0000" },
+        ],
+      },
+    ]);
+
+    const { getHeaderSortState, rowModelRows, toggleSortColumn } =
+      useHeadlessMatrixTable(
+        computed(() => columns.value),
+        computed(() => rows.value),
+        { enableClientSorting: true },
+      );
+
+    expect(getHeaderSortState("name")).toMatchObject({
+      sortable: true,
+      sort: "asc",
+      ariaSort: "ascending",
+      nextDirection: "desc",
+    });
+    expect(rowModelRows.value.map((row) => row.original.rowId)).toEqual([
+      "a",
+      "b",
+    ]);
+
+    toggleSortColumn("pnl");
+    await nextTick();
+
+    expect(getHeaderSortState("pnl")).toMatchObject({
+      sort: "asc",
+      ariaSort: "ascending",
+      nextDirection: "desc",
+    });
+    expect(rowModelRows.value.map((row) => row.original.rowId)).toEqual([
+      "a",
+      "b",
+    ]);
+
+    toggleSortColumn("pnl");
+    await nextTick();
+
+    expect(getHeaderSortState("pnl")).toMatchObject({
+      sort: "desc",
+      ariaSort: "descending",
+      nextDirection: "asc",
+    });
+    expect(rowModelRows.value.map((row) => row.original.rowId)).toEqual([
+      "b",
+      "a",
+    ]);
+  });
+
+  it("carries persisted column widths into table column metadata", () => {
+    const columns = ref([
+      { key: "rank", label: "#", alignLeft: true, sort: "asc" as const },
+      { key: "pnl", label: "PnL", alignLeft: false, sort: "" as const },
+    ]);
+    const rows = ref([
+      {
+        cells: [
+          { text: "1", className: "mono left", title: "" },
+          { text: "12.5", className: "mono", title: "12.5000" },
+        ],
+      },
+    ]);
+    const columnWidths = ref<Record<string, number>>({ pnl: 184 });
+
+    const { headerGroups, visibleLeafColumns } = useHeadlessMatrixTable(
+      computed(() => columns.value),
+      computed(() => rows.value),
+      { columnWidths: computed(() => columnWidths.value) },
+    );
+
+    const pnlHeader = headerGroups.value[0]?.headers.find(
+      (header) => header.id === "pnl",
+    );
+    const pnlMeta = pnlHeader?.column.columnDef.meta as MatrixColumnMeta;
+    expect(pnlMeta.widthPx).toBe(184);
+    expect(visibleLeafColumns.value.find((column) => column.id === "pnl")?.getSize()).toBe(184);
   });
 });

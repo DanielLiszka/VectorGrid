@@ -530,13 +530,23 @@ npm --prefix web run baseline:ui
 npm --prefix web run test:desktop:smoke
 ```
 
+Build-once browser QA gate for local handoff and release rehearsals:
+
+```powershell
+powershell -File scripts/run_frontend_e2e_gate.ps1
+powershell -File scripts/run_frontend_e2e_gate.ps1 -IncludeResponsive -IncludeRegressions -IncludeA11ySmoke
+powershell -File scripts/run_repo_quality_gate.ps1 -IncludeBrowserWorkflowQa -IncludeBrowserResponsiveE2E -IncludeBrowserRegressionE2E
+```
+
+The default frontend E2E gate runs the sliced QA lane: workbench smoke, action coverage, and core workflow coverage. `-IncludeResponsive`, `-IncludeRegressions`, and `-IncludeExploratory` add the focused optional slices without duplicating the core lane; `-IncludeFullWorkflow` runs the full browser spec set instead.
+
 Recommended nightly or pre-release expanded gates:
 
 ```powershell
 npm --prefix web run test:e2e:workflow:full
 npm --prefix web run test:e2e:explore
 npm --prefix web run test:desktop:geometry
-powershell -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck
+powershell -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck -IncludeBrowserWorkflowQa
 ```
 
 Desktop smoke should be required for release candidates, but not necessarily for every small frontend-only PR on machines without the correct EdgeDriver/Tauri driver setup.

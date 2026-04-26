@@ -8,7 +8,7 @@ import { expectNoHorizontalDocumentOverflow } from '../support/qaAssertions'
 
 defineWorkflow({
   id: 'workbench.shell.firstSlice',
-  title: 'exercises the opt-in premium workbench shell without regressing shell contracts',
+  title: 'exercises the default premium workbench shell without regressing shell contracts',
   tags: ['@workflow', '@smoke'],
   scenario: premiumWorkbenchScenario,
   run: async ({ page, action }) => {

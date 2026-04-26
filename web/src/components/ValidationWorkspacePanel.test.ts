@@ -507,6 +507,83 @@ describe('ValidationWorkspacePanel', () => {
     expect(localStorage.getItem(VALIDATION_RESULTS_TABLE_STATE_KEY)).toBeNull()
   })
 
+  it('updates validation header sort state and persists column width adjustments from table headers', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const validationStore = useValidationStore(pinia)
+    const artifactsStore = useWorkflowArtifactsStore(pinia)
+    workflow.selectResultsTab('validate', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    artifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:30:00Z',
+        csv_path: 'C:/data/aapl.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/aapl.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'dataset_1',
+        },
+        res: {
+          top: [],
+        },
+      },
+      currentValidation: null,
+    })
+    validationStore.tableRowCount = 2
+    validationStore.tableVisible = true
+    validationStore.validationColumns = [
+      { key: 'gate', label: 'Gate', alignLeft: true },
+      { key: 'sharpe', label: 'Sharpe', alignLeft: false },
+    ]
+    validationStore.validationRows = [
+      {
+        cells: [
+          { text: 'pass', className: 'left', title: 'pass' },
+          { text: '1.20', className: 'mono', title: '1.20' },
+        ],
+      },
+      {
+        cells: [
+          { text: 'warn', className: 'left', title: 'warn' },
+          { text: '2.40', className: 'mono', title: '2.40' },
+        ],
+      },
+    ]
+
+    mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const sharpeHeaderButton = document.querySelector<HTMLButtonElement>('.headerButton:not(.left)')
+    const sharpeHeader = document.querySelectorAll<HTMLTableCellElement>('th')[1]
+    expect(sharpeHeaderButton).not.toBeNull()
+    sharpeHeaderButton?.click()
+    await flushPanel()
+    expect(sharpeHeader?.getAttribute('aria-sort')).toBe('ascending')
+
+    sharpeHeaderButton?.click()
+    await flushPanel()
+    expect(sharpeHeader?.getAttribute('aria-sort')).toBe('descending')
+
+    const resizeHandle = document.querySelector<HTMLButtonElement>('[aria-label="Resize Sharpe column"]')
+    resizeHandle?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await flushPanel()
+
+    expect(localStorage.getItem(VALIDATION_RESULTS_TABLE_STATE_KEY)).toContain('"columnWidths":{"sharpe":144}')
+    expect(document.querySelectorAll<HTMLTableCellElement>('th')[1]?.getAttribute('style')).toContain('144px')
+  })
+
   it('applies built-in validation table presets without misaligning row cells', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

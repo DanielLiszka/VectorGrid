@@ -1,6 +1,6 @@
 
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import AppDataTableShell from './AppDataTableShell.vue'
 
 describe('AppDataTableShell', () => {
@@ -64,5 +64,55 @@ describe('AppDataTableShell', () => {
 
     expect(wrapper.find('.appDataTableViewport').exists()).toBe(false)
     expect(wrapper.get('.appDataTableContent .customVirtualViewport').text()).toBe('Rows')
+  })
+
+  it('moves focus through slotted table rows and cells with grid navigation keys', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+
+    try {
+      const wrapper = mount(AppDataTableShell, {
+        attachTo: host,
+        props: {
+          title: 'Keyboard table',
+          rowCount: 2,
+        },
+        slots: {
+          default: `
+            <table>
+              <tbody>
+                <tr tabindex="0"><td>A1</td><td>A2</td></tr>
+                <tr tabindex="0"><td>B1</td><td>B2</td></tr>
+              </tbody>
+            </table>
+          `,
+        },
+      })
+
+      const viewport = wrapper.get('.appDataTableViewport')
+      const rows = wrapper.findAll('tbody tr')
+      const viewportElement = viewport.element as HTMLElement
+      viewportElement.focus()
+      await viewport.trigger('keydown', { key: 'ArrowDown' })
+
+      expect(document.activeElement).toBe(rows[0]?.element)
+
+      await rows[0]!.trigger('keydown', { key: 'ArrowDown' })
+      expect(document.activeElement).toBe(rows[1]?.element)
+
+      await rows[1]!.trigger('keydown', { key: 'ArrowRight' })
+      const secondRowCells = rows[1]!.findAll('td')
+      expect(document.activeElement).toBe(secondRowCells[0]?.element)
+
+      await secondRowCells[0]!.trigger('keydown', { key: 'ArrowRight' })
+      expect(document.activeElement).toBe(secondRowCells[1]?.element)
+
+      wrapper.unmount()
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView
+      host.remove()
+    }
   })
 })

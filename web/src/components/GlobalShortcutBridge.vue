@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useEventListener } from '@vueuse/core'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -7,12 +7,15 @@ import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import {
+  createSharedShellShortcutCommandEnabledStates,
   createSharedShellShortcutCommands,
   dispatchSharedShellShortcut,
   type SharedShellShortcutContext,
 } from '../utils/shellShortcutRegistry'
 import { listenEvent } from '../tauri/events'
+import { invokeCommand, tauriRuntimeAvailable } from '../tauri/invoke'
 
 interface NativeShellCommandPayload {
   commandId?: unknown
@@ -25,12 +28,14 @@ const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
 const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
+const settingsStore = useSettingsStore()
 
 const { canExportCsv, canExportJson } = storeToRefs(analysisStore)
 const { canOpenLatestMetaReport, canOpenLatestReport } = storeToRefs(commandActionStore)
 const { open: commandPaletteOpen } = storeToRefs(commandPaletteStore)
 const { canBrowseCsv, canPolygonOpen, polygonOpen } = storeToRefs(dataStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
+const { controlsCollapsed } = storeToRefs(settingsStore)
 
 const canRun = computed(() => !runDisabled.value)
 const canValidate = computed(() => !validateDisabled.value)
@@ -56,6 +61,7 @@ function isPolygonModalOpen(): boolean {
 function sharedShellShortcutContext(): SharedShellShortcutContext {
   return {
     canRun: canRun.value,
+    canCancel: canCancel.value,
     canValidate: canValidate.value,
     canBrowseCsv: canBrowseCsv.value,
     canPolygonOpen: canPolygonOpen.value,
@@ -63,6 +69,7 @@ function sharedShellShortcutContext(): SharedShellShortcutContext {
     canExportJson: canExportJson.value,
     canOpenLatestReport: canOpenLatestReport.value,
     canOpenLatestMetaReport: canOpenLatestMetaReport.value,
+    controlsPanelVisible: !controlsCollapsed.value,
     browseCsv: () => {
       commandActionStore.browseCsv()
     },
@@ -74,6 +81,9 @@ function sharedShellShortcutContext(): SharedShellShortcutContext {
     },
     runOptimization: () => {
       commandActionStore.runOptimization()
+    },
+    cancelOptimization: () => {
+      commandActionStore.cancelOptimization()
     },
     validateOptimization: () => {
       commandActionStore.validateOptimization()
@@ -108,6 +118,34 @@ function runNativeShellCommand(payload: NativeShellCommandPayload): void {
     .find((item) => item.id === commandId)
   if (!command?.enabled) return
   command.run()
+}
+
+const nativeMenuCommandStates = computed(() =>
+  createSharedShellShortcutCommandEnabledStates(sharedShellShortcutContext()),
+)
+
+let lastNativeMenuStateSignature = ''
+
+function nativeMenuStateSignature(
+  states: Array<{ commandId: string; enabled: boolean; checked?: boolean }>,
+): string {
+  return states
+    .map((state) => `${state.commandId}:${state.enabled ? '1' : '0'}:${state.checked === true ? '1' : state.checked === false ? '0' : '-'}`)
+    .join('|')
+}
+
+async function syncNativeMenuCommandStates(
+  states: Array<{ commandId: string; enabled: boolean; checked?: boolean }>,
+): Promise<void> {
+  if (!tauriRuntimeAvailable()) return
+  const signature = nativeMenuStateSignature(states)
+  if (signature === lastNativeMenuStateSignature) return
+  lastNativeMenuStateSignature = signature
+  try {
+    await invokeCommand('set_shell_menu_command_states', { states })
+  } catch {
+    // Native menus are a desktop enhancement; shortcut routing remains authoritative.
+  }
 }
 
 function onKeydown(e: KeyboardEvent): void {
@@ -167,6 +205,14 @@ function onKeydown(e: KeyboardEvent): void {
 if (typeof document !== 'undefined') {
   useEventListener(document, 'keydown', onKeydown, { capture: true })
 }
+
+watch(
+  nativeMenuCommandStates,
+  (states) => {
+    void syncNativeMenuCommandStates(states)
+  },
+  { immediate: true, deep: true },
+)
 
 let nativeShellCommandOff: (() => void) | null = null
 

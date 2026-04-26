@@ -73,6 +73,7 @@ pub fn run_tauri() {
         )
         .manage(AppState::default())
         .manage(BackgroundTaskState::default())
+        .manage(desktop_menu::DesktopMenuState::default())
         .setup(|app| {
             let window_cfg = app.config().app.windows.get(0).cloned().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "missing window config")
@@ -169,6 +170,7 @@ pub fn run_tauri() {
             open_path,
             exit_application,
             set_window_effect,
+            set_shell_menu_command_states,
             run_meta_selection,
             run_meta_stage4_experimental,
             run_meta_stage5_ml_confidence,

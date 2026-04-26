@@ -544,6 +544,37 @@ describe('TopWorkspacePanel', () => {
     expect(localStorage.getItem(TOP_RESULTS_TABLE_STATE_KEY)).toBeNull()
   })
 
+  it('persists top-result column width adjustments from the header resize handle', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      { selected: true, cells: [{ text: 'row 1', className: 'left', title: 'row 1' }] },
+    ]
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const resizeHandle = document.querySelector<HTMLButtonElement>('[aria-label="Resize Name column"]')
+    expect(resizeHandle).not.toBeNull()
+    resizeHandle?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+
+    expect(localStorage.getItem(TOP_RESULTS_TABLE_STATE_KEY)).toContain('"columnWidths":{"name":144}')
+    expect(document.querySelector<HTMLTableCellElement>('th')?.getAttribute('style')).toContain('144px')
+  })
+
   it('keeps the row pin affordance on the first visible cell when earlier columns are hidden', async () => {
     localStorage.setItem(
       TOP_RESULTS_TABLE_STATE_KEY,

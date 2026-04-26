@@ -37,6 +37,7 @@ mod run_artifacts;
 #[path = "validation_common.rs"]
 mod validation_common;
 
+pub use crate::desktop_menu::{set_shell_menu_command_states, ShellMenuCommandEnabledState};
 pub use commands_analysis::{
     compute_composite_cpu_drilldown, compute_composite_cpu_local_stability,
     compute_double_ma_drilldown, compute_double_ma_local_stability,

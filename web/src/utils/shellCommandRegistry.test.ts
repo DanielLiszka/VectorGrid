@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   SETTINGS_SHORTCUT_SUMMARY_ROWS,
+  createSharedShellCommandEnabledStates,
   createSharedShellCommands,
   dispatchSharedShellCommandShortcut,
   type ShellCommandRuntimeContext,
@@ -9,6 +10,7 @@ import {
 function runtimeContext(overrides: Partial<ShellCommandRuntimeContext> = {}): ShellCommandRuntimeContext {
   return {
     canRun: true,
+    canCancel: false,
     canValidate: true,
     canBrowseCsv: true,
     canPolygonOpen: true,
@@ -16,10 +18,12 @@ function runtimeContext(overrides: Partial<ShellCommandRuntimeContext> = {}): Sh
     canExportJson: true,
     canOpenLatestReport: true,
     canOpenLatestMetaReport: true,
+    controlsPanelVisible: true,
     browseCsv: vi.fn(),
     openPolygon: vi.fn(),
     toggleControls: vi.fn(),
     runOptimization: vi.fn(),
+    cancelOptimization: vi.fn(),
     validateOptimization: vi.fn(),
     exportTopCsv: vi.fn(),
     exportTopJson: vi.fn(),
@@ -47,6 +51,7 @@ describe('shellCommandRegistry', () => {
 
     expect(ids).toEqual([
       'run',
+      'cancel_run',
       'validate',
       'browse_csv',
       'open_polygon',
@@ -76,6 +81,23 @@ describe('shellCommandRegistry', () => {
     expect(browseCsv).not.toHaveBeenCalled()
   })
 
+  it('exposes enabled states for native menu synchronization', () => {
+    const states = createSharedShellCommandEnabledStates(runtimeContext({
+      canRun: false,
+      canCancel: true,
+      canExportJson: false,
+      controlsPanelVisible: false,
+    }))
+
+    expect(states).toContainEqual({ commandId: 'run', enabled: false })
+    expect(states).toContainEqual({ commandId: 'cancel_run', enabled: true })
+    expect(states).toContainEqual({ commandId: 'export_json', enabled: false })
+    expect(states).toContainEqual({ commandId: 'toggle_controls', enabled: true, checked: false })
+    expect(states.map((state) => state.commandId)).toEqual(
+      createSharedShellCommands(runtimeContext()).map((command) => command.id),
+    )
+  })
+
   it('keeps settings shortcut summaries derived from shared registry labels', () => {
     expect(SETTINGS_SHORTCUT_SUMMARY_ROWS).toEqual([
       { keysLabel: 'Ctrl+K', label: 'Command palette' },
@@ -86,4 +108,3 @@ describe('shellCommandRegistry', () => {
     ])
   })
 })
-

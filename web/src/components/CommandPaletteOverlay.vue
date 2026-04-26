@@ -82,6 +82,7 @@ const inputRef = ref<HTMLInputElement | null>(null)
 
 const sharedShortcutCommands = computed<PaletteCommand[]>(() => createSharedShellShortcutCommands({
   canRun: !runDisabled.value,
+  canCancel: canCancel.value,
   canValidate: !validateDisabled.value,
   canBrowseCsv: canBrowseCsv.value,
   canPolygonOpen: canPolygonOpen.value,
@@ -89,6 +90,7 @@ const sharedShortcutCommands = computed<PaletteCommand[]>(() => createSharedShel
   canExportJson: canExportJson.value,
   canOpenLatestReport: canOpenLatestReport.value,
   canOpenLatestMetaReport: canOpenLatestMetaReport.value,
+  controlsPanelVisible: !settingsStore.controlsCollapsed,
   browseCsv: () => {
     commandActionStore.browseCsv()
   },
@@ -100,6 +102,9 @@ const sharedShortcutCommands = computed<PaletteCommand[]>(() => createSharedShel
   },
   runOptimization: () => {
     commandActionStore.runOptimization()
+  },
+  cancelOptimization: () => {
+    commandActionStore.cancelOptimization()
   },
   validateOptimization: () => {
     commandActionStore.validateOptimization()
@@ -121,18 +126,6 @@ const sharedShortcutCommands = computed<PaletteCommand[]>(() => createSharedShel
 const commands = computed<PaletteCommand[]>(() => {
   return [
     ...sharedShortcutCommands.value,
-    {
-      id: 'cancel',
-      group: 'actions',
-      name: 'Cancel run',
-      desc: 'Cancel active optimization or validation task.',
-      keys: ['Esc'],
-      keywords: ['cancel', 'stop'],
-      enabled: canCancel.value,
-      run: () => {
-        commandActionStore.cancelOptimization()
-      },
-    },
     {
       id: 'switch_guided_mode',
       group: 'navigation',
@@ -383,6 +376,7 @@ function commandQaAction(commandId: string): string {
   const normalized = String(commandId || '').trim()
   const overrides: Record<string, string> = {
     browse_csv: 'browseCsv',
+    cancel_run: 'cancelRun',
     export_csv: 'exportCsv',
     export_json: 'exportJson',
     go_step_analyze: 'goStepAnalyze',

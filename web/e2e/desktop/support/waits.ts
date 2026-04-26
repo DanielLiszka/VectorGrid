@@ -1,6 +1,20 @@
 import { $, browser } from '@wdio/globals'
 import { desktopSmokeAppUrl, desktopSmokeDisablePreview, desktopSmokePackagedUrl } from './appPaths.js'
-import { commandPaletteSelectors, shellSelectors, taskCenterSelectors, type WorkspaceKey, workspaceTabSelector } from './selectors.js'
+import {
+  commandPaletteSelectors,
+  shellSelectors,
+  taskCenterSelectors,
+  workbenchSelectors,
+  type WorkspaceKey,
+  workspaceTabSelector,
+} from './selectors.js'
+
+export async function expectedWorkspaceLabels(): Promise<string[]> {
+  const workbenchVisible = await (await $(workbenchSelectors.root)).isDisplayed().catch(() => false)
+  return workbenchVisible
+    ? ['Research', 'Library', 'Runs', 'Live', 'Settings', 'Diag']
+    : ['Research', 'Library', 'Aggregate', 'Diagnostics', 'Live', 'Settings']
+}
 
 async function waitForShellMarkerOrUrl(urlPrefix: string, timeout: number, timeoutMsg: string): Promise<void> {
   await browser.waitUntil(
@@ -79,9 +93,8 @@ export async function waitForShellReady(timeout = 30000): Promise<void> {
       async () => {
         const workspaceBar = await $(shellSelectors.workspaceBar)
         const text = await workspaceBar.getText()
-        return ['Research', 'Library', 'Aggregate', 'Diagnostics', 'Live', 'Settings'].every((label) =>
-          text.includes(label),
-        )
+        const labels = await expectedWorkspaceLabels()
+        return labels.every((label) => text.includes(label))
       },
     {
       timeout,

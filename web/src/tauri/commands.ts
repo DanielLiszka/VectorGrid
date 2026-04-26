@@ -64,6 +64,7 @@ export const TAURI_COMMANDS = [
   'open_path',
   'exit_application',
   'set_window_effect',
+  'set_shell_menu_command_states',
   'run_meta_selection',
   'run_meta_stage4_experimental',
   'run_meta_stage5_ml_confidence',

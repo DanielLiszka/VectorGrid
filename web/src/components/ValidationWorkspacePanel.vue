@@ -241,16 +241,31 @@ const {
   allColumnKeys,
   orderedColumns,
   orderedVisibleColumnKeys,
+  columnWidths,
   toggleColumnVisibility,
   restoreDefaultColumns,
   canHideColumn,
   applyColumnViewPreset,
+  setColumnWidth,
+  resizeColumnWidth,
+  clearColumnWidth,
+  columnWidthStyle,
 } = usePersistedMatrixColumnState(renderedColumns, VALIDATION_RESULTS_TABLE_STATE_KEY)
 const { tableDensity } = usePersistedTableDensity(VALIDATION_RESULTS_TABLE_DENSITY_KEY)
-const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
+const {
+  headerGroups,
+  rowModelRows,
+  visibleLeafColumns,
+  getHeaderSortState,
+  toggleSortColumn,
+} = useHeadlessMatrixTable(
   orderedColumns,
   renderedRows,
-  { columnVisibility },
+  {
+    columnVisibility,
+    columnWidths,
+    enableClientSorting: true,
+  },
 )
 const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
 const {
@@ -295,7 +310,7 @@ const columnVisibilityHint = computed(() => {
   }
   return 'Hide secondary result columns when you want a tighter validation review pass.'
 })
-const selectedValidationRow = computed(() => renderedRows.value[selectedValidationRowIndex.value] ?? null)
+const selectedValidationRow = computed(() => rowModelRows.value[selectedValidationRowIndex.value]?.original ?? null)
 const selectedValidationRowLabel = computed(() => {
   const total = renderedRows.value.length
   if (!total || !selectedValidationRow.value) return 'No row selected'
@@ -371,8 +386,8 @@ watch(
       selectedValidationRowIndex.value = 0
       return
     }
-    if (selectedValidationRowIndex.value < rows.length) return
-    selectedValidationRowIndex.value = rows.length - 1
+    if (selectedValidationRowIndex.value < rowModelRows.value.length) return
+    selectedValidationRowIndex.value = Math.max(0, rowModelRows.value.length - 1)
   },
   { immediate: true },
 )
@@ -579,8 +594,81 @@ function validationCellPayload(cell: Cell<ValidationRow, unknown>): ValidationCe
   return cell.getValue() as ValidationCell
 }
 
+const resizingValidationColumnKey = ref('')
+let validationResizeStartX = 0
+let validationResizeStartWidth = 0
+
+function validationHeaderSortState(header: Header<ValidationRow, unknown>) {
+  return getHeaderSortState(headerMeta(header).columnKey)
+}
+
+function validationHeaderStyle(header: Header<ValidationRow, unknown>): Record<string, string> {
+  return columnWidthStyle(headerMeta(header).columnKey)
+}
+
+function validationCellStyle(cell: Cell<ValidationRow, unknown>): Record<string, string> {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta
+  return columnWidthStyle(meta.columnKey)
+}
+
+function clickValidationHeader(header: Header<ValidationRow, unknown>): void {
+  const columnKey = headerMeta(header).columnKey
+  if (!columnKey) return
+  toggleSortColumn(columnKey)
+}
+
+function finishValidationColumnResize(): void {
+  resizingValidationColumnKey.value = ''
+  window.removeEventListener('pointermove', onValidationColumnResizeMove)
+  window.removeEventListener('pointerup', finishValidationColumnResize)
+  window.removeEventListener('pointercancel', finishValidationColumnResize)
+}
+
+function onValidationColumnResizeMove(event: PointerEvent): void {
+  const columnKey = resizingValidationColumnKey.value
+  if (!columnKey) return
+  setColumnWidth(columnKey, validationResizeStartWidth + event.clientX - validationResizeStartX)
+}
+
+function startValidationColumnResize(event: PointerEvent, header: Header<ValidationRow, unknown>): void {
+  const columnKey = headerMeta(header).columnKey
+  if (!columnKey) return
+  event.preventDefault()
+  event.stopPropagation()
+  resizingValidationColumnKey.value = columnKey
+  validationResizeStartX = event.clientX
+  validationResizeStartWidth =
+    columnWidths.value[columnKey] ??
+    (event.currentTarget instanceof HTMLElement
+      ? event.currentTarget.closest('th')?.getBoundingClientRect().width
+      : 128) ??
+    128
+  window.addEventListener('pointermove', onValidationColumnResizeMove)
+  window.addEventListener('pointerup', finishValidationColumnResize)
+  window.addEventListener('pointercancel', finishValidationColumnResize)
+}
+
+function onValidationColumnResizeKeydown(event: KeyboardEvent, header: Header<ValidationRow, unknown>): void {
+  const columnKey = headerMeta(header).columnKey
+  if (!columnKey) return
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    resizeColumnWidth(columnKey, event.shiftKey ? -48 : -16)
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    resizeColumnWidth(columnKey, event.shiftKey ? 48 : 16)
+    return
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault()
+    clearColumnWidth(columnKey)
+  }
+}
+
 function selectValidationRow(index: number): void {
-  if (index < 0 || index >= renderedRows.value.length) return
+  if (index < 0 || index >= rowModelRows.value.length) return
   selectedValidationRowIndex.value = index
 }
 
@@ -604,6 +692,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  finishValidationColumnResize()
   flushQueuedInputValuesNow()
 })
 </script>
@@ -1339,9 +1428,32 @@ onBeforeUnmount(() => {
                     v-for="header in headerGroup.headers"
                     :key="header.id"
                     :class="{ left: headerMeta(header).alignLeft }"
+                    :aria-sort="validationHeaderSortState(header).ariaSort"
+                    :style="validationHeaderStyle(header)"
                     scope="col"
                   >
-                    {{ headerMeta(header).columnLabel }}
+                    <button
+                      v-if="!header.isPlaceholder"
+                      type="button"
+                      class="headerButton"
+                      :class="{ left: headerMeta(header).alignLeft }"
+                      @click="clickValidationHeader(header)"
+                    >
+                      <span>{{ headerMeta(header).columnLabel }}</span>
+                      <span v-if="validationHeaderSortState(header).sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
+                      <span v-else-if="validationHeaderSortState(header).sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
+                    </button>
+                    <button
+                      v-if="!header.isPlaceholder"
+                      type="button"
+                      class="columnResizeHandle"
+                      :class="{ active: resizingValidationColumnKey === headerMeta(header).columnKey }"
+                      :aria-label="`Resize ${headerMeta(header).columnLabel} column`"
+                      title="Drag to resize. Use Left/Right arrows to adjust, Delete to reset."
+                      @click.stop
+                      @pointerdown="startValidationColumnResize($event, header)"
+                      @keydown.stop="onValidationColumnResizeKeydown($event, header)"
+                    ></button>
                   </th>
                 </tr>
               </thead>
@@ -1362,6 +1474,7 @@ onBeforeUnmount(() => {
                   <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
                     <td
                       :class="validationCellPayload(cell).className"
+                      :style="validationCellStyle(cell)"
                       :title="validationCellPayload(cell).title || undefined"
                     >
                       {{ validationCellPayload(cell).text }}
@@ -1638,10 +1751,74 @@ onBeforeUnmount(() => {
 }
 
 .validationTableVue th {
+  position: relative;
+  user-select: none;
   font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted-soft);
+}
+
+.headerButton {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.25rem;
+  font: inherit;
+}
+
+.headerButton.left {
+  justify-content: flex-start;
+}
+
+.headerButton:hover:not(:disabled) {
+  background: transparent;
+}
+
+.sortGlyph {
+  margin-left: 0.25rem;
+  font-size: 0.72rem;
+  opacity: 0.8;
+}
+
+.columnResizeHandle {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 0.48rem;
+  min-width: 0.48rem;
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.columnResizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 24%;
+  bottom: 24%;
+  right: 0.16rem;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--border) 72%, transparent);
+}
+
+.columnResizeHandle:hover::after,
+.columnResizeHandle:focus-visible::after,
+.columnResizeHandle.active::after {
+  background: var(--focus-border);
+}
+
+.columnResizeHandle:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: -2px;
 }
 
 .validationTableVue th.left,

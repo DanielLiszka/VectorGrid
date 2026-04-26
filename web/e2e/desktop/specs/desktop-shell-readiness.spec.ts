@@ -1,6 +1,6 @@
 import { $, expect } from '@wdio/globals'
 import { shellSelectors } from '../support/selectors.js'
-import { waitForShellReady } from '../support/waits.js'
+import { expectedWorkspaceLabels, waitForShellReady } from '../support/waits.js'
 
 describe('desktop shell readiness', () => {
   it('launches the Tauri shell and exposes the main chrome', async () => {
@@ -12,11 +12,8 @@ describe('desktop shell readiness', () => {
     await expect($(shellSelectors.runFooter)).toBeDisplayed()
 
     const workspaceText = await (await $(shellSelectors.workspaceBar)).getText()
-    expect(workspaceText).toContain('Research')
-    expect(workspaceText).toContain('Library')
-    expect(workspaceText).toContain('Aggregate')
-    expect(workspaceText).toContain('Diagnostics')
-    expect(workspaceText).toContain('Live')
-    expect(workspaceText).toContain('Settings')
+    for (const label of await expectedWorkspaceLabels()) {
+      expect(workspaceText).toContain(label)
+    }
   })
 })

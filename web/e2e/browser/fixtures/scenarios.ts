@@ -17,6 +17,7 @@ export const baseCommandResults: Record<string, unknown> = {
     auto_device_memory_bytes: null,
     auto_device_error: 'CUDA disabled in browser QA fixture.',
   },
+  set_shell_menu_command_states: null,
   list_moving_averages: [],
   list_gpu_speedups: [],
   list_dynamic_indicators: [],
@@ -110,14 +111,47 @@ export const emptyAppScenario: MockTauriScenario = {
   },
 }
 
+export const dataLoadFailureScenario: MockTauriScenario = {
+  ...emptyAppScenario,
+  name: 'data-load-failure',
+  description: 'Sample CSV loading fails after the user activates the sample-data action.',
+  commandResults: {
+    ...emptyAppScenario.commandResults,
+    load_price_data: {
+      __mockFailure: 'Fixture CSV read failed.',
+    },
+  },
+  expectedInvokes: ['load_price_data'],
+}
+
+export const gpuStatusFailureScenario: MockTauriScenario = {
+  ...emptyAppScenario,
+  name: 'gpu-status-failure',
+  description: 'GPU status probing fails after the user requests a refresh.',
+  commandResults: {
+    ...emptyAppScenario.commandResults,
+    get_gpu_status: {
+      __mockFailure: 'GPU probe failed in browser QA fixture.',
+    },
+  },
+  expectedInvokes: ['get_gpu_status'],
+}
+
 export const premiumWorkbenchScenario: MockTauriScenario = {
   ...emptyAppScenario,
   name: 'premium-workbench',
-  description: 'Fresh app with the opt-in premium workbench shell enabled through launch query parameters.',
+  description: 'Fresh app exercising the premium workbench shell through an explicit launch query.',
   urlSearch: '?workbench_shell=1',
   localStorage: {
     ...emptyAppScenario.localStorage,
   },
+}
+
+export const legacyShellScenario: MockTauriScenario = {
+  ...emptyAppScenario,
+  name: 'legacy-shell',
+  description: 'Fresh app using the explicit legacy shell opt-out.',
+  urlSearch: '?workbench_shell=0',
 }
 
 export const validationDatasetMismatchScenario: MockTauriScenario = {
@@ -779,6 +813,37 @@ export const optionsValidationReadyScenario: MockTauriScenario = {
     'analyze_options_expression_validation_feasibility',
     'validate_options_expression_artifact',
     'reveal_path',
+  ],
+}
+
+const optionsValidationSetupInvokes = [
+  'list_run_artifacts',
+  'load_run_artifact_detail',
+  'list_options_datasets',
+  'list_artifact_library',
+  'load_options_expression_artifact',
+]
+
+export const optionsValidationInputFailureScenario: MockTauriScenario = {
+  ...optionsValidationReadyScenario,
+  name: 'options-validation-input-failure',
+  description: 'A saved options artifact is loaded, then local validation-plan input fails before Tauri validation.',
+  expectedInvokes: optionsValidationSetupInvokes,
+}
+
+export const optionsValidationPreviewFailureScenario: MockTauriScenario = {
+  ...optionsValidationReadyScenario,
+  name: 'options-validation-preview-failure',
+  description: 'A saved options artifact is loaded, then validation feasibility preview fails through mocked Tauri.',
+  commandResults: {
+    ...optionsValidationReadyScenario.commandResults,
+    analyze_options_expression_validation_feasibility: {
+      __mockFailure: 'Options validation feasibility fixture failed.',
+    },
+  },
+  expectedInvokes: [
+    ...optionsValidationSetupInvokes,
+    'analyze_options_expression_validation_feasibility',
   ],
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import AppEmptyState from './AppEmptyState.vue'
 import { normalizeTableDensity, type TableDensity } from '../../composables/usePersistedTableDensity'
 
@@ -16,6 +16,7 @@ const props = withDefaults(
     viewport?: boolean
     toolbarLabel?: string
     density?: TableDensity
+    keyboardGridNavigation?: boolean
   }>(),
   {
     summary: '',
@@ -28,11 +29,141 @@ const props = withDefaults(
     viewport: true,
     toolbarLabel: '',
     density: 'comfortable',
+    keyboardGridNavigation: true,
   },
 )
 
 const tableDensity = computed(() => normalizeTableDensity(props.density))
 const controlsLabel = computed(() => props.toolbarLabel || `${props.title} controls`)
+const tableContentRef = ref<HTMLElement | null>(null)
+
+const focusableSelector = [
+  'button',
+  '[href]',
+  'input',
+  'select',
+  'textarea',
+  '[tabindex]:not([tabindex="-1"])',
+  '[contenteditable="true"]',
+].join(',')
+const cellSelector = [
+  'td',
+  'th',
+  '[role="gridcell"]',
+  '[role="cell"]',
+  '[role="columnheader"]',
+  '[role="rowheader"]',
+].join(',')
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target instanceof HTMLElement ? target : null
+  if (!element) return false
+  return !!element.closest('button, input, select, textarea, a[href], [contenteditable="true"]')
+}
+
+function dataRowsFor(table: HTMLElement): HTMLTableRowElement[] {
+  return Array.from(table.querySelectorAll<HTMLTableRowElement>('tbody tr')).filter(
+    (row) => row.getAttribute('aria-hidden') !== 'true' && !row.classList.contains('spacerRow'),
+  )
+}
+
+function cellsFor(row: HTMLTableRowElement): HTMLElement[] {
+  return Array.from(row.querySelectorAll<HTMLElement>(cellSelector)).filter(
+    (cell) => cell.getAttribute('aria-hidden') !== 'true',
+  )
+}
+
+function makeFocusable(element: HTMLElement): void {
+  if (!element.matches(focusableSelector)) {
+    element.setAttribute('tabindex', element.getAttribute('tabindex') || '-1')
+  }
+  element.focus({ preventScroll: true })
+  element.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+}
+
+function focusRowOrCell(row: HTMLTableRowElement, columnIndex: number, preferRow: boolean): void {
+  if (preferRow && row.hasAttribute('tabindex')) {
+    makeFocusable(row)
+    return
+  }
+  const cells = cellsFor(row)
+  makeFocusable(cells[Math.min(Math.max(columnIndex, 0), Math.max(0, cells.length - 1))] ?? row)
+}
+
+function focusInitialTableRow(table: HTMLElement): void {
+  const rows = dataRowsFor(table)
+  if (!rows.length) return
+  const selectedRow =
+    rows.find((row) => row.getAttribute('aria-selected') === 'true' || row.classList.contains('selected')) ??
+    rows[0]
+  if (selectedRow) focusRowOrCell(selectedRow, 0, true)
+}
+
+function onShellGridKeydown(event: KeyboardEvent): void {
+  if (!props.keyboardGridNavigation || event.defaultPrevented || isEditableTarget(event.target)) return
+  const root = tableContentRef.value
+  const target = event.target instanceof HTMLElement ? event.target : null
+  if (!root || !target || !root.contains(target)) return
+
+  const key = event.key
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(key)) return
+
+  const table = (target.closest('table, [role="grid"], [role="table"]') ||
+    root.querySelector('table, [role="grid"], [role="table"]')) as HTMLElement | null
+  if (!table) return
+
+  const rows = dataRowsFor(table)
+  if (!rows.length) return
+
+  const currentRow = target.closest('tbody tr') as HTMLTableRowElement | null
+  if (!currentRow || !rows.includes(currentRow)) {
+    if (key === 'ArrowDown' || key === 'ArrowRight' || key === 'Home' || key === 'PageDown') {
+      event.preventDefault()
+      focusInitialTableRow(table)
+    }
+    return
+  }
+
+  const currentCells = cellsFor(currentRow)
+  const currentCell = target.closest(cellSelector) as HTMLElement | null
+  const preferRow = target === currentRow || !currentCell
+  const currentRowIndex = rows.indexOf(currentRow)
+  const currentColumnIndex = currentCell ? Math.max(0, currentCells.indexOf(currentCell)) : 0
+  let nextRowIndex = currentRowIndex
+  let nextColumnIndex = currentColumnIndex
+  let nextPreferRow = preferRow
+
+  if (key === 'ArrowUp') nextRowIndex = Math.max(0, currentRowIndex - 1)
+  else if (key === 'ArrowDown') nextRowIndex = Math.min(rows.length - 1, currentRowIndex + 1)
+  else if (key === 'PageUp') nextRowIndex = Math.max(0, currentRowIndex - 10)
+  else if (key === 'PageDown') nextRowIndex = Math.min(rows.length - 1, currentRowIndex + 10)
+  else if (key === 'ArrowLeft') {
+    nextPreferRow = false
+    nextColumnIndex = Math.max(0, currentColumnIndex - 1)
+  } else if (key === 'ArrowRight') {
+    nextPreferRow = false
+    nextColumnIndex = currentCell ? currentColumnIndex + 1 : 0
+  } else if (key === 'Home') {
+    if (event.ctrlKey) nextRowIndex = 0
+    else {
+      nextPreferRow = false
+      nextColumnIndex = 0
+    }
+  } else if (key === 'End') {
+    if (event.ctrlKey) nextRowIndex = rows.length - 1
+    else {
+      nextPreferRow = false
+      nextColumnIndex = Math.max(0, currentCells.length - 1)
+    }
+  }
+
+  const nextRow = rows[nextRowIndex]
+  if (!nextRow) return
+  const nextCells = cellsFor(nextRow)
+  nextColumnIndex = Math.min(nextColumnIndex, Math.max(0, nextCells.length - 1))
+  event.preventDefault()
+  focusRowOrCell(nextRow, nextColumnIndex, nextPreferRow)
+}
 </script>
 
 <template>
@@ -74,8 +205,11 @@ const controlsLabel = computed(() => props.toolbarLabel || `${props.title} contr
     </AppEmptyState>
     <div
       v-else
+      ref="tableContentRef"
       :class="viewport ? 'appDataTableViewport' : 'appDataTableContent'"
       :tabindex="viewport ? 0 : undefined"
+      :data-keyboard-grid-navigation="keyboardGridNavigation ? 'true' : undefined"
+      @keydown="onShellGridKeydown"
     >
       <slot />
     </div>

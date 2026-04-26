@@ -12,15 +12,15 @@ This plan turns that into implementation work for the Vue 3/Tauri frontend while
 
 ## Implementation Status
 
-2026-04-26 first implementation slice is complete behind the opt-in `vta_workbench_shell_v1=1` flag:
+2026-04-26 first implementation slice is complete; the workbench shell is now the default path with an explicit opt-out through `?workbench_shell=0` or `vta_workbench_shell_v1=0`:
 
-- Added a feature-flagged `WorkbenchShell` that preserves the current shell as the default path.
+- Added `WorkbenchShell` as the default desktop shell while preserving the legacy shell as a rollback path.
 - Preserved the existing panel mount IDs, shell selectors, and QA action IDs so current workspace panels can teleport into either shell.
 - Added a workbench rail, condensed header, inspector, and footer action-bar host.
-- Suppressed legacy floating context docks only while the flagged workbench is active, avoiding duplicated inspector/dock context.
-- Added model tests, component tests, selector coverage, action-coverage manifest entries, and a flagged Playwright workflow.
+- Suppressed legacy floating context docks while the workbench is active, avoiding duplicated inspector/dock context.
+- Added model tests, component tests, selector coverage, action-coverage manifest entries, and Playwright workflow coverage.
 
-2026-04-26 second implementation slice is also complete behind the same opt-in flag:
+2026-04-26 second implementation slice is also complete on the workbench shell:
 
 - Added `ResearchCockpit` as the Research workbench overview, backed by `useResearchCockpitModel`.
 - Connected the cockpit to the existing workflow store, readiness model, primary-action model, and task lifecycle summary instead of introducing a parallel workflow state.
@@ -28,9 +28,9 @@ This plan turns that into implementation work for the Vue 3/Tauri frontend while
 - Added inspector action buttons for opening Data/Optimize/Analyze, jumping to Validation, opening the Task Center, and running existing History actions.
 - Added roving keyboard behavior for inspector mode tabs.
 - Added workbench QA selectors, action-coverage manifest entries, unit tests, and browser E2E coverage for cockpit steps, inspector modes, inspector actions, and responsive inspector visibility.
-- Verified the flagged workbench visually at `1366x768` and `390x844` from Playwright screenshots.
+- Verified the workbench visually at `1366x768` and `390x844` from Playwright screenshots.
 
-2026-04-26 dense data-surface slice is complete across the default shell and the flagged workbench path:
+2026-04-26 dense data-surface slice is complete across the default workbench shell and the legacy opt-out path:
 
 - Added a shared `AppTableDensityControl` segmented control and `usePersistedTableDensity` composable.
 - Added a table-shell density contract to `AppDataTableShell`, including `data-table-density`, toolbar labeling, and compact/comfortable/spacious row-density classes.
@@ -42,35 +42,55 @@ This plan turns that into implementation work for the Vue 3/Tauri frontend while
 
 - Added persistent named view presets for Top results and Validation results.
 - Extended persisted matrix column state with `columnOrderKeys` so saved/preset views can reorder columns without corrupting row-cell alignment.
+- Extended persisted matrix column state with sanitized `columnWidths`, resize helpers, and reset/restore participation.
 - Added source-column-index handling to the headless matrix table adapter and regression coverage for reordered columns.
+- Added sortable Top/Validation table headers, client-side Validation sorting, persisted resizable column widths, pointer resize handles, and keyboard column resize controls.
+- Added shared `AppDataTableShell` keyboard-grid navigation for slotted table surfaces, including Arrow/Home/End/PageUp/PageDown movement and scroll-into-view behavior.
 - Added a selected-row detail inspector for Validation results, with row selection, keyboard activation, and QA selectors.
+- Updated Validation selected-row detail and bounds logic to honor the sorted row model instead of raw input order.
 - Added a central `shellCommandRegistry` while keeping the old shortcut-registry import path as a compatibility wrapper.
 - Added a Tauri native menu that emits `shell-command` events for shared app commands, and routed those events through the same frontend command actions used by keyboard shortcuts and the command palette.
+- Added frontend-to-Tauri native menu enabled-state synchronization through `set_shell_menu_command_states`, so disabled shared commands are reflected in the desktop menu while frontend guards remain authoritative.
 - Added the missing workbench inspector History clear-session action.
-- Hardened the opt-in workbench E2E path to use the launch query override `?workbench_shell=1`, while keeping product default migration gated.
-- Extended browser regression coverage to click a validation table view preset and verify the selected-row detail panel.
+- Added empty-library History actions so refresh/open-library remain reachable before any saved artifacts exist.
+- Fixed leaked global sticky `header` styling so nested panel headers cannot intercept clicks across adjacent scroll lanes.
+- Migrated the workbench to default-on with explicit query/storage opt-out and added unit coverage for the rollback path.
+- Extended browser regression coverage to click validation table view presets, verify the selected-row detail panel, exercise keyboard-only data-to-validation flow, and cover data-load, GPU-status, options-validation input, and options-validation preview failure paths.
+- Updated layout regression coverage for the default workbench inspector and updated the desktop smoke harness so WDIO accepts the default workbench labels while preserving the legacy-shell opt-out path.
+
+2026-04-26 final productization hardening slice is complete:
+
+- Added `scripts/run_frontend_e2e_gate.ps1`, build-once Playwright `:built` scripts, repo-quality opt-in switches, and release-candidate browser QA wiring so the browser workbench/action/core-workflow lane is repeatable without rebuilding for every spec group, with responsive/regression/exploratory slices added explicitly.
+- Added `typecheck:desktop` and made `-IncludeDesktopTypecheck` execute the WDIO/Tauri harness typecheck instead of accepting a skipped placeholder.
+- Added release-candidate packaged desktop smoke wiring through `scripts/run_packaged_smoke.ps1` when `-IncludeDesktopSmoke` is requested.
+- Added native `Cancel Run`, startup-disabled defaults for unavailable native menu entries, and a checked `Show Controls Panel` menu item synced from Vue state.
+- Brought the Meta results table into the shared persisted table contract by applying saved column order and persisted resizable widths while preserving its backend-defined row order.
+- Added browser regression coverage for Validation header sort plus keyboard resize, and desktop-width browser layout coverage for the legacy shell rollback path.
 
 Verification completed for the current workbench implementation:
 
 - `npm --prefix web run lint`
 - `npm --prefix web run typecheck`
+- `npm --prefix web run typecheck:desktop`
 - `npm --prefix web run test -- src/utils/inspectorModel.test.ts src/components/workbench/WorkbenchInspector.test.ts src/composables/useResearchCockpitModel.test.ts src/components/workbench/ResearchCockpit.test.ts src/components/workbench/WorkbenchShell.test.ts`
 - `npm --prefix web run test -- src/components/ui/AppDataTableShell.test.ts src/components/ui/AppTableDensityControl.test.ts src/composables/usePersistedTableDensity.test.ts src/components/TopWorkspacePanel.test.ts src/components/ValidationWorkspacePanel.test.ts src/components/HistoryWorkspacePanel.test.ts`
+- `npm --prefix web run test -- src/composables/usePersistedMatrixColumnState.test.ts src/utils/shellCommandRegistry.test.ts src/components/GlobalShortcutBridge.test.ts src/components/CommandPaletteOverlay.test.ts src/components/MetaWorkspacePanel.test.ts`
 - `npm --prefix web run test`
-- `npx playwright test e2e/browser/qa/workbenchShell.spec.ts e2e/browser/qa/actionCoverage.spec.ts e2e/browser/qa/responsiveWorkflow.spec.ts e2e/browser/qa/layoutRegression.spec.ts --project=chromium`
-- `npx playwright test e2e/browser/qa/regressionRepros.spec.ts --project=chromium`
-- `npx playwright test e2e/browser/qa/workflowMatrix.spec.ts --project=chromium`
+- `npm --prefix web run test:e2e:workbench`
+- `npm --prefix web run test:e2e:action-coverage`
+- `npm --prefix web run test:e2e:responsive`
+- `npm --prefix web run test:e2e:regressions`
+- `npm --prefix web run test:e2e:workflow`
 - `cargo check -p ta_desktop_demo_app`
 - `cargo test -p ta_desktop_demo_app --lib desktop_menu --jobs 1`
 - `npm --prefix web run test:desktop:smoke`
 
 Remaining roadmap items are still intentionally open:
 
-- Add sortable/resizable table headers and deeper keyboard grid behavior where the table is expected to behave like an interactive grid.
-- Continue row-level action standardization for table surfaces beyond Top and Validation.
-- Add native desktop polish beyond the first menu bridge, especially tray/window-affordance decisions and any menu state that must become dynamic.
-- Migrate the workbench from opt-in to default only after parity has been proven across browser E2E, desktop smoke, action coverage, screenshots, and manual review.
-- Remove legacy shell/dock code only after the default migration and selector parity are complete.
+- Extend sortable/resizable/grid behavior beyond Top, Validation, History, and Meta where future table surfaces need the same workstation-grade interaction contract.
+- Continue row-level action standardization for any table surfaces beyond the current Top/Validation/History scope.
+- Add native desktop polish beyond the current menu bridge, especially tray/window-affordance decisions and any additional menu entries whose checked/enabled state depends on deeper runtime state.
+- Remove legacy shell/dock code only after the default workbench path has baked through browser E2E, desktop smoke, action coverage, screenshots, and manual review.
 
 ## Research Basis
 
@@ -421,8 +441,8 @@ Design system extensions:
 Implementation notes:
 
 - Use existing Pinia stores for workflow state; do not invent parallel business state.
-- Keep `VueWorkspaceShell.vue` running until `WorkbenchShell` proves parity.
-- Place new shell behind a local feature flag or settings key such as `vta_workbench_shell_v1`.
+- Keep `VueWorkspaceShell.vue` reachable through the explicit workbench opt-out until `WorkbenchShell` has baked as the default.
+- Preserve the local rollback key `vta_workbench_shell_v1=0` and query opt-out `?workbench_shell=0` until legacy removal is approved.
 - Keep all existing `data-qa-action` values working where practical. If a selector must move, update the action manifest and E2E coverage in the same change.
 
 Acceptance criteria:
@@ -1012,7 +1032,7 @@ The redesign should ship through staged parity rather than a single replacement.
 
 Rollback plan:
 
-- Keep the old shell path available until Phase 8.
+- Keep the old shell path available through `?workbench_shell=0` or `vta_workbench_shell_v1=0` until Phase 8.
 - Keep old selectors aliased or mapped while the new selectors land.
 - If a phase fails desktop smoke or broad workflow E2E, disable the feature flag instead of partially reverting shared state changes.
 
@@ -1306,7 +1326,7 @@ Acceptance criteria for first slice:
 2. Should ML Signal be a Research mode, a top-level destination, or a specialized workflow under Research?
 3. Should the left rail show labels by default on desktop, or compact icons with labels on hover/expanded state?
 4. Should the inspector be resizable in the first slice, or fixed width until behavior stabilizes?
-5. Should the workbench shell be opt-in through Settings first, or enabled only in local/dev builds until parity?
+5. How long should the legacy shell opt-out remain after the default workbench path has passed desktop smoke and workflow QA?
 6. Should the current Aggregate workspace be renamed to Runs in the visible UI while keeping internal ids/aliases during migration?
 
 ## Recommendation

@@ -44,7 +44,7 @@ export async function closeCommandPaletteWithEscape(page: Page): Promise<void> {
 }
 
 export async function openTaskCenter(page: Page): Promise<Locator> {
-  const launcher = page.locator('button.taskCenterLauncher')
+  const launcher = page.locator('[data-qa-action="shell.taskCenter.open"]').first()
   await launcher.click()
   const dialog = page.locator(taskCenterSelectors.dialog)
   await expect(dialog).toBeVisible()

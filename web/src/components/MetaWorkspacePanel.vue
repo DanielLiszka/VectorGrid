@@ -297,15 +297,21 @@ const {
   visibleCount: visibleColumnCount,
   hiddenCount: hiddenColumnCount,
   canRestoreDefaults,
+  orderedColumns,
+  columnWidths,
   toggleColumnVisibility,
   restoreDefaultColumns,
   canHideColumn,
+  setColumnWidth,
+  resizeColumnWidth,
+  clearColumnWidth,
+  columnWidthStyle,
 } = usePersistedMatrixColumnState(
   renderedColumns,
   META_RESULTS_TABLE_STATE_KEY,
 );
 const { headerGroups, rowModelRows, visibleLeafColumns } =
-  useHeadlessMatrixTable(renderedColumns, renderedRows, { columnVisibility });
+  useHeadlessMatrixTable(orderedColumns, renderedRows, { columnVisibility, columnWidths });
 const renderedBatchDatasets = computed<BatchDatasetItem[]>(
   () => batchDatasets.value as BatchDatasetItem[],
 );
@@ -1489,6 +1495,69 @@ function metaCellPayload(cell: Cell<MetaRow, unknown>): MetaCell {
   return cell.getValue() as MetaCell;
 }
 
+const resizingMetaColumnKey = ref("");
+let metaResizeStartX = 0;
+let metaResizeStartWidth = 0;
+
+function metaHeaderStyle(header: Header<MetaRow, unknown>): Record<string, string> {
+  return columnWidthStyle(headerMeta(header).columnKey);
+}
+
+function metaCellStyle(cell: Cell<MetaRow, unknown>): Record<string, string> {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta;
+  return columnWidthStyle(meta.columnKey);
+}
+
+function finishMetaColumnResize(): void {
+  resizingMetaColumnKey.value = "";
+  window.removeEventListener("pointermove", onMetaColumnResizeMove);
+  window.removeEventListener("pointerup", finishMetaColumnResize);
+  window.removeEventListener("pointercancel", finishMetaColumnResize);
+}
+
+function onMetaColumnResizeMove(event: PointerEvent): void {
+  const columnKey = resizingMetaColumnKey.value;
+  if (!columnKey) return;
+  setColumnWidth(columnKey, metaResizeStartWidth + event.clientX - metaResizeStartX);
+}
+
+function startMetaColumnResize(event: PointerEvent, header: Header<MetaRow, unknown>): void {
+  const columnKey = headerMeta(header).columnKey;
+  if (!columnKey) return;
+  event.preventDefault();
+  event.stopPropagation();
+  resizingMetaColumnKey.value = columnKey;
+  metaResizeStartX = event.clientX;
+  metaResizeStartWidth =
+    columnWidths.value[columnKey] ??
+    (event.currentTarget instanceof HTMLElement
+      ? event.currentTarget.closest("th")?.getBoundingClientRect().width
+      : 128) ??
+    128;
+  window.addEventListener("pointermove", onMetaColumnResizeMove);
+  window.addEventListener("pointerup", finishMetaColumnResize);
+  window.addEventListener("pointercancel", finishMetaColumnResize);
+}
+
+function onMetaColumnResizeKeydown(event: KeyboardEvent, header: Header<MetaRow, unknown>): void {
+  const columnKey = headerMeta(header).columnKey;
+  if (!columnKey) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    resizeColumnWidth(columnKey, event.shiftKey ? -48 : -16);
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    resizeColumnWidth(columnKey, event.shiftKey ? 48 : 16);
+    return;
+  }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    clearColumnWidth(columnKey);
+  }
+}
+
 function metaColumnToggleId(columnKey: string): string {
   return `metaColumnToggle_${String(columnKey || "").replace(/[^a-zA-Z0-9_-]+/g, "_")}`;
 }
@@ -1548,6 +1617,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  finishMetaColumnResize();
   flushQueuedInputValuesNow();
 });
 </script>
@@ -3276,9 +3346,21 @@ onBeforeUnmount(() => {
                       v-for="header in headerGroup.headers"
                       :key="header.id"
                       :class="{ left: headerMeta(header).alignLeft }"
+                      :style="metaHeaderStyle(header)"
                       scope="col"
                     >
-                      {{ headerMeta(header).columnLabel }}
+                      <span>{{ headerMeta(header).columnLabel }}</span>
+                      <button
+                        v-if="!header.isPlaceholder"
+                        type="button"
+                        class="columnResizeHandle"
+                        :class="{ active: resizingMetaColumnKey === headerMeta(header).columnKey }"
+                        :aria-label="`Resize ${headerMeta(header).columnLabel} column`"
+                        title="Drag to resize. Use Left/Right arrows to adjust, Delete to reset."
+                        @click.stop
+                        @pointerdown="startMetaColumnResize($event, header)"
+                        @keydown.stop="onMetaColumnResizeKeydown($event, header)"
+                      ></button>
                     </th>
                   </tr>
                 </thead>
@@ -3300,6 +3382,7 @@ onBeforeUnmount(() => {
                     >
                       <td
                         :class="metaCellPayload(cell).className"
+                        :style="metaCellStyle(cell)"
                         :title="metaCellPayload(cell).title || undefined"
                       >
                         {{ metaCellPayload(cell).text }}
@@ -3648,6 +3731,46 @@ onBeforeUnmount(() => {
   padding: 0.34rem 0.42rem;
   text-align: right;
   vertical-align: top;
+}
+
+.metaTableVue th {
+  position: relative;
+  user-select: none;
+}
+
+.columnResizeHandle {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 0.48rem;
+  min-width: 0.48rem;
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.columnResizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 24%;
+  bottom: 24%;
+  right: 0.16rem;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--border) 72%, transparent);
+}
+
+.columnResizeHandle:hover::after,
+.columnResizeHandle:focus-visible::after,
+.columnResizeHandle.active::after {
+  background: var(--focus-border);
+}
+
+.columnResizeHandle:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: -2px;
 }
 
 .metaTableVue th.left,

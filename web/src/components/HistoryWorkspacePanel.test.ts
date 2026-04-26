@@ -36,6 +36,37 @@ describe("HistoryWorkspacePanel", () => {
     document.body.innerHTML = "";
   });
 
+  it("keeps saved-run refresh reachable from the empty library state", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+    const refreshSpy = vi
+      .spyOn(history, "refreshSavedRuns")
+      .mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 0;
+    history.canRefreshSavedRuns = true;
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const refreshButton = document.querySelector<HTMLButtonElement>(
+      '[data-qa-action="library.savedRun.refresh"]',
+    );
+    expect(refreshButton).not.toBeNull();
+    expect(refreshButton?.disabled).toBe(false);
+
+    refreshButton?.click();
+    await nextTick();
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("renders MlSignal saved-run verdict and top candidate summaries", async () => {
     const history = useHistoryStore();
     const workflow = useWorkflowStore();

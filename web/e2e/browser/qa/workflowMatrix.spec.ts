@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { emptyAppScenario } from '../fixtures/scenarios'
 import { defineWorkflow } from '../support/workflowRunner'
-import { expectNoHorizontalDocumentOverflow } from '../support/qaAssertions'
+import { expectNoHorizontalDocumentOverflow, expectNoStuckBusyState } from '../support/qaAssertions'
 
 defineWorkflow({
   id: 'shell.workspace.tabs',
@@ -70,6 +70,44 @@ defineWorkflow({
     await expect(action('data.csv.loadDraft')).toBeVisible()
     await expect(action('data.sample.load').first()).toBeVisible()
     await expect(page.getByText(/Load a dataset/i).first()).toBeVisible()
+    await expectNoHorizontalDocumentOverflow(page)
+  },
+})
+
+defineWorkflow({
+  id: 'optimize.blocked.noData',
+  title: 'keeps no-data optimization actions blocked and inspectable',
+  tags: ['@workflow', '@regression'],
+  scenario: emptyAppScenario,
+  run: async ({ page, action }) => {
+    await action('shell.workflowStep.optimize').click()
+    await expect(action('optimize.run')).toBeEnabled()
+    await expect(action('shell.primaryAction.run')).toBeEnabled()
+    await expect(action('footer.primaryAction.run')).toBeDisabled()
+    await expect(page.getByText(/Load a dataset before running optimization/i).first()).toBeVisible()
+
+    await action('shell.primaryAction.run').click()
+    await expect(page.getByText(/Load data first, then configure/i).first()).toBeVisible()
+    await action('optimize.run').click()
+    await expect(page.getByText(/Load data first, then configure/i).first()).toBeVisible()
+
+    await action('optimize.preset.apply').click()
+    await expect(page.getByText(/Applied preset:/i).first()).toBeVisible()
+    await action('optimize.backend.presetKernel').click()
+    await expect(page.getByText(/Applied preset: GPU kernel/i).first()).toBeVisible()
+    await action('optimize.gpu.refreshStatus').first().click()
+    await expect(page.getByText(/GPU status refreshed/i).first()).toBeVisible()
+
+    await action('shell.commandPalette.open').click()
+    await expect(page.locator('.cmdPaletteDialog')).toBeVisible()
+    await page.getByLabel('Command search').fill('run')
+    await expect(action('commandPalette.command.run')).toBeVisible()
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.cmdPaletteDialog')).toBeHidden()
+    await expect(page.getByText(/Load data first, then configure/i).first()).toBeVisible()
+
+    await expect(action('optimize.run')).toBeEnabled()
+    await expectNoStuckBusyState(page)
     await expectNoHorizontalDocumentOverflow(page)
   },
 })

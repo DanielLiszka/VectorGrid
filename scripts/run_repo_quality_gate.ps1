@@ -5,11 +5,18 @@ param(
   [switch]$StrictClippy,
   [switch]$IncludeDesktopTypecheck,
   [switch]$IncludeWorkspaceTests,
+  [switch]$IncludeBrowserWorkflowQa,
+  [switch]$IncludeFullBrowserWorkflowQa,
+  [switch]$IncludeBrowserResponsiveE2E,
+  [switch]$IncludeBrowserRegressionE2E,
+  [switch]$IncludeBrowserExploratoryE2E,
+  [switch]$IncludeDesktopSmoke,
   [switch]$IncludeA11ySmoke,
   [switch]$IncludeBaselineUi
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 
 function Invoke-Step {
   param(
@@ -71,21 +78,48 @@ try {
     Invoke-Step "Web typecheck" { & npm.cmd --prefix web run typecheck }
 
     if ($IncludeDesktopTypecheck) {
-      Write-Host "[SKIP] Web desktop typecheck is local-only in the backend-preview public tree."
+      Invoke-Step "Web desktop harness typecheck" { & npm.cmd --prefix web run typecheck:desktop }
     }
 
-    if ($IncludeA11ySmoke) {
-      Write-Host "[SKIP] Web accessibility smoke is local-only in the backend-preview public tree."
+    if ($IncludeBrowserWorkflowQa -or $IncludeFullBrowserWorkflowQa -or $IncludeBrowserResponsiveE2E -or $IncludeBrowserRegressionE2E -or $IncludeBrowserExploratoryE2E) {
+      $frontendQaArgs = @("-File", (Join-Path $repoRoot "scripts\\run_frontend_e2e_gate.ps1"))
+      if ($IncludeFullBrowserWorkflowQa) {
+        $frontendQaArgs += "-IncludeFullWorkflow"
+      }
+      if ($IncludeBrowserResponsiveE2E) {
+        $frontendQaArgs += "-IncludeResponsive"
+      }
+      if ($IncludeBrowserRegressionE2E) {
+        $frontendQaArgs += "-IncludeRegressions"
+      }
+      if ($IncludeA11ySmoke) {
+        $frontendQaArgs += "-IncludeA11ySmoke"
+      }
+      if ($IncludeBaselineUi) {
+        $frontendQaArgs += "-IncludeBaselineUi"
+      }
+      if ($IncludeBrowserExploratoryE2E) {
+        $frontendQaArgs += "-IncludeExploratory"
+      }
+      Invoke-Step "Frontend browser E2E QA" { powershell @frontendQaArgs }
+    } else {
+      if ($IncludeA11ySmoke) {
+        Invoke-Step "Web accessibility smoke" { & npm.cmd --prefix web run a11y:smoke }
+      }
+
+      if ($IncludeBaselineUi) {
+        Invoke-Step "Web baseline UI capture" { & npm.cmd --prefix web run baseline:ui }
+      }
     }
 
-    if ($IncludeBaselineUi) {
-      Write-Host "[SKIP] Web baseline UI capture is local-only in the backend-preview public tree."
+    if ($IncludeDesktopSmoke) {
+      Invoke-Step "Desktop smoke" { & npm.cmd --prefix web run test:desktop:smoke }
     }
   }
 
   Write-Host "Repo quality gate completed successfully."
   Write-Host "Default scope: rust fmt/check/clippy + web lint/typecheck."
-  Write-Host "Optional scope: -IncludeWorkspaceTests. Desktop/a11y/baseline UI switches are accepted but skipped in this backend-preview tree."
+  Write-Host "Optional scope: -IncludeWorkspaceTests, -IncludeDesktopTypecheck, -IncludeBrowserWorkflowQa, -IncludeBrowserResponsiveE2E, -IncludeBrowserRegressionE2E, -IncludeA11ySmoke, -IncludeBaselineUi, -IncludeDesktopSmoke."
 } finally {
   if ($null -ne $previousRustcWrapper) {
     $env:RUSTC_WRAPPER = $previousRustcWrapper

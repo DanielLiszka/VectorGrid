@@ -7,14 +7,25 @@ import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useSettingsStore } from '../stores/settingsStore'
 
 const tauriEventsMock = vi.hoisted(() => ({
   off: vi.fn(),
   listenEvent: vi.fn(),
 }))
 
+const tauriInvokeMock = vi.hoisted(() => ({
+  invokeCommand: vi.fn(),
+  tauriRuntimeAvailable: vi.fn(),
+}))
+
 vi.mock('../tauri/events', () => ({
   listenEvent: tauriEventsMock.listenEvent,
+}))
+
+vi.mock('../tauri/invoke', () => ({
+  invokeCommand: tauriInvokeMock.invokeCommand,
+  tauriRuntimeAvailable: tauriInvokeMock.tauriRuntimeAvailable,
 }))
 
 function dispatchKeydown(options: KeyboardEventInit): void {
@@ -35,6 +46,10 @@ describe('GlobalShortcutBridge', () => {
     tauriEventsMock.listenEvent.mockClear()
     tauriEventsMock.off.mockClear()
     tauriEventsMock.listenEvent.mockImplementation(async () => tauriEventsMock.off)
+    tauriInvokeMock.invokeCommand.mockClear()
+    tauriInvokeMock.invokeCommand.mockResolvedValue(null)
+    tauriInvokeMock.tauriRuntimeAvailable.mockClear()
+    tauriInvokeMock.tauriRuntimeAvailable.mockReturnValue(false)
   })
 
   afterEach(() => {
@@ -195,6 +210,8 @@ describe('GlobalShortcutBridge', () => {
     optimizeStore.$patch({ runDisabled: false })
     const openPaletteSpy = vi.spyOn(paletteStore, 'openPalette')
     const runSpy = vi.spyOn(actionStore, 'runOptimization').mockImplementation(() => {})
+    const cancelSpy = vi.spyOn(actionStore, 'cancelOptimization').mockImplementation(() => {})
+    optimizeStore.canCancel = true
 
     const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
     await Promise.resolve()
@@ -202,12 +219,65 @@ describe('GlobalShortcutBridge', () => {
     const handler = nativeShellCommandHandler()
     handler({ commandId: 'open_command_palette', source: 'native-menu' })
     handler({ commandId: 'run', source: 'native-menu' })
+    handler({ commandId: 'cancel_run', source: 'native-menu' })
 
     expect(openPaletteSpy).toHaveBeenCalledTimes(1)
     expect(runSpy).toHaveBeenCalledTimes(1)
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
 
     wrapper.unmount()
     await Promise.resolve()
     expect(tauriEventsMock.off).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores disabled native shell-command actions', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const optimizeStore = useOptimizeStore(pinia)
+    const actionStore = useCommandActionStore(pinia)
+    optimizeStore.$patch({ runDisabled: true, validateDisabled: true })
+    const runSpy = vi.spyOn(actionStore, 'runOptimization').mockImplementation(() => {})
+    const validateSpy = vi.spyOn(actionStore, 'validateOptimization').mockImplementation(() => {})
+
+    const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
+    await Promise.resolve()
+
+    const handler = nativeShellCommandHandler()
+    handler({ commandId: 'run', source: 'native-menu' })
+    handler({ commandId: 'validate', source: 'native-menu' })
+
+    expect(runSpy).not.toHaveBeenCalled()
+    expect(validateSpy).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('syncs shared command enabled states to the native desktop menu when Tauri is available', async () => {
+    tauriInvokeMock.tauriRuntimeAvailable.mockReturnValue(true)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const optimizeStore = useOptimizeStore(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    optimizeStore.$patch({ runDisabled: false, validateDisabled: true })
+    optimizeStore.canCancel = true
+    settingsStore.controlsCollapsed = true
+
+    const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(tauriInvokeMock.invokeCommand).toHaveBeenCalledWith(
+      'set_shell_menu_command_states',
+      {
+        states: expect.arrayContaining([
+          expect.objectContaining({ commandId: 'run', enabled: true }),
+          expect.objectContaining({ commandId: 'cancel_run', enabled: true }),
+          expect.objectContaining({ commandId: 'validate', enabled: false }),
+          expect.objectContaining({ commandId: 'toggle_controls', enabled: true, checked: false }),
+        ]),
+      },
+    )
+
+    wrapper.unmount()
   })
 })

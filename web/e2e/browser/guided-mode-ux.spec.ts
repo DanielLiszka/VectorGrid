@@ -28,8 +28,8 @@ test.describe('browser guided mode ux', () => {
     await expect(page.locator('#workspaceBar')).toHaveCount(0)
     await expect(page.locator('#runFooterShell')).toHaveCount(0)
     await expect(page.getByRole('heading', { name: 'Optimize, validate, then dry-run.' })).toBeVisible()
-    await expect(page.locator('.contextStrip > .contextCard')).toHaveCount(3)
-    await expect(page.locator('.contextOverflowSummary')).toHaveCount(0)
+    await expect(page.getByRole('navigation', { name: 'Guided workflow steps' }).getByRole('button')).toHaveCount(5)
+    await expect(page.getByRole('complementary', { name: 'Guided checklist' }).getByRole('listitem')).toHaveCount(5)
 
     const titlebarPrimary = page.locator('.titlebarPrimary')
     await expect(titlebarPrimary).toHaveAttribute('aria-label', 'Choose data')

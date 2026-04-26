@@ -26,10 +26,6 @@ test.describe('browser shell ux', () => {
     await expect(page.locator('#results_panel_meta')).toBeVisible()
 
     await aggregateTab.press('ArrowRight')
-    await expect(proTab).toHaveAttribute('aria-selected', 'true')
-    await expect(proTab).toBeFocused()
-
-    await proTab.press('ArrowRight')
     await expect(liveTab).toHaveAttribute('aria-selected', 'true')
     await expect(liveTab).toBeFocused()
     await expect(page.locator(shellSelectors.liveGrid)).toBeVisible()
@@ -40,7 +36,12 @@ test.describe('browser shell ux', () => {
     await expect(settingsTab).toBeFocused()
     await expect(page.locator(shellSelectors.settingsGrid)).toBeVisible()
 
-    await settingsTab.press('Home')
+    await settingsTab.press('ArrowRight')
+    await expect(proTab).toHaveAttribute('aria-selected', 'true')
+    await expect(proTab).toBeFocused()
+    await expect(page.locator('#results_panel_debug')).toBeVisible()
+
+    await proTab.press('Home')
     await expect(workflowTab).toHaveAttribute('aria-selected', 'true')
     await expect(workflowTab).toBeFocused()
 

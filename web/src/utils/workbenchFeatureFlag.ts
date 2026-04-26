@@ -16,7 +16,7 @@ export function resolveWorkbenchShellFlag(value: unknown): boolean | null {
 }
 
 export function shouldUseWorkbenchShell(): boolean {
-  if (typeof window === 'undefined') return false
+  if (typeof window === 'undefined') return true
   try {
     const params = new URLSearchParams(window.location.search)
     const queryValue =
@@ -27,8 +27,9 @@ export function shouldUseWorkbenchShell(): boolean {
     if (queryResolved !== null) return queryResolved
 
     const storageResolved = resolveWorkbenchShellFlag(window.localStorage.getItem(WORKBENCH_SHELL_STORAGE_KEY))
-    return storageResolved === true
+    if (storageResolved !== null) return storageResolved
+    return true
   } catch {
-    return false
+    return true
   }
 }

@@ -134,16 +134,27 @@ const {
   allColumnKeys,
   orderedColumns,
   orderedVisibleColumnKeys,
+  columnWidths,
   toggleColumnVisibility,
   restoreDefaultColumns,
   canHideColumn,
   applyColumnViewPreset,
+  setColumnWidth,
+  resizeColumnWidth,
+  clearColumnWidth,
+  columnWidthStyle,
 } = usePersistedMatrixColumnState(renderedColumns, TOP_RESULTS_TABLE_STATE_KEY)
 const { tableDensity } = usePersistedTableDensity(TOP_RESULTS_TABLE_DENSITY_KEY)
-const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
+const { headerGroups, rowModelRows, visibleLeafColumns, toggleSortColumn } = useHeadlessMatrixTable(
   orderedColumns,
   renderedRows,
-  { columnVisibility },
+  {
+    columnVisibility,
+    columnWidths,
+    onSortColumn: (columnKey) => {
+      analysisStore.sortTopTable(columnKey)
+    },
+  },
 )
 const hasTopResults = computed(() => Number(topRows.value || 0) > 0)
 const topDisabledForRun = computed(() => String(topFilterMeta.value || '').toLowerCase().includes('top k disabled'))
@@ -413,10 +424,14 @@ function queueFilterInput(id: string, nextValue: string): void {
   queueFilterInputValue(id, nextValue)
 }
 
+const resizingTopColumnKey = ref('')
+let topResizeStartX = 0
+let topResizeStartWidth = 0
+
 function clickTopHeader(key: string): void {
   const sortKey = String(key || '').trim()
   if (!sortKey) return
-  analysisStore.sortTopTable(sortKey)
+  toggleSortColumn(sortKey)
 }
 
 function headerMeta(header: Header<TopRow, unknown>): MatrixColumnMeta {
@@ -431,6 +446,65 @@ function sortStateToAria(sort: TopColumn['sort']): 'ascending' | 'descending' | 
   if (sort === 'asc') return 'ascending'
   if (sort === 'desc') return 'descending'
   return 'none'
+}
+
+function topHeaderStyle(header: Header<TopRow, unknown>): Record<string, string> {
+  return columnWidthStyle(headerMeta(header).columnKey)
+}
+
+function topCellStyle(cell: Cell<TopRow, unknown>): Record<string, string> {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta
+  return columnWidthStyle(meta.columnKey)
+}
+
+function finishTopColumnResize(): void {
+  resizingTopColumnKey.value = ''
+  window.removeEventListener('pointermove', onTopColumnResizeMove)
+  window.removeEventListener('pointerup', finishTopColumnResize)
+  window.removeEventListener('pointercancel', finishTopColumnResize)
+}
+
+function onTopColumnResizeMove(event: PointerEvent): void {
+  const columnKey = resizingTopColumnKey.value
+  if (!columnKey) return
+  setColumnWidth(columnKey, topResizeStartWidth + event.clientX - topResizeStartX)
+}
+
+function startTopColumnResize(event: PointerEvent, header: Header<TopRow, unknown>): void {
+  const columnKey = headerMeta(header).columnKey
+  if (!columnKey) return
+  event.preventDefault()
+  event.stopPropagation()
+  resizingTopColumnKey.value = columnKey
+  topResizeStartX = event.clientX
+  topResizeStartWidth =
+    columnWidths.value[columnKey] ??
+    (event.currentTarget instanceof HTMLElement
+      ? event.currentTarget.closest('th')?.getBoundingClientRect().width
+      : 128) ??
+    128
+  window.addEventListener('pointermove', onTopColumnResizeMove)
+  window.addEventListener('pointerup', finishTopColumnResize)
+  window.addEventListener('pointercancel', finishTopColumnResize)
+}
+
+function onTopColumnResizeKeydown(event: KeyboardEvent, header: Header<TopRow, unknown>): void {
+  const columnKey = headerMeta(header).columnKey
+  if (!columnKey) return
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    resizeColumnWidth(columnKey, event.shiftKey ? -48 : -16)
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    resizeColumnWidth(columnKey, event.shiftKey ? 48 : 16)
+    return
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault()
+    clearColumnWidth(columnKey)
+  }
 }
 
 function clickTopRow(index: number): void {
@@ -462,31 +536,37 @@ function focusAdjacentTopRow(currentTarget: EventTarget | null, direction: 'prev
 function onTopRowKeydown(index: number, event: KeyboardEvent): void {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
+    event.stopPropagation()
     clickTopRow(index)
     return
   }
   if (event.key.toLowerCase() === 'p') {
     event.preventDefault()
+    event.stopPropagation()
     pinTopRow(index)
     return
   }
   if (event.key === 'ArrowUp') {
     event.preventDefault()
+    event.stopPropagation()
     focusAdjacentTopRow(event.currentTarget, 'prev')
     return
   }
   if (event.key === 'ArrowDown') {
     event.preventDefault()
+    event.stopPropagation()
     focusAdjacentTopRow(event.currentTarget, 'next')
     return
   }
   if (event.key === 'Home') {
     event.preventDefault()
+    event.stopPropagation()
     focusAdjacentTopRow(event.currentTarget, 'first')
     return
   }
   if (event.key === 'End') {
     event.preventDefault()
+    event.stopPropagation()
     focusAdjacentTopRow(event.currentTarget, 'last')
   }
 }
@@ -497,6 +577,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  finishTopColumnResize()
   flushQueuedFilterInputsNow()
 })
 </script>
@@ -742,6 +823,7 @@ onBeforeUnmount(() => {
                     :key="header.id"
                     :class="{ left: headerMeta(header).alignLeft }"
                     :aria-sort="sortStateToAria(headerMeta(header).sort)"
+                    :style="topHeaderStyle(header)"
                     scope="col"
                     role="columnheader"
                   >
@@ -756,6 +838,17 @@ onBeforeUnmount(() => {
                       <span v-if="headerMeta(header).sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
                       <span v-else-if="headerMeta(header).sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
                     </button>
+                    <button
+                      v-if="!header.isPlaceholder"
+                      type="button"
+                      class="columnResizeHandle"
+                      :class="{ active: resizingTopColumnKey === headerMeta(header).columnKey }"
+                      :aria-label="`Resize ${headerMeta(header).columnLabel} column`"
+                      title="Drag to resize. Use Left/Right arrows to adjust, Delete to reset."
+                      @click.stop
+                      @pointerdown="startTopColumnResize($event, header)"
+                      @keydown.stop="onTopColumnResizeKeydown($event, header)"
+                    ></button>
                   </th>
                 </tr>
               </thead>
@@ -780,6 +873,7 @@ onBeforeUnmount(() => {
                         topCellPayload(cell).className,
                         { leadVisibleColumn: cell.column.id === leadVisibleColumnKey },
                       ]"
+                      :style="topCellStyle(cell)"
                       :data-column-key="String((cell.column.columnDef.meta as MatrixColumnMeta)?.columnKey || '')"
                       :title="topCellPayload(cell).title || undefined"
                       role="gridcell"
@@ -1021,11 +1115,47 @@ onBeforeUnmount(() => {
 }
 
 .topTableVue th {
+  position: relative;
   user-select: none;
   font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted-soft);
+}
+
+.columnResizeHandle {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 0.48rem;
+  min-width: 0.48rem;
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.columnResizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 24%;
+  bottom: 24%;
+  right: 0.16rem;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--border) 72%, transparent);
+}
+
+.columnResizeHandle:hover::after,
+.columnResizeHandle:focus-visible::after,
+.columnResizeHandle.active::after {
+  background: var(--focus-border);
+}
+
+.columnResizeHandle:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: -2px;
 }
 
 .topTableVue th.left,

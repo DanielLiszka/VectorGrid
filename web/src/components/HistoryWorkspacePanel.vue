@@ -494,6 +494,24 @@ onBeforeUnmount(() => {
         >
           {{ statusLine }}
         </div>
+        <div class="actions emptyStateActions">
+          <button
+            type="button"
+            data-qa-action="library.savedRun.refresh"
+            :disabled="!canRefreshSavedRuns"
+            @click="historyStore.refreshSavedRuns()"
+          >
+            Refresh saved
+          </button>
+          <button
+            type="button"
+            data-qa-action="library.runsDir.open"
+            :disabled="!canOpenRunsDir"
+            @click="historyStore.openRunsDir()"
+          >
+            Runs folder
+          </button>
+        </div>
       </section>
 
       <section
@@ -1160,6 +1178,10 @@ onBeforeUnmount(() => {
 .actions button {
   padding: 0.42rem 0.6rem;
   font-size: 0.76rem;
+}
+
+.emptyStateActions {
+  justify-content: center;
 }
 
 .metaLine {

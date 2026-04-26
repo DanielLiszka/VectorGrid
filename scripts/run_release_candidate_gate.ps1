@@ -2,6 +2,9 @@ param(
   [ValidateSet("cpu", "gpu-ma", "gpu-kernel")]
   [string]$Variant = "cpu",
   [switch]$IncludePerf,
+  [switch]$SkipBrowserQa,
+  [switch]$IncludeExpandedBrowserQa,
+  [switch]$IncludeBaselineUi,
   [switch]$IncludeDesktopSmoke,
   [string]$OutDir = "",
   [switch]$SkipPackagedSmoke,
@@ -109,6 +112,9 @@ function Write-ReleaseSummary {
     status = $Status
     out_dir = $resolvedOutDir
     include_perf = [bool]$IncludePerf
+    skip_browser_qa = [bool]$SkipBrowserQa
+    include_expanded_browser_qa = [bool]$IncludeExpandedBrowserQa
+    include_baseline_ui = [bool]$IncludeBaselineUi
     include_desktop_smoke = [bool]$IncludeDesktopSmoke
     include_live_safety_harness = [bool]$IncludeLiveSafetyHarness
     skip_packaged_smoke = [bool]$SkipPackagedSmoke
@@ -144,6 +150,9 @@ function Write-ReleaseSummary {
     "- Variant: $Variant",
     "- Output: $resolvedOutDir",
     "- Include perf: $([bool]$IncludePerf)",
+    "- Skip browser QA: $([bool]$SkipBrowserQa)",
+    "- Include expanded browser QA: $([bool]$IncludeExpandedBrowserQa)",
+    "- Include baseline UI: $([bool]$IncludeBaselineUi)",
     "- Include desktop smoke: $([bool]$IncludeDesktopSmoke)",
     "- Include live safety harness: $([bool]$IncludeLiveSafetyHarness)",
     "- Skip packaged smoke: $([bool]$SkipPackagedSmoke)",
@@ -215,6 +224,22 @@ try {
     & npm.cmd --prefix web run parity
     if ($LASTEXITCODE -ne 0) {
       throw "web parity failed with exit code $LASTEXITCODE"
+    }
+  }
+
+  if (-not $SkipBrowserQa) {
+    $browserQaArgs = @("-File", (Join-Path $repoRoot "scripts\\run_frontend_e2e_gate.ps1"), "-IncludeA11ySmoke")
+    if ($IncludeExpandedBrowserQa) {
+      $browserQaArgs += @("-IncludeResponsive", "-IncludeRegressions")
+    }
+    if ($IncludeBaselineUi) {
+      $browserQaArgs += "-IncludeBaselineUi"
+    }
+    Invoke-ReleaseStep -Name "Frontend browser QA" -CommandText ("powershell " + ($browserQaArgs -join " ")) -Action {
+      powershell @browserQaArgs
+      if ($LASTEXITCODE -ne 0) {
+        throw "frontend browser QA failed with exit code $LASTEXITCODE"
+      }
     }
   }
 
@@ -315,7 +340,17 @@ try {
   }
 
   if ($IncludeDesktopSmoke -and -not $SkipPackagedSmoke) {
-    Write-Host "[SKIP] Packaged desktop smoke is local-only in the backend-preview public tree."
+    $smokeArgs = @(
+      "-File", (Join-Path $repoRoot "scripts\\run_packaged_smoke.ps1"),
+      "-BinaryPath", $releaseBinaryPath,
+      "-OutDir", $resolvedOutDir
+    )
+    Invoke-ReleaseStep -Name "Packaged desktop smoke" -CommandText ("powershell " + ($smokeArgs -join " ")) -Action {
+      powershell @smokeArgs
+      if ($LASTEXITCODE -ne 0) {
+        throw "packaged desktop smoke failed with exit code $LASTEXITCODE"
+      }
+    }
   }
 
   if ($IncludeLiveSafetyHarness) {

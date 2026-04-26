@@ -23,10 +23,12 @@ From the repo root:
 ```powershell
 npm --prefix web run test:browser:ux
 npm --prefix web run test:e2e:workflow
+npm --prefix web run test:e2e:qa
 npm --prefix web run test:e2e:action-coverage
 npm --prefix web run test:e2e:responsive
 npm --prefix web run test:e2e:regressions
 npm --prefix web run test:e2e:explore
+powershell -File scripts/run_frontend_e2e_gate.ps1
 ```
 
 The workflow commands:
@@ -35,7 +37,7 @@ The workflow commands:
 2. starts a local Vite preview host
 3. runs Playwright browser UX specs against the built app in mocked-Tauri mode
 
-`test:browser:ux` is kept as a compatibility alias for `test:e2e:workflow`.
+`test:browser:ux` is kept as a compatibility alias for `test:e2e:workflow`. The build-once frontend E2E gate and `test:e2e:qa` use the sliced QA lane: workbench smoke, action coverage, and core workflow coverage by default, with responsive/regression/exploratory coverage added through explicit gate switches.
 
 ## What this suite should own
 

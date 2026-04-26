@@ -169,6 +169,15 @@ Add workspace tests for higher-risk backend or cross-layer changes:
 powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeWorkspaceTests
 ```
 
+For frontend workflow/shell changes, use the build-once browser QA bundle instead of manually repeating individual Playwright commands. The default bundle runs workbench smoke, action coverage, and core workflow coverage; add the responsive/regression switches when those surfaces changed.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_frontend_e2e_gate.ps1
+powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeBrowserWorkflowQa
+```
+
+Add `-IncludeBrowserResponsiveE2E`, `-IncludeBrowserRegressionE2E`, or `-IncludeDesktopSmoke` to the repo gate when those surfaces changed and the local machine has the required browser/desktop smoke setup.
+
 For a direct workspace-wide Rust test run, prefer the stable wrapper instead of raw `cargo test --workspace` on the large Windows desktop surface:
 
 ```powershell

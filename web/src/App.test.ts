@@ -12,6 +12,7 @@ const APP_STUBS = {
   DesktopTitlebar: { template: '<div data-stub="DesktopTitlebar" />' },
   GlobalShortcutBridge: { template: '<div data-stub="GlobalShortcutBridge" />' },
   VueWorkspaceShell: { template: '<div data-stub="VueWorkspaceShell" />' },
+  WorkbenchShell: { template: '<div data-stub="WorkbenchShell" />' },
   AdvancedWorkspacePanel: { template: '<div data-stub="AdvancedWorkspacePanel" />' },
   AnalysisContextDock: { template: '<div data-stub="AnalysisContextDock" />' },
   CommandPaletteOverlay: { template: '<div data-stub="CommandPaletteOverlay" />' },
@@ -65,7 +66,8 @@ describe('App root shell', () => {
     await flushApp()
 
     expect(document.querySelector('[data-stub="DesktopTitlebar"]')).not.toBeNull()
-    expect(document.querySelector('[data-stub="VueWorkspaceShell"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="WorkbenchShell"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="VueWorkspaceShell"]')).toBeNull()
     expect(document.querySelector('[data-stub="CommandPaletteOverlay"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="GlobalShortcutBridge"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="AppRuntimeBanner"]')).not.toBeNull()
@@ -87,6 +89,7 @@ describe('App root shell', () => {
     await flushApp()
 
     expect(document.querySelector('[data-stub="GuidedWorkspacePanel"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="WorkbenchShell"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="ActionStatusBar"]')).toBeNull()
     expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).toBeNull()
 
@@ -109,9 +112,32 @@ describe('App root shell', () => {
     await flushApp()
 
     expect(document.querySelector('[data-stub="GuidedWorkspacePanel"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="WorkbenchShell"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="ActionStatusBar"]')).toBeNull()
     expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).toBeNull()
     expect(document.querySelector('[data-stub="OptimizeWorkspacePanel"]')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('keeps the legacy shell reachable through the explicit workbench opt-out', async () => {
+    localStorage.setItem('vta_workbench_shell_v1', '0')
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setUiMode('advanced')
+
+    const wrapper = mount(App, {
+      global: {
+        plugins: [pinia],
+        stubs: APP_STUBS,
+      },
+      attachTo: document.body,
+    })
+    await flushApp()
+
+    expect(document.querySelector('[data-stub="WorkbenchShell"]')).toBeNull()
+    expect(document.querySelector('[data-stub="VueWorkspaceShell"]')).not.toBeNull()
 
     wrapper.unmount()
   })

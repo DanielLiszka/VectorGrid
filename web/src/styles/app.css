@@ -257,6 +257,17 @@ header {
   isolation: isolate;
 }
 
+header.head {
+  position: static;
+  top: auto;
+  z-index: auto;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
+  backdrop-filter: none;
+  isolation: auto;
+}
+
 h1 {
   margin: 0;
   font-size: var(--text-xl);

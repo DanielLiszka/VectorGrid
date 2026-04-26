@@ -1,6 +1,7 @@
 export type ShellCommandGroup = 'actions' | 'data' | 'exports' | 'layout'
 export type SharedShellCommandId =
   | 'run'
+  | 'cancel_run'
   | 'validate'
   | 'browse_csv'
   | 'open_polygon'
@@ -12,6 +13,7 @@ export type SharedShellCommandId =
 
 export interface ShellCommandRuntimeContext {
   canRun: boolean
+  canCancel: boolean
   canValidate: boolean
   canBrowseCsv: boolean
   canPolygonOpen: boolean
@@ -19,10 +21,12 @@ export interface ShellCommandRuntimeContext {
   canExportJson: boolean
   canOpenLatestReport: boolean
   canOpenLatestMetaReport: boolean
+  controlsPanelVisible: boolean
   browseCsv: () => void
   openPolygon: () => void
   toggleControls: () => void
   runOptimization: () => void
+  cancelOptimization: () => void
   validateOptimization: () => void
   exportTopCsv: () => void
   exportTopJson: () => void
@@ -41,6 +45,12 @@ export interface ShellCommand {
   run: () => void
 }
 
+export interface ShellCommandEnabledState {
+  commandId: SharedShellCommandId
+  enabled: boolean
+  checked?: boolean
+}
+
 export interface ShellShortcutSummaryRow {
   keysLabel: string
   label: string
@@ -54,6 +64,7 @@ interface SharedShellCommandDef {
   keys: string[]
   keywords: string[]
   enabled: (ctx: ShellCommandRuntimeContext) => boolean
+  checked?: (ctx: ShellCommandRuntimeContext) => boolean | undefined
   run: (ctx: ShellCommandRuntimeContext) => void
   matches: (event: KeyboardEvent) => boolean
 }
@@ -81,6 +92,17 @@ const SHARED_SHELL_COMMAND_DEFS: readonly SharedShellCommandDef[] = [
     enabled: (ctx) => ctx.canRun,
     run: (ctx) => ctx.runOptimization(),
     matches: (event) => hasMod(event) && String(event.key || '') === 'Enter',
+  },
+  {
+    id: 'cancel_run',
+    group: 'actions',
+    name: 'Cancel run',
+    desc: 'Cancel the currently running optimization or validation task.',
+    keys: [],
+    keywords: ['cancel', 'stop', 'running'],
+    enabled: (ctx) => ctx.canCancel,
+    run: (ctx) => ctx.cancelOptimization(),
+    matches: () => false,
   },
   {
     id: 'validate',
@@ -167,6 +189,7 @@ const SHARED_SHELL_COMMAND_DEFS: readonly SharedShellCommandDef[] = [
     keys: ['Ctrl', '\\'],
     keywords: ['controls', 'sidebar', 'layout'],
     enabled: () => true,
+    checked: (ctx) => ctx.controlsPanelVisible,
     run: (ctx) => ctx.toggleControls(),
     matches: (event) => hasMod(event) && String(event.key || '') === '\\',
   },
@@ -206,6 +229,20 @@ export function createSharedShellCommands(ctx: ShellCommandRuntimeContext): Shel
   }))
 }
 
+export function createSharedShellCommandEnabledStates(
+  ctx: ShellCommandRuntimeContext,
+): ShellCommandEnabledState[] {
+  return createSharedShellCommands(ctx).map((command) => {
+    const definition = SHARED_SHELL_COMMAND_DEFS.find((item) => item.id === command.id)
+    const checked = definition?.checked?.(ctx)
+    return {
+      commandId: command.id,
+      enabled: command.enabled,
+      ...(typeof checked === 'boolean' ? { checked } : {}),
+    }
+  })
+}
+
 export function dispatchSharedShellCommandShortcut(
   event: KeyboardEvent,
   ctx: ShellCommandRuntimeContext,
@@ -220,5 +257,5 @@ export function dispatchSharedShellCommandShortcut(
 }
 
 export const createSharedShellShortcutCommands = createSharedShellCommands
+export const createSharedShellShortcutCommandEnabledStates = createSharedShellCommandEnabledStates
 export const dispatchSharedShellShortcut = dispatchSharedShellCommandShortcut
-

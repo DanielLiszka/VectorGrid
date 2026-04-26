@@ -102,6 +102,67 @@ describe("MetaWorkspacePanel", () => {
     expect(localStorage.getItem(META_RESULTS_TABLE_STATE_KEY)).toBeNull();
   });
 
+  it("applies persisted meta result column order and keyboard-resizable widths", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const historyStore = useHistoryStore(pinia);
+    const analysisStore = useAnalysisStore(pinia);
+    workflow.selectResultsTab("meta", { persist: false });
+    workflow.selectAggregateTab("meta", { persist: false });
+    historyStore.savedRunCount = 1;
+    analysisStore.metaTableColumns = [
+      { label: "Group", alignLeft: true },
+      { label: "Selection", alignLeft: true },
+      { label: "Score", alignLeft: false },
+    ];
+    analysisStore.metaTableRows = [
+      {
+        cells: [
+          { text: "Momentum", className: "left", title: "Momentum" },
+          { text: "Candidate A", className: "left", title: "Candidate A" },
+          { text: "0.88", className: "", title: "0.88" },
+        ],
+      },
+    ];
+    localStorage.setItem(
+      META_RESULTS_TABLE_STATE_KEY,
+      JSON.stringify({
+        visibleColumnKeys: ["col_0", "col_1", "col_2"],
+        knownColumnKeys: ["col_0", "col_1", "col_2"],
+        columnOrderKeys: ["col_2", "col_0", "col_1"],
+        columnWidths: { col_2: 220 },
+      }),
+    );
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const headers = Array.from(document.querySelectorAll("th"));
+    expect(headers.map((cell) => String(cell.textContent || "").trim())).toEqual([
+      "Score",
+      "Group",
+      "Selection",
+    ]);
+    expect((headers[0] as HTMLElement).style.width).toBe("220px");
+
+    const scoreResize = headers[0]?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Resize Score column"]',
+    );
+    expect(scoreResize).not.toBeNull();
+    scoreResize?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+    );
+    await flushPanel();
+
+    expect(localStorage.getItem(META_RESULTS_TABLE_STATE_KEY)).toContain(
+      '"col_2":236',
+    );
+  });
+
   it("reuses the shared contextual action menu across saved aggregate artifact families", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
