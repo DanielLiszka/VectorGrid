@@ -516,7 +516,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="actions">
-          <button type="button" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
+          <button type="button" data-qa-action="top.filters.clear" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
         </div>
         <div class="panelAdvisory mono">{{ topFilterMeta }}</div>
         <div v-if="hasTopSelectionGuardrail" class="panelAdvisory surfaceWarning mono">{{ topSelectionGuardrail }}</div>
@@ -561,17 +561,17 @@ onBeforeUnmount(() => {
             Use Drilldown for deeper proof and Overview for baseline framing. Pareto and Heatmap stay optional lenses once the shortlist decision is made.
           </div>
           <div class="actions stickySelectionActions">
-            <button type="button" class="primary" :disabled="!canOpenDrilldown" @click="openDrilldown()">
+            <button type="button" class="primary" data-qa-action="top.selected.openDrilldown" :disabled="!canOpenDrilldown" @click="openDrilldown()">
               <span>Open Drilldown</span>
             </button>
-            <button type="button" :disabled="!hasTopResults" @click="reviewOverview()">
+            <button type="button" data-qa-action="top.selected.reviewOverview" :disabled="!hasTopResults" @click="reviewOverview()">
               <span>Review Overview</span>
             </button>
-            <button type="button" :disabled="!canPinSelectedTopCandidate" @click="analysisStore.pinSelectedTopRow()">
+            <button type="button" data-qa-action="top.selected.pin" :disabled="!canPinSelectedTopCandidate" @click="analysisStore.pinSelectedTopRow()">
               <AppVisualIcon :icon="pinCompareIcon" class="actionIcon" />
               <span>Pin current candidate</span>
             </button>
-            <button type="button" :disabled="pinnedTopCandidates.length === 0" @click="analysisStore.clearPinnedTopCandidates()">
+            <button type="button" data-qa-action="top.pins.clear" :disabled="pinnedTopCandidates.length === 0" @click="analysisStore.clearPinnedTopCandidates()">
               <AppVisualIcon :icon="clearCompareIcon" class="actionIcon" />
               <span>Clear compare</span>
             </button>

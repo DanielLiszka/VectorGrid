@@ -252,6 +252,7 @@ function openTaskCenterDetails(): void {
         <AppButton
           variant="subtle"
           size="sm"
+          data-qa-action="footer.taskCenter.details"
           :aria-controls="TASK_CENTER_PANEL_ID"
           :aria-expanded="taskCenterOpen ? 'true' : 'false'"
           aria-haspopup="dialog"
@@ -262,6 +263,7 @@ function openTaskCenterDetails(): void {
         <AppButton
           :variant="canCancel ? 'danger' : 'primary'"
           size="sm"
+          data-qa-action="footer.primaryAction.run"
           :disabled="primaryActionDisabled"
           :disabled-reason="primaryDisabledReason"
           @click="runPrimaryAction"

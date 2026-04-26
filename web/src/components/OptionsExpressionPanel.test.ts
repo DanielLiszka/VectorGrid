@@ -7,6 +7,7 @@ import { useOptionsExpressionStore } from "../stores/optionsExpressionStore";
 
 const {
   analyzeOptionsExpressionFeasibilityMock,
+  analyzeOptionsExpressionValidationFeasibilityMock,
   downloadPolygonOptionsDatasetMock,
   exportOptionsExpressionCsvMock,
   importOptionsDatasetMock,
@@ -17,9 +18,12 @@ const {
   loadOptionsExpressionArtifactMock,
   openOrRevealOptionsPathMock,
   pickOptionsCsvPathMock,
+  revealOptionsPathMock,
   runOptionsExpressionMock,
+  validateOptionsExpressionArtifactMock,
 } = vi.hoisted(() => ({
   analyzeOptionsExpressionFeasibilityMock: vi.fn(),
+  analyzeOptionsExpressionValidationFeasibilityMock: vi.fn(),
   downloadPolygonOptionsDatasetMock: vi.fn(),
   exportOptionsExpressionCsvMock: vi.fn(),
   importOptionsDatasetMock: vi.fn(),
@@ -30,11 +34,15 @@ const {
   loadOptionsExpressionArtifactMock: vi.fn(),
   openOrRevealOptionsPathMock: vi.fn(),
   pickOptionsCsvPathMock: vi.fn(),
+  revealOptionsPathMock: vi.fn(),
   runOptionsExpressionMock: vi.fn(),
+  validateOptionsExpressionArtifactMock: vi.fn(),
 }));
 
 vi.mock("../services/optionsExpressionService", () => ({
   analyzeOptionsExpressionFeasibility: analyzeOptionsExpressionFeasibilityMock,
+  analyzeOptionsExpressionValidationFeasibility:
+    analyzeOptionsExpressionValidationFeasibilityMock,
   downloadPolygonOptionsDataset: downloadPolygonOptionsDatasetMock,
   exportOptionsExpressionCsv: exportOptionsExpressionCsvMock,
   importOptionsDataset: importOptionsDatasetMock,
@@ -45,7 +53,9 @@ vi.mock("../services/optionsExpressionService", () => ({
   loadOptionsExpressionArtifact: loadOptionsExpressionArtifactMock,
   openOrRevealOptionsPath: openOrRevealOptionsPathMock,
   pickOptionsCsvPath: pickOptionsCsvPathMock,
+  revealOptionsPath: revealOptionsPathMock,
   runOptionsExpression: runOptionsExpressionMock,
+  validateOptionsExpressionArtifact: validateOptionsExpressionArtifactMock,
 }));
 
 function makeDiagnosticsSummary(overrides: Record<string, unknown> = {}) {
@@ -193,6 +203,7 @@ function makeArtifactRecord(overrides: Record<string, unknown> = {}) {
     rootSymbol: "SPY",
     optionsDatasetId: "spy_options",
     optionsDatasetHash: "hash-1",
+    datasetProvenance: null,
     backendUsed: "cpu_reference",
     backendFallbackReason: "",
     priceSemantics: "minute_aggregate",
@@ -376,7 +387,7 @@ describe("OptionsExpressionPanel", () => {
       {
         optionsDatasetId: "spy_options",
         rootSymbol: "SPY",
-        providerName: "massive",
+        providerName: "polygon.io",
         providerSourceSurface: "minute_aggregate",
         providerEntitlementProfile: "options_business",
         quoteResolution: "1m",
@@ -385,7 +396,7 @@ describe("OptionsExpressionPanel", () => {
         timezone: "UTC",
         coverageStart: 1_700_000_000_000,
         coverageEnd: 1_700_000_120_000,
-        contractReferenceSource: "massive_contract_reference",
+        contractReferenceSource: "polygon_contract_reference",
         underlierReferenceSource: "underlying_dataset",
         datasetPath: "C:/datasets/spy_options",
         contractReferenceAsOfUtc: "2026-04-05T00:00:00Z",
@@ -606,7 +617,18 @@ describe("OptionsExpressionPanel", () => {
     expect(wrapper.find('option[value="session_chronological"]').exists()).toBe(
       true,
     );
-    expect(wrapper.text()).toContain("Polygon/Massive 1m options download");
+    expect(wrapper.text()).toContain("Polygon.io 1m options download");
+    expect(wrapper.text()).toContain("Subsequent validation");
+    expect(wrapper.text()).toContain("Validate artifact");
+    expect(wrapper.find('option[value="date_range_holdout"]').exists()).toBe(
+      true,
+    );
+    expect(wrapper.find('option[value="anchored_walk_forward"]').exists()).toBe(
+      true,
+    );
+    expect(
+      wrapper.find('option[value="rolling_session_walk_forward"]').exists(),
+    ).toBe(true);
     expect(wrapper.text()).toContain("Aggregate lane");
     expect(wrapper.text()).toContain(
       "only support aggregate_research in the backend",
@@ -635,7 +657,7 @@ describe("OptionsExpressionPanel", () => {
     expect(wrapper.text()).toContain("C:/datasets/spy_options");
     expect(wrapper.text()).toContain("spy_options");
     expect(wrapper.text()).toContain(
-      "massive | minute_aggregate | 1m | close | 2026-04-05T00:00:00Z",
+      "polygon.io | minute_aggregate | 1m | close | 2026-04-05T00:00:00Z",
     );
     expect(wrapper.text()).toContain("Saved artifact comparison");
     expect(wrapper.text()).toContain("Artifact frontier leaders");
@@ -702,6 +724,48 @@ describe("OptionsExpressionPanel", () => {
     );
   });
 
+  it("shows validation plan controls for date-range and walk-forward modes", async () => {
+    listOptionsDatasetsMock.mockResolvedValue([]);
+    listOptionsExpressionArtifactsMock.mockResolvedValue([]);
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: "C:/runs/vectorgrid_run_1.json",
+        parentStrategyKind: "DoubleMa",
+        parentDatasetLabel: "SPY.csv",
+      },
+    });
+    const store = useOptionsExpressionStore();
+
+    store.validationPlanMode = "date_range_holdout";
+    await wrapper.vm.$nextTick();
+    expect(
+      wrapper.find('[data-qa-control="options.validation.startDate"]').exists(),
+    ).toBe(true);
+    expect(
+      wrapper.find('[data-qa-control="options.validation.endDate"]').exists(),
+    ).toBe(true);
+
+    store.validationPlanMode = "rolling_session_walk_forward";
+    await wrapper.vm.$nextTick();
+    expect(
+      wrapper.find('[data-qa-control="options.validation.startDate"]').exists(),
+    ).toBe(false);
+    expect(
+      wrapper
+        .find('[data-qa-control="options.validation.trainSessions"]')
+        .exists(),
+    ).toBe(true);
+    expect(
+      wrapper
+        .find('[data-qa-control="options.validation.validationSessions"]')
+        .exists(),
+    ).toBe(true);
+    expect(
+      wrapper.find('[data-qa-control="options.validation.stepSessions"]').exists(),
+    ).toBe(true);
+  });
+
   it("switches the workflow into the quote-aware lane and disables direct provider download", async () => {
     listOptionsDatasetsMock.mockResolvedValue([
       {
@@ -737,7 +801,7 @@ describe("OptionsExpressionPanel", () => {
 
     const downloadButton = wrapper
       .findAll("button")
-      .find((entry) => entry.text() === "Download Polygon/Massive 1m data");
+      .find((entry) => entry.text() === "Download Polygon.io 1m data");
     expect(downloadButton).toBeTruthy();
     expect(downloadButton!.attributes("disabled")).toBeDefined();
     expect(wrapper.text()).toContain(
@@ -747,7 +811,7 @@ describe("OptionsExpressionPanel", () => {
       "Direct provider download in this panel is currently available only for the Aggregate lane.",
     );
     expect(wrapper.text()).toContain(
-      "Select Quote-aware Polygon/Massive dataset…",
+      "Select Quote-aware Polygon.io dataset…",
     );
     expect(wrapper.text()).toContain("Lane product status");
     expect(wrapper.text()).toContain("Saved datasets");
@@ -791,7 +855,7 @@ describe("OptionsExpressionPanel", () => {
 
     const downloadButton = wrapper
       .findAll("button")
-      .find((entry) => entry.text() === "Download Polygon/Massive 1m data");
+      .find((entry) => entry.text() === "Download Polygon.io 1m data");
     expect(downloadButton).toBeTruthy();
     expect(downloadButton!.attributes("disabled")).toBeDefined();
     expect(wrapper.text()).toContain(
@@ -801,7 +865,7 @@ describe("OptionsExpressionPanel", () => {
       "Direct provider download in this panel is currently available only for the Aggregate lane.",
     );
     expect(wrapper.text()).toContain(
-      "Select Derived-mid Polygon/Massive dataset…",
+      "Select Derived-mid Polygon.io dataset…",
     );
     expect(wrapper.text()).toContain(
       "only support aggregate_research in the backend",
@@ -814,7 +878,7 @@ describe("OptionsExpressionPanel", () => {
       {
         optionsDatasetId: "spy_options",
         rootSymbol: "SPY",
-        providerName: "massive",
+        providerName: "polygon.io",
         providerSourceSurface: "minute_aggregate",
         providerEntitlementProfile: "options_business",
         quoteResolution: "1m",
@@ -823,7 +887,7 @@ describe("OptionsExpressionPanel", () => {
         timezone: "UTC",
         coverageStart: 1_700_000_000_000,
         coverageEnd: 1_700_000_120_000,
-        contractReferenceSource: "massive_contract_reference",
+        contractReferenceSource: "polygon_contract_reference",
         contractReferenceAsOfUtc: "2026-04-05T00:00:00Z",
         underlierReferenceSource: "underlying_dataset",
         datasetPath: "C:/datasets/spy_options",
@@ -1006,14 +1070,14 @@ describe("OptionsExpressionPanel", () => {
     );
   });
 
-  it("downloads a bounded Polygon/Massive dataset from the options panel", async () => {
+  it("downloads a bounded Polygon.io dataset from the options panel", async () => {
     listOptionsDatasetsMock.mockResolvedValue([]);
     listOptionsExpressionArtifactsMock.mockResolvedValue([]);
     downloadPolygonOptionsDatasetMock.mockResolvedValue({
       manifest: {
         optionsDatasetId: "spy_options_1m",
         rootSymbol: "SPY",
-        providerName: "massive",
+        providerName: "polygon.io",
         providerSourceSurface: "minute_aggregate",
         quoteResolution: "1m",
         priceSemantics: "minute_aggregate",
@@ -1053,7 +1117,7 @@ describe("OptionsExpressionPanel", () => {
 
     const downloadButton = wrapper
       .findAll("button")
-      .find((entry) => entry.text() === "Download Polygon/Massive 1m data");
+      .find((entry) => entry.text() === "Download Polygon.io 1m data");
     expect(downloadButton).toBeTruthy();
     await downloadButton!.trigger("click");
 
@@ -1071,7 +1135,7 @@ describe("OptionsExpressionPanel", () => {
     const store = useOptionsExpressionStore();
     await vi.waitFor(() => {
       expect(store.statusLine).toContain(
-        "Downloaded Polygon/Massive options dataset",
+        "Downloaded Polygon.io options dataset",
       );
     });
     expect(store.latestDatasetDownload?.underlyingCsvPath).toBe(
@@ -1657,7 +1721,7 @@ describe("OptionsExpressionPanel", () => {
       {
         optionsDatasetId: "spy_options",
         rootSymbol: "SPY",
-        providerName: "massive",
+        providerName: "polygon.io",
         providerSourceSurface: "minute_aggregate",
         quoteResolution: "1m",
         priceSemantics: "minute_aggregate",
@@ -1873,7 +1937,7 @@ describe("OptionsExpressionPanel", () => {
     expect(wrapper.text()).toContain("auto");
     expect(wrapper.text()).toContain("Dataset provenance");
     expect(wrapper.text()).toContain(
-      "massive | minute_aggregate | 1m | close | 2026-04-05T00:00:00Z",
+      "polygon.io | minute_aggregate | 1m | close | 2026-04-05T00:00:00Z",
     );
     expect(wrapper.text()).toContain("Filters");
     expect(wrapper.text()).toContain(

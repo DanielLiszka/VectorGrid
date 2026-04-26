@@ -10,7 +10,6 @@ export async function seedAdvancedUiMode(context) {
     try {
       localStorage.setItem('vta_ui_mode_v1', 'advanced')
     } catch {
-
     }
   })
 }
@@ -29,17 +28,48 @@ export async function installMockedTauri(context, options = {}) {
     const invokeLog = []
     let nextCallbackId = 1
 
-    const listen = async (event, cb) => {
+    const addListener = (event, callbackId) => {
       if (!handlers[event]) handlers[event] = []
-      handlers[event].push(cb)
+      handlers[event].push(callbackId)
+      return callbackId
+    }
+    const removeListener = (event, callbackId) => {
+      handlers[event] = (handlers[event] || []).filter((id) => id !== callbackId)
+      unregisterCallback(callbackId)
+    }
+    const emitEvent = (event, payload) => {
+      const listeners = handlers[event] || []
+      for (const callbackId of listeners) {
+        const cb = callbacks[callbackId]
+        if (typeof cb !== 'function') continue
+        try {
+          cb({ event, id: callbackId, payload })
+        } catch {
+        }
+      }
+    }
+    const listen = async (event, cb) => {
+      const callbackId = transformCallback(cb)
+      addListener(event, callbackId)
       return () => {
-        handlers[event] = (handlers[event] || []).filter((fn) => fn !== cb)
+        removeListener(event, callbackId)
       }
     }
 
-    const invoke = async (command) => {
+    const invoke = async (command, args = {}) => {
       const key = String(command ?? '')
       invokeLog.push(key)
+      if (key === 'plugin:event|listen') {
+        return addListener(String(args.event || ''), Number(args.handler))
+      }
+      if (key === 'plugin:event|unlisten') {
+        removeListener(String(args.event || ''), Number(args.eventId))
+        return null
+      }
+      if (key === 'plugin:event|emit') {
+        emitEvent(String(args.event || ''), args.payload)
+        return null
+      }
       if (Object.prototype.hasOwnProperty.call(results, key)) {
         return results[key]
       }
@@ -80,7 +110,7 @@ export async function installMockedTauri(context, options = {}) {
       },
     }
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-      unregisterListener: () => {},
+      unregisterListener: removeListener,
     }
     window.__TAURI__ = window.__TAURI__ || {}
     window.__TAURI__.event = { listen }
@@ -88,15 +118,7 @@ export async function installMockedTauri(context, options = {}) {
     window.__TAURI__.invoke = invoke
 
     if (emitEvents) {
-      window.__VTA_TEST_EMIT = (event, payload) => {
-        const listeners = handlers[event] || []
-        for (const cb of listeners) {
-          try {
-            cb({ event, payload })
-          } catch {
-                      }
-        }
-      }
+      window.__VTA_TEST_EMIT = emitEvent
     }
     window.__VTA_TEST_INVOKES = invokeLog
   }, {

@@ -140,6 +140,7 @@ function reviewTopResults(): void {
           <button
             class="primary"
             type="button"
+            data-qa-action="overview.empty.primary"
             :disabled="overviewPrimaryDisabled"
             @click="analysisStore.overviewEmptyPrimary()"
           >
@@ -148,6 +149,7 @@ function reviewTopResults(): void {
           <button
             v-if="overviewSecondaryVisible"
             type="button"
+            data-qa-action="overview.empty.secondary"
             :disabled="overviewSecondaryDisabled"
             @click="analysisStore.overviewEmptySecondary()"
           >
@@ -170,7 +172,7 @@ function reviewTopResults(): void {
         <div class="riskTitle">{{ executionRisk.title }}</div>
         <div class="riskBody">{{ executionRisk.body }}</div>
         <div class="actions" style="margin-top: 0.75rem;">
-          <button type="button" class="primary" @click="reviewExecutionSurface()">Review live execution</button>
+          <button type="button" class="primary" data-qa-action="overview.live.review" @click="reviewExecutionSurface()">Review live execution</button>
         </div>
       </section>
 
@@ -213,13 +215,13 @@ function reviewTopResults(): void {
             </div>
           </div>
           <div class="actions bestUtilityActions">
-            <button type="button" class="primary" @click="reviewTopResults">Review Top results</button>
-            <button type="button" :disabled="!canCopyBest" @click="analysisStore.copyBest()">Copy</button>
-            <button type="button" class="buttonWithIcon" :disabled="!canExportCsv" @click="analysisStore.exportTopCsv()">
+            <button type="button" class="primary" data-qa-action="overview.top.review" @click="reviewTopResults">Review Top results</button>
+            <button type="button" data-qa-action="overview.best.copy" :disabled="!canCopyBest" @click="analysisStore.copyBest()">Copy</button>
+            <button type="button" class="buttonWithIcon" data-qa-action="overview.top.exportCsv" :disabled="!canExportCsv" @click="analysisStore.exportTopCsv()">
               <AppVisualIcon :icon="artifactExportSnapshotIcon" class="actionIcon" />
               <span>Export top CSV</span>
             </button>
-            <button type="button" class="buttonWithIcon" :disabled="!canExportJson" @click="analysisStore.exportTopJson()">
+            <button type="button" class="buttonWithIcon" data-qa-action="overview.top.exportJson" :disabled="!canExportJson" @click="analysisStore.exportTopJson()">
               <AppVisualIcon :icon="artifactExportSnapshotIcon" class="actionIcon" />
               <span>Export JSON</span>
             </button>

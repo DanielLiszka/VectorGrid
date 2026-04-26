@@ -65,26 +65,24 @@ const {
   validationShortlistMeta,
   validationWarningSummary,
 } = storeToRefs(validationStore)
-const {
-  canRunOnce,
-  canStartLive,
-  canStartRunner,
-  canStopLive,
-  canStopRunner,
-  dryRun,
-  feedStateLabel,
-  hasExecutionCredentials,
-  keyStateDetail,
-  keyStateLabel,
-  liveStatusHint,
-  mode: executionMode,
-  qty,
-  requestedSymbolLabel,
-  runnerStateLabel,
-  runnerStatusHint,
-  statusLine: executionStatusLine,
-  symbol,
-} = storeToRefs(executionStore)
+const canRunOnce = computed(() => executionStore.canRunOnce)
+const canStartLive = computed(() => executionStore.canStartLive)
+const canStartRunner = computed(() => executionStore.canStartRunner)
+const canStopLive = computed(() => executionStore.canStopLive)
+const canStopRunner = computed(() => executionStore.canStopRunner)
+const dryRun = computed(() => executionStore.dryRun)
+const feedStateLabel = computed(() => executionStore.feedStateLabel)
+const hasExecutionCredentials = computed(() => executionStore.hasExecutionCredentials)
+const keyStateDetail = computed(() => executionStore.keyStateDetail)
+const keyStateLabel = computed(() => executionStore.keyStateLabel)
+const liveStatusHint = computed(() => executionStore.liveStatusHint)
+const executionMode = computed(() => executionStore.mode)
+const qty = computed(() => executionStore.qty)
+const requestedSymbolLabel = computed(() => executionStore.requestedSymbolLabel)
+const runnerStateLabel = computed(() => executionStore.runnerStateLabel)
+const runnerStatusHint = computed(() => executionStore.runnerStatusHint)
+const executionStatusLine = computed(() => executionStore.statusLine)
+const symbol = computed(() => executionStore.symbol)
 const { guidedStep } = storeToRefs(settingsStore)
 
 onMounted(async () => {
@@ -315,23 +313,24 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             <span>Next</span>
             <strong>{{ primaryGuidedAction.label }}</strong>
             <small>{{ primaryGuidedAction.detail }}</small>
-            <button type="button" class="guidedPrimary" :disabled="primaryGuidedActionDisabled" @click="runPrimaryGuidedAction">
+            <button type="button" class="guidedPrimary" data-qa-action="guided.primaryAction.run" :disabled="primaryGuidedActionDisabled" @click="runPrimaryGuidedAction">
               <ArrowRight :size="15" aria-hidden="true" />
               {{ primaryGuidedAction.label }}
             </button>
           </div>
-          <button type="button" class="guidedSecondary" @click="settingsStore.setUiMode('advanced')">
+          <button type="button" class="guidedSecondary" data-qa-action="guided.advancedMode.open" @click="settingsStore.setUiMode('advanced')">
             Advanced Mode
           </button>
         </div>
       </header>
 
       <nav class="guidedSteps" aria-label="Guided workflow steps">
-        <button
-          v-for="step in stepMeta"
-          :key="step.key"
-          type="button"
-          class="guidedStepButton"
+          <button
+            v-for="step in stepMeta"
+            :key="step.key"
+            type="button"
+            class="guidedStepButton"
+            data-qa-action="guided.step.select"
           :class="[stepStatuses[step.key], { active: activeStep === step.key }]"
           :aria-current="activeStep === step.key ? 'step' : undefined"
           @click="selectStep(step.key)"
@@ -431,22 +430,22 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             </div>
 
             <div class="guidedActions">
-              <button type="button" class="guidedPrimary" :disabled="!canBrowseCsv" @click="dataStore.browseCsv()">
+              <button type="button" class="guidedPrimary" data-qa-action="guided.data.csv.browse" :disabled="!canBrowseCsv" @click="dataStore.browseCsv()">
                 Browse CSV
               </button>
-              <button type="button" class="guidedSecondary" :disabled="!canLoadCsv" @click="dataStore.loadCsv()">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.data.csv.load" :disabled="!canLoadCsv" @click="dataStore.loadCsv()">
                 Load CSV
               </button>
-              <button type="button" class="guidedSecondary" :disabled="!selectedSample || selectedSample.disabled" @click="loadSelectedSample">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.data.sample.load" :disabled="!selectedSample || selectedSample.disabled" @click="loadSelectedSample">
                 Load sample
               </button>
-              <button type="button" class="guidedSecondary" :disabled="!canPolygonOpen" @click="dataStore.openPolygon()">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.data.polygon.open" :disabled="!canPolygonOpen" @click="dataStore.openPolygon()">
                 Polygon data
               </button>
-              <button type="button" class="guidedSecondary" :disabled="!canApplyTimeframe" @click="applyTimeframe">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.data.timeframe.apply" :disabled="!canApplyTimeframe" @click="applyTimeframe">
                 Apply timeframe
               </button>
-              <button type="button" class="guidedSecondary" :disabled="!canClearData" @click="dataStore.clearData()">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.data.clear" :disabled="!canClearData" @click="dataStore.clearData()">
                 Clear
               </button>
             </div>
@@ -476,7 +475,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
                   <h4>Double MA crossover</h4>
                 </div>
                 <p>Simple trend-following baseline with fast and slow moving averages.</p>
-                <button type="button" class="guidedPrimary" @click="setTemplate('DoubleMa')">
+                <button type="button" class="guidedPrimary" data-qa-action="guided.strategy.template.doubleMa" @click="setTemplate('DoubleMa')">
                   Use Double MA
                 </button>
               </article>
@@ -486,7 +485,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
                   <h4>Composite signal</h4>
                 </div>
                 <p>Conventional composite signal path that can still move into live execution.</p>
-                <button type="button" class="guidedPrimary" @click="setTemplate('CompositeCpu')">
+                <button type="button" class="guidedPrimary" data-qa-action="guided.strategy.template.compositeCpu" @click="setTemplate('CompositeCpu')">
                   Use Composite
                 </button>
               </article>
@@ -538,10 +537,10 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             </p>
 
             <div class="guidedActions">
-              <button type="button" class="guidedPrimary" @click="selectStep('optimize')">
+              <button type="button" class="guidedPrimary" data-qa-action="guided.strategy.continueToOptimize" @click="selectStep('optimize')">
                 Continue to optimize
               </button>
-              <button type="button" class="guidedSecondary" @click="openAdvanced('optimize')">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.optimize.advanced.open" @click="openAdvanced('optimize')">
                 Full strategy controls
               </button>
             </div>
@@ -576,14 +575,14 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 
             <p class="guidedMuted mono">{{ runPlanMeta }}</p>
             <div class="guidedActions">
-              <button v-if="canCancel" type="button" class="guidedDanger" @click="optimizeStore.cancelOptimization()">
+              <button v-if="canCancel" type="button" class="guidedDanger" data-qa-action="guided.optimize.cancel" @click="optimizeStore.cancelOptimization()">
                 Stop run
               </button>
-              <button v-else type="button" class="guidedPrimary" :disabled="guidedRunDisabled" @click="runOptimization">
+              <button v-else type="button" class="guidedPrimary" data-qa-action="guided.optimize.run" :disabled="guidedRunDisabled" @click="runOptimization">
                 <Play :size="15" aria-hidden="true" />
                 Run optimization
               </button>
-              <button type="button" class="guidedSecondary" :disabled="!readiness.optimizationReady.value" @click="selectStep('validate')">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.optimize.continueToValidate" :disabled="!readiness.optimizationReady.value" @click="selectStep('validate')">
                 Continue to validate
               </button>
               <button type="button" class="guidedSecondary" @click="openAdvanced('optimize')">
@@ -627,13 +626,13 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 
             <p class="guidedMuted">{{ validationPreviewText }}</p>
             <div class="guidedActions">
-              <button type="button" class="guidedPrimary" :disabled="validateDisabled" @click="runValidation">
+              <button type="button" class="guidedPrimary" data-qa-action="guided.validation.run" :disabled="validateDisabled" @click="runValidation">
                 Run validation
               </button>
-              <button type="button" class="guidedSecondary" :disabled="!readiness.validationReady.value" @click="selectStep('trade')">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.validation.continueToTrade" :disabled="!readiness.validationReady.value" @click="selectStep('trade')">
                 Continue to trade readiness
               </button>
-              <button type="button" class="guidedSecondary" @click="openAdvanced('validate')">
+              <button type="button" class="guidedSecondary" data-qa-action="guided.validation.advanced.open" @click="openAdvanced('validate')">
                 Full validation report
               </button>
             </div>

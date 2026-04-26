@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeCommand } from "../tauri/invoke";
 import {
   analyzeOptionsExpressionFeasibility,
+  analyzeOptionsExpressionValidationFeasibility,
   downloadPolygonOptionsDataset,
   exportOptionsExpressionCsv,
   exportOptionsExpressionEventPathCsv,
@@ -18,6 +19,7 @@ import {
   pickOptionsCsvPath,
   revealOptionsPath,
   runOptionsExpression,
+  validateOptionsExpressionArtifact,
 } from "./optionsExpressionService";
 
 vi.mock("../tauri/invoke", () => ({
@@ -37,7 +39,7 @@ describe("optionsExpressionService", () => {
       version: 1,
       options_dataset_id: "spy_options",
       root_symbol: "SPY",
-      provider_name: "massive",
+      provider_name: "polygon.io",
       provider_source_surface: "minute_aggregate",
       quote_resolution: "1m",
       price_semantics: "minute_aggregate",
@@ -48,7 +50,7 @@ describe("optionsExpressionService", () => {
       normalization_version: 1,
       quote_semantics_version: 1,
       corporate_action_mapping_version: 1,
-      contract_reference_source: "massive_contract_reference",
+      contract_reference_source: "polygon_contract_reference",
       underlier_reference_source: "underlying_dataset",
       dataset_path: "C:/data/options.csv",
       row_count: 42,
@@ -74,7 +76,7 @@ describe("optionsExpressionService", () => {
       version: 1,
       options_dataset_id: "spy_mid",
       root_symbol: "SPY",
-      provider_name: "massive",
+      provider_name: "polygon.io",
       provider_source_surface: "derived_mid_snapshot",
       quote_resolution: "1m",
       price_semantics: "derived_mid_snapshot",
@@ -85,7 +87,7 @@ describe("optionsExpressionService", () => {
       normalization_version: 1,
       quote_semantics_version: 1,
       corporate_action_mapping_version: 1,
-      contract_reference_source: "massive_contract_reference",
+      contract_reference_source: "polygon_contract_reference",
       contract_reference_as_of_utc: "2026-04-05T00:00:00Z",
       provider_entitlement_profile: "options_business",
       underlier_reference_source: "underlying_dataset",
@@ -107,13 +109,13 @@ describe("optionsExpressionService", () => {
     expect(summary.aggregatePriceField).toBe("");
   });
 
-  it("normalizes Polygon/Massive download responses", async () => {
+  it("normalizes Polygon.io download responses", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       manifest: {
         version: 1,
         options_dataset_id: "spy_options_1m",
         root_symbol: "SPY",
-        provider_name: "massive",
+        provider_name: "polygon.io",
         provider_source_surface: "minute_aggregate",
         quote_resolution: "1m",
         price_semantics: "minute_aggregate",
@@ -124,7 +126,7 @@ describe("optionsExpressionService", () => {
         normalization_version: 1,
         quote_semantics_version: 1,
         corporate_action_mapping_version: 1,
-        contract_reference_source: "massive_contract_reference",
+        contract_reference_source: "polygon_contract_reference",
         contract_reference_as_of_utc: "2026-04-06T23:59:00Z",
         underlier_reference_source: "polygon_stocks_1m_raw:SPY",
         dataset_path: "C:/data/spy_options_rows.csv",
@@ -918,6 +920,245 @@ describe("optionsExpressionService", () => {
           options_dataset_id: "spy_options",
         },
       },
+    );
+  });
+
+  it("normalizes subsequent validation preview and result responses", async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        replay_build_ms: 5,
+        artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
+        source_artifact_hash: "source-hash",
+        options_dataset_id: "spy_options",
+        options_dataset_hash: "hash-1",
+        dataset_policy: "require_exact_replay",
+        replacement_dataset: false,
+        validation_plan: {
+          mode: "date_range_holdout",
+          start_timestamp_ms: 1_775_174_400_000,
+          end_timestamp_ms: 1_775_260_800_000,
+        },
+        tuple_selection: {
+          include_sealed_finalists: true,
+          include_robust_leader: true,
+          include_holdout_leader: true,
+          tuple_indexes: [2],
+        },
+        selected_tuple_indexes: [0, 2],
+        selected_tuple_count: 2,
+        price_semantics: "minute_aggregate",
+        dataset_provenance: {
+          provider_name: "polygon.io",
+          provider_source_surface: "top_of_book_quote",
+          quote_resolution: "1m",
+          quote_quality: {
+            price_semantics: "top_of_book_quote",
+            row_count: 10,
+            contract_count: 2,
+            any_quote_row_count: 8,
+            bid_row_count: 7,
+            ask_row_count: 7,
+            bid_ask_row_count: 7,
+            mid_row_count: 8,
+            quote_age_row_count: 8,
+            stale_quote_threshold_ms: 900000,
+            stale_quote_row_count: 1,
+            any_quote_coverage_rate: 0.8,
+            bid_ask_coverage_rate: 0.7,
+            mid_coverage_rate: 0.8,
+            stale_quote_rate: 0.1,
+            mean_spread_bps: 42,
+            median_spread_bps: 40,
+            max_spread_bps: 80,
+            max_quote_age_ms: 1200000,
+            per_contract: [
+              {
+                contract_id: "SPY-2026-04-03-C-645",
+                row_count: 5,
+                any_quote_row_count: 4,
+                bid_ask_row_count: 4,
+                mid_row_count: 4,
+                quote_age_row_count: 4,
+                stale_quote_row_count: 1,
+                any_quote_coverage_rate: 0.8,
+                bid_ask_coverage_rate: 0.8,
+                mid_coverage_rate: 0.8,
+                stale_quote_rate: 0.2,
+                mean_spread_bps: 40,
+                max_spread_bps: 80,
+                max_quote_age_ms: 1200000,
+              },
+            ],
+          },
+        },
+        notes: ["Exact replay is eligible."],
+      })
+      .mockResolvedValueOnce({
+        artifact_path: "C:/runs/vectorgrid_options_validation_1.json",
+        replay_build_ms: 5,
+        validation_ms: 8,
+        result: {
+          version: 1,
+          kind: "vectorgrid_options_expression_validation_v1",
+          ts: "2026-04-05T12:30:00Z",
+          validation_artifact_path:
+            "C:/runs/vectorgrid_options_validation_1.json",
+          source_artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
+          source_artifact_hash: "source-hash",
+          parent_artifact_id: "vectorgrid_run_1",
+          parent_artifact_hash: "parent-hash",
+          signal_manifest_id: "manifest",
+          root_symbol: "SPY",
+          options_dataset_id: "spy_options",
+          options_dataset_hash: "hash-1",
+          dataset_policy: "require_exact_replay",
+          replacement_dataset: false,
+          validation_plan: {
+            mode: "date_range_holdout",
+            start_timestamp_ms: 1_775_174_400_000,
+            end_timestamp_ms: 1_775_260_800_000,
+          },
+          tuple_selection: {
+            include_sealed_finalists: true,
+            include_robust_leader: true,
+            include_holdout_leader: true,
+            tuple_indexes: [2],
+          },
+          price_semantics: "minute_aggregate",
+          dataset_provenance: {
+            provider_name: "polygon.io",
+            provider_source_surface: "top_of_book_quote",
+            quote_resolution: "1m",
+            quote_quality: {
+              price_semantics: "top_of_book_quote",
+              row_count: 10,
+              contract_count: 2,
+              any_quote_row_count: 8,
+              bid_row_count: 7,
+              ask_row_count: 7,
+              bid_ask_row_count: 7,
+              mid_row_count: 8,
+              quote_age_row_count: 8,
+              stale_quote_threshold_ms: 900000,
+              stale_quote_row_count: 1,
+              any_quote_coverage_rate: 0.8,
+              bid_ask_coverage_rate: 0.7,
+              mid_coverage_rate: 0.8,
+              stale_quote_rate: 0.1,
+              mean_spread_bps: 42,
+              median_spread_bps: 40,
+              max_spread_bps: 80,
+              max_quote_age_ms: 1200000,
+              per_contract: [],
+            },
+          },
+          diagnostics: {
+            parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+            options_dataset_id: "spy_options",
+            root_symbol: "SPY",
+            total_events: 10,
+            bullish_events: 6,
+            bearish_events: 4,
+            search_events: 6,
+            holdout_events: 2,
+            sealed_test_events: 2,
+            dataset_contracts: 3,
+            dataset_rows: 42,
+          },
+          overlap_window: {},
+          coverage_adequacy: {},
+          lane_summaries: [
+            {
+              lane: "sealed",
+              tuple_count: 2,
+              supported_tuple_count: 1,
+              support_deficient_tuple_count: 1,
+              best_expectancy_per_premium: 0.2,
+              worst_expectancy_per_premium: 0.1,
+              median_expectancy_per_premium: 0.15,
+            },
+          ],
+          acceptance_summary: {
+            verdict: "accepted",
+            selected_tuple_count: 2,
+            validated_tuple_count: 2,
+            accepted_tuple_count: 1,
+            support_deficient_tuple_count: 1,
+            stress_fragile_tuple_count: 0,
+            best_validated_expectancy_per_premium: 0.2,
+            worst_stress_expectancy_per_premium: 0.1,
+            notes: ["1 tuple passed."],
+          },
+          tuple_results: [
+            {
+              source_tuple_index: 2,
+              source_validation_verdict: "sealed_finalist",
+              source_robust_score: 0.4,
+              validated_tuple: {
+                tuple: {
+                  delay_minutes: 0,
+                  dte_days: 1,
+                  moneyness_bucket: "atm",
+                  hold_minutes: 15,
+                  exit_template: "fixed_hold",
+                  fill_model: "aggregate_research",
+                },
+                robust_score: 0.42,
+                selection_metrics: {
+                  valid_trades: 2,
+                  invalid_events: 0,
+                  invalid_rate: 0,
+                  expectancy_per_trade: 10,
+                  expectancy_per_premium: 0.2,
+                  median_return_on_premium: 0.2,
+                  win_rate: 0.5,
+                  total_pnl_per_contract: 20,
+                },
+                validation_verdict: "sealed_finalist",
+              },
+              support_deficient: false,
+              drift: {
+                selection_expectancy_delta: 0.01,
+                robust_score_delta: 0.02,
+              },
+            },
+          ],
+        },
+      });
+
+    const preview = await analyzeOptionsExpressionValidationFeasibility({
+      artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
+    });
+    const validation = await validateOptionsExpressionArtifact({
+      artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
+    });
+
+    expect(preview.selectedTupleIndexes).toEqual([0, 2]);
+    expect(preview.datasetProvenance?.providerName).toBe("polygon.io");
+    expect(preview.validationPlan.mode).toBe("date_range_holdout");
+    expect(preview.validationPlan.startTimestampMs).toBe(1_775_174_400_000);
+    expect(preview.datasetProvenance?.quoteQuality?.bidAskCoverageRate).toBe(
+      0.7,
+    );
+    expect(validation.artifactPath).toBe(
+      "C:/runs/vectorgrid_options_validation_1.json",
+    );
+    expect(validation.result.validationPlan.mode).toBe("date_range_holdout");
+    expect(
+      validation.result.datasetProvenance?.quoteQuality?.maxQuoteAgeMs,
+    ).toBe(1_200_000);
+    expect(validation.result.acceptanceSummary.verdict).toBe("accepted");
+    expect(validation.result.laneSummaries[0]?.lane).toBe("sealed");
+    expect(validation.result.tupleResults[0]?.sourceTupleIndex).toBe(2);
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "analyze_options_expression_validation_feasibility",
+      { req: { artifact_path: "C:/runs/vectorgrid_options_expression_1.json" } },
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "validate_options_expression_artifact",
+      { req: { artifact_path: "C:/runs/vectorgrid_options_expression_1.json" } },
     );
   });
 

@@ -1,16 +1,19 @@
 import { defineStore } from "pinia";
 import type {
   AnalyzeOptionsExpressionFeasibilitySummary,
+  AnalyzeOptionsExpressionValidationFeasibilitySummary,
   OptionsDatasetManifestSummary,
   OptionsExpressionArtifactRecord,
   OptionsExpressionArtifactSummary,
   OptionsExpressionEventPathInspectionSummary,
   OptionsExpressionTupleInspectionSummary,
+  ValidateOptionsExpressionArtifactSummary,
   PolygonOptionsDatasetDownloadSummary,
   RunOptionsExpressionSummary,
 } from "../services/optionsExpressionService";
 import {
   analyzeOptionsExpressionFeasibility,
+  analyzeOptionsExpressionValidationFeasibility,
   downloadPolygonOptionsDataset,
   exportOptionsExpressionCsv,
   exportOptionsExpressionEventPathCsv,
@@ -24,6 +27,7 @@ import {
   pickOptionsCsvPath,
   revealOptionsPath,
   runOptionsExpression,
+  validateOptionsExpressionArtifact,
 } from "../services/optionsExpressionService";
 
 export const OPTIONS_MONEYNESS_BUCKET_OPTIONS = [
@@ -56,6 +60,18 @@ export const OPTIONS_BACKEND_PREFERENCE_OPTIONS = [
 export const OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS = [
   "event_chronological",
   "session_chronological",
+] as const;
+export const OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS = [
+  "require_exact_replay",
+  "allow_same_root_replacement",
+  "allow_explicit_cross_lane_comparison",
+] as const;
+export const OPTIONS_VALIDATION_PLAN_MODE_OPTIONS = [
+  "original_embedded_splits",
+  "session_chronological_replay",
+  "date_range_holdout",
+  "anchored_walk_forward",
+  "rolling_session_walk_forward",
 ] as const;
 export const OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS = [
   "minute_aggregate",
@@ -212,6 +228,28 @@ function normalizeOptionalNumber(value: unknown): number | null {
 function normalizeOptionalInteger(value: unknown): number | null {
   const parsed = normalizeOptionalNumber(value);
   return parsed == null ? null : Math.max(0, Math.floor(parsed));
+}
+
+function parseRequiredPositiveIntegerInput(
+  value: unknown,
+  label: string,
+): number {
+  const raw = normalizeText(value);
+  const parsed = Number(raw);
+  if (!raw || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive whole number.`);
+  }
+  return parsed;
+}
+
+function parseUtcDateInputToMs(value: unknown, label: string): number {
+  const raw = normalizeText(value);
+  if (!raw) throw new Error(`${label} is required.`);
+  const parsed = Date.parse(`${raw}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a valid YYYY-MM-DD date.`);
+  }
+  return parsed;
 }
 
 function parseOptionalFiniteInput(value: unknown): {
@@ -404,6 +442,9 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     latestRun: null as RunOptionsExpressionSummary | null,
     latestFeasibility:
       null as AnalyzeOptionsExpressionFeasibilitySummary | null,
+    latestValidationFeasibility:
+      null as AnalyzeOptionsExpressionValidationFeasibilitySummary | null,
+    latestValidation: null as ValidateOptionsExpressionArtifactSummary | null,
     activeTupleInspection:
       null as OptionsExpressionTupleInspectionSummary | null,
     activeEventPathInspection:
@@ -419,6 +460,17 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     structureFamily: "long_single",
     backendPreference: "auto",
     splitAssignmentMode: "event_chronological",
+    validationDatasetPolicy: "require_exact_replay",
+    validationPlanMode: "original_embedded_splits",
+    validationStartDateInput: "",
+    validationEndDateInput: "",
+    validationTrainSessionCountInput: "5",
+    validationSessionCountInput: "1",
+    validationStepSessionCountInput: "1",
+    validationIncludeSealedFinalists: true,
+    validationIncludeRobustLeader: true,
+    validationIncludeHoldoutLeader: true,
+    validationTupleIndexesInput: "",
     topKInput: "25",
     sealedFinalistCountInput: "5",
     minValidTradesInput: "",
@@ -438,6 +490,8 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     inspectionBusy: false,
     eventPathBusy: false,
     feasibilityBusy: false,
+    validationFeasibilityBusy: false,
+    validationBusy: false,
     statusLine:
       "Select a saved supported run to configure an options expression follow-up.",
   }),
@@ -479,6 +533,14 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         normalizeText(state.activeArtifact?.artifactPath) ||
         normalizeText(state.selectedArtifactPath)
       );
+    },
+
+    activeValidationArtifactPath(state): string {
+      return normalizeText(state.latestValidation?.artifactPath);
+    },
+
+    validationAcceptance(state) {
+      return state.latestValidation?.result.acceptanceSummary || null;
     },
 
     activeArtifactTimestamp(state): string {
@@ -621,6 +683,8 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.activeArtifact = null;
         this.latestRun = null;
         this.latestFeasibility = null;
+        this.latestValidationFeasibility = null;
+        this.latestValidation = null;
         this.latestDatasetDownload = null;
         this.activeTupleInspection = null;
         this.activeEventPathInspection = null;
@@ -636,7 +700,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         return;
       }
       this.statusLine =
-        "Ready to import a Polygon/Massive options dataset or reuse an existing one.";
+        "Ready to import a Polygon.io options dataset or reuse an existing one.";
     },
 
     async bootstrap(): Promise<void> {
@@ -728,9 +792,9 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         const imported = await importOptionsDataset({
           csv_path: csvPath,
           root_symbol: normalizeText(this.importRootSymbol) || undefined,
-          provider_name: "massive",
+          provider_name: "polygon.io",
           provider_source_surface: importPriceSemantics,
-          contract_reference_source: "massive_contract_reference",
+          contract_reference_source: "polygon_contract_reference",
           price_semantics: importPriceSemantics,
           aggregate_price_field:
             importPriceSemantics === "minute_aggregate" ? "close" : undefined,
@@ -751,7 +815,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     async downloadDatasetFromPolygon(): Promise<void> {
       if (this.realismLane !== "aggregate") {
         this.statusLine =
-          "Direct Polygon/Massive download in this panel is aggregate-lane only. Switch the realism lane to Aggregate to use provider download.";
+          "Direct Polygon.io download in this panel is aggregate-lane only. Switch the realism lane to Aggregate to use provider download.";
         return;
       }
       const rootSymbol = normalizeText(
@@ -761,12 +825,12 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       const to = normalizeText(this.downloadToDateInput);
       if (!rootSymbol) {
         this.statusLine =
-          "Enter a Polygon/Massive root symbol before downloading options data.";
+          "Enter a Polygon.io root symbol before downloading options data.";
         return;
       }
       if (!from || !to) {
         this.statusLine =
-          "Enter both from/to dates for the Polygon/Massive options download.";
+          "Enter both from/to dates for the Polygon.io options download.";
         return;
       }
 
@@ -823,13 +887,13 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.ensureCompatibleFillModel();
         this.latestDatasetDownload = downloaded;
         this.statusLine =
-          `Downloaded Polygon/Massive options dataset ${downloaded.manifest.optionsDatasetId} ` +
+          `Downloaded Polygon.io options dataset ${downloaded.manifest.optionsDatasetId} ` +
           `(${downloaded.contractsWithRows}/${downloaded.contractsSelected} contracts with rows, ` +
           `${downloaded.downloadedOptionRows} option rows).`;
       } catch (error) {
         this.statusLine =
           String(error || "").trim() ||
-          "Failed to download Polygon/Massive options dataset.";
+          "Failed to download Polygon.io options dataset.";
       } finally {
         this.downloadBusy = false;
       }
@@ -1170,6 +1234,8 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.latestFeasibility = null;
         this.activeTupleInspection = null;
         this.activeEventPathInspection = null;
+        this.latestValidation = null;
+        this.latestValidationFeasibility = null;
         this.statusLine = this.selectedDatasetId
           ? `Loaded saved options expression artifact ${fileStem(nextPath) || nextPath}; pinned replay to dataset ${artifact.optionsDatasetId}.`
           : `Loaded saved options expression artifact ${fileStem(nextPath) || nextPath}, but dataset ${artifact.optionsDatasetId} is not currently imported. Select a replacement dataset intentionally before rerunning or previewing feasibility.`;
@@ -1179,6 +1245,123 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           "Failed to load saved options expression artifact.";
       } finally {
         this.loadBusy = false;
+      }
+    },
+
+    buildValidationRequest(): Record<string, unknown> {
+      const artifactPath = this.activeArtifactPath;
+      if (!artifactPath) {
+        throw new Error("Load or run an options expression artifact before validation.");
+      }
+      const datasetPolicy = pickSupported(
+        this.validationDatasetPolicy,
+        OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS,
+        "require_exact_replay",
+      );
+      const replacementPolicy = datasetPolicy !== "require_exact_replay";
+      if (replacementPolicy && !this.selectedDatasetId) {
+        throw new Error(
+          "Select a Polygon.io replacement dataset before using a replacement validation policy.",
+        );
+      }
+      const tupleIndexes = parseIntegerList(
+        this.validationTupleIndexesInput,
+        [],
+      );
+      const validationPlanMode = pickSupported(
+        this.validationPlanMode,
+        OPTIONS_VALIDATION_PLAN_MODE_OPTIONS,
+        "original_embedded_splits",
+      );
+      const validationPlan: Record<string, unknown> = {
+        mode: validationPlanMode,
+      };
+      if (validationPlanMode === "date_range_holdout") {
+        const start = parseUtcDateInputToMs(
+          this.validationStartDateInput,
+          "Validation start date",
+        );
+        const end = parseUtcDateInputToMs(
+          this.validationEndDateInput,
+          "Validation end date",
+        );
+        if (start >= end) {
+          throw new Error(
+            "Validation start date must be before validation end date.",
+          );
+        }
+        validationPlan.start_timestamp_ms = start;
+        validationPlan.end_timestamp_ms = end;
+      }
+      if (
+        validationPlanMode === "anchored_walk_forward" ||
+        validationPlanMode === "rolling_session_walk_forward"
+      ) {
+        validationPlan.train_session_count =
+          parseRequiredPositiveIntegerInput(
+            this.validationTrainSessionCountInput,
+            "Train sessions",
+          );
+        validationPlan.validation_session_count =
+          parseRequiredPositiveIntegerInput(
+            this.validationSessionCountInput,
+            "Validation sessions",
+          );
+        validationPlan.step_session_count = parseRequiredPositiveIntegerInput(
+          this.validationStepSessionCountInput,
+          "Step sessions",
+        );
+      }
+      return {
+        artifact_path: artifactPath,
+        options_dataset_id: replacementPolicy
+          ? this.selectedDatasetId
+          : this.activeArtifact?.optionsDatasetId || this.selectedDatasetId,
+        dataset_policy: datasetPolicy,
+        tuple_selection: {
+          include_sealed_finalists: this.validationIncludeSealedFinalists,
+          include_robust_leader: this.validationIncludeRobustLeader,
+          include_holdout_leader: this.validationIncludeHoldoutLeader,
+          tuple_indexes: tupleIndexes,
+        },
+        validation_plan: validationPlan,
+        min_valid_trades: normalizeOptionalInteger(this.minValidTradesInput),
+      };
+    },
+
+    async previewValidationFeasibility(): Promise<void> {
+      this.validationFeasibilityBusy = true;
+      try {
+        const preview = await analyzeOptionsExpressionValidationFeasibility(
+          this.buildValidationRequest(),
+        );
+        this.latestValidationFeasibility = preview;
+        this.statusLine = `Validation preview selected ${preview.selectedTupleCount} tuple${preview.selectedTupleCount === 1 ? "" : "s"} for ${preview.datasetPolicy}.`;
+      } catch (error) {
+        this.statusLine =
+          String(error || "").trim() ||
+          "Failed to preview options-expression validation.";
+      } finally {
+        this.validationFeasibilityBusy = false;
+      }
+    },
+
+    async validateActiveArtifact(): Promise<void> {
+      this.validationBusy = true;
+      try {
+        const validation = await validateOptionsExpressionArtifact(
+          this.buildValidationRequest(),
+        );
+        this.latestValidation = validation;
+        this.latestValidationFeasibility = null;
+        const summary = validation.result.acceptanceSummary;
+        this.statusLine = `Validation ${summary.verdict.replace(/_/g, " ")}: ${summary.acceptedTupleCount}/${summary.validatedTupleCount} tuple${summary.validatedTupleCount === 1 ? "" : "s"} accepted.`;
+      } catch (error) {
+        this.statusLine =
+          String(error || "").trim() ||
+          "Failed to validate options expression artifact.";
+      } finally {
+        this.validationBusy = false;
       }
     },
 
@@ -1195,6 +1378,22 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.statusLine =
           String(error || "").trim() ||
           "Failed to reveal options expression artifact path.";
+      }
+    },
+
+    async revealLatestValidationArtifact(): Promise<void> {
+      const nextPath = this.activeValidationArtifactPath;
+      if (!nextPath) {
+        this.statusLine = "No options validation artifact is active yet.";
+        return;
+      }
+      try {
+        await revealOptionsPath(nextPath);
+        this.statusLine = `Revealed ${nextPath}.`;
+      } catch (error) {
+        this.statusLine =
+          String(error || "").trim() ||
+          "Failed to reveal options validation artifact path.";
       }
     },
 

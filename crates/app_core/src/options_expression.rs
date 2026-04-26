@@ -12,7 +12,11 @@ use crate::options_types::{
     OptionsExpressionMetrics, OptionsExpressionOverlapWindowSummary, OptionsExpressionRunRequest,
     OptionsExpressionRunResult, OptionsExpressionSplitInvalidReasonSummary,
     OptionsExpressionStagingStats, OptionsExpressionTupleInspectionResult,
-    OptionsExpressionTupleResult, OptionsFillModelFamily, OptionsMoneynessBucket,
+    OptionsExpressionTupleResult, OptionsExpressionValidationAcceptanceSummary,
+    OptionsExpressionValidationAcceptanceVerdict, OptionsExpressionValidationEvaluationResult,
+    OptionsExpressionValidationLaneSummary, OptionsExpressionValidationPlan,
+    OptionsExpressionValidationPlanMode, OptionsExpressionValidationTupleDriftSummary,
+    OptionsExpressionValidationTupleResult, OptionsFillModelFamily, OptionsMoneynessBucket,
     OptionsMoneynessBucketCoverage, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
     OptionsSignalEventManifestV1, OptionsSplitAssignmentMode, OptionsStructureFamily,
     OptionsTupleSpec, SignalSide,
@@ -54,6 +58,7 @@ const OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE: f64 = 0.50;
 const OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE: f64 = 0.50;
 const OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD: f64 = 0.40;
 const OPTIONS_EXACTIFY_BUFFER_SURPLUS_MAX: usize = 8;
+const OPTIONS_VALIDATION_DATE_RANGE_END_EXCLUSIVE_LABEL: &str = "end-exclusive";
 
 #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn forced_options_expression_cuda_device_id() -> &'static Mutex<Option<Option<u32>>> {
@@ -629,6 +634,255 @@ fn assign_splits(
         }
     }
     Ok(events)
+}
+
+fn validation_session_key(event: &OptionsSignalEvent) -> String {
+    event
+        .session_id
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "utc_day:{}",
+                event.earliest_tradable_timestamp.div_euclid(DAY_MS)
+            )
+        })
+}
+
+fn ordered_validation_session_indices(events: &[OptionsSignalEvent]) -> (Vec<String>, Vec<usize>) {
+    let mut ordered_sessions: Vec<String> = Vec::new();
+    let mut session_index_by_key = BTreeMap::<String, usize>::new();
+    let mut event_session_indices = Vec::with_capacity(events.len());
+    for event in events {
+        let key = validation_session_key(event);
+        let next_index = if let Some(existing) = session_index_by_key.get(&key) {
+            *existing
+        } else {
+            let index = ordered_sessions.len();
+            ordered_sessions.push(key.clone());
+            session_index_by_key.insert(key, index);
+            index
+        };
+        event_session_indices.push(next_index);
+    }
+    (ordered_sessions, event_session_indices)
+}
+
+fn refresh_prepared_split_diagnostics(
+    prepared: &mut PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
+) {
+    prepared.diagnostics.search_events = prepared
+        .events
+        .iter()
+        .filter(|event| event.fold == OptionsEvaluationSplit::Search)
+        .count();
+    prepared.diagnostics.holdout_events = prepared
+        .events
+        .iter()
+        .filter(|event| event.fold == OptionsEvaluationSplit::Holdout)
+        .count();
+    prepared.diagnostics.sealed_test_events = prepared
+        .events
+        .iter()
+        .filter(|event| event.fold == OptionsEvaluationSplit::SealedTest)
+        .count();
+    prepared.overlap_window =
+        build_overlap_window_summary(&prepared.events, &prepared.diagnostics, dataset);
+}
+
+fn validation_plan_positive_count(value: Option<usize>, field_name: &str) -> Result<usize, String> {
+    match value {
+        Some(value) if value > 0 => Ok(value),
+        _ => Err(format!("{field_name} must be a positive session count")),
+    }
+}
+
+fn apply_date_range_holdout_plan(
+    prepared: &mut PreparedOptionsExpressionRun,
+    plan: &OptionsExpressionValidationPlan,
+    dataset: &ImportedOptionsDataset,
+) -> Result<Vec<String>, String> {
+    let start = plan
+        .start_timestamp_ms
+        .ok_or_else(|| "date_range_holdout validation requires start_timestamp_ms".to_string())?;
+    let end = plan
+        .end_timestamp_ms
+        .ok_or_else(|| "date_range_holdout validation requires end_timestamp_ms".to_string())?;
+    if start >= end {
+        return Err(
+            "date_range_holdout validation requires start_timestamp_ms < end_timestamp_ms"
+                .to_string(),
+        );
+    }
+
+    let mut holdout_events = 0usize;
+    for event in &mut prepared.events {
+        let in_range =
+            event.earliest_tradable_timestamp >= start && event.earliest_tradable_timestamp < end;
+        event.fold = if in_range {
+            holdout_events = holdout_events.saturating_add(1);
+            OptionsEvaluationSplit::Holdout
+        } else {
+            OptionsEvaluationSplit::Search
+        };
+    }
+    if holdout_events == 0 {
+        return Err(format!(
+            "date_range_holdout validation found no signal events in the {OPTIONS_VALIDATION_DATE_RANGE_END_EXCLUSIVE_LABEL} range [{start}, {end})"
+        ));
+    }
+    refresh_prepared_split_diagnostics(prepared, dataset);
+    Ok(vec![format!(
+        "Validation plan date_range_holdout reassigned {} event{} to holdout for the {OPTIONS_VALIDATION_DATE_RANGE_END_EXCLUSIVE_LABEL} range [{start}, {end}); all other events remained search context.",
+        holdout_events,
+        if holdout_events == 1 { "" } else { "s" }
+    )])
+}
+
+fn apply_session_walk_forward_union_plan(
+    prepared: &mut PreparedOptionsExpressionRun,
+    plan: &OptionsExpressionValidationPlan,
+    dataset: &ImportedOptionsDataset,
+    anchored: bool,
+) -> Result<Vec<String>, String> {
+    let train_session_count =
+        validation_plan_positive_count(plan.train_session_count, "train_session_count")?;
+    let validation_session_count =
+        validation_plan_positive_count(plan.validation_session_count, "validation_session_count")?;
+    let step_session_count = validation_plan_positive_count(
+        plan.step_session_count.or(Some(validation_session_count)),
+        "step_session_count",
+    )?;
+    let (ordered_sessions, event_session_indices) =
+        ordered_validation_session_indices(&prepared.events);
+    let total_sessions = ordered_sessions.len();
+    let minimum_sessions = train_session_count.saturating_add(validation_session_count);
+    if total_sessions < minimum_sessions {
+        return Err(format!(
+            "{} validation requires at least {} ordered sessions, but only {} are available",
+            if anchored {
+                "anchored_walk_forward"
+            } else {
+                "rolling_session_walk_forward"
+            },
+            minimum_sessions,
+            total_sessions
+        ));
+    }
+
+    let mut validation_session_flags = vec![false; total_sessions];
+    let mut window_count = 0usize;
+    if anchored {
+        let mut validation_start = train_session_count;
+        while validation_start < total_sessions {
+            let validation_end = validation_start
+                .saturating_add(validation_session_count)
+                .min(total_sessions);
+            if validation_start >= validation_end {
+                break;
+            }
+            for flag in validation_session_flags
+                .iter_mut()
+                .take(validation_end)
+                .skip(validation_start)
+            {
+                *flag = true;
+            }
+            window_count = window_count.saturating_add(1);
+            validation_start = validation_start.saturating_add(step_session_count);
+        }
+    } else {
+        let mut train_start = 0usize;
+        loop {
+            let validation_start = train_start.saturating_add(train_session_count);
+            let validation_end = validation_start
+                .saturating_add(validation_session_count)
+                .min(total_sessions);
+            if validation_start >= total_sessions || validation_start >= validation_end {
+                break;
+            }
+            for flag in validation_session_flags
+                .iter_mut()
+                .take(validation_end)
+                .skip(validation_start)
+            {
+                *flag = true;
+            }
+            window_count = window_count.saturating_add(1);
+            train_start = train_start.saturating_add(step_session_count);
+            if train_start.saturating_add(train_session_count) >= total_sessions {
+                break;
+            }
+        }
+    }
+
+    let validation_session_total = validation_session_flags
+        .iter()
+        .filter(|flag| **flag)
+        .count();
+    if validation_session_total == 0 {
+        return Err("walk-forward validation produced no validation sessions".to_string());
+    }
+
+    let mut holdout_events = 0usize;
+    for (event, session_index) in prepared.events.iter_mut().zip(event_session_indices) {
+        event.fold = if validation_session_flags
+            .get(session_index)
+            .copied()
+            .unwrap_or(false)
+        {
+            holdout_events = holdout_events.saturating_add(1);
+            OptionsEvaluationSplit::Holdout
+        } else {
+            OptionsEvaluationSplit::Search
+        };
+    }
+    if holdout_events == 0 {
+        return Err("walk-forward validation produced no holdout events".to_string());
+    }
+    refresh_prepared_split_diagnostics(prepared, dataset);
+    let mode = if anchored {
+        "anchored_walk_forward"
+    } else {
+        "rolling_session_walk_forward"
+    };
+    Ok(vec![format!(
+        "Validation plan {mode} built {} window{} across {} ordered session{} and evaluated the union of {} validation session{} as holdout.",
+        window_count,
+        if window_count == 1 { "" } else { "s" },
+        total_sessions,
+        if total_sessions == 1 { "" } else { "s" },
+        validation_session_total,
+        if validation_session_total == 1 { "" } else { "s" }
+    )])
+}
+
+fn apply_validation_plan_to_prepared(
+    prepared: &mut PreparedOptionsExpressionRun,
+    plan: &OptionsExpressionValidationPlan,
+    dataset: &ImportedOptionsDataset,
+) -> Result<Vec<String>, String> {
+    match plan.mode {
+        OptionsExpressionValidationPlanMode::OriginalEmbeddedSplits => Ok(vec![
+            "Validation plan original_embedded_splits reused the saved request split policy."
+                .to_string(),
+        ]),
+        OptionsExpressionValidationPlanMode::SessionChronologicalReplay => Ok(vec![
+            "Validation plan session_chronological_replay rebuilt splits by ordered session."
+                .to_string(),
+        ]),
+        OptionsExpressionValidationPlanMode::DateRangeHoldout => {
+            apply_date_range_holdout_plan(prepared, plan, dataset)
+        }
+        OptionsExpressionValidationPlanMode::AnchoredWalkForward => {
+            apply_session_walk_forward_union_plan(prepared, plan, dataset, true)
+        }
+        OptionsExpressionValidationPlanMode::RollingSessionWalkForward => {
+            apply_session_walk_forward_union_plan(prepared, plan, dataset, false)
+        }
+    }
 }
 
 fn lower_bound_timestamp(rows: &[OptionsPriceRow], timestamp_ms: i64) -> Option<usize> {
@@ -5437,6 +5691,453 @@ pub fn run_options_expression_blocking(
     })
 }
 
+fn optional_expectancy_delta(
+    validated: Option<&OptionsExpressionMetrics>,
+    source: Option<&OptionsExpressionMetrics>,
+) -> Option<f64> {
+    match (validated, source) {
+        (Some(validated), Some(source)) => {
+            Some(validated.expectancy_per_premium - source.expectancy_per_premium)
+        }
+        _ => None,
+    }
+}
+
+fn validation_lane_summary(
+    lane: &str,
+    tuple_results: &[OptionsExpressionValidationTupleResult],
+    min_valid_trades: Option<usize>,
+    metric: impl Fn(&OptionsExpressionTupleResult) -> Option<&OptionsExpressionMetrics>,
+) -> OptionsExpressionValidationLaneSummary {
+    let support_floor = min_valid_trades.unwrap_or(1).max(1);
+    let mut values: Vec<f64> = tuple_results
+        .iter()
+        .filter_map(|row| metric(&row.validated_tuple))
+        .filter(|metrics| metrics.valid_trades >= support_floor)
+        .map(|metrics| metrics.expectancy_per_premium)
+        .filter(|value| value.is_finite())
+        .collect();
+    values.sort_by(|left, right| left.total_cmp(right));
+    let supported_tuple_count = values.len();
+    let support_deficient_tuple_count = tuple_results
+        .iter()
+        .filter(|row| {
+            metric(&row.validated_tuple)
+                .map(|metrics| metrics.valid_trades < support_floor)
+                .unwrap_or(true)
+        })
+        .count();
+    let median_expectancy_per_premium = if values.is_empty() {
+        None
+    } else {
+        Some(median(values.clone()))
+    };
+
+    OptionsExpressionValidationLaneSummary {
+        lane: lane.to_string(),
+        tuple_count: tuple_results.len(),
+        supported_tuple_count,
+        support_deficient_tuple_count,
+        min_valid_trades,
+        best_expectancy_per_premium: values.last().copied(),
+        worst_expectancy_per_premium: values.first().copied(),
+        median_expectancy_per_premium,
+    }
+}
+
+fn build_validation_lane_summaries(
+    tuple_results: &[OptionsExpressionValidationTupleResult],
+    min_valid_trades: Option<usize>,
+) -> Vec<OptionsExpressionValidationLaneSummary> {
+    vec![
+        validation_lane_summary("search", tuple_results, min_valid_trades, |tuple| {
+            Some(&tuple.selection_metrics)
+        }),
+        validation_lane_summary("holdout", tuple_results, min_valid_trades, |tuple| {
+            tuple.holdout_metrics.as_ref()
+        }),
+        validation_lane_summary("sealed", tuple_results, min_valid_trades, |tuple| {
+            tuple.sealed_evaluation_metrics.as_ref()
+        }),
+        validation_lane_summary("stress", tuple_results, min_valid_trades, |tuple| {
+            tuple.strongest_validation_stress_metrics()
+        }),
+    ]
+}
+
+fn build_validation_acceptance_summary(
+    tuple_results: &[OptionsExpressionValidationTupleResult],
+    min_valid_trades: Option<usize>,
+) -> OptionsExpressionValidationAcceptanceSummary {
+    let mut notes = Vec::new();
+    let mut accepted_tuple_count = 0usize;
+    let mut support_deficient_tuple_count = 0usize;
+    let mut stress_fragile_tuple_count = 0usize;
+    let mut best_validated_expectancy_per_premium: Option<f64> = None;
+    let mut worst_stress_expectancy_per_premium: Option<f64> = None;
+
+    for row in tuple_results {
+        if row.support_deficient {
+            support_deficient_tuple_count = support_deficient_tuple_count.saturating_add(1);
+        }
+        if row.validated_tuple.is_stress_fragile() {
+            stress_fragile_tuple_count = stress_fragile_tuple_count.saturating_add(1);
+        }
+        if let Some(metrics) = row.validated_tuple.strongest_validation_metrics() {
+            if metrics.expectancy_per_premium.is_finite() {
+                best_validated_expectancy_per_premium = Some(
+                    best_validated_expectancy_per_premium
+                        .unwrap_or(metrics.expectancy_per_premium)
+                        .max(metrics.expectancy_per_premium),
+                );
+            }
+        }
+        if let Some(metrics) = row.validated_tuple.strongest_validation_stress_metrics() {
+            if metrics.expectancy_per_premium.is_finite() {
+                worst_stress_expectancy_per_premium = Some(
+                    worst_stress_expectancy_per_premium
+                        .unwrap_or(metrics.expectancy_per_premium)
+                        .min(metrics.expectancy_per_premium),
+                );
+            }
+        }
+        let validation_ev_positive = row
+            .validated_tuple
+            .strongest_validation_metrics()
+            .map(|metrics| metrics.expectancy_per_premium > 0.0)
+            .unwrap_or(false);
+        if !row.support_deficient
+            && !row.validated_tuple.is_stress_fragile()
+            && validation_ev_positive
+        {
+            accepted_tuple_count = accepted_tuple_count.saturating_add(1);
+        }
+    }
+
+    if tuple_results.is_empty() {
+        notes.push("No tuples were selected for validation.".to_string());
+    }
+    if support_deficient_tuple_count > 0 {
+        notes.push(format!(
+            "{} selected tuple{} did not meet validation support requirements.",
+            support_deficient_tuple_count,
+            if support_deficient_tuple_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+    if stress_fragile_tuple_count > 0 {
+        notes.push(format!(
+            "{} selected tuple{} failed stress robustness checks.",
+            stress_fragile_tuple_count,
+            if stress_fragile_tuple_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+    if accepted_tuple_count > 0 {
+        notes.push(format!(
+            "{} selected tuple{} passed support, validation expectancy, and stress checks.",
+            accepted_tuple_count,
+            if accepted_tuple_count == 1 { "" } else { "s" }
+        ));
+    }
+
+    let verdict =
+        if tuple_results.is_empty() || support_deficient_tuple_count == tuple_results.len() {
+            OptionsExpressionValidationAcceptanceVerdict::SupportDeficient
+        } else if accepted_tuple_count == 0 {
+            OptionsExpressionValidationAcceptanceVerdict::Rejected
+        } else if support_deficient_tuple_count > 0 || stress_fragile_tuple_count > 0 {
+            OptionsExpressionValidationAcceptanceVerdict::Warning
+        } else {
+            OptionsExpressionValidationAcceptanceVerdict::Accepted
+        };
+
+    OptionsExpressionValidationAcceptanceSummary {
+        verdict,
+        selected_tuple_count: tuple_results.len(),
+        validated_tuple_count: tuple_results.len(),
+        accepted_tuple_count,
+        support_deficient_tuple_count,
+        stress_fragile_tuple_count,
+        min_valid_trades,
+        best_validated_expectancy_per_premium,
+        worst_stress_expectancy_per_premium,
+        notes,
+    }
+}
+
+pub fn validate_options_expression_tuples_blocking(
+    req: OptionsExpressionRunRequest,
+    source_tuples: &[(usize, OptionsExpressionTupleResult)],
+    signal_manifest: &OptionsSignalEventManifestV1,
+    dataset: &ImportedOptionsDataset,
+    validation_plan: &OptionsExpressionValidationPlan,
+    min_valid_trades: Option<usize>,
+) -> Result<OptionsExpressionValidationEvaluationResult, String> {
+    let _nvtx_scope = crate::nvtx::scope("engine", "options_engine_validation_total");
+    if source_tuples.is_empty() {
+        return Err(
+            "at least one options-expression tuple must be selected for validation".to_string(),
+        );
+    }
+    let mut prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
+    let plan_notes = apply_validation_plan_to_prepared(&mut prepared, validation_plan, dataset)?;
+    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
+    let support_floor = min_valid_trades.unwrap_or(1).max(1);
+    let mut tuple_results = Vec::with_capacity(source_tuples.len());
+
+    for (source_tuple_index, source_tuple) in source_tuples {
+        let compiled = prepared
+            .compiled_tuples
+            .iter()
+            .find(|compiled| compiled.tuple == source_tuple.tuple)
+            .ok_or_else(|| {
+                format!(
+                    "saved tuple at index {} no longer compiles under the saved request grid",
+                    source_tuple_index
+                )
+            })?;
+        let selection_metrics = evaluate_compiled_tuple_for_split(
+            compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::Search,
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+        );
+        let holdout_metrics = if prepared.diagnostics.holdout_events > 0 {
+            Some(evaluate_compiled_tuple_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            ))
+        } else {
+            None
+        };
+        let stress_metrics = if prepared.diagnostics.holdout_events > 0 {
+            Some(evaluate_compiled_tuple_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.conservative_candidate_cache,
+                &prepared.conservative_exit_summary_cache,
+            ))
+        } else {
+            None
+        };
+        let harsher_stress_metrics = if prepared.diagnostics.holdout_events > 0 {
+            Some(evaluate_compiled_tuple_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &prepared.harsher_candidate_cache,
+                &prepared.harsher_exit_summary_cache,
+            ))
+        } else {
+            None
+        };
+        let extreme_stress_metrics = if prepared.diagnostics.holdout_events > 0 {
+            Some(evaluate_exact_stress_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &index,
+                &prepared.baseline_candidate_cache,
+                dataset.manifest.price_semantics,
+                AggregateStressMode::Extreme,
+            ))
+        } else {
+            None
+        };
+        let sealed_evaluation_metrics = if prepared.diagnostics.sealed_test_events > 0 {
+            Some(evaluate_compiled_tuple_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &prepared.baseline_candidate_cache,
+                &prepared.baseline_exit_summary_cache,
+            ))
+        } else {
+            None
+        };
+        let sealed_stress_metrics = if prepared.diagnostics.sealed_test_events > 0 {
+            Some(evaluate_compiled_tuple_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &prepared.conservative_candidate_cache,
+                &prepared.conservative_exit_summary_cache,
+            ))
+        } else {
+            None
+        };
+        let sealed_harsher_stress_metrics = if prepared.diagnostics.sealed_test_events > 0 {
+            Some(evaluate_compiled_tuple_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &prepared.harsher_candidate_cache,
+                &prepared.harsher_exit_summary_cache,
+            ))
+        } else {
+            None
+        };
+        let sealed_extreme_stress_metrics = if prepared.diagnostics.sealed_test_events > 0 {
+            Some(evaluate_exact_stress_for_split(
+                compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::SealedTest,
+                &index,
+                &prepared.baseline_candidate_cache,
+                dataset.manifest.price_semantics,
+                AggregateStressMode::Extreme,
+            ))
+        } else {
+            None
+        };
+        let robust = robust_score(
+            &selection_metrics,
+            holdout_metrics.as_ref(),
+            sealed_evaluation_metrics.as_ref(),
+            stress_metrics.as_ref(),
+            harsher_stress_metrics.as_ref(),
+            extreme_stress_metrics.as_ref(),
+        );
+        let mut validated_tuple = OptionsExpressionTupleResult {
+            tuple: compiled.tuple.clone(),
+            pre_sealed_rank: source_tuple.pre_sealed_rank,
+            sealed_finalist: sealed_evaluation_metrics.is_some(),
+            sealed_final_rank: 0,
+            selection_metrics,
+            holdout_metrics,
+            sealed_evaluation_metrics,
+            stress_metrics,
+            sealed_stress_metrics,
+            harsher_stress_metrics,
+            sealed_harsher_stress_metrics,
+            extreme_stress_metrics,
+            sealed_extreme_stress_metrics,
+            validation_verdict: Default::default(),
+            robust_score: robust,
+        };
+        validated_tuple.validation_verdict = validated_tuple.inferred_validation_verdict();
+        let validation_support = validated_tuple
+            .strongest_validation_metrics()
+            .map(|metrics| metrics.valid_trades)
+            .unwrap_or(0);
+        let support_deficient = validation_support < support_floor;
+        let drift = OptionsExpressionValidationTupleDriftSummary {
+            selection_expectancy_delta: validated_tuple.selection_metrics.expectancy_per_premium
+                - source_tuple.selection_metrics.expectancy_per_premium,
+            holdout_expectancy_delta: optional_expectancy_delta(
+                validated_tuple.holdout_metrics.as_ref(),
+                source_tuple.holdout_metrics.as_ref(),
+            ),
+            sealed_expectancy_delta: optional_expectancy_delta(
+                validated_tuple.sealed_evaluation_metrics.as_ref(),
+                source_tuple.sealed_evaluation_metrics.as_ref(),
+            ),
+            stress_expectancy_delta: optional_expectancy_delta(
+                validated_tuple.stress_metrics.as_ref(),
+                source_tuple.stress_metrics.as_ref(),
+            ),
+            extreme_stress_expectancy_delta: optional_expectancy_delta(
+                validated_tuple.extreme_stress_metrics.as_ref(),
+                source_tuple.extreme_stress_metrics.as_ref(),
+            ),
+            robust_score_delta: validated_tuple.robust_score - source_tuple.robust_score,
+        };
+        tuple_results.push(OptionsExpressionValidationTupleResult {
+            source_tuple_index: *source_tuple_index,
+            source_validation_verdict: source_tuple.validation_verdict,
+            source_robust_score: source_tuple.robust_score,
+            source_tuple: source_tuple.tuple.clone(),
+            validated_tuple,
+            support_deficient,
+            drift,
+        });
+    }
+
+    let mut sealed_positions: Vec<usize> = tuple_results
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            row.validated_tuple
+                .sealed_evaluation_metrics
+                .as_ref()
+                .map(|_| index)
+        })
+        .collect();
+    sealed_positions.sort_by(|left, right| {
+        let left_tuple = &tuple_results[*left].validated_tuple;
+        let right_tuple = &tuple_results[*right].validated_tuple;
+        compare_optional_metrics_desc(
+            left_tuple.sealed_evaluation_metrics.as_ref(),
+            right_tuple.sealed_evaluation_metrics.as_ref(),
+        )
+        .then_with(|| {
+            compare_optional_metrics_desc(
+                left_tuple.sealed_stress_metrics.as_ref(),
+                right_tuple.sealed_stress_metrics.as_ref(),
+            )
+        })
+        .then_with(|| {
+            right_tuple
+                .robust_score
+                .partial_cmp(&left_tuple.robust_score)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| {
+            tuple_results[*left]
+                .source_tuple_index
+                .cmp(&tuple_results[*right].source_tuple_index)
+        })
+    });
+    for (rank, index) in sealed_positions.into_iter().enumerate() {
+        tuple_results[index].validated_tuple.sealed_final_rank = rank + 1;
+    }
+
+    let event_coverage = build_event_coverage_summary(&prepared);
+    let split_invalid_reasons =
+        build_split_invalid_reason_summary(&prepared.events, &prepared.baseline_candidate_cache);
+    let invalid_reasons = prepared.baseline_candidate_cache.invalid_reason_counts();
+    let coverage_adequacy = build_coverage_adequacy_summary(
+        &prepared.diagnostics,
+        &prepared.overlap_window,
+        &event_coverage,
+        &split_invalid_reasons,
+        &invalid_reasons,
+    );
+    let lane_summaries = build_validation_lane_summaries(&tuple_results, min_valid_trades);
+    let mut acceptance_summary =
+        build_validation_acceptance_summary(&tuple_results, min_valid_trades);
+    for note in plan_notes {
+        if !acceptance_summary
+            .notes
+            .iter()
+            .any(|existing| existing == &note)
+        {
+            acceptance_summary.notes.push(note);
+        }
+    }
+
+    Ok(OptionsExpressionValidationEvaluationResult {
+        diagnostics: prepared.diagnostics,
+        overlap_window: prepared.overlap_window,
+        coverage_adequacy,
+        lane_summaries,
+        acceptance_summary,
+        tuple_results,
+    })
+}
+
 pub fn analyze_options_expression_feasibility_blocking(
     req: OptionsExpressionRunRequest,
     signal_manifest: &OptionsSignalEventManifestV1,
@@ -5951,10 +6652,11 @@ mod tests {
     use crate::options_types::{
         ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
         OptionsExitTemplateFamily, OptionsExpressionBackendPreference,
-        OptionsExpressionEventStatus, OptionsExpressionExitReason,
-        OptionsExpressionValidationVerdict, OptionsFillModelFamily, OptionsMoneynessBucket,
-        OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1,
-        OptionsSplitAssignmentMode, OptionsStaticFilterBundle, OptionsStructureFamily,
+        OptionsExpressionEventStatus, OptionsExpressionExitReason, OptionsExpressionValidationPlan,
+        OptionsExpressionValidationPlanMode, OptionsExpressionValidationVerdict,
+        OptionsFillModelFamily, OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics,
+        OptionsSignalEvent, OptionsSignalEventManifestV1, OptionsSplitAssignmentMode,
+        OptionsStaticFilterBundle, OptionsStructureFamily,
     };
     use crate::test_support::lock_test_env;
     use std::sync::atomic::AtomicUsize;
@@ -7288,6 +7990,57 @@ mod tests {
         assert!(session3
             .iter()
             .all(|fold| *fold == OptionsEvaluationSplit::SealedTest));
+    }
+
+    #[test]
+    fn date_range_validation_plan_reassigns_holdout_without_filtering_events() {
+        let req = test_request();
+        let dataset = test_dataset();
+        let manifest = test_manifest_multi_session();
+        let mut prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let original_event_count = prepared.events.len();
+        let plan = OptionsExpressionValidationPlan {
+            mode: OptionsExpressionValidationPlanMode::DateRangeHoldout,
+            start_timestamp_ms: Some(1_700_086_000_000),
+            end_timestamp_ms: Some(1_700_087_000_000),
+            ..OptionsExpressionValidationPlan::default()
+        };
+
+        let notes =
+            apply_validation_plan_to_prepared(&mut prepared, &plan, &dataset).expect("plan");
+
+        assert_eq!(prepared.events.len(), original_event_count);
+        assert_eq!(prepared.diagnostics.search_events, 4);
+        assert_eq!(prepared.diagnostics.holdout_events, 2);
+        assert_eq!(prepared.diagnostics.sealed_test_events, 0);
+        assert!(notes.iter().any(|note| note.contains("date_range_holdout")));
+    }
+
+    #[test]
+    fn rolling_validation_plan_uses_union_of_validation_sessions() {
+        let req = test_request();
+        let dataset = test_dataset();
+        let manifest = test_manifest_multi_session();
+        let mut prepared =
+            prepare_options_expression_run(&req, &manifest, &dataset).expect("prepared run");
+        let plan = OptionsExpressionValidationPlan {
+            mode: OptionsExpressionValidationPlanMode::RollingSessionWalkForward,
+            train_session_count: Some(1),
+            validation_session_count: Some(1),
+            step_session_count: Some(1),
+            ..OptionsExpressionValidationPlan::default()
+        };
+
+        let notes =
+            apply_validation_plan_to_prepared(&mut prepared, &plan, &dataset).expect("plan");
+
+        assert_eq!(prepared.diagnostics.search_events, 2);
+        assert_eq!(prepared.diagnostics.holdout_events, 4);
+        assert_eq!(prepared.diagnostics.sealed_test_events, 0);
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("rolling_session_walk_forward")));
     }
 
     #[test]

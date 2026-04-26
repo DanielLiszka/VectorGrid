@@ -13,7 +13,7 @@ use ta_app_core::{
 use tauri::Manager;
 
 fn default_provider_name() -> String {
-    "massive".to_string()
+    "polygon.io".to_string()
 }
 
 fn default_provider_source_surface() -> String {
@@ -37,7 +37,7 @@ fn default_timezone() -> String {
 }
 
 fn default_contract_reference_source() -> String {
-    "massive_contract_reference".to_string()
+    "polygon_contract_reference".to_string()
 }
 
 fn default_underlier_reference_source() -> String {
@@ -51,12 +51,11 @@ fn canonicalize_provider_name(raw: &str) -> Result<String, String> {
     }
     match normalized.as_str() {
         "massive" | "polygon" | "polygon.io" | "polygon_io" | "polygonio" => {
-            Ok("massive".to_string())
+            Ok("polygon.io".to_string())
         }
-        _ => Err(
-            "options dataset imports currently assume Polygon/Massive-derived data only"
-                .to_string(),
-        ),
+        _ => {
+            Err("options dataset imports currently assume Polygon.io-derived data only".to_string())
+        }
     }
 }
 
@@ -83,7 +82,7 @@ fn canonicalize_provider_source_surface(
             Ok("derived_mid_snapshot".to_string())
         }
         _ => Err(
-            "options dataset imports currently support Polygon/Massive minute aggregates, top-of-book quotes, or derived mid snapshots only"
+            "options dataset imports currently support Polygon.io minute aggregates, top-of-book quotes, or derived mid snapshots only"
                 .to_string(),
         ),
     }
@@ -99,9 +98,9 @@ fn canonicalize_contract_reference_source(raw: &str) -> Result<String, String> {
         | "polygon_contract_reference"
         | "polygon_io_contract_reference"
         | "contracts"
-        | "all_contracts" => Ok("massive_contract_reference".to_string()),
+        | "all_contracts" => Ok("polygon_contract_reference".to_string()),
         _ => Err(
-            "options dataset imports currently assume Polygon/Massive contract-reference metadata only"
+            "options dataset imports currently assume Polygon.io contract-reference metadata only"
                 .to_string(),
         ),
     }
@@ -597,7 +596,7 @@ where
                     continue;
                 }
                 return Err(format!(
-                    "Polygon/Massive request failed: {}",
+                    "Polygon.io request failed: {}",
                     last_err.unwrap_or_default()
                 ));
             }
@@ -622,13 +621,10 @@ where
             std::thread::sleep(std::time::Duration::from_millis(wait_ms));
             continue;
         }
-        return Err(format!(
-            "Polygon/Massive request failed {}: {}",
-            status, body
-        ));
+        return Err(format!("Polygon.io request failed {}: {}", status, body));
     }
     Err(format!(
-        "Polygon/Massive request failed: {}",
+        "Polygon.io request failed: {}",
         last_err.unwrap_or_else(|| "unknown error".to_string())
     ))
 }
@@ -673,13 +669,11 @@ fn fetch_polygon_option_contracts(
         };
 
         if let Some(error) = response.error {
-            return Err(format!("Polygon/Massive options contracts error: {error}"));
+            return Err(format!("Polygon.io options contracts error: {error}"));
         }
         let status = response.status.unwrap_or_default();
         if !status.is_empty() && !status.eq_ignore_ascii_case("ok") {
-            return Err(format!(
-                "Polygon/Massive options contracts status: {status}"
-            ));
+            return Err(format!("Polygon.io options contracts status: {status}"));
         }
         if let Some(results) = response.results {
             out.extend(results);
@@ -715,13 +709,13 @@ fn fetch_polygon_option_agg_chunk(
     })?;
     if let Some(error) = response.error {
         return Err(format!(
-            "Polygon/Massive options aggregate error for {contract_ticker}: {error}"
+            "Polygon.io options aggregate error for {contract_ticker}: {error}"
         ));
     }
     let status = response.status.unwrap_or_default();
     if !status.is_empty() && !status.eq_ignore_ascii_case("ok") {
         return Err(format!(
-            "Polygon/Massive options aggregate status for {contract_ticker}: {status}"
+            "Polygon.io options aggregate status for {contract_ticker}: {status}"
         ));
     }
     Ok(response.results.unwrap_or_default())
@@ -940,8 +934,7 @@ fn download_polygon_options_dataset_into_store(
     }
     if selected_contracts.is_empty() {
         return Err(
-            "Polygon/Massive returned no option contracts matching the requested filters"
-                .to_string(),
+            "Polygon.io returned no option contracts matching the requested filters".to_string(),
         );
     }
     if selected_contracts.len() > max_contracts {
@@ -1024,7 +1017,7 @@ fn download_polygon_options_dataset_into_store(
 
         if downloaded_option_rows == 0 {
             return Err(
-                "Polygon/Massive returned no usable 1m option rows for the requested filters"
+                "Polygon.io returned no usable 1m option rows for the requested filters"
                     .to_string(),
             );
         }
@@ -1377,7 +1370,7 @@ mod tests {
         assert_eq!(build_req.options_dataset_id, "spy_options_1m");
         assert_eq!(build_req.dataset_path, dataset_path.to_string_lossy());
         assert_eq!(build_req.root_symbol.as_deref(), Some("SPY"));
-        assert_eq!(build_req.provider_name, "massive");
+        assert_eq!(build_req.provider_name, "polygon.io");
         assert_eq!(build_req.provider_source_surface, "minute_aggregate");
         assert_eq!(build_req.quote_resolution, "1m");
         assert_eq!(
@@ -1386,7 +1379,7 @@ mod tests {
         );
         assert_eq!(
             build_req.contract_reference_source,
-            "massive_contract_reference"
+            "polygon_contract_reference"
         );
         assert_eq!(
             build_req.contract_reference_as_of_utc.as_deref(),

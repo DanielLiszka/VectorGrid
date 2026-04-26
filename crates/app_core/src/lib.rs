@@ -221,7 +221,7 @@ pub use options_data_store::{
 pub use options_expression::{
     analyze_options_expression_feasibility_blocking,
     inspect_options_expression_event_path_blocking, inspect_options_expression_tuple_blocking,
-    run_options_expression_blocking,
+    run_options_expression_blocking, validate_options_expression_tuples_blocking,
 };
 pub use options_signal_manifest::{
     build_options_signal_manifest_from_breakout_momentum,
@@ -237,11 +237,18 @@ pub use options_types::{
     OptionsExpressionEventPathPoint, OptionsExpressionEventStatus, OptionsExpressionExitReason,
     OptionsExpressionFeasibilityCacheStats, OptionsExpressionFeasibilityReport,
     OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionRunResult,
-    OptionsExpressionTupleInspectionResult, OptionsExpressionTupleResult, OptionsFillModelFamily,
-    OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
-    OptionsSignalEventManifestV1, OptionsSplitAssignmentMode, OptionsStaticFilterBundle,
-    OptionsTupleSpec, SignalSide, OPTIONS_DATASET_MANIFEST_VERSION,
-    OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_SIGNAL_MANIFEST_VERSION,
+    OptionsExpressionTupleInspectionResult, OptionsExpressionTupleResult,
+    OptionsExpressionValidationAcceptanceSummary, OptionsExpressionValidationAcceptanceVerdict,
+    OptionsExpressionValidationDatasetPolicy, OptionsExpressionValidationEvaluationResult,
+    OptionsExpressionValidationLaneSummary, OptionsExpressionValidationPlan,
+    OptionsExpressionValidationPlanMode, OptionsExpressionValidationRequest,
+    OptionsExpressionValidationResult, OptionsExpressionValidationTupleDriftSummary,
+    OptionsExpressionValidationTupleResult, OptionsExpressionValidationTupleSelection,
+    OptionsFillModelFamily, OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics,
+    OptionsSignalEvent, OptionsSignalEventManifestV1, OptionsSplitAssignmentMode,
+    OptionsStaticFilterBundle, OptionsTupleSpec, SignalSide, OPTIONS_DATASET_MANIFEST_VERSION,
+    OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_EXPRESSION_VALIDATION_ARTIFACT_VERSION,
+    OPTIONS_SIGNAL_MANIFEST_VERSION,
 };
 
 pub use sharpe_stats::{

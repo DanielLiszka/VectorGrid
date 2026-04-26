@@ -549,6 +549,7 @@ export interface OptionsExpressionArtifactRecord {
   rootSymbol: string;
   optionsDatasetId: string;
   optionsDatasetHash: string;
+  datasetProvenance: OptionsExpressionDatasetProvenanceSummary | null;
   exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   backendUsed: string;
   backendFallbackReason?: string;
@@ -560,6 +561,166 @@ export interface OptionsExpressionArtifactRecord {
   coverageAdequacy: OptionsExpressionCoverageAdequacySummary;
   splitInvalidReasons: OptionsExpressionSplitInvalidReasonSummary;
   selectionMetrics: OptionsExpressionTupleSummary[];
+}
+
+export interface OptionsExpressionDatasetProvenanceSummary {
+  providerName: string;
+  providerSourceSurface: string;
+  quoteResolution: string;
+  aggregatePriceField: string;
+  contractReferenceAsOfUtc: string;
+  quoteQuality: OptionsExpressionDatasetQuoteQualitySummary | null;
+}
+
+export interface OptionsExpressionContractQuoteQualitySummary {
+  contractId: string;
+  rowCount: number;
+  anyQuoteRowCount: number;
+  bidAskRowCount: number;
+  midRowCount: number;
+  quoteAgeRowCount: number;
+  staleQuoteRowCount: number;
+  anyQuoteCoverageRate: number;
+  bidAskCoverageRate: number;
+  midCoverageRate: number;
+  staleQuoteRate: number;
+  meanSpreadBps: number | null;
+  maxSpreadBps: number | null;
+  maxQuoteAgeMs: number | null;
+}
+
+export interface OptionsExpressionDatasetQuoteQualitySummary {
+  priceSemantics: string;
+  rowCount: number;
+  contractCount: number;
+  anyQuoteRowCount: number;
+  bidRowCount: number;
+  askRowCount: number;
+  bidAskRowCount: number;
+  midRowCount: number;
+  quoteAgeRowCount: number;
+  staleQuoteThresholdMs: number | null;
+  staleQuoteRowCount: number;
+  anyQuoteCoverageRate: number;
+  bidAskCoverageRate: number;
+  midCoverageRate: number;
+  staleQuoteRate: number;
+  meanSpreadBps: number | null;
+  medianSpreadBps: number | null;
+  maxSpreadBps: number | null;
+  maxQuoteAgeMs: number | null;
+  perContract: OptionsExpressionContractQuoteQualitySummary[];
+}
+
+export interface OptionsExpressionValidationTupleSelectionSummary {
+  includeSealedFinalists: boolean;
+  includeRobustLeader: boolean;
+  includeHoldoutLeader: boolean;
+  tupleIndexes: number[];
+}
+
+export interface OptionsExpressionValidationPlanSummary {
+  mode: string;
+  startTimestampMs: number | null;
+  endTimestampMs: number | null;
+  trainSessionCount: number | null;
+  validationSessionCount: number | null;
+  stepSessionCount: number | null;
+}
+
+export interface OptionsExpressionValidationTupleDriftSummary {
+  selectionExpectancyDelta: number;
+  holdoutExpectancyDelta: number | null;
+  sealedExpectancyDelta: number | null;
+  stressExpectancyDelta: number | null;
+  extremeStressExpectancyDelta: number | null;
+  robustScoreDelta: number;
+}
+
+export interface OptionsExpressionValidationTupleResultSummary {
+  sourceTupleIndex: number;
+  sourceValidationVerdict?: OptionsExpressionValidationVerdict | undefined;
+  sourceRobustScore: number;
+  validatedTuple: OptionsExpressionTupleSummary;
+  supportDeficient: boolean;
+  drift: OptionsExpressionValidationTupleDriftSummary;
+}
+
+export interface OptionsExpressionValidationLaneSummary {
+  lane: string;
+  tupleCount: number;
+  supportedTupleCount: number;
+  supportDeficientTupleCount: number;
+  minValidTrades: number | null;
+  bestExpectancyPerPremium: number | null;
+  worstExpectancyPerPremium: number | null;
+  medianExpectancyPerPremium: number | null;
+}
+
+export interface OptionsExpressionValidationAcceptanceSummary {
+  verdict: string;
+  selectedTupleCount: number;
+  validatedTupleCount: number;
+  acceptedTupleCount: number;
+  supportDeficientTupleCount: number;
+  stressFragileTupleCount: number;
+  minValidTrades: number | null;
+  bestValidatedExpectancyPerPremium: number | null;
+  worstStressExpectancyPerPremium: number | null;
+  notes: string[];
+}
+
+export interface OptionsExpressionValidationResultSummary {
+  version: number;
+  kind: string;
+  ts: string;
+  validationArtifactPath: string;
+  sourceArtifactPath: string;
+  sourceArtifactHash: string;
+  parentArtifactId: string;
+  parentArtifactHash: string;
+  signalManifestId: string;
+  rootSymbol: string;
+  optionsDatasetId: string;
+  optionsDatasetHash: string;
+  datasetPolicy: string;
+  replacementDataset: boolean;
+  validationPlan: OptionsExpressionValidationPlanSummary;
+  tupleSelection: OptionsExpressionValidationTupleSelectionSummary;
+  priceSemantics: string;
+  datasetProvenance: OptionsExpressionDatasetProvenanceSummary | null;
+  diagnostics: OptionsExpressionDiagnosticsSummary;
+  overlapWindow: OptionsExpressionOverlapWindowSummary;
+  coverageAdequacy: OptionsExpressionCoverageAdequacySummary;
+  laneSummaries: OptionsExpressionValidationLaneSummary[];
+  acceptanceSummary: OptionsExpressionValidationAcceptanceSummary;
+  tupleResults: OptionsExpressionValidationTupleResultSummary[];
+}
+
+export interface ValidateOptionsExpressionArtifactSummary {
+  artifactPath: string;
+  replayBuildMs: number;
+  validationMs: number;
+  replayBuildTiming: OptionsExpressionReplayBuildTimingSummary | null;
+  result: OptionsExpressionValidationResultSummary;
+}
+
+export interface AnalyzeOptionsExpressionValidationFeasibilitySummary {
+  replayBuildMs: number;
+  replayBuildTiming: OptionsExpressionReplayBuildTimingSummary | null;
+  artifactPath: string;
+  sourceArtifactHash: string;
+  optionsDatasetId: string;
+  optionsDatasetHash: string;
+  datasetPolicy: string;
+  replacementDataset: boolean;
+  validationPlan: OptionsExpressionValidationPlanSummary;
+  tupleSelection: OptionsExpressionValidationTupleSelectionSummary;
+  selectedTupleIndexes: number[];
+  selectedTupleCount: number;
+  priceSemantics: string;
+  datasetProvenance: OptionsExpressionDatasetProvenanceSummary | null;
+  notes: string[];
 }
 
 export interface OptionsExpressionEventInspectionRow {
@@ -816,6 +977,214 @@ function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
     sealedExtremeStressMetrics: row.sealed_extreme_stress_metrics
       ? normalizeMetrics(row.sealed_extreme_stress_metrics)
       : null,
+  };
+}
+
+function normalizeContractQuoteQuality(
+  raw: unknown,
+): OptionsExpressionContractQuoteQualitySummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    contractId: normalizeText(row.contract_id),
+    rowCount: normalizeNumber(row.row_count),
+    anyQuoteRowCount: normalizeNumber(row.any_quote_row_count),
+    bidAskRowCount: normalizeNumber(row.bid_ask_row_count),
+    midRowCount: normalizeNumber(row.mid_row_count),
+    quoteAgeRowCount: normalizeNumber(row.quote_age_row_count),
+    staleQuoteRowCount: normalizeNumber(row.stale_quote_row_count),
+    anyQuoteCoverageRate: normalizeNumber(row.any_quote_coverage_rate),
+    bidAskCoverageRate: normalizeNumber(row.bid_ask_coverage_rate),
+    midCoverageRate: normalizeNumber(row.mid_coverage_rate),
+    staleQuoteRate: normalizeNumber(row.stale_quote_rate),
+    meanSpreadBps: normalizeOptionalNumber(row.mean_spread_bps),
+    maxSpreadBps: normalizeOptionalNumber(row.max_spread_bps),
+    maxQuoteAgeMs: normalizeOptionalNumber(row.max_quote_age_ms),
+  };
+}
+
+function normalizeDatasetQuoteQuality(
+  raw: unknown,
+): OptionsExpressionDatasetQuoteQualitySummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const perContract = Array.isArray(row.per_contract)
+    ? row.per_contract
+    : [];
+  return {
+    priceSemantics: normalizeText(row.price_semantics),
+    rowCount: normalizeNumber(row.row_count),
+    contractCount: normalizeNumber(row.contract_count),
+    anyQuoteRowCount: normalizeNumber(row.any_quote_row_count),
+    bidRowCount: normalizeNumber(row.bid_row_count),
+    askRowCount: normalizeNumber(row.ask_row_count),
+    bidAskRowCount: normalizeNumber(row.bid_ask_row_count),
+    midRowCount: normalizeNumber(row.mid_row_count),
+    quoteAgeRowCount: normalizeNumber(row.quote_age_row_count),
+    staleQuoteThresholdMs: normalizeOptionalNumber(
+      row.stale_quote_threshold_ms,
+    ),
+    staleQuoteRowCount: normalizeNumber(row.stale_quote_row_count),
+    anyQuoteCoverageRate: normalizeNumber(row.any_quote_coverage_rate),
+    bidAskCoverageRate: normalizeNumber(row.bid_ask_coverage_rate),
+    midCoverageRate: normalizeNumber(row.mid_coverage_rate),
+    staleQuoteRate: normalizeNumber(row.stale_quote_rate),
+    meanSpreadBps: normalizeOptionalNumber(row.mean_spread_bps),
+    medianSpreadBps: normalizeOptionalNumber(row.median_spread_bps),
+    maxSpreadBps: normalizeOptionalNumber(row.max_spread_bps),
+    maxQuoteAgeMs: normalizeOptionalNumber(row.max_quote_age_ms),
+    perContract: perContract.map((entry) =>
+      normalizeContractQuoteQuality(entry),
+    ),
+  };
+}
+
+function normalizeDatasetProvenance(
+  raw: unknown,
+): OptionsExpressionDatasetProvenanceSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  return {
+    providerName: normalizeText(row.provider_name),
+    providerSourceSurface: normalizeText(row.provider_source_surface),
+    quoteResolution: normalizeText(row.quote_resolution),
+    aggregatePriceField: normalizeText(row.aggregate_price_field),
+    contractReferenceAsOfUtc: normalizeText(row.contract_reference_as_of_utc),
+    quoteQuality: normalizeDatasetQuoteQuality(row.quote_quality),
+  };
+}
+
+function normalizeValidationTupleSelection(
+  raw: unknown,
+): OptionsExpressionValidationTupleSelectionSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    includeSealedFinalists: row.include_sealed_finalists !== false,
+    includeRobustLeader: row.include_robust_leader !== false,
+    includeHoldoutLeader: row.include_holdout_leader !== false,
+    tupleIndexes: Array.isArray(row.tuple_indexes)
+      ? row.tuple_indexes.map((entry) => normalizeNumber(entry))
+      : [],
+  };
+}
+
+function normalizeValidationPlan(
+  raw: unknown,
+): OptionsExpressionValidationPlanSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    mode: normalizeText(row.mode) || "original_embedded_splits",
+    startTimestampMs: normalizeOptionalNumber(row.start_timestamp_ms),
+    endTimestampMs: normalizeOptionalNumber(row.end_timestamp_ms),
+    trainSessionCount: normalizeOptionalNumber(row.train_session_count),
+    validationSessionCount: normalizeOptionalNumber(row.validation_session_count),
+    stepSessionCount: normalizeOptionalNumber(row.step_session_count),
+  };
+}
+
+function normalizeValidationTupleDrift(
+  raw: unknown,
+): OptionsExpressionValidationTupleDriftSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    selectionExpectancyDelta: normalizeNumber(row.selection_expectancy_delta),
+    holdoutExpectancyDelta: normalizeOptionalNumber(
+      row.holdout_expectancy_delta,
+    ),
+    sealedExpectancyDelta: normalizeOptionalNumber(
+      row.sealed_expectancy_delta,
+    ),
+    stressExpectancyDelta: normalizeOptionalNumber(
+      row.stress_expectancy_delta,
+    ),
+    extremeStressExpectancyDelta: normalizeOptionalNumber(
+      row.extreme_stress_expectancy_delta,
+    ),
+    robustScoreDelta: normalizeNumber(row.robust_score_delta),
+  };
+}
+
+function normalizeValidationTupleResult(
+  raw: unknown,
+): OptionsExpressionValidationTupleResultSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    sourceTupleIndex: normalizeNumber(row.source_tuple_index),
+    sourceValidationVerdict: normalizeValidationVerdict(
+      row.source_validation_verdict,
+    ),
+    sourceRobustScore: normalizeNumber(row.source_robust_score),
+    validatedTuple: normalizeTuple(row.validated_tuple),
+    supportDeficient: Boolean(row.support_deficient),
+    drift: normalizeValidationTupleDrift(row.drift),
+  };
+}
+
+function normalizeValidationLaneSummary(
+  raw: unknown,
+): OptionsExpressionValidationLaneSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    lane: normalizeText(row.lane),
+    tupleCount: normalizeNumber(row.tuple_count),
+    supportedTupleCount: normalizeNumber(row.supported_tuple_count),
+    supportDeficientTupleCount: normalizeNumber(
+      row.support_deficient_tuple_count,
+    ),
+    minValidTrades: normalizeOptionalNumber(row.min_valid_trades),
+    bestExpectancyPerPremium: normalizeOptionalNumber(
+      row.best_expectancy_per_premium,
+    ),
+    worstExpectancyPerPremium: normalizeOptionalNumber(
+      row.worst_expectancy_per_premium,
+    ),
+    medianExpectancyPerPremium: normalizeOptionalNumber(
+      row.median_expectancy_per_premium,
+    ),
+  };
+}
+
+function normalizeValidationAcceptanceSummary(
+  raw: unknown,
+): OptionsExpressionValidationAcceptanceSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    verdict: normalizeText(row.verdict) || "support_deficient",
+    selectedTupleCount: normalizeNumber(row.selected_tuple_count),
+    validatedTupleCount: normalizeNumber(row.validated_tuple_count),
+    acceptedTupleCount: normalizeNumber(row.accepted_tuple_count),
+    supportDeficientTupleCount: normalizeNumber(
+      row.support_deficient_tuple_count,
+    ),
+    stressFragileTupleCount: normalizeNumber(row.stress_fragile_tuple_count),
+    minValidTrades: normalizeOptionalNumber(row.min_valid_trades),
+    bestValidatedExpectancyPerPremium: normalizeOptionalNumber(
+      row.best_validated_expectancy_per_premium,
+    ),
+    worstStressExpectancyPerPremium: normalizeOptionalNumber(
+      row.worst_stress_expectancy_per_premium,
+    ),
+    notes: normalizeStringList(row.notes),
   };
 }
 
@@ -1669,6 +2038,7 @@ function normalizeOptionsExpressionArtifact(
     rootSymbol: normalizeText(row.root_symbol),
     optionsDatasetId: normalizeText(row.options_dataset_id),
     optionsDatasetHash: normalizeText(row.options_dataset_hash),
+    datasetProvenance: normalizeDatasetProvenance(row.dataset_provenance),
     exactnessSemantics: normalizeExactnessSemantics(
       row.exactness_semantics ?? row.exactnessSemantics,
     ),
@@ -1684,6 +2054,101 @@ function normalizeOptionsExpressionArtifact(
       row.split_invalid_reasons,
     ),
     selectionMetrics: metrics.map((entry) => normalizeTuple(entry)),
+  };
+}
+
+function normalizeOptionsExpressionValidationResult(
+  raw: unknown,
+): OptionsExpressionValidationResultSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  const laneSummaries = Array.isArray(row.lane_summaries)
+    ? row.lane_summaries
+    : [];
+  const tupleResults = Array.isArray(row.tuple_results)
+    ? row.tuple_results
+    : [];
+  return {
+    version: normalizeNumber(row.version),
+    kind: normalizeText(row.kind),
+    ts: normalizeText(row.ts),
+    validationArtifactPath: normalizeText(row.validation_artifact_path),
+    sourceArtifactPath: normalizeText(row.source_artifact_path),
+    sourceArtifactHash: normalizeText(row.source_artifact_hash),
+    parentArtifactId: normalizeText(row.parent_artifact_id),
+    parentArtifactHash: normalizeText(row.parent_artifact_hash),
+    signalManifestId: normalizeText(row.signal_manifest_id),
+    rootSymbol: normalizeText(row.root_symbol),
+    optionsDatasetId: normalizeText(row.options_dataset_id),
+    optionsDatasetHash: normalizeText(row.options_dataset_hash),
+    datasetPolicy: normalizeText(row.dataset_policy),
+    replacementDataset: Boolean(row.replacement_dataset),
+    validationPlan: normalizeValidationPlan(row.validation_plan),
+    tupleSelection: normalizeValidationTupleSelection(row.tuple_selection),
+    priceSemantics: normalizeText(row.price_semantics),
+    datasetProvenance: normalizeDatasetProvenance(row.dataset_provenance),
+    diagnostics: normalizeDiagnostics(row.diagnostics),
+    overlapWindow: normalizeOverlapWindow(row.overlap_window),
+    coverageAdequacy: normalizeCoverageAdequacy(row.coverage_adequacy),
+    laneSummaries: laneSummaries.map((entry) =>
+      normalizeValidationLaneSummary(entry),
+    ),
+    acceptanceSummary: normalizeValidationAcceptanceSummary(
+      row.acceptance_summary,
+    ),
+    tupleResults: tupleResults.map((entry) =>
+      normalizeValidationTupleResult(entry),
+    ),
+  };
+}
+
+function normalizeValidateOptionsExpressionArtifact(
+  raw: unknown,
+): ValidateOptionsExpressionArtifactSummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    artifactPath: normalizeText(row.artifact_path),
+    replayBuildMs: normalizeNumber(row.replay_build_ms),
+    validationMs: normalizeNumber(row.validation_ms),
+    replayBuildTiming: row.replay_build_timing
+      ? normalizeReplayBuildTiming(row.replay_build_timing)
+      : null,
+    result: normalizeOptionsExpressionValidationResult(row.result),
+  };
+}
+
+function normalizeValidationFeasibilityResponse(
+  raw: unknown,
+): AnalyzeOptionsExpressionValidationFeasibilitySummary {
+  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    replayBuildMs: normalizeNumber(row.replay_build_ms),
+    replayBuildTiming: row.replay_build_timing
+      ? normalizeReplayBuildTiming(row.replay_build_timing)
+      : null,
+    artifactPath: normalizeText(row.artifact_path),
+    sourceArtifactHash: normalizeText(row.source_artifact_hash),
+    optionsDatasetId: normalizeText(row.options_dataset_id),
+    optionsDatasetHash: normalizeText(row.options_dataset_hash),
+    datasetPolicy: normalizeText(row.dataset_policy),
+    replacementDataset: Boolean(row.replacement_dataset),
+    validationPlan: normalizeValidationPlan(row.validation_plan),
+    tupleSelection: normalizeValidationTupleSelection(row.tuple_selection),
+    selectedTupleIndexes: Array.isArray(row.selected_tuple_indexes)
+      ? row.selected_tuple_indexes.map((entry) => normalizeNumber(entry))
+      : [],
+    selectedTupleCount: normalizeNumber(row.selected_tuple_count),
+    priceSemantics: normalizeText(row.price_semantics),
+    datasetProvenance: normalizeDatasetProvenance(row.dataset_provenance),
+    notes: normalizeStringList(row.notes),
   };
 }
 
@@ -1920,6 +2385,25 @@ export async function analyzeOptionsExpressionFeasibility(
     req,
   });
   return normalizeFeasibilityResponse(raw);
+}
+
+export async function validateOptionsExpressionArtifact(
+  req: Record<string, unknown>,
+): Promise<ValidateOptionsExpressionArtifactSummary> {
+  const raw = await invokeCommand("validate_options_expression_artifact", {
+    req,
+  });
+  return normalizeValidateOptionsExpressionArtifact(raw);
+}
+
+export async function analyzeOptionsExpressionValidationFeasibility(
+  req: Record<string, unknown>,
+): Promise<AnalyzeOptionsExpressionValidationFeasibilitySummary> {
+  const raw = await invokeCommand(
+    "analyze_options_expression_validation_feasibility",
+    { req },
+  );
+  return normalizeValidationFeasibilityResponse(raw);
 }
 
 export async function listOptionsExpressionArtifacts(): Promise<

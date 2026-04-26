@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub const OPTIONS_DATASET_MANIFEST_VERSION: u32 = 1;
 pub const OPTIONS_SIGNAL_MANIFEST_VERSION: u32 = 1;
 pub const OPTIONS_EXPRESSION_ARTIFACT_VERSION: u32 = 1;
+pub const OPTIONS_EXPRESSION_VALIDATION_ARTIFACT_VERSION: u32 = 1;
 
 fn default_timezone() -> String {
     "UTC".to_string()
@@ -13,7 +14,7 @@ fn default_quote_resolution() -> String {
 }
 
 fn default_provider_name() -> String {
-    "massive".to_string()
+    "polygon.io".to_string()
 }
 
 fn default_provider_source_surface() -> String {
@@ -21,7 +22,7 @@ fn default_provider_source_surface() -> String {
 }
 
 fn default_contract_reference_source() -> String {
-    "massive_contract_reference".to_string()
+    "polygon_contract_reference".to_string()
 }
 
 fn default_underlier_reference_source() -> String {
@@ -99,6 +100,22 @@ fn default_sealed_finalist_count() -> usize {
 
 fn default_split_assignment_mode() -> OptionsSplitAssignmentMode {
     OptionsSplitAssignmentMode::EventChronological
+}
+
+fn default_validation_tuple_selection() -> OptionsExpressionValidationTupleSelection {
+    OptionsExpressionValidationTupleSelection::default()
+}
+
+fn default_validation_plan() -> OptionsExpressionValidationPlan {
+    OptionsExpressionValidationPlan::default()
+}
+
+fn default_validation_dataset_policy() -> OptionsExpressionValidationDatasetPolicy {
+    OptionsExpressionValidationDatasetPolicy::RequireExactReplay
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -1200,7 +1217,210 @@ pub struct OptionsExpressionRunResult {
     pub ranked_results: Vec<OptionsExpressionTupleResult>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExpressionValidationDatasetPolicy {
+    #[default]
+    RequireExactReplay,
+    AllowSameRootReplacement,
+    AllowExplicitCrossLaneComparison,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExpressionValidationPlanMode {
+    #[default]
+    OriginalEmbeddedSplits,
+    SessionChronologicalReplay,
+    AnchoredWalkForward,
+    RollingSessionWalkForward,
+    DateRangeHoldout,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct OptionsExpressionValidationPlan {
+    #[serde(default)]
+    pub mode: OptionsExpressionValidationPlanMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_timestamp_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_timestamp_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train_session_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_session_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_session_count: Option<usize>,
+}
+
+impl Default for OptionsExpressionValidationPlan {
+    fn default() -> Self {
+        Self {
+            mode: OptionsExpressionValidationPlanMode::OriginalEmbeddedSplits,
+            start_timestamp_ms: None,
+            end_timestamp_ms: None,
+            train_session_count: None,
+            validation_session_count: None,
+            step_session_count: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OptionsExpressionValidationTupleSelection {
+    #[serde(default = "default_true")]
+    pub include_sealed_finalists: bool,
+    #[serde(default = "default_true")]
+    pub include_robust_leader: bool,
+    #[serde(default = "default_true")]
+    pub include_holdout_leader: bool,
+    #[serde(default)]
+    pub tuple_indexes: Vec<usize>,
+}
+
+impl Default for OptionsExpressionValidationTupleSelection {
+    fn default() -> Self {
+        Self {
+            include_sealed_finalists: true,
+            include_robust_leader: true,
+            include_holdout_leader: true,
+            tuple_indexes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsExpressionValidationRequest {
+    pub artifact_path: String,
+    #[serde(default)]
+    pub options_dataset_id: String,
+    #[serde(default = "default_validation_dataset_policy")]
+    pub dataset_policy: OptionsExpressionValidationDatasetPolicy,
+    #[serde(default = "default_validation_tuple_selection")]
+    pub tuple_selection: OptionsExpressionValidationTupleSelection,
+    #[serde(default = "default_validation_plan")]
+    pub validation_plan: OptionsExpressionValidationPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_model_override: Option<OptionsFillModelFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_valid_trades: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionValidationTupleDriftSummary {
+    pub selection_expectancy_delta: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdout_expectancy_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_expectancy_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stress_expectancy_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extreme_stress_expectancy_delta: Option<f64>,
+    pub robust_score_delta: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsExpressionValidationTupleResult {
+    pub source_tuple_index: usize,
+    pub source_validation_verdict: OptionsExpressionValidationVerdict,
+    pub source_robust_score: f64,
+    pub source_tuple: OptionsTupleSpec,
+    pub validated_tuple: OptionsExpressionTupleResult,
+    pub support_deficient: bool,
+    pub drift: OptionsExpressionValidationTupleDriftSummary,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionValidationLaneSummary {
+    pub lane: String,
+    pub tuple_count: usize,
+    pub supported_tuple_count: usize,
+    pub support_deficient_tuple_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_valid_trades: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_expectancy_per_premium: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_expectancy_per_premium: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_expectancy_per_premium: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExpressionValidationAcceptanceVerdict {
+    Accepted,
+    Warning,
+    #[default]
+    SupportDeficient,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionValidationAcceptanceSummary {
+    pub verdict: OptionsExpressionValidationAcceptanceVerdict,
+    pub selected_tuple_count: usize,
+    pub validated_tuple_count: usize,
+    pub accepted_tuple_count: usize,
+    pub support_deficient_tuple_count: usize,
+    pub stress_fragile_tuple_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_valid_trades: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_validated_expectancy_per_premium: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_stress_expectancy_per_premium: Option<f64>,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsExpressionValidationEvaluationResult {
+    pub diagnostics: OptionsExpressionDiagnostics,
+    #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
+    #[serde(default)]
+    pub lane_summaries: Vec<OptionsExpressionValidationLaneSummary>,
+    pub acceptance_summary: OptionsExpressionValidationAcceptanceSummary,
+    pub tuple_results: Vec<OptionsExpressionValidationTupleResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsExpressionValidationResult {
+    pub version: u32,
+    pub kind: String,
+    pub ts: String,
+    pub validation_artifact_path: String,
+    pub source_artifact_path: String,
+    pub source_artifact_hash: String,
+    pub parent_artifact_id: String,
+    pub parent_artifact_hash: String,
+    pub signal_manifest_id: String,
+    pub root_symbol: String,
+    pub options_dataset_id: String,
+    pub options_dataset_hash: String,
+    pub dataset_policy: OptionsExpressionValidationDatasetPolicy,
+    pub replacement_dataset: bool,
+    pub validation_plan: OptionsExpressionValidationPlan,
+    pub tuple_selection: OptionsExpressionValidationTupleSelection,
+    pub price_semantics: OptionsPriceSemantics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_provenance: Option<OptionsExpressionDatasetProvenance>,
+    pub diagnostics: OptionsExpressionDiagnostics,
+    #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
+    #[serde(default)]
+    pub lane_summaries: Vec<OptionsExpressionValidationLaneSummary>,
+    pub acceptance_summary: OptionsExpressionValidationAcceptanceSummary,
+    pub tuple_results: Vec<OptionsExpressionValidationTupleResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct OptionsExpressionDatasetProvenance {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider_name: String,
@@ -1212,6 +1432,86 @@ pub struct OptionsExpressionDatasetProvenance {
     pub aggregate_price_field: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_reference_as_of_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_quality: Option<OptionsExpressionDatasetQuoteQualitySummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub struct OptionsExpressionContractQuoteQualitySummary {
+    pub contract_id: String,
+    pub row_count: usize,
+    pub any_quote_row_count: usize,
+    pub bid_ask_row_count: usize,
+    pub mid_row_count: usize,
+    pub quote_age_row_count: usize,
+    pub stale_quote_row_count: usize,
+    pub any_quote_coverage_rate: f64,
+    pub bid_ask_coverage_rate: f64,
+    pub mid_coverage_rate: f64,
+    pub stale_quote_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_spread_bps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_spread_bps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_quote_age_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct OptionsExpressionDatasetQuoteQualitySummary {
+    pub price_semantics: OptionsPriceSemantics,
+    pub row_count: usize,
+    pub contract_count: usize,
+    pub any_quote_row_count: usize,
+    pub bid_row_count: usize,
+    pub ask_row_count: usize,
+    pub bid_ask_row_count: usize,
+    pub mid_row_count: usize,
+    pub quote_age_row_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_quote_threshold_ms: Option<i64>,
+    pub stale_quote_row_count: usize,
+    pub any_quote_coverage_rate: f64,
+    pub bid_ask_coverage_rate: f64,
+    pub mid_coverage_rate: f64,
+    pub stale_quote_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_spread_bps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub median_spread_bps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_spread_bps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_quote_age_ms: Option<i64>,
+    #[serde(default)]
+    pub per_contract: Vec<OptionsExpressionContractQuoteQualitySummary>,
+}
+
+impl Default for OptionsExpressionDatasetQuoteQualitySummary {
+    fn default() -> Self {
+        Self {
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            row_count: 0,
+            contract_count: 0,
+            any_quote_row_count: 0,
+            bid_row_count: 0,
+            ask_row_count: 0,
+            bid_ask_row_count: 0,
+            mid_row_count: 0,
+            quote_age_row_count: 0,
+            stale_quote_threshold_ms: None,
+            stale_quote_row_count: 0,
+            any_quote_coverage_rate: 0.0,
+            bid_ask_coverage_rate: 0.0,
+            mid_coverage_rate: 0.0,
+            stale_quote_rate: 0.0,
+            mean_spread_bps: None,
+            median_spread_bps: None,
+            max_spread_bps: None,
+            max_quote_age_ms: None,
+            per_contract: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

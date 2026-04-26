@@ -127,15 +127,17 @@ pub use commands_options_data::{
 pub use commands_options_expression::{
     analyze_options_expression_feasibility,
     analyze_options_expression_feasibility_blocking_headless,
-    inspect_options_expression_event_path, inspect_options_expression_event_path_blocking_headless,
-    inspect_options_expression_tuple, inspect_options_expression_tuple_blocking_headless,
-    list_options_expression_artifacts, list_options_expression_artifacts_blocking_headless,
-    load_options_expression_artifact, load_options_expression_artifact_blocking_headless,
-    run_options_expression, run_options_expression_blocking_headless, save_options_csv,
-    save_options_csv_blocking_headless, AnalyzeOptionsExpressionFeasibilityResponse,
+    analyze_options_expression_validation_feasibility, inspect_options_expression_event_path,
+    inspect_options_expression_event_path_blocking_headless, inspect_options_expression_tuple,
+    inspect_options_expression_tuple_blocking_headless, list_options_expression_artifacts,
+    list_options_expression_artifacts_blocking_headless, load_options_expression_artifact,
+    load_options_expression_artifact_blocking_headless, run_options_expression,
+    run_options_expression_blocking_headless, save_options_csv, save_options_csv_blocking_headless,
+    validate_options_expression_artifact, AnalyzeOptionsExpressionFeasibilityResponse,
+    AnalyzeOptionsExpressionValidationFeasibilityResponse,
     InspectOptionsExpressionEventPathRequest, InspectOptionsExpressionTupleRequest,
     OptionsExpressionArtifactSummary, RunOptionsExpressionResponse, SaveOptionsCsvRequest,
-    SaveOptionsCsvResponse,
+    SaveOptionsCsvResponse, ValidateOptionsExpressionArtifactResponse,
 };
 pub use commands_reports::build_report_xlsx_bytes_headless;
 pub(crate) use commands_reports::{
@@ -175,4 +177,5 @@ pub use ta_app_core::{
     MlSignalScoreCacheBuildResult, MlSignalValidationRequest, MlSignalValidationResult,
     OptimizationModeResolved, OptionsDatasetManifestV1, OptionsExpressionArtifactV1,
     OptionsExpressionFeasibilityReport, OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    OptionsExpressionValidationRequest, OptionsExpressionValidationResult,
 };

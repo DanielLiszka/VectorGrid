@@ -554,7 +554,15 @@ export const useValidationStore = defineStore('validation', {
     },
 
     runValidation(): void {
-      void loadValidationService().then((service) => service.runValidation())
+      void loadValidationService()
+        .then((service) => service.runValidation())
+        .catch((error: unknown) => {
+          const message = `Validation failed: ${String(error || '')}`.trim()
+          this.statusLine = message
+          this.validationHint = message
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     exportShortlistCsv(): void {

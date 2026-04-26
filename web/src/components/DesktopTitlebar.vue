@@ -344,6 +344,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="titlebarTool"
+        data-qa-action="shell.commandPalette.open"
         aria-label="Open command palette"
         title="Command palette (Ctrl+K)"
         aria-keyshortcuts="Control+K"
@@ -355,6 +356,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="titlebarTool"
+        data-qa-action="shell.settings.open"
         aria-label="Open settings workspace"
         title="Settings"
         @click="openSettings"
@@ -365,6 +367,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="titlebarTool titlebarPrimary"
+        data-qa-action="shell.primaryAction.run"
         :class="{ titlebarDanger: canCancel }"
         :disabled="actionDisabled"
         :aria-label="actionLabel"
@@ -380,6 +383,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="windowControl"
+          data-qa-action="shell.window.minimize"
           :disabled="!desktopRuntimeAvailable"
           aria-label="Minimize window"
           title="Minimize"
@@ -390,6 +394,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="windowControl"
+          data-qa-action="shell.window.toggleMaximize"
           :disabled="!desktopRuntimeAvailable"
           :aria-label="isMaximized ? 'Restore window' : 'Maximize window'"
           :title="isMaximized ? 'Restore' : 'Maximize'"
@@ -401,6 +406,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="windowControl windowControlClose"
+          data-qa-action="shell.window.close"
           :disabled="!desktopRuntimeAvailable"
           aria-label="Close window"
           title="Close"

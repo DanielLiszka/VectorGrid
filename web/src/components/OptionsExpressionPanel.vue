@@ -23,6 +23,8 @@ import {
   OPTIONS_STRUCTURE_FAMILY_OPTIONS,
   OPTIONS_SUPPORTED_PARENT_STRATEGIES,
   OPTIONS_REALISM_LANE_OPTIONS,
+  OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS,
+  OPTIONS_VALIDATION_PLAN_MODE_OPTIONS,
   priceSemanticsForRealismLane,
 } from "../stores/optionsExpressionStore";
 import {
@@ -76,6 +78,8 @@ const {
   downloadMaxContractsInput,
   loadBusy,
   latestFeasibility,
+  latestValidation,
+  latestValidationFeasibility,
   latestDatasetDownload,
   parentRootHint,
   runBusy,
@@ -102,6 +106,20 @@ const {
   structureFamily,
   backendPreference,
   splitAssignmentMode,
+  validationAcceptance,
+  validationBusy,
+  validationDatasetPolicy,
+  validationFeasibilityBusy,
+  validationIncludeHoldoutLeader,
+  validationIncludeRobustLeader,
+  validationIncludeSealedFinalists,
+  validationPlanMode,
+  validationStartDateInput,
+  validationEndDateInput,
+  validationTrainSessionCountInput,
+  validationSessionCountInput,
+  validationStepSessionCountInput,
+  validationTupleIndexesInput,
   topKInput,
   sealedFinalistCountInput,
   minValidTradesInput,
@@ -176,6 +194,65 @@ function formatSplitAssignmentMode(value: string | null | undefined): string {
     default:
       return "event_chronological";
   }
+}
+
+function formatValidationDatasetPolicy(value: string | null | undefined): string {
+  switch (normalizeText(value)) {
+    case "allow_same_root_replacement":
+      return "Same-root replacement";
+    case "allow_explicit_cross_lane_comparison":
+      return "Cross-lane comparison";
+    case "require_exact_replay":
+    default:
+      return "Exact replay";
+  }
+}
+
+function formatValidationPlanMode(value: string | null | undefined): string {
+  switch (normalizeText(value)) {
+    case "session_chronological_replay":
+      return "Session replay";
+    case "date_range_holdout":
+      return "Date-range holdout";
+    case "anchored_walk_forward":
+      return "Anchored walk-forward";
+    case "rolling_session_walk_forward":
+      return "Rolling walk-forward";
+    case "original_embedded_splits":
+    default:
+      return "Original splits";
+  }
+}
+
+function formatValidationPlanDetail(
+  plan:
+    | {
+        mode?: string;
+        startTimestampMs?: number | null;
+        endTimestampMs?: number | null;
+        trainSessionCount?: number | null;
+        validationSessionCount?: number | null;
+        stepSessionCount?: number | null;
+      }
+    | null
+    | undefined,
+): string {
+  if (!plan) return "";
+  const mode = normalizeText(plan.mode);
+  if (mode === "date_range_holdout") {
+    return `${formatTimestamp(plan.startTimestampMs)} to ${formatTimestamp(
+      plan.endTimestampMs,
+    )}`;
+  }
+  if (
+    mode === "anchored_walk_forward" ||
+    mode === "rolling_session_walk_forward"
+  ) {
+    return `train ${plan.trainSessionCount ?? "—"} · validate ${
+      plan.validationSessionCount ?? "—"
+    } · step ${plan.stepSessionCount ?? "—"}`;
+  }
+  return "";
 }
 
 function formatRealismLaneLabel(value: string | null | undefined): string {
@@ -1086,7 +1163,7 @@ function describeRealismLane(
       return {
         label: "Aggregate lane",
         shortLabel: "Aggregate",
-        detail: `${activeFillModel} over minute_aggregate rows. This remains the canonical fast Polygon/Massive 1m optimization lane.`,
+        detail: `${activeFillModel} over minute_aggregate rows. This remains the canonical fast Polygon.io 1m optimization lane.`,
       };
   }
 }
@@ -1263,12 +1340,12 @@ const realismLaneSummary = computed(() => {
 const realismLaneRouteNote = computed(() => {
   switch (normalizeText(realismLane.value)) {
     case "quote_aware":
-      return "Quote-aware realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.";
+      return "Quote-aware realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon.io provider download in this panel remains the bounded 1m aggregate path.";
     case "derived_mid":
-      return "Derived-mid realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.";
+      return "Derived-mid realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon.io provider download in this panel remains the bounded 1m aggregate path.";
     case "aggregate":
     default:
-      return "Aggregate realism supports both normalized CSV import and direct bounded Polygon/Massive 1m provider download.";
+      return "Aggregate realism supports both normalized CSV import and direct bounded Polygon.io 1m provider download.";
   }
 });
 const realismLaneProductRows = computed(() => {
@@ -3815,7 +3892,7 @@ function focusTupleIndex(index: number): void {
           <h3 class="panelPaneTitle" style="margin: 0">Options Expression</h3>
           <div class="panelSectionLead">
             Express a saved validated directional artifact through a constrained
-            Polygon/Massive options search without mutating the main workflow
+            Polygon.io options search without mutating the main workflow
             state.
           </div>
           <div class="panelMuted" style="margin-top: 6px">
@@ -3953,7 +4030,7 @@ function focusTupleIndex(index: number): void {
           <div class="row inlineControls">
             <select id="optionsDatasetSelect" v-model="selectedDatasetId">
               <option value="">
-                Select {{ formatRealismLaneLabel(realismLane) }} Polygon/Massive
+                Select {{ formatRealismLaneLabel(realismLane) }} Polygon.io
                 dataset…
               </option>
               <option
@@ -3977,7 +4054,7 @@ function focusTupleIndex(index: number): void {
           <div class="panelMuted">
             {{
               datasetSummary ||
-              `Import or select a ${formatRealismLaneLabel(realismLane)} Polygon/Massive options dataset.`
+              `Import or select a ${formatRealismLaneLabel(realismLane)} Polygon.io options dataset.`
             }}
           </div>
           <div v-if="datasetProvenanceSummary" class="panelMuted mono">
@@ -3999,7 +4076,7 @@ function focusTupleIndex(index: number): void {
 
         <div class="controlBlock">
           <label for="optionsImportRoot"
-            >Polygon/Massive {{ formatRealismLaneLabel(realismLane) }} dataset
+            >Polygon.io {{ formatRealismLaneLabel(realismLane) }} dataset
             import</label
           >
           <div class="downloadFieldGrid">
@@ -4041,12 +4118,12 @@ function focusTupleIndex(index: number): void {
                 :icon="optionsDatasetImportIcon"
                 class="optionsActionIcon"
               />
-              <span>Import Polygon/Massive CSV</span>
+              <span>Import Polygon.io CSV</span>
             </button>
           </div>
           <div class="panelMuted">
             Uses the existing native CSV picker and stores a normalized
-            Polygon/Massive options dataset under the app market-data root. The
+            Polygon.io options dataset under the app market-data root. The
             selected realism lane controls the expected CSV semantics for this
             import.
           </div>
@@ -4054,7 +4131,7 @@ function focusTupleIndex(index: number): void {
 
         <div class="controlBlock">
           <label for="optionsDownloadFrom"
-            >Polygon/Massive 1m options download</label
+            >Polygon.io 1m options download</label
           >
           <div class="downloadFieldGrid">
             <label>
@@ -4149,7 +4226,7 @@ function focusTupleIndex(index: number): void {
                 :icon="optionsProviderDownloadIcon"
                 class="optionsActionIcon"
               />
-              <span>Download Polygon/Massive 1m data</span>
+              <span>Download Polygon.io 1m data</span>
             </button>
           </div>
           <div class="panelMuted">
@@ -5065,6 +5142,373 @@ function focusTupleIndex(index: number): void {
           </div>
         </div>
       </details>
+
+      <section class="resultCard" data-qa-surface="options-validation">
+        <div class="panelSectionHeader">
+          <div class="panelHeaderVisual">
+            <AppVisualIcon
+              :icon="optionsCurrentResultIcon"
+              class="sectionGlyph"
+            />
+          </div>
+          <div>
+            <h3>Validate</h3>
+            <p>
+              Subsequent validation replays selected tuples from a saved
+              options artifact against explicit Polygon.io dataset provenance.
+            </p>
+          </div>
+        </div>
+
+        <div class="formGrid compactGrid">
+          <label>
+            Dataset policy
+            <select v-model="validationDatasetPolicy">
+              <option
+                v-for="entry in OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS"
+                :key="entry"
+                :value="entry"
+              >
+                {{ formatValidationDatasetPolicy(entry) }}
+              </option>
+            </select>
+          </label>
+          <label>
+            Validation plan
+            <select v-model="validationPlanMode">
+              <option
+                v-for="entry in OPTIONS_VALIDATION_PLAN_MODE_OPTIONS"
+                :key="entry"
+                :value="entry"
+              >
+                {{ formatValidationPlanMode(entry) }}
+              </option>
+            </select>
+          </label>
+          <label v-if="validationPlanMode === 'date_range_holdout'">
+            Holdout start
+            <input
+              v-model="validationStartDateInput"
+              data-qa-control="options.validation.startDate"
+              type="date"
+            />
+          </label>
+          <label v-if="validationPlanMode === 'date_range_holdout'">
+            Holdout end
+            <input
+              v-model="validationEndDateInput"
+              data-qa-control="options.validation.endDate"
+              type="date"
+            />
+          </label>
+          <label
+            v-if="
+              validationPlanMode === 'anchored_walk_forward' ||
+              validationPlanMode === 'rolling_session_walk_forward'
+            "
+          >
+            Train sessions
+            <input
+              v-model="validationTrainSessionCountInput"
+              data-qa-control="options.validation.trainSessions"
+              type="number"
+              min="1"
+              step="1"
+            />
+          </label>
+          <label
+            v-if="
+              validationPlanMode === 'anchored_walk_forward' ||
+              validationPlanMode === 'rolling_session_walk_forward'
+            "
+          >
+            Validation sessions
+            <input
+              v-model="validationSessionCountInput"
+              data-qa-control="options.validation.validationSessions"
+              type="number"
+              min="1"
+              step="1"
+            />
+          </label>
+          <label
+            v-if="
+              validationPlanMode === 'anchored_walk_forward' ||
+              validationPlanMode === 'rolling_session_walk_forward'
+            "
+          >
+            Step sessions
+            <input
+              v-model="validationStepSessionCountInput"
+              data-qa-control="options.validation.stepSessions"
+              type="number"
+              min="1"
+              step="1"
+            />
+          </label>
+          <label>
+            Tuple indexes
+            <input
+              v-model="validationTupleIndexesInput"
+              type="text"
+              inputmode="numeric"
+              spellcheck="false"
+              placeholder="Optional, comma-separated"
+            />
+          </label>
+          <div class="full">
+            <div class="moneynessList">
+              <label class="bucketToggle">
+                <input
+                  v-model="validationIncludeSealedFinalists"
+                  type="checkbox"
+                />
+                <span>Sealed finalists</span>
+              </label>
+              <label class="bucketToggle">
+                <input v-model="validationIncludeRobustLeader" type="checkbox" />
+                <span>Robust leader</span>
+              </label>
+              <label class="bucketToggle">
+                <input
+                  v-model="validationIncludeHoldoutLeader"
+                  type="checkbox"
+                />
+                <span>Holdout leader</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button
+            type="button"
+            data-qa-action="options.validation.preview"
+            :disabled="validationFeasibilityBusy || !activeArtifactPath"
+            @click="store.previewValidationFeasibility()"
+          >
+            {{
+              validationFeasibilityBusy
+                ? "Previewing validation…"
+                : "Preview validation"
+            }}
+          </button>
+          <button
+            type="button"
+            data-qa-action="options.validation.run"
+            :disabled="validationBusy || !activeArtifactPath"
+            @click="store.validateActiveArtifact()"
+          >
+            {{ validationBusy ? "Validating…" : "Validate artifact" }}
+          </button>
+          <button
+            type="button"
+            data-qa-action="options.validation.reveal"
+            :disabled="!latestValidation?.artifactPath"
+            @click="store.revealLatestValidationArtifact()"
+          >
+            Reveal validation
+          </button>
+        </div>
+
+        <div v-if="latestValidationFeasibility" class="panelMuted mono">
+          {{ latestValidationFeasibility.selectedTupleCount }} selected tuple{{
+            latestValidationFeasibility.selectedTupleCount === 1 ? "" : "s"
+          }}
+          · {{ latestValidationFeasibility.datasetPolicy }} ·
+          {{ latestValidationFeasibility.optionsDatasetId }} ·
+          {{ latestValidationFeasibility.priceSemantics }} ·
+          {{
+            formatValidationPlanMode(
+              latestValidationFeasibility.validationPlan.mode,
+            )
+          }}
+          <template
+            v-if="
+              formatValidationPlanDetail(
+                latestValidationFeasibility.validationPlan,
+              )
+            "
+          >
+            ·
+            {{
+              formatValidationPlanDetail(
+                latestValidationFeasibility.validationPlan,
+              )
+            }}
+          </template>
+        </div>
+        <div v-if="latestValidationFeasibility?.notes.length" class="panelMuted">
+          {{ latestValidationFeasibility.notes.join(" ") }}
+        </div>
+
+        <div v-if="validationAcceptance" class="gateBadgeRow">
+          <span
+            class="gateBadge"
+            :class="{
+              isPass: validationAcceptance.verdict === 'accepted',
+              isPending:
+                validationAcceptance.verdict === 'support_deficient',
+              isMixed:
+                validationAcceptance.verdict === 'warning' ||
+                validationAcceptance.verdict === 'rejected',
+            }"
+          >
+            Subsequent validation ·
+            {{ validationAcceptance.verdict.replace(/_/g, " ") }}
+          </span>
+          <span v-if="latestValidation" class="gateBadge isPending">
+            {{
+              formatValidationPlanMode(
+                latestValidation.result.validationPlan.mode,
+              )
+            }}
+            <template
+              v-if="
+                formatValidationPlanDetail(
+                  latestValidation.result.validationPlan,
+                )
+              "
+            >
+              ·
+              {{
+                formatValidationPlanDetail(
+                  latestValidation.result.validationPlan,
+                )
+              }}
+            </template>
+          </span>
+        </div>
+        <div v-if="validationAcceptance" class="detailGrid detailGridTight">
+          <div>
+            <span class="panelMetricKey">Accepted</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{ validationAcceptance.acceptedTupleCount }} /
+              {{ validationAcceptance.validatedTupleCount }}
+            </span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Support deficient</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{ validationAcceptance.supportDeficientTupleCount }}
+            </span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Stress fragile</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{ validationAcceptance.stressFragileTupleCount }}
+            </span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Best validation EV</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{
+                formatOptionalDecimal(
+                  validationAcceptance.bestValidatedExpectancyPerPremium,
+                  3,
+                )
+              }}
+            </span>
+          </div>
+        </div>
+        <div v-if="validationAcceptance?.notes.length" class="panelMuted">
+          {{ validationAcceptance.notes.join(" ") }}
+        </div>
+        <div
+          v-if="latestValidation?.result.datasetProvenance?.quoteQuality"
+          class="detailGrid detailGridTight"
+        >
+          <div>
+            <span class="panelMetricKey">Quote rows</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{
+                latestValidation.result.datasetProvenance.quoteQuality
+                  .anyQuoteRowCount
+              }}
+              /
+              {{
+                latestValidation.result.datasetProvenance.quoteQuality.rowCount
+              }}
+            </span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Bid/ask coverage</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{
+                formatPercent(
+                  latestValidation.result.datasetProvenance.quoteQuality
+                    .bidAskCoverageRate,
+                  1,
+                )
+              }}
+            </span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Median spread</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{
+                formatOptionalDecimal(
+                  latestValidation.result.datasetProvenance.quoteQuality
+                    .medianSpreadBps,
+                  1,
+                )
+              }}
+              bps
+            </span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Stale quotes</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{
+                formatPercent(
+                  latestValidation.result.datasetProvenance.quoteQuality
+                    .staleQuoteRate,
+                  1,
+                )
+              }}
+            </span>
+          </div>
+        </div>
+
+        <div
+          v-if="latestValidation?.result.laneSummaries.length"
+          class="tableWrap"
+        >
+          <table class="resultTable">
+            <thead>
+              <tr>
+                <th>Lane</th>
+                <th>Supported</th>
+                <th>Best EV</th>
+                <th>Worst EV</th>
+                <th>Median EV</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in latestValidation.result.laneSummaries"
+                :key="row.lane"
+              >
+                <td class="mono">{{ row.lane }}</td>
+                <td class="mono">
+                  {{ row.supportedTupleCount }} / {{ row.tupleCount }}
+                </td>
+                <td class="mono">
+                  {{ formatOptionalDecimal(row.bestExpectancyPerPremium, 3) }}
+                </td>
+                <td class="mono">
+                  {{ formatOptionalDecimal(row.worstExpectancyPerPremium, 3) }}
+                </td>
+                <td class="mono">
+                  {{
+                    formatOptionalDecimal(row.medianExpectancyPerPremium, 3)
+                  }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section v-if="latestFeasibility" class="resultCard">
         <div class="panelSectionHeader">

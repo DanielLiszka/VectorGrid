@@ -104,6 +104,8 @@ export const TAURI_COMMANDS = [
   'delete_artifact',
   'run_options_expression',
   'analyze_options_expression_feasibility',
+  'validate_options_expression_artifact',
+  'analyze_options_expression_validation_feasibility',
   'list_options_expression_artifacts',
   'load_options_expression_artifact',
   'save_options_csv',

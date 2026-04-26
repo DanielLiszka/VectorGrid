@@ -4,6 +4,7 @@ import { useOptionsExpressionStore } from "./optionsExpressionStore";
 
 const {
   analyzeOptionsExpressionFeasibilityMock,
+  analyzeOptionsExpressionValidationFeasibilityMock,
   downloadPolygonOptionsDatasetMock,
   exportOptionsExpressionCsvMock,
   exportOptionsExpressionEventPathCsvMock,
@@ -17,8 +18,10 @@ const {
   pickOptionsCsvPathMock,
   revealOptionsPathMock,
   runOptionsExpressionMock,
+  validateOptionsExpressionArtifactMock,
 } = vi.hoisted(() => ({
   analyzeOptionsExpressionFeasibilityMock: vi.fn(),
+  analyzeOptionsExpressionValidationFeasibilityMock: vi.fn(),
   downloadPolygonOptionsDatasetMock: vi.fn(),
   exportOptionsExpressionCsvMock: vi.fn(),
   exportOptionsExpressionEventPathCsvMock: vi.fn(),
@@ -32,10 +35,13 @@ const {
   pickOptionsCsvPathMock: vi.fn(),
   revealOptionsPathMock: vi.fn(),
   runOptionsExpressionMock: vi.fn(),
+  validateOptionsExpressionArtifactMock: vi.fn(),
 }));
 
 vi.mock("../services/optionsExpressionService", () => ({
   analyzeOptionsExpressionFeasibility: analyzeOptionsExpressionFeasibilityMock,
+  analyzeOptionsExpressionValidationFeasibility:
+    analyzeOptionsExpressionValidationFeasibilityMock,
   downloadPolygonOptionsDataset: downloadPolygonOptionsDatasetMock,
   exportOptionsExpressionCsv: exportOptionsExpressionCsvMock,
   exportOptionsExpressionEventPathCsv: exportOptionsExpressionEventPathCsvMock,
@@ -50,6 +56,7 @@ vi.mock("../services/optionsExpressionService", () => ({
   pickOptionsCsvPath: pickOptionsCsvPathMock,
   revealOptionsPath: revealOptionsPathMock,
   runOptionsExpression: runOptionsExpressionMock,
+  validateOptionsExpressionArtifact: validateOptionsExpressionArtifactMock,
 }));
 
 function makeDiagnosticsSummary(overrides: Record<string, unknown> = {}) {
@@ -270,6 +277,7 @@ function makeArtifactRecord(overrides: Record<string, unknown> = {}) {
     rootSymbol: "SPY",
     optionsDatasetId: "spy_options",
     optionsDatasetHash: "hash-1",
+    datasetProvenance: null,
     backendUsed: "cpu_reference",
     priceSemantics: "minute_aggregate",
     request: {
@@ -306,6 +314,65 @@ function makeArtifactRecord(overrides: Record<string, unknown> = {}) {
     coverageAdequacy: makeCoverageAdequacy(),
     splitInvalidReasons: makeSplitInvalidReasons(),
     selectionMetrics: [],
+    ...overrides,
+  };
+}
+
+function makeValidationSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    artifactPath: "C:/runs/vectorgrid_options_validation_1.json",
+    replayBuildMs: 3,
+    validationMs: 4,
+    replayBuildTiming: null,
+    result: {
+      version: 1,
+      kind: "vectorgrid_options_expression_validation_v1",
+      ts: "2026-04-05T12:30:00Z",
+      validationArtifactPath: "C:/runs/vectorgrid_options_validation_1.json",
+      sourceArtifactPath: "C:/runs/vectorgrid_options_expression_1.json",
+      sourceArtifactHash: "source-hash",
+      parentArtifactId: "vectorgrid_run_1",
+      parentArtifactHash: "parent-hash",
+      signalManifestId: "manifest",
+      rootSymbol: "SPY",
+      optionsDatasetId: "spy_options",
+      optionsDatasetHash: "hash-1",
+      datasetPolicy: "require_exact_replay",
+      replacementDataset: false,
+      validationPlan: {
+        mode: "original_embedded_splits",
+        startTimestampMs: null,
+        endTimestampMs: null,
+        trainSessionCount: null,
+        validationSessionCount: null,
+        stepSessionCount: null,
+      },
+      tupleSelection: {
+        includeSealedFinalists: true,
+        includeRobustLeader: true,
+        includeHoldoutLeader: true,
+        tupleIndexes: [],
+      },
+      priceSemantics: "minute_aggregate",
+      datasetProvenance: null,
+      diagnostics: makeDiagnosticsSummary(),
+      overlapWindow: makeOverlapWindow(),
+      coverageAdequacy: makeCoverageAdequacy(),
+      laneSummaries: [],
+      acceptanceSummary: {
+        verdict: "accepted",
+        selectedTupleCount: 2,
+        validatedTupleCount: 2,
+        acceptedTupleCount: 1,
+        supportDeficientTupleCount: 0,
+        stressFragileTupleCount: 0,
+        minValidTrades: null,
+        bestValidatedExpectancyPerPremium: 0.24,
+        worstStressExpectancyPerPremium: 0.12,
+        notes: ["1 selected tuple passed support, validation expectancy, and stress checks."],
+      },
+      tupleResults: [],
+    },
     ...overrides,
   };
 }
@@ -356,7 +423,7 @@ describe("optionsExpressionStore", () => {
         version: 1,
         optionsDatasetId: "spy_options",
         rootSymbol: "SPY",
-        providerName: "massive",
+        providerName: "polygon.io",
         providerSourceSurface: "minute_aggregate",
         providerEntitlementProfile: "",
         quoteResolution: "1m",
@@ -368,7 +435,7 @@ describe("optionsExpressionStore", () => {
         normalizationVersion: 1,
         quoteSemanticsVersion: 1,
         corporateActionMappingVersion: 1,
-        contractReferenceSource: "massive_contract_reference",
+        contractReferenceSource: "polygon_contract_reference",
         contractReferenceAsOfUtc: "",
         underlierReferenceSource: "",
         datasetPath: "",
@@ -380,7 +447,7 @@ describe("optionsExpressionStore", () => {
         version: 1,
         optionsDatasetId: "spy_quotes",
         rootSymbol: "SPY",
-        providerName: "massive",
+        providerName: "polygon.io",
         providerSourceSurface: "top_of_book_quote",
         providerEntitlementProfile: "",
         quoteResolution: "1m",
@@ -392,7 +459,7 @@ describe("optionsExpressionStore", () => {
         normalizationVersion: 1,
         quoteSemanticsVersion: 1,
         corporateActionMappingVersion: 1,
-        contractReferenceSource: "massive_contract_reference",
+        contractReferenceSource: "polygon_contract_reference",
         contractReferenceAsOfUtc: "",
         underlierReferenceSource: "",
         datasetPath: "",
@@ -723,7 +790,7 @@ describe("optionsExpressionStore", () => {
     );
   });
 
-  it("can import quote-aware Polygon/Massive datasets through the picker flow", async () => {
+  it("can import quote-aware Polygon.io datasets through the picker flow", async () => {
     pickOptionsCsvPathMock.mockResolvedValue("C:/imports/spy_quotes.csv");
     importOptionsDatasetMock.mockResolvedValue({
       optionsDatasetId: "spy_quotes",
@@ -764,7 +831,7 @@ describe("optionsExpressionStore", () => {
     expect(store.selectedDatasetId).toBe("spy_quotes");
   });
 
-  it("can import derived-mid Polygon/Massive datasets through the picker flow", async () => {
+  it("can import derived-mid Polygon.io datasets through the picker flow", async () => {
     pickOptionsCsvPathMock.mockResolvedValue("C:/imports/spy_mid.csv");
     importOptionsDatasetMock.mockResolvedValue({
       optionsDatasetId: "spy_mid",
@@ -819,13 +886,13 @@ describe("optionsExpressionStore", () => {
     expect(store.statusLine).toContain("aggregate-lane only");
   });
 
-  it("downloads Polygon/Massive datasets through the bounded options flow", async () => {
+  it("downloads Polygon.io datasets through the bounded options flow", async () => {
     downloadPolygonOptionsDatasetMock.mockResolvedValue({
       manifest: {
         optionsDatasetId: "spy_options_1m",
         rootSymbol: "SPY",
         priceSemantics: "minute_aggregate",
-        providerName: "massive",
+        providerName: "polygon.io",
         providerSourceSurface: "minute_aggregate",
         quoteResolution: "1m",
         contractReferenceAsOfUtc: "2026-04-06T23:59:00Z",
@@ -888,7 +955,7 @@ describe("optionsExpressionStore", () => {
     );
     expect(store.latestDatasetDownload?.usedUnderlyingCacheOnly).toBe(true);
     expect(store.statusLine).toContain(
-      "Downloaded Polygon/Massive options dataset",
+      "Downloaded Polygon.io options dataset",
     );
 
     await store.revealLatestDownloadUnderlyingPath();
@@ -1115,6 +1182,131 @@ describe("optionsExpressionStore", () => {
     expect(store.fillModel).toBe("quote_conservative");
     expect(store.selectedDatasetId).toBe("spy_quotes");
     expect(store.statusLine).toContain("pinned replay to dataset spy_quotes");
+  });
+
+  it("previews and runs subsequent validation for the active artifact", async () => {
+    analyzeOptionsExpressionValidationFeasibilityMock.mockResolvedValue({
+      replayBuildMs: 2,
+      replayBuildTiming: null,
+      artifactPath: "C:/runs/vectorgrid_options_expression_1.json",
+      sourceArtifactHash: "source-hash",
+      optionsDatasetId: "spy_options",
+      optionsDatasetHash: "hash-1",
+      datasetPolicy: "require_exact_replay",
+      replacementDataset: false,
+      validationPlan: {
+        mode: "original_embedded_splits",
+        startTimestampMs: null,
+        endTimestampMs: null,
+        trainSessionCount: null,
+        validationSessionCount: null,
+        stepSessionCount: null,
+      },
+      tupleSelection: {
+        includeSealedFinalists: true,
+        includeRobustLeader: true,
+        includeHoldoutLeader: true,
+        tupleIndexes: [3],
+      },
+      selectedTupleIndexes: [0, 3],
+      selectedTupleCount: 2,
+      priceSemantics: "minute_aggregate",
+      datasetProvenance: null,
+      notes: ["Validation is eligible for exact replay."],
+    });
+    validateOptionsExpressionArtifactMock.mockResolvedValue(
+      makeValidationSummary(),
+    );
+
+    const store = useOptionsExpressionStore();
+    store.activeArtifact = makeArtifactRecord();
+    store.selectedDatasetId = "spy_options";
+    store.validationTupleIndexesInput = "3";
+
+    await store.previewValidationFeasibility();
+    await store.validateActiveArtifact();
+
+    expect(analyzeOptionsExpressionValidationFeasibilityMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifact_path: "C:/runs/vectorgrid_options_expression_1.json",
+        options_dataset_id: "spy_options",
+        dataset_policy: "require_exact_replay",
+        tuple_selection: expect.objectContaining({
+          include_sealed_finalists: true,
+          include_robust_leader: true,
+          include_holdout_leader: true,
+          tuple_indexes: [3],
+        }),
+      }),
+    );
+    expect(validateOptionsExpressionArtifactMock).toHaveBeenCalledTimes(1);
+    expect(store.latestValidation?.result.acceptanceSummary.verdict).toBe(
+      "accepted",
+    );
+    expect(store.statusLine).toContain("Validation accepted");
+  });
+
+  it("builds date-range holdout validation requests with UTC timestamps", () => {
+    const store = useOptionsExpressionStore();
+    store.activeArtifact = makeArtifactRecord();
+    store.selectedDatasetId = "spy_options";
+    store.validationPlanMode = "date_range_holdout";
+    store.validationStartDateInput = "2026-04-01";
+    store.validationEndDateInput = "2026-04-03";
+
+    const req = store.buildValidationRequest();
+
+    expect(req.validation_plan).toEqual({
+      mode: "date_range_holdout",
+      start_timestamp_ms: Date.parse("2026-04-01T00:00:00.000Z"),
+      end_timestamp_ms: Date.parse("2026-04-03T00:00:00.000Z"),
+    });
+  });
+
+  it("rejects incomplete date-range validation requests before invoke", () => {
+    const store = useOptionsExpressionStore();
+    store.activeArtifact = makeArtifactRecord();
+    store.selectedDatasetId = "spy_options";
+    store.validationPlanMode = "date_range_holdout";
+    store.validationStartDateInput = "2026-04-03";
+    store.validationEndDateInput = "2026-04-01";
+
+    expect(() => store.buildValidationRequest()).toThrow(
+      /start date must be before/i,
+    );
+  });
+
+  it("builds walk-forward validation requests with session counts", () => {
+    const store = useOptionsExpressionStore();
+    store.activeArtifact = makeArtifactRecord();
+    store.selectedDatasetId = "spy_options";
+    store.validationPlanMode = "rolling_session_walk_forward";
+    store.validationTrainSessionCountInput = "8";
+    store.validationSessionCountInput = "2";
+    store.validationStepSessionCountInput = "2";
+
+    const req = store.buildValidationRequest();
+
+    expect(req.validation_plan).toEqual({
+      mode: "rolling_session_walk_forward",
+      train_session_count: 8,
+      validation_session_count: 2,
+      step_session_count: 2,
+    });
+  });
+
+  it("rejects invalid walk-forward session counts before invoke", () => {
+    const store = useOptionsExpressionStore();
+    store.activeArtifact = makeArtifactRecord();
+    store.selectedDatasetId = "spy_options";
+    store.validationPlanMode = "anchored_walk_forward";
+    store.validationTrainSessionCountInput = "0";
+    store.validationSessionCountInput = "1";
+    store.validationStepSessionCountInput = "1";
+
+    expect(() => store.buildValidationRequest()).toThrow(
+      /Train sessions must be a positive whole number/i,
+    );
   });
 
   it("leaves dataset selection empty when a reopened artifact dataset is missing", async () => {

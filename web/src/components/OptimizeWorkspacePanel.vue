@@ -1695,6 +1695,7 @@ onBeforeUnmount(() => {
               </select>
               <button
                 type="button"
+                data-qa-action="optimize.preset.apply"
                 :disabled="!canApplyPreset"
                 @click="optimizeStore.applyPreset()"
               >
@@ -1798,6 +1799,7 @@ onBeforeUnmount(() => {
           <div v-if="showGpuPresetActions" class="actions">
             <button
               type="button"
+              data-qa-action="optimize.backend.presetKernel"
               :disabled="!canPresetKernel"
               @click="optimizeStore.presetKernel()"
             >
@@ -1805,6 +1807,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="optimize.gpu.refreshStatus"
               :disabled="!canRefreshGpuStatus"
               @click="optimizeStore.refreshGpuStatus()"
             >
@@ -1812,6 +1815,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="optimize.gpu.runParityCheck"
               :disabled="!canParityCheck"
               @click="optimizeStore.runGpuParityCheck()"
             >
@@ -1821,6 +1825,7 @@ onBeforeUnmount(() => {
           <div v-else class="actions">
             <button
               type="button"
+              data-qa-action="optimize.gpu.refreshStatus"
               :disabled="!canRefreshGpuStatus"
               @click="optimizeStore.refreshGpuStatus()"
             >
@@ -2588,6 +2593,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="primary"
+              data-qa-action="optimize.run"
               :disabled="runDisabled"
               @click="runOptimizationAction"
             >
@@ -2595,6 +2601,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="optimize.validation.run"
               :disabled="validateDisabled"
               @click="runValidationAction"
             >

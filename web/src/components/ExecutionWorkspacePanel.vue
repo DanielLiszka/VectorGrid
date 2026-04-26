@@ -1329,9 +1329,9 @@ watch(
           <section class="actionGroup">
             <div class="actionGroupLabel">Account and review</div>
             <div class="actions">
-              <button type="button" :disabled="!canTestConnection" @click="testConnectionAction">Test account</button>
-              <button type="button" :disabled="!canRefreshOrders" @click="refreshOrdersAction">Refresh orders</button>
-              <button type="button" class="danger-btn" :disabled="!canResetLocalPaper" @click="queueConfirmation('resetLocalPaper')">Reset local paper</button>
+              <button type="button" data-qa-action="live.account.test" :disabled="!canTestConnection" @click="testConnectionAction">Test account</button>
+              <button type="button" data-qa-action="live.account.refreshOrders" :disabled="!canRefreshOrders" @click="refreshOrdersAction">Refresh orders</button>
+              <button type="button" class="danger-btn" data-qa-action="live.paper.reset" :disabled="!canResetLocalPaper" @click="queueConfirmation('resetLocalPaper')">Reset local paper</button>
             </div>
             <div class="actionHelp panelMuted">{{ accountReviewNote }}</div>
             <div v-if="localPaperAccountDetails.length > 0" class="localPaperAccountPanel" aria-label="Local paper account">
@@ -1348,7 +1348,7 @@ watch(
           <section class="actionGroup">
             <div class="actionGroupLabel">Manual execution</div>
             <div class="actions">
-              <button type="button" :disabled="!canRunOnce" @click="queueRunOnceAction">{{ runOnceActionLabel }}</button>
+              <button type="button" data-qa-action="live.runner.runOnce" :disabled="!canRunOnce" @click="queueRunOnceAction">{{ runOnceActionLabel }}</button>
             </div>
             <div class="actionHelp panelMuted">{{ runOnceActionDetail }}</div>
             <div class="preflightBlock" role="status" aria-live="polite">
@@ -1362,10 +1362,10 @@ watch(
           <section class="actionGroup">
             <div class="actionGroupLabel">Live automation</div>
             <div class="actions">
-              <button type="button" :disabled="!canStartLive" @click="queueConfirmation('startLive')">Start live</button>
-              <button type="button" :disabled="!canStopLive" @click="stopLiveAction">Stop live</button>
-              <button type="button" :disabled="!canStartRunner" @click="queueConfirmation('startRunner')">Start runner</button>
-              <button type="button" :disabled="!canStopRunner" @click="stopRunnerAction">Stop runner</button>
+              <button type="button" data-qa-action="live.stream.start" :disabled="!canStartLive" @click="queueConfirmation('startLive')">Start live</button>
+              <button type="button" data-qa-action="live.stream.stop" :disabled="!canStopLive" @click="stopLiveAction">Stop live</button>
+              <button type="button" data-qa-action="live.runner.start" :disabled="!canStartRunner" @click="queueConfirmation('startRunner')">Start runner</button>
+              <button type="button" data-qa-action="live.runner.stop" :disabled="!canStopRunner" @click="stopRunnerAction">Stop runner</button>
             </div>
             <div class="preflightBlock" role="status" aria-live="polite">
               <div class="preflightLabel">Preflight</div>
@@ -1378,9 +1378,9 @@ watch(
           <section class="actionGroup actionGroupWarn">
             <div class="actionGroupLabel">Safety controls</div>
             <div class="actions">
-              <button type="button" :disabled="!canCancelOpenOrders" @click="queueConfirmation('cancelOpenOrders')">Cancel open orders</button>
-              <button type="button" :disabled="!canFlattenPosition" @click="queueConfirmation('flattenPosition')">Flatten position</button>
-              <button type="button" class="danger-btn" :disabled="!canEmergencyHalt" @click="queueConfirmation('emergencyHalt')">Emergency halt</button>
+              <button type="button" data-qa-action="live.safety.cancelOpenOrders" :disabled="!canCancelOpenOrders" @click="queueConfirmation('cancelOpenOrders')">Cancel open orders</button>
+              <button type="button" data-qa-action="live.safety.flattenPosition" :disabled="!canFlattenPosition" @click="queueConfirmation('flattenPosition')">Flatten position</button>
+              <button type="button" class="danger-btn" data-qa-action="live.safety.emergencyHalt" :disabled="!canEmergencyHalt" @click="queueConfirmation('emergencyHalt')">Emergency halt</button>
             </div>
             <div class="actionHelp panelMuted">
               Broker-facing safety controls stay backend-authoritative and current-symbol-only. Emergency halt is local disarm only.

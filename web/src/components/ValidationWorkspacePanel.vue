@@ -626,12 +626,12 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="actions">
-          <button type="button" class="primary" :disabled="validateDisabled" @click="runValidationAction">Run validation</button>
-          <button type="button" :disabled="!canExportValidationCsv" @click="exportShortlistCsvAction">Export shortlist CSV</button>
-          <button type="button" :disabled="!canExportValidationJson" @click="exportValidationJsonAction">Export validation JSON</button>
-          <button type="button" :disabled="!canExportReportJson" @click="exportReportJsonAction">Export report JSON</button>
-          <button type="button" :disabled="!canExportReportXlsx" @click="exportReportXlsxAction">Export report XLSX</button>
-          <button type="button" :disabled="!canOpenReportsDir" @click="openReportsDirAction">Open reports folder</button>
+          <button type="button" class="primary" data-qa-action="validation.run" :disabled="validateDisabled" @click="runValidationAction">Run validation</button>
+          <button type="button" data-qa-action="validation.export.shortlistCsv" :disabled="!canExportValidationCsv" @click="exportShortlistCsvAction">Export shortlist CSV</button>
+          <button type="button" data-qa-action="validation.export.validationJson" :disabled="!canExportValidationJson" @click="exportValidationJsonAction">Export validation JSON</button>
+          <button type="button" data-qa-action="validation.export.reportJson" :disabled="!canExportReportJson" @click="exportReportJsonAction">Export report JSON</button>
+          <button type="button" data-qa-action="validation.export.reportXlsx" :disabled="!canExportReportXlsx" @click="exportReportXlsxAction">Export report XLSX</button>
+          <button type="button" data-qa-action="validation.reports.openFolder" :disabled="!canOpenReportsDir" @click="openReportsDirAction">Open reports folder</button>
         </div>
 
         <div class="gridFour compactMetaGrid">

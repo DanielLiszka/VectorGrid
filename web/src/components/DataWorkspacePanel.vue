@@ -369,11 +369,12 @@ onBeforeUnmount(() => {
             @change="commitInputValue('csvPath', csvPathDraft)"
           />
           <AppToolbar aria-label="CSV data actions">
-            <AppButton size="sm" :disabled="!canBrowseCsv" @click="browseCsv">
+            <AppButton size="sm" data-qa-action="data.csv.browse" :disabled="!canBrowseCsv" @click="browseCsv">
               Browse
             </AppButton>
             <AppButton
               size="sm"
+              data-qa-action="data.polygon.toggle"
               :disabled="!canPolygonOpen"
               @click="togglePolygonSection"
             >
@@ -382,6 +383,7 @@ onBeforeUnmount(() => {
             <AppButton
               variant="primary"
               size="sm"
+              data-qa-action="data.csv.loadDraft"
               :disabled="!canLoadCsv"
               @click="loadCsvFromDraft"
             >
@@ -389,6 +391,7 @@ onBeforeUnmount(() => {
             </AppButton>
             <AppButton
               size="sm"
+              data-qa-action="data.dataset.clear"
               :disabled="!canClearData"
               @click="dataStore.clearData()"
             >
@@ -404,6 +407,7 @@ onBeforeUnmount(() => {
               :key="`recent_${path}`"
               type="button"
               class="chip mono"
+              data-qa-action="data.csv.applyRecent"
               @click="applyRecentPath(path)"
             >
               {{ path }}
@@ -422,6 +426,7 @@ onBeforeUnmount(() => {
             v-for="(sample, index) in sampleCsvOptions"
             :key="`sample_${index}_${sample.label}`"
             size="sm"
+            data-qa-action="data.sample.load"
             :disabled="sample.disabled"
             @click="loadSampleCsv(sample.path, index)"
           >
@@ -439,12 +444,13 @@ onBeforeUnmount(() => {
           <div class="actions">
             <button
               type="button"
+              data-qa-action="data.polygon.refresh"
               :disabled="!canPolygonRefresh"
               @click="dataStore.refreshPolygon()"
             >
               Refresh cache
             </button>
-            <button type="button" @click="dataStore.closePolygon()">
+            <button type="button" data-qa-action="data.polygon.close" @click="dataStore.closePolygon()">
               Close
             </button>
           </div>

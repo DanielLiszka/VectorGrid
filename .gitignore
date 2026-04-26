@@ -34,6 +34,10 @@ data/*.csv
 
 # Local-only documentation and AI/research working notes
 /docs/
+!/docs/
+/docs/*
+!/docs/REPO_MAP.md
+!/docs/frontend_end_to_end_qa_automation_plan.md
 /.github/workflows.disabled/
 /Archive/
 /research/
@@ -61,12 +65,21 @@ data/*.csv
 /src-tauri/gen/schemas/
 /src-tauri/resources/native/
 /web/playwright.config.ts
+!/web/playwright.config.ts
 /web/wdio.desktop.conf.ts
+!/web/wdio.desktop.conf.ts
 /web/tsconfig.wdio.json
+!/web/tsconfig.wdio.json
 /web/scripts/desktop/
+!/web/scripts/desktop/
+!/web/scripts/desktop/**
 /web/scripts/capture-baseline-ui.mjs
+!/web/scripts/capture-baseline-ui.mjs
 /web/scripts/check-a11y-smoke.mjs
+!/web/scripts/check-a11y-smoke.mjs
 /web/e2e/
+!/web/e2e/
+!/web/e2e/**
 
 # JS dependency/build outputs
 /node_modules/
@@ -75,6 +88,7 @@ data/*.csv
 /web/dist/
 /web/playwright-report/
 /web/test-results/
+/test-results/
 /web/.vite/
 
 # Editor / OS

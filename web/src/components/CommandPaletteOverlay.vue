@@ -379,6 +379,32 @@ function commandOptionId(commandId: string): string {
   return `command_option_${String(commandId || '').trim()}`
 }
 
+function commandQaAction(commandId: string): string {
+  const normalized = String(commandId || '').trim()
+  const overrides: Record<string, string> = {
+    browse_csv: 'browseCsv',
+    export_csv: 'exportCsv',
+    export_json: 'exportJson',
+    go_step_analyze: 'goStepAnalyze',
+    go_step_data: 'goStepData',
+    go_step_finalize: 'goStepFinalize',
+    go_step_optimize: 'goStepOptimize',
+    go_step_validate: 'goStepValidate',
+    go_workspace_aggregate: 'goWorkspaceAggregate',
+    go_workspace_library: 'goWorkspaceLibrary',
+    go_workspace_live: 'goWorkspaceLive',
+    go_workspace_pro: 'goWorkspaceDiagnostics',
+    go_workspace_settings: 'goWorkspaceSettings',
+    open_latest_meta_report: 'openLatestMetaReport',
+    open_latest_report: 'openLatestReport',
+    open_polygon: 'openPolygon',
+    switch_advanced_mode: 'switchAdvancedMode',
+    switch_guided_mode: 'switchGuidedMode',
+    toggle_controls: 'toggleControls',
+  }
+  return `commandPalette.command.${overrides[normalized] ?? normalized}`
+}
+
 const selectedCommandId = computed(() => {
   const command = filteredCommands.value[selectedIndex.value] ?? null
   return command ? commandOptionId(command.id) : undefined
@@ -499,6 +525,7 @@ function onKeydown(event: KeyboardEvent): void {
               :key="command.id"
               :id="commandOptionId(command.id)"
               class="row"
+              :data-qa-action="commandQaAction(command.id)"
               :class="{ selected: selectedIndex === index, disabled: !command.enabled }"
               role="option"
               :aria-selected="selectedIndex === index"
@@ -631,6 +658,7 @@ function onKeydown(event: KeyboardEvent): void {
 .meta {
   display: grid;
   gap: 0.15rem;
+  min-width: 0;
 }
 
 .name {
@@ -645,8 +673,12 @@ function onKeydown(event: KeyboardEvent): void {
 
 .keys {
   display: flex;
+  flex-wrap: wrap;
+  flex: 0 1 auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 0.25rem;
+  min-width: 0;
 }
 
 kbd {
@@ -675,5 +707,17 @@ kbd {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+@media (max-width: 520px) {
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.35rem;
+  }
+
+  .keys {
+    justify-content: flex-start;
+  }
 }
 </style>

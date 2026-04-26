@@ -162,6 +162,19 @@ describe('validation store actions', () => {
     expect(openReportsDirMock).toHaveBeenCalled()
   })
 
+  it('keeps validation service rejections inside store state', async () => {
+    const store = useValidationStore()
+    runValidationMock.mockRejectedValueOnce(new Error('dataset mismatch'))
+
+    store.runValidation()
+    await flushServiceImports()
+
+    expect(runValidationMock).toHaveBeenCalled()
+    expect(store.statusLine).toBe('Validation failed: Error: dataset mismatch')
+    expect(store.validationHint).toBe('Validation failed: Error: dataset mismatch')
+    expect(store.source).toBe('vue')
+  })
+
   it('dispatches cross-dataset actions', async () => {
     const store = useValidationStore()
     store.crossSearch = 'stocks'

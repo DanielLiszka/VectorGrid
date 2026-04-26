@@ -14,19 +14,24 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use ta_app_core::options_types::{
-    OptionsExpressionCoverageAdequacyVerdict, OptionsExpressionDatasetProvenance,
-    OptionsExpressionMetrics, OptionsExpressionValidationVerdict,
+    OptionsExpressionContractQuoteQualitySummary, OptionsExpressionCoverageAdequacyVerdict,
+    OptionsExpressionDatasetProvenance, OptionsExpressionDatasetQuoteQualitySummary,
+    OptionsExpressionMetrics, OptionsExpressionValidationDatasetPolicy,
+    OptionsExpressionValidationPlan, OptionsExpressionValidationPlanMode,
+    OptionsExpressionValidationRequest, OptionsExpressionValidationResult,
+    OptionsExpressionValidationTupleSelection, OptionsExpressionValidationVerdict,
 };
 use ta_app_core::{
     analyze_options_expression_feasibility_blocking,
     compute_double_ma_drilldown_blocking_with_candles, dataset_manifest_path,
     inspect_options_expression_event_path_blocking, inspect_options_expression_tuple_blocking,
     load_imported_options_dataset_from_csv, parse_timeframe_label, read_options_dataset_manifest,
-    resample_candles, run_options_expression_blocking, ImportedOptionsDatasetCsvBuildRequest,
-    OptionsExpressionArtifactV1, OptionsExpressionEventPathInspectionResult,
-    OptionsExpressionFeasibilityReport, OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    resample_candles, run_options_expression_blocking, validate_options_expression_tuples_blocking,
+    ImportedOptionsDatasetCsvBuildRequest, OptionsExpressionArtifactV1,
+    OptionsExpressionEventPathInspectionResult, OptionsExpressionFeasibilityReport,
+    OptionsExpressionRunRequest, OptionsExpressionRunResult,
     OptionsExpressionTupleInspectionResult, OptionsPriceSemantics,
-    OPTIONS_EXPRESSION_ARTIFACT_VERSION,
+    OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_EXPRESSION_VALIDATION_ARTIFACT_VERSION,
 };
 use tauri::Manager;
 
@@ -47,6 +52,38 @@ pub struct AnalyzeOptionsExpressionFeasibilityResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_build_timing: Option<OptionsExpressionReplayBuildTimingBreakdown>,
     pub report: OptionsExpressionFeasibilityReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidateOptionsExpressionArtifactResponse {
+    pub artifact_path: String,
+    pub replay_build_ms: u64,
+    pub validation_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_build_timing: Option<OptionsExpressionReplayBuildTimingBreakdown>,
+    pub result: OptionsExpressionValidationResult,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AnalyzeOptionsExpressionValidationFeasibilityResponse {
+    pub replay_build_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_build_timing: Option<OptionsExpressionReplayBuildTimingBreakdown>,
+    pub artifact_path: String,
+    pub source_artifact_hash: String,
+    pub options_dataset_id: String,
+    pub options_dataset_hash: String,
+    pub dataset_policy: OptionsExpressionValidationDatasetPolicy,
+    pub replacement_dataset: bool,
+    pub validation_plan: OptionsExpressionValidationPlan,
+    pub tuple_selection: OptionsExpressionValidationTupleSelection,
+    pub selected_tuple_indexes: Vec<usize>,
+    pub selected_tuple_count: usize,
+    pub price_semantics: OptionsPriceSemantics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_provenance: Option<OptionsExpressionDatasetProvenance>,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -1046,6 +1083,28 @@ fn suggest_options_expression_artifact_path(
     Ok(path)
 }
 
+fn suggest_options_expression_validation_artifact_path(
+    app_local_data_dir: &std::path::Path,
+    ts: &str,
+) -> Result<std::path::PathBuf, String> {
+    let runs_dir = runs_dir(app_local_data_dir)?;
+    std::fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
+    let safe_ts = super::sanitize_filename_component(ts);
+    let base_name = format!("vectorgrid_options_validation_{safe_ts}");
+    let mut path = runs_dir.join(format!("{base_name}.json"));
+    if !path.exists() {
+        return Ok(path);
+    }
+    for suffix in 2..=999u32 {
+        let candidate = runs_dir.join(format!("{base_name}_{suffix}.json"));
+        if !candidate.exists() {
+            path = candidate;
+            break;
+        }
+    }
+    Ok(path)
+}
+
 fn read_artifact_value(path: &std::path::Path) -> Result<Value, String> {
     let bytes = std::fs::read(path)
         .map_err(|e| format!("failed to read saved artifact {}: {e}", path.display()))?;
@@ -1134,6 +1193,182 @@ fn build_options_expression_artifact(
     }
 }
 
+const OPTIONS_QUOTE_QUALITY_STALE_THRESHOLD_MS: i64 = 15 * 60 * 1_000;
+
+#[derive(Default)]
+struct QuoteQualityCounts {
+    row_count: usize,
+    any_quote_row_count: usize,
+    bid_row_count: usize,
+    ask_row_count: usize,
+    bid_ask_row_count: usize,
+    mid_row_count: usize,
+    quote_age_row_count: usize,
+    stale_quote_row_count: usize,
+    max_quote_age_ms: Option<i64>,
+    spread_bps_values: Vec<f64>,
+}
+
+fn quote_quality_ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
+fn quote_row_spread_bps(row: &ta_app_core::OptionsPriceRow) -> Option<f64> {
+    let bid = row.bid?;
+    let ask = row.ask?;
+    if !bid.is_finite() || !ask.is_finite() || bid < 0.0 || ask < bid {
+        return None;
+    }
+    let midpoint = (bid + ask) * 0.5;
+    if midpoint <= 0.0 || !midpoint.is_finite() {
+        return None;
+    }
+    Some((ask - bid) / midpoint * 10_000.0)
+}
+
+fn accumulate_quote_quality_row(
+    counts: &mut QuoteQualityCounts,
+    row: &ta_app_core::OptionsPriceRow,
+    stale_threshold_ms: i64,
+) {
+    counts.row_count = counts.row_count.saturating_add(1);
+    let has_bid = row.bid.is_some();
+    let has_ask = row.ask.is_some();
+    let has_mid = row.mid.is_some();
+    if has_bid || has_ask || has_mid {
+        counts.any_quote_row_count = counts.any_quote_row_count.saturating_add(1);
+    }
+    if has_bid {
+        counts.bid_row_count = counts.bid_row_count.saturating_add(1);
+    }
+    if has_ask {
+        counts.ask_row_count = counts.ask_row_count.saturating_add(1);
+    }
+    if has_bid && has_ask {
+        counts.bid_ask_row_count = counts.bid_ask_row_count.saturating_add(1);
+    }
+    if has_mid {
+        counts.mid_row_count = counts.mid_row_count.saturating_add(1);
+    }
+    if let Some(age_ms) = row.quote_age_ms {
+        counts.quote_age_row_count = counts.quote_age_row_count.saturating_add(1);
+        counts.max_quote_age_ms = Some(counts.max_quote_age_ms.unwrap_or(age_ms).max(age_ms));
+        if age_ms > stale_threshold_ms {
+            counts.stale_quote_row_count = counts.stale_quote_row_count.saturating_add(1);
+        }
+    }
+    if let Some(spread_bps) = quote_row_spread_bps(row) {
+        counts.spread_bps_values.push(spread_bps);
+    }
+}
+
+fn mean(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+
+fn median(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        Some((values[mid - 1] + values[mid]) * 0.5)
+    } else {
+        Some(values[mid])
+    }
+}
+
+fn max_value(values: &[f64]) -> Option<f64> {
+    values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .reduce(f64::max)
+}
+
+fn contract_quote_quality_summary(
+    contract_id: &str,
+    counts: QuoteQualityCounts,
+) -> OptionsExpressionContractQuoteQualitySummary {
+    OptionsExpressionContractQuoteQualitySummary {
+        contract_id: contract_id.to_string(),
+        row_count: counts.row_count,
+        any_quote_row_count: counts.any_quote_row_count,
+        bid_ask_row_count: counts.bid_ask_row_count,
+        mid_row_count: counts.mid_row_count,
+        quote_age_row_count: counts.quote_age_row_count,
+        stale_quote_row_count: counts.stale_quote_row_count,
+        any_quote_coverage_rate: quote_quality_ratio(counts.any_quote_row_count, counts.row_count),
+        bid_ask_coverage_rate: quote_quality_ratio(counts.bid_ask_row_count, counts.row_count),
+        mid_coverage_rate: quote_quality_ratio(counts.mid_row_count, counts.row_count),
+        stale_quote_rate: quote_quality_ratio(counts.stale_quote_row_count, counts.row_count),
+        mean_spread_bps: mean(&counts.spread_bps_values),
+        max_spread_bps: max_value(&counts.spread_bps_values),
+        max_quote_age_ms: counts.max_quote_age_ms,
+    }
+}
+
+fn dataset_quote_quality_from_imported_dataset(
+    dataset: &ta_app_core::ImportedOptionsDataset,
+) -> Option<OptionsExpressionDatasetQuoteQualitySummary> {
+    let stale_threshold_ms = OPTIONS_QUOTE_QUALITY_STALE_THRESHOLD_MS;
+    let mut global = QuoteQualityCounts::default();
+    let mut per_contract = Vec::with_capacity(dataset.contracts.len());
+
+    for contract in &dataset.contracts {
+        let mut contract_counts = QuoteQualityCounts::default();
+        for row in &contract.rows {
+            accumulate_quote_quality_row(&mut contract_counts, row, stale_threshold_ms);
+            accumulate_quote_quality_row(&mut global, row, stale_threshold_ms);
+        }
+        per_contract.push(contract_quote_quality_summary(
+            &contract.contract_id,
+            contract_counts,
+        ));
+    }
+
+    let should_include = !matches!(
+        dataset.manifest.price_semantics,
+        OptionsPriceSemantics::MinuteAggregate
+    ) || global.any_quote_row_count > 0
+        || global.quote_age_row_count > 0;
+    if !should_include {
+        return None;
+    }
+
+    Some(OptionsExpressionDatasetQuoteQualitySummary {
+        price_semantics: dataset.manifest.price_semantics,
+        row_count: global.row_count,
+        contract_count: dataset.contracts.len(),
+        any_quote_row_count: global.any_quote_row_count,
+        bid_row_count: global.bid_row_count,
+        ask_row_count: global.ask_row_count,
+        bid_ask_row_count: global.bid_ask_row_count,
+        mid_row_count: global.mid_row_count,
+        quote_age_row_count: global.quote_age_row_count,
+        stale_quote_threshold_ms: Some(stale_threshold_ms),
+        stale_quote_row_count: global.stale_quote_row_count,
+        any_quote_coverage_rate: quote_quality_ratio(global.any_quote_row_count, global.row_count),
+        bid_ask_coverage_rate: quote_quality_ratio(global.bid_ask_row_count, global.row_count),
+        mid_coverage_rate: quote_quality_ratio(global.mid_row_count, global.row_count),
+        stale_quote_rate: quote_quality_ratio(global.stale_quote_row_count, global.row_count),
+        mean_spread_bps: mean(&global.spread_bps_values),
+        median_spread_bps: median(global.spread_bps_values.clone()),
+        max_spread_bps: max_value(&global.spread_bps_values),
+        max_quote_age_ms: global.max_quote_age_ms,
+        per_contract,
+    })
+}
+
 fn dataset_provenance_from_imported_dataset(
     dataset: &ta_app_core::ImportedOptionsDataset,
 ) -> OptionsExpressionDatasetProvenance {
@@ -1155,6 +1390,16 @@ fn dataset_provenance_from_imported_dataset(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        quote_quality: dataset_quote_quality_from_imported_dataset(dataset),
+    }
+}
+
+fn canonical_options_provider_identity(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "massive" | "polygon" | "polygon.io" | "polygon_io" | "polygonio" => {
+            "polygon.io".to_string()
+        }
+        other => other.to_string(),
     }
 }
 
@@ -1519,10 +1764,11 @@ fn validate_saved_artifact_replay_provenance(
         let actual_provenance = dataset_provenance_from_imported_dataset(replay.dataset.as_ref());
         let expected_provider_name = expected_provenance.provider_name.trim();
         if !expected_provider_name.is_empty()
-            && actual_provenance.provider_name != expected_provider_name
+            && canonical_options_provider_identity(&actual_provenance.provider_name)
+                != canonical_options_provider_identity(expected_provider_name)
         {
             return Err(format!(
-                "saved artifact provider_name '{}' no longer matches the currently imported dataset provider_name '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+                "saved artifact Polygon.io provider identity '{}' no longer matches the currently imported dataset provider identity '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
                 expected_provider_name, actual_provenance.provider_name, artifact.options_dataset_id
             ));
         }
@@ -1592,6 +1838,91 @@ fn validate_saved_artifact_replay_provenance(
         }
     }
     Ok(())
+}
+
+fn validate_saved_artifact_parent_signal_replay_provenance(
+    artifact: &OptionsExpressionArtifactV1,
+    replay: &OptionsExpressionReplayInputs,
+) -> Result<(), String> {
+    if replay.parent_artifact_id != artifact.parent_artifact_id {
+        return Err(format!(
+            "saved artifact parent id '{}' no longer matches the replay parent id '{}'",
+            artifact.parent_artifact_id, replay.parent_artifact_id
+        ));
+    }
+    if !artifact.parent_artifact_hash.trim().is_empty()
+        && replay.parent_artifact_hash != artifact.parent_artifact_hash
+    {
+        return Err(format!(
+            "saved artifact parent hash '{}' no longer matches the replay parent hash '{}' for parent '{}'; reopen the original parent artifact or rerun the options expression optimization",
+            artifact.parent_artifact_hash, replay.parent_artifact_hash, artifact.parent_artifact_id
+        ));
+    }
+    if !artifact.signal_manifest_id.trim().is_empty()
+        && replay.signal_manifest.manifest_id != artifact.signal_manifest_id
+    {
+        return Err(format!(
+            "saved artifact signal manifest id '{}' no longer matches the replay signal manifest id '{}' for parent '{}'; rerun the options expression optimization from the original parent artifact",
+            artifact.signal_manifest_id, replay.signal_manifest.manifest_id, artifact.parent_artifact_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_options_expression_validation_replay_provenance(
+    artifact: &OptionsExpressionArtifactV1,
+    replay: &OptionsExpressionReplayInputs,
+    dataset_policy: OptionsExpressionValidationDatasetPolicy,
+) -> Result<bool, String> {
+    match dataset_policy {
+        OptionsExpressionValidationDatasetPolicy::RequireExactReplay => {
+            validate_saved_artifact_replay_provenance(artifact, replay)?;
+            Ok(false)
+        }
+        OptionsExpressionValidationDatasetPolicy::AllowSameRootReplacement => {
+            validate_saved_artifact_parent_signal_replay_provenance(artifact, replay)?;
+            if !replay
+                .dataset
+                .manifest
+                .root_symbol
+                .eq_ignore_ascii_case(&artifact.root_symbol)
+            {
+                return Err(format!(
+                    "replacement validation requires the same root symbol as the saved artifact: saved '{}' vs replay '{}'",
+                    artifact.root_symbol, replay.dataset.manifest.root_symbol
+                ));
+            }
+            if replay.dataset.manifest.price_semantics != artifact.price_semantics {
+                return Err(format!(
+                    "same-root replacement validation requires matching price semantics: saved '{:?}' vs replay '{:?}'. Use explicit cross-lane comparison for Polygon.io realism-lane comparisons.",
+                    artifact.price_semantics, replay.dataset.manifest.price_semantics
+                ));
+            }
+            Ok(
+                replay.normalized_req.options_dataset_id != artifact.options_dataset_id
+                    || replay.options_dataset_hash != artifact.options_dataset_hash,
+            )
+        }
+        OptionsExpressionValidationDatasetPolicy::AllowExplicitCrossLaneComparison => {
+            validate_saved_artifact_parent_signal_replay_provenance(artifact, replay)?;
+            if !replay
+                .dataset
+                .manifest
+                .root_symbol
+                .eq_ignore_ascii_case(&artifact.root_symbol)
+            {
+                return Err(format!(
+                    "cross-lane validation requires the same root symbol as the saved artifact: saved '{}' vs replay '{}'",
+                    artifact.root_symbol, replay.dataset.manifest.root_symbol
+                ));
+            }
+            Ok(
+                replay.normalized_req.options_dataset_id != artifact.options_dataset_id
+                    || replay.options_dataset_hash != artifact.options_dataset_hash
+                    || replay.dataset.manifest.price_semantics != artifact.price_semantics,
+            )
+        }
+    }
 }
 
 fn validate_event_path_replay_consistency(
@@ -2146,6 +2477,383 @@ pub fn load_options_expression_artifact_blocking_headless(
     Ok(artifact)
 }
 
+fn load_options_expression_artifact_with_hash(
+    artifact_path: &std::path::Path,
+    app_local_data_dir: &std::path::Path,
+) -> Result<(OptionsExpressionArtifactV1, String), String> {
+    if !artifact_path.is_file() {
+        return Err(format!(
+            "options expression artifact does not exist: {}",
+            artifact_path.display()
+        ));
+    }
+    let runs_dir = runs_dir(app_local_data_dir)?;
+    ensure_path_is_within_dir(artifact_path, &runs_dir)?;
+    let value = read_artifact_value(artifact_path)?;
+    let source_artifact_hash = json_value_digest(&value)?;
+    let mut artifact =
+        serde_json::from_value::<OptionsExpressionArtifactV1>(value).map_err(|e| {
+            format!(
+                "failed to deserialize options expression artifact {}: {e}",
+                artifact_path.display()
+            )
+        })?;
+    if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
+        return Err(format!(
+            "unsupported options expression artifact kind: {}",
+            artifact.kind
+        ));
+    }
+    refresh_options_expression_artifact_validation_verdicts(&mut artifact);
+    Ok((artifact, source_artifact_hash))
+}
+
+fn effective_validation_replay_request(
+    artifact: &OptionsExpressionArtifactV1,
+    req: &OptionsExpressionValidationRequest,
+) -> Result<OptionsExpressionRunRequest, String> {
+    let mut replay_req = artifact.request.clone();
+    let requested_dataset_id = req.options_dataset_id.trim();
+    if !requested_dataset_id.is_empty() {
+        replay_req.options_dataset_id = requested_dataset_id.to_string();
+    }
+    if let Some(fill_model) = req.fill_model_override {
+        replay_req.fill_model = fill_model;
+    }
+    match req.validation_plan.mode {
+        OptionsExpressionValidationPlanMode::OriginalEmbeddedSplits => {}
+        OptionsExpressionValidationPlanMode::SessionChronologicalReplay => {
+            replay_req.split_assignment_mode =
+                ta_app_core::OptionsSplitAssignmentMode::SessionChronological;
+        }
+        OptionsExpressionValidationPlanMode::DateRangeHoldout => {
+            let start = req.validation_plan.start_timestamp_ms.ok_or_else(|| {
+                "date_range_holdout validation requires start_timestamp_ms".to_string()
+            })?;
+            let end = req.validation_plan.end_timestamp_ms.ok_or_else(|| {
+                "date_range_holdout validation requires end_timestamp_ms".to_string()
+            })?;
+            if start >= end {
+                return Err(
+                    "date_range_holdout validation requires start_timestamp_ms < end_timestamp_ms"
+                        .to_string(),
+                );
+            }
+        }
+        OptionsExpressionValidationPlanMode::AnchoredWalkForward
+        | OptionsExpressionValidationPlanMode::RollingSessionWalkForward => {
+            let train = req.validation_plan.train_session_count.unwrap_or(0);
+            let validation = req.validation_plan.validation_session_count.unwrap_or(0);
+            let step = req.validation_plan.step_session_count.unwrap_or(validation);
+            if train == 0 || validation == 0 || step == 0 {
+                return Err(
+                    "walk-forward validation requires positive train_session_count, validation_session_count, and step_session_count"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(replay_req)
+}
+
+fn validation_session_key(event: &ta_app_core::OptionsSignalEvent) -> String {
+    event
+        .session_id
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "utc_day:{}",
+                event.earliest_tradable_timestamp.div_euclid(86_400_000)
+            )
+        })
+}
+
+fn validation_plan_preview_notes(
+    plan: &OptionsExpressionValidationPlan,
+    signal_manifest: &ta_app_core::OptionsSignalEventManifestV1,
+) -> Vec<String> {
+    match plan.mode {
+        OptionsExpressionValidationPlanMode::OriginalEmbeddedSplits => {
+            vec!["Validation will reuse the saved artifact's embedded split policy.".to_string()]
+        }
+        OptionsExpressionValidationPlanMode::SessionChronologicalReplay => vec![
+            "Validation will replay selected tuples with session-chronological splits.".to_string(),
+        ],
+        OptionsExpressionValidationPlanMode::DateRangeHoldout => {
+            if let (Some(start), Some(end)) = (plan.start_timestamp_ms, plan.end_timestamp_ms) {
+                let event_count = signal_manifest
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        event.earliest_tradable_timestamp >= start
+                            && event.earliest_tradable_timestamp < end
+                    })
+                    .count();
+                vec![format!(
+                    "Validation will assign {} event{} in the end-exclusive date range [{start}, {end}) to holdout.",
+                    event_count,
+                    if event_count == 1 { "" } else { "s" }
+                )]
+            } else {
+                vec!["Validation date-range holdout requires start and end timestamps.".to_string()]
+            }
+        }
+        OptionsExpressionValidationPlanMode::AnchoredWalkForward
+        | OptionsExpressionValidationPlanMode::RollingSessionWalkForward => {
+            let mut sessions = BTreeSet::new();
+            for event in &signal_manifest.events {
+                sessions.insert(validation_session_key(event));
+            }
+            let mode = match plan.mode {
+                OptionsExpressionValidationPlanMode::AnchoredWalkForward => "anchored_walk_forward",
+                OptionsExpressionValidationPlanMode::RollingSessionWalkForward => {
+                    "rolling_session_walk_forward"
+                }
+                _ => unreachable!(),
+            };
+            vec![format!(
+                "Validation will evaluate retained tuples with {mode} over {} ordered session{} using train={}, validation={}, step={}.",
+                sessions.len(),
+                if sessions.len() == 1 { "" } else { "s" },
+                plan.train_session_count.unwrap_or(0),
+                plan.validation_session_count.unwrap_or(0),
+                plan.step_session_count
+                    .or(plan.validation_session_count)
+                    .unwrap_or(0)
+            )]
+        }
+    }
+}
+
+fn select_options_expression_validation_tuple_indexes(
+    artifact: &OptionsExpressionArtifactV1,
+    selection: &OptionsExpressionValidationTupleSelection,
+) -> Result<Vec<usize>, String> {
+    let tuple_count = artifact.selection_metrics.len();
+    let mut selected = BTreeSet::new();
+    if selection.include_sealed_finalists {
+        for (index, tuple) in artifact.selection_metrics.iter().enumerate() {
+            if tuple.sealed_finalist {
+                selected.insert(index);
+            }
+        }
+    }
+    if selection.include_robust_leader {
+        if let Some(index) = best_tuple_index_by_metric(&artifact.selection_metrics, |entry| {
+            Some(entry.robust_score)
+        }) {
+            selected.insert(index);
+        }
+    }
+    if selection.include_holdout_leader {
+        if let Some(index) = best_tuple_index_by_metric(&artifact.selection_metrics, |entry| {
+            entry
+                .supported_holdout_metrics()
+                .map(|metrics| metrics.expectancy_per_premium)
+        }) {
+            selected.insert(index);
+        }
+    }
+    for index in &selection.tuple_indexes {
+        if *index >= tuple_count {
+            return Err(format!(
+                "validation tuple index {} is out of range for saved artifact with {} tuple{}",
+                index,
+                tuple_count,
+                if tuple_count == 1 { "" } else { "s" }
+            ));
+        }
+        selected.insert(*index);
+    }
+    if selected.is_empty() && tuple_count > 0 {
+        selected.insert(0);
+    }
+    Ok(selected.into_iter().collect())
+}
+
+fn selected_options_expression_validation_tuples(
+    artifact: &OptionsExpressionArtifactV1,
+    selection: &OptionsExpressionValidationTupleSelection,
+) -> Result<Vec<(usize, ta_app_core::OptionsExpressionTupleResult)>, String> {
+    let indexes = select_options_expression_validation_tuple_indexes(artifact, selection)?;
+    indexes
+        .into_iter()
+        .map(|index| {
+            artifact
+                .selection_metrics
+                .get(index)
+                .cloned()
+                .map(|tuple| (index, tuple))
+                .ok_or_else(|| {
+                    format!(
+                        "validation tuple index {} is out of range for saved artifact",
+                        index
+                    )
+                })
+        })
+        .collect()
+}
+
+fn build_options_expression_validation_result(
+    validation_artifact_path: &std::path::Path,
+    source_artifact_path: &std::path::Path,
+    source_artifact_hash: String,
+    artifact: &OptionsExpressionArtifactV1,
+    replay: &OptionsExpressionReplayInputs,
+    req: OptionsExpressionValidationRequest,
+    replacement_dataset: bool,
+    evaluation: ta_app_core::OptionsExpressionValidationEvaluationResult,
+) -> OptionsExpressionValidationResult {
+    OptionsExpressionValidationResult {
+        version: OPTIONS_EXPRESSION_VALIDATION_ARTIFACT_VERSION,
+        kind: "vectorgrid_options_expression_validation_v1".to_string(),
+        ts: chrono::Utc::now().to_rfc3339(),
+        validation_artifact_path: validation_artifact_path.to_string_lossy().to_string(),
+        source_artifact_path: source_artifact_path.to_string_lossy().to_string(),
+        source_artifact_hash,
+        parent_artifact_id: artifact.parent_artifact_id.clone(),
+        parent_artifact_hash: artifact.parent_artifact_hash.clone(),
+        signal_manifest_id: replay.signal_manifest.manifest_id.clone(),
+        root_symbol: replay.dataset.manifest.root_symbol.clone(),
+        options_dataset_id: replay.normalized_req.options_dataset_id.clone(),
+        options_dataset_hash: replay.options_dataset_hash.clone(),
+        dataset_policy: req.dataset_policy,
+        replacement_dataset,
+        validation_plan: req.validation_plan,
+        tuple_selection: req.tuple_selection,
+        price_semantics: replay.dataset.manifest.price_semantics,
+        dataset_provenance: Some(dataset_provenance_from_imported_dataset(
+            replay.dataset.as_ref(),
+        )),
+        diagnostics: evaluation.diagnostics,
+        overlap_window: evaluation.overlap_window,
+        coverage_adequacy: evaluation.coverage_adequacy,
+        lane_summaries: evaluation.lane_summaries,
+        acceptance_summary: evaluation.acceptance_summary,
+        tuple_results: evaluation.tuple_results,
+    }
+}
+
+fn validate_options_expression_artifact_blocking_impl(
+    req: OptionsExpressionValidationRequest,
+    app_local_data_dir: &std::path::Path,
+) -> Result<ValidateOptionsExpressionArtifactResponse, String> {
+    let source_artifact_path = std::path::PathBuf::from(req.artifact_path.trim());
+    let (artifact, source_artifact_hash) =
+        load_options_expression_artifact_with_hash(&source_artifact_path, app_local_data_dir)?;
+    let source_tuples =
+        selected_options_expression_validation_tuples(&artifact, &req.tuple_selection)?;
+    let replay_req = effective_validation_replay_request(&artifact, &req)?;
+    let replay_start = std::time::Instant::now();
+    let replay =
+        build_options_expression_replay_inputs_with_timing(replay_req, app_local_data_dir)?;
+    let replay_build_ms = replay_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let replacement_dataset = validate_options_expression_validation_replay_provenance(
+        &artifact,
+        &replay.inputs,
+        req.dataset_policy,
+    )?;
+    let validation_start = std::time::Instant::now();
+    let evaluation = validate_options_expression_tuples_blocking(
+        replay.inputs.normalized_req.clone(),
+        &source_tuples,
+        replay.inputs.signal_manifest.as_ref(),
+        replay.inputs.dataset.as_ref(),
+        &req.validation_plan,
+        req.min_valid_trades.or(artifact.request.min_valid_trades),
+    )?;
+    let validation_ms = validation_start
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let ts = chrono::Utc::now().to_rfc3339();
+    let validation_artifact_path =
+        suggest_options_expression_validation_artifact_path(app_local_data_dir, &ts)?;
+    let result = build_options_expression_validation_result(
+        &validation_artifact_path,
+        &source_artifact_path,
+        source_artifact_hash,
+        &artifact,
+        &replay.inputs,
+        req,
+        replacement_dataset,
+        evaluation,
+    );
+    let bytes = serde_json::to_vec_pretty(&result)
+        .map_err(|e| format!("failed to serialize options validation artifact: {e}"))?;
+    std::fs::write(&validation_artifact_path, bytes).map_err(|e| {
+        format!(
+            "failed to write options validation artifact {}: {e}",
+            validation_artifact_path.display()
+        )
+    })?;
+    Ok(ValidateOptionsExpressionArtifactResponse {
+        artifact_path: validation_artifact_path.to_string_lossy().to_string(),
+        replay_build_ms,
+        validation_ms,
+        replay_build_timing: Some(replay.timing),
+        result,
+    })
+}
+
+fn analyze_options_expression_validation_feasibility_blocking_impl(
+    req: OptionsExpressionValidationRequest,
+    app_local_data_dir: &std::path::Path,
+) -> Result<AnalyzeOptionsExpressionValidationFeasibilityResponse, String> {
+    let source_artifact_path = std::path::PathBuf::from(req.artifact_path.trim());
+    let (artifact, source_artifact_hash) =
+        load_options_expression_artifact_with_hash(&source_artifact_path, app_local_data_dir)?;
+    let selected_tuple_indexes =
+        select_options_expression_validation_tuple_indexes(&artifact, &req.tuple_selection)?;
+    let replay_req = effective_validation_replay_request(&artifact, &req)?;
+    let replay_start = std::time::Instant::now();
+    let replay =
+        build_options_expression_replay_inputs_with_timing(replay_req, app_local_data_dir)?;
+    let replay_build_ms = replay_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let replacement_dataset = validate_options_expression_validation_replay_provenance(
+        &artifact,
+        &replay.inputs,
+        req.dataset_policy,
+    )?;
+    let mut notes = Vec::new();
+    if replacement_dataset {
+        notes.push(
+            "Validation will use an explicitly selected replacement Polygon.io dataset."
+                .to_string(),
+        );
+    } else {
+        notes.push(
+            "Validation is eligible for exact replay against the saved Polygon.io dataset."
+                .to_string(),
+        );
+    }
+    notes.extend(validation_plan_preview_notes(
+        &req.validation_plan,
+        replay.inputs.signal_manifest.as_ref(),
+    ));
+    Ok(AnalyzeOptionsExpressionValidationFeasibilityResponse {
+        replay_build_ms,
+        replay_build_timing: Some(replay.timing),
+        artifact_path: source_artifact_path.to_string_lossy().to_string(),
+        source_artifact_hash,
+        options_dataset_id: replay.inputs.normalized_req.options_dataset_id,
+        options_dataset_hash: replay.inputs.options_dataset_hash,
+        dataset_policy: req.dataset_policy,
+        replacement_dataset,
+        validation_plan: req.validation_plan,
+        tuple_selection: req.tuple_selection,
+        selected_tuple_count: selected_tuple_indexes.len(),
+        selected_tuple_indexes,
+        price_semantics: replay.inputs.dataset.manifest.price_semantics,
+        dataset_provenance: Some(dataset_provenance_from_imported_dataset(
+            replay.inputs.dataset.as_ref(),
+        )),
+        notes,
+    })
+}
+
 pub fn save_options_csv_blocking_headless(
     req: SaveOptionsCsvRequest,
 ) -> Result<SaveOptionsCsvResponse, String> {
@@ -2209,6 +2917,40 @@ pub async fn analyze_options_expression_feasibility(
             ta_app_core::nvtx::scope("engine", "tauri_options_expression_feasibility_request");
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
         analyze_options_expression_feasibility_blocking_impl(req, &app_local_data_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn validate_options_expression_artifact(
+    req: OptionsExpressionValidationRequest,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<ValidateOptionsExpressionArtifactResponse, String> {
+    let _run_guard = state.try_begin_run()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _nvtx_scope =
+            ta_app_core::nvtx::scope("engine", "tauri_options_expression_validation_request");
+        let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        validate_options_expression_artifact_blocking_impl(req, &app_local_data_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn analyze_options_expression_validation_feasibility(
+    req: OptionsExpressionValidationRequest,
+    app: tauri::AppHandle,
+) -> Result<AnalyzeOptionsExpressionValidationFeasibilityResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _nvtx_scope = ta_app_core::nvtx::scope(
+            "engine",
+            "tauri_options_expression_validation_feasibility_request",
+        );
+        let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        analyze_options_expression_validation_feasibility_blocking_impl(req, &app_local_data_dir)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2405,6 +3147,8 @@ mod tests {
     use ta_app_core::{
         options_types::{
             ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
+            OptionsExpressionValidationDatasetPolicy, OptionsExpressionValidationPlanMode,
+            OptionsExpressionValidationRequest, OptionsExpressionValidationTupleSelection,
             OptionsExpressionValidationVerdict, OptionsFillModelFamily, OptionsMoneynessBucket,
             OptionsPriceRow, OptionsStructureFamily, OptionsTupleSpec,
         },
@@ -3750,6 +4494,31 @@ mod tests {
     }
 
     #[test]
+    fn dataset_provenance_includes_quote_quality_summary_for_quote_rows() {
+        let dataset = sample_replay_dataset("spy_quotes", OptionsPriceSemantics::TopOfBookQuote);
+
+        let provenance = dataset_provenance_from_imported_dataset(&dataset);
+        let quote_quality = provenance
+            .quote_quality
+            .expect("quote quality should be present for quote datasets");
+
+        assert_eq!(quote_quality.row_count, 2);
+        assert_eq!(quote_quality.contract_count, 1);
+        assert_eq!(quote_quality.any_quote_row_count, 1);
+        assert_eq!(quote_quality.bid_ask_row_count, 1);
+        assert_eq!(quote_quality.mid_row_count, 1);
+        assert_eq!(quote_quality.quote_age_row_count, 1);
+        assert_eq!(quote_quality.stale_quote_row_count, 0);
+        assert_eq!(quote_quality.per_contract.len(), 1);
+        assert_eq!(
+            quote_quality.per_contract[0].contract_id,
+            "SPY-2026-04-03-C-645"
+        );
+        assert!((quote_quality.bid_ask_coverage_rate - 0.5).abs() < 1e-12);
+        assert!(quote_quality.mean_spread_bps.unwrap_or_default() > 1_800.0);
+    }
+
+    #[test]
     fn saved_artifact_replay_provenance_accepts_matching_dataset_hash_and_semantics() {
         let temp_root = std::env::temp_dir().join(format!(
             "vectorgrid_options_replay_provenance_test_{}_{}",
@@ -3863,7 +4632,7 @@ mod tests {
             .provider_name = "other_provider".to_string();
         let provider_error = validate_saved_artifact_replay_provenance(&artifact, &provider_drift)
             .expect_err("provider provenance drift should fail");
-        assert!(provider_error.contains("provider_name"));
+        assert!(provider_error.contains("provider identity"));
 
         let mut contract_reference_drift = sample_replay_inputs_for_artifact(
             &artifact,
@@ -3880,6 +4649,206 @@ mod tests {
 
         let _ = std::fs::remove_file(&parent_artifact_path);
         let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    #[test]
+    fn validation_tuple_selection_includes_default_leaders_and_explicit_indexes() {
+        let temp_root = temp_app_local_data_dir("validation_tuple_selection");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let mut artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        artifact.selection_metrics = vec![
+            sample_summary_tuple(0, 0.60, 0.10, Some(0.05), None, Some(0.04), false, 0),
+            sample_summary_tuple(1, 0.30, 0.20, Some(0.30), None, Some(0.10), false, 0),
+            sample_summary_tuple(2, 0.20, 0.15, Some(0.10), Some(0.25), Some(0.08), true, 1),
+        ];
+
+        let selection = OptionsExpressionValidationTupleSelection {
+            include_sealed_finalists: true,
+            include_robust_leader: true,
+            include_holdout_leader: true,
+            tuple_indexes: vec![1],
+        };
+        let indexes =
+            select_options_expression_validation_tuple_indexes(&artifact, &selection).unwrap();
+
+        assert_eq!(indexes, vec![0, 1, 2]);
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn validation_replay_request_accepts_date_range_and_walk_forward_plans() {
+        let temp_root = temp_app_local_data_dir("validation_plan_request");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+
+        let date_req = OptionsExpressionValidationRequest {
+            artifact_path: parent_artifact_path.to_string_lossy().to_string(),
+            options_dataset_id: String::new(),
+            dataset_policy: OptionsExpressionValidationDatasetPolicy::RequireExactReplay,
+            tuple_selection: OptionsExpressionValidationTupleSelection::default(),
+            validation_plan: OptionsExpressionValidationPlan {
+                mode: OptionsExpressionValidationPlanMode::DateRangeHoldout,
+                start_timestamp_ms: Some(1_700_000_000_000),
+                end_timestamp_ms: Some(1_700_086_400_000),
+                ..OptionsExpressionValidationPlan::default()
+            },
+            fill_model_override: None,
+            min_valid_trades: None,
+        };
+        let replay = effective_validation_replay_request(&artifact, &date_req)
+            .expect("date range replay request");
+        assert_eq!(replay.options_dataset_id, "spy_options");
+
+        let rolling_req = OptionsExpressionValidationRequest {
+            validation_plan: OptionsExpressionValidationPlan {
+                mode: OptionsExpressionValidationPlanMode::RollingSessionWalkForward,
+                train_session_count: Some(2),
+                validation_session_count: Some(1),
+                step_session_count: Some(1),
+                ..OptionsExpressionValidationPlan::default()
+            },
+            ..date_req
+        };
+        effective_validation_replay_request(&artifact, &rolling_req)
+            .expect("rolling replay request");
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn validation_replay_request_rejects_incomplete_plan_inputs() {
+        let temp_root = temp_app_local_data_dir("validation_plan_request_rejects");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        let req = OptionsExpressionValidationRequest {
+            artifact_path: parent_artifact_path.to_string_lossy().to_string(),
+            options_dataset_id: String::new(),
+            dataset_policy: OptionsExpressionValidationDatasetPolicy::RequireExactReplay,
+            tuple_selection: OptionsExpressionValidationTupleSelection::default(),
+            validation_plan: OptionsExpressionValidationPlan {
+                mode: OptionsExpressionValidationPlanMode::DateRangeHoldout,
+                start_timestamp_ms: Some(2),
+                end_timestamp_ms: Some(1),
+                ..OptionsExpressionValidationPlan::default()
+            },
+            fill_model_override: None,
+            min_valid_trades: None,
+        };
+
+        let error = effective_validation_replay_request(&artifact, &req)
+            .expect_err("inverted date range should fail");
+        assert!(error.contains("start_timestamp_ms < end_timestamp_ms"));
+
+        let req = OptionsExpressionValidationRequest {
+            validation_plan: OptionsExpressionValidationPlan {
+                mode: OptionsExpressionValidationPlanMode::AnchoredWalkForward,
+                train_session_count: Some(1),
+                validation_session_count: None,
+                step_session_count: Some(1),
+                ..OptionsExpressionValidationPlan::default()
+            },
+            ..req
+        };
+        let error = effective_validation_replay_request(&artifact, &req)
+            .expect_err("incomplete walk-forward plan should fail");
+        assert!(error.contains("positive train_session_count"));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn validation_replay_policy_requires_explicit_replacement_or_cross_lane() {
+        let temp_root = temp_app_local_data_dir("validation_replay_policy");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        let exact = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::MinuteAggregate,
+        );
+        assert_eq!(
+            validate_options_expression_validation_replay_provenance(
+                &artifact,
+                &exact,
+                OptionsExpressionValidationDatasetPolicy::RequireExactReplay,
+            )
+            .unwrap(),
+            false
+        );
+
+        let mut replacement = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-2",
+            OptionsPriceSemantics::MinuteAggregate,
+        );
+        replacement.normalized_req.options_dataset_id = "spy_options_replacement".to_string();
+        Arc::make_mut(&mut replacement.dataset)
+            .manifest
+            .options_dataset_id = "spy_options_replacement".to_string();
+        let exact_error = validate_options_expression_validation_replay_provenance(
+            &artifact,
+            &replacement,
+            OptionsExpressionValidationDatasetPolicy::RequireExactReplay,
+        )
+        .expect_err("exact replay should reject replacement dataset");
+        assert!(exact_error.contains("dataset id"));
+        assert_eq!(
+            validate_options_expression_validation_replay_provenance(
+                &artifact,
+                &replacement,
+                OptionsExpressionValidationDatasetPolicy::AllowSameRootReplacement,
+            )
+            .unwrap(),
+            true
+        );
+
+        let mut cross_lane = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-3",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        cross_lane.normalized_req.options_dataset_id = "spy_options_mid".to_string();
+        Arc::make_mut(&mut cross_lane.dataset)
+            .manifest
+            .options_dataset_id = "spy_options_mid".to_string();
+        let same_root_error = validate_options_expression_validation_replay_provenance(
+            &artifact,
+            &cross_lane,
+            OptionsExpressionValidationDatasetPolicy::AllowSameRootReplacement,
+        )
+        .expect_err("same-root replacement should reject cross-lane semantics");
+        assert!(same_root_error.contains("matching price semantics"));
+        assert_eq!(
+            validate_options_expression_validation_replay_provenance(
+                &artifact,
+                &cross_lane,
+                OptionsExpressionValidationDatasetPolicy::AllowExplicitCrossLaneComparison,
+            )
+            .unwrap(),
+            true
+        );
+
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

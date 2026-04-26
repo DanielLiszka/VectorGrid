@@ -1033,7 +1033,7 @@ fn main() -> Result<(), String> {
             cache_dir: cache_dir.to_string_lossy().to_string(),
             load_ms,
             resample_ms,
-            data_id,
+            data_id: data_id.to_string(),
             version,
             bars,
         },

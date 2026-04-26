@@ -766,6 +766,7 @@ onBeforeUnmount(() => {
           <div class="actions">
             <button
               type="button"
+              data-qa-action="library.savedRun.refresh"
               :disabled="!canRefreshSavedRuns"
               @click="historyStore.refreshSavedRuns()"
             >
@@ -773,6 +774,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.savedRun.load"
               :disabled="!canLoadSavedRun"
               @click="loadSavedRun"
             >
@@ -780,6 +782,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.savedRun.apply"
               :disabled="!canApplySavedRun"
               @click="applySavedRun"
             >
@@ -787,6 +790,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.savedRun.rerun"
               :disabled="!canRerunSavedRun"
               @click="rerunSavedRun"
             >
@@ -794,6 +798,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.savedRun.openReport"
               :disabled="!canOpenSavedRunReport"
               @click="openSavedRunReport"
             >
@@ -801,6 +806,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.savedRun.reveal"
               :disabled="!canRevealSavedRun"
               @click="revealSavedRun"
             >
@@ -808,6 +814,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.savedRun.delete"
               :disabled="!canDeleteSavedRun"
               @click="queueDeleteSavedRunConfirmation"
             >
@@ -815,6 +822,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.runsDir.open"
               :disabled="!canOpenRunsDir"
               @click="historyStore.openRunsDir()"
             >

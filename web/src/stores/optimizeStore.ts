@@ -1200,12 +1200,22 @@ export const useOptimizeStore = defineStore("optimize", {
         pinia &&
         String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal"
       ) {
-        void import("../services/mlSignalService").then(
-          ({ runMlSignalValidation }) => runMlSignalValidation(),
-        );
+        void import("../services/mlSignalService")
+          .then(({ runMlSignalValidation }) => runMlSignalValidation())
+          .catch((error: unknown) => {
+            this.statusLine = `Validation failed: ${String(error || "")}`.trim();
+            this.source = "vue";
+            this.updatedAtUnixMs = Date.now();
+          });
         return;
       }
-      void loadOptimizeService().then((service) => service.runValidation());
+      void loadOptimizeService()
+        .then((service) => service.runValidation())
+        .catch((error: unknown) => {
+          this.statusLine = `Validation failed: ${String(error || "")}`.trim();
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
   },
 });

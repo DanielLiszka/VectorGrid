@@ -160,6 +160,18 @@ describe("optimize store actions", () => {
     expect(runValidationMock).toHaveBeenCalled();
   });
 
+  it("keeps validation service rejections inside store state", async () => {
+    const store = useOptimizeStore(pinia);
+    runValidationMock.mockRejectedValueOnce(new Error("dataset mismatch"));
+
+    store.runValidation();
+    await flushServiceImports();
+
+    expect(runValidationMock).toHaveBeenCalled();
+    expect(store.statusLine).toBe("Validation failed: Error: dataset mismatch");
+    expect(store.source).toBe("vue");
+  });
+
   it("routes the shared MlSignal primary action by workflow step", async () => {
     const store = useOptimizeStore(pinia);
     const data = useDataStore(pinia);
