@@ -10,9 +10,9 @@ Depends on:
 
 ## Purpose
 
-This document identifies high-ROI GPT-5.5 Pro prompt ideas beyond the 12 active dossiers.
+This document identifies high-ROI GPT-5.5 Pro prompt ideas that were originally beyond the first 12 active dossiers.
 
-The existing 12 dossiers are comprehensive for the current engine, GPU, options, ML, workflow, artifact, campaign, and release surfaces. The prompts below are worth adding only if the project wants deeper research coverage across risk boundaries that cut across multiple current dossiers.
+The original 12 dossiers were comprehensive for the current engine, GPU, options, ML, workflow, artifact, campaign, and release surfaces. Dossiers 13-15 have since been promoted into the active prompt pack; candidates 16-18 remain future expansion ideas.
 
 ## Method
 
@@ -29,6 +29,8 @@ Add these first if expanding the prompt pack:
 1. Dossier 13: Desktop Trust Boundary, Secrets, Capabilities, And Local Security
 2. Dossier 14: Portfolio Construction, Capital Allocation, Margin, And Execution Realism
 3. Dossier 15: Numerical Reproducibility, Determinism, And Cross-Backend Scientific Audit
+
+Promotion status: dossiers 13-15 have been promoted into the final prompt dossier document and upload packs.
 
 Add these second:
 
@@ -433,4 +435,4 @@ These should not become new prompt packs yet:
 
 ## Recommended Next Step
 
-Promote Candidates 13-15 into full dossiers if the project wants to expand the master pack. Candidate 13 should come first because it can change the safety requirements for live execution, report/open/reveal commands, logs, local files, capabilities, and credential storage.
+Candidates 13-15 are now promoted into full dossiers and upload packs. The remaining next step is to consider Candidates 16-18 only after the active 15-dossier pack has produced decisions or implementation plans.

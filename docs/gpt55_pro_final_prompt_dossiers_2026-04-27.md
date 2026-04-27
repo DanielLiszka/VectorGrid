@@ -35,7 +35,7 @@ Generated or unusually low-signal files, such as prebuilt PTX, may be summarized
 
 ## Future Prompt Ideas
 
-For researched high-ROI prompt candidates beyond these 12 dossiers, see `docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md`.
+For researched high-ROI prompt candidates beyond this active 15-dossier pack, see `docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md`.
 
 ## Global Context Files
 
@@ -123,6 +123,9 @@ Constraints:
 | 10 | Frontend workflow orchestration and evidence-to-decision UX | State model and decision-support constraints |
 | 11 | Campaign, batch, and resumable research workflows | Deterministic resume/retry model |
 | 12 | Verification, benchmark fidelity, release, and packaging authority | Evidence and deployment authority |
+| 13 | Desktop trust boundary, secrets, capabilities, and local security | Security/trust-boundary decision |
+| 14 | Portfolio construction, capital allocation, margin, and execution realism | Portfolio/risk objective decision |
+| 15 | Numerical reproducibility, determinism, and cross-backend scientific audit | Reproducibility contract decision |
 
 ---
 
@@ -1532,11 +1535,354 @@ Minimum local validation for changes to the authority model:
 
 ---
 
+## Dossier 13: Desktop Trust Boundary, Secrets, Capabilities, And Local Security
+
+### Prompt
+
+```md
+Apply the global prompt contract.
+
+Problem:
+
+VectorGrid is a local Tauri desktop app that stores or uses Polygon and Alpaca credentials, exposes a broad Tauri command surface, writes local artifacts/reports/logs, opens/reveals files, manages market-data roots, and can bridge research outputs into paper or live broker actions. The hard question is what secure-by-default trust boundary is sufficient without adding security theater or breaking offline desktop workflows.
+
+Design the desktop trust-boundary and local security model.
+
+Specific questions:
+
+1. Which Tauri commands are safety-critical, data-exfiltration-capable, broker-action-capable, or harmless read-only diagnostics?
+2. Are current `main.json` and `dev.json` capabilities minimal enough for a single-window desktop app?
+3. Which command families require backend authorization, confirmation, path validation, or state preconditions beyond Tauri capability gating?
+4. How should Polygon and Alpaca credentials be stored, migrated, redacted, cleared, and excluded from artifacts, logs, reports, and broker intent records?
+5. Is JSON-file credential fallback acceptable, and what warning, degradation, or fail-closed behavior should it imply?
+6. Which local paths are sensitive: `runs`, `reports`, Polygon cache, options datasets, logs, settings, model bundles, native DLLs, and PTX?
+7. What CSP, remote-content, shell/open/reveal, log redaction, and file-picker rules are required?
+8. What should security tests prove before live broker support expands?
+9. What security recommendations should be explicitly killed because they add complexity without reducing a realistic desktop risk?
+```
+
+### Required File Pack
+
+Tauri command and capability boundary:
+
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/commands.rs`
+- `src-tauri/src/commands_system.rs`
+- `src-tauri/src/commands_data.rs`
+- `src-tauri/src/commands_execution.rs`
+- `src-tauri/src/commands_artifacts.rs`
+- `src-tauri/src/commands_reports_api.rs`
+- `src-tauri/src/commands_reports_shared.rs`
+- `src-tauri/src/desktop_menu.rs`
+- `src-tauri/capabilities/main.json`
+- `src-tauri/capabilities/dev.json`
+- `src-tauri/tauri.conf.json`
+- `tauri.conf.json`
+
+State, credentials, paths, and local evidence:
+
+- `src-tauri/src/settings.rs`
+- `src-tauri/src/state.rs`
+- `src-tauri/src/polygon.rs`
+- `src-tauri/src/run_artifacts.rs`
+- `src-tauri/src/data_cache.rs`
+
+Frontend bridge and operator surfaces:
+
+- `web/src/tauri/commands.ts`
+- `web/src/tauri/invoke.ts`
+- `web/src/tauri/events.ts`
+- `web/src/tauri/instrumentation.ts`
+- `web/src/services/executionService.ts`
+- `web/src/services/dataService.ts`
+- `web/src/services/historyService.ts`
+- `web/src/services/workflowArtifactsSync.ts`
+- `web/src/services/settingsService.ts`
+- `web/src/stores/settingsStore.ts`
+- `web/src/stores/executionStore.ts`
+- `web/src/stores/runtimeStore.ts`
+- `web/src/components/SettingsWorkspacePanel.vue`
+- `web/src/components/ExecutionWorkspacePanel.vue`
+
+Verification:
+
+- `web/scripts/check-tauri-capabilities.mjs`
+- `web/scripts/check-tauri-parity.mjs`
+- `web/scripts/check-known-tauri-commands.mjs`
+- `src-tauri/tests/command_runtime_wiring.rs`
+- `scripts/run_execution_safety_gate.ps1`
+
+### Optional File Pack
+
+Use if the question expands to release/security packaging, native model bundles, or artifact integrity:
+
+- `docs/RELEASE.md`
+- `src-tauri/src/release_readiness.rs`
+- `scripts/run_release_doctor.ps1`
+- `scripts/run_release_candidate_gate.ps1`
+- `scripts/generate_release_manifest.ps1`
+- `scripts/capture_release_provenance.ps1`
+- `scripts/run_packaged_smoke.ps1`
+
+### External Context To Include
+
+- Tauri capabilities and security boundaries: https://v2.tauri.app/security/capabilities/
+- Tauri runtime authority: https://v2.tauri.app/security/runtime-authority/
+- Tauri CSP guidance: https://v2.tauri.app/security/csp/
+- OWASP Desktop App Security Top 10: https://owasp.org/www-project-desktop-app-security-top-10/
+- NIST Cybersecurity Framework 2.0: https://www.nist.gov/publications/nist-cybersecurity-framework-csf-20
+- Microsoft DPAPI/CNG DPAPI: https://learn.microsoft.com/en-us/windows/win32/seccng/cng-dpapi
+
+### Required Output Emphasis
+
+- trust-boundary diagram in text form
+- command risk classification table
+- credential lifecycle and fallback policy
+- local sensitive-data inventory
+- capability/CSP/path-validation recommendations
+- tests and log-redaction requirements
+- explicit security-theater kill list
+
+### Local Verification Authority
+
+- `npm --prefix web run parity`
+- `npm --prefix web run check:tauri-capabilities`
+- `npm --prefix web run test -- executionService settingsService settingsStore runtimeStore`
+- `powershell -File scripts/run_execution_safety_gate.ps1`
+- targeted Rust tests for `commands_execution`, `polygon`, `settings`, and `command_runtime_wiring`
+
+---
+
+## Dossier 14: Portfolio Construction, Capital Allocation, Margin, And Execution Realism
+
+### Prompt
+
+```md
+Apply the global prompt contract.
+
+Problem:
+
+VectorGrid optimizes and validates individual strategy candidates, options-expression tuples, meta selections, ML Signal workflows, and live/paper broker actions. The hard finance question is whether a portfolio-level decision layer should turn validated evidence into capital allocation, risk budgets, margin-aware recommendations, and execution-realism constraints without pretending to be a broker OMS or portfolio-margin engine.
+
+Decide whether VectorGrid should add a portfolio construction and execution-realism layer, and define the minimum decision-grade model.
+
+Specific questions:
+
+1. What is the correct portfolio objective: expected utility, robust Sharpe, drawdown control, tail-risk minimization, capital efficiency, or multi-objective frontier?
+2. How should correlated strategies, overlapping symbols, shared market regimes, and crowded exposures be penalized?
+3. Which constraints are required: gross exposure, net exposure, per-symbol exposure, sector/asset-class exposure, drawdown budget, turnover, margin, buying power, liquidity, open-order risk, and bracket risk?
+4. Can current validation artifacts provide enough covariance/correlation and scenario data, or is a new portfolio artifact needed?
+5. How should options structures account for strategy-based margin, portfolio-margin approximations, assignment/exercise, and broker option-trading levels?
+6. What execution model is sufficient for non-HFT desktop decisions: spread, slippage, market/limit order tradeoffs, stale quotes, partial fills, rejected/canceled orders, and bracket limitations?
+7. What is dangerous to automate live versus safe to present as offline research evidence?
+8. What should be killed if current artifacts cannot support decision-grade portfolio allocation?
+```
+
+### Required File Pack
+
+Core objectives, strategy metrics, and optimization primitives:
+
+- `crates/optimizer/src/mo.rs`
+- `crates/optimizer/src/lib.rs`
+- `crates/strategies/src/double_ma/mod.rs`
+- `crates/strategies/src/composite_cpu/mod.rs`
+- `crates/strategies/src/records.rs`
+- `crates/app_core/src/validation_stats.rs`
+- `crates/app_core/src/validation_pipeline.rs`
+- `crates/app_core/src/validation_shared.rs`
+- `crates/app_core/src/meta_select.rs`
+- `crates/app_core/src/ml_confidence.rs`
+
+Options and execution realism:
+
+- `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_types.rs`
+- `src-tauri/src/commands_meta.rs`
+- `src-tauri/src/commands_validation.rs`
+- `src-tauri/src/commands_execution.rs`
+- `src-tauri/src/execution_policy.rs`
+- `src-tauri/src/execution_quantity.rs`
+- `src-tauri/src/broker_paper.rs`
+
+Frontend request and operator surfaces:
+
+- `web/src/services/optimizeRequestBuilder.ts`
+- `web/src/services/validationRequestBuilder.ts`
+- `web/src/services/metaService.ts`
+- `web/src/services/optionsExpressionService.ts`
+- `web/src/services/executionService.ts`
+- `web/src/utils/executionRisk.ts`
+- `web/src/components/ExecutionWorkspacePanel.vue`
+- `web/src/components/MetaWorkspacePanel.vue`
+- `web/src/stores/analysisStore.ts`
+- `web/src/stores/executionStore.ts`
+
+Verification:
+
+- `scripts/run_execution_safety_gate.ps1`
+- `scripts/run_workflow_gate.ps1`
+- `crates/app_core/benches/meta_select_workflow.rs`
+- `crates/app_core/benches/composite_mo_opt.rs`
+
+### Optional File Pack
+
+Use if portfolio output needs durable artifact/report/replay treatment:
+
+- `src-tauri/src/run_artifacts.rs`
+- `src-tauri/src/commands_artifacts.rs`
+- `src-tauri/src/commands_reports_api.rs`
+- `src-tauri/src/commands_reports_shared.rs`
+- `web/src/services/historyService.ts`
+- `web/src/stores/workflowArtifactsStore.ts`
+
+### External Context To Include
+
+- Cboe strategy-based margin: https://www.cboe.com/en/markets/us/options/margin/strategy-based-margin/
+- FINRA margin accounts and portfolio margin overview: https://www.finra.org/rules-guidance/key-topics/margin-accounts
+- OCC options disclosure document page: https://www.theocc.com/company-information/documents-and-archives/options-disclosure-document
+- Alpaca order behavior and order-type documentation: https://docs.alpaca.markets/docs/trading/orders/
+
+### Required Output Emphasis
+
+- portfolio artifact/schema proposal
+- allocation objective and constraint model
+- options margin approximation policy
+- execution-realism model
+- offline-vs-live automation boundary
+- smallest read-only/offline first slice
+- kill criteria when evidence is insufficient
+
+### Local Verification Authority
+
+- `cargo test -p ta_app_core meta_select`
+- `cargo test -p ta_app_core validation`
+- targeted Rust execution and paper-broker tests
+- `npm --prefix web run test -- optimizeRequestBuilder validationRequestBuilder metaService optionsExpressionService executionService`
+- `powershell -File scripts/run_execution_safety_gate.ps1`
+- `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`
+
+---
+
+## Dossier 15: Numerical Reproducibility, Determinism, And Cross-Backend Scientific Audit
+
+### Prompt
+
+```md
+Apply the global prompt contract.
+
+Problem:
+
+VectorGrid depends on CPU/GPU parity, deterministic optimizer ordering, seeded validation/meta workflows, artifact replay, output parity, generated PTX, benchmark baselines, and release provenance. Current dossiers discuss reproducibility locally, but the hard question is what repo-wide reproducibility contract should govern scientific claims across CPU, CUDA, frontend request builders, artifacts, reports, benchmarks, and releases.
+
+Design the numerical reproducibility and cross-backend scientific audit contract.
+
+Specific questions:
+
+1. Which outputs must be bitwise stable, order stable, tolerance stable, or only distributionally stable?
+2. What is the canonical policy for `NaN`, infinity, invalid candidates, score ties, stable sorting, and tie-break fields?
+3. Which seeds, sampler controls, split definitions, route metadata, and environment fingerprints must be persisted into artifacts and reports?
+4. How should CPU/GPU parity tolerances differ between rank, score, metrics, equity curves, validation summaries, and reports?
+5. Should CUDA deterministic reductions, reproducible accumulators, or deterministic selection primitives be considered, and where is the performance tradeoff acceptable?
+6. How should generated PTX, CUDA toolkit version, GPU model, driver, and benchmark environment fingerprinting affect reproducibility claims?
+7. What output parity gate should become authority for replay reproducibility?
+8. Which current reproducibility claims should be weakened, renamed, or made warning-only?
+```
+
+### Required File Pack
+
+Ordering, optimization, and CUDA:
+
+- `crates/optimizer/src/grid.rs`
+- `crates/optimizer/src/stream.rs`
+- `crates/optimizer/src/mo.rs`
+- `crates/app_core/src/gpu_backtest_kernel.rs`
+- `crates/app_core/src/kernels/double_crossover.cu`
+- `crates/app_core/src/options_expression_gpu.rs`
+
+Statistics, validation, meta, and ML:
+
+- `crates/app_core/src/validation_stats.rs`
+- `crates/app_core/src/sharpe_stats.rs`
+- `crates/app_core/src/cscv_pbo.rs`
+- `crates/app_core/src/meta_select.rs`
+- `crates/app_core/src/ml_confidence.rs`
+- `crates/app_core/src/validation_pipeline.rs`
+
+Artifacts, reports, and headless reproducibility:
+
+- `src-tauri/src/run_artifacts.rs`
+- `src-tauri/src/commands_reports_shared.rs`
+- `src-tauri/src/bin/ta_workflow_regression.rs`
+- `src-tauri/src/bin/ta_profile_route_matrix.rs`
+- `src-tauri/src/bin/ta_refactor_snapshots.rs`
+- `web/src/services/optimizeRequestBuilder.ts`
+- `web/src/services/validationRequestBuilder.ts`
+- `web/src/services/historyService.ts`
+- `web/src/utils/core/artifactIdentity.ts`
+
+Gates, baselines, and release provenance:
+
+- `scripts/run_output_parity_check.mjs`
+- `scripts/check_output_parity.mjs`
+- `scripts/check_output_semantic_parity.mjs`
+- `scripts/output_parity_pairs.json`
+- `scripts/output_parity_semantic_pairs.json`
+- `scripts/run_gpu_perf_gate.ps1`
+- `scripts/run_gpu_validation_perf_gate.ps1`
+- `scripts/run_workflow_gate.ps1`
+- `scripts/capture_release_provenance.ps1`
+- `scripts/baselines/workflow_regression_baseline.json`
+- `scripts/baselines/gpu_validation_perf_baseline.json`
+
+### Optional File Pack
+
+Use if reproducibility decisions change release packaging or PTX authority:
+
+- `docs/RELEASE.md`
+- `crates/app_core/build.rs`
+- `crates/app_core/src/kernels/double_crossover.prebuilt.ptx`
+- `crates/app_core/src/kernels/options_expression.prebuilt.ptx`
+- `src-tauri/src/release_readiness.rs`
+- `scripts/run_release_candidate_gate.ps1`
+- `scripts/run_release_doctor.ps1`
+
+### External Context To Include
+
+- NVIDIA CUDA floating-point guide: https://docs.nvidia.com/cuda/floating-point/contents.html
+- NVIDIA CCCL floating-point determinism: https://developer.nvidia.com/blog/controlling-floating-point-determinism-in-nvidia-cccl/
+- NVIDIA CUDA Programming Guide: https://docs.nvidia.com/cuda/cuda-programming-guide/
+- benchmark noise/statistical methodology references
+
+### Required Output Emphasis
+
+- reproducibility tier taxonomy
+- deterministic ordering and non-finite policy
+- parity tolerance table
+- artifact/report/release fingerprint contract
+- benchmark reproducibility policy
+- CUDA determinism spike or kill recommendation
+- claims to weaken, rename, or gate
+
+### Local Verification Authority
+
+- `cargo test -p ta_optimizer`
+- `cargo test -p ta_app_core validation`
+- `cargo test -p ta_app_core meta_select`
+- `node scripts/run_output_parity_check.mjs`
+- `node scripts/check_output_parity.mjs`
+- `node scripts/check_output_semantic_parity.mjs`
+- `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`
+- `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate` for CUDA-affecting changes
+
+---
+
 ## Prompt Pack Source Links
 
 CUDA and GPU:
 
 - NVIDIA CUDA Programming Guide: https://docs.nvidia.com/cuda/cuda-programming-guide/
+- NVIDIA CUDA floating-point guide: https://docs.nvidia.com/cuda/floating-point/contents.html
+- NVIDIA CCCL floating-point determinism: https://developer.nvidia.com/blog/controlling-floating-point-determinism-in-nvidia-cccl/
 - NVIDIA CUTLASS overview: https://docs.nvidia.com/cutlass/latest/overview.html
 - NVIDIA CUB documentation: https://docs.nvidia.com/cuda/cub/index.html
 - CUB DeviceTopK API: https://nvidia.github.io/cccl/cub/api/structcub_1_1DeviceTopK.html
@@ -1548,6 +1894,7 @@ Options and market data:
 
 - Polygon/Massive Options REST API overview: https://www.polygon.io/docs/options
 - Cboe strategy-based margin: https://www.cboe.com/en/markets/us/options/margin/strategy-based-margin/
+- FINRA margin accounts and portfolio margin overview: https://www.finra.org/rules-guidance/key-topics/margin-accounts
 - OCC options disclosure document page: https://www.theocc.com/company-information/documents-and-archives/options-disclosure-document
 
 Validation and ML uncertainty:
@@ -1560,6 +1907,12 @@ Execution and governance:
 
 - Alpaca placing orders documentation: https://docs.alpaca.markets/docs/trading/orders/
 - NIST AI Risk Management Framework: https://www.nist.gov/itl/ai-risk-management-framework
+- Tauri capabilities and security boundaries: https://v2.tauri.app/security/capabilities/
+- Tauri runtime authority: https://v2.tauri.app/security/runtime-authority/
+- Tauri CSP guidance: https://v2.tauri.app/security/csp/
+- OWASP Desktop App Security Top 10: https://owasp.org/www-project-desktop-app-security-top-10/
+- NIST Cybersecurity Framework 2.0: https://www.nist.gov/publications/nist-cybersecurity-framework-csf-20
+- Microsoft DPAPI/CNG DPAPI: https://learn.microsoft.com/en-us/windows/win32/seccng/cng-dpapi
 
 ## Local Triage Template After GPT-5.5 Pro Responds
 

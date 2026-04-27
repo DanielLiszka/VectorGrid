@@ -10,7 +10,7 @@ use super::{
         summarize_options_expression_artifact, OptionsExpressionArtifactSummary,
     },
     metric_surface::build_optimization_metric_surface_artifact_value,
-    reveal_path_blocking, sanitize_filename_component,
+    sanitize_filename_component,
 };
 
 const DATASET_META_SCHEMA_VERSION: u64 = 2;
@@ -3992,23 +3992,18 @@ pub(super) fn load_ml_policy_eval_artifact_replay_blocking(
     })
 }
 
-fn open_runs_dir_blocking_with_revealer<R: tauri::Runtime, F>(
-    app: tauri::AppHandle<R>,
+#[cfg(test)]
+fn open_runs_dir_with_revealer<R: tauri::Runtime, F>(
+    app: &tauri::AppHandle<R>,
     reveal: F,
 ) -> Result<String, String>
 where
     F: FnOnce(String) -> Result<(), String>,
 {
-    let dir = runs_dir(&app)?;
+    let dir = runs_dir(app)?;
     let dir_string = dir.to_string_lossy().to_string();
     reveal(dir_string.clone())?;
     Ok(dir_string)
-}
-
-pub(super) fn open_runs_dir_blocking<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<String, String> {
-    open_runs_dir_blocking_with_revealer(app, reveal_path_blocking)
 }
 
 fn canonical_json(v: &Value) -> String {
@@ -4269,7 +4264,7 @@ mod tests {
         load_latest_run_artifact_hydration_blocking, load_latest_run_artifact_summary_blocking,
         load_live_session_artifact_detail_blocking, load_run_artifact_detail_blocking,
         normalize_dataset_meta, normalize_run_artifact_value_canonical,
-        open_runs_dir_blocking_with_revealer, prune_old_meta_artifacts_blocking,
+        open_runs_dir_with_revealer, prune_old_meta_artifacts_blocking,
         repair_run_artifact_blocking, resolve_run_artifact_csv_path,
         resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
         save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
@@ -6885,12 +6880,12 @@ mod tests {
     }
 
     #[test]
-    fn open_runs_dir_blocking_with_revealer_creates_runs_dir_and_returns_it() {
+    fn open_runs_dir_with_revealer_creates_runs_dir_and_returns_it() {
         let app = build_mock_app();
         let handle = app.handle().clone();
         let mut revealed = None;
 
-        let opened = open_runs_dir_blocking_with_revealer(handle.clone(), |path| {
+        let opened = open_runs_dir_with_revealer(&handle, |path| {
             revealed = Some(path);
             Ok(())
         })

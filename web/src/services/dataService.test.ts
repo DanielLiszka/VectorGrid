@@ -137,6 +137,46 @@ describe("dataService market-data directory actions", () => {
     expect(result.meta.timeframe).toBe("5m");
   });
 
+  it("keeps data IPC boundary parsing tolerant for malformed, partial, and extra-field payloads", async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce("not an array")
+      .mockResolvedValueOnce({
+        id: "partial-data",
+        extra_backend_field: { ignored: true },
+      })
+      .mockResolvedValueOnce("not an object");
+
+    await expect(listSampleCsvs()).resolves.toEqual([]);
+
+    const partial = await loadCsv(" C:/partial.csv ");
+    expect(partial).toEqual(
+      expect.objectContaining({
+        path: "C:/partial.csv",
+        dataId: "partial-data",
+        cacheHit: false,
+        cachePath: "",
+        loadSource: "csv_parsed_cache_write_skipped",
+      }),
+    );
+    expect(partial.meta).toEqual({
+      len: 0,
+      hasOpen: false,
+      hasHigh: false,
+      hasLow: false,
+      hasClose: false,
+      hasVolume: false,
+      minTs: 0,
+      maxTs: 0,
+      timeframe: "",
+      sourceSizeBytes: null,
+      sourceMtimeUtcMs: null,
+    });
+
+    const info = await getMarketDataDirInfo();
+    expect(info.defaultRootDir).toBe("");
+    expect(info.hint).toContain("Using default root:");
+  });
+
   it("applies timeframe using base data id", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       id: "data-2@15m",

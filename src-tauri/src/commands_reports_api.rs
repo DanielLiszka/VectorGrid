@@ -79,43 +79,51 @@ pub async fn open_reports_dir(app: tauri::AppHandle) -> Result<String, String> {
 async fn open_reports_dir_with_app<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || open_reports_dir_blocking(app))
-        .await
-        .map_err(|e| e.to_string())?
+    let dir_string = reports_dir_string_for_app(&app)?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(dir_string.clone(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(dir_string)
 }
 
-fn open_reports_dir_blocking_with_revealer<R: tauri::Runtime, F>(
-    app: tauri::AppHandle<R>,
+fn reports_dir_string_for_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<String, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let dir = commands_reports::reports_dir_for_base(&base)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+fn open_reports_dir_with_revealer<R: tauri::Runtime, F>(
+    app: &tauri::AppHandle<R>,
     reveal: F,
 ) -> Result<String, String>
 where
     F: FnOnce(String) -> Result<(), String>,
 {
-    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let dir = commands_reports::reports_dir_for_base(&base)?;
-    let dir_string = dir.to_string_lossy().to_string();
+    let dir_string = reports_dir_string_for_app(app)?;
     reveal(dir_string.clone())?;
     Ok(dir_string)
 }
 
-fn open_reports_dir_blocking<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<String, String> {
-    open_reports_dir_blocking_with_revealer(app, commands_reports::reveal_path_blocking)
+#[tauri::command]
+pub async fn reveal_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let path = commands_reports::existing_path(path)?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn reveal_path(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || commands_reports::reveal_path_blocking(path))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn open_path(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || commands_reports::open_path_blocking(path))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn open_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let path = commands_reports::existing_path(path)?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -352,12 +360,12 @@ mod tests {
     }
 
     #[test]
-    fn open_reports_dir_blocking_with_revealer_creates_reports_dir_and_returns_it() {
+    fn open_reports_dir_with_revealer_creates_reports_dir_and_returns_it() {
         let app = build_mock_app();
         let handle = app.handle().clone();
         let mut revealed = None;
 
-        let opened = open_reports_dir_blocking_with_revealer(handle.clone(), |path| {
+        let opened = open_reports_dir_with_revealer(&handle, |path| {
             revealed = Some(path);
             Ok(())
         })
@@ -372,14 +380,12 @@ mod tests {
         assert!(Path::new(&opened).starts_with(base.join("reports")));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_reports_dir_with_app_async_creates_reports_dir() {
+    #[test]
+    fn reports_dir_string_for_app_creates_reports_dir() {
         let app = build_mock_app();
         let handle = app.handle().clone();
 
-        let opened = open_reports_dir_with_app(handle.clone())
-            .await
-            .expect("open reports dir");
+        let opened = reports_dir_string_for_app(&handle).expect("reports dir");
 
         assert!(Path::new(&opened).is_dir());
         let base = handle
@@ -391,17 +397,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn open_path_async_surfaces_missing_path_errors() {
-        let err = open_path("C:/definitely-missing/nonexistent-report.xlsx".to_string())
-            .await
-            .expect_err("missing path");
+        let err = commands_reports::existing_path(
+            "C:/definitely-missing/nonexistent-report.xlsx".to_string(),
+        )
+        .expect_err("missing path");
         assert!(err.contains("path does not exist"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn reveal_path_async_surfaces_missing_path_errors() {
-        let err = reveal_path("C:/definitely-missing/nonexistent-report.xlsx".to_string())
-            .await
-            .expect_err("missing path");
+        let err = commands_reports::existing_path(
+            "C:/definitely-missing/nonexistent-report.xlsx".to_string(),
+        )
+        .expect_err("missing path");
         assert!(err.contains("path does not exist"));
     }
 }

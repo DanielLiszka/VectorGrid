@@ -3,6 +3,14 @@ import { defineStore } from 'pinia'
 export type LegacyBootPhase = 'idle' | 'booting' | 'ready' | 'error'
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 export type DesktopNotificationPermission = 'unknown' | 'default' | 'granted' | 'denied' | 'unsupported'
+export type DesktopUpdaterStatus =
+  | 'unknown'
+  | 'unavailable'
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'update-available'
+  | 'error'
 export const BOOT_STAGES = {
   STARTING_FRONTEND_RUNTIME: 'Starting frontend runtime',
   RESTORING_WORKSPACE_STATE: 'Restoring workspace state',
@@ -36,6 +44,10 @@ interface RuntimeState {
   desktopWindowStateFile: string
   desktopWindowStateReady: boolean
   desktopNotificationPermission: DesktopNotificationPermission
+  desktopUpdaterStatus: DesktopUpdaterStatus
+  desktopUpdaterVersion: string
+  desktopUpdaterError: string
+  desktopUpdaterCheckedAt: number | null
 }
 
 const MAX_DESKTOP_LOGS = 24
@@ -59,6 +71,10 @@ export const useRuntimeStore = defineStore('runtime', {
     desktopWindowStateFile: '',
     desktopWindowStateReady: false,
     desktopNotificationPermission: 'unknown',
+    desktopUpdaterStatus: 'unknown',
+    desktopUpdaterVersion: '',
+    desktopUpdaterError: '',
+    desktopUpdaterCheckedAt: null,
   }),
 
   getters: {
@@ -148,6 +164,17 @@ export const useRuntimeStore = defineStore('runtime', {
 
     setDesktopNotificationPermission(permission: DesktopNotificationPermission): void {
       this.desktopNotificationPermission = permission
+    },
+
+    setDesktopUpdaterStatus(
+      status: DesktopUpdaterStatus,
+      version = '',
+      error = '',
+    ): void {
+      this.desktopUpdaterStatus = status
+      this.desktopUpdaterVersion = String(version || '').trim()
+      this.desktopUpdaterError = String(error || '').trim()
+      this.desktopUpdaterCheckedAt = status === 'idle' || status === 'unknown' ? null : Date.now()
     },
   },
 })

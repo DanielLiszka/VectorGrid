@@ -9,6 +9,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useTaskStore } from '../stores/taskStore'
 import { desktopNotificationIntentForTask } from '../utils/desktopNotificationPolicy'
 import { tauriRuntimeAvailable } from '../tauri/invoke'
+import { checkForDesktopUpdate } from './desktopUpdater'
 
 let initialized = false
 let consoleDetach: (() => void) | null = null
@@ -103,6 +104,27 @@ async function installDesktopLogging(): Promise<void> {
   }
 }
 
+async function refreshDesktopUpdaterStatus(): Promise<void> {
+  const runtimeStore = runtimeStoreOrNull()
+  if (!runtimeStore) return
+  if (import.meta.env.VITE_VECTORGRID_ENABLE_UPDATER_CHECK !== 'true') {
+    runtimeStore.setDesktopUpdaterStatus('idle')
+    return
+  }
+  runtimeStore.setDesktopUpdaterStatus('checking')
+  const result = await checkForDesktopUpdate()
+  runtimeStore.setDesktopUpdaterStatus(
+    result.status,
+    result.update?.version ?? '',
+    result.error ?? '',
+  )
+  if (result.status === 'update-available') {
+    runtimeStore.pushDesktopLog('info', `Desktop update available (${result.update?.version || 'unknown version'}).`)
+  } else if (result.status === 'error') {
+    runtimeStore.pushDesktopLog('warn', `Desktop updater check failed: ${result.error || 'unknown error'}`)
+  }
+}
+
 function installTaskNotificationRouting(): void {
   const pinia = resolveRuntimePinia()
   if (!pinia) return
@@ -145,6 +167,7 @@ export async function initializeDesktopProductization(): Promise<void> {
   await bindWindowStateSaving()
   await installDesktopLogging()
   await refreshDesktopNotificationPermission()
+  await refreshDesktopUpdaterStatus()
   installTaskNotificationRouting()
   void writeDesktopInfoLog('Desktop productization bridges ready.').catch(() => undefined)
 }

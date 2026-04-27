@@ -2,6 +2,7 @@ pub mod broker_paper;
 pub mod commands;
 pub mod data_cache;
 pub mod desktop_menu;
+pub mod desktop_tray;
 pub mod execution_mocks;
 pub mod execution_policy;
 pub mod execution_quantity;
@@ -15,6 +16,7 @@ use commands::*;
 use log::LevelFilter;
 use state::AppState;
 use state::BackgroundTaskState;
+use tauri::Manager;
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_window_state::{StateFlags, WindowExt};
 
@@ -22,6 +24,22 @@ const MAIN_WINDOW_LABEL: &str = "main";
 
 fn main_window_restore_flags() -> StateFlags {
     StateFlags::all() & !StateFlags::VISIBLE
+}
+
+fn focus_existing_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        log::warn!("single-instance focus requested before the main window existed");
+        return;
+    };
+    if let Err(error) = window.unminimize() {
+        log::warn!("failed to unminimize main window for single-instance activation: {error}");
+    }
+    if let Err(error) = window.show() {
+        log::warn!("failed to show main window for single-instance activation: {error}");
+    }
+    if let Err(error) = window.set_focus() {
+        log::warn!("failed to focus main window for single-instance activation: {error}");
+    }
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -48,6 +66,9 @@ fn spawn_options_expression_gpu_prewarm() {
 
 pub fn run_tauri() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            focus_existing_main_window(app);
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level_for(
@@ -65,6 +86,11 @@ pub fn run_tauri() {
                 ])
                 .build(),
         )
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -95,6 +121,9 @@ pub fn run_tauri() {
             }
             if let Err(error) = desktop_menu::install_desktop_menu(app.handle()) {
                 log::warn!("failed to install desktop menu: {error}");
+            }
+            if let Err(error) = desktop_tray::install_desktop_tray(app.handle()) {
+                log::warn!("failed to install desktop tray: {error}");
             }
 
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

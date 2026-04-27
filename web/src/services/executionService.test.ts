@@ -215,6 +215,30 @@ describe('executionService', () => {
     })
   })
 
+  it('keeps execution IPC boundary parsing tolerant for malformed, partial, and extra-field payloads', async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce('not an object')
+      .mockResolvedValueOnce({ policy: { max_order_notional: '250', ignored_extra: true } })
+      .mockResolvedValueOnce({ notRows: true })
+
+    await expect(getStoredExecutionCredentialStatus()).resolves.toEqual({
+      rememberAvailable: false,
+      hasApiKey: false,
+      hasApiSecret: false,
+      hasCredentials: false,
+      state: 'missing',
+      storageBackend: '',
+      message: '',
+    })
+    await expect(loadExecutionRiskPolicy()).resolves.toEqual({
+      max_order_notional: 250,
+      max_position_notional: null,
+      allow_short: null,
+      require_bracket: null,
+    })
+    await expect(listSavedLiveSessions()).resolves.toEqual([])
+  })
+
   it('stores execution credentials through the secure backend command path', async () => {
     invokeCommandMock.mockResolvedValue({
       remember_available: true,

@@ -1,8 +1,8 @@
 
-import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { createTestPinia } from '../test/pinia'
 import WorkflowQuickSwitch from './WorkflowQuickSwitch.vue'
 
 describe('WorkflowQuickSwitch', () => {
@@ -12,8 +12,7 @@ describe('WorkflowQuickSwitch', () => {
   })
 
   it('toggles the workflow nav popover and persists the open state', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
+    const pinia = createTestPinia()
     const wrapper = mount(WorkflowQuickSwitch, {
       global: { plugins: [pinia] },
       attachTo: document.body,
@@ -37,8 +36,7 @@ describe('WorkflowQuickSwitch', () => {
   })
 
   it('exposes grouped navigation semantics and moves between items with arrow keys', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
+    const pinia = createTestPinia()
     const wrapper = mount(WorkflowQuickSwitch, {
       global: { plugins: [pinia] },
       attachTo: document.body,

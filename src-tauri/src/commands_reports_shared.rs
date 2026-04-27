@@ -16,7 +16,7 @@ pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
-fn existing_path(path: String) -> Result<PathBuf, String> {
+pub(crate) fn existing_path(path: String) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("path must not be empty".to_string());
@@ -28,110 +28,6 @@ fn existing_path(path: String) -> Result<PathBuf, String> {
     }
 
     Ok(path)
-}
-
-#[cfg(target_os = "linux")]
-fn reveal_target_path(path: &Path) -> PathBuf {
-    if path.is_dir() {
-        return path.to_path_buf();
-    }
-
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf()
-}
-
-pub(crate) fn reveal_path_blocking(path: String) -> Result<(), String> {
-    use std::process::Command;
-
-    let path = existing_path(path)?;
-
-    #[cfg(target_os = "windows")]
-    {
-        if path.is_dir() {
-            Command::new("explorer")
-                .arg(path.as_os_str())
-                .spawn()
-                .map_err(|e| e.to_string())?;
-        } else {
-            let arg = format!("/select,\"{}\"", path.to_string_lossy());
-            Command::new("explorer")
-                .arg(arg)
-                .spawn()
-                .map_err(|e| e.to_string())?;
-        }
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if path.is_dir() {
-            Command::new("open")
-                .arg(path.as_os_str())
-                .spawn()
-                .map_err(|e| e.to_string())?;
-        } else {
-            Command::new("open")
-                .arg("-R")
-                .arg(path.as_os_str())
-                .spawn()
-                .map_err(|e| e.to_string())?;
-        }
-        return Ok(());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let target = reveal_target_path(&path);
-        Command::new("xdg-open")
-            .arg(target.as_os_str())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    #[allow(unreachable_code)]
-    Ok(())
-}
-
-pub(crate) fn open_path_blocking(path: String) -> Result<(), String> {
-    use std::process::Command;
-
-    let path = existing_path(path)?;
-
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .arg("/C")
-            .arg("start")
-            .arg("")
-            .arg(path.as_os_str())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(path.as_os_str())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        Command::new("xdg-open")
-            .arg(path.as_os_str())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    #[allow(unreachable_code)]
-    Ok(())
 }
 
 pub(crate) fn sanitize_filename_component(raw: &str) -> String {
@@ -219,19 +115,9 @@ mod tests {
     }
 
     #[test]
-    fn open_path_blocking_rejects_missing_paths_before_shell_launch() {
+    fn existing_path_rejects_missing_paths_before_shell_launch() {
         let missing = make_temp_dir("open_missing").join("missing.xlsx");
-        let err =
-            open_path_blocking(missing.to_string_lossy().to_string()).expect_err("missing path");
-        assert!(err.contains("path does not exist"));
-        assert!(err.contains("missing.xlsx"));
-    }
-
-    #[test]
-    fn reveal_path_blocking_rejects_missing_paths_before_shell_launch() {
-        let missing = make_temp_dir("reveal_missing").join("missing.xlsx");
-        let err =
-            reveal_path_blocking(missing.to_string_lossy().to_string()).expect_err("missing path");
+        let err = existing_path(missing.to_string_lossy().to_string()).expect_err("missing path");
         assert!(err.contains("path does not exist"));
         assert!(err.contains("missing.xlsx"));
     }
@@ -251,23 +137,6 @@ mod tests {
         let padded = format!(" {} ", file.to_string_lossy());
         let resolved = existing_path(padded).expect("padded path should resolve after trimming");
         assert_eq!(resolved, file);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn reveal_target_path_falls_back_to_current_directory_for_one_component_relative_files() {
-        let dir = make_temp_dir("reveal_target_path");
-        let nested_dir = dir.join("nested");
-        let nested_file = nested_dir.join("report.xlsx");
-        std::fs::create_dir_all(&nested_dir).expect("create nested dir");
-        std::fs::write(&nested_file, b"report").expect("create nested file");
-
-        assert_eq!(
-            reveal_target_path(Path::new("report.xlsx")),
-            PathBuf::from(".")
-        );
-        assert_eq!(reveal_target_path(&nested_file), nested_dir);
-        assert_eq!(reveal_target_path(&nested_dir), nested_dir);
     }
 
     #[test]

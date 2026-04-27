@@ -1,3 +1,5 @@
+import { match } from 'ts-pattern'
+
 export const SHELL_MODES = ['conventional', 'ml-signal'] as const
 export type ShellMode = (typeof SHELL_MODES)[number]
 export const SHELL_MODE_SET: ReadonlySet<string> = new Set(SHELL_MODES)
@@ -266,16 +268,10 @@ export function mlSignalPrimaryActionForStep(step: unknown): MlSignalPrimaryActi
 
 export function workflowStepForMlSignalStage(stage: unknown): WorkflowStep {
   const normalizedStage = String(stage || '').trim().toLowerCase()
-  switch (normalizedStage) {
-    case 'dataset_export':
-      return 'data'
-    case 'validation':
-      return 'validate'
-    case 'policy_sweep':
-      return 'analyze'
-    case 'score_cache':
-      return 'optimize'
-    default:
-      return 'finalize'
-  }
+  return match(normalizedStage)
+    .with('dataset_export', () => 'data' as const)
+    .with('validation', () => 'validate' as const)
+    .with('policy_sweep', () => 'analyze' as const)
+    .with('score_cache', () => 'optimize' as const)
+    .otherwise(() => 'finalize' as const)
 }

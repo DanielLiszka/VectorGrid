@@ -1,6 +1,7 @@
 import { configDefaults, defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import { visualizer } from 'rollup-plugin-visualizer'
+import checker from 'vite-plugin-checker'
 
 const baseTestExclude = [...configDefaults.exclude, 'e2e/**']
 
@@ -31,6 +32,15 @@ const jsdomTestInclude = [
 export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
+    ...(mode === 'development'
+      ? [
+          checker({
+            vueTsc: {
+              tsconfigPath: 'tsconfig.app.json',
+            },
+          }),
+        ]
+      : []),
     ...(mode === 'analyze'
       ? [
           visualizer({

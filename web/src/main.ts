@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import { PiniaColada } from '@pinia/colada'
 import App from './App.vue'
 import './styles/app.css'
 import {
@@ -41,6 +42,11 @@ export async function startVectorGridApp(root: HTMLElement): Promise<void> {
   const runtimeStore = useRuntimeStore(pinia)
   const app = createApp(App)
   app.use(pinia)
+  app.use(PiniaColada, {
+    queryOptions: {
+      staleTime: 60_000,
+    },
+  })
   runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
   app.mount(root)
 

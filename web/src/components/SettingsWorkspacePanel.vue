@@ -16,6 +16,7 @@ import {
 import { useTaskLifecycleSummary } from "../composables/useTaskLifecycleSummary";
 import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import { requestDesktopNotificationPermission } from "../services/desktopProductization";
+import { copyTextToDesktopClipboard } from "../services/desktopClipboard";
 import {
   ARTIFACT_RETENTION_FAMILY_META,
   ARTIFACT_RETENTION_FAMILY_ORDER,
@@ -110,6 +111,10 @@ const {
   desktopLogs,
   desktopLogConsoleAttached,
   desktopNotificationPermission,
+  desktopUpdaterCheckedAt,
+  desktopUpdaterError,
+  desktopUpdaterStatus,
+  desktopUpdaterVersion,
   desktopWindowStateFile,
   desktopWindowStateReady,
 } = storeToRefs(runtimeStore);
@@ -460,6 +465,32 @@ const desktopWindowStateDetail = computed(() => {
     ? `Window geometry persists to ${file}.`
     : "Window geometry persists between launches.";
 });
+const desktopUpdaterLabel = computed(() => {
+  if (desktopUpdaterStatus.value === "update-available") {
+    return desktopUpdaterVersion.value
+      ? `Update available: ${desktopUpdaterVersion.value}`
+      : "Update available";
+  }
+  if (desktopUpdaterStatus.value === "up-to-date") return "Up to date";
+  if (desktopUpdaterStatus.value === "unavailable") return "Updater unavailable";
+  if (desktopUpdaterStatus.value === "error") return "Updater check failed";
+  if (desktopUpdaterStatus.value === "checking") return "Checking for updates";
+  if (desktopUpdaterStatus.value === "idle") return "Updater idle";
+  return "Updater not checked";
+});
+const desktopUpdaterDetail = computed(() => {
+  if (desktopUpdaterError.value) return desktopUpdaterError.value;
+  if (desktopUpdaterStatus.value === "idle") {
+    return "Update checks are installed but disabled until signed release metadata is configured.";
+  }
+  if (desktopUpdaterStatus.value === "unavailable") {
+    return "Updater checks only run inside the packaged desktop runtime.";
+  }
+  if (!desktopUpdaterCheckedAt.value) {
+    return "No update check has completed in this session.";
+  }
+  return `Last checked ${formatUiTimeFromUnixMs(desktopUpdaterCheckedAt.value)}.`;
+});
 const desktopPresenceTitle = "Foreground-first workstation";
 const desktopPresenceMinimizeDetail =
   "Minimize keeps the app alive in the standard desktop way.";
@@ -764,29 +795,8 @@ async function requestDesktopNotifications(): Promise<void> {
 }
 
 async function writeClipboardText(value: string): Promise<boolean> {
-  const text = String(value || "");
-  const clipboard =
-    typeof navigator === "undefined" ? null : navigator.clipboard;
-  if (clipboard?.writeText) {
-    await clipboard.writeText(text);
-    return true;
-  }
-  if (
-    typeof document !== "undefined" &&
-    typeof document.execCommand === "function"
-  ) {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "true");
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const copied = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return copied;
-  }
-  return false;
+  const result = await copyTextToDesktopClipboard(value);
+  return result.ok;
 }
 
 function markDiagnosticsCopied(active: boolean): void {
@@ -1647,6 +1657,12 @@ onBeforeUnmount(() => {
                     ? "Desktop log mirror is attached to the browser console in dev."
                     : "Desktop log output stays buffered in-app outside dev console mirroring."
                 }}
+              </div>
+              <div class="panelMuted" aria-label="Desktop updater status">
+                Updates: {{ desktopUpdaterLabel }}
+              </div>
+              <div class="panelMuted">
+                {{ desktopUpdaterDetail }}
               </div>
             </section>
 

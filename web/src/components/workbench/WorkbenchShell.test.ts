@@ -1,11 +1,11 @@
 import { mount } from '@vue/test-utils'
-import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTaskCenterVisibility } from '../../composables/useTaskCenterVisibility'
 import { useHistoryStore } from '../../stores/historyStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useWorkflowStore } from '../../stores/workflowStore'
+import { createTestPinia } from '../../test/pinia'
 import WorkbenchShell from './WorkbenchShell.vue'
 
 async function flushUi(): Promise<void> {
@@ -22,8 +22,7 @@ describe('WorkbenchShell', () => {
   })
 
   it('renders the feature-flag shell with preserved shell selectors and mount targets', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
+    const pinia = createTestPinia()
     const workflowStore = useWorkflowStore(pinia)
     workflowStore.selectWorkflowStep('optimize', { persist: false })
 
@@ -50,8 +49,7 @@ describe('WorkbenchShell', () => {
   })
 
   it('switches workspaces through the premium rail without changing internal workspace ids', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
+    const pinia = createTestPinia()
     const workflowStore = useWorkflowStore(pinia)
 
     const wrapper = mount(WorkbenchShell, {
@@ -76,8 +74,7 @@ describe('WorkbenchShell', () => {
   })
 
   it('keeps guided mode additive and removes advanced workbench chrome', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
+    const pinia = createTestPinia()
     const settingsStore = useSettingsStore(pinia)
     settingsStore.setUiMode('guided')
 
@@ -96,8 +93,7 @@ describe('WorkbenchShell', () => {
   })
 
   it('exposes inspector mode switching and collapse state', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
+    const pinia = createTestPinia()
     const workflowStore = useWorkflowStore(pinia)
     const historyStore = useHistoryStore(pinia)
     const clearSessionSpy = vi.spyOn(historyStore, 'clearSession').mockImplementation(() => {})

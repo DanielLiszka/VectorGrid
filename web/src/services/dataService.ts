@@ -1,4 +1,9 @@
 import { invokeCommand } from "../tauri/invoke";
+import {
+  parseBoundaryArray,
+  parseBoundaryObject,
+  parseOptionalBoundaryObject,
+} from "./serviceBoundarySchemas";
 
 function normalizeText(value: unknown): string {
   return String(value || "").trim();
@@ -223,9 +228,7 @@ function buildMarketDataDirHint(summary: MarketDataDirInfoSummary): string {
 }
 
 function normalizeMarketDataDirInfo(raw: unknown): MarketDataDirInfoSummary {
-  const info = (
-    raw && typeof raw === "object" ? raw : {}
-  ) as MarketDataDirInfoResponse;
+  const info = parseBoundaryObject(raw) as MarketDataDirInfoResponse;
   const defaultRootDir = normalizeText(info.default_root_dir);
   const configuredRootDir = normalizeText(info.configured_root_dir);
   const effectiveRootDir = normalizeText(info.effective_root_dir);
@@ -242,9 +245,7 @@ function normalizeMarketDataDirInfo(raw: unknown): MarketDataDirInfoSummary {
 }
 
 function normalizeDataMeta(raw: unknown): DataMetaSummary {
-  const meta = (
-    raw && typeof raw === "object" ? raw : {}
-  ) as PriceDataMetaResponse;
+  const meta = parseBoundaryObject(raw) as PriceDataMetaResponse;
   return {
     len: normalizeInteger(meta.len),
     hasOpen: Boolean(meta.has_open),
@@ -294,9 +295,7 @@ function normalizeLoadPriceDataResponse(
   raw: unknown,
   path: string,
 ): DataLoadResult {
-  const row = (
-    raw && typeof raw === "object" ? raw : {}
-  ) as LoadPriceDataResponse;
+  const row = parseBoundaryObject(raw) as LoadPriceDataResponse;
   return {
     path: normalizeText(path),
     dataId: normalizeText(row.id),
@@ -310,8 +309,10 @@ function normalizeLoadPriceDataResponse(
 function normalizePolygonDatasetIntegrity(
   raw: unknown,
 ): PolygonDatasetIntegritySummary | null {
-  if (!raw || typeof raw !== "object") return null;
-  const row = raw as PolygonDatasetIntegrityResponse;
+  const row = parseOptionalBoundaryObject(
+    raw,
+  ) as PolygonDatasetIntegrityResponse | null;
+  if (!row) return null;
   return {
     checkedUtcMs: normalizeUnixTs(row.checked_utc_ms),
     parseErrors: normalizeInteger(row.parse_errors),
@@ -324,8 +325,10 @@ function normalizePolygonDatasetIntegrity(
 function normalizePolygonDatasetMeta(
   raw: unknown,
 ): PolygonDatasetSummary | null {
-  if (!raw || typeof raw !== "object") return null;
-  const row = raw as PolygonDatasetMetaResponse;
+  const row = parseOptionalBoundaryObject(
+    raw,
+  ) as PolygonDatasetMetaResponse | null;
+  if (!row) return null;
   const csvPath = normalizeText(row.csv_path);
   if (!csvPath) return null;
   return {
@@ -344,10 +347,8 @@ function normalizePolygonDatasetMeta(
 }
 
 function normalizePolygonCacheInfo(raw: unknown): PolygonCacheInfoSummary {
-  const info = (
-    raw && typeof raw === "object" ? raw : {}
-  ) as PolygonCacheInfoResponse;
-  const rows = Array.isArray(info.datasets) ? info.datasets : [];
+  const info = parseBoundaryObject(raw) as PolygonCacheInfoResponse;
+  const rows = parseBoundaryArray(info.datasets);
   const datasets: PolygonDatasetSummary[] = [];
   for (const row of rows) {
     const normalized = normalizePolygonDatasetMeta(row);
@@ -374,12 +375,10 @@ export async function getMarketDataDirInfo(): Promise<MarketDataDirInfoSummary> 
 
 export async function listSampleCsvs(): Promise<DataSampleCsvSummary[]> {
   const rows = (await invokeCommand("list_sample_csvs")) as unknown;
-  const samples = Array.isArray(rows) ? rows : [];
+  const samples = parseBoundaryArray(rows);
   const out: DataSampleCsvSummary[] = [];
   for (const entry of samples) {
-    const typed = (
-      entry && typeof entry === "object" ? entry : {}
-    ) as SampleCsvEntry;
+    const typed = parseBoundaryObject(entry) as SampleCsvEntry;
     const path = normalizeText(typed.path);
     if (!path) continue;
     const label = normalizeText(typed.label) || fileBasename(path) || path;
@@ -540,9 +539,7 @@ export async function downloadPolygonDataset(
       timeframe,
     },
   })) as unknown;
-  const row = (
-    raw && typeof raw === "object" ? raw : {}
-  ) as PolygonDownloadAndLoadResponse;
+  const row = parseBoundaryObject(raw) as PolygonDownloadAndLoadResponse;
   return ensureValidPolygonDownloadAndLoadSummary({
     csvPath: normalizeText(row.csv_path),
     downloadedBars: normalizeInteger(row.downloaded_bars),
@@ -567,9 +564,7 @@ export async function topOffPolygonDataset(
       timeframe,
     },
   })) as unknown;
-  const row = (
-    raw && typeof raw === "object" ? raw : {}
-  ) as PolygonDownloadAndLoadResponse;
+  const row = parseBoundaryObject(raw) as PolygonDownloadAndLoadResponse;
   return ensureValidPolygonDownloadAndLoadSummary({
     csvPath: normalizeText(row.csv_path),
     downloadedBars: normalizeInteger(row.downloaded_bars),

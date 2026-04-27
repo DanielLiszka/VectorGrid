@@ -1,4 +1,7 @@
 import { invokeCommand } from '../tauri/invoke'
+import { movingAverageCatalogQueryKey } from './catalogQueryKeys'
+
+export { movingAverageCatalogQueryKey }
 
 export type MaParamKind = 'int' | 'float'
 

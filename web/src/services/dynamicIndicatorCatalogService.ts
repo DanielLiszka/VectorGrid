@@ -1,4 +1,7 @@
 import { invokeCommand } from '../tauri/invoke'
+import { dynamicIndicatorCatalogQueryKey } from './catalogQueryKeys'
+
+export { dynamicIndicatorCatalogQueryKey }
 
 export type DynamicIndicatorParamKind = 'int' | 'float' | 'bool' | 'enum_string'
 export type DynamicIndicatorValueType = 'f64' | 'f32' | 'i32' | 'bool'

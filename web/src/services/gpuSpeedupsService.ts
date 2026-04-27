@@ -1,4 +1,7 @@
 import { invokeCommand } from '../tauri/invoke'
+import { gpuSpeedupsQueryKey } from './catalogQueryKeys'
+
+export { gpuSpeedupsQueryKey }
 
 export interface GpuSpeedupEntry {
   id: string
@@ -79,4 +82,3 @@ export function resetGpuSpeedupsCacheForTests(): void {
   gpuSpeedupsCache = null
   gpuSpeedupMapCache = null
 }
-

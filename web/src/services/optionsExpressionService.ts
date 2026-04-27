@@ -1,4 +1,8 @@
 import { invokeCommand } from "../tauri/invoke";
+import {
+  parseBoundaryArray,
+  parseBoundaryObject,
+} from "./serviceBoundarySchemas";
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
@@ -835,10 +839,7 @@ export interface OptionsExpressionCsvExportResult {
 function normalizeOptionsDatasetManifest(
   raw: unknown,
 ): OptionsDatasetManifestSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
+  const row = parseBoundaryObject(raw);
   return {
     version: normalizeNumber(row.version),
     optionsDatasetId: normalizeText(row.options_dataset_id),
@@ -870,10 +871,7 @@ function normalizeOptionsDatasetManifest(
 function normalizePolygonOptionsDatasetDownload(
   raw: unknown,
 ): PolygonOptionsDatasetDownloadSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
+  const row = parseBoundaryObject(raw);
   return {
     manifest: normalizeOptionsDatasetManifest(row.manifest),
     contractsDiscovered: normalizeNumber(row.contracts_discovered),
@@ -887,10 +885,7 @@ function normalizePolygonOptionsDatasetDownload(
 }
 
 function normalizeMetrics(raw: unknown): OptionsExpressionMetricsSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
+  const row = parseBoundaryObject(raw);
   return {
     validTrades: normalizeNumber(row.valid_trades),
     invalidEvents: normalizeNumber(row.invalid_events),
@@ -924,13 +919,8 @@ function normalizeValidationVerdict(
 }
 
 function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
-  const tuple = (
-    row.tuple && typeof row.tuple === "object" ? row.tuple : {}
-  ) as Record<string, unknown>;
+  const row = parseBoundaryObject(raw);
+  const tuple = parseBoundaryObject(row.tuple);
   return {
     structureFamily: normalizeText(tuple.structure_family),
     delayMinutes: normalizeNumber(tuple.delay_minutes),
@@ -1523,12 +1513,8 @@ function normalizeFeasibilityCacheStats(
 function normalizeInvalidReasonCounts(
   value: unknown,
 ): OptionsCandidateInvalidReasonCountSummary[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry) => {
-    const row = (entry && typeof entry === "object" ? entry : {}) as Record<
-      string,
-      unknown
-    >;
+  return parseBoundaryArray(value).map((entry) => {
+    const row = parseBoundaryObject(entry);
     return {
       reason: normalizeText(row.reason),
       count: normalizeNumber(row.count),
@@ -1539,12 +1525,8 @@ function normalizeInvalidReasonCounts(
 function normalizeDelayBucketCoverage(
   value: unknown,
 ): OptionsDelayBucketCoverageSummary[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry) => {
-    const row = (entry && typeof entry === "object" ? entry : {}) as Record<
-      string,
-      unknown
-    >;
+  return parseBoundaryArray(value).map((entry) => {
+    const row = parseBoundaryObject(entry);
     return {
       delayMinutes: normalizeNumber(row.delay_minutes),
       slotCount: normalizeNumber(row.slot_count),
@@ -1559,12 +1541,8 @@ function normalizeDelayBucketCoverage(
 function normalizeDteBucketCoverage(
   value: unknown,
 ): OptionsDteBucketCoverageSummary[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry) => {
-    const row = (entry && typeof entry === "object" ? entry : {}) as Record<
-      string,
-      unknown
-    >;
+  return parseBoundaryArray(value).map((entry) => {
+    const row = parseBoundaryObject(entry);
     return {
       dteDays: normalizeNumber(row.dte_days),
       slotCount: normalizeNumber(row.slot_count),
@@ -1579,12 +1557,8 @@ function normalizeDteBucketCoverage(
 function normalizeMoneynessBucketCoverage(
   value: unknown,
 ): OptionsMoneynessBucketCoverageSummary[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry) => {
-    const row = (entry && typeof entry === "object" ? entry : {}) as Record<
-      string,
-      unknown
-    >;
+  return parseBoundaryArray(value).map((entry) => {
+    const row = parseBoundaryObject(entry);
     return {
       moneynessBucket: normalizeText(row.moneyness_bucket),
       slotCount: normalizeNumber(row.slot_count),
@@ -1599,10 +1573,7 @@ function normalizeMoneynessBucketCoverage(
 function normalizeAxisCoverage(
   raw: unknown,
 ): OptionsCandidateAxisCoverageSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
+  const row = parseBoundaryObject(raw);
   return {
     delayMinutes: normalizeDelayBucketCoverage(row.delay_minutes),
     dteDays: normalizeDteBucketCoverage(row.dte_days),
@@ -1613,10 +1584,7 @@ function normalizeAxisCoverage(
 function normalizeAutoBackendDecision(
   raw: unknown,
 ): OptionsExpressionAutoBackendDecisionSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
+  const row = parseBoundaryObject(raw);
   return {
     recommendedBackend: normalizeText(row.recommended_backend),
     gpuEligible: Boolean(row.gpu_eligible),
@@ -1627,8 +1595,8 @@ function normalizeAutoBackendDecision(
 function normalizeReplayBuildTiming(
   raw: unknown,
 ): OptionsExpressionReplayBuildTimingSummary | null {
-  if (!raw || typeof raw !== "object") return null;
-  const row = raw as Record<string, unknown>;
+  const row = parseBoundaryObject(raw);
+  if (Object.keys(row).length === 0) return null;
   return {
     totalUs: normalizeNumber(row.total_us),
     parentArtifactValidationUs: normalizeNumber(
@@ -1675,13 +1643,8 @@ function normalizeReplayBuildTiming(
 function normalizeFeasibilityResponse(
   raw: unknown,
 ): AnalyzeOptionsExpressionFeasibilitySummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
-  const report = (
-    row.report && typeof row.report === "object" ? row.report : {}
-  ) as Record<string, unknown>;
+  const row = parseBoundaryObject(raw);
+  const report = parseBoundaryObject(row.report);
   return {
     replayBuildMs: normalizeNumber(row.replay_build_ms),
     totalPreviewMs: normalizeNumber(row.total_preview_ms),
@@ -1765,19 +1728,10 @@ function normalizeFeasibilityResponse(
 function normalizeRunOptionsExpression(
   raw: unknown,
 ): RunOptionsExpressionSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
-  const result = (
-    row.result && typeof row.result === "object" ? row.result : {}
-  ) as Record<string, unknown>;
-  const artifact = (
-    row.artifact && typeof row.artifact === "object" ? row.artifact : {}
-  ) as Record<string, unknown>;
-  const ranked = Array.isArray(result.ranked_results)
-    ? result.ranked_results
-    : [];
+  const row = parseBoundaryObject(raw);
+  const result = parseBoundaryObject(row.result);
+  const artifact = parseBoundaryObject(row.artifact);
+  const ranked = parseBoundaryArray(result.ranked_results);
   return {
     artifactPath: normalizeText(row.artifact_path),
     artifactTs: normalizeText(artifact.ts),
@@ -1815,24 +1769,19 @@ function normalizeRunOptionsExpression(
 }
 
 function normalizeIntegerList(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  return value
+  return parseBoundaryArray(value)
     .map((entry) => Math.floor(normalizeNumber(entry)))
     .filter((entry) => Number.isFinite(entry));
 }
 
 function normalizeFloatList(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  return value
+  return parseBoundaryArray(value)
     .map((entry) => normalizeNumber(entry))
     .filter((entry) => Number.isFinite(entry));
 }
 
 function normalizeFilters(raw: unknown): OptionsStaticFilterBundleSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
+  const row = parseBoundaryObject(raw);
   return {
     maxEntryLagMinutes: normalizeOptionalNumber(row.max_entry_lag_minutes),
     maxPremium: normalizeOptionalNumber(row.max_premium),
@@ -1843,10 +1792,7 @@ function normalizeFilters(raw: unknown): OptionsStaticFilterBundleSummary {
 }
 
 function normalizeRequest(raw: unknown): OptionsExpressionRequestSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
+  const row = parseBoundaryObject(raw);
   return {
     parentArtifactPath: normalizeText(row.parent_artifact_path),
     parentCandidateIndex: normalizeOptionalNumber(row.parent_candidate_index),
@@ -1875,14 +1821,8 @@ function normalizeRequest(raw: unknown): OptionsExpressionRequestSummary {
 function normalizeOptionsExpressionArtifactSummary(
   raw: unknown,
 ): OptionsExpressionArtifactSummary {
-  const row = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
-  const leaderSummaryRaw =
-    row.leader_summary && typeof row.leader_summary === "object"
-      ? (row.leader_summary as Record<string, unknown>)
-      : {};
+  const row = parseBoundaryObject(raw);
+  const leaderSummaryRaw = parseBoundaryObject(row.leader_summary);
   return {
     ts: normalizeText(row.ts),
     path: normalizeText(row.path),
@@ -2357,9 +2297,9 @@ export async function listOptionsDatasets(): Promise<
   OptionsDatasetManifestSummary[]
 > {
   const raw = await invokeCommand("list_options_datasets");
-  return Array.isArray(raw)
-    ? raw.map((entry) => normalizeOptionsDatasetManifest(entry))
-    : [];
+  return parseBoundaryArray(raw).map((entry) =>
+    normalizeOptionsDatasetManifest(entry),
+  );
 }
 
 export async function loadOptionsDatasetManifest(
@@ -2410,15 +2350,11 @@ export async function listOptionsExpressionArtifacts(): Promise<
   OptionsExpressionArtifactSummary[]
 > {
   const raw = await invokeCommand("list_artifact_library");
-  const library = (raw && typeof raw === "object" ? raw : {}) as Record<
-    string,
-    unknown
-  >;
-  const rows = Array.isArray(library.optionsExpression)
-    ? library.optionsExpression
-    : Array.isArray(library.options_expression)
-      ? library.options_expression
-      : [];
+  const library = parseBoundaryObject(raw);
+  const rows =
+    parseBoundaryArray(library.optionsExpression).length > 0
+      ? parseBoundaryArray(library.optionsExpression)
+      : parseBoundaryArray(library.options_expression);
   return rows.map((entry) => normalizeOptionsExpressionArtifactSummary(entry));
 }
 
@@ -2498,7 +2434,6 @@ export async function openOrRevealOptionsPath(
 }
 
 export function normalizeOptionsDatasetIds(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
   return normalizeStringList(value);
 }
 

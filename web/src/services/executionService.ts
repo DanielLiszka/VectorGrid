@@ -6,6 +6,11 @@ import { readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
 import { EXEC_KEYS_STORAGE_KEY } from '../utils/core/storageKeys'
 import { formatUtcDateTimeFromUnixMs } from '../utils/uiFormat'
 import { readStorageString, removeStorageKey } from '../utils/storage'
+import {
+  isBoundaryObject,
+  parseBoundaryArray,
+  parseBoundaryObject,
+} from './serviceBoundarySchemas'
 
 let analysisServicePromise: Promise<typeof import('./analysisService')> | null = null
 let optimizeServicePromise: Promise<typeof import('./optimizeService')> | null = null
@@ -723,7 +728,7 @@ function positiveInt(value: unknown): number {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
+  return isBoundaryObject(value)
 }
 
 const BROKER_REVIEW_STALE_THRESHOLD_MS = 90_000
@@ -1325,7 +1330,7 @@ function summarizeRunnerStatus(raw: unknown): {
   active: boolean
   lifecycle: ExecutionRunnerLifecycleState
 } {
-  const status = isRecord(raw) ? (raw as ExecutionRunnerStatusResponse) : {}
+  const status = parseBoundaryObject(raw) as ExecutionRunnerStatusResponse
   const active = !!status.active
   const cfg = isRecord(status.config) ? (status.config as ExecutionRunnerConfigResponse) : null
   const lastError = compactRunnerFailureForSummary(
@@ -1404,7 +1409,7 @@ function liveStatusHint(
 }
 
 function parseLiveStreamStatus(raw: unknown): ParsedLiveStatus {
-  const row = isRecord(raw) ? (raw as LiveCandleStreamStatusResponse) : {}
+  const row = parseBoundaryObject(raw) as LiveCandleStreamStatusResponse
   const stream = isRecord(row.stream) ? (row.stream as LiveCandleStreamInfoResponse) : null
   const active = !!row.active
   const symbol = canonicalSymbol(stream?.symbol)
@@ -1434,7 +1439,7 @@ function parseLiveStreamStatus(raw: unknown): ParsedLiveStatus {
 }
 
 export function parsePolygonLiveStatusEvent(raw: unknown): ParsedLiveStatus {
-  const row = isRecord(raw) ? (raw as PolygonLiveStatusEventPayload) : {}
+  const row = parseBoundaryObject(raw) as PolygonLiveStatusEventPayload
   const status = text(row.status).toLowerCase()
   const symbol = canonicalSymbol(row.symbol)
   const delayed = !!row.delayed
@@ -1474,7 +1479,7 @@ export function optimisticOrderRowFromExecution(
 }
 
 export function parseRunnerEvent(raw: unknown): ParsedRunnerEvent {
-  const row = isRecord(raw) ? (raw as LiveExecutionRunnerEventPayload) : {}
+  const row = parseBoundaryObject(raw) as LiveExecutionRunnerEventPayload
   const status = text(row.status).toLowerCase()
   const symbol = canonicalSymbol(row.symbol)
   const message = normalizeRunnerEventMessage(status, row.message, symbol)
@@ -1528,7 +1533,7 @@ function parseStoredExecutionKeys(raw: unknown): { apiKey: string; apiSecret: st
 }
 
 function parseStoredExecutionCredentialStatus(raw: unknown): ExecutionStoredCredentialStatus {
-  const row = isRecord(raw) ? (raw as ExecutionStoredCredentialStatusResponse) : {}
+  const row = parseBoundaryObject(raw) as ExecutionStoredCredentialStatusResponse
   const stateRaw = text(row.state).toLowerCase()
   const state =
     stateRaw === 'stored' || stateRaw === 'incomplete' || stateRaw === 'unavailable'
@@ -1633,17 +1638,15 @@ function parseSavedSessionBrokerSnapshot(raw: unknown): ExecutionSavedSessionBro
 }
 
 function parseSavedSessionDetail(raw: unknown): ExecutionSavedSessionDetail {
-  const row = isRecord(raw) ? raw : {}
+  const row = parseBoundaryObject(raw)
   const qty = toNumber(row.qty)
   const rawBrokerSnapshots = row.brokerSnapshots ?? row.broker_snapshots
-  const events = Array.isArray(row.events)
-    ? row.events.map(parseSavedSessionEvent).filter((event): event is ExecutionSavedSessionEvent => !!event)
-    : []
-  const brokerSnapshots = Array.isArray(rawBrokerSnapshots)
-    ? rawBrokerSnapshots
-        .map(parseSavedSessionBrokerSnapshot)
-        .filter((snapshot): snapshot is ExecutionSavedSessionBrokerSnapshot => !!snapshot)
-    : []
+  const events = parseBoundaryArray(row.events)
+    .map(parseSavedSessionEvent)
+    .filter((event): event is ExecutionSavedSessionEvent => !!event)
+  const brokerSnapshots = parseBoundaryArray(rawBrokerSnapshots)
+    .map(parseSavedSessionBrokerSnapshot)
+    .filter((snapshot): snapshot is ExecutionSavedSessionBrokerSnapshot => !!snapshot)
   return {
     ts: text(row.ts),
     artifactPath: text(row.artifactPath ?? row.artifact_path),
@@ -1923,7 +1926,7 @@ async function refreshLiveStatus(): Promise<ParsedLiveStatus> {
 }
 
 function normalizeExecutionRiskPolicy(raw: unknown): ExecutionRiskPolicy {
-  const row = isRecord(raw) ? (raw as Record<string, unknown>) : {}
+  const row = parseBoundaryObject(raw)
   return {
     max_order_notional: positiveNumberOrNull(row.max_order_notional),
     max_position_notional: positiveNumberOrNull(row.max_position_notional),
@@ -1957,8 +1960,7 @@ function normalizeExecutionStrategySupportRow(raw: unknown): ExecutionStrategySu
 
 export async function loadExecutionStrategySupportMatrix(): Promise<ExecutionStrategySupportRow[]> {
   const raw = await invokeCommand('get_execution_strategy_support_matrix')
-  const rows = Array.isArray(raw) ? raw : []
-  return rows
+  return parseBoundaryArray(raw)
     .map((row) => normalizeExecutionStrategySupportRow(row))
     .filter((row): row is ExecutionStrategySupportRow => row !== null)
 }
@@ -1987,7 +1989,7 @@ export async function previewExecutionRiskPolicy(
 ): Promise<ExecutionActionResult> {
   const payload = await buildExecutionInvokePayload(options)
   const resp = await invokeCommand('preview_execution_policy_decision', { req: payload.req })
-  const row = isRecord(resp) ? resp : {}
+  const row = parseBoundaryObject(resp)
   const decision = isRecord(row.decision) ? row.decision : {}
   const allowed = !!decision.allowed
   const code = text(decision.code) || (allowed ? 'allowed' : 'blocked')
@@ -2491,8 +2493,7 @@ export async function clearKeys(): Promise<ExecutionActionResult> {
 
 export async function listSavedLiveSessions(): Promise<ExecutionSavedSessionSummary[]> {
   const raw = await invokeCommand('list_live_session_artifacts')
-  if (!Array.isArray(raw)) return []
-  return raw
+  return parseBoundaryArray(raw)
     .map(parseSavedSessionSummary)
     .filter((row): row is ExecutionSavedSessionSummary => !!row)
 }

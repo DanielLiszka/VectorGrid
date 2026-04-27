@@ -15,12 +15,8 @@ mod commands_reports_validation_common;
 #[path = "commands_reports_validation_xlsx.rs"]
 mod commands_reports_validation_xlsx;
 
-pub(crate) fn reveal_path_blocking(path: String) -> Result<(), String> {
-    commands_reports_shared::reveal_path_blocking(path)
-}
-
-pub(crate) fn open_path_blocking(path: String) -> Result<(), String> {
-    commands_reports_shared::open_path_blocking(path)
+pub(crate) fn existing_path(path: String) -> Result<PathBuf, String> {
+    commands_reports_shared::existing_path(path)
 }
 
 pub(crate) fn sanitize_filename_component(raw: &str) -> String {

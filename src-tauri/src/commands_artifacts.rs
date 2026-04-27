@@ -255,7 +255,11 @@ pub async fn delete_artifact(path: String, app: tauri::AppHandle) -> Result<(), 
 
 #[tauri::command]
 pub async fn open_runs_dir(app: tauri::AppHandle) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || run_artifacts::open_runs_dir_blocking(app))
-        .await
-        .map_err(|e| e.to_string())?
+    let dir = run_artifacts::runs_dir(&app)?;
+    let dir_string = dir.to_string_lossy().to_string();
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(dir_string.clone(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(dir_string)
 }

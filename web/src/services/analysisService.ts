@@ -4,6 +4,7 @@ import { useDataStore } from "../stores/dataStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore";
 import { invokeCommand } from "../tauri/invoke";
+import { copyTextToDesktopClipboard } from "./desktopClipboard";
 import {
   buildRunCompareSummary,
   parseArtifactLineage,
@@ -3553,20 +3554,8 @@ function downloadText(filename: string, body: string, mime: string): boolean {
 async function copyText(body: string): Promise<boolean> {
   const src = text(body);
   if (!src) return false;
-  try {
-    const clip = (
-      globalThis as {
-        navigator?: {
-          clipboard?: { writeText?: (value: string) => Promise<void> };
-        };
-      }
-    ).navigator?.clipboard;
-    if (clip && typeof clip.writeText === "function") {
-      await clip.writeText(src);
-      return true;
-    }
-  } catch {}
-  return false;
+  const result = await copyTextToDesktopClipboard(src);
+  return result.ok;
 }
 
 function byIds<T extends HTMLElement>(ids: readonly string[]): T | null {

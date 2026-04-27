@@ -1515,156 +1515,64 @@ pub async fn polygon_top_off_dataset(
     })
 }
 
-#[cfg(target_os = "windows")]
-fn utf16z_to_string(buf: &[u16]) -> String {
-    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
-    String::from_utf16_lossy(&buf[..end])
+#[tauri::command]
+pub fn pick_csv_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    app.dialog()
+        .file()
+        .add_filter("CSV Files", &["csv"])
+        .add_filter("All Files", &["*"])
+        .blocking_pick_file()
+        .map(|path| {
+            path.into_path()
+                .map(|path| path.to_string_lossy().to_string())
+                .map_err(|e| e.to_string())
+        })
+        .transpose()
 }
 
 #[tauri::command]
-pub fn pick_csv_file() -> Result<Option<String>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::UI::Controls::Dialogs::{
-            CommDlgExtendedError, GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST,
-            OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
-        };
+pub fn pick_save_csv(
+    default_name: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
 
-        let filter = "CSV Files (*.csv)\0*.csv\0All Files (*.*)\0*.*\0\0"
-            .encode_utf16()
-            .collect::<Vec<u16>>();
-        let mut file_buf = vec![0u16; 8192];
-
-        let mut ofn = OPENFILENAMEW::default();
-        ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-        ofn.lpstrFilter = filter.as_ptr();
-        ofn.lpstrFile = file_buf.as_mut_ptr();
-        ofn.nMaxFile = file_buf.len() as u32;
-        ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
-
-        let ok = unsafe { GetOpenFileNameW(&mut ofn) };
-        if ok != 0 {
-            return Ok(Some(utf16z_to_string(&file_buf)));
+    let mut builder = app
+        .dialog()
+        .file()
+        .add_filter("CSV Files", &["csv"])
+        .add_filter("All Files", &["*"]);
+    if let Some(name) = default_name {
+        let name = name.trim();
+        if !name.is_empty() {
+            builder = builder.set_file_name(name);
         }
-
-        let err = unsafe { CommDlgExtendedError() };
-        if err == 0 {
-            return Ok(None);
-        }
-        return Err(format!(
-            "Open file dialog failed (CommDlgExtendedError={err})."
-        ));
     }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("Native file dialogs are only implemented on Windows in this demo. Please paste a CSV path.".to_string())
-    }
+    builder
+        .blocking_save_file()
+        .map(|path| {
+            path.into_path()
+                .map(|path| path.to_string_lossy().to_string())
+                .map_err(|e| e.to_string())
+        })
+        .transpose()
 }
 
 #[tauri::command]
-pub fn pick_save_csv(default_name: Option<String>) -> Result<Option<String>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::UI::Controls::Dialogs::{
-            CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_HIDEREADONLY,
-            OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
-        };
+pub fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
 
-        let filter = "CSV Files (*.csv)\0*.csv\0All Files (*.*)\0*.*\0\0"
-            .encode_utf16()
-            .collect::<Vec<u16>>();
-        let defext = "csv\0".encode_utf16().collect::<Vec<u16>>();
-
-        let mut file_buf = vec![0u16; 8192];
-        if let Some(name) = default_name {
-            let name = name.trim();
-            if !name.is_empty() {
-                let w = name.encode_utf16().collect::<Vec<u16>>();
-                let max = file_buf.len().saturating_sub(1);
-                let n = w.len().min(max);
-                file_buf[..n].copy_from_slice(&w[..n]);
-                file_buf[n] = 0;
-            }
-        }
-
-        let mut ofn = OPENFILENAMEW::default();
-        ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-        ofn.lpstrFilter = filter.as_ptr();
-        ofn.lpstrFile = file_buf.as_mut_ptr();
-        ofn.nMaxFile = file_buf.len() as u32;
-        ofn.lpstrDefExt = defext.as_ptr();
-        ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
-
-        let ok = unsafe { GetSaveFileNameW(&mut ofn) };
-        if ok != 0 {
-            return Ok(Some(utf16z_to_string(&file_buf)));
-        }
-
-        let err = unsafe { CommDlgExtendedError() };
-        if err == 0 {
-            return Ok(None);
-        }
-        return Err(format!(
-            "Save file dialog failed (CommDlgExtendedError={err})."
-        ));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = default_name;
-        Err("Native file dialogs are only implemented on Windows in this demo. Please type an export path.".to_string())
-    }
-}
-
-#[tauri::command]
-pub fn pick_folder() -> Result<Option<String>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::System::Com::{
-            CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
-        };
-        use windows_sys::Win32::UI::Shell::{
-            SHBrowseForFolderW, SHGetPathFromIDListW, BIF_EDITBOX, BIF_NEWDIALOGSTYLE,
-            BIF_RETURNONLYFSDIRS, BROWSEINFOW,
-        };
-
-        let hr = unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED as u32) };
-        let did_init = hr >= 0;
-
-        let title = "Select a folder\0".encode_utf16().collect::<Vec<u16>>();
-        let mut display_name_buf = vec![0u16; 260];
-
-        let mut bi: BROWSEINFOW = unsafe { std::mem::zeroed() };
-        bi.pszDisplayName = display_name_buf.as_mut_ptr();
-        bi.lpszTitle = title.as_ptr();
-        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX;
-
-        let pidl = unsafe { SHBrowseForFolderW(&mut bi) };
-        if pidl.is_null() {
-            if did_init {
-                unsafe { CoUninitialize() };
-            }
-            return Ok(None);
-        }
-
-        let mut path_buf = vec![0u16; 8192];
-        let ok = unsafe { SHGetPathFromIDListW(pidl, path_buf.as_mut_ptr()) };
-        unsafe { CoTaskMemFree(pidl as _) };
-        if did_init {
-            unsafe { CoUninitialize() };
-        }
-
-        if ok == 0 {
-            return Err("Folder dialog failed (no path returned).".to_string());
-        }
-        return Ok(Some(utf16z_to_string(&path_buf)));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("Native folder dialogs are only implemented on Windows in this demo.".to_string())
-    }
+    app.dialog()
+        .file()
+        .blocking_pick_folder()
+        .map(|path| {
+            path.into_path()
+                .map(|path| path.to_string_lossy().to_string())
+                .map_err(|e| e.to_string())
+        })
+        .transpose()
 }
 
 #[cfg(test)]

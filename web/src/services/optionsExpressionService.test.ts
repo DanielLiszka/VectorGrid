@@ -71,6 +71,52 @@ describe("optionsExpressionService", () => {
     });
   });
 
+  it("keeps options IPC boundary parsing tolerant for malformed, partial, and extra-field payloads", async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce("not an object")
+      .mockResolvedValueOnce({ notRows: true })
+      .mockResolvedValueOnce({
+        artifact_path: "C:/runs/options_partial.json",
+        artifact: {
+          ts: "2026-04-05T12:00:00Z",
+          options_dataset_hash: "hash-partial",
+          extra_backend_field: true,
+        },
+        result: {
+          backend_used: "cpu_reference",
+          ranked_results: "not an array",
+        },
+      });
+
+    const manifest = await importOptionsDataset({
+      csv_path: "C:/data/bad.csv",
+    });
+    expect(manifest).toEqual(
+      expect.objectContaining({
+        version: 0,
+        optionsDatasetId: "",
+        rootSymbol: "",
+        rowCount: 0,
+      }),
+    );
+
+    await expect(listOptionsDatasets()).resolves.toEqual([]);
+
+    const run = await runOptionsExpression({
+      parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
+    });
+    expect(run.artifactPath).toBe("C:/runs/options_partial.json");
+    expect(run.optionsDatasetHash).toBe("hash-partial");
+    expect(run.backendUsed).toBe("cpu_reference");
+    expect(run.rankedResults).toEqual([]);
+    expect(run.request).toEqual(
+      expect.objectContaining({
+        parentArtifactPath: "",
+        optionsDatasetId: "",
+      }),
+    );
+  });
+
   it("preserves derived-mid dataset semantics during import normalization", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       version: 1,
