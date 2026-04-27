@@ -94,7 +94,7 @@ describe('HeatmapCanvas', () => {
     expect(wrapper.emitted('review-top-results')).toHaveLength(1)
   })
 
-  it('renders model-owned metadata and emits representative drilldown params from clicks', async () => {
+  it('renders model-owned metadata and emits representative candidate-detail params from clicks', async () => {
     mockCanvasContext()
     const wrapper = mount(HeatmapCanvas, {
       props: {
@@ -125,7 +125,7 @@ describe('HeatmapCanvas', () => {
     expect(wrapper.get('#heatmapTooltipVue').text()).toContain('Sharpe')
 
     await wrapper.get('#heatmapOverlayVue').trigger('click', { clientX: 128, clientY: 384 })
-    expect(wrapper.emitted('request-drilldown')?.[0]?.[0]).toMatchObject({
+    expect(wrapper.emitted('request-candidate-detail')?.[0]?.[0]).toMatchObject({
       fast_len: 5,
       fast_ma_type: 'ema',
       slow_len: 20,
@@ -150,7 +150,7 @@ describe('HeatmapCanvas', () => {
     expect(wrapper.get('#heatmapSelectedCellSummaryVue').text()).toContain('EMA 9')
 
     await wrapper.get('#heatmapCanvasStackVue').trigger('keydown', { key: 'Enter' })
-    expect(wrapper.emitted('request-drilldown')?.[0]?.[0]).toMatchObject({
+    expect(wrapper.emitted('request-candidate-detail')?.[0]?.[0]).toMatchObject({
       fast_len: 9,
       fast_ma_type: 'ema',
       slow_len: 30,

@@ -2,7 +2,7 @@
 import { mount } from '@vue/test-utils'
 import { markRaw, nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import DrillWorkspacePanel from './DrillWorkspacePanel.vue'
+import CandidateDetailWorkspacePanel from './CandidateDetailWorkspacePanel.vue'
 import { drillClearTradeSelection, drillNextTrade } from '../services/analysisService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
@@ -68,23 +68,23 @@ const drillCurves = {
   ],
 }
 
-describe('DrillWorkspacePanel', () => {
+describe('CandidateDetailWorkspacePanel', () => {
   beforeEach(() => {
     installDrillPanelMountShell()
     localStorage.clear()
   })
 
-  it('rerenders on visible mount and keeps the drill evidence surface visible to contributors', async () => {
+  it('rerenders on visible mount and keeps the candidate detail evidence surface visible to contributors', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const analysisStore = useAnalysisStore(pinia)
     const workflowStore = useWorkflowStore(pinia)
     workflowStore.selectWorkflow('analyze', { persist: false })
     workflowStore.selectResultsTab('drill', { persist: false })
-    analysisStore.statusLine = 'Drilldown ready.'
+    analysisStore.statusLine = 'Candidate detail ready.'
     const rerenderSpy = vi.spyOn(analysisStore, 'rerenderDrill').mockImplementation(() => undefined)
 
-    mount(DrillWorkspacePanel, {
+    mount(CandidateDetailWorkspacePanel, {
       global: { plugins: [pinia] },
       attachTo: document.body,
     })
@@ -96,7 +96,7 @@ describe('DrillWorkspacePanel', () => {
     expect(text).toContain('Stability')
     expect(text).toContain('Trades')
     expect(text).toContain('If the charts stay empty')
-    expect(text).toContain('Drilldown ready.')
+    expect(text).toContain('Candidate detail ready.')
     expect(document.querySelector('#tradeTableBodyVue')).not.toBeNull()
     expect(document.querySelector('#stabilityTableBodyVue')).not.toBeNull()
   })
@@ -110,7 +110,7 @@ describe('DrillWorkspacePanel', () => {
     workflowStore.selectResultsTab('drill', { persist: false })
     vi.spyOn(analysisStore, 'rerenderDrill').mockImplementation(() => undefined)
 
-    mount(DrillWorkspacePanel, {
+    mount(CandidateDetailWorkspacePanel, {
       global: { plugins: [pinia] },
       attachTo: document.body,
     })
@@ -135,7 +135,7 @@ describe('DrillWorkspacePanel', () => {
     workflowStore.selectResultsTab('drill', { persist: false })
     vi.spyOn(analysisStore, 'rerenderDrill').mockImplementation(() => undefined)
 
-    mount(DrillWorkspacePanel, {
+    mount(CandidateDetailWorkspacePanel, {
       global: { plugins: [pinia] },
       attachTo: document.body,
     })

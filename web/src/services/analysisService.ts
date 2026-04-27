@@ -1409,7 +1409,7 @@ function syncTopSelectionState(
       ? "No ranked candidate selected."
       : "No ranked candidates are available.";
     store.selectedTopDecisionNote =
-      "Select a ranked candidate to lock a review target before moving into Drilldown or Validation.";
+      "Select a ranked candidate to lock a review target before moving into Candidate Detail or Validation.";
     store.selectedTopProvenanceChips = [];
     return;
   }
@@ -1861,7 +1861,7 @@ export function resolveExecutionTopRowSnapshot(
   };
 }
 
-function buildDrilldownInvocation(
+function buildCandidateDetailInvocation(
   paramsRaw: Record<string, unknown>,
   runReqRaw: Record<string, unknown>,
   runResRaw?: Record<string, unknown> | null,
@@ -1961,7 +1961,7 @@ export function buildExecutionStrategyFromRunContext(
   paramsRaw: Record<string, unknown>,
   runReqRaw: Record<string, unknown>,
 ): AnalysisExecutionStrategySnapshot | null {
-  const invocation = buildDrilldownInvocation(paramsRaw, runReqRaw, null);
+  const invocation = buildCandidateDetailInvocation(paramsRaw, runReqRaw, null);
   if (!invocation) return null;
   const strategyKind = normalizeStrategyKindRaw(invocation.kind);
   const kind =
@@ -2158,17 +2158,17 @@ async function runVueDrillPipeline(
   const runRes = asRecord(run?.res);
   const params = asRecord(row.params);
   const metrics = asRecord(row.metrics);
-  const invocation = buildDrilldownInvocation(params, runReq, runRes);
+  const invocation = buildCandidateDetailInvocation(params, runReq, runRes);
   if (!invocation) return false;
 
   drillSeq = (drillSeq + 1) >>> 0;
   const seq = drillSeq;
   if (store) {
-    store.drillStatus = "Computing drilldown…";
+    store.drillStatus = "Computing candidate detail…";
     store.stabilityStatus = "-";
     markAnalysisVue(store);
   }
-  setStatus(store, "Computing drilldown…");
+  setStatus(store, "Computing candidate detail…");
   try {
     const drillKey = requestCacheKey(invocation.command, invocation.request);
     const drillLoad = await cacheGetOrLoad(
@@ -2219,7 +2219,7 @@ async function runVueDrillPipeline(
     }
     setStatus(
       store,
-      cachedDrill ? "Drilldown done (cached)." : "Drilldown done.",
+      cachedDrill ? "Candidate detail done (cached)." : "Candidate detail done.",
     );
 
     const stability = buildLocalStabilityInvocation(params, invocation);
@@ -2279,7 +2279,7 @@ async function runVueDrillPipeline(
   } catch (error) {
     if (seq !== drillSeq) return true;
     drillRenderState = null;
-    const message = `Drilldown failed: ${String(error)}`;
+    const message = `Candidate detail failed: ${String(error)}`;
     if (store) {
       store.drillStatus = message;
       markAnalysisVue(store);
@@ -3317,7 +3317,7 @@ export function registerHeatmapCanvasController(controller: HeatmapCanvasControl
   registeredHeatmapCanvasController = controller;
 }
 
-export function runHeatmapRepresentativeDrilldown(params: HeatmapCellParams): void {
+export function runHeatmapRepresentativeCandidateDetail(params: HeatmapCellParams): void {
   const pinia = resolveRuntimePinia();
   if (pinia) {
     useWorkflowStore(pinia).selectResultsTab("drill");
@@ -3954,8 +3954,8 @@ function restoreDrillViewFromCache(
   setStatus(
     store,
     drillRenderState.drillStatus === "Done (cached)."
-      ? "Drilldown restored (cached)."
-      : "Drilldown restored.",
+      ? "Candidate detail restored (cached)."
+      : "Candidate detail restored.",
   );
   return true;
 }

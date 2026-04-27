@@ -1,5 +1,18 @@
 # Frontend End-to-End QA Automation Implementation Plan
 
+## Additive QA Hardening Implemented
+
+The current implementation keeps CI/CD out of scope and adds local, opt-in verification surfaces:
+
+- Static QA drift checks: `npm --prefix web run check:qa-static`.
+- Selector inventory and local summary report: `npm --prefix web run check:qa-report`.
+- Visual baseline snapshots: `npm --prefix web run test:e2e:visual` and `npm --prefix web run test:e2e:visual:update` for intentional UI changes.
+- WCAG-focused smoke: `npm --prefix web run a11y:smoke:wcag`.
+- UI perf budget: `npm --prefix web run perf:ui:budget:capture`.
+- Optional local gate flags: `-IncludeQaStatic`, `-IncludeQaReport`, `-IncludeVisualBaselines`, `-IncludeWcag22Smoke`, `-IncludeBaselineUi`, and `-IncludeUiPerfBudget` on `scripts/run_frontend_e2e_gate.ps1`.
+
+These checks are additive: they do not change runtime application behavior, backend contracts, or default build output. When the UI changes intentionally, update `web/e2e/browser/qa/actionCoverageManifest.ts`, affected workflow specs, and visual snapshots in the same change.
+
 ## Intent
 
 Build a comprehensive click-and-use QA automation system for the VectorGrid frontend so foreseeable user-facing workflow bugs are caught before release.
@@ -379,9 +392,9 @@ Console filtering must be explicit. A known benign console message should be all
 | --- | --- | --- |
 | `results.overview` | Open overview after optimization | Summary metrics and selected candidate visible |
 | `results.topTable` | Top results table interactions | Sort/filter/select row, virtual scroll stable |
-| `results.heatmap` | Heatmap render and keyboard drilldown | Canvas non-empty, keyboard selection, Enter drilldown |
+| `results.heatmap` | Heatmap render and keyboard candidate detail | Canvas non-empty, keyboard selection, Enter candidate detail |
 | `results.pareto` | Pareto render and selection | Canvas non-empty, point list, selected summary |
-| `results.drilldown` | Candidate drilldown | Chart host, trade table, marker selection summary |
+| `results.candidateDetail` | Candidate Detail | Chart host, trade table, marker selection summary |
 | `results.export` | Export/copy actions | Status or mocked command confirmation |
 | `results.emptyStates` | Analysis panels before data/results | Action-oriented empty states |
 
@@ -581,7 +594,7 @@ Exit criteria:
 
 - [x] Add `qaAssertions.ts` with global console/page/request/stuck-busy guards.
 - [x] Add `workflowRunner.ts` for scenario setup and common action execution.
-- [ ] Add fixture modules for every fully populated dataset, optimization, validation, library, aggregate, ML, options, live, and settings state.
+- [ ] Add fixture modules for every fully populated dataset, optimization, validation, library, aggregate, ML, options, live, and settings state. Current additive slice includes validation success/failure, saved options artifacts, and live safety readiness.
 - [x] Keep mocked Tauri strict by default.
 - [x] Add action inventory helper for `[data-qa-action]`.
 
@@ -605,14 +618,14 @@ Exit criteria:
 
 ### Phase 3: Core Workflow Matrix
 
-- [ ] Implement shell/global navigation workflows.
-- [ ] Implement data workflows.
-- [ ] Implement strategy configuration workflows.
-- [ ] Implement optimization workflows.
+- [x] Implement shell/global navigation workflows.
+- [x] Implement baseline data workflows.
+- [x] Implement baseline strategy configuration navigation workflows.
+- [x] Implement baseline optimization blocked/failure workflows.
 - [x] Implement baseline validation workflows for both dataset-mismatch failure and conventional validation success.
 - [ ] Implement analysis/result review workflows.
-- [ ] Implement library/artifact workflows.
-- [ ] Add compact viewport coverage for critical overlays and workflow navigation.
+- [x] Implement baseline library/artifact workflows.
+- [x] Add compact viewport coverage for critical overlays and workflow navigation.
 
 Exit criteria:
 
@@ -624,7 +637,7 @@ Exit criteria:
 - [ ] Add aggregate/meta workflows.
 - [ ] Add ML Signal workflows.
 - [x] Add baseline options-expression validation workflow for saved artifact preview/run/reveal.
-- [ ] Add live execution workflows.
+- [x] Add baseline live execution safety workflows.
 - [ ] Add settings/diagnostics workflows.
 - [ ] Add representative failure/recovery cases for each advanced surface.
 
@@ -644,12 +657,12 @@ Exit criteria:
 - Browser workflow QA proves dense behavior.
 - Desktop smoke proves the same app shell is reachable in the native runtime.
 
-### Phase 6: CI And Reporting
+### Phase 6: Local Reporting
 
-- [ ] Add package scripts for workflow, action coverage, full workflow, exploratory, and headed/debug lanes.
-- [ ] Add CI jobs or documented local gates for PR, release candidate, and nightly coverage.
-- [ ] Emit JSON coverage reports and retain Playwright traces/screenshots on failure.
-- [ ] Add summary output with workflow count, action coverage count, waived actions, failed actions, and artifact paths.
+- [x] Add package scripts for workflow, action coverage, full workflow, exploratory, and headed/debug lanes.
+- [x] Add documented local gates for PR-style and release-candidate-style coverage. CI/CD remains explicitly out of scope.
+- [x] Emit JSON coverage/static reports and retain Playwright traces/screenshots on failure.
+- [x] Add summary output with workflow count, action coverage count, waived actions, failed actions, and artifact paths.
 
 Exit criteria:
 
@@ -658,9 +671,9 @@ Exit criteria:
 
 ### Phase 7: Maintenance And Governance
 
-- [ ] Add a short E2E contribution guide under `web/e2e/browser/README.md`.
-- [ ] Require new UI actions to include a `data-qa-action` id and manifest entry.
-- [ ] Require user-discovered bugs to add an E2E repro.
+- [x] Add a short E2E contribution guide under `web/e2e/browser/README.md`.
+- [x] Require new UI actions to include a `data-qa-action` id and manifest entry through documented local checks.
+- [x] Require user-discovered bugs to add an E2E repro in the contribution guide.
 - [ ] Review waivers monthly or before release.
 - [ ] Keep exploratory sweep failures triaged into either product bugs, harness bugs, or new manifest waivers.
 
@@ -784,7 +797,7 @@ The app already exposes stable navigation selectors such as `data-workspace`, `d
 | Results Top tab | `#resultsTabBar [data-tab="top"]` | `shell.resultsTab.top` |
 | Results Pareto tab | `#resultsTabBar [data-tab="pareto"]` | `shell.resultsTab.pareto` |
 | Results Validate tab | `#resultsTabBar [data-tab="validate"]` | `shell.resultsTab.validate` |
-| Results Drilldown tab | `#resultsTabBar [data-tab="drill"]` | `shell.resultsTab.drill` |
+| Results Candidate Detail tab | `#resultsTabBar [data-tab="drill"]` | `shell.resultsTab.drill` |
 | Results Heatmap tab | `#resultsTabBar [data-tab="heatmap"]` | `shell.resultsTab.heatmap` |
 | Footer details | Footer `Details` button | `footer.taskCenter.details` |
 | Footer primary action | Footer run/validate button | `footer.primaryAction.run` |
@@ -879,7 +892,7 @@ Initial command ids from the current command registry:
 | Set compare baseline | `overview.compare.setBaseline` |
 | Clear compare baseline | `overview.compare.clearBaseline` |
 | Clear top filters | `top.filters.clear` |
-| Open drilldown | `top.selected.openDrilldown` |
+| Open Candidate Detail | `top.selected.openCandidateDetail` |
 | Review overview | `top.selected.reviewOverview` |
 | Pin selected top candidate | `top.selected.pin` |
 | Clear pinned top candidates | `top.pins.clear` |
@@ -891,9 +904,9 @@ Initial command ids from the current command registry:
 | Unpin candidate | `top.pin.remove` |
 | Heatmap export PNG | `heatmap.exportPng` |
 | Heatmap review top results | `heatmap.empty.reviewTopResults` |
-| Heatmap drilldown from cell | `heatmap.cell.drilldown` |
-| Drill review Top results | `drill.empty.reviewTopResults` |
-| Drill select trade row | `drill.trade.selectRow` |
+| Heatmap candidate detail from cell | `heatmap.cell.candidateDetail` |
+| Candidate Detail review Top results | `drill.empty.reviewTopResults` |
+| Candidate Detail select trade row | `drill.trade.selectRow` |
 | Pareto select point | `pareto.point.select` |
 
 ### Validation Actions
@@ -1122,11 +1135,11 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     coveredBy: ['validation.success.selected', 'validation.blocked.datasetMismatch'],
   },
   {
-    actionId: 'top.selected.openDrilldown',
+    actionId: 'top.selected.openCandidateDetail',
     surface: 'top results',
     required: true,
     priority: 'critical',
-    coveredBy: ['results.drilldown'],
+    coveredBy: ['results.candidateDetail'],
   },
   {
     actionId: 'library.savedRun.load',
@@ -1523,7 +1536,7 @@ Implement these first because they cover the most user-visible regressions:
 12. `validation.success.selected`
 13. `results.topTable`
 14. `results.heatmap`
-15. `results.drilldown`
+15. `results.candidateDetail`
 16. `library.openRun`
 17. `live.empty`
 18. `live.emergencyHalt`

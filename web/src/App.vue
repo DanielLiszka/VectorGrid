@@ -15,7 +15,7 @@ const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/A
 const CommandPaletteOverlay = defineAsyncComponent(() => import('./components/CommandPaletteOverlay.vue'))
 const DataWorkspacePanel = defineAsyncComponent(() => import('./components/DataWorkspacePanel.vue'))
 const DebugWorkspacePanel = defineAsyncComponent(() => import('./components/DebugWorkspacePanel.vue'))
-const DrillWorkspacePanel = defineAsyncComponent(() => import('./components/DrillWorkspacePanel.vue'))
+const CandidateDetailWorkspacePanel = defineAsyncComponent(() => import('./components/CandidateDetailWorkspacePanel.vue'))
 const ExecutionWorkspacePanel = defineAsyncComponent(() => import('./components/ExecutionWorkspacePanel.vue'))
 const HeatmapWorkspacePanel = defineAsyncComponent(() => import('./components/HeatmapWorkspacePanel.vue'))
 const HistoryWorkspacePanel = defineAsyncComponent(() => import('./components/HistoryWorkspacePanel.vue'))
@@ -110,7 +110,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <AdvancedWorkspacePanel v-if="advancedPanelActive" />
   <DataWorkspacePanel v-if="mountedPanels.data" />
   <DebugWorkspacePanel v-if="debugPanelActive" />
-  <DrillWorkspacePanel v-if="drillPanelActive" />
+  <CandidateDetailWorkspacePanel v-if="drillPanelActive" />
   <ExecutionWorkspacePanel v-if="mountedPanels.live" />
   <HeatmapWorkspacePanel v-if="heatmapPanelActive" />
   <HistoryWorkspacePanel v-if="historyPanelActive" />

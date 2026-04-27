@@ -24,6 +24,10 @@ Do not treat this as the full implementation spec. Use it together with:
 - `docs/archive/README.md` for retired planning/review/tracker material
 - `docs/options_research/options_expression_optimizer_viable_plan_2026-04-02.md` for the current shipped-slice options-expression tracker, current checklist, and repo-fit implementation status
 - `docs/options_research/options_expression_future_scope_roadmap_2026-04-07.md` for the refocused future roadmap that is now limited to improving the existing options optimization + embedded validation workflow
+- `docs/gpt55_pro_hard_problem_meta_research_plan_2026-04-27.md` for the active meta-analysis plan used to identify which application-wide hard problems deserve external web research and GPT-5.5 Pro dossier treatment
+- `docs/gpt55_pro_hard_problem_atlas_2026-04-27.md` for the first repo-wide and web-research-backed hard-problem atlas, ranked candidate list, and recommended GPT-5.5 Pro dossier order
+- `docs/gpt55_pro_final_prompt_dossiers_2026-04-27.md` for ready-to-use GPT-5.5 Pro prompt dossiers with exact required and optional file packs for each hard-problem prompt
+- `docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md` for researched high-ROI prompt ideas beyond the initial 12 dossiers, especially trust-boundary/security, portfolio allocation, reproducibility, data lifecycle, native binary integrity, and prompt sequencing governance
 
 Archived planning and implementation notes under `docs/archive/` plus dated notes under `docs/options_research/` are optional background only. Do not open them by default unless this map routes you there for the exact task you are doing.
 
@@ -425,7 +429,7 @@ Use the lightweight safety gate before handoff for execution/broker-contract cha
 
 - `powershell -File scripts/run_execution_safety_gate.ps1`
 
-### If the task is drilldown, local stability, or follow-up analysis
+### If the task is Candidate Detail, local stability, or follow-up analysis
 
 Open in this order:
 
@@ -435,25 +439,25 @@ Open in this order:
 - `crates/app_core/src/double_ma.rs`
 - `crates/app_core/src/composite_cpu.rs`
 
-Current drilldown/local-stability coverage matrix:
+Current candidate-detail/local-stability coverage matrix:
 
 - Double-MA family:
-  - `DoubleMa`, `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, `Vfct`, `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the Double-MA drilldown and local-stability path
+  - `DoubleMa`, `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, `Vfct`, `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the Double-MA candidate-detail and local-stability path
 - Composite-family analysis:
-  - `CompositeCpu` supports both drilldown and local stability on its own analysis path
-  - `Asr` supports both drilldown and local stability on the composite-family analysis path
-  - `Vemr` supports both drilldown and local stability on the composite-family analysis path
-  - `Vcc` currently supports local stability, but drilldown remains intentionally unimplemented
-  - `Rocb` currently supports local stability, but drilldown remains intentionally unimplemented
-  - `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` currently keep both drilldown and local stability explicit as “not implemented yet” on the composite-family analysis path
-- `MlSignal` does not participate in optimizer drilldown/local-stability views; loading an `MlSignal` artifact should leave analysis views in the explicit non-optimizer state
+  - `CompositeCpu` supports both candidate detail and local stability on its own analysis path
+  - `Asr` supports both candidate detail and local stability on the composite-family analysis path
+  - `Vemr` supports both candidate detail and local stability on the composite-family analysis path
+  - `Vcc` currently supports local stability, but candidate detail remains intentionally unimplemented
+  - `Rocb` currently supports local stability, but candidate detail remains intentionally unimplemented
+  - `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` currently keep both candidate detail and local stability explicit as “not implemented yet” on the composite-family analysis path
+- `MlSignal` does not participate in optimizer candidate-detail/local-stability views; loading an `MlSignal` artifact should leave analysis views in the explicit non-optimizer state
 
 Truth anchors for this coverage:
 
 - `web/src/services/analysisService.ts`
 - `web/src/services/analysisService.test.ts`
 - `web/src/components/TopWorkspacePanel.test.ts`
-- `web/src/components/DrillWorkspacePanel.test.ts`
+- `web/src/components/CandidateDetailWorkspacePanel.test.ts`
 - `src-tauri/src/commands_analysis.rs`
 - `crates/app_core/src/double_ma.rs`
 - `crates/app_core/src/composite_cpu.rs`
@@ -609,7 +613,7 @@ Use `src-tauri/src/lib.rs` to see the public command registry and `src-tauri/src
 - `src-tauri/src/commands_execution.rs`
   - one-shot strategy execution, live runner, Alpaca connectivity/snapshots
 - `src-tauri/src/commands_analysis.rs`
-  - drilldown and local-stability follow-up computations
+  - candidate-detail and local-stability follow-up computations
 - `src-tauri/src/commands_dynamic.rs`
   - dynamic strategy IR preview/formatting and constant-bit tooling
 - `src-tauri/src/commands_system.rs`
@@ -1193,10 +1197,10 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
   - request/result shapes in `crates/app_core/src/composite_cpu.rs`
   - product request shaping in `web/src/services/optimizeRequestBuilder.ts`
   - analysis follow-ups in `web/src/services/analysisService.ts`
-  - Tauri drilldown/local-stability bridging in `src-tauri/src/commands_analysis.rs`
+  - Tauri candidate-detail/local-stability bridging in `src-tauri/src/commands_analysis.rs`
 - `CompositeCpu` is not a routed Double-MA family member. It keeps its own:
   - family-specific route diagnostics
-  - drilldown path
+  - candidate-detail path
   - local-stability path
   - native Top-K/include-all result surface
 - `CompositeMo` is a distinct Pareto/sampler/search-space product surface, not a normal Top-K/grid optimizer. It owns:
@@ -1623,7 +1627,7 @@ Start here:
 Important current-state notes:
 
 - current live execution strategy coverage is limited to `DoubleMa` and `CompositeCpu`
-- live execution reuses drilldown compute paths
+- live execution reuses candidate-detail compute paths
 - the frontend shell now exposes live execution as a dedicated `live` workspace instead of a settings-mounted execution pane
 - broker integration is Alpaca over REST
 - `dry_run=true` requires no broker credentials; non-dry-run requires Alpaca credentials

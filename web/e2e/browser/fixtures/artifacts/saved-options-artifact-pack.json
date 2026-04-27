@@ -1,0 +1,455 @@
+{
+  "savedRunSummaries": [
+    {
+      "ts": "2026-04-24T14:30:00Z",
+      "path": "C:/runs/vectorgrid_options_parent.json",
+      "bytes": 49152,
+      "strategy_kind": "DoubleMa",
+      "config_fingerprint": "double-ma-aapl-qa",
+      "config_fingerprint_version": 1,
+      "has_validation": true,
+      "report_xlsx_path": "C:/runs/vectorgrid_options_parent.xlsx",
+      "report_xlsx_exists": true,
+      "csv_path": "C:/fixtures/aapl_1m.csv",
+      "timeframe": "1m",
+      "tags": ["qa", "options"]
+    }
+  ],
+  "repairedRunSummaries": [
+    {
+      "ts": "2026-04-24T14:30:00Z",
+      "path": "C:/runs/vectorgrid_options_parent.json",
+      "bytes": 49152,
+      "strategy_kind": "DoubleMa",
+      "config_fingerprint": "double-ma-aapl-qa",
+      "config_fingerprint_version": 1,
+      "has_validation": true,
+      "report_xlsx_path": "C:/runs/vectorgrid_options_parent.xlsx",
+      "report_xlsx_exists": true,
+      "csv_path": "C:/fixtures/aapl_1m.csv",
+      "timeframe": "1m",
+      "tags": ["qa", "options"]
+    },
+    {
+      "ts": "2026-04-24T14:31:00Z",
+      "path": "C:/runs/vectorgrid_options_parent.repaired.json",
+      "bytes": 51200,
+      "strategy_kind": "DoubleMa",
+      "config_fingerprint": "double-ma-aapl-qa",
+      "config_fingerprint_version": 1,
+      "has_validation": true,
+      "report_xlsx_path": "C:/runs/vectorgrid_options_parent.xlsx",
+      "report_xlsx_exists": true,
+      "csv_path": "C:/fixtures/aapl_1m.csv",
+      "timeframe": "1m",
+      "tags": ["qa", "options", "repaired"]
+    }
+  ],
+  "parentRunDetail": {
+    "ts": "2026-04-24T14:30:00Z",
+    "artifactPath": "C:/runs/vectorgrid_options_parent.json",
+    "strategyKind": "DoubleMa",
+    "configFingerprint": "double-ma-aapl-qa",
+    "configFingerprintVersion": 1,
+    "timeframe": "1m",
+    "csvPath": "C:/fixtures/aapl_1m.csv",
+    "reportXlsxPath": "C:/runs/vectorgrid_options_parent.xlsx",
+    "reportXlsxExists": true,
+    "hasValidation": true,
+    "datasetMeta": {
+      "csv_path": "C:/fixtures/aapl_1m.csv",
+      "timeframe": "1m",
+      "len": 5000
+    },
+    "runReq": {
+      "strategy_kind": "DoubleMa",
+      "data_id": "fixture_aapl_1m",
+      "fast_start": 8,
+      "fast_end": 10,
+      "fast_step": 1,
+      "slow_start": 32,
+      "slow_end": 36,
+      "slow_step": 2
+    },
+    "runRes": {
+      "best_params": {
+        "fast_len": 8,
+        "slow_len": 32,
+        "fast_ma_type": "sma",
+        "slow_ma_type": "sma"
+      },
+      "best_metrics": {
+        "pnl": 0.12,
+        "sharpe": 1.4,
+        "max_dd": -0.05,
+        "trades": 18
+      },
+      "top": [],
+      "runtime_ms": 84,
+      "backend_used": "cpu",
+      "backend_route": "CpuOnly"
+    },
+    "paramsText": "{\"strategy_kind\":\"DoubleMa\",\"data_id\":\"fixture_aapl_1m\"}",
+    "tags": ["qa", "options"]
+  },
+  "repairDryRun": {
+    "source_path": "C:/runs/vectorgrid_options_parent.json",
+    "result_path": "",
+    "dry_run": true,
+    "changed": true,
+    "wrote": false,
+    "changes": ["normalized saved-run summary fields", "canonicalized request payload"],
+    "summary": {
+      "ts": "2026-04-24T14:30:00Z",
+      "path": "C:/runs/vectorgrid_options_parent.json",
+      "bytes": 49152,
+      "strategy_kind": "DoubleMa",
+      "config_fingerprint": "double-ma-aapl-qa",
+      "config_fingerprint_version": 1,
+      "has_validation": true,
+      "report_xlsx_path": "C:/runs/vectorgrid_options_parent.xlsx",
+      "report_xlsx_exists": true,
+      "csv_path": "C:/fixtures/aapl_1m.csv",
+      "timeframe": "1m",
+      "tags": ["qa", "options"]
+    }
+  },
+  "repairWrite": {
+    "source_path": "C:/runs/vectorgrid_options_parent.json",
+    "result_path": "C:/runs/vectorgrid_options_parent.repaired.json",
+    "dry_run": false,
+    "changed": true,
+    "wrote": true,
+    "changes": ["normalized saved-run summary fields", "canonicalized request payload"],
+    "summary": {
+      "ts": "2026-04-24T14:31:00Z",
+      "path": "C:/runs/vectorgrid_options_parent.repaired.json",
+      "bytes": 51200,
+      "strategy_kind": "DoubleMa",
+      "config_fingerprint": "double-ma-aapl-qa",
+      "config_fingerprint_version": 1,
+      "has_validation": true,
+      "report_xlsx_path": "C:/runs/vectorgrid_options_parent.xlsx",
+      "report_xlsx_exists": true,
+      "csv_path": "C:/fixtures/aapl_1m.csv",
+      "timeframe": "1m",
+      "tags": ["qa", "options", "repaired"]
+    }
+  },
+  "optionsDatasets": [
+    {
+      "version": 1,
+      "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+      "root_symbol": "AAPL",
+      "provider_name": "polygon.io",
+      "provider_source_surface": "polygon_options_download",
+      "provider_entitlement_profile": "starter",
+      "quote_resolution": "minute",
+      "price_semantics": "minute_aggregate",
+      "calendar_id": "XNYS",
+      "timezone": "America/New_York",
+      "coverage_start": 1904164200000,
+      "coverage_end": 1904250600000,
+      "normalization_version": 1,
+      "quote_semantics_version": 1,
+      "corporate_action_mapping_version": 1,
+      "contract_reference_source": "polygon_contract_reference",
+      "contract_reference_as_of_utc": "2026-04-24T00:00:00Z",
+      "underlier_reference_source": "polygon_underlying_aggregates",
+      "dataset_path": "C:/VectorGridData/options/aapl_options_agg_fixture.csv",
+      "row_count": 2400,
+      "contract_count": 48,
+      "aggregate_price_field": "close"
+    }
+  ],
+  "optionsArtifactSummaries": [
+    {
+      "ts": "2026-04-24T14:45:00Z",
+      "path": "C:/runs/vectorgrid_options_parent_options_expression.json",
+      "bytes": 65536,
+      "parent_artifact_id": "vectorgrid_options_parent",
+      "parent_strategy_kind": "DoubleMa",
+      "root_symbol": "AAPL",
+      "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+      "backend_used": "cpu",
+      "backend_fallback_reason": "",
+      "price_semantics": "minute_aggregate",
+      "request_backend_preference": "auto",
+      "request_fill_model": "aggregate_research",
+      "request_structure_family": "long_single",
+      "request_split_assignment_mode": "event_chronological",
+      "coverage_adequacy_verdict": "adequate",
+      "coverage_non_promotable": false,
+      "tuple_count": 1,
+      "best_robust_score": 1.32,
+      "top_validation_verdict": "sealed_finalist",
+      "sealed_finalist_budget": 1,
+      "validated_tuple_count": 1,
+      "supported_holdout_tuple_count": 1,
+      "supported_sealed_tuple_count": 1,
+      "supported_stress_tuple_count": 1,
+      "has_holdout_metrics": true,
+      "has_sealed_evaluation_metrics": true,
+      "has_stress_metrics": true,
+      "has_harsher_stress_metrics": true,
+      "has_extreme_stress_metrics": true
+    }
+  ],
+  "optionsExpressionArtifact": {
+    "version": 1,
+    "kind": "options_expression_artifact",
+    "ts": "2026-04-24T14:45:00Z",
+    "artifact_path": "C:/runs/vectorgrid_options_parent_options_expression.json",
+    "parent_artifact_id": "vectorgrid_options_parent",
+    "root_symbol": "AAPL",
+    "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+    "options_dataset_hash": "sha256:aapl-options-agg-fixture",
+    "backend_used": "cpu",
+    "backend_fallback_reason": "",
+    "price_semantics": "minute_aggregate",
+    "request": {
+      "parent_artifact_path": "C:/runs/vectorgrid_options_parent.json",
+      "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+      "structure_family": "long_single",
+      "backend_preference": "auto",
+      "split_assignment_mode": "event_chronological",
+      "delay_minutes": [0, 1, 5],
+      "dte_buckets": [1, 3, 5],
+      "moneyness_buckets": ["atm"],
+      "hold_minutes": [15],
+      "target_return_buckets": [0.5],
+      "stop_return_buckets": [0.25],
+      "exit_template": "fixed_hold_or_target_stop",
+      "fill_model": "aggregate_research",
+      "filters": {
+        "max_entry_lag_minutes": 5,
+        "max_premium": null,
+        "min_premium": null,
+        "min_volume": null,
+        "min_open_interest": null
+      },
+      "top_k": 25,
+      "min_valid_trades": 5,
+      "split_ratio_search": 0.6,
+      "split_ratio_holdout": 0.2,
+      "sealed_finalist_count": 1
+    },
+    "diagnostics": {
+      "parent_artifact_path": "C:/runs/vectorgrid_options_parent.json",
+      "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+      "root_symbol": "AAPL",
+      "total_events": 34,
+      "bullish_events": 20,
+      "bearish_events": 14,
+      "search_events": 20,
+      "holdout_events": 8,
+      "sealed_test_events": 6
+    },
+    "staging": null,
+    "overlap_window": {
+      "overlap_start": 1904164200000,
+      "overlap_end": 1904250600000,
+      "search_overlap_rate": 1,
+      "holdout_overlap_rate": 1,
+      "sealed_test_overlap_rate": 1
+    },
+    "coverage_adequacy": {
+      "verdict": "adequate",
+      "non_promotable": false,
+      "notes": ["Fixture coverage is adequate for browser QA."]
+    },
+    "split_invalid_reasons": {},
+    "selection_metrics": [
+      {
+        "structure_family": "long_single",
+        "delay_minutes": 1,
+        "dte_days": 3,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 15,
+        "target_return": 0.5,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research",
+        "pre_sealed_rank": 1,
+        "sealed_finalist": true,
+        "sealed_final_rank": 1,
+        "validation_verdict": "sealed_finalist",
+        "robust_score": 1.32,
+        "selection_metrics": { "valid_trades": 18, "expectancy_per_premium": 0.42, "win_rate": 0.61 },
+        "holdout_metrics": { "valid_trades": 9, "expectancy_per_premium": 0.31, "win_rate": 0.61 },
+        "sealed_evaluation_metrics": { "valid_trades": 6, "expectancy_per_premium": 0.28, "win_rate": 0.61 },
+        "stress_metrics": { "valid_trades": 8, "expectancy_per_premium": 0.2, "win_rate": 0.61 },
+        "harsher_stress_metrics": { "valid_trades": 7, "expectancy_per_premium": 0.16, "win_rate": 0.61 },
+        "extreme_stress_metrics": { "valid_trades": 5, "expectancy_per_premium": 0.11, "win_rate": 0.61 }
+      }
+    ]
+  },
+  "optionsValidationFeasibility": {
+    "replay_build_ms": 4,
+    "artifact_path": "C:/runs/vectorgrid_options_parent_options_expression.json",
+    "source_artifact_hash": "sha256:options-expression-artifact",
+    "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+    "options_dataset_hash": "sha256:aapl-options-agg-fixture",
+    "dataset_policy": "require_exact_replay",
+    "replacement_dataset": false,
+    "validation_plan": {
+      "mode": "date_range_holdout",
+      "start_timestamp_ms": 1903305600000,
+      "end_timestamp_ms": 1903392000000,
+      "train_session_count": null,
+      "validation_session_count": null,
+      "step_session_count": null
+    },
+    "tuple_selection": {
+      "include_sealed_finalists": true,
+      "include_robust_leader": true,
+      "include_holdout_leader": true,
+      "tuple_indexes": [0]
+    },
+    "selected_tuple_indexes": [0],
+    "selected_tuple_count": 1,
+    "price_semantics": "minute_aggregate",
+    "dataset_provenance": {
+      "provider_name": "polygon.io",
+      "provider_source_surface": "polygon_options_download",
+      "quote_resolution": "minute",
+      "aggregate_price_field": "close",
+      "contract_reference_as_of_utc": "2026-04-24T00:00:00Z"
+    },
+    "notes": [
+      "Selected sealed finalist and robust leader tuple.",
+      "Validation will assign 8 events in the end-exclusive date range to holdout."
+    ]
+  },
+  "optionsValidationResult": {
+    "artifact_path": "C:/runs/vectorgrid_options_parent_options_validation.json",
+    "replay_build_ms": 4,
+    "validation_ms": 7,
+    "result": {
+      "version": 1,
+      "kind": "options_expression_validation_artifact",
+      "ts": "2026-04-24T15:00:00Z",
+      "validation_artifact_path": "C:/runs/vectorgrid_options_parent_options_validation.json",
+      "source_artifact_path": "C:/runs/vectorgrid_options_parent_options_expression.json",
+      "source_artifact_hash": "sha256:options-expression-artifact",
+      "parent_artifact_id": "vectorgrid_options_parent",
+      "parent_artifact_hash": "sha256:parent-run",
+      "signal_manifest_id": "signal-aapl-qa",
+      "root_symbol": "AAPL",
+      "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+      "options_dataset_hash": "sha256:aapl-options-agg-fixture",
+      "dataset_policy": "require_exact_replay",
+      "replacement_dataset": false,
+      "validation_plan": {
+        "mode": "date_range_holdout",
+        "start_timestamp_ms": 1903305600000,
+        "end_timestamp_ms": 1903392000000,
+        "train_session_count": null,
+        "validation_session_count": null,
+        "step_session_count": null
+      },
+      "tuple_selection": {
+        "include_sealed_finalists": true,
+        "include_robust_leader": true,
+        "include_holdout_leader": true,
+        "tuple_indexes": [0]
+      },
+      "price_semantics": "minute_aggregate",
+      "dataset_provenance": {
+        "provider_name": "polygon.io",
+        "provider_source_surface": "polygon_options_download",
+        "quote_resolution": "minute",
+        "aggregate_price_field": "close",
+        "contract_reference_as_of_utc": "2026-04-24T00:00:00Z"
+      },
+      "diagnostics": {
+        "parent_artifact_path": "C:/runs/vectorgrid_options_parent.json",
+        "options_dataset_id": "AAPL_OPTIONS_AGG_QA",
+        "root_symbol": "AAPL",
+        "total_events": 34,
+        "bullish_events": 20,
+        "bearish_events": 14,
+        "search_events": 20,
+        "holdout_events": 8,
+        "sealed_test_events": 6
+      },
+      "overlap_window": {
+        "overlap_start": 1904164200000,
+        "overlap_end": 1904250600000,
+        "search_overlap_rate": 1,
+        "holdout_overlap_rate": 1,
+        "sealed_test_overlap_rate": 1
+      },
+      "coverage_adequacy": {
+        "verdict": "adequate",
+        "non_promotable": false,
+        "notes": ["Fixture coverage is adequate for browser QA."]
+      },
+      "lane_summaries": [
+        {
+          "lane": "holdout",
+          "tuple_count": 1,
+          "supported_tuple_count": 1,
+          "support_deficient_tuple_count": 0,
+          "min_valid_trades": 5,
+          "best_expectancy_per_premium": 0.3,
+          "worst_expectancy_per_premium": 0.3,
+          "median_expectancy_per_premium": 0.3
+        },
+        {
+          "lane": "stress",
+          "tuple_count": 1,
+          "supported_tuple_count": 1,
+          "support_deficient_tuple_count": 0,
+          "min_valid_trades": 5,
+          "best_expectancy_per_premium": 0.19,
+          "worst_expectancy_per_premium": 0.19,
+          "median_expectancy_per_premium": 0.19
+        }
+      ],
+      "acceptance_summary": {
+        "verdict": "accepted",
+        "selected_tuple_count": 1,
+        "validated_tuple_count": 1,
+        "accepted_tuple_count": 1,
+        "support_deficient_tuple_count": 0,
+        "stress_fragile_tuple_count": 0,
+        "min_valid_trades": 5,
+        "best_validated_expectancy_per_premium": 0.3,
+        "worst_stress_expectancy_per_premium": 0.19,
+        "notes": ["Accepted with supported holdout and stress lanes."]
+      },
+      "tuple_results": [
+        {
+          "source_tuple_index": 0,
+          "source_validation_verdict": "sealed_finalist",
+          "source_robust_score": 1.32,
+          "validated_tuple": {
+            "structure_family": "long_single",
+            "delay_minutes": 1,
+            "dte_days": 3,
+            "moneyness_bucket": "atm",
+            "hold_minutes": 15,
+            "target_return": 0.5,
+            "stop_return": 0.25,
+            "exit_template": "fixed_hold_or_target_stop",
+            "fill_model": "aggregate_research",
+            "validation_verdict": "sealed_finalist",
+            "robust_score": 1.29,
+            "holdout_metrics": { "valid_trades": 9, "expectancy_per_premium": 0.3, "win_rate": 0.61 },
+            "stress_metrics": { "valid_trades": 8, "expectancy_per_premium": 0.19, "win_rate": 0.61 }
+          },
+          "support_deficient": false,
+          "drift": {
+            "selection_expectancy_delta": -0.01,
+            "holdout_expectancy_delta": -0.01,
+            "sealed_expectancy_delta": 0,
+            "stress_expectancy_delta": -0.01,
+            "extreme_stress_expectancy_delta": 0,
+            "robust_score_delta": -0.03
+          }
+        }
+      ]
+    }
+  }
+}

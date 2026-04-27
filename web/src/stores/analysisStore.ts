@@ -510,7 +510,7 @@ export const useAnalysisStore = defineStore('analysis', {
     topTableRows: [],
     selectedTopTitle: 'No ranked candidate selected.',
     selectedTopSummary: 'No ranked candidates are available.',
-    selectedTopDecisionNote: 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.',
+    selectedTopDecisionNote: 'Select a ranked candidate to lock a review target before moving into Candidate Detail or Validation.',
     selectedTopProvenanceChips: [],
     pinnedTopCandidates: [],
     bestKicker: '—',
@@ -705,7 +705,7 @@ export const useAnalysisStore = defineStore('analysis', {
       this.topTableRows = rawArray(snapshot.topTableRows, this.topTableRows)
       this.selectedTopTitle = String(snapshot.selectedTopTitle ?? this.selectedTopTitle ?? 'No ranked candidate selected.').trim() || 'No ranked candidate selected.'
       this.selectedTopSummary = String(snapshot.selectedTopSummary ?? this.selectedTopSummary ?? 'No ranked candidates are available.').trim() || 'No ranked candidates are available.'
-      this.selectedTopDecisionNote = String(snapshot.selectedTopDecisionNote ?? this.selectedTopDecisionNote ?? 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.').trim() || 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.'
+      this.selectedTopDecisionNote = String(snapshot.selectedTopDecisionNote ?? this.selectedTopDecisionNote ?? 'Select a ranked candidate to lock a review target before moving into Candidate Detail or Validation.').trim() || 'Select a ranked candidate to lock a review target before moving into Candidate Detail or Validation.'
       this.selectedTopProvenanceChips = rawArray(snapshot.selectedTopProvenanceChips, this.selectedTopProvenanceChips)
       this.pinnedTopCandidates = rawArray(snapshot.pinnedTopCandidates, this.pinnedTopCandidates)
       this.bestKicker = String(snapshot.bestKicker ?? this.bestKicker ?? '—').trim() || '—'

@@ -285,7 +285,7 @@ function Convert-CriterionEstimateToCaseSummary {
     schema_version = $SchemaVersion
     workflow_family = "conventional_double_ma_followup"
     timing_boundary = "Criterion"
-    timing_boundary_note = "Criterion bench profile estimate for Double-MA drilldown plus local-stability follow-up. The benchmark asserts the seed optimization route remains resident GpuKernel."
+    timing_boundary_note = "Criterion bench profile estimate for Double-MA candidate detail plus local-stability follow-up. The benchmark asserts the seed optimization route remains resident GpuKernel."
     build_profile = "bench"
     bench_name = $CaseSpec.bench_name
     bench_filter = $CaseSpec.bench_filter

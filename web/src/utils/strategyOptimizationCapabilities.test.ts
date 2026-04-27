@@ -365,11 +365,11 @@ describe('strategyOptimizationCapabilities', () => {
     expect(compositeCpuCaps.supportsShortlistUnionMode).toBe(false)
     expect(compositeCpuCaps.supportsAdvancedExactKernelControls).toBe(false)
     expect(compositeCpuCaps.executionSummary).toContain('route diagnostics')
-    expect(compositeCpuCaps.executionSummary).toContain('drilldown/local-stability')
+    expect(compositeCpuCaps.executionSummary).toContain('candidate-detail/local-stability')
     expect(compositeCpuCaps.modeSummary).toContain('route-diagnostic')
     expect(compositeCpuCaps.outputSummary).toContain('include-all')
     expect(compositeCpuCaps.outputSummary).toContain('native candidate returns')
-    expect(compositeCpuCaps.outputSummary).toContain('drilldown and local-stability follow-ups')
+    expect(compositeCpuCaps.outputSummary).toContain('candidate detail and local-stability follow-ups')
     expect(compositeCpuCaps.outputSummary).toContain('Explicit Full17 and Trade22 metric-contract requests are available')
   })
 

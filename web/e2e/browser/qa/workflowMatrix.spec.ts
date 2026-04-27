@@ -128,3 +128,54 @@ defineWorkflow({
     await expect(action('shell.uiMode.advanced')).toHaveAttribute('aria-selected', 'true')
   },
 })
+
+defineWorkflow({
+  id: 'shell.taskCenter',
+  title: 'opens and closes the task center from shell and footer actions',
+  tags: ['@workflow', '@smoke'],
+  scenario: emptyAppScenario,
+  run: async ({ page, action }) => {
+    const taskCenter = page.getByRole('dialog', { name: 'Task center' })
+
+    await action('shell.taskCenter.open').click()
+    await expect(taskCenter).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(taskCenter).toBeHidden()
+
+    await action('footer.taskCenter.details').click()
+    await expect(taskCenter).toBeVisible()
+    await expect(page.getByText(/No active or recent commands/i).first()).toBeVisible()
+  },
+})
+
+defineWorkflow({
+  id: 'library.empty',
+  title: 'keeps the empty artifact library refreshable',
+  tags: ['@workflow'],
+  scenario: emptyAppScenario,
+  run: async ({ page, action }) => {
+    await action('shell.workspace.library').click()
+    await expect(page.getByText(/Library is empty/i).first()).toBeVisible()
+    await expect(action('library.savedRun.refresh').first()).toBeEnabled()
+    await action('library.savedRun.refresh').first().click()
+    await expect(page.getByText(/Library is empty/i).first()).toBeVisible()
+    await expectNoStuckBusyState(page)
+  },
+})
+
+defineWorkflow({
+  id: 'live.empty',
+  title: 'keeps the empty live workspace safe and inspectable',
+  tags: ['@workflow'],
+  scenario: emptyAppScenario,
+  run: async ({ page, action }) => {
+    await action('shell.workspace.live').click()
+    await expect(page.locator('#liveShellGrid')).toBeVisible()
+    await expect(page.getByText('Current live support envelope')).toBeVisible()
+    await expect(action('live.account.refreshOrders')).toBeDisabled()
+    await expect(action('live.safety.cancelOpenOrders')).toBeDisabled()
+    await expect(action('live.safety.flattenPosition')).toBeDisabled()
+    await expect(action('live.safety.emergencyHalt')).toBeDisabled()
+    await expectNoHorizontalDocumentOverflow(page)
+  },
+})

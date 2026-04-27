@@ -411,11 +411,11 @@ export function describeStrategyOptimizationCapabilities(
       supportsShortlistUnionMode: false,
       supportsAdvancedExactKernelControls: false,
       executionSummary:
-        'CompositeCpu uses the strategy-local composite CPU optimization path, keeps family-specific route diagnostics close to execution, and feeds drilldown/local-stability follow-ups from the same request family.',
+        'CompositeCpu uses the strategy-local composite CPU optimization path, keeps family-specific route diagnostics close to execution, and feeds candidate-detail/local-stability follow-ups from the same request family.',
       modeSummary:
-        `${kind} always runs in Grid mode and keeps route-diagnostic, drilldown, and local-stability follow-ups on its fixed composite path.`,
+        `${kind} always runs in Grid mode and keeps route-diagnostic, candidate-detail, and local-stability follow-ups on its fixed composite path.`,
       outputSummary:
-        `${kind} supports ranked Top-K and include-all native candidate returns plus route-diagnostic-aware drilldown and local-stability follow-ups for the selected candidate, but does not emit the Double MA heatmap or CSV export. Explicit Full17 and Trade22 metric-contract requests are available on this route.`,
+        `${kind} supports ranked Top-K and include-all native candidate returns plus route-diagnostic-aware candidate detail and local-stability follow-ups for the selected candidate, but does not emit the Double MA heatmap or CSV export. Explicit Full17 and Trade22 metric-contract requests are available on this route.`,
     }
   }
   if (kind === 'CompositeMo') {

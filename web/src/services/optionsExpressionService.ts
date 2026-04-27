@@ -400,7 +400,7 @@ export interface OptionsExpressionReplayBuildTimingSummary {
   persistedSignalManifestCacheLookupUs: number;
   persistedSignalManifestCacheHit: boolean;
   candleReplayLoadUs: number;
-  parentReplayAndDrilldownUs: number;
+  parentReplayAndCandidateDetailUs: number;
   signalManifestMaterializationUs: number;
   optionsDatasetManifestValidationUs: number;
   optionsDatasetProcessCacheLookupUs: number;
@@ -1646,7 +1646,7 @@ function normalizeReplayBuildTiming(
       row.persisted_signal_manifest_cache_hit,
     ),
     candleReplayLoadUs: normalizeNumber(row.candle_replay_load_us),
-    parentReplayAndDrilldownUs: normalizeNumber(
+    parentReplayAndCandidateDetailUs: normalizeNumber(
       row.parent_replay_and_drilldown_us,
     ),
     signalManifestMaterializationUs: normalizeNumber(

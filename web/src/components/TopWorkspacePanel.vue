@@ -273,7 +273,7 @@ const fallbackSelectedTopProvenanceChips = computed(() => {
 const fallbackSelectedTopDecisionNote = computed(() => {
   const summary = String(bestSummary.value || '').trim()
   if (!summary || summary === '-') {
-    if (selectedTopIndex.value < 0) return 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.'
+    if (selectedTopIndex.value < 0) return 'Select a ranked candidate to lock a review target before moving into Candidate Detail or Validation.'
     return 'Use the current candidate as the working review target, then pin it if you need a side-by-side compare stack.'
   }
   return summary
@@ -319,7 +319,7 @@ const hasExplicitSelectedTopState = computed(() => {
       explicitSummary !== 'No ranked candidate selected.' &&
       explicitSummary !== 'No ranked candidates are available.') ||
     (explicitDecisionNote.length > 0 &&
-      explicitDecisionNote !== 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.')
+      explicitDecisionNote !== 'Select a ranked candidate to lock a review target before moving into Candidate Detail or Validation.')
   )
 })
 const displayedSelectedTopTitle = computed(() => {
@@ -367,7 +367,7 @@ const canPinSelectedTopCandidate = computed(
   () => selectedTopIndex.value >= 0 && !!selectedTopRowId.value && !pinnedTopCandidateIds.value.has(selectedTopRowId.value),
 )
 const canReplaceWithCurrent = computed(() => selectedTopIndex.value >= 0 && !!selectedTopRowId.value)
-const canOpenDrilldown = computed(() => selectedTopIndex.value >= 0 && hasTopResults.value)
+const canOpenCandidateDetail = computed(() => selectedTopIndex.value >= 0 && hasTopResults.value)
 
 function rowPinned(rowId: string | undefined): boolean {
   const next = String(rowId || '').trim()
@@ -386,8 +386,8 @@ function reviewOverview(): void {
   workflowStore.selectResultsTab('overview')
 }
 
-function openDrilldown(): void {
-  if (!canOpenDrilldown.value) return
+function openCandidateDetail(): void {
+  if (!canOpenCandidateDetail.value) return
   workflowStore.selectResultsTab('drill')
 }
 
@@ -706,11 +706,11 @@ onBeforeUnmount(() => {
           </div>
           <div class="panelMuted">{{ displayedSelectedTopDecisionNote }}</div>
           <div class="panelMuted topSelectionPathNote">
-            Use Drilldown for deeper proof and Overview for baseline framing. Pareto and Heatmap stay optional lenses once the shortlist decision is made.
+            Use Candidate Detail for deeper proof and Overview for baseline framing. Pareto and Heatmap stay optional lenses once the shortlist decision is made.
           </div>
           <div class="actions stickySelectionActions">
-            <button type="button" class="primary" data-qa-action="top.selected.openDrilldown" :disabled="!canOpenDrilldown" @click="openDrilldown()">
-              <span>Open Drilldown</span>
+            <button type="button" class="primary" data-qa-action="top.selected.openCandidateDetail" :disabled="!canOpenCandidateDetail" @click="openCandidateDetail()">
+              <span>Open Candidate Detail</span>
             </button>
             <button type="button" data-qa-action="top.selected.reviewOverview" :disabled="!hasTopResults" @click="reviewOverview()">
               <span>Review Overview</span>
@@ -757,7 +757,7 @@ onBeforeUnmount(() => {
           :density="tableDensity"
           toolbar-label="Ranked candidate table controls"
           aria-label="Top optimization results table shell"
-          keyboard-hint="Use arrow keys to move between rows, Enter to open Drilldown, and P to pin a candidate."
+          keyboard-hint="Use arrow keys to move between rows, Enter to open Candidate Detail, and P to pin a candidate."
         >
           <template #controls>
             <div class="tableControlBar">

@@ -873,7 +873,7 @@ fn execution_strategy_support_matrix() -> Vec<ExecutionStrategySupportRow> {
             supported: true,
             adapter: "double_ma_execution_adapter".to_string(),
             support_level: "signal_and_delta".to_string(),
-            notes: "Uses Double-MA drilldown candles and params to derive latest desired position."
+            notes: "Uses Double-MA candidate-detail candles and params to derive latest desired position."
                 .to_string(),
         },
         ExecutionStrategySupportRow {
@@ -882,7 +882,7 @@ fn execution_strategy_support_matrix() -> Vec<ExecutionStrategySupportRow> {
             adapter: "composite_cpu_execution_adapter".to_string(),
             support_level: "signal_and_delta".to_string(),
             notes:
-                "Uses CompositeCpu drilldown candles and params to derive latest desired position."
+                "Uses CompositeCpu candidate-detail candles and params to derive latest desired position."
                     .to_string(),
         },
     ]

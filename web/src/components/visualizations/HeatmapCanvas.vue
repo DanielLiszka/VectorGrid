@@ -30,7 +30,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   'review-top-results': []
-  'request-drilldown': [params: HeatmapCellParams]
+  'request-candidate-detail': [params: HeatmapCellParams]
 }>()
 
 const stackRef = ref<HTMLElement | null>(null)
@@ -157,7 +157,7 @@ function handleClick(event: MouseEvent): void {
   if (params) {
     selectedCell.value = cell
     repaint()
-    emit('request-drilldown', params)
+    emit('request-candidate-detail', params)
   }
 }
 
@@ -205,12 +205,12 @@ function selectKeyboardCell(cell: HeatmapResolvedCell | null): void {
   repaint()
 }
 
-function requestSelectedDrilldown(): void {
+function requestSelectedCandidateDetail(): void {
   const renderModel = props.renderModel
   const cell = selectedCell.value
   if (!renderModel || !cell) return
   const params = buildHeatmapCellParams(renderModel, cell)
-  if (params) emit('request-drilldown', params)
+  if (params) emit('request-candidate-detail', params)
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -218,7 +218,7 @@ function handleKeydown(event: KeyboardEvent): void {
   if (!renderModel) return
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
-    requestSelectedDrilldown()
+    requestSelectedCandidateDetail()
     return
   }
   const movement: Record<string, [number, number]> = {
@@ -327,7 +327,7 @@ defineExpose({ exportPng, repaint })
         <div>
           <label>&nbsp;</label>
           <div class="panelMuted heatmapLegendNote">
-            Select a Top result for exact retained candidates, or click a populated cell for a representative heatmap-region drilldown. Markers and crosshair stay on for both paths.
+            Select a Top result for exact retained candidates, or click a populated cell for representative heatmap-region candidate detail. Markers and crosshair stay on for both paths.
           </div>
         </div>
       </div>

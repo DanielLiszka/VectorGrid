@@ -349,7 +349,7 @@ The active stage owns its local tabs. For example:
 - Configure: Strategy, Advanced, Options
 - Optimize: Search, Results Preview, Runtime
 - Validate: Setup, Results, Reports
-- Analyze: Top, Drilldown, Heatmap, Pareto
+- Analyze: Top, Candidate Detail, Heatmap, Pareto
 
 This removes the current effect where global workflow tabs and panel tabs compete.
 
@@ -507,7 +507,7 @@ Tasks:
 - Replace dock visibility logic with inspector routing:
   - Research/Validate -> validation context if a run exists, otherwise readiness.
   - Library -> history detail.
-  - Analyze -> selected candidate/drilldown context.
+  - Analyze -> selected candidate/candidate-detail context.
   - Live -> runner/feed/broker context.
 - Keep mobile behavior as a sheet or inline collapsed panel.
 
@@ -607,7 +607,7 @@ Table upgrades:
   - selected-row actions
 - Row detail model:
   - single selection opens inspector
-  - double click or Enter opens drilldown/details
+  - double click or Enter opens candidate details
   - multi-select uses batch action bar
 - Keyboard behavior:
   - arrow-key row movement for true interactive grids

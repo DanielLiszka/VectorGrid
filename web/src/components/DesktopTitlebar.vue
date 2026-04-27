@@ -538,6 +538,13 @@ onBeforeUnmount(() => {
   background: color-mix(in oklab, var(--surface-working) 92%, var(--surface-inline));
 }
 
+.titlebarTool:focus-visible,
+.windowControl:focus-visible {
+  outline: none;
+  border-color: var(--focus-border);
+  box-shadow: var(--focus-ring);
+}
+
 .titlebarPrimary {
   border-color: color-mix(in oklab, var(--accent) 58%, var(--border));
   background: color-mix(in oklab, var(--selection-fill) 86%, var(--surface-working));

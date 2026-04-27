@@ -285,7 +285,7 @@ describe('task-store lifecycle smoke', () => {
     }
   })
 
-  it('does not surface a success toast for drilldown micro-operations', () => {
+  it('does not surface a success toast for candidate-detail micro-operations', () => {
     const taskId = beginTrackedCommand('compute_double_ma_drilldown')
     completeTrackedCommand(taskId)
 

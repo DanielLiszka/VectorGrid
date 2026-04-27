@@ -11631,31 +11631,31 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
         return run_vemr_drilldown(req, candles);
     }
     if req.vcc.is_some() {
-        return Err("VCC drilldown is not implemented yet.".to_string());
+        return Err("VCC candidate detail is not implemented yet.".to_string());
     }
     if req.asr.is_some() {
         return run_asr_drilldown(req, candles);
     }
     if req.rocb.is_some() {
-        return Err("ROCB drilldown is not implemented yet.".to_string());
+        return Err("ROCB candidate detail is not implemented yet.".to_string());
     }
     if req.vcet.is_some() {
-        return Err("VCET drilldown is not implemented yet.".to_string());
+        return Err("VCET candidate detail is not implemented yet.".to_string());
     }
     if req.mkcs.is_some() {
-        return Err("MKCS drilldown is not implemented yet.".to_string());
+        return Err("MKCS candidate detail is not implemented yet.".to_string());
     }
     if req.kqsr.is_some() {
-        return Err("KQSR drilldown is not implemented yet.".to_string());
+        return Err("KQSR candidate detail is not implemented yet.".to_string());
     }
     if req.carm.is_some() {
-        return Err("CARM drilldown is not implemented yet.".to_string());
+        return Err("CARM candidate detail is not implemented yet.".to_string());
     }
     if req.kvdf.is_some() {
-        return Err("KVDF drilldown is not implemented yet.".to_string());
+        return Err("KVDF candidate detail is not implemented yet.".to_string());
     }
     if req.cdmc.is_some() {
-        return Err("CDMC drilldown is not implemented yet.".to_string());
+        return Err("CDMC candidate detail is not implemented yet.".to_string());
     }
 
     let n = candles.close.len();

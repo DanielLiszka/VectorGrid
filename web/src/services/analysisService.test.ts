@@ -16,7 +16,7 @@ import {
   refreshParetoFromWorkflowRun,
   refreshTopTableFromWorkflowRun,
   rerenderDrill,
-  runHeatmapRepresentativeDrilldown,
+  runHeatmapRepresentativeCandidateDetail,
   selectTopRow,
   setBaseline,
   sortTopTable,
@@ -342,7 +342,7 @@ describe("analysis service", () => {
     expect(store.source).toBe("vue");
   });
 
-  it("computes drilldown/stability via Vue command path on top-row selection", async () => {
+  it("computes candidate detail/stability via Vue command path on top-row selection", async () => {
     seedWorkflowRun({
       req: {
         strategy_kind: "DoubleMa",
@@ -448,7 +448,7 @@ describe("analysis service", () => {
     expect(store.topTableRows[1]?.selected).toBe(true);
   });
 
-  it("builds drill trade markers from drilldown trades and publishes drill chart/table models", async () => {
+  it("builds detail trade markers from candidate detail trades and publishes chart/table models", async () => {
     mountDrillDom();
     const drillCurves = {
       equity: { start_t: 1, end_t: 4, bins: 2, minmax: [1, 1.02, 1.01, 1.05] },
@@ -636,7 +636,7 @@ describe("analysis service", () => {
     expect(req).not.toHaveProperty("bins");
   });
 
-  it("routes CompositeCpu drilldown and local stability through the composite command family", async () => {
+  it("routes CompositeCpu candidate detail and local stability through the composite command family", async () => {
     useAnalysisStore(pinia);
     seedWorkflowRun({
       req: {
@@ -1691,7 +1691,7 @@ describe("analysis service", () => {
     });
 
     expect(refreshHeatmapFromWorkflowRun()).toBe(true);
-    runHeatmapRepresentativeDrilldown({
+    runHeatmapRepresentativeCandidateDetail({
       fast_len: 7,
       fast_ma_type: "ema",
       slow_len: 25,
@@ -1764,7 +1764,7 @@ describe("analysis service", () => {
     expect(String(store.topFilterMeta || "")).toContain("MlSignal");
   });
 
-  it("surfaces composite-family drilldown gaps explicitly instead of implying support", async () => {
+  it("surfaces composite-family candidate detail gaps explicitly instead of implying support", async () => {
     seedWorkflowRun({
       req: {
         strategy_kind: "Vcet",
@@ -1805,7 +1805,7 @@ describe("analysis service", () => {
 
     invokeCommandMock.mockImplementation(async (command: unknown) => {
       if (command === "compute_composite_cpu_drilldown") {
-        throw new Error("VCET drilldown is not implemented yet.");
+        throw new Error("VCET candidate detail is not implemented yet.");
       }
       return undefined as never;
     });
@@ -1813,10 +1813,10 @@ describe("analysis service", () => {
     await selectTopRow(0);
 
     expect(String(store.drillStatus || "")).toContain(
-      "VCET drilldown is not implemented yet.",
+      "VCET candidate detail is not implemented yet.",
     );
     expect(String(store.statusLine || "")).toContain(
-      "VCET drilldown is not implemented yet.",
+      "VCET candidate detail is not implemented yet.",
     );
   });
 

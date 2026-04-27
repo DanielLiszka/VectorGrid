@@ -984,7 +984,7 @@ fn render_markdown_summary(output: &FeasibilityHarnessOutput) -> String {
         );
         let _ = writeln!(
             &mut out,
-            "- Parent replay + drilldown: {}",
+            "- Parent replay + candidate detail: {}",
             format_millis_from_us(replay_timing.parent_replay_and_drilldown_us)
         );
         let _ = writeln!(

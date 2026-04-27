@@ -2,9 +2,11 @@ import { expect } from '@playwright/test'
 import {
   dataLoadFailureScenario,
   gpuStatusFailureScenario,
+  liveSafetyReadyScenario,
   optionsValidationInputFailureScenario,
   optionsValidationPreviewFailureScenario,
   optionsValidationReadyScenario,
+  savedOptionsArtifactFixturePack,
   validationDatasetMismatchScenario,
   validationSuccessScenario,
 } from '../fixtures/scenarios'
@@ -40,58 +42,8 @@ const savedRunRepairWriteScenario = {
   description: 'A saved DoubleMa run can write a repaired artifact copy.',
   commandResults: {
     ...optionsValidationReadyScenario.commandResults,
-    list_run_artifacts: [
-      {
-        ts: '2026-04-24T14:30:00Z',
-        path: 'C:/runs/vectorgrid_options_parent.json',
-        bytes: 49152,
-        strategy_kind: 'DoubleMa',
-        config_fingerprint: 'double-ma-aapl-qa',
-        config_fingerprint_version: 1,
-        has_validation: true,
-        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
-        report_xlsx_exists: true,
-        csv_path: 'C:/fixtures/aapl_1m.csv',
-        timeframe: '1m',
-        tags: ['qa', 'options'],
-      },
-      {
-        ts: '2026-04-24T14:31:00Z',
-        path: 'C:/runs/vectorgrid_options_parent.repaired.json',
-        bytes: 51200,
-        strategy_kind: 'DoubleMa',
-        config_fingerprint: 'double-ma-aapl-qa',
-        config_fingerprint_version: 1,
-        has_validation: true,
-        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
-        report_xlsx_exists: true,
-        csv_path: 'C:/fixtures/aapl_1m.csv',
-        timeframe: '1m',
-        tags: ['qa', 'options', 'repaired'],
-      },
-    ],
-    repair_run_artifact: {
-      source_path: 'C:/runs/vectorgrid_options_parent.json',
-      result_path: 'C:/runs/vectorgrid_options_parent.repaired.json',
-      dry_run: false,
-      changed: true,
-      wrote: true,
-      changes: ['normalized saved-run summary fields', 'canonicalized request payload'],
-      summary: {
-        ts: '2026-04-24T14:31:00Z',
-        path: 'C:/runs/vectorgrid_options_parent.repaired.json',
-        bytes: 51200,
-        strategy_kind: 'DoubleMa',
-        config_fingerprint: 'double-ma-aapl-qa',
-        config_fingerprint_version: 1,
-        has_validation: true,
-        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
-        report_xlsx_exists: true,
-        csv_path: 'C:/fixtures/aapl_1m.csv',
-        timeframe: '1m',
-        tags: ['qa', 'options', 'repaired'],
-      },
-    },
+    list_run_artifacts: savedOptionsArtifactFixturePack.repairedRunSummaries,
+    repair_run_artifact: savedOptionsArtifactFixturePack.repairWrite,
   },
   expectedInvokes: ['list_run_artifacts', 'load_run_artifact_detail', 'repair_run_artifact'],
 }
@@ -343,5 +295,65 @@ defineWorkflow({
     const invokes = (await readTauriInvokeLog(page)).map((entry) => entry.command)
     expect(invokes).toContain('analyze_options_expression_validation_feasibility')
     await expectNoStuckBusyState(page)
+  },
+})
+
+defineWorkflow({
+  id: 'live.safety.confirmations',
+  title: 'keeps live safety actions behind explicit confirmation flows',
+  tags: ['@workflow', '@regression'],
+  scenario: liveSafetyReadyScenario,
+  run: async ({ page, action }) => {
+    await action('shell.workspace.live').click()
+    await page.getByLabel('Execution target').selectOption('local_paper')
+    await page.getByLabel('Symbol').fill('AAPL')
+    await page.getByLabel('Symbol').press('Tab')
+
+    await expect(action('live.account.refreshOrders')).toBeEnabled()
+    await expect(action('live.safety.cancelOpenOrders')).toBeEnabled()
+    await expect(action('live.safety.flattenPosition')).toBeEnabled()
+
+    await expect(action('live.stream.start')).toBeEnabled()
+    await action('live.stream.start').click()
+    await expect(page.getByRole('alertdialog', { name: /Start live candle feed/i })).toBeVisible()
+    await page
+      .locator('.confirmationDialog')
+      .getByRole('button', { name: /^Start live feed$/ })
+      .click()
+    await expect(page.getByText(/Live candles started for AAPL/i).first()).toBeVisible()
+    await expect(action('live.safety.emergencyHalt')).toBeEnabled()
+
+    await action('live.safety.cancelOpenOrders').click()
+    await expect(page.getByRole('alertdialog', { name: /Cancel current-symbol open orders/i })).toBeVisible()
+    await page
+      .locator('.confirmationDialog')
+      .getByRole('button', { name: /^Cancel open orders$/ })
+      .click()
+    await expect(page.getByText(/Cancelled 1 open broker order for AAPL/i).first()).toBeVisible()
+
+    await action('live.safety.flattenPosition').click()
+    await expect(page.getByRole('alertdialog', { name: /Flatten the current broker position/i })).toBeVisible()
+    await page
+      .locator('.confirmationDialog')
+      .getByRole('button', { name: /^Flatten position$/ })
+      .click()
+    await expect(page.getByText(/Submitted SELL flatten order \(id=lp_flat_1\) for AAPL/i).first()).toBeVisible()
+
+    await action('live.safety.emergencyHalt').click()
+    await expect(page.getByRole('alertdialog', { name: /Emergency halt live automation/i })).toBeVisible()
+    await page
+      .locator('.confirmationDialog')
+      .getByRole('button', { name: /^Emergency halt$/ })
+      .click()
+    await expect(page.getByText(/Emergency halt applied/i).first()).toBeVisible()
+    await expect(action('live.safety.emergencyHalt')).toBeDisabled()
+
+    const invokes = (await readTauriInvokeLog(page)).map((entry) => entry.command)
+    expect(invokes).toContain('polygon_start_live_candle_stream')
+    expect(invokes).toContain('cancel_local_paper_open_orders')
+    expect(invokes).toContain('flatten_local_paper_position')
+    expect(invokes).toContain('emergency_halt_live_execution')
+    await expectNoStuckBusyState(page)
+    await expectNoHorizontalDocumentOverflow(page)
   },
 })

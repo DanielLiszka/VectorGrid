@@ -5,7 +5,7 @@ import { useShellMount } from '../composables/useShellMount'
 import {
   refreshHeatmapFromWorkflowRun,
   registerHeatmapCanvasController,
-  runHeatmapRepresentativeDrilldown,
+  runHeatmapRepresentativeCandidateDetail,
   restoreHeatmapVisible,
 } from '../services/analysisService'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -56,8 +56,8 @@ const chartAriaLabel = computed(() =>
 
 const scaleNote = computed(() =>
   String(heatmapMode.value || '').trim() === 'plateau'
-    ? 'Derived plateau scale: blue fragile, green stable. The score uses supportive 8-neighbor agreement, roughness, curvature, and bin-consistency when mean/count aggregates are available. Click drills a representative parameter pair for the selected heatmap region; Top results remains the exact retained-candidate path.'
-    : 'Zero-centered scale: red negative, blue near zero, green positive. Click drills a representative parameter pair for the selected heatmap region.',
+    ? 'Derived plateau scale: blue fragile, green stable. The score uses supportive 8-neighbor agreement, roughness, curvature, and bin-consistency when mean/count aggregates are available. Click opens a representative parameter pair for the selected heatmap region; Top results remains the exact retained-candidate path.'
+    : 'Zero-centered scale: red negative, blue near zero, green positive. Click opens a representative parameter pair for the selected heatmap region.',
 )
 
 async function ensureVisibleHeatmap(): Promise<void> {
@@ -105,8 +105,8 @@ function registerCanvasController(): void {
   })
 }
 
-function requestHeatmapDrilldown(params: HeatmapCellParams): void {
-  runHeatmapRepresentativeDrilldown(params)
+function requestHeatmapCandidateDetail(params: HeatmapCellParams): void {
+  runHeatmapRepresentativeCandidateDetail(params)
 }
 
 onMounted(() => {
@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
           :render-model="heatmapCanvasModel"
           :selected-summary="heatmapStatusLine"
           @review-top-results="reviewTopResults"
-          @request-drilldown="requestHeatmapDrilldown"
+          @request-candidate-detail="requestHeatmapCandidateDetail"
         />
       </section>
 

@@ -274,7 +274,7 @@ describe('TopWorkspacePanel', () => {
     expect(selectionStatus?.textContent).toContain('3.4')
   })
 
-  it('opens drilldown when a ranked row is selected from the table', async () => {
+  it('opens candidate detail when a ranked row is selected from the table', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const analysisStore = useAnalysisStore(pinia)
@@ -692,7 +692,7 @@ describe('TopWorkspacePanel', () => {
     expect(localStorage.getItem(TOP_RESULTS_TABLE_STATE_KEY)).toContain('"columnOrderKeys":["rank","pnl","sharpe","max_dd","trades","exposure","name"]')
   })
 
-  it('routes current-candidate actions into drilldown and overview while keeping compare below the ranked table', async () => {
+  it('routes current-candidate actions into candidate detail and overview while keeping compare below the ranked table', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const analysisStore = useAnalysisStore(pinia)
@@ -742,14 +742,14 @@ describe('TopWorkspacePanel', () => {
       Boolean(tableWrap.compareDocumentPosition(compareTray) & Node.DOCUMENT_POSITION_FOLLOWING),
     ).toBe(true)
 
-    const openDrilldownButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
-      String(button.textContent || '').includes('Open Drilldown'),
+    const openCandidateDetailButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Open Candidate Detail'),
     )
     const reviewOverviewButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
       String(button.textContent || '').includes('Review Overview'),
     )
 
-    openDrilldownButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    openCandidateDetailButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     reviewOverviewButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
     expect(resultsSpy).toHaveBeenCalledWith('drill')

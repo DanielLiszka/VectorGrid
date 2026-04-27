@@ -31,7 +31,7 @@ npm run gen:commands
 - Pinia is active for Vue state; task tracking is managed through `src/stores/taskStore.ts` and runtime boot state through `src/stores/runtimeStore.ts`.
 - `src/main.ts` runs storage schema migrations from `src/utils/storage.ts` on startup while preserving all legacy localStorage keys.
 - `src/components/DataWorkspacePanel.vue`, `src/components/OptimizeWorkspacePanel.vue`, `src/components/StrategyWorkspacePanel.vue`, and `src/components/AdvancedWorkspacePanel.vue` own controls rendering.
-- `src/components/ValidationWorkspacePanel.vue`, `src/components/OverviewWorkspacePanel.vue`, `src/components/TopWorkspacePanel.vue`, `src/components/ParetoWorkspacePanel.vue`, `src/components/DrillWorkspacePanel.vue`, `src/components/HeatmapWorkspacePanel.vue`, `src/components/MetaWorkspacePanel.vue`, and `src/components/DebugWorkspacePanel.vue` own results rendering.
+- `src/components/ValidationWorkspacePanel.vue`, `src/components/OverviewWorkspacePanel.vue`, `src/components/TopWorkspacePanel.vue`, `src/components/ParetoWorkspacePanel.vue`, `src/components/CandidateDetailWorkspacePanel.vue`, `src/components/HeatmapWorkspacePanel.vue`, `src/components/MetaWorkspacePanel.vue`, and `src/components/DebugWorkspacePanel.vue` own results rendering.
 - `src/components/TopWorkspacePanel.vue`, `src/components/ValidationWorkspacePanel.vue`, and `src/components/MetaWorkspacePanel.vue` now render result rows through a virtualized row window (spacer-row pattern) to reduce large-table render cost.
 - `src/components/HistoryWorkspacePanel.vue` and `src/components/ExecutionWorkspacePanel.vue` own their workspace rendering paths.
 - `src/tauri/instrumentation.ts` patches Tauri invoke and subscribes to progress events.

@@ -593,7 +593,14 @@ function onKeydown(event: KeyboardEvent): void {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: color-mix(in oklab, var(--surface-inline) 88%, var(--surface-overlay));
-  padding: 0.15rem 0.4rem;
+  min-height: 1.5rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.closeBtn:focus-visible {
+  outline: none;
+  border-color: var(--focus-border);
+  box-shadow: var(--focus-ring);
 }
 
 .query {

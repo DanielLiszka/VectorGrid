@@ -3764,7 +3764,7 @@ describe("OptionsExpressionPanel", () => {
     expect(wrapper.text()).toContain("Different tuple");
   });
 
-  it("loads lazy event drilldown for the selected tuple", async () => {
+  it("loads lazy event detail for the selected tuple", async () => {
     listOptionsDatasetsMock.mockResolvedValue([
       {
         optionsDatasetId: "spy_options",
@@ -4027,7 +4027,7 @@ describe("OptionsExpressionPanel", () => {
 
     const loadButton = wrapper
       .findAll("button")
-      .find((entry) => entry.text() === "Load event drilldown");
+      .find((entry) => entry.text() === "Load event detail");
     expect(loadButton).toBeTruthy();
     await loadButton!.trigger("click");
 
@@ -4045,7 +4045,7 @@ describe("OptionsExpressionPanel", () => {
       });
     });
 
-    expect(wrapper.text()).toContain("Tuple event drilldown");
+    expect(wrapper.text()).toContain("Tuple event detail");
     expect(wrapper.text()).toContain("SPY_C_1");
     expect(wrapper.text()).toContain("target_hit");
     expect(wrapper.text()).toContain("5m / 1440m");

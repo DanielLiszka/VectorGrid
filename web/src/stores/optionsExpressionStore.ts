@@ -1443,7 +1443,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       const rows = inspection?.rows ?? [];
       if (!inspection || !rows.length) {
         this.statusLine =
-          "Load a tuple drilldown before exporting inspection rows.";
+          "Load tuple detail before exporting inspection rows.";
         return;
       }
 
@@ -1547,7 +1547,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       }
       if (!this.activeRankedResults[tupleIndex]) {
         this.statusLine =
-          "Select a valid ranked tuple before loading drilldown events.";
+          "Select a valid ranked tuple before loading detail events.";
         return;
       }
       this.inspectionBusy = true;

@@ -243,7 +243,7 @@ function openTaskCenterDetails(): void {
         <span class="statusCopy mono">{{ latestOutcome }}</span>
         <span class="statusCopy mono">{{ analysisSummary }}</span>
         <span v-if="!mlSignalModeActive" class="statusCopy mono">
-          Tab {{ resultsTab || 'overview' }} · Top {{ topRows }} · Drill {{ drillStatus }} · Heatmap {{ heatmapMeta }}
+          Tab {{ resultsTab || 'overview' }} · Top {{ topRows }} · Detail {{ drillStatus }} · Heatmap {{ heatmapMeta }}
         </span>
         <span class="statusCopy mono">{{ runPlanMeta || statusLine }}</span>
       </div>

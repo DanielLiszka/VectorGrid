@@ -4,7 +4,12 @@ param(
   [switch]$IncludeResponsive,
   [switch]$IncludeRegressions,
   [switch]$IncludeA11ySmoke,
+  [switch]$IncludeWcag22Smoke,
   [switch]$IncludeBaselineUi,
+  [switch]$IncludeVisualBaselines,
+  [switch]$IncludeQaStatic,
+  [switch]$IncludeQaReport,
+  [switch]$IncludeUiPerfBudget,
   [switch]$IncludeExploratory
 )
 
@@ -33,6 +38,10 @@ try {
     Invoke-Step "Web build" { & npm.cmd --prefix web run build }
   }
 
+  if ($IncludeQaStatic) {
+    Invoke-Step "Static QA manifest and fixture checks" { & npm.cmd --prefix web run check:qa-static }
+  }
+
   if ($IncludeFullWorkflow) {
     Invoke-Step "Full browser workflow E2E" { & npm.cmd --prefix web run test:e2e:workflow:full:built }
   } else {
@@ -57,8 +66,24 @@ try {
     Invoke-Step "Web accessibility smoke" { & npm.cmd --prefix web run a11y:smoke:built }
   }
 
+  if ($IncludeWcag22Smoke) {
+    Invoke-Step "Web accessibility WCAG 2.2 smoke" { & npm.cmd --prefix web run a11y:smoke:wcag:built }
+  }
+
   if ($IncludeBaselineUi) {
     Invoke-Step "Baseline UI capture" { & npm.cmd --prefix web run baseline:ui:built }
+  }
+
+  if ($IncludeVisualBaselines) {
+    Invoke-Step "Visual baseline E2E" { & npm.cmd --prefix web run test:e2e:visual:built }
+  }
+
+  if ($IncludeUiPerfBudget) {
+    Invoke-Step "UI performance budget" { & npm.cmd --prefix web run perf:ui:budget }
+  }
+
+  if ($IncludeQaReport) {
+    Invoke-Step "Local QA summary report" { & npm.cmd --prefix web run qa:summary }
   }
 
   Write-Host "Frontend E2E gate completed successfully."

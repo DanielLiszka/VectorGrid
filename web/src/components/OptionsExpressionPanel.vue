@@ -35,7 +35,7 @@ import {
   optionsFeasibilityPreviewIcon,
   optionsFollowupWorkflowIcon,
   optionsProviderDownloadIcon,
-  optionsTupleDrilldownIcon,
+  optionsTupleDetailIcon,
 } from "../utils/appSvgAssets";
 
 const props = defineProps<{
@@ -6182,7 +6182,7 @@ function focusTupleIndex(index: number): void {
           <div class="panelSectionHeader">
             <div class="panelHeaderVisual">
               <AppVisualIcon
-                :icon="optionsTupleDrilldownIcon"
+                :icon="optionsTupleDetailIcon"
                 class="sectionGlyph"
               />
               <div>
@@ -6202,11 +6202,11 @@ function focusTupleIndex(index: number): void {
               class="buttonWithIcon"
             >
               <AppVisualIcon
-                :icon="optionsTupleDrilldownIcon"
+                :icon="optionsTupleDetailIcon"
                 class="optionsActionIcon"
               />
               <span>{{
-                inspectionBusy ? "Loading events…" : "Load event drilldown"
+                inspectionBusy ? "Loading events…" : "Load event detail"
               }}</span>
             </button>
           </div>
@@ -6564,7 +6564,7 @@ function focusTupleIndex(index: number): void {
             </div>
           </details>
           <details v-if="selectedInspection" class="panelDetails" open>
-            <summary>Tuple event drilldown</summary>
+            <summary>Tuple event detail</summary>
             <div class="panelDetailsBody">
               <div class="detailGrid detailGridTight">
                 <div>
@@ -6829,7 +6829,7 @@ function focusTupleIndex(index: number): void {
                     <div class="panelEyebrow">Selected event</div>
                     <div class="panelSectionLead">
                       Inspect the chosen event row without leaving the current
-                      tuple drilldown.
+                      tuple detail.
                     </div>
                   </div>
                 </div>

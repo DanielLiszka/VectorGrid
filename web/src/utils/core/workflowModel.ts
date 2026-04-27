@@ -64,7 +64,7 @@ export const WORKFLOW_SUBTITLES = {
   data: 'Load a dataset (CSV or Polygon) and select the optimization timeframe.',
   optimize: 'Configure strategy + search space, then run an optimization.',
   validate: 'Run robustness checks on the current run’s candidates.',
-  analyze: 'Inspect results via drilldown curves and heatmaps.',
+  analyze: 'Inspect results via candidate detail curves and heatmaps.',
   finalize: 'Run post-meta ML confidence, Stage 5 ranking, and policy evaluation on saved meta artifacts.',
   history: 'Review, compare, and rerun saved optimizations.',
   settings: 'Advanced tools, meta selection, and debug output.',
@@ -86,7 +86,7 @@ export const WORKFLOW_STEP_SUBTITLES = {
   data: 'Data source: load CSV or Polygon candles, then confirm timeframe.',
   optimize: 'Strategy setup: configure ranges, backend, and run optimization.',
   validate: 'Validation: run robustness checks on the selected optimization.',
-  analyze: 'Summary: inspect top results, Pareto, drilldown, and heatmap.',
+  analyze: 'Summary: inspect top results, Pareto, candidate detail, and heatmap.',
   finalize: 'Stage 5: apply ML confidence, run Stage 5 ranking, evaluate policy quality, and manage saved finalizer artifacts.',
 } as const
 
@@ -183,7 +183,7 @@ export const TAB_LABELS = {
     top: 'Top',
     pareto: 'Pareto',
     validate: 'Validate',
-    drill: 'Drilldown',
+    drill: 'Candidate Detail',
     heatmap: 'Heatmap',
     history: 'History',
     meta: 'Meta',

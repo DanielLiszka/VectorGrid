@@ -1,3 +1,7 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 export interface MockTauriScenario {
   name: string
   description: string
@@ -7,6 +11,29 @@ export interface MockTauriScenario {
   commandResults: Record<string, unknown>
   expectedInvokes?: string[]
 }
+
+const fixtureDir = path.dirname(fileURLToPath(import.meta.url))
+
+function loadArtifactFixturePack<T>(fileName: string): T {
+  const filePath = path.resolve(fixtureDir, 'artifacts', fileName)
+  return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T
+}
+
+interface OptionsArtifactFixturePack {
+  savedRunSummaries: unknown[]
+  repairedRunSummaries: unknown[]
+  parentRunDetail: Record<string, unknown>
+  repairDryRun: Record<string, unknown>
+  repairWrite: Record<string, unknown>
+  optionsDatasets: unknown[]
+  optionsArtifactSummaries: unknown[]
+  optionsExpressionArtifact: Record<string, unknown>
+  optionsValidationFeasibility: Record<string, unknown>
+  optionsValidationResult: Record<string, unknown>
+}
+
+export const savedOptionsArtifactFixturePack =
+  loadArtifactFixturePack<OptionsArtifactFixturePack>('saved-options-artifact-pack.json')
 
 export const baseCommandResults: Record<string, unknown> = {
   get_gpu_status: {
@@ -714,99 +741,17 @@ export const optionsValidationReadyScenario: MockTauriScenario = {
   },
   commandResults: {
     ...emptyAppScenario.commandResults,
-    list_run_artifacts: [
-      {
-        ts: '2026-04-24T14:30:00Z',
-        path: optionsParentRunPath,
-        bytes: 49152,
-        strategy_kind: 'DoubleMa',
-        config_fingerprint: 'double-ma-aapl-qa',
-        config_fingerprint_version: 1,
-        has_validation: true,
-        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
-        report_xlsx_exists: true,
-        csv_path: 'C:/fixtures/aapl_1m.csv',
-        timeframe: '1m',
-        tags: ['qa', 'options'],
-      },
-    ],
-    load_run_artifact_detail: {
-      ts: '2026-04-24T14:30:00Z',
-      artifactPath: optionsParentRunPath,
-      strategyKind: 'DoubleMa',
-      configFingerprint: 'double-ma-aapl-qa',
-      configFingerprintVersion: 1,
-      timeframe: '1m',
-      csvPath: 'C:/fixtures/aapl_1m.csv',
-      reportXlsxPath: 'C:/runs/vectorgrid_options_parent.xlsx',
-      reportXlsxExists: true,
-      hasValidation: true,
-      datasetMeta: {
-        csv_path: 'C:/fixtures/aapl_1m.csv',
-        timeframe: '1m',
-        len: 5000,
-      },
-      runReq: {
-        strategy_kind: 'DoubleMa',
-        data_id: 'fixture_aapl_1m',
-        fast_start: 8,
-        fast_end: 10,
-        fast_step: 1,
-        slow_start: 32,
-        slow_end: 36,
-        slow_step: 2,
-      },
-      runRes: {
-        best_params: {
-          fast_len: 8,
-          slow_len: 32,
-          fast_ma_type: 'sma',
-          slow_ma_type: 'sma',
-        },
-        best_metrics: {
-          pnl: 0.12,
-          sharpe: 1.4,
-          max_dd: -0.05,
-          trades: 18,
-        },
-        top: [],
-        runtime_ms: 84,
-        backend_used: 'cpu',
-        backend_route: 'CpuOnly',
-      },
-      paramsText: '{"strategy_kind":"DoubleMa","data_id":"fixture_aapl_1m"}',
-      tags: ['qa', 'options'],
-    },
-    repair_run_artifact: {
-      source_path: optionsParentRunPath,
-      result_path: '',
-      dry_run: true,
-      changed: true,
-      wrote: false,
-      changes: ['normalized saved-run summary fields', 'canonicalized request payload'],
-      summary: {
-        ts: '2026-04-24T14:30:00Z',
-        path: optionsParentRunPath,
-        bytes: 49152,
-        strategy_kind: 'DoubleMa',
-        config_fingerprint: 'double-ma-aapl-qa',
-        config_fingerprint_version: 1,
-        has_validation: true,
-        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
-        report_xlsx_exists: true,
-        csv_path: 'C:/fixtures/aapl_1m.csv',
-        timeframe: '1m',
-        tags: ['qa', 'options'],
-      },
-    },
-    list_options_datasets: [optionsDatasetFixture],
+    list_run_artifacts: savedOptionsArtifactFixturePack.savedRunSummaries,
+    load_run_artifact_detail: savedOptionsArtifactFixturePack.parentRunDetail,
+    repair_run_artifact: savedOptionsArtifactFixturePack.repairDryRun,
+    list_options_datasets: savedOptionsArtifactFixturePack.optionsDatasets,
     list_artifact_library: {
-      optionsExpression: [optionsArtifactSummaryFixture],
-      options_expression: [optionsArtifactSummaryFixture],
+      optionsExpression: savedOptionsArtifactFixturePack.optionsArtifactSummaries,
+      options_expression: savedOptionsArtifactFixturePack.optionsArtifactSummaries,
     },
-    load_options_expression_artifact: optionsArtifactRecordFixture,
-    analyze_options_expression_validation_feasibility: optionsValidationFeasibilityFixture,
-    validate_options_expression_artifact: optionsValidationResultFixture,
+    load_options_expression_artifact: savedOptionsArtifactFixturePack.optionsExpressionArtifact,
+    analyze_options_expression_validation_feasibility: savedOptionsArtifactFixturePack.optionsValidationFeasibility,
+    validate_options_expression_artifact: savedOptionsArtifactFixturePack.optionsValidationResult,
     reveal_path: null,
   },
   expectedInvokes: [
@@ -884,4 +829,65 @@ export const liveReadyScenario: MockTauriScenario = {
     list_live_session_artifacts: [],
     load_live_session_artifact_detail: null,
   },
+}
+
+export const liveSafetyReadyScenario: MockTauriScenario = {
+  ...liveReadyScenario,
+  name: 'live-safety-ready',
+  description: 'Local-paper safety controls are confirmable while a live candle stream is active.',
+  commandResults: {
+    ...liveReadyScenario.commandResults,
+    polygon_live_candle_stream_status: {
+      active: true,
+      stream: {
+        symbol: 'AAPL',
+        delayed: true,
+        market: 'stocks',
+        status: 'started',
+        last_message: 'started live candle stream task',
+        last_status_at_unix_ms: 1_900_000_000_000,
+      },
+    },
+    get_local_paper_execution_snapshot: {
+      symbol: 'AAPL',
+      account_number: 'local-paper',
+      account_status: 'simulated',
+      currency: 'USD',
+      cash: '100000.00',
+      buying_power: '100000.00',
+      portfolio_value: '100000.00',
+      position: null,
+      orders: [],
+      fetched_at_unix_ms: 1_900_000_000_000,
+    },
+    cancel_local_paper_open_orders: {
+      cancelled_count: 1,
+      open_order_count_before: 1,
+    },
+    flatten_local_paper_position: {
+      position_found: true,
+      order_submitted: true,
+      action: 'sell',
+      order_id: 'lp_flat_1',
+      qty: '1',
+    },
+    polygon_start_live_candle_stream: {
+      symbol: 'AAPL',
+      channel: 'A.AAPL',
+      delayed: true,
+    },
+    emergency_halt_live_execution: {
+      live_stopped: true,
+      runner_stopped: false,
+      live_symbol: 'AAPL',
+      status_message: 'Emergency halt applied.',
+      requires_manual_review: true,
+    },
+  },
+  expectedInvokes: [
+    'polygon_start_live_candle_stream',
+    'cancel_local_paper_open_orders',
+    'flatten_local_paper_position',
+    'emergency_halt_live_execution',
+  ],
 }

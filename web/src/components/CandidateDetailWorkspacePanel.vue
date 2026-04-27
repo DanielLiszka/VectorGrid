@@ -179,13 +179,13 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#drillVueShellMount">
     <section class="drillPanelVueRoot drillVueShellMountHost" v-show="visible">
       <header class="head">
-        <h2 class="panelTitle">Drilldown</h2>
+        <h2 class="panelTitle">Candidate Detail</h2>
         <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
       </header>
 
       <section class="pane">
         <div id="drillEmptyHintVue" class="panelStatus" role="status" aria-live="polite">
-          Select a row in the Top tab to compute drilldown curves.
+          Select a row in the Top tab to compute candidate detail curves.
         </div>
         <div class="chartAssist">
           <div id="drillKeyboardHint" class="panelMuted">Use the Top results table to select another candidate, or click chart markers if you prefer direct chart interaction.</div>
@@ -201,7 +201,7 @@ onBeforeUnmount(() => {
             :style="{ marginTop: '0.75rem', display: drillContentVisible ? 'block' : 'none' }"
           >
             <div class="panelStatus" style="margin-bottom: 0.5rem;" id="drillMetaVue" role="status" aria-live="polite">-</div>
-            <div class="panelStatus" style="margin-bottom: 0.5rem;" id="drillStatusVue" role="status" aria-live="polite">Click a Top row to view curves.</div>
+            <div class="panelStatus" style="margin-bottom: 0.5rem;" id="drillStatusVue" role="status" aria-live="polite">Click a Top row to view candidate detail curves.</div>
           <PriceChartPanel
             chart-id="drillTvChartVue"
             meta-id="drillTvChartMetaVue"

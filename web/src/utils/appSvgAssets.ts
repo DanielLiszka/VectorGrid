@@ -20,7 +20,7 @@ import optionsEventPathReplayColorUrl from '../assets/generated-svg/options-even
 import optionsFeasibilityPreviewColorUrl from '../assets/generated-svg/options-feasibility-preview-color.svg'
 import optionsFollowupWorkflowColorUrl from '../assets/generated-svg/options-followup-workflow-color.svg'
 import optionsProviderDownloadColorUrl from '../assets/generated-svg/options-provider-download-color.svg'
-import optionsTupleDrilldownColorUrl from '../assets/generated-svg/options-tuple-drilldown-color.svg'
+import optionsTupleDetailColorUrl from '../assets/generated-svg/options-tuple-detail-color.svg'
 import emptyOptionsWorkspaceColorUrl from '../assets/generated-svg/empty-options-workspace-color.svg'
 import provenanceDatasetChangedColorUrl from '../assets/generated-svg/provenance-dataset-changed-color.svg'
 import provenanceLowSampleColorUrl from '../assets/generated-svg/provenance-low-sample-color.svg'
@@ -80,7 +80,7 @@ export const optionsDatasetImportIcon = asset('Options dataset import', optionsD
 export const optionsProviderDownloadIcon = asset('Options provider download', optionsProviderDownloadColorUrl)
 export const optionsFeasibilityPreviewIcon = asset('Options feasibility preview', optionsFeasibilityPreviewColorUrl)
 export const optionsCurrentResultIcon = asset('Options current result', optionsCurrentResultColorUrl)
-export const optionsTupleDrilldownIcon = asset('Options tuple drilldown', optionsTupleDrilldownColorUrl)
+export const optionsTupleDetailIcon = asset('Options tuple detail', optionsTupleDetailColorUrl)
 export const optionsEventPathReplayIcon = asset('Options event path replay', optionsEventPathReplayColorUrl)
 
 export const emptyOptionsWorkspaceIllustration = emptyOptionsWorkspaceColorUrl
