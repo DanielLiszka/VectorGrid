@@ -25,6 +25,8 @@
     "a11y:smoke": "npm run build && node ./scripts/check-a11y-smoke.mjs",
     "a11y:smoke:built": "node ./scripts/check-a11y-smoke.mjs",
     "a11y:smoke:managed": "npm run a11y:smoke",
+    "a11y:smoke:contrast": "npm run build && npm run a11y:smoke:contrast:built",
+    "a11y:smoke:contrast:built": "node ./scripts/check-a11y-smoke.mjs --include-color-contrast",
     "baseline:ui": "npm run build && node ./scripts/capture-baseline-ui.mjs",
     "baseline:ui:built": "node ./scripts/capture-baseline-ui.mjs",
     "test:browser:ux": "npm run test:e2e:workflow",

@@ -14,6 +14,8 @@ import {
 const ROOT = process.cwd()
 const DIST_DIR = path.resolve(ROOT, 'dist')
 const PORT = 4181
+const INCLUDE_COLOR_CONTRAST =
+  process.env.VECTORGRID_A11Y_INCLUDE_CONTRAST === '1' || process.argv.includes('--include-color-contrast')
 
 function mimeType(file) {
   if (file.endsWith('.html')) return 'text/html; charset=utf-8'
@@ -52,10 +54,11 @@ function startServer() {
 }
 
 async function scan(page, name, options = {}) {
-  const result = await new AxeBuilder({ page })
-    .disableRules(['color-contrast'])
-    .options(options)
-    .analyze()
+  const builder = new AxeBuilder({ page }).options(options)
+  if (!INCLUDE_COLOR_CONTRAST) {
+    builder.disableRules(['color-contrast'])
+  }
+  const result = await builder.analyze()
 
   if (!result.violations.length) return
 

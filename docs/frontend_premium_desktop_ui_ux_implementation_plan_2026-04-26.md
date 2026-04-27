@@ -12,12 +12,12 @@ This plan turns that into implementation work for the Vue 3/Tauri frontend while
 
 ## Implementation Status
 
-2026-04-26 first implementation slice is complete; the workbench shell is now the default path with an explicit opt-out through `?workbench_shell=0` or `vta_workbench_shell_v1=0`:
+2026-04-26 first implementation slice is complete; the workbench shell is now the production shell:
 
-- Added `WorkbenchShell` as the default desktop shell while preserving the legacy shell as a rollback path.
-- Preserved the existing panel mount IDs, shell selectors, and QA action IDs so current workspace panels can teleport into either shell.
+- Added `WorkbenchShell` as the desktop shell.
+- Preserved the existing panel mount IDs, shell selectors, and QA action IDs so current workspace panels can teleport into the production shell.
 - Added a workbench rail, condensed header, inspector, and footer action-bar host.
-- Suppressed legacy floating context docks while the workbench is active, avoiding duplicated inspector/dock context.
+- Replaced floating context docks with the workbench inspector and action bar, avoiding duplicated context.
 - Added model tests, component tests, selector coverage, action-coverage manifest entries, and Playwright workflow coverage.
 
 2026-04-26 second implementation slice is also complete on the workbench shell:
@@ -30,7 +30,7 @@ This plan turns that into implementation work for the Vue 3/Tauri frontend while
 - Added workbench QA selectors, action-coverage manifest entries, unit tests, and browser E2E coverage for cockpit steps, inspector modes, inspector actions, and responsive inspector visibility.
 - Verified the workbench visually at `1366x768` and `390x844` from Playwright screenshots.
 
-2026-04-26 dense data-surface slice is complete across the default workbench shell and the legacy opt-out path:
+2026-04-26 dense data-surface slice is complete across the production workbench shell:
 
 - Added a shared `AppTableDensityControl` segmented control and `usePersistedTableDensity` composable.
 - Added a table-shell density contract to `AppDataTableShell`, including `data-table-density`, toolbar labeling, and compact/comfortable/spacious row-density classes.
@@ -54,9 +54,9 @@ This plan turns that into implementation work for the Vue 3/Tauri frontend while
 - Added the missing workbench inspector History clear-session action.
 - Added empty-library History actions so refresh/open-library remain reachable before any saved artifacts exist.
 - Fixed leaked global sticky `header` styling so nested panel headers cannot intercept clicks across adjacent scroll lanes.
-- Migrated the workbench to default-on with explicit query/storage opt-out and added unit coverage for the rollback path.
+- Hardened the workbench shell with unit coverage for app-level shell routing.
 - Extended browser regression coverage to click validation table view presets, verify the selected-row detail panel, exercise keyboard-only data-to-validation flow, and cover data-load, GPU-status, options-validation input, and options-validation preview failure paths.
-- Updated layout regression coverage for the default workbench inspector and updated the desktop smoke harness so WDIO accepts the default workbench labels while preserving the legacy-shell opt-out path.
+- Updated layout regression coverage for the workbench inspector and updated the desktop smoke harness so WDIO accepts the workbench labels.
 
 2026-04-26 final productization hardening slice is complete:
 
@@ -65,7 +65,14 @@ This plan turns that into implementation work for the Vue 3/Tauri frontend while
 - Added release-candidate packaged desktop smoke wiring through `scripts/run_packaged_smoke.ps1` when `-IncludeDesktopSmoke` is requested.
 - Added native `Cancel Run`, startup-disabled defaults for unavailable native menu entries, and a checked `Show Controls Panel` menu item synced from Vue state.
 - Brought the Meta results table into the shared persisted table contract by applying saved column order and persisted resizable widths while preserving its backend-defined row order.
-- Added browser regression coverage for Validation header sort plus keyboard resize, and desktop-width browser layout coverage for the legacy shell rollback path.
+- Added browser regression coverage for Validation header sort plus keyboard resize, and desktop-width browser layout coverage for the workbench inspector/action-bar geometry.
+
+2026-04-26 previous shell retirement slice is complete:
+
+- Removed the previous Vue shell implementation, shell toggle code, explicit query/storage selector, and fallback-only tests.
+- Removed the floating Analysis, Optimize, Validation, and History side panels after their run, validation, history, task, and diagnostics actions were confirmed in the workbench inspector/action bar or existing panels.
+- Removed legacy-only browser scenarios and layout assertions.
+- Updated repository routing docs and accessibility-review guidance to point future shell work at `WorkbenchShell`.
 
 Verification completed for the current workbench implementation:
 
@@ -90,7 +97,7 @@ Remaining roadmap items are still intentionally open:
 - Extend sortable/resizable/grid behavior beyond Top, Validation, History, and Meta where future table surfaces need the same workstation-grade interaction contract.
 - Continue row-level action standardization for any table surfaces beyond the current Top/Validation/History scope.
 - Add native desktop polish beyond the current menu bridge, especially tray/window-affordance decisions and any additional menu entries whose checked/enabled state depends on deeper runtime state.
-- Remove legacy shell/dock code only after the default workbench path has baked through browser E2E, desktop smoke, action coverage, screenshots, and manual review.
+- Keep shell parity documentation current when future backend commands or workspace panels are added.
 
 ## Research Basis
 
@@ -196,7 +203,7 @@ The second pass changes the bar for this plan in five ways:
 
 - The app exposes a serious workflow: data loading, strategy selection, optimization, validation, history, options follow-up, ML Signal, and live execution.
 - Recent QA work added browser workflow coverage, action coverage, responsive workflow tests, desktop smoke geometry, and layout regression budgets.
-- Recent UI work improved chrome density, mobile workflow visibility, validation dock behavior, and history dock placement.
+- Recent UI work improved chrome density, mobile workflow visibility, validation inspector behavior, and history inspector placement.
 - The frontend already has useful component primitives such as `AppButton`, `AppStatusChip`, `AppDataTableShell`, visualization components, command palette, task center, and desktop smoke selectors.
 - The backend command surface is broad and mature enough to support a premium shell without backend churn.
 
@@ -364,12 +371,7 @@ Inspector behavior:
 - Tablet: collapsible side sheet.
 - Mobile/narrow: modal sheet or inline section below stage summary.
 
-The inspector replaces:
-
-- `ValidationContextDock`
-- `HistoryContextDock`
-- parts of `OptimizeContextDock`
-- ad hoc context summaries inside individual panels where duplication exists
+The inspector replaces the former validation, history, and optimize context docks plus ad hoc context summaries inside individual panels where duplication exists.
 
 ### Footer
 
@@ -441,15 +443,15 @@ Design system extensions:
 Implementation notes:
 
 - Use existing Pinia stores for workflow state; do not invent parallel business state.
-- Keep `VueWorkspaceShell.vue` reachable through the explicit workbench opt-out until `WorkbenchShell` has baked as the default.
-- Preserve the local rollback key `vta_workbench_shell_v1=0` and query opt-out `?workbench_shell=0` until legacy removal is approved.
+- Use `WorkbenchShell` as the only production shell.
+- Preserve backend command reachability through existing stores, services, panel mount slots, the workbench inspector, the command palette, and the action bar.
 - Keep all existing `data-qa-action` values working where practical. If a selector must move, update the action manifest and E2E coverage in the same change.
 
 Acceptance criteria:
 
 - New primitives render in isolation with component tests where useful.
 - New shell can mount in mocked-Tauri mode without changing backend commands.
-- Existing advanced shell remains available during migration.
+- Existing advanced-mode panels remain available inside the workbench shell.
 
 ### Phase 2 - Workbench Shell Migration
 
@@ -499,9 +501,9 @@ Tasks:
   - selected run/candidate/task context
   - collapsed/expanded state
   - per-workspace preferred mode
-- Port `ValidationContextDock` content into `WorkbenchInspector`.
-- Port `HistoryContextDock` content into `WorkbenchInspector`.
-- Port high-signal optimize context into `WorkbenchInspector`.
+- Keep validation context in `WorkbenchInspector`.
+- Keep history context in `WorkbenchInspector`.
+- Keep high-signal optimize context in `WorkbenchInspector`.
 - Replace dock visibility logic with inspector routing:
   - Research/Validate -> validation context if a run exists, otherwise readiness.
   - Library -> history detail.
@@ -512,16 +514,12 @@ Tasks:
 Files likely touched:
 
 - `web/src/App.vue`
-- `web/src/components/ValidationContextDock.vue`
-- `web/src/components/HistoryContextDock.vue`
-- `web/src/components/OptimizeContextDock.vue`
-- `web/src/utils/shellDockContract.ts`
 - new `web/src/stores/inspectorStore.ts`
 - new `web/src/components/workbench/WorkbenchInspector.vue`
 
 Acceptance criteria:
 
-- No `.valDock` or `.historyDock` fixed overlay is needed for normal workflow.
+- No fixed validation or history overlay is needed for normal workflow.
 - Inspector never overlaps main content or footer.
 - Layout E2E asserts inspector behavior in desktop and mobile.
 - Component tests prove validation/history context routing.
@@ -722,12 +720,12 @@ Goal: avoid keeping two shells forever.
 
 Tasks:
 
-- Run old shell and new workbench in parallel only during migration.
+- Keep the production workbench as the only active shell after migration.
 - Keep a migration checklist of selectors, commands, and mounted panels.
 - After parity:
   - remove obsolete dock components or keep them as inspector sections only
   - remove obsolete shell CSS
-  - remove old layout tests that assert old chrome budgets
+  - remove obsolete layout tests that assert retired chrome budgets
   - update `docs/REPO_MAP.md`
   - update browser/desktop README docs
 
@@ -747,7 +745,6 @@ The phase list above defines sequencing. This backlog defines the concrete produ
 Files likely involved:
 
 - `web/src/App.vue`
-- `web/src/components/VueWorkspaceShell.vue`
 - `web/src/components/DesktopTitlebar.vue`
 - `web/src/styles/app.css`
 - new `web/src/components/workbench/WorkbenchShell.vue`
@@ -832,7 +829,6 @@ Acceptance details:
 
 Files likely involved:
 
-- `web/src/components/HistoryContextDock.vue`
 - `web/src/components/RunContextBar.vue`
 - `web/src/components/OptionsExpressionPanel.vue`
 - new `web/src/components/workbench/WorkbenchInspector.vue`
@@ -1019,22 +1015,17 @@ Acceptance details:
 
 ## Migration Strategy
 
-The redesign should ship through staged parity rather than a single replacement.
+The redesign shipped through staged parity and now has one production shell.
 
-1. Introduce workbench models and shell components behind a feature flag.
-2. Mount the new shell in mocked browser E2E first.
-3. Keep existing workflows wired to the old panels while shell navigation and action state mature.
-4. Move Research first because it exercises the most capability and QA coverage.
-5. Move Library/history/options after inspector behavior is stable.
-6. Move Live last unless Live is already isolated enough to adopt the shell with low risk.
-7. Remove old docks and redundant chrome only after selector/action coverage proves parity.
-8. Update `docs/REPO_MAP.md`, browser E2E docs, and desktop E2E docs in the same implementation slice that changes navigation ownership.
+1. Keep existing workflows wired to the current panels while workbench navigation and action state mature.
+2. Maintain Research, Library/history/options, Live, Settings, and Advanced Mode reachability through `WorkbenchShell`.
+3. Remove redundant chrome only after selector/action coverage proves parity.
+4. Update `docs/REPO_MAP.md`, browser E2E docs, and desktop E2E docs in the same implementation slice that changes navigation ownership.
 
-Rollback plan:
+Regression plan:
 
-- Keep the old shell path available through `?workbench_shell=0` or `vta_workbench_shell_v1=0` until Phase 8.
-- Keep old selectors aliased or mapped while the new selectors land.
-- If a phase fails desktop smoke or broad workflow E2E, disable the feature flag instead of partially reverting shared state changes.
+- Keep current selectors aliased or mapped where practical while new selectors land.
+- If a shell/navigation phase fails desktop smoke or broad workflow E2E, fix the production workbench path directly rather than reintroducing a second shell.
 
 ## Pre-Implementation Checklist
 
@@ -1043,7 +1034,7 @@ Complete these before writing production UI code:
 - Confirm the global destination list.
 - Confirm whether Diagnostics is top-level or Settings/command-only.
 - Confirm ML Signal placement.
-- Confirm first-slice feature flag name.
+- Confirm first-slice rollout posture.
 - Identify exact current command/store sources for:
   - active dataset
   - active strategy
@@ -1231,9 +1222,8 @@ A shell phase is complete only when:
 
 Mitigation:
 
-- Build new shell behind a feature flag.
-- Keep old shell until browser workflow and desktop smoke pass.
-- Migrate one workspace at a time.
+- Keep workbench shell changes covered by browser workflow and desktop smoke before handoff.
+- Migrate one workspace surface at a time.
 - Preserve `data-qa-action` selectors or update action coverage in the same PR.
 
 ### Risk: Inspector Becomes A New Junk Drawer
@@ -1274,12 +1264,12 @@ Mitigation:
 
 1. Run pre-implementation baseline: current responsive/workflow E2E, desktop geometry if available, and viewport screenshots.
 2. Add `workbenchNavigationModel` and `workbenchActionModel` tests before rendering the new shell.
-3. Add `WorkbenchShell` skeleton behind feature flag.
+3. Add or revise `WorkbenchShell` skeleton coverage.
 4. Add `WorkbenchRail` with top-level workspace routing only.
 5. Add `WorkbenchActionBar` that mirrors current footer primary action.
 6. Add `WorkbenchInspector` shell with current run-context summary.
 7. Add browser layout guards for rail/actionbar/inspector geometry and focus-not-obscured behavior.
-8. Port validation/history docks into inspector modes.
+8. Port validation/history side-panel behavior into inspector modes.
 9. Add `ResearchCockpit` as the Research default.
 10. Move Research stage navigation local to workbench.
 11. Tighten layout budgets to the target geometry.
@@ -1294,7 +1284,7 @@ Scope:
 
 - `workbenchNavigationModel`
 - `workbenchActionModel`
-- `WorkbenchShell` behind feature flag
+- `WorkbenchShell`
 - `WorkbenchRail`
 - `WorkbenchActionBar`
 - `WorkbenchInspector` placeholder
@@ -1303,7 +1293,7 @@ Scope:
 
 Out of scope:
 
-- deleting the old shell
+- broad shell replacement work
 - redesigning every panel
 - changing backend commands
 - redesigning charts/tables
@@ -1311,8 +1301,7 @@ Out of scope:
 
 Acceptance criteria for first slice:
 
-- Feature flag off: current app behaves exactly as today.
-- Feature flag on: mocked-Tauri shell renders with rail, main content, inspector placeholder, and action bar.
+- Mocked-Tauri shell renders with rail, main content, inspector placeholder, and action bar.
 - Research, Library, Runs/Aggregate, Live, Settings can be selected.
 - Primary action state matches current footer state.
 - `test:e2e:responsive` passes for both shell modes or has explicit old/new coverage.
@@ -1326,7 +1315,7 @@ Acceptance criteria for first slice:
 2. Should ML Signal be a Research mode, a top-level destination, or a specialized workflow under Research?
 3. Should the left rail show labels by default on desktop, or compact icons with labels on hover/expanded state?
 4. Should the inspector be resizable in the first slice, or fixed width until behavior stabilizes?
-5. How long should the legacy shell opt-out remain after the default workbench path has passed desktop smoke and workflow QA?
+5. Which future inspector states should be user-resizable versus fixed until behavior stabilizes?
 6. Should the current Aggregate workspace be renamed to Runs in the visible UI while keeping internal ids/aliases during migration?
 
 ## Recommendation

@@ -66,55 +66,55 @@ function onItemKeydown(event: KeyboardEvent, item: WorkbenchNavigationItem): voi
   <nav
     id="workspaceBar"
     class="workbenchRail"
-    role="tablist"
     aria-label="Workspace navigation"
-    aria-orientation="vertical"
     data-qa-panel="workbench.rail"
   >
-    <div class="railGroup primary">
-      <button
-        v-for="item in primaryItems"
-        :id="item.tabId"
-        :key="item.id"
-        type="button"
-        class="railButton"
-        :class="{ active: item.selected }"
-        role="tab"
-        :aria-selected="item.selected ? 'true' : 'false'"
-        :aria-controls="item.ariaControls"
-        :tabindex="item.selected ? 0 : -1"
-        :title="`${item.label}. ${item.description}`"
-        :data-workspace="item.id"
-        :data-qa-action="item.actionId"
-        @click="selectItem(item)"
-        @keydown="onItemKeydown($event, item)"
-      >
-        <component :is="itemIcon(item)" aria-hidden="true" class="railIcon" />
-        <span>{{ item.shortLabel }}</span>
-      </button>
-    </div>
+    <div class="railTabList" role="tablist" aria-label="Workspace navigation" aria-orientation="vertical">
+      <div class="railGroup primary">
+        <button
+          v-for="item in primaryItems"
+          :id="item.tabId"
+          :key="item.id"
+          type="button"
+          class="railButton"
+          :class="{ active: item.selected }"
+          role="tab"
+          :aria-selected="item.selected ? 'true' : 'false'"
+          :aria-controls="item.ariaControls"
+          :tabindex="item.selected ? 0 : -1"
+          :title="`${item.label}. ${item.description}`"
+          :data-workspace="item.id"
+          :data-qa-action="item.actionId"
+          @click="selectItem(item)"
+          @keydown="onItemKeydown($event, item)"
+        >
+          <component :is="itemIcon(item)" aria-hidden="true" class="railIcon" />
+          <span>{{ item.shortLabel }}</span>
+        </button>
+      </div>
 
-    <div class="railGroup secondary">
-      <button
-        v-for="item in secondaryItems"
-        :id="item.tabId"
-        :key="item.id"
-        type="button"
-        class="railButton compact"
-        :class="{ active: item.selected }"
-        role="tab"
-        :aria-selected="item.selected ? 'true' : 'false'"
-        :aria-controls="item.ariaControls"
-        :tabindex="item.selected ? 0 : -1"
-        :title="`${item.label}. ${item.description}`"
-        :data-workspace="item.id"
-        :data-qa-action="item.actionId"
-        @click="selectItem(item)"
-        @keydown="onItemKeydown($event, item)"
-      >
-        <component :is="itemIcon(item)" aria-hidden="true" class="railIcon" />
-        <span>{{ item.shortLabel }}</span>
-      </button>
+      <div class="railGroup secondary">
+        <button
+          v-for="item in secondaryItems"
+          :id="item.tabId"
+          :key="item.id"
+          type="button"
+          class="railButton compact"
+          :class="{ active: item.selected }"
+          role="tab"
+          :aria-selected="item.selected ? 'true' : 'false'"
+          :aria-controls="item.ariaControls"
+          :tabindex="item.selected ? 0 : -1"
+          :title="`${item.label}. ${item.description}`"
+          :data-workspace="item.id"
+          :data-qa-action="item.actionId"
+          @click="selectItem(item)"
+          @keydown="onItemKeydown($event, item)"
+        >
+          <component :is="itemIcon(item)" aria-hidden="true" class="railIcon" />
+          <span>{{ item.shortLabel }}</span>
+        </button>
+      </div>
     </div>
   </nav>
 </template>
@@ -127,10 +127,15 @@ function onItemKeydown(event: KeyboardEvent, item: WorkbenchNavigationItem): voi
   border-right: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   background:
     linear-gradient(180deg, color-mix(in oklab, var(--surface-shell) 88%, var(--panel)), var(--surface-sunken));
+  overflow: hidden auto;
+}
+
+.railTabList {
+  min-width: 0;
+  min-height: 100%;
   display: grid;
   grid-template-rows: 1fr auto;
   gap: 0.5rem;
-  overflow: hidden auto;
 }
 
 .railGroup {

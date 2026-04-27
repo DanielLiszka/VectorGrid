@@ -761,8 +761,8 @@ onBeforeUnmount(() => {
           </div>
           <ContextHelpTip
             title="Validation actions"
-            summary="Run validation and export its evidence package from this panel; the validation dock now stays focused on status and navigation."
-            detail="This is the canonical validation action surface for shortlist export, report export, and reports-folder access. The dock still preserves a clear shortcut into validation without duplicating all of those buttons."
+            summary="Run validation and export its evidence package from this panel; the workbench inspector stays focused on status and navigation."
+            detail="This is the canonical validation action surface for shortlist export, report export, and reports-folder access. The inspector preserves a clear shortcut into validation without duplicating all of those buttons."
             aria-label="Validation actions help"
           />
         </div>

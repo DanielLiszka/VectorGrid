@@ -69,6 +69,7 @@ const {
   savedRunDetailMlVerdict,
   savedRunDetailMlCandidates,
   savedRunDetailParams,
+  savedRunRepairSummary,
   canApplyHistory,
   canExportPreset,
   canImportPreset,
@@ -81,6 +82,8 @@ const {
   canOpenSavedRunReport,
   canRevealSavedRun,
   canDeleteSavedRun,
+  canRepairSavedRun,
+  canWriteRepairedSavedRun,
   canOpenRunsDir,
   statusLine,
   updatedAtUnixMs,
@@ -289,6 +292,14 @@ function openSavedRunReport(): void {
 
 function revealSavedRun(): void {
   historyStore.revealSavedRun(String(savedValue.value || "").trim());
+}
+
+function checkSavedRunRepair(): void {
+  historyStore.repairSavedRun(String(savedValue.value || "").trim(), true);
+}
+
+function writeRepairedSavedRun(): void {
+  historyStore.repairSavedRun(String(savedValue.value || "").trim(), false);
 }
 
 const pendingDeleteTarget = computed(() =>
@@ -848,6 +859,22 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="library.savedRun.repairCheck"
+              :disabled="!canRepairSavedRun"
+              @click="checkSavedRunRepair"
+            >
+              Check repair
+            </button>
+            <button
+              type="button"
+              data-qa-action="library.savedRun.repairWrite"
+              :disabled="!canWriteRepairedSavedRun"
+              @click="writeRepairedSavedRun"
+            >
+              Write repaired copy
+            </button>
+            <button
+              type="button"
               data-qa-action="library.savedRun.delete"
               :disabled="!canDeleteSavedRun"
               @click="queueDeleteSavedRunConfirmation"
@@ -1060,6 +1087,15 @@ onBeforeUnmount(() => {
               </option>
             </select>
             <pre class="mono">{{ savedRunCompareSummary }}</pre>
+          </div>
+        </details>
+        <details class="panelDetails">
+          <summary>Artifact repair</summary>
+          <div class="panelDetailsBody compareDetailsBody">
+            <div class="panelMuted">
+              Dry-run checks report canonicalization changes. Write repair creates a sibling repaired artifact copy in the runs directory.
+            </div>
+            <pre class="mono">{{ savedRunRepairSummary }}</pre>
           </div>
         </details>
       </section>

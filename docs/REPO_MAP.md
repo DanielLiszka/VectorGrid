@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 ## Purpose
 
@@ -79,7 +79,7 @@ Open these first before broad search:
 - `crates/optimizer/src/lib.rs`
 - `web/src/App.vue`
 - `web/src/components/DesktopTitlebar.vue`
-- `web/src/components/VueWorkspaceShell.vue`
+- `web/src/components/workbench/WorkbenchShell.vue`
 - `web/src/services/desktopProductization.ts`
   - desktop plugin bridge for logging, window-state persistence, and background-aware OS-notification routing
 - `web/src/preflight.ts`
@@ -680,10 +680,8 @@ The frontend is a Vue + Pinia workspace app, not a page-routed SPA.
   - bootstraps Pinia, drives the runtime boot stages, mounts the app early, and runs storage migrations, settings/workflow bootstrap, desktop startup wiring, and recommended optimization defaults
 - `web/src/App.vue`
   - app shell, lazy panel router, and mount point for global overlays/bridges including the startup overlay
-- `web/src/components/VueWorkspaceShell.vue`
-  - top-level workspace/workflow shell
 - `web/src/components/workbench/WorkbenchShell.vue`
-  - premium workbench shell is the default desktop shell; legacy `VueWorkspaceShell` remains reachable through `?workbench_shell=0` or localStorage `vta_workbench_shell_v1=0` as a rollback path
+  - production desktop shell for rail navigation, workflow stages, panel mount slots, inspector, and footer action-bar host
 - `web/src/components/workbench/ResearchCockpit.vue`
   - flagged Research workbench overview, backed by `web/src/composables/useResearchCockpitModel.ts`
 - `web/src/components/workbench/WorkbenchInspector.vue`
@@ -708,8 +706,8 @@ The frontend is a Vue + Pinia workspace app, not a page-routed SPA.
 
 Visible-shell routing and restored state also depend on:
 
-- `web/src/components/VueWorkspaceShell.vue`
-  - decides which controls/results tab bars are visible and owns the shell mount slots such as `#metaVueShellMount`
+- `web/src/components/workbench/WorkbenchShell.vue`
+  - decides which controls/results surfaces are visible and owns the shell mount slots such as `#metaVueShellMount`
 - `web/src/stores/workflowStore.ts`
   - translates workspace/workflow changes into control/results selections, persists root shell attrs, and persists `aggregateTab`
 - `web/src/services/workflowBootstrap.ts`
@@ -720,7 +718,7 @@ Visible-shell routing and restored state also depend on:
   - batch generation now exposes a compact operating-mode summary for execution mode, preload policy, automation mode, and selected dataset count without hiding retry/resume/reveal controls
   - the batch pane now also states the current holdout/skip posture, dataset-registry assumptions, and recovery contract directly in the UI: same-timeframe selection unless Data overrides, tags dedup on run, retry/resume depend on the saved batch summary, and both recovery flows force skip-completed behavior
 
-If you are debugging navigation, visible panels, or why a tab is allowed or hidden, start with `workflowModel.ts`, then follow `VueWorkspaceShell.vue`, `workflowStore.ts`, and `workflowBootstrap.ts`.
+If you are debugging navigation, visible panels, or why a tab is allowed or hidden, start with `workflowModel.ts`, then follow `WorkbenchShell.vue`, `workflowStore.ts`, and `workflowBootstrap.ts`.
 
 ### Global UI surfaces
 
@@ -741,10 +739,8 @@ These are good first files when the task is startup flow, global shortcuts, quic
 
 - `web/src/App.vue`
   - lazy async panel registry for workspace panels such as `DataWorkspacePanel`, `OptimizeWorkspacePanel`, `MetaWorkspacePanel`, `HistoryWorkspacePanel`, `ExecutionWorkspacePanel`, and `SettingsWorkspacePanel`
-- `web/src/components/VueWorkspaceShell.vue`
-  - legacy rollback shell reachable through the explicit workbench opt-out; still owns the old control/result mount slots
 - `web/src/components/workbench/WorkbenchShell.vue`
-  - owns the default workbench rail, cockpit placement, inspector placement, and action-bar host while reusing the same panel mount IDs as the legacy shell
+  - owns the workbench rail, cockpit placement, inspector placement, Vue panel mount slots, and action-bar host
 - `web/src/components/workbench/ResearchCockpit.vue`
   - owns the Research cockpit cards and workflow-step shortcuts; use `web/src/composables/useResearchCockpitModel.ts` for derived cockpit state
 - `web/src/components/workbench/WorkbenchInspector.vue`
@@ -831,7 +827,7 @@ These are good first files when the task is startup flow, global shortcuts, quic
 - `web/src/composables/useQueuedInputWriter.ts`
   - shared queued/commit input writer used by panels such as optimize, advanced, settings, and meta
 - `web/src/composables/useShellMount.ts`
-  - shared shell mount helper for Vue-owned panel ownership over legacy shell slots
+  - shared shell mount helper for Vue-owned panel ownership over workbench mount slots
 - `web/src/composables/useTaskLifecycleSummary.ts`
   - shared task/runtime summary model used by footer and diagnostics surfaces
 - `web/src/composables/useHeadlessMatrixTable.ts`
@@ -927,19 +923,16 @@ Important current-state note:
 - `web/src/services/historyService.ts`
   - library/history flows on top of saved artifacts
 
-### Context docks and quick actions
+### Quick actions and command surfaces
 
-The shell also has workflow-local quick-action surfaces:
-
-- `web/src/components/OptimizeContextDock.vue`
-- `web/src/components/ValidationContextDock.vue`
-- `web/src/components/AnalysisContextDock.vue`
-- `web/src/components/HistoryContextDock.vue`
+The workbench exposes workflow-local action state through the inspector, action bar, command palette, and native menu bridge.
 
 For command-palette and quick-action behavior, start with:
 
 - `web/src/stores/commandPaletteStore.ts`
 - `web/src/stores/commandActionStore.ts`
+- `web/src/components/workbench/WorkbenchInspector.vue`
+- `web/src/components/workbench/WorkbenchActionBar.vue`
 
 ### Frontend files that summarize behavior well
 

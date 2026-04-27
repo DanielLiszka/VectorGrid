@@ -7,20 +7,11 @@ import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
 import OptimizeWorkspacePanel from './components/OptimizeWorkspacePanel.vue'
 import ActionStatusBar from './components/ActionStatusBar.vue'
 import StrategyWorkspacePanel from './components/StrategyWorkspacePanel.vue'
-import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
 import WorkbenchShell from './components/workbench/WorkbenchShell.vue'
 import { useSettingsStore } from './stores/settingsStore'
 import { useWorkflowStore } from './stores/workflowStore'
-import {
-  isAnalysisDockVisible,
-  isHistoryDockVisible,
-  isOptimizeDockVisible,
-  isValidationDockVisible,
-} from './utils/shellDockContract'
-import { shouldUseWorkbenchShell } from './utils/workbenchFeatureFlag'
 
 const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/AdvancedWorkspacePanel.vue'))
-const AnalysisContextDock = defineAsyncComponent(() => import('./components/AnalysisContextDock.vue'))
 const CommandPaletteOverlay = defineAsyncComponent(() => import('./components/CommandPaletteOverlay.vue'))
 const DataWorkspacePanel = defineAsyncComponent(() => import('./components/DataWorkspacePanel.vue'))
 const DebugWorkspacePanel = defineAsyncComponent(() => import('./components/DebugWorkspacePanel.vue'))
@@ -28,17 +19,14 @@ const DrillWorkspacePanel = defineAsyncComponent(() => import('./components/Dril
 const ExecutionWorkspacePanel = defineAsyncComponent(() => import('./components/ExecutionWorkspacePanel.vue'))
 const HeatmapWorkspacePanel = defineAsyncComponent(() => import('./components/HeatmapWorkspacePanel.vue'))
 const HistoryWorkspacePanel = defineAsyncComponent(() => import('./components/HistoryWorkspacePanel.vue'))
-const HistoryContextDock = defineAsyncComponent(() => import('./components/HistoryContextDock.vue'))
 const MetaWorkspacePanel = defineAsyncComponent(() => import('./components/MetaWorkspacePanel.vue'))
 const MlSignalShellPanel = defineAsyncComponent(() => import('./components/MlSignalShellPanel.vue'))
 const GuidedWorkspacePanel = defineAsyncComponent(() => import('./components/GuidedWorkspacePanel.vue'))
-const OptimizeContextDock = defineAsyncComponent(() => import('./components/OptimizeContextDock.vue'))
 const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
 const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/ParetoWorkspacePanel.vue'))
 const SettingsWorkspacePanel = defineAsyncComponent(() => import('./components/SettingsWorkspacePanel.vue'))
 const TaskCenterOverlay = defineAsyncComponent(() => import('./components/TaskCenterOverlay.vue'))
 const TopWorkspacePanel = defineAsyncComponent(() => import('./components/TopWorkspacePanel.vue'))
-const ValidationContextDock = defineAsyncComponent(() => import('./components/ValidationContextDock.vue'))
 const ValidationWorkspacePanel = defineAsyncComponent(() => import('./components/ValidationWorkspacePanel.vue'))
 const WorkflowQuickSwitch = defineAsyncComponent(() => import('./components/WorkflowQuickSwitch.vue'))
 
@@ -49,7 +37,6 @@ workflowStore.syncRuntimeState()
 const { controlsTab, mode, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
 const { uiMode } = storeToRefs(settingsStore)
 
-const workbenchShellActive = shouldUseWorkbenchShell()
 const guidedModeActive = computed(() => uiMode.value === 'guided')
 const settingsWorkspaceActive = computed(() => !guidedModeActive.value && String(workspace.value || '').trim() === 'settings')
 const liveWorkspaceActive = computed(() => !guidedModeActive.value && String(workspace.value || '').trim() === 'live')
@@ -57,36 +44,10 @@ const currentWorkspace = computed(() => String(workspace.value || '').trim() || 
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
-const analysisDockActive = computed(() =>
-  !workbenchShellActive && isAnalysisDockVisible({
-    mode: mode.value,
-    workspace: workspace.value,
-    workflow: workflow.value,
-  }),
-)
-const optimizeDockActive = computed(() =>
-  !workbenchShellActive && isOptimizeDockVisible({
-    mode: mode.value,
-    workspace: workspace.value,
-    workflow: workflow.value,
-    controlsTab: controlsTab.value,
-  }),
-)
-const validationDockActive = computed(() =>
-  !workbenchShellActive && isValidationDockVisible({
-    mode: mode.value,
-    workspace: workspace.value,
-    workflow: workflow.value,
-    resultsTab: resultsTab.value,
-  }),
-)
 const historyPanelActive = computed(() =>
-  isHistoryDockVisible({
-    workspace: workspace.value,
-    workflow: workflow.value,
-  }),
+  !guidedModeActive.value
+  && (String(workspace.value || '').trim() === 'library' || String(workflow.value || '').trim() === 'history'),
 )
-const historyDockActive = computed(() => !workbenchShellActive && historyPanelActive.value)
 function shouldShowWorkflowQuickSwitch(): boolean {
   if (!import.meta.env.DEV) return false
   try {
@@ -140,33 +101,28 @@ mountWhenActive('overview', () => overviewPanelActive.value)
 
 <template>
   <DesktopTitlebar />
-  <WorkbenchShell v-if="workbenchShellActive" />
-  <VueWorkspaceShell v-else />
+  <WorkbenchShell />
   <GuidedWorkspacePanel v-if="guidedModeActive" />
   <CommandPaletteOverlay />
   <GlobalShortcutBridge />
   <AppRuntimeBanner />
   <TaskCenterOverlay />
-  <AnalysisContextDock v-if="analysisDockActive" />
   <AdvancedWorkspacePanel v-if="advancedPanelActive" />
   <DataWorkspacePanel v-if="mountedPanels.data" />
   <DebugWorkspacePanel v-if="debugPanelActive" />
   <DrillWorkspacePanel v-if="drillPanelActive" />
   <ExecutionWorkspacePanel v-if="mountedPanels.live" />
   <HeatmapWorkspacePanel v-if="heatmapPanelActive" />
-  <HistoryContextDock v-if="historyDockActive" />
   <HistoryWorkspacePanel v-if="historyPanelActive" />
   <MetaWorkspacePanel v-if="metaPanelActive" />
   <MlSignalShellPanel v-if="mlSignalPanelActive" />
   <OverviewWorkspacePanel v-if="mountedPanels.overview" />
-  <OptimizeContextDock v-if="optimizeDockActive" />
   <ParetoWorkspacePanel v-if="paretoPanelActive" />
   <OptimizeWorkspacePanel v-if="mountedPanels.optimize && !mlSignalModeActive" />
   <ActionStatusBar v-if="!guidedModeActive" />
   <SettingsWorkspacePanel v-if="settingsWorkspaceActive" />
   <StrategyWorkspacePanel v-if="strategyPanelActive" />
   <TopWorkspacePanel v-if="topPanelActive" />
-  <ValidationContextDock v-if="validationDockActive" />
   <ValidationWorkspacePanel v-if="validationPanelActive" />
   <WorkflowQuickSwitch v-if="showWorkflowQuickSwitch" />
 </template>

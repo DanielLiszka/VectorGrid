@@ -34,7 +34,7 @@ describe('WorkbenchShell', () => {
     await flushUi()
 
     expect(document.querySelector('[data-qa-shell="workbench"]')).not.toBeNull()
-    expect(document.querySelector('#workspaceBar')?.getAttribute('role')).toBe('tablist')
+    expect(document.querySelector('#workspaceBar .railTabList')?.getAttribute('role')).toBe('tablist')
     expect(document.querySelector('#workflowStepBar')?.getAttribute('role')).toBe('tablist')
     expect(document.querySelector('#controlsTabBar')?.getAttribute('role')).toBe('tablist')
     expect(document.querySelector('#resultsTabBar')?.getAttribute('role')).toBe('tablist')

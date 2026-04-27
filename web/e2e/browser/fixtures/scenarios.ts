@@ -137,23 +137,6 @@ export const gpuStatusFailureScenario: MockTauriScenario = {
   expectedInvokes: ['get_gpu_status'],
 }
 
-export const premiumWorkbenchScenario: MockTauriScenario = {
-  ...emptyAppScenario,
-  name: 'premium-workbench',
-  description: 'Fresh app exercising the premium workbench shell through an explicit launch query.',
-  urlSearch: '?workbench_shell=1',
-  localStorage: {
-    ...emptyAppScenario.localStorage,
-  },
-}
-
-export const legacyShellScenario: MockTauriScenario = {
-  ...emptyAppScenario,
-  name: 'legacy-shell',
-  description: 'Fresh app using the explicit legacy shell opt-out.',
-  urlSearch: '?workbench_shell=0',
-}
-
 export const validationDatasetMismatchScenario: MockTauriScenario = {
   name: 'validation-dataset-mismatch',
   description: 'A saved optimization artifact is loaded without its matching dataset.',
@@ -793,6 +776,28 @@ export const optionsValidationReadyScenario: MockTauriScenario = {
       },
       paramsText: '{"strategy_kind":"DoubleMa","data_id":"fixture_aapl_1m"}',
       tags: ['qa', 'options'],
+    },
+    repair_run_artifact: {
+      source_path: optionsParentRunPath,
+      result_path: '',
+      dry_run: true,
+      changed: true,
+      wrote: false,
+      changes: ['normalized saved-run summary fields', 'canonicalized request payload'],
+      summary: {
+        ts: '2026-04-24T14:30:00Z',
+        path: optionsParentRunPath,
+        bytes: 49152,
+        strategy_kind: 'DoubleMa',
+        config_fingerprint: 'double-ma-aapl-qa',
+        config_fingerprint_version: 1,
+        has_validation: true,
+        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
+        report_xlsx_exists: true,
+        csv_path: 'C:/fixtures/aapl_1m.csv',
+        timeframe: '1m',
+        tags: ['qa', 'options'],
+      },
     },
     list_options_datasets: [optionsDatasetFixture],
     list_artifact_library: {

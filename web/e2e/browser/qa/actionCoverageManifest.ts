@@ -134,6 +134,8 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
   { actionId: 'library.savedRun.rerun', surface: 'library', required: true, priority: 'important', coveredBy: ['library.openRun'] },
   { actionId: 'library.savedRun.openReport', surface: 'library', required: false, priority: 'extended', coveredBy: [], waiver: { reason: 'Requires a saved run with report metadata.', owner: 'frontend-qa', expires: '2026-06-01' } },
   { actionId: 'library.savedRun.reveal', surface: 'library', required: false, priority: 'extended', coveredBy: [], waiver: { reason: 'Native reveal is covered by desktop smoke after artifact fixture expansion.', owner: 'frontend-qa', expires: '2026-06-01' } },
+  { actionId: 'library.savedRun.repairCheck', surface: 'library', required: true, priority: 'important', coveredBy: ['library.savedRun.repairCheck'] },
+  { actionId: 'library.savedRun.repairWrite', surface: 'library', required: true, priority: 'important', coveredBy: ['library.savedRun.repairWrite'] },
   { actionId: 'library.savedRun.delete', surface: 'library', required: false, priority: 'extended', coveredBy: [], waiver: { reason: 'Destructive saved-run flow needs isolated artifact fixture.', owner: 'frontend-qa', expires: '2026-06-01' } },
   { actionId: 'library.runsDir.open', surface: 'library', required: false, priority: 'extended', coveredBy: [], waiver: { reason: 'Native folder open is covered by desktop smoke.', owner: 'frontend-qa', expires: '2026-06-01' } },
   { actionId: 'live.account.test', surface: 'live', required: false, priority: 'extended', coveredBy: [], waiver: { reason: 'Broker connectivity execution is mocked only in dedicated live fixtures.', owner: 'frontend-qa', expires: '2026-06-01' } },

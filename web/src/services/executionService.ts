@@ -506,6 +506,14 @@ export interface ExecutionRuntimeEventHandlers {
   onRunnerEvent?: (event: ParsedRunnerEvent) => void
 }
 
+export interface ExecutionStrategySupportRow {
+  strategyKind: string
+  supported: boolean
+  adapter: string
+  supportLevel: string
+  notes: string
+}
+
 function text(value: unknown): string {
   return String(value ?? '').trim()
 }
@@ -1931,6 +1939,28 @@ function serializeExecutionRiskPolicy(policy: Partial<ExecutionRiskPolicy>): Exe
     allow_short: nullableBoolean(policy.allow_short),
     require_bracket: nullableBoolean(policy.require_bracket),
   }
+}
+
+function normalizeExecutionStrategySupportRow(raw: unknown): ExecutionStrategySupportRow | null {
+  const row = isRecord(raw) ? (raw as Record<string, unknown>) : null
+  if (!row) return null
+  const strategyKind = text(row.strategy_kind ?? row.strategyKind)
+  if (!strategyKind) return null
+  return {
+    strategyKind,
+    supported: Boolean(row.supported),
+    adapter: text(row.adapter),
+    supportLevel: text(row.support_level ?? row.supportLevel),
+    notes: text(row.notes),
+  }
+}
+
+export async function loadExecutionStrategySupportMatrix(): Promise<ExecutionStrategySupportRow[]> {
+  const raw = await invokeCommand('get_execution_strategy_support_matrix')
+  const rows = Array.isArray(raw) ? raw : []
+  return rows
+    .map((row) => normalizeExecutionStrategySupportRow(row))
+    .filter((row): row is ExecutionStrategySupportRow => row !== null)
 }
 
 export async function loadExecutionRiskPolicy(): Promise<ExecutionRiskPolicy> {

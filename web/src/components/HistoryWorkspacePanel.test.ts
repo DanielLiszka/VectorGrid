@@ -262,6 +262,49 @@ describe("HistoryWorkspacePanel", () => {
     expect(deleteSpy).toHaveBeenCalledWith("C:/runs/demo.json");
   });
 
+  it("surfaces saved-run artifact repair actions and summary", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+    history.savedSelectedValue = "C:/runs/demo.json";
+    history.savedRunDetailTitle = "demo";
+    history.savedRunRepairSummary = "Dry-run found repairable changes";
+    history.canRepairSavedRun = true;
+    history.canWriteRepairedSavedRun = true;
+    const repairSpy = vi
+      .spyOn(history, "repairSavedRun")
+      .mockImplementation(() => {});
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const checkButton = document.querySelector<HTMLButtonElement>(
+      '[data-qa-action="library.savedRun.repairCheck"]',
+    );
+    const writeButton = document.querySelector<HTMLButtonElement>(
+      '[data-qa-action="library.savedRun.repairWrite"]',
+    );
+    expect(checkButton?.disabled).toBe(false);
+    expect(writeButton?.disabled).toBe(false);
+    expect(document.body.textContent || "").toContain("Artifact repair");
+    expect(document.body.textContent || "").toContain(
+      "Dry-run found repairable changes",
+    );
+
+    checkButton?.click();
+    writeButton?.click();
+    expect(repairSpy).toHaveBeenNthCalledWith(1, "C:/runs/demo.json", true);
+    expect(repairSpy).toHaveBeenNthCalledWith(2, "C:/runs/demo.json", false);
+  });
+
   it("supports arrow-key navigation across session and saved run lists", async () => {
     const history = useHistoryStore();
     const workflow = useWorkflowStore();

@@ -14,6 +14,7 @@ import {
   readSessionHistory,
   refreshSavedRuns,
   revealSavedRun,
+  repairSavedRun,
   rerunSavedRun,
   saveSavedRunTags,
 } from "./historyService";
@@ -1325,6 +1326,53 @@ describe("historyService", () => {
     expect(invokeCommandMock).toHaveBeenCalledWith("delete_run_artifact", {
       path: "C:/runs/run1.json",
     });
+  });
+
+  it("checks and writes repaired saved-run artifacts through the backend repair command", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      source_path: "C:/runs/run1.json",
+      result_path: "C:/runs/run1.json",
+      dry_run: true,
+      changed: true,
+      wrote: false,
+      changes: ["normalized route provenance"],
+    });
+
+    const dryRun = await repairSavedRun(" C:/runs/run1.json ");
+
+    expect(invokeCommandMock).toHaveBeenCalledWith("repair_run_artifact", {
+      path: "C:/runs/run1.json",
+      dry_run: true,
+    });
+    expect(dryRun.changed).toBe(true);
+    expect(dryRun.changes).toEqual(["normalized route provenance"]);
+
+    invokeCommandMock.mockResolvedValueOnce({
+      source_path: "C:/runs/run1.json",
+      result_path: "C:/runs/run1.repaired.json",
+      dry_run: false,
+      changed: true,
+      wrote: true,
+      changes: ["normalized route provenance"],
+      summary: {
+        ts: "2026-02-25T00:00:00Z",
+        path: "C:/runs/run1.repaired.json",
+        bytes: 4096,
+        strategy_kind: "DoubleMa",
+        has_validation: false,
+        tags: [],
+      },
+    });
+
+    const wrote = await repairSavedRun(" C:/runs/run1.json ", { dryRun: false });
+
+    expect(invokeCommandMock).toHaveBeenLastCalledWith("repair_run_artifact", {
+      path: "C:/runs/run1.json",
+      dry_run: false,
+      write_target: "C:/runs/run1.repaired.json",
+    });
+    expect(wrote.wrote).toBe(true);
+    expect(wrote.summary?.path).toBe("C:/runs/run1.repaired.json");
   });
 
   it("refreshes saved runs through direct command and normalizes rows", async () => {

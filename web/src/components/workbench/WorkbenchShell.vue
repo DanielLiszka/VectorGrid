@@ -12,6 +12,11 @@ import { useOptimizeStore } from '../../stores/optimizeStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useValidationStore } from '../../stores/validationStore'
 import { useWorkflowStore } from '../../stores/workflowStore'
+import { tauriRuntimeAvailable } from '../../tauri/invoke'
+import {
+  loadExecutionStrategySupportMatrix,
+  type ExecutionStrategySupportRow,
+} from '../../services/executionService'
 import { previewValidationContextCompatibilityFromStores } from '../../services/validationService'
 import { resolveWorkbenchInspectorState, type WorkbenchInspectorMode } from '../../utils/inspectorModel'
 import { resolveWorkbenchPrimaryAction } from '../../utils/workbenchActionModel'
@@ -127,6 +132,37 @@ const standardWorkspaceActive = computed(
 )
 const liveWorkspaceActive = computed(() => !guidedModeActive.value && currentWorkspace.value === 'live')
 const settingsWorkspaceActive = computed(() => !guidedModeActive.value && currentWorkspace.value === 'settings')
+const liveSupportRows = ref<ExecutionStrategySupportRow[]>([])
+const liveSupportMatrixStatus = ref('Support matrix uses desktop backend data when Tauri is available.')
+const liveSupportMatrixLoaded = ref(false)
+const liveSupportStrategiesLabel = computed(() => {
+  const supported = liveSupportRows.value
+    .filter((row) => row.supported)
+    .map((row) => row.strategyKind)
+    .filter((value) => value.length > 0)
+  return supported.length ? supported.join(' · ') : 'DoubleMa · CompositeCpu'
+})
+const liveSupportAdaptersLabel = computed(() => {
+  const adapters = liveSupportRows.value
+    .filter((row) => row.supported)
+    .map((row) => row.adapter || row.supportLevel)
+    .filter((value) => value.length > 0)
+  return adapters.length ? adapters.join(' · ') : 'Backend support matrix'
+})
+async function refreshLiveSupportMatrix(): Promise<void> {
+  if (liveSupportMatrixLoaded.value || !tauriRuntimeAvailable()) return
+  try {
+    const rows = await loadExecutionStrategySupportMatrix()
+    liveSupportRows.value = rows
+    liveSupportMatrixStatus.value = rows.length
+      ? `${rows.filter((row) => row.supported).length} supported strategy adapters reported by backend.`
+      : 'Backend returned an empty live strategy support matrix.'
+  } catch (error) {
+    liveSupportMatrixStatus.value = `Live support matrix unavailable: ${String(error || '')}`.trim()
+  } finally {
+    liveSupportMatrixLoaded.value = true
+  }
+}
 const visibleControlsItems = computed(() => navState.value.controlsItems)
 const visibleResultsItems = computed(() => navState.value.resultsItems)
 const controlsColumnVisible = computed(
@@ -235,6 +271,14 @@ watch(
   () => {
     requestedInspectorMode.value = ''
   },
+)
+
+watch(
+  () => liveWorkspaceActive.value,
+  (active) => {
+    if (active) void refreshLiveSupportMatrix()
+  },
+  { immediate: true },
 )
 
 watch(
@@ -414,8 +458,8 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
   >
     <WorkbenchRail v-if="!guidedModeActive" :items="navState.workspaceItems" @select="selectWorkspace" />
 
-    <section class="workbenchContent">
-      <header class="workbenchHeader" aria-label="Workspace shell header">
+    <div class="workbenchContent">
+      <header class="workbenchHeader" role="banner" aria-label="Workspace shell header">
         <div class="titleRow">
           <div class="titleCopy">
             <span class="eyebrow">VectorGrid</span>
@@ -520,7 +564,6 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
       <main
         id="shellMainPanel"
         class="workbenchMain"
-        role="tabpanel"
         :aria-labelledby="selectedShellLabelledBy"
       >
         <div id="shellSelectionStatus" class="srOnly" role="status" aria-live="polite">
@@ -765,7 +808,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
             <div class="liveSupportGrid">
               <article>
                 <span>Strategies</span>
-                <strong class="mono">DoubleMa · CompositeCpu</strong>
+                <strong class="mono" :title="liveSupportMatrixStatus">{{ liveSupportStrategiesLabel }}</strong>
+              </article>
+              <article>
+                <span>Adapters</span>
+                <strong class="mono" :title="liveSupportMatrixStatus">{{ liveSupportAdaptersLabel }}</strong>
               </article>
               <article>
                 <span>Broker</span>
@@ -790,7 +837,7 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
           <div id="settingsVueShellMount"></div>
         </section>
       </main>
-    </section>
+    </div>
 
     <WorkbenchInspector
       v-if="!guidedModeActive"

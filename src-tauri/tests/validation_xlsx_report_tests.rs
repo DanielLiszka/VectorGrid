@@ -331,6 +331,12 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(workbook_xml.contains("Distributions"));
     assert!(workbook_xml.contains("Audit Data"));
     assert!(workbook_xml.contains("Dashboard"));
+    assert!(workbook_xml.contains("Validation Features"));
+    assert!(workbook_xml.contains("Robustness Matrix"));
+    assert!(workbook_xml.contains("Rejection Diagnostics"));
+    assert!(workbook_xml.contains("Report Guide"));
+    assert!(workbook_xml.contains("Decision Ledger"));
+    assert!(workbook_xml.contains("Downside Stress"));
     assert!(workbook_xml.contains("Regime Audit"));
     assert!(workbook_xml.contains("activeTab=\"4\""));
 
@@ -357,11 +363,57 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(titles
         .iter()
         .any(|title| title == "WF Sharpe efficiency by robust rank"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Validation feature status counts"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Peer robust score by rank"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Validation probability metrics by rank"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Threshold distance by candidate"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Rejection and review reason counts"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Validation outcomes by candidate"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Worst drawdown by candidate"));
+    assert!(titles
+        .iter()
+        .any(|title| title == "Drawdown stress components by candidate"));
 
     let approved_sheet = read_entry(&bytes, "xl/worksheets/sheet1.xml");
     let shortlist_sheet = read_entry(&bytes, "xl/worksheets/sheet2.xml");
+    let features_sheet = read_entry(&bytes, "xl/worksheets/sheet6.xml");
+    let robustness_sheet = read_entry(&bytes, "xl/worksheets/sheet7.xml");
+    let diagnostics_sheet = read_entry(&bytes, "xl/worksheets/sheet8.xml");
+    let guide_sheet = read_entry(&bytes, "xl/worksheets/sheet9.xml");
+    let decision_sheet = read_entry(&bytes, "xl/worksheets/sheet10.xml");
+    let downside_sheet = read_entry(&bytes, "xl/worksheets/sheet11.xml");
     assert_eq!(row_count(&approved_sheet), 3, "header + 2 approved rows");
     assert_eq!(row_count(&shortlist_sheet), 4, "header + 3 shortlist rows");
+    assert!(approved_sheet.contains("<tableParts"));
+    assert!(approved_sheet.contains("<conditionalFormatting"));
+    assert!(shortlist_sheet.contains("<tableParts"));
+    assert!(shortlist_sheet.contains("<conditionalFormatting"));
+    assert!(features_sheet.contains("<tableParts"));
+    assert!(features_sheet.contains("<conditionalFormatting"));
+    assert!(robustness_sheet.contains("<tableParts"));
+    assert!(robustness_sheet.contains("<conditionalFormatting"));
+    assert!(diagnostics_sheet.contains("<tableParts"));
+    assert!(diagnostics_sheet.contains("<conditionalFormatting"));
+    assert!(guide_sheet.contains("<tableParts"));
+    assert!(decision_sheet.contains("<tableParts"));
+    assert!(decision_sheet.contains("<conditionalFormatting"));
+    assert!(downside_sheet.contains("<tableParts"));
+    assert!(downside_sheet.contains("<conditionalFormatting"));
+    assert!(all_xml(&bytes).contains("tableStyleInfo"));
 
     let xml = all_xml(&bytes);
     assert!(xml.contains("Validation XLSX Report"));
@@ -436,6 +488,39 @@ fn workbook_contains_expected_sheets_charts_and_dashboard_content() {
     assert!(xml.contains("Max Drift"));
     assert!(xml.contains("psr_below_min:0.50"));
     assert!(xml.contains("high_turnover"));
+    assert!(xml.contains("Validation Feature Coverage"));
+    assert!(xml.contains("Run-by-run inventory of validation modules"));
+    assert!(xml.contains("ValidationFeaturesTable"));
+    assert!(xml.contains("Final run verdict"));
+    assert!(xml.contains("Candidate hard gates"));
+    assert!(xml.contains("Closed-trade bootstrap"));
+    assert!(xml.contains("Parameter perturbation"));
+    assert!(xml.contains("Execution route evidence"));
+    assert!(xml.contains("Validation provenance contract"));
+    assert!(xml.contains("Top Candidate Robustness Matrix"));
+    assert!(xml.contains("Derived from the saved validation artifact"));
+    assert!(xml.contains("Peer Comparison"));
+    assert!(xml.contains("CSCV PBO"));
+    assert!(xml.contains("Bootstrap downside"));
+    assert!(xml.contains("Walk-forward efficiency"));
+    assert!(xml.contains("Rejection Diagnostics"));
+    assert!(xml.contains("Gate distance columns show observed minus required minimum"));
+    assert!(xml.contains("PSR Gap"));
+    assert!(xml.contains("DSR Gap"));
+    assert!(xml.contains("Worst Gate Gap"));
+    assert!(xml.contains("Candidate Decision Map"));
+    assert!(xml.contains("CandidateDecisionMapTable"));
+    assert!(xml.contains("CandidateDecisionLedgerTable"));
+    assert!(xml.contains("Decision Ledger Detail"));
+    assert!(xml.contains("Downside Stress Summary"));
+    assert!(xml.contains("DownsideStressTable"));
+    assert!(xml.contains("Worst DD Source"));
+    assert!(xml.contains("Worst PnL Source"));
+    assert!(xml.contains("Report Guide"));
+    assert!(xml.contains("Quick reference for interpreting the workbook"));
+    assert!(xml.contains("Positive is better"));
+    assert!(xml.contains("tabColor"));
+    assert!(xml.contains("pageSetup"));
 }
 
 #[test]
@@ -453,6 +538,34 @@ fn workbook_dashboard_links_quote_internal_sheet_targets_with_spaces() {
     );
     assert!(dashboard_sheet.contains("location=\"Shortlist!A1\""));
     assert!(dashboard_sheet.contains("location=\"Distributions!A1\""));
+    assert!(
+        dashboard_sheet.contains("location=\"'Validation Features'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Validation Features&apos;!A1\"")
+    );
+    assert!(
+        dashboard_sheet.contains("location=\"'Robustness Matrix'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Robustness Matrix&apos;!A1\"")
+    );
+    assert!(
+        dashboard_sheet.contains("location=\"'Rejection Diagnostics'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Rejection Diagnostics&apos;!A1\"")
+    );
+    assert!(
+        dashboard_sheet.contains("location=\"'Report Guide'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Report Guide&apos;!A1\"")
+    );
+    assert!(
+        dashboard_sheet.contains("location=\"'Decision Ledger'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Decision Ledger&apos;!A1\"")
+    );
+    assert!(
+        dashboard_sheet.contains("location=\"'Downside Stress'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Downside Stress&apos;!A1\"")
+    );
+    assert!(
+        dashboard_sheet.contains("location=\"'Regime Audit'!A1\"")
+            || dashboard_sheet.contains("location=\"&apos;Regime Audit&apos;!A1\"")
+    );
 }
 
 #[test]

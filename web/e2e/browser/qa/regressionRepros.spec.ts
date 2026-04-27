@@ -27,6 +27,75 @@ async function openSavedOptionsArtifact(page: import('@playwright/test').Page, a
   await expect(page.getByText(/Loaded saved options expression artifact/i).first()).toBeVisible()
 }
 
+const savedRunRepairScenario = {
+  ...optionsValidationReadyScenario,
+  name: 'saved-run-repair-ready',
+  description: 'A saved DoubleMa run can run a dry-run artifact repair check.',
+  expectedInvokes: ['list_run_artifacts', 'load_run_artifact_detail', 'repair_run_artifact'],
+}
+
+const savedRunRepairWriteScenario = {
+  ...optionsValidationReadyScenario,
+  name: 'saved-run-repair-write-ready',
+  description: 'A saved DoubleMa run can write a repaired artifact copy.',
+  commandResults: {
+    ...optionsValidationReadyScenario.commandResults,
+    list_run_artifacts: [
+      {
+        ts: '2026-04-24T14:30:00Z',
+        path: 'C:/runs/vectorgrid_options_parent.json',
+        bytes: 49152,
+        strategy_kind: 'DoubleMa',
+        config_fingerprint: 'double-ma-aapl-qa',
+        config_fingerprint_version: 1,
+        has_validation: true,
+        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
+        report_xlsx_exists: true,
+        csv_path: 'C:/fixtures/aapl_1m.csv',
+        timeframe: '1m',
+        tags: ['qa', 'options'],
+      },
+      {
+        ts: '2026-04-24T14:31:00Z',
+        path: 'C:/runs/vectorgrid_options_parent.repaired.json',
+        bytes: 51200,
+        strategy_kind: 'DoubleMa',
+        config_fingerprint: 'double-ma-aapl-qa',
+        config_fingerprint_version: 1,
+        has_validation: true,
+        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
+        report_xlsx_exists: true,
+        csv_path: 'C:/fixtures/aapl_1m.csv',
+        timeframe: '1m',
+        tags: ['qa', 'options', 'repaired'],
+      },
+    ],
+    repair_run_artifact: {
+      source_path: 'C:/runs/vectorgrid_options_parent.json',
+      result_path: 'C:/runs/vectorgrid_options_parent.repaired.json',
+      dry_run: false,
+      changed: true,
+      wrote: true,
+      changes: ['normalized saved-run summary fields', 'canonicalized request payload'],
+      summary: {
+        ts: '2026-04-24T14:31:00Z',
+        path: 'C:/runs/vectorgrid_options_parent.repaired.json',
+        bytes: 51200,
+        strategy_kind: 'DoubleMa',
+        config_fingerprint: 'double-ma-aapl-qa',
+        config_fingerprint_version: 1,
+        has_validation: true,
+        report_xlsx_path: 'C:/runs/vectorgrid_options_parent.xlsx',
+        report_xlsx_exists: true,
+        csv_path: 'C:/fixtures/aapl_1m.csv',
+        timeframe: '1m',
+        tags: ['qa', 'options', 'repaired'],
+      },
+    },
+  },
+  expectedInvokes: ['list_run_artifacts', 'load_run_artifact_detail', 'repair_run_artifact'],
+}
+
 defineWorkflow({
   id: 'validation.success.selected',
   title: 'runs conventional validation successfully from a loaded matching dataset',
@@ -173,6 +242,61 @@ defineWorkflow({
     expect(invokes).toContain('analyze_options_expression_validation_feasibility')
     expect(invokes).toContain('validate_options_expression_artifact')
     expect(invokes).toContain('reveal_path')
+    await expectNoStuckBusyState(page)
+  },
+})
+
+defineWorkflow({
+  id: 'library.savedRun.repairCheck',
+  title: 'checks saved-run artifact repair from the Library panel',
+  tags: ['@workflow', '@regression'],
+  scenario: savedRunRepairScenario,
+  run: async ({ page, action }) => {
+    await action('shell.workspace.library').click()
+    await action('library.savedRun.refresh').click()
+    await expect(page.getByRole('button', { name: /DoubleMa/i }).first()).toBeVisible()
+    await page.getByRole('button', { name: /DoubleMa/i }).first().click()
+
+    await expect(action('library.savedRun.repairCheck')).toBeEnabled()
+    await action('library.savedRun.repairCheck').click()
+    await page.locator('summary', { hasText: 'Artifact repair' }).click()
+    await expect(page.getByText(/Dry-run found repairable changes/i).first()).toBeVisible()
+    await expect(page.getByText(/canonicalized request payload/i).first()).toBeVisible()
+
+    const repairInvokes = (await readTauriInvokeLog(page)).filter((entry) => entry.command === 'repair_run_artifact')
+    expect(repairInvokes).toHaveLength(1)
+    expect(repairInvokes[0]?.args).toMatchObject({
+      path: 'C:/runs/vectorgrid_options_parent.json',
+      dry_run: true,
+    })
+    await expectNoStuckBusyState(page)
+  },
+})
+
+defineWorkflow({
+  id: 'library.savedRun.repairWrite',
+  title: 'writes a repaired saved-run artifact copy from the Library panel',
+  tags: ['@workflow', '@regression'],
+  scenario: savedRunRepairWriteScenario,
+  run: async ({ page, action }) => {
+    await action('shell.workspace.library').click()
+    await action('library.savedRun.refresh').click()
+    await expect(page.getByRole('button', { name: /DoubleMa/i }).first()).toBeVisible()
+    await page.getByRole('button', { name: /DoubleMa/i }).first().click()
+
+    await expect(action('library.savedRun.repairWrite')).toBeEnabled()
+    await action('library.savedRun.repairWrite').click()
+    await page.locator('summary', { hasText: 'Artifact repair' }).click()
+    await expect(page.getByText(/Wrote repaired artifact copy/i).first()).toBeVisible()
+    await expect(page.getByText(/vectorgrid_options_parent\.repaired\.json/i).first()).toBeVisible()
+
+    const repairInvokes = (await readTauriInvokeLog(page)).filter((entry) => entry.command === 'repair_run_artifact')
+    expect(repairInvokes).toHaveLength(1)
+    expect(repairInvokes[0]?.args).toMatchObject({
+      path: 'C:/runs/vectorgrid_options_parent.json',
+      dry_run: false,
+      write_target: 'C:/runs/vectorgrid_options_parent.repaired.json',
+    })
     await expectNoStuckBusyState(page)
   },
 })

@@ -399,6 +399,16 @@ export interface HistorySavedRunsRefreshSummary {
   runs: HistorySavedRunSummary[];
 }
 
+export interface HistoryRunArtifactRepairSummary {
+  sourcePath: string;
+  resultPath: string;
+  dryRun: boolean;
+  changed: boolean;
+  wrote: boolean;
+  changes: string[];
+  summary?: HistorySavedRunSummary | null;
+}
+
 export interface HistorySavedRunDetail {
   ts?: string;
   artifactPath?: string;
@@ -1023,6 +1033,10 @@ function applyConventionalReplayConfigToStores(
     ),
     moPrescanPredictiveStride: formatReplayNumber(
       gpuPrescan?.predictive_stride ?? gpuPrescan?.predictiveStride,
+      true,
+    ),
+    moPrescanDeviceId: formatReplayNumber(
+      gpuPrescan?.device_id ?? gpuPrescan?.deviceId,
       true,
     ),
     moPrescanObjectives: normalizeText(gpuPrescan?.objectives),
@@ -1834,6 +1848,72 @@ export async function saveSavedRunTags(
   });
 }
 
+function normalizeRunArtifactSummary(row: RunArtifactSummaryResponse): HistorySavedRunSummary | null {
+  const path = normalizeText(row.path);
+  if (!path) return null;
+
+  const bytes = Number(row.bytes);
+  const mlScoreSpace = canonicalMlScoreSpace(row.ml_score_space);
+  const mlScoreScope = canonicalMlScoreScope(row.ml_score_scope);
+  const mlNativeBackendUsed = normalizeText(row.ml_native_backend_used);
+  const mlNativePredictionBatchSize = normalizeOptionalNumber(
+    row.ml_native_prediction_batch_size,
+  );
+  const mlNativeFallbackReason = normalizeText(row.ml_native_fallback_reason);
+  const mlScoreNote = [
+    buildMlScoreNote(mlScoreSpace, mlScoreScope, row.ml_score_note),
+    buildMlNativeScoreNote(
+      mlNativeBackendUsed,
+      mlNativePredictionBatchSize,
+      mlNativeFallbackReason,
+    ),
+  ]
+    .filter((part) => part.length > 0)
+    .join(" • ");
+
+  return {
+    ts: normalizeText(row.ts),
+    path,
+    bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
+    strategyKind: normalizeText(row.strategy_kind),
+    configFingerprint: normalizeText(row.config_fingerprint),
+    configFingerprintVersion: normalizeOptionalNumber(
+      row.config_fingerprint_version,
+    ),
+    hasValidation: !!row.has_validation,
+    reportXlsxPath: normalizeText(row.report_xlsx_path),
+    reportXlsxExists: parseBooleanLike(row.report_xlsx_exists),
+    csvPath: normalizeText(row.csv_path),
+    timeframe: normalizeText(row.timeframe),
+    baseTimeframe: normalizeText(row.base_timeframe),
+    derivedTimeframe: normalizeText(row.derived_timeframe),
+    resampleApplied:
+      row.resample_applied == null ? null : parseBooleanLike(row.resample_applied),
+    sourceContentFingerprint: normalizeText(row.source_content_fingerprint),
+    routeProvenance: parseRouteProvenance(row.route_provenance),
+    lineage: parseArtifactLineage(row.lineage),
+    ...(mlScoreSpace ? { mlScoreSpace } : {}),
+    ...(mlScoreScope ? { mlScoreScope } : {}),
+    ...(buildMlScoreContractSummary(
+      mlScoreSpace,
+      mlScoreScope,
+      row.ml_score_contract_summary,
+    )
+      ? {
+          mlScoreContractSummary: buildMlScoreContractSummary(
+            mlScoreSpace,
+            mlScoreScope,
+            row.ml_score_contract_summary,
+          ),
+        }
+      : {}),
+    ...(mlScoreNote ? { mlScoreNote } : {}),
+    ...(mlNativeBackendUsed ? { mlNativeBackendUsed } : {}),
+    ...(mlNativeFallbackReason ? { mlNativeFallbackReason } : {}),
+    tags: normalizeStringList(row.tags),
+  };
+}
+
 export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary> {
   return measureArtifactHistoryPerf(
     "historyService.refreshSavedRunsMs",
@@ -1846,74 +1926,8 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
         const row = (
           entry && typeof entry === "object" ? entry : {}
         ) as RunArtifactSummaryResponse;
-        const path = normalizeText(row.path);
-        if (!path) continue;
-
-        const bytes = Number(row.bytes);
-        const mlScoreSpace = canonicalMlScoreSpace(row.ml_score_space);
-        const mlScoreScope = canonicalMlScoreScope(row.ml_score_scope);
-        const mlNativeBackendUsed = normalizeText(row.ml_native_backend_used);
-        const mlNativePredictionBatchSize = normalizeOptionalNumber(
-          row.ml_native_prediction_batch_size,
-        );
-        const mlNativeFallbackReason = normalizeText(
-          row.ml_native_fallback_reason,
-        );
-        const mlScoreNote = [
-          buildMlScoreNote(mlScoreSpace, mlScoreScope, row.ml_score_note),
-          buildMlNativeScoreNote(
-            mlNativeBackendUsed,
-            mlNativePredictionBatchSize,
-            mlNativeFallbackReason,
-          ),
-        ]
-          .filter((part) => part.length > 0)
-          .join(" • ");
-        runs.push({
-          ts: normalizeText(row.ts),
-          path,
-          bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
-          strategyKind: normalizeText(row.strategy_kind),
-          configFingerprint: normalizeText(row.config_fingerprint),
-          configFingerprintVersion: normalizeOptionalNumber(
-            row.config_fingerprint_version,
-          ),
-          hasValidation: !!row.has_validation,
-          reportXlsxPath: normalizeText(row.report_xlsx_path),
-          reportXlsxExists: parseBooleanLike(row.report_xlsx_exists),
-          csvPath: normalizeText(row.csv_path),
-          timeframe: normalizeText(row.timeframe),
-          baseTimeframe: normalizeText(row.base_timeframe),
-          derivedTimeframe: normalizeText(row.derived_timeframe),
-          resampleApplied:
-            row.resample_applied == null
-              ? null
-              : parseBooleanLike(row.resample_applied),
-          sourceContentFingerprint: normalizeText(
-            row.source_content_fingerprint,
-          ),
-          routeProvenance: parseRouteProvenance(row.route_provenance),
-          lineage: parseArtifactLineage(row.lineage),
-          ...(mlScoreSpace ? { mlScoreSpace } : {}),
-          ...(mlScoreScope ? { mlScoreScope } : {}),
-          ...(buildMlScoreContractSummary(
-            mlScoreSpace,
-            mlScoreScope,
-            row.ml_score_contract_summary,
-          )
-            ? {
-                mlScoreContractSummary: buildMlScoreContractSummary(
-                  mlScoreSpace,
-                  mlScoreScope,
-                  row.ml_score_contract_summary,
-                ),
-              }
-            : {}),
-          ...(mlScoreNote ? { mlScoreNote } : {}),
-          ...(mlNativeBackendUsed ? { mlNativeBackendUsed } : {}),
-          ...(mlNativeFallbackReason ? { mlNativeFallbackReason } : {}),
-          tags: normalizeStringList(row.tags),
-        });
+        const summary = normalizeRunArtifactSummary(row);
+        if (summary) runs.push(summary);
       }
 
       return { runs };
@@ -2125,6 +2139,52 @@ export async function deleteSavedRun(path: string): Promise<void> {
   const nextPath = normalizePath(path);
   if (!nextPath) return;
   await invokeCommand("delete_run_artifact", { path: nextPath });
+}
+
+function defaultRepairTargetPath(path: string): string {
+  const nextPath = normalizePath(path);
+  if (!nextPath) return "";
+  const parts = nextPath.split(/([\\/])/g);
+  const filename = parts.pop() || "repaired_run.json";
+  const suffix = filename.toLowerCase().endsWith(".json")
+    ? filename.slice(0, -5)
+    : filename;
+  return `${parts.join("")}${suffix}.repaired.json`;
+}
+
+function normalizeRunArtifactRepairResponse(raw: unknown): HistoryRunArtifactRepairSummary {
+  const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const summary = row.summary && typeof row.summary === "object"
+    ? normalizeRunArtifactSummary(row.summary as RunArtifactSummaryResponse)
+    : null;
+  return {
+    sourcePath: normalizePath(String(row.sourcePath ?? row.source_path ?? "")),
+    resultPath: normalizePath(String(row.resultPath ?? row.result_path ?? "")),
+    dryRun: !!(row.dryRun ?? row.dry_run),
+    changed: !!row.changed,
+    wrote: !!row.wrote,
+    changes: normalizeStringList(row.changes),
+    summary,
+  };
+}
+
+export async function repairSavedRun(
+  path: string,
+  options: { dryRun?: boolean; writeTarget?: string } = {},
+): Promise<HistoryRunArtifactRepairSummary> {
+  const nextPath = normalizePath(path);
+  if (!nextPath) throw new Error("Select a saved run before repairing.");
+  const dryRun = options.dryRun !== false;
+  const writeTarget = dryRun
+    ? ""
+    : normalizePath(options.writeTarget || defaultRepairTargetPath(nextPath));
+  const args: Record<string, unknown> = {
+    path: nextPath,
+    dry_run: dryRun,
+  };
+  if (writeTarget) args.write_target = writeTarget;
+  const raw = await invokeCommand("repair_run_artifact", args);
+  return normalizeRunArtifactRepairResponse(raw);
 }
 
 export async function loadSavedRunDetail(

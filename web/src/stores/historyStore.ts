@@ -3,6 +3,7 @@ import type { IFuseOptions } from "fuse.js";
 import { defineStore } from "pinia";
 import { markRaw } from "vue";
 import type {
+  HistoryRunArtifactRepairSummary,
   HistorySavedRunDetail,
   HistorySavedRunSummary,
   HistorySessionSummary,
@@ -337,6 +338,7 @@ interface HistoryState {
   savedRunDetailMlVerdict: string;
   savedRunDetailMlCandidates: string;
   savedRunDetailParams: string;
+  savedRunRepairSummary: string;
   canApplyHistory: boolean;
   canExportPreset: boolean;
   canImportPreset: boolean;
@@ -349,6 +351,8 @@ interface HistoryState {
   canOpenSavedRunReport: boolean;
   canRevealSavedRun: boolean;
   canDeleteSavedRun: boolean;
+  canRepairSavedRun: boolean;
+  canWriteRepairedSavedRun: boolean;
   canOpenRunsDir: boolean;
   statusLine: string;
   source: "vue" | "unknown";
@@ -545,6 +549,25 @@ function buildOverviewCompareOptions(
   return rawArray(options);
 }
 
+function formatRepairSummary(result: HistoryRunArtifactRepairSummary): string {
+  const changes = result.changes.length
+    ? result.changes.join(" | ")
+    : "No detailed repair changes reported.";
+  const disposition = result.dryRun
+    ? result.changed
+      ? "Dry-run found repairable changes"
+      : "Dry-run found no required changes"
+    : result.wrote
+      ? "Wrote repaired artifact copy"
+      : result.changed
+        ? "Repair found changes but did not write a copy"
+        : "Artifact already canonical";
+  const target = result.resultPath || result.sourcePath || "";
+  return [disposition, target ? `target=${target}` : "", changes]
+    .filter((part) => part.length > 0)
+    .join(" · ");
+}
+
 function applyVueTextFieldUpdate(
   state: HistoryState,
   field: string,
@@ -642,6 +665,7 @@ export const useHistoryStore = defineStore("history", {
     savedRunDetailMlVerdict: "—",
     savedRunDetailMlCandidates: "—",
     savedRunDetailParams: "Select a saved run to inspect parameters.",
+    savedRunRepairSummary: "No artifact repair check has been run.",
     canApplyHistory: false,
     canExportPreset: true,
     canImportPreset: true,
@@ -654,6 +678,8 @@ export const useHistoryStore = defineStore("history", {
     canOpenSavedRunReport: false,
     canRevealSavedRun: false,
     canDeleteSavedRun: false,
+    canRepairSavedRun: false,
+    canWriteRepairedSavedRun: false,
     canOpenRunsDir: true,
     statusLine: "Ready.",
     source: "unknown",
@@ -912,6 +938,12 @@ export const useHistoryStore = defineStore("history", {
             this.savedRunDetailParams ??
             "Select a saved run to inspect parameters.",
         ).trim() || "Select a saved run to inspect parameters.";
+      this.savedRunRepairSummary =
+        String(
+          snapshot.savedRunRepairSummary ??
+            this.savedRunRepairSummary ??
+            "No artifact repair check has been run.",
+        ).trim() || "No artifact repair check has been run.";
       this.canApplyHistory = Boolean(
         snapshot.canApplyHistory ?? this.canApplyHistory,
       );
@@ -947,6 +979,12 @@ export const useHistoryStore = defineStore("history", {
       );
       this.canDeleteSavedRun = Boolean(
         snapshot.canDeleteSavedRun ?? this.canDeleteSavedRun,
+      );
+      this.canRepairSavedRun = Boolean(
+        snapshot.canRepairSavedRun ?? this.canRepairSavedRun,
+      );
+      this.canWriteRepairedSavedRun = Boolean(
+        snapshot.canWriteRepairedSavedRun ?? this.canWriteRepairedSavedRun,
       );
       this.canOpenRunsDir = Boolean(
         snapshot.canOpenRunsDir ?? this.canOpenRunsDir,
@@ -1084,6 +1122,7 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailMlVerdict = "—";
         this.savedRunDetailMlCandidates = "—";
         this.savedRunDetailParams = "Select a saved run to inspect parameters.";
+        this.savedRunRepairSummary = "No artifact repair check has been run.";
         this.savedRunCompareSummary = "-";
         this.savedRunDetailLoadingPath = "";
       } else {
@@ -1240,6 +1279,8 @@ export const useHistoryStore = defineStore("history", {
         );
       this.canRevealSavedRun = canMutate && hasSelection;
       this.canDeleteSavedRun = canMutate && hasSelection;
+      this.canRepairSavedRun = canMutate && hasSelection;
+      this.canWriteRepairedSavedRun = canMutate && hasSelection;
       this.canOpenRunsDir = canMutate;
 
       if (selectedEntry && !selectedDetail) {
@@ -1582,6 +1623,50 @@ export const useHistoryStore = defineStore("history", {
         .catch((error: unknown) => {
           this.statusLine =
             String(error || "").trim() || "Failed to reveal saved run.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
+    },
+
+    repairSavedRun(path: string, dryRun = true): void {
+      const nextPath = normalizePath(path || this.savedSelectedValue);
+      if (!nextPath) return;
+      const preferredPath = this.savedSelectedValue;
+      this.statusLine = dryRun
+        ? "Checking saved run artifact repair scope..."
+        : "Writing repaired saved run artifact copy...";
+      this.source = "vue";
+      this.updatedAtUnixMs = Date.now();
+
+      void loadHistoryService()
+        .then((service) =>
+          service.repairSavedRun(nextPath, { dryRun }).then((result) => ({
+            result,
+            refresh: dryRun ? null : service.refreshSavedRuns(),
+          })),
+        )
+        .then(async ({ result, refresh }) => {
+          this.savedRunRepairSummary = formatRepairSummary(result);
+          if (refresh) {
+            const summary = await refresh;
+            this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs);
+            this.savedRunDetailCache = pruneSavedRunDetailCache(
+              this.savedRunDetailCache,
+              this.savedRunsRaw,
+            );
+            this.syncSavedRunsView(result.resultPath || preferredPath);
+          }
+          this.statusLine = dryRun
+            ? "Artifact repair dry-run complete."
+            : "Repaired artifact copy complete.";
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        })
+        .catch((error: unknown) => {
+          const message =
+            String(error || "").trim() || "Failed to repair saved run artifact.";
+          this.savedRunRepairSummary = message;
+          this.statusLine = message;
           this.source = "vue";
           this.updatedAtUnixMs = Date.now();
         });

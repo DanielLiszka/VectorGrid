@@ -19,14 +19,13 @@ function selectStep(id: ResearchCockpitStepId): void {
       <p>{{ model.summary }}</p>
     </div>
 
-    <div class="cockpitSteps" role="list" aria-label="Research workflow progress">
+    <div class="cockpitSteps" role="group" aria-label="Research workflow progress">
       <button
         v-for="step in model.steps"
         :key="step.id"
         type="button"
         class="cockpitStep"
         :class="step.state"
-        role="listitem"
         :data-state="step.state"
         :data-qa-action="step.actionId"
         @click="selectStep(step.id)"

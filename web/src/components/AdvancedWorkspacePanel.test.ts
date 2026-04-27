@@ -80,6 +80,82 @@ describe('AdvancedWorkspacePanel', () => {
     wrapper.unmount()
   })
 
+  it('exposes Composite MO sampler, prescan, and search-space controls', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'CompositeMo'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueAdvanced_moSampler')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_moRandomTrials')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_moTpeTrials')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_moQmcSequence')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_moNsga2Population')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_moPrescanDeviceId')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_moSearchSpace')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_moUseRangeBuilder')).not.toBeNull()
+
+    const sampler = document.querySelector<HTMLSelectElement>('#vueAdvanced_moSampler')
+    sampler!.value = 'Random'
+    sampler!.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(advanced.moSampler).toBe('Random')
+
+    const device = document.querySelector<HTMLInputElement>('#vueAdvanced_moPrescanDeviceId')
+    device!.value = '2'
+    device!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(advanced.moPrescanDeviceId).toBe('2')
+
+    wrapper.unmount()
+  })
+
+  it('exposes VDPS controls and non-Grid mode options when advertised by the store', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    advanced.applyLegacySnapshot({
+      mode: 'GpuVdps',
+      modeOptions: [
+        { value: 'Grid', label: 'Grid', disabled: false },
+        { value: 'GpuVdps', label: 'GpuVdps', disabled: false },
+      ],
+      vdpsVisible: true,
+    })
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    const mode = document.querySelector<HTMLSelectElement>('#vueMode')
+    expect(Array.from(mode?.options || []).map((option) => option.value)).toContain('GpuVdps')
+    expect(document.querySelector('#vueAdvanced_vdpsEta')).not.toBeNull()
+    expect(document.querySelector('#vueAdvanced_vdpsDeterministic')).not.toBeNull()
+
+    const eta = document.querySelector<HTMLInputElement>('#vueAdvanced_vdpsEta')
+    eta!.value = '5'
+    eta!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(advanced.vdpsEta).toBe('5')
+
+    wrapper.unmount()
+  })
+
   it('keeps Top K but hides heatmap for VCC', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

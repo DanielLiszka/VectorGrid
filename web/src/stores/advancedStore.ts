@@ -122,6 +122,7 @@ interface AdvancedState {
   moPrescanWindow: string
   moPrescanPredictiveTopK: string
   moPrescanPredictiveStride: string
+  moPrescanDeviceId: string
   moPrescanObjectives: string
   moPrescanMode: string
   moPrescanMaPairs: string
@@ -235,6 +236,7 @@ const ADVANCED_STRING_FIELD_IDS = new Set<string>([
   'moPrescanWindow',
   'moPrescanPredictiveTopK',
   'moPrescanPredictiveStride',
+  'moPrescanDeviceId',
   'moPrescanObjectives',
   'moPrescanMode',
   'moPrescanMaPairs',
@@ -414,6 +416,7 @@ export const useAdvancedStore = defineStore('advanced', {
     moPrescanWindow: '',
     moPrescanPredictiveTopK: '',
     moPrescanPredictiveStride: '',
+    moPrescanDeviceId: '',
     moPrescanObjectives: '',
     moPrescanMode: '',
     moPrescanMaPairs: '',
@@ -463,7 +466,7 @@ export const useAdvancedStore = defineStore('advanced', {
     vdpsDeterministic: true,
     moPrescanEnable: false,
     moPrescanRequireGpu: false,
-    moUseRangeBuilder: true,
+    moUseRangeBuilder: false,
     exportAllCsvPath: '',
     canBrowseExportAll: true,
     canResetMoSearchSpace: false,
@@ -542,6 +545,7 @@ export const useAdvancedStore = defineStore('advanced', {
       this.moPrescanWindow = String(snapshot.moPrescanWindow ?? this.moPrescanWindow ?? '').trim()
       this.moPrescanPredictiveTopK = String(snapshot.moPrescanPredictiveTopK ?? this.moPrescanPredictiveTopK ?? '').trim()
       this.moPrescanPredictiveStride = String(snapshot.moPrescanPredictiveStride ?? this.moPrescanPredictiveStride ?? '').trim()
+      this.moPrescanDeviceId = String(snapshot.moPrescanDeviceId ?? this.moPrescanDeviceId ?? '').trim()
       this.moPrescanObjectives = String(snapshot.moPrescanObjectives ?? this.moPrescanObjectives ?? '').trim()
       this.moPrescanMode = String(snapshot.moPrescanMode ?? this.moPrescanMode ?? '').trim()
       this.moPrescanMaPairs = String(snapshot.moPrescanMaPairs ?? this.moPrescanMaPairs ?? '').trim()
@@ -643,7 +647,6 @@ export const useAdvancedStore = defineStore('advanced', {
     resetMoSearchSpace(): void {
       void (async () => {
         try {
-          if (!this.canResetMoSearchSpace) return
           const result = await resetMoSearchSpaceAction()
           const json = String(result?.json || '').trim()
           if (!json) return

@@ -16,6 +16,7 @@ import {
   flattenPosition,
   getStoredExecutionCredentialStatus,
   listSavedLiveSessions,
+  loadExecutionStrategySupportMatrix,
   loadExecutionRiskPolicy,
   loadPersistedExecutionKeys,
   loadSavedLiveSessionDetail,
@@ -1204,6 +1205,32 @@ describe('executionService', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('preview_execution_policy_decision', {
       req: expect.objectContaining({ symbol: 'AAPL' }),
     })
+  })
+
+  it('loads the backend execution strategy support matrix', async () => {
+    invokeCommandMock.mockResolvedValueOnce([
+      {
+        strategy_kind: 'DoubleMa',
+        supported: true,
+        adapter: 'double_ma_execution_adapter',
+        support_level: 'signal_and_delta',
+        notes: 'ok',
+      },
+      { strategy_kind: '', supported: true },
+    ])
+
+    const rows = await loadExecutionStrategySupportMatrix()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('get_execution_strategy_support_matrix')
+    expect(rows).toEqual([
+      {
+        strategyKind: 'DoubleMa',
+        supported: true,
+        adapter: 'double_ma_execution_adapter',
+        supportLevel: 'signal_and_delta',
+        notes: 'ok',
+      },
+    ])
   })
 
   it('keeps submitted runOnce success visible when secure credential persistence fails afterward', async () => {

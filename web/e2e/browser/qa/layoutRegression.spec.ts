@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import { emptyAppScenario, legacyShellScenario } from '../fixtures/scenarios'
+import { emptyAppScenario } from '../fixtures/scenarios'
 import { defineWorkflow } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow } from '../support/qaAssertions'
 
@@ -24,8 +24,6 @@ interface ShellLayoutSnapshot {
   header: LayoutRect | null
   main: LayoutRect | null
   footer: LayoutRect | null
-  validationDock: LayoutRect | null
-  historyDock: LayoutRect | null
   workbenchInspector: LayoutRect | null
   visibleChromeHeight: number | null
   mainVisibleHeight: number | null
@@ -84,8 +82,6 @@ async function readShellLayout(page: Page): Promise<ShellLayoutSnapshot> {
       header,
       main,
       footer,
-      validationDock: readRect('.valDock'),
-      historyDock: readRect('.historyDock'),
       workbenchInspector: readRect('[aria-label="Workbench inspector"]'),
       visibleChromeHeight: main ? main.top : null,
       mainVisibleHeight: main ? Math.max(0, Math.min(main.bottom, window.innerHeight) - Math.max(main.top, 0)) : null,
@@ -113,13 +109,13 @@ function expectVisibleNavTargets(snapshot: ShellLayoutSnapshot): void {
   expect(hiddenTargets, 'shell navigation targets outside viewport').toEqual([])
 }
 
-function expectNoDockOverlap(dock: LayoutRect, reference: LayoutRect, label: string, dockLabel = 'dock'): void {
+function expectNoInspectorOverlap(inspector: LayoutRect, reference: LayoutRect, label: string): void {
   const overlaps =
-    dock.left < reference.right
-    && dock.right > reference.left
-    && dock.top < reference.bottom
-    && dock.bottom > reference.top
-  expect(overlaps, `${label} should not overlap the ${dockLabel}`).toBe(false)
+    inspector.left < reference.right
+    && inspector.right > reference.left
+    && inspector.top < reference.bottom
+    && inspector.bottom > reference.top
+  expect(overlaps, `${label} should not overlap the workbench inspector`).toBe(false)
 }
 
 defineWorkflow({
@@ -133,7 +129,6 @@ defineWorkflow({
     let snapshot = await readShellLayout(page)
     expectLayoutBudget(snapshot, { maxChrome: 360, minMainVisible: 360, maxFooter: 130 })
     expectVisibleNavTargets(snapshot)
-    expect(snapshot.validationDock, 'validation dock should not be visible on data step').toBeNull()
 
     await action('shell.workflowStep.validate').click()
     await expect(page.locator('[data-qa-action="validation.run"]')).toBeVisible()
@@ -141,13 +136,12 @@ defineWorkflow({
     snapshot = await readShellLayout(page)
     expectLayoutBudget(snapshot, { maxChrome: 360, minMainVisible: 380, maxFooter: 120 })
     expectVisibleNavTargets(snapshot)
-    expect(snapshot.validationDock, 'validation dock should not duplicate the validation workspace').toBeNull()
   },
 })
 
 defineWorkflow({
   id: 'layout.desktop.validation',
-  title: 'keeps desktop validation layout clear of duplicate validation dock',
+  title: 'keeps desktop validation layout clear of duplicate inspector context',
   tags: ['@workflow', '@responsive', '@layout'],
   viewport: { width: 1720, height: 1080 },
   scenario: emptyAppScenario,
@@ -158,7 +152,6 @@ defineWorkflow({
     const snapshot = await readShellLayout(page)
     expectLayoutBudget(snapshot, { maxChrome: 260, minMainVisible: 720, maxFooter: 80 })
     expectVisibleNavTargets(snapshot)
-    expect(snapshot.validationDock, 'validation dock should not duplicate the validation workspace').toBeNull()
   },
 })
 
@@ -175,59 +168,38 @@ defineWorkflow({
     const snapshot = await readShellLayout(page)
     expectLayoutBudget(snapshot, { maxChrome: 220, minMainVisible: 500, maxFooter: 40 })
     expectVisibleNavTargets(snapshot)
-    expect(snapshot.historyDock, 'legacy history dock should not duplicate the workbench inspector').toBeNull()
     expect(snapshot.workbenchInspector, 'workbench inspector should be visible on desktop library').not.toBeNull()
     expect(snapshot.main, 'main panel should be available for inspector comparison').not.toBeNull()
     expect(snapshot.footer, 'footer should be available for inspector comparison').not.toBeNull()
     expect(snapshot.header, 'header should be available for inspector comparison').not.toBeNull()
-    const historyDock = snapshot.workbenchInspector as LayoutRect
-    expect(historyDock.left, 'workbench inspector should sit to the right of the library panel').toBeGreaterThanOrEqual(
+    const inspector = snapshot.workbenchInspector as LayoutRect
+    expect(inspector.left, 'workbench inspector should sit to the right of the library panel').toBeGreaterThanOrEqual(
       (snapshot.main as LayoutRect).right - 0.5,
     )
-    expect(historyDock.top, 'workbench inspector should sit below the desktop titlebar').toBeGreaterThanOrEqual(
+    expect(inspector.top, 'workbench inspector should sit below the desktop titlebar').toBeGreaterThanOrEqual(
       (snapshot.titlebar as LayoutRect).bottom - 0.5,
     )
-    expect(historyDock.right, 'workbench inspector should stay inside viewport').toBeLessThanOrEqual(snapshot.viewport.width)
-    expect(historyDock.bottom, 'workbench inspector should stay above footer').toBeLessThanOrEqual(
+    expect(inspector.right, 'workbench inspector should stay inside viewport').toBeLessThanOrEqual(snapshot.viewport.width)
+    expect(inspector.bottom, 'workbench inspector should stay above footer').toBeLessThanOrEqual(
       (snapshot.footer as LayoutRect).top,
     )
-    expectNoDockOverlap(historyDock, snapshot.main as LayoutRect, 'main panel', 'workbench inspector')
-    expectNoDockOverlap(historyDock, snapshot.footer as LayoutRect, 'footer', 'workbench inspector')
-  },
-})
-
-defineWorkflow({
-  id: 'layout.desktop.legacyHistoryDockRollback',
-  title: 'keeps desktop legacy shell rollback path measurable while workbench is default',
-  tags: ['@workflow', '@responsive', '@layout'],
-  viewport: { width: 1366, height: 768 },
-  scenario: legacyShellScenario,
-  run: async ({ page, action }) => {
-    await action('shell.workspace.library').click()
-    await expect(page.locator('[aria-label="History context dock"]')).toBeVisible()
-    await expect(page.locator('[aria-label="Workbench inspector"]')).toBeHidden()
-    await expectNoHorizontalDocumentOverflow(page)
-    const snapshot = await readShellLayout(page)
-    expectLayoutBudget(snapshot, { maxChrome: 260, minMainVisible: 500, maxFooter: 80 })
-    expectVisibleNavTargets(snapshot)
-    expect(snapshot.historyDock, 'legacy history dock should remain available on rollback path').not.toBeNull()
-    expect(snapshot.workbenchInspector, 'workbench inspector should not render on legacy rollback path').toBeNull()
+    expectNoInspectorOverlap(inspector, snapshot.main as LayoutRect, 'main panel')
+    expectNoInspectorOverlap(inspector, snapshot.footer as LayoutRect, 'footer')
   },
 })
 
 defineWorkflow({
   id: 'layout.mobile.library',
-  title: 'keeps mobile library usable without a fixed history overlay',
+  title: 'keeps mobile library usable without a persistent inspector overlay',
   tags: ['@workflow', '@responsive', '@layout'],
   viewport: { width: 390, height: 844 },
   scenario: emptyAppScenario,
   run: async ({ page, action }) => {
     await action('shell.workspace.library').click()
-    await expect(page.locator('[aria-label="History context dock"]')).toBeHidden()
+    await expect(page.locator('[aria-label="Workbench inspector"]')).toBeHidden()
     await expectNoHorizontalDocumentOverflow(page)
     const snapshot = await readShellLayout(page)
     expectLayoutBudget(snapshot, { maxChrome: 300, minMainVisible: 500, maxFooter: 40 })
     expectVisibleNavTargets(snapshot)
-    expect(snapshot.historyDock, 'history dock should not consume mobile viewport space').toBeNull()
   },
 })

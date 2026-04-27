@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { premiumWorkbenchScenario } from '../fixtures/scenarios'
+import { emptyAppScenario } from '../fixtures/scenarios'
 import { workbenchSelectors } from '../../desktop/support/selectors'
 import { defineWorkflow } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow } from '../support/qaAssertions'
@@ -10,7 +10,7 @@ defineWorkflow({
   id: 'workbench.shell.firstSlice',
   title: 'exercises the default premium workbench shell without regressing shell contracts',
   tags: ['@workflow', '@smoke'],
-  scenario: premiumWorkbenchScenario,
+  scenario: emptyAppScenario,
   run: async ({ page, action }) => {
     const visualEvidenceDir = path.resolve(process.cwd(), '../output/playwright/workbench-visual')
     await fs.mkdir(visualEvidenceDir, { recursive: true })

@@ -406,6 +406,7 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
     storeId: "advanced",
     key: "moPrescanPredictiveStride",
   },
+  moPrescanDeviceId: { storeId: "advanced", key: "moPrescanDeviceId" },
   moPrescanObjectives: { storeId: "advanced", key: "moPrescanObjectives" },
   moPrescanMode: { storeId: "advanced", key: "moPrescanMode" },
   moPrescanMaPairs: { storeId: "advanced", key: "moPrescanMaPairs" },

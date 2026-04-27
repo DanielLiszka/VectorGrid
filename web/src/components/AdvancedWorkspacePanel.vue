@@ -17,6 +17,37 @@ interface GuidanceItem {
   detail: string
 }
 
+interface FieldOption {
+  value: string
+  label: string
+}
+
+interface AdvancedTextFieldSpec {
+  id: string
+  label: string
+  placeholder?: string
+  wide?: boolean
+  multiline?: boolean
+}
+
+interface AdvancedSelectFieldSpec {
+  id: string
+  label: string
+  options: FieldOption[]
+  wide?: boolean
+}
+
+interface AdvancedCheckboxSpec {
+  id: string
+  label: string
+}
+
+interface FieldGroup {
+  key: string
+  title: string
+  fields: AdvancedTextFieldSpec[]
+}
+
 const advancedStore = useAdvancedStore()
 const optimizeStore = useOptimizeStore()
 const strategyStore = useStrategyStore()
@@ -38,6 +69,7 @@ const {
   shortlistNeighborhoodRadius,
   shortlistNeighborhoodStep,
   mode,
+  modeOptions,
   vdpsVisible,
   vdpsTelemetryHint,
   compositeMoVisible,
@@ -419,8 +451,231 @@ const shortlistSliceBenchmarkOptionItems = computed(() => [
   { value: 'flat', label: 'Flat benchmark', disabled: false },
   { value: 'buy_and_hold', label: 'Buy and Hold', disabled: false },
 ])
-const modeOptionItems = computed(() => [{ value: 'Grid', label: 'Grid', disabled: false }])
+const modeOptionItems = computed(() => resolvedOptions(modeOptions.value, mode.value, mode.value || 'Grid'))
 const includeAllOptionItems = computed(() => resolvedOptions(includeAllOptions.value, includeAll.value, includeAll.value || 'false'))
+const compositeMoSamplerOptions: FieldOption[] = [
+  { value: '', label: 'NSGA-II (default)' },
+  { value: 'Nsga2', label: 'NSGA-II' },
+  { value: 'Random', label: 'Random' },
+  { value: 'Tpe', label: 'TPE' },
+  { value: 'Qmc', label: 'QMC' },
+]
+const qmcSequenceOptions: FieldOption[] = [
+  { value: '', label: 'Sobol (default)' },
+  { value: 'sobol', label: 'Sobol' },
+  { value: 'halton', label: 'Halton' },
+]
+const moBoolDomainOptions: FieldOption[] = [
+  { value: '', label: 'Both true/false (default)' },
+  { value: 'true', label: 'True only' },
+  { value: 'false', label: 'False only' },
+]
+const moPrescanObjectiveOptions: FieldOption[] = [
+  { value: '', label: 'Both (default)' },
+  { value: 'both', label: 'Both' },
+  { value: 'maximize', label: 'Maximize only' },
+  { value: 'minimize', label: 'Minimize only' },
+]
+const moPrescanModeOptions: FieldOption[] = [
+  { value: '', label: 'Auto (default)' },
+  { value: 'Auto', label: 'Auto' },
+  { value: 'Gpu', label: 'GPU' },
+  { value: 'Cpu', label: 'CPU' },
+]
+const vdpsTextFields: AdvancedTextFieldSpec[] = [
+  { id: 'vdpsEta', label: 'Eta', placeholder: '4' },
+  { id: 'vdpsRungs', label: 'Rungs', placeholder: '3' },
+  { id: 'vdpsMinInitialPairs', label: 'Min initial pairs', placeholder: '256' },
+  { id: 'vdpsMaxSurvivorSeeds', label: 'Max survivor seeds', placeholder: '64' },
+  { id: 'vdpsMaxPeriodCandidates', label: 'Max period candidates', placeholder: '512' },
+  { id: 'vdpsRandomInjectionRatio', label: 'Random injection ratio', placeholder: '0.05' },
+  { id: 'vdpsEliteMutationRatio', label: 'Elite mutation ratio', placeholder: '0.1' },
+  { id: 'vdpsDifferentialRatio', label: 'Differential ratio', placeholder: '0.1' },
+  { id: 'vdpsSeed', label: 'Seed', placeholder: '1' },
+  { id: 'vdpsQualityCheckMaxPairs', label: 'Quality-check max pairs', placeholder: '1024' },
+  { id: 'vdpsQualityCheckTopK', label: 'Quality-check top K', placeholder: '32' },
+]
+const vdpsCheckboxFields: AdvancedCheckboxSpec[] = [
+  { id: 'vdpsDeterministic', label: 'Deterministic VDPS search' },
+]
+const moObjectiveFields: AdvancedTextFieldSpec[] = [
+  { id: 'moObjectiveMin', label: 'Minimize objective', placeholder: 'MaxDrawdown' },
+]
+const moSamplerSelectFields: AdvancedSelectFieldSpec[] = [
+  { id: 'moSampler', label: 'Sampler', options: compositeMoSamplerOptions },
+]
+const moSamplerFieldGroups: FieldGroup[] = [
+  {
+    key: 'mo_random',
+    title: 'Random sampler',
+    fields: [
+      { id: 'moRandomSeed', label: 'Random seed', placeholder: '1' },
+      { id: 'moRandomTrials', label: 'Random trials', placeholder: '2000' },
+    ],
+  },
+  {
+    key: 'mo_tpe',
+    title: 'TPE sampler',
+    fields: [
+      { id: 'moTpeSeed', label: 'TPE seed', placeholder: '1' },
+      { id: 'moTpeTrials', label: 'TPE trials', placeholder: '5000' },
+      { id: 'moTpeStartupTrials', label: 'Startup trials', placeholder: '10' },
+      { id: 'moTpeCandidates', label: 'EI candidates', placeholder: '24' },
+      { id: 'moTpeGamma', label: 'Gamma', placeholder: '0.25' },
+      { id: 'moTpeBatchSize', label: 'Batch size', placeholder: '64' },
+      { id: 'moTpeMaxModelPoints', label: 'Max model points', placeholder: '2048' },
+    ],
+  },
+  {
+    key: 'mo_qmc',
+    title: 'QMC sampler',
+    fields: [
+      { id: 'moQmcSeed', label: 'QMC seed', placeholder: '1' },
+      { id: 'moQmcTrials', label: 'QMC trials', placeholder: '5000' },
+    ],
+  },
+  {
+    key: 'mo_nsga',
+    title: 'NSGA-II sampler',
+    fields: [
+      { id: 'moNsga2Seed', label: 'NSGA-II seed', placeholder: '1' },
+      { id: 'moNsga2Population', label: 'Population', placeholder: '80' },
+      { id: 'moNsga2Generations', label: 'Generations', placeholder: '40' },
+      { id: 'moNsga2CrossoverProb', label: 'Crossover probability', placeholder: '0.9' },
+      { id: 'moNsga2SwappingProb', label: 'Swapping probability', placeholder: '0.5' },
+      { id: 'moNsga2MutationProb', label: 'Mutation probability', placeholder: 'blank = auto' },
+    ],
+  },
+]
+const moQmcSelectFields: AdvancedSelectFieldSpec[] = [
+  { id: 'moQmcSequence', label: 'QMC sequence', options: qmcSequenceOptions },
+]
+const moConstraintFields: AdvancedTextFieldSpec[] = [
+  { id: 'moConstraintMinTrades', label: 'Min trades', placeholder: 'blank' },
+  { id: 'moConstraintMaxDd', label: 'Max drawdown', placeholder: 'blank' },
+  { id: 'moConstraintMaxAbsExposure', label: 'Max abs exposure', placeholder: 'blank' },
+]
+const moPrescanCheckboxFields: AdvancedCheckboxSpec[] = [
+  { id: 'moPrescanEnable', label: 'Enable GPU prescan' },
+  { id: 'moPrescanRequireGpu', label: 'Require GPU prescan availability' },
+]
+const moPrescanFields: AdvancedTextFieldSpec[] = [
+  { id: 'moPrescanTopK', label: 'Prescan top K', placeholder: '128' },
+  { id: 'moPrescanWindow', label: 'Prescan window', placeholder: '8' },
+  { id: 'moPrescanPredictiveTopK', label: 'Predictive top K', placeholder: '12' },
+  { id: 'moPrescanPredictiveStride', label: 'Predictive stride', placeholder: '8' },
+  { id: 'moPrescanDeviceId', label: 'CUDA device ID', placeholder: 'blank = auto' },
+  { id: 'moPrescanMaPairs', label: 'Prescan MA pairs JSON', placeholder: '[{"fast_ma_type":"sma","slow_ma_type":"ema"}]', wide: true, multiline: true },
+]
+const moPrescanSelectFields: AdvancedSelectFieldSpec[] = [
+  { id: 'moPrescanObjectives', label: 'Prescan objectives', options: moPrescanObjectiveOptions },
+  { id: 'moPrescanMode', label: 'Prescan mode', options: moPrescanModeOptions },
+]
+const moSearchSpaceCheckboxFields: AdvancedCheckboxSpec[] = [
+  { id: 'moUseRangeBuilder', label: 'Use range-builder fields instead of custom JSON' },
+]
+const moSearchSpaceFields: AdvancedTextFieldSpec[] = [
+  { id: 'moSearchSpace', label: 'Custom search-space JSON', placeholder: '{"params":[...]}', wide: true, multiline: true },
+]
+const moRangeFieldGroups: FieldGroup[] = [
+  {
+    key: 'mo_halftrend',
+    title: 'HalfTrend ranges',
+    fields: [
+      { id: 'moHtAmpLow', label: 'Amplitude low', placeholder: '2' },
+      { id: 'moHtAmpHigh', label: 'Amplitude high', placeholder: '20' },
+      { id: 'moHtAmpStep', label: 'Amplitude step', placeholder: '1' },
+      { id: 'moHtDevLow', label: 'Channel dev low', placeholder: '0.5' },
+      { id: 'moHtDevHigh', label: 'Channel dev high', placeholder: '5.0' },
+      { id: 'moHtDevStep', label: 'Channel dev step', placeholder: '0.25' },
+      { id: 'moHtAtrLow', label: 'ATR low', placeholder: '20' },
+      { id: 'moHtAtrHigh', label: 'ATR high', placeholder: '200' },
+      { id: 'moHtAtrStep', label: 'ATR step', placeholder: '1' },
+    ],
+  },
+  {
+    key: 'mo_macz',
+    title: 'MACZ ranges',
+    fields: [
+      { id: 'moMaczFastLow', label: 'Fast low', placeholder: '5' },
+      { id: 'moMaczFastHigh', label: 'Fast high', placeholder: '30' },
+      { id: 'moMaczFastStep', label: 'Fast step', placeholder: '1' },
+      { id: 'moMaczSlowLow', label: 'Slow low', placeholder: '10' },
+      { id: 'moMaczSlowHigh', label: 'Slow high', placeholder: '60' },
+      { id: 'moMaczSlowStep', label: 'Slow step', placeholder: '1' },
+      { id: 'moMaczSignalLow', label: 'Signal low', placeholder: '3' },
+      { id: 'moMaczSignalHigh', label: 'Signal high', placeholder: '30' },
+      { id: 'moMaczSignalStep', label: 'Signal step', placeholder: '1' },
+      { id: 'moMaczLengthZLow', label: 'Length Z low', placeholder: '5' },
+      { id: 'moMaczLengthZHigh', label: 'Length Z high', placeholder: '50' },
+      { id: 'moMaczLengthZStep', label: 'Length Z step', placeholder: '1' },
+      { id: 'moMaczLengthStdevLow', label: 'Length stdev low', placeholder: '5' },
+      { id: 'moMaczLengthStdevHigh', label: 'Length stdev high', placeholder: '80' },
+      { id: 'moMaczLengthStdevStep', label: 'Length stdev step', placeholder: '1' },
+      { id: 'moMaczGammaLow', label: 'Gamma low', placeholder: '0.0' },
+      { id: 'moMaczGammaHigh', label: 'Gamma high', placeholder: '0.2' },
+      { id: 'moMaczGammaStep', label: 'Gamma step', placeholder: '0.01' },
+      { id: 'moMaczALow', label: 'A low', placeholder: '-2.0' },
+      { id: 'moMaczAHigh', label: 'A high', placeholder: '2.0' },
+      { id: 'moMaczAStep', label: 'A step', placeholder: '0.25' },
+      { id: 'moMaczBLow', label: 'B low', placeholder: '-2.0' },
+      { id: 'moMaczBHigh', label: 'B high', placeholder: '2.0' },
+      { id: 'moMaczBStep', label: 'B step', placeholder: '0.25' },
+    ],
+  },
+  {
+    key: 'mo_ott',
+    title: 'OTT ranges',
+    fields: [
+      { id: 'moOttPeriodLow', label: 'Period low', placeholder: '1' },
+      { id: 'moOttPeriodHigh', label: 'Period high', placeholder: '50' },
+      { id: 'moOttPeriodStep', label: 'Period step', placeholder: '1' },
+      { id: 'moOttPercentLow', label: 'Percent low', placeholder: '0.1' },
+      { id: 'moOttPercentHigh', label: 'Percent high', placeholder: '5.0' },
+      { id: 'moOttPercentStep', label: 'Percent step', placeholder: '0.1' },
+      { id: 'moOttMaTypes', label: 'MA types', placeholder: 'VAR,EMA,SMA', wide: true },
+    ],
+  },
+]
+const moRangeSelectFields: AdvancedSelectFieldSpec[] = [
+  { id: 'moMaczUseLagMode', label: 'MACZ lag domain', options: moBoolDomainOptions },
+  { id: 'moMaczUseVolumeMode', label: 'MACZ volume domain', options: moBoolDomainOptions },
+]
+const vdpsHasExplicitState = computed(() =>
+  vdpsTextFields.some((field) => advancedTextFieldValue(field.id).trim().length > 0)
+  || !advancedCheckboxValue('vdpsDeterministic'),
+)
+const moHasExplicitState = computed(() =>
+  [
+    ...moObjectiveFields,
+    ...moSamplerFieldGroups.flatMap((group) => group.fields),
+    ...moConstraintFields,
+    ...moPrescanFields,
+    ...moSearchSpaceFields,
+    ...moRangeFieldGroups.flatMap((group) => group.fields),
+  ].some((field) => advancedTextFieldValue(field.id).trim().length > 0)
+  || moSamplerSelectFields.some((field) => advancedTextFieldValue(field.id).trim().length > 0)
+  || moQmcSelectFields.some((field) => advancedTextFieldValue(field.id).trim().length > 0)
+  || moPrescanSelectFields.some((field) => advancedTextFieldValue(field.id).trim().length > 0)
+  || moRangeSelectFields.some((field) => advancedTextFieldValue(field.id).trim().length > 0)
+  || advancedCheckboxValue('moPrescanEnable')
+  || advancedCheckboxValue('moPrescanRequireGpu')
+  || advancedCheckboxValue('moUseRangeBuilder'),
+)
+const showVdpsControlPanel = computed(() =>
+  showModeControl.value
+  && (
+    modeDraft.value === 'GpuVdps'
+    || vdpsVisible.value
+    || vdpsHasExplicitState.value
+    || modeOptionItems.value.some((option) => String(option.value || '').trim() === 'GpuVdps')
+  ),
+)
+const showCompositeMoControlPanel = computed(() =>
+  String(strategyCapabilities.value.kind || '').trim() === 'CompositeMo'
+  || compositeMoVisible.value
+  || moHasExplicitState.value,
+)
 const advancedSummaryChips = computed(() => {
   const modeLabel = showModeControl.value
     ? optionLabel(modeOptionItems.value, modeDraft.value, 'Grid')
@@ -610,6 +865,30 @@ const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueu
 
 function setSelectValue(id: string, nextValue: string): void {
   advancedStore.setSelectField(id, nextValue)
+}
+
+function advancedFieldDomId(id: string): string {
+  return `vueAdvanced_${id}`
+}
+
+function advancedTextFieldValue(id: string): string {
+  return String((advancedStore as unknown as Record<string, unknown>)[id] ?? '')
+}
+
+function advancedCheckboxValue(id: string): boolean {
+  return Boolean((advancedStore as unknown as Record<string, unknown>)[id])
+}
+
+function setAdvancedTextField(id: string, nextValue: string): void {
+  advancedStore.setInputField(id, nextValue)
+}
+
+function setAdvancedSelectField(id: string, nextValue: string): void {
+  advancedStore.setSelectField(id, nextValue)
+}
+
+function setAdvancedCheckboxField(id: string, checked: boolean): void {
+  advancedStore.setCheckboxField(id, checked)
 }
 
 onMounted(() => {
@@ -968,6 +1247,256 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <section v-if="showVdpsControlPanel" class="pane">
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">VDPS</div>
+            <h3 class="panelPaneTitle">Variable-depth period search</h3>
+            <div class="panelSectionLead">
+              Tune GPU VDPS pruning and quality-check behavior when the active route exposes GpuVdps mode.
+            </div>
+          </div>
+        </div>
+        <div class="gridThree">
+          <div v-for="field in vdpsTextFields" :key="field.id">
+            <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+            <input
+              :id="advancedFieldDomId(field.id)"
+              type="text"
+              :value="advancedTextFieldValue(field.id)"
+              :placeholder="field.placeholder || ''"
+              @input="setAdvancedTextField(field.id, String(($event.target as HTMLInputElement).value || ''))"
+            />
+          </div>
+        </div>
+        <div class="panelCheckGrid">
+          <label
+            v-for="field in vdpsCheckboxFields"
+            :key="field.id"
+            class="checkboxRow"
+            :for="advancedFieldDomId(field.id)"
+          >
+            <input
+              :id="advancedFieldDomId(field.id)"
+              type="checkbox"
+              :checked="advancedCheckboxValue(field.id)"
+              @change="setAdvancedCheckboxField(field.id, Boolean(($event.target as HTMLInputElement).checked))"
+            />
+            <span>{{ field.label }}</span>
+          </label>
+        </div>
+        <div class="muted mono">{{ vdpsTelemetryHint }}</div>
+      </section>
+
+      <section v-if="showCompositeMoControlPanel" class="pane">
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Composite MO</div>
+            <h3 class="panelPaneTitle">Multi-objective optimizer</h3>
+            <div class="panelSectionLead">
+              Configure sampler budgets, constraints, GPU prescan, and search-space shaping for Composite MO requests.
+            </div>
+          </div>
+        </div>
+
+        <div class="gridThree">
+          <div v-for="field in moObjectiveFields" :key="field.id">
+            <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+            <input
+              :id="advancedFieldDomId(field.id)"
+              type="text"
+              :value="advancedTextFieldValue(field.id)"
+              :placeholder="field.placeholder || ''"
+              @input="setAdvancedTextField(field.id, String(($event.target as HTMLInputElement).value || ''))"
+            />
+          </div>
+          <div v-for="field in moSamplerSelectFields" :key="field.id">
+            <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+            <select
+              :id="advancedFieldDomId(field.id)"
+              :value="advancedTextFieldValue(field.id)"
+              @change="setAdvancedSelectField(field.id, String(($event.target as HTMLSelectElement).value || ''))"
+            >
+              <option v-for="option in field.options" :key="`${field.id}_${option.value}`" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div v-for="field in moQmcSelectFields" :key="field.id">
+            <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+            <select
+              :id="advancedFieldDomId(field.id)"
+              :value="advancedTextFieldValue(field.id)"
+              @change="setAdvancedSelectField(field.id, String(($event.target as HTMLSelectElement).value || ''))"
+            >
+              <option v-for="option in field.options" :key="`${field.id}_${option.value}`" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div v-for="group in moSamplerFieldGroups" :key="group.key" class="stackBlock">
+          <h4 class="subsectionTitle">{{ group.title }}</h4>
+          <div class="gridThree">
+            <div v-for="field in group.fields" :key="field.id">
+              <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+              <input
+                :id="advancedFieldDomId(field.id)"
+                type="text"
+                :value="advancedTextFieldValue(field.id)"
+                :placeholder="field.placeholder || ''"
+                @input="setAdvancedTextField(field.id, String(($event.target as HTMLInputElement).value || ''))"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="stackBlock">
+          <h4 class="subsectionTitle">Constraints</h4>
+          <div class="gridThree">
+            <div v-for="field in moConstraintFields" :key="field.id">
+              <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+              <input
+                :id="advancedFieldDomId(field.id)"
+                type="text"
+                :value="advancedTextFieldValue(field.id)"
+                :placeholder="field.placeholder || ''"
+                @input="setAdvancedTextField(field.id, String(($event.target as HTMLInputElement).value || ''))"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="stackBlock">
+          <h4 class="subsectionTitle">GPU prescan</h4>
+          <div class="panelCheckGrid">
+            <label
+              v-for="field in moPrescanCheckboxFields"
+              :key="field.id"
+              class="checkboxRow"
+              :for="advancedFieldDomId(field.id)"
+            >
+              <input
+                :id="advancedFieldDomId(field.id)"
+                type="checkbox"
+                :checked="advancedCheckboxValue(field.id)"
+                @change="setAdvancedCheckboxField(field.id, Boolean(($event.target as HTMLInputElement).checked))"
+              />
+              <span>{{ field.label }}</span>
+            </label>
+          </div>
+          <div class="gridThree">
+            <div v-for="field in moPrescanSelectFields" :key="field.id">
+              <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+              <select
+                :id="advancedFieldDomId(field.id)"
+                :value="advancedTextFieldValue(field.id)"
+                @change="setAdvancedSelectField(field.id, String(($event.target as HTMLSelectElement).value || ''))"
+              >
+                <option v-for="option in field.options" :key="`${field.id}_${option.value}`" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div v-for="field in moPrescanFields" :key="field.id" :class="{ spanTwo: field.wide }">
+              <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+              <textarea
+                v-if="field.multiline"
+                :id="advancedFieldDomId(field.id)"
+                rows="3"
+                :value="advancedTextFieldValue(field.id)"
+                :placeholder="field.placeholder || ''"
+                @input="setAdvancedTextField(field.id, String(($event.target as HTMLTextAreaElement).value || ''))"
+              ></textarea>
+              <input
+                v-else
+                :id="advancedFieldDomId(field.id)"
+                type="text"
+                :value="advancedTextFieldValue(field.id)"
+                :placeholder="field.placeholder || ''"
+                @input="setAdvancedTextField(field.id, String(($event.target as HTMLInputElement).value || ''))"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="stackBlock">
+          <h4 class="subsectionTitle">Search space</h4>
+          <div class="panelCheckGrid">
+            <label
+              v-for="field in moSearchSpaceCheckboxFields"
+              :key="field.id"
+              class="checkboxRow"
+              :for="advancedFieldDomId(field.id)"
+            >
+              <input
+                :id="advancedFieldDomId(field.id)"
+                type="checkbox"
+                :checked="advancedCheckboxValue(field.id)"
+                @change="setAdvancedCheckboxField(field.id, Boolean(($event.target as HTMLInputElement).checked))"
+              />
+              <span>{{ field.label }}</span>
+            </label>
+          </div>
+          <div class="gridThree">
+            <div v-for="field in moSearchSpaceFields" :key="field.id" :class="{ spanTwo: field.wide }">
+              <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+              <textarea
+                :id="advancedFieldDomId(field.id)"
+                rows="5"
+                :value="advancedTextFieldValue(field.id)"
+                :placeholder="field.placeholder || ''"
+                @input="setAdvancedTextField(field.id, String(($event.target as HTMLTextAreaElement).value || ''))"
+              ></textarea>
+            </div>
+          </div>
+          <div class="pathRow samplerActionRow">
+            <div class="muted mono">
+              Blank custom JSON uses the default Composite MO search-space contract when range builder is off.
+            </div>
+            <button type="button" @click="advancedStore.resetMoSearchSpace()">
+              Reset MO search-space JSON
+            </button>
+          </div>
+        </div>
+
+        <details class="panelDetails stackBlock">
+          <summary>Range-builder fields</summary>
+          <div class="panelDetailsBody">
+            <div class="gridThree">
+              <div v-for="field in moRangeSelectFields" :key="field.id">
+                <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+                <select
+                  :id="advancedFieldDomId(field.id)"
+                  :value="advancedTextFieldValue(field.id)"
+                  @change="setAdvancedSelectField(field.id, String(($event.target as HTMLSelectElement).value || ''))"
+                >
+                  <option v-for="option in field.options" :key="`${field.id}_${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <div v-for="group in moRangeFieldGroups" :key="group.key" class="stackBlock">
+              <h4 class="subsectionTitle">{{ group.title }}</h4>
+              <div class="gridThree">
+                <div v-for="field in group.fields" :key="field.id" :class="{ spanTwo: field.wide }">
+                  <label :for="advancedFieldDomId(field.id)">{{ field.label }}</label>
+                  <input
+                    :id="advancedFieldDomId(field.id)"
+                    type="text"
+                    :value="advancedTextFieldValue(field.id)"
+                    :placeholder="field.placeholder || ''"
+                    @input="setAdvancedTextField(field.id, String(($event.target as HTMLInputElement).value || ''))"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
       <section class="pane">
         <div class="panelSectionHeader">
           <div>
@@ -983,7 +1512,7 @@ onBeforeUnmount(() => {
         <div class="muted">{{ vdpsTelemetryHint }}</div>
         <div class="pathRow samplerActionRow">
           <div></div>
-          <button type="button" :disabled="!canResetMoSearchSpace" @click="advancedStore.resetMoSearchSpace()">
+          <button type="button" :disabled="!canResetMoSearchSpace && !showCompositeMoControlPanel" @click="advancedStore.resetMoSearchSpace()">
             Reset MO search-space JSON
           </button>
         </div>
@@ -1027,6 +1556,19 @@ onBeforeUnmount(() => {
 
 .stackBlock {
   margin-top: 0.75rem;
+}
+
+.subsectionTitle {
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: var(--muted-strong);
+}
+
+.panelCheckGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
+  align-items: center;
 }
 
 .panelInlineDetails {
