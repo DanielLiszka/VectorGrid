@@ -244,6 +244,44 @@ mod tests {
     }
 
     #[test]
+    fn capability_report_blocks_topk_over_device_limit_unless_include_all() {
+        let blocked = build_strategy_capability_report_for_request(
+            "sma",
+            "sma",
+            &StrategyConfig::default(),
+            false,
+            ObjectiveKind::Sharpe,
+            None,
+            257,
+            false,
+        );
+
+        assert!(!blocked.gpu_static_supported);
+        assert!(!blocked.gpu_dynamic_supported);
+        assert!(blocked.cpu_dynamic_supported);
+        assert!(blocked
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("top_k too large")));
+
+        let include_all = build_strategy_capability_report_for_request(
+            "sma",
+            "sma",
+            &StrategyConfig::default(),
+            false,
+            ObjectiveKind::Sharpe,
+            None,
+            257,
+            true,
+        );
+
+        assert!(include_all.gpu_static_supported);
+        assert!(include_all.gpu_dynamic_supported);
+        assert!(include_all.cpu_dynamic_supported);
+        assert!(include_all.reasons.is_empty());
+    }
+
+    #[test]
     fn capability_report_allows_omega_for_kernel_capable_request() {
         let report = build_strategy_capability_report_for_request(
             "alma",

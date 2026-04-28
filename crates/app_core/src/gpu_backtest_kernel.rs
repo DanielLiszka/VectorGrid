@@ -16446,6 +16446,139 @@ mod tests {
         rows.iter().flat_map(|row| row.iter().copied()).collect()
     }
 
+    fn metric_row_objective_score_for_selector_reference(
+        row: &[f32; METRICS_COUNT],
+        objective: i32,
+    ) -> f32 {
+        const CLAMP_MAX: f32 = 1.0e6;
+        let score = match objective {
+            0 => row[0],
+            1 => {
+                let mean = row[3];
+                let std = row[4];
+                if mean.is_finite() && std.is_finite() {
+                    if std > 0.0 {
+                        mean / std
+                    } else {
+                        0.0
+                    }
+                } else {
+                    f32::NEG_INFINITY
+                }
+            }
+            2 => -row[2],
+            3 => {
+                let pnl = row[0];
+                let max_dd = row[2];
+                if pnl.is_finite() && max_dd.is_finite() {
+                    if max_dd > 1e-12 {
+                        (pnl / max_dd).clamp(-CLAMP_MAX, CLAMP_MAX)
+                    } else if pnl > 0.0 {
+                        CLAMP_MAX
+                    } else if pnl < 0.0 {
+                        -CLAMP_MAX
+                    } else {
+                        0.0
+                    }
+                } else {
+                    f32::NEG_INFINITY
+                }
+            }
+            4 => -row[4],
+            5 => {
+                let mean = row[3];
+                let downside = row[7];
+                if mean.is_finite() && downside.is_finite() {
+                    if downside > 0.0 {
+                        mean / downside
+                    } else if mean > 0.0 {
+                        CLAMP_MAX
+                    } else if mean < 0.0 {
+                        -CLAMP_MAX
+                    } else {
+                        0.0
+                    }
+                } else {
+                    f32::NEG_INFINITY
+                }
+            }
+            6 => row[9],
+            _ => f32::NEG_INFINITY,
+        };
+
+        if score.is_finite() {
+            score
+        } else {
+            f32::NEG_INFINITY
+        }
+    }
+
+    fn canonical_metric_row_topk_reference(
+        rows: &[[f32; METRICS_COUNT]],
+        candidates: Option<&[i32]>,
+        objective: i32,
+        top_k: usize,
+    ) -> Vec<i32> {
+        let top_k = top_k.max(1);
+        let mut scored = Vec::new();
+
+        match candidates {
+            Some(candidates) => {
+                for &candidate in candidates {
+                    let Ok(row_idx) = usize::try_from(candidate) else {
+                        continue;
+                    };
+                    if row_idx >= rows.len() {
+                        continue;
+                    }
+                    let score = metric_row_objective_score_for_selector_reference(
+                        &rows[row_idx],
+                        objective,
+                    );
+                    if score.is_finite() {
+                        scored.push((row_idx as i32, score));
+                    }
+                }
+            }
+            None => {
+                for (row_idx, row) in rows.iter().enumerate() {
+                    let score = metric_row_objective_score_for_selector_reference(row, objective);
+                    if score.is_finite() {
+                        scored.push((row_idx as i32, score));
+                    }
+                }
+            }
+        }
+
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut out: Vec<i32> = scored
+            .into_iter()
+            .take(top_k)
+            .map(|(row_idx, _)| row_idx)
+            .collect();
+        out.resize(top_k, -1);
+        out
+    }
+
+    fn canonical_scored_row_topk_reference(scores: &[f32], top_k: usize) -> Vec<i32> {
+        let top_k = top_k.max(1);
+        let mut scored: Vec<(i32, f32)> = scores
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(row_idx, score)| score.is_finite().then_some((row_idx as i32, score)))
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let mut out: Vec<i32> = scored
+            .into_iter()
+            .take(top_k)
+            .map(|(row_idx, _)| row_idx)
+            .collect();
+        out.resize(top_k, -1);
+        out
+    }
+
     fn assert_only_valid_row_selected(label: &str, selected: &[i32]) {
         assert_eq!(
             selected.first().copied(),
@@ -20054,6 +20187,178 @@ mod tests {
     }
 
     #[test]
+    fn canonical_metric_row_topk_reference_rejects_non_finite_scores_and_ties_by_row() {
+        let rows = [
+            metric_row17_for_selector(0.25, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(0.75, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(f32::NAN, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(0.75, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(f32::INFINITY, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(f32::NEG_INFINITY, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(0.10, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+        ];
+
+        let ranked = canonical_metric_row_topk_reference(&rows, None, 0, 7);
+        assert_eq!(ranked, vec![1, 3, 0, 6, -1, -1, -1]);
+
+        let candidate_ranked =
+            canonical_metric_row_topk_reference(&rows, Some(&[3, -1, 99, 0, 2, 1]), 0, 5);
+        assert_eq!(candidate_ranked, vec![1, 3, 0, -1, -1]);
+    }
+
+    #[test]
+    fn metric_row_selector_v2_matches_reference_for_non_finite_fixture() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+        let constraints = DoubleMaConstraints::default();
+        let rows = [
+            metric_row17_for_selector(0.25, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(0.75, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(f32::NAN, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(0.50, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(f32::INFINITY, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+            metric_row17_for_selector(0.10, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5),
+        ];
+        let flat = flatten_metric_rows(&rows);
+        let top_k = 6;
+
+        let selected =
+            launch_metric_row_selector_v2_for_test(&rt, &flat, rows.len(), 0, top_k, &constraints)
+                .expect("direct selector");
+        let expected = canonical_metric_row_topk_reference(&rows, None, 0, top_k);
+        assert_eq!(selected, expected);
+
+        let candidates = [5_i32, -1, 3, 99, 0, 2, 4, 1];
+        let selected = launch_metric_row_candidate_selector_v2_for_test(
+            &rt,
+            &flat,
+            rows.len(),
+            &candidates,
+            0,
+            top_k,
+            &constraints,
+        )
+        .expect("candidate selector");
+        let expected = canonical_metric_row_topk_reference(&rows, Some(&candidates), 0, top_k);
+        assert_eq!(selected, expected);
+    }
+
+    #[test]
+    fn metric_row_global_topk_reduction_matches_reference_across_blocks() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
+        rt.set_current().expect("set CUDA context current");
+
+        let row_count = super::TOPK_BLOCK_ITEMS + 33;
+        let mut rows =
+            vec![metric_row17_for_selector(-100.0, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5); row_count];
+        let winners = [
+            (super::TOPK_BLOCK_ITEMS + 17, 9.0),
+            (11, 8.5),
+            (super::TOPK_BLOCK_ITEMS + 4, 7.0),
+            (271, 6.5),
+            (super::TOPK_BLOCK_ITEMS + 32, 6.0),
+            (42, 5.5),
+            (super::TOPK_BLOCK_ITEMS + 1, 5.0),
+            (390, 4.5),
+        ];
+        for (row_idx, pnl) in winners {
+            rows[row_idx][0] = pnl;
+        }
+        rows[super::TOPK_BLOCK_ITEMS + 2][0] = f32::NAN;
+        rows[super::TOPK_BLOCK_ITEMS + 3][0] = f32::INFINITY;
+
+        let flat = flatten_metric_rows(&rows);
+        let fast_rows: Vec<i32> = (0..row_count).map(|idx| idx as i32).collect();
+        let slow_rows: Vec<i32> = (0..row_count).map(|idx| 10_000 + idx as i32).collect();
+        let d_fast = DeviceBuffer::from_slice(&fast_rows).expect("upload fast rows");
+        let d_slow = DeviceBuffer::from_slice(&slow_rows).expect("upload slow rows");
+        let d_metrics = DeviceBuffer::from_slice(&flat).expect("upload metric rows");
+        let mut scratch = super::KernelScratch::default();
+        let top_k = winners.len();
+        super::KernelScratch::ensure_len_i32(&mut scratch.d_top_fast, top_k, &rt.stream)
+            .expect("top fast scratch");
+        super::KernelScratch::ensure_len_i32(&mut scratch.d_top_slow, top_k, &rt.stream)
+            .expect("top slow scratch");
+        super::KernelScratch::ensure_len_f32(
+            &mut scratch.d_top_metrics,
+            top_k * METRICS_COUNT,
+            &rt.stream,
+        )
+        .expect("top metrics scratch");
+
+        let select_rows_legacy = rt
+            .module
+            .get_function("select_topk_metric_rows_f32")
+            .expect("legacy row selector");
+        let select_rows_candidates_legacy = rt
+            .module
+            .get_function("select_topk_metric_rows_from_candidates_f32")
+            .expect("legacy candidate row selector");
+        let select_rows_v2 = rt
+            .module
+            .get_function("select_topk_metric_rows_f32_v2")
+            .expect("v2 row selector");
+        let select_rows_candidates_v2 = rt
+            .module
+            .get_function("select_topk_metric_rows_from_candidates_f32_v2")
+            .expect("v2 candidate row selector");
+        let gather_rows = rt
+            .module
+            .get_function("gather_topk_metric_rows_f32")
+            .expect("gather rows");
+        let constraints = DoubleMaConstraints::default();
+        let constraint_args = build_device_constraint_args(Some(&constraints), METRICS_COUNT);
+        let mut launch_submit_elapsed = std::time::Duration::ZERO;
+
+        super::reduce_metric_rows_topk_on_device(
+            &rt.stream,
+            &mut scratch,
+            &d_fast,
+            &d_slow,
+            &d_metrics,
+            rows.len(),
+            METRICS_COUNT,
+            METRICS_COUNT,
+            0,
+            0.0,
+            top_k,
+            true,
+            constraint_args,
+            &select_rows_legacy,
+            &select_rows_candidates_legacy,
+            Some(&select_rows_v2),
+            Some(&select_rows_candidates_v2),
+            &gather_rows,
+            &mut launch_submit_elapsed,
+        )
+        .expect("global metric row top-k reduction");
+        rt.stream
+            .synchronize()
+            .expect("synchronize top-k reduction");
+
+        let mut actual = vec![-1_i32; top_k];
+        scratch
+            .d_top_fast
+            .as_ref()
+            .expect("top fast output")
+            .copy_to(&mut actual)
+            .expect("copy top fast rows");
+
+        let expected = canonical_metric_row_topk_reference(&rows, None, 0, top_k);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn scored_row_selector_and_gather_preserve_invalid_topk_sentinels() {
         let _guard = lock_env();
         if !vector_ta::cuda::cuda_available() {
@@ -20063,18 +20368,10 @@ mod tests {
         let rt = super::CudaKernelRuntime::new(0).expect("create CUDA runtime");
         rt.set_current().expect("set CUDA context current");
 
-        let selected = launch_scored_row_selector_for_test(
-            &rt,
-            &[0.75, f32::NAN, f32::INFINITY, -0.10, f32::NEG_INFINITY],
-            7,
-        )
-        .expect("scored selector");
-        assert_eq!(selected[0], 0);
-        assert_eq!(selected[1], 3);
-        assert!(
-            selected.iter().skip(2).all(|&idx| idx == -1),
-            "invalid scored slots must stay -1: {selected:?}"
-        );
+        let scores = [0.75, f32::NAN, f32::INFINITY, -0.10, f32::NEG_INFINITY];
+        let selected =
+            launch_scored_row_selector_for_test(&rt, &scores, 7).expect("scored selector");
+        assert_eq!(selected, canonical_scored_row_topk_reference(&scores, 7));
 
         let metric_row = metric_row17_for_selector(0.25, 3.0, 0.10, 0.04, 0.02, 0.01, 2.5);
         let (fast, slow, metrics) =
