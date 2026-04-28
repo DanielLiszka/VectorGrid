@@ -5,7 +5,9 @@ use crate::double_ma::{
     eval_metrics_f64_with_exit_mode, strategy_cfg_for_optimization,
     validate_strategy_cfg_for_optimization, KaufmanStopSeries,
 };
-use crate::double_ma_backend::build_strategy_capability_report_for_request;
+use crate::double_ma_backend::{
+    build_strategy_capability_report_for_request, gpu_kernel_blocker_details_for_request,
+};
 use crate::double_ma_strategy::validate_strategy_cfg;
 use crate::dynamic_indicator_adapter::{
     compute_dynamic_indicator_cpu, DynamicIndicatorComputeOutput,
@@ -53,11 +55,182 @@ pub struct PreparedDynamicCpuContext {
 pub type DynamicIndicatorStagingProgressFn<'a> =
     dyn FnMut(usize, usize, &str, crate::strategy_plan::IndicatorRouteKind, bool) + 'a;
 
+pub const DYNAMIC_CAPABILITY_SCHEMA_VERSION: u16 = 1;
+
+fn default_dynamic_capability_schema_version() -> u16 {
+    DYNAMIC_CAPABILITY_SCHEMA_VERSION
+}
+
+fn default_dynamic_residency_tier() -> DynamicResidencyTier {
+    DynamicResidencyTier::Unsupported
+}
+
+fn default_dynamic_proof_class() -> DynamicProofClass {
+    DynamicProofClass::Unsupported
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicIssueSeverity {
+    Info,
+    Warning,
+    Blocker,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicResidencyTier {
+    Cpu,
+    GpuResident,
+    GpuIndicatorHostReadback,
+    CpuStaged,
+    Mixed,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicProofClass {
+    HardCapability,
+    StrategyPolicy,
+    ParityFallback,
+    MeasuredPolicy,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicCapabilityIssueCode {
+    KaufmanStopExitGpuKernelUnsupported,
+    ExecutionOverlaysGpuKernelUnsupported,
+    RegimeFilterKernelDisabled,
+    GpuKernelTopkTooLarge,
+    FastMaGpuKernelUnsupported,
+    SlowMaGpuKernelUnsupported,
+    CpuDynamicMaUnsupported,
+    DynamicPreviewIndicatorCapExceeded,
+    DynamicPreviewConditionCapExceeded,
+    DynamicPreviewGroupCapExceeded,
+    DynamicPreviewGroupConditionCapExceeded,
+    DynamicPreviewBidirectionalShortEntryMissing,
+    DynamicOutputNotFloatingScalar,
+    DynamicGpuV1NonGpuUnifiedPlan,
+    DynamicGpuV1ProfileUnsupported,
+    DynamicGpuV1HalftrendUnsupported,
+    DynamicGpuV1ExitModeUnsupported,
+    DynamicGpuV1NonCanonicalShape,
+    DynamicGpuV1DescriptorSlotUnsupported,
+    DynamicGpuV1OperandUnsupported,
+    DynamicGpuV1CpuFallback,
+}
+
+impl DynamicCapabilityIssueCode {
+    fn as_wire_label(self) -> &'static str {
+        match self {
+            DynamicCapabilityIssueCode::KaufmanStopExitGpuKernelUnsupported => {
+                "kaufman_stop_exit_gpu_kernel_unsupported"
+            }
+            DynamicCapabilityIssueCode::ExecutionOverlaysGpuKernelUnsupported => {
+                "execution_overlays_gpu_kernel_unsupported"
+            }
+            DynamicCapabilityIssueCode::RegimeFilterKernelDisabled => {
+                "regime_filter_kernel_disabled"
+            }
+            DynamicCapabilityIssueCode::GpuKernelTopkTooLarge => "gpu_kernel_topk_too_large",
+            DynamicCapabilityIssueCode::FastMaGpuKernelUnsupported => {
+                "fast_ma_gpu_kernel_unsupported"
+            }
+            DynamicCapabilityIssueCode::SlowMaGpuKernelUnsupported => {
+                "slow_ma_gpu_kernel_unsupported"
+            }
+            DynamicCapabilityIssueCode::CpuDynamicMaUnsupported => "cpu_dynamic_ma_unsupported",
+            DynamicCapabilityIssueCode::DynamicPreviewIndicatorCapExceeded => {
+                "dynamic_preview_indicator_cap_exceeded"
+            }
+            DynamicCapabilityIssueCode::DynamicPreviewConditionCapExceeded => {
+                "dynamic_preview_condition_cap_exceeded"
+            }
+            DynamicCapabilityIssueCode::DynamicPreviewGroupCapExceeded => {
+                "dynamic_preview_group_cap_exceeded"
+            }
+            DynamicCapabilityIssueCode::DynamicPreviewGroupConditionCapExceeded => {
+                "dynamic_preview_group_condition_cap_exceeded"
+            }
+            DynamicCapabilityIssueCode::DynamicPreviewBidirectionalShortEntryMissing => {
+                "dynamic_preview_bidirectional_short_entry_missing"
+            }
+            DynamicCapabilityIssueCode::DynamicOutputNotFloatingScalar => {
+                "dynamic_output_not_floating_scalar"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1NonGpuUnifiedPlan => {
+                "dynamic_gpu_v1_non_gpu_unified_plan"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1ProfileUnsupported => {
+                "dynamic_gpu_v1_profile_unsupported"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1HalftrendUnsupported => {
+                "dynamic_gpu_v1_halftrend_unsupported"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1ExitModeUnsupported => {
+                "dynamic_gpu_v1_exit_mode_unsupported"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1NonCanonicalShape => {
+                "dynamic_gpu_v1_non_canonical_shape"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1DescriptorSlotUnsupported => {
+                "dynamic_gpu_v1_descriptor_slot_unsupported"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1OperandUnsupported => {
+                "dynamic_gpu_v1_operand_unsupported"
+            }
+            DynamicCapabilityIssueCode::DynamicGpuV1CpuFallback => "dynamic_gpu_v1_cpu_fallback",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DynamicCapabilityIssue {
+    pub code: DynamicCapabilityIssueCode,
+    pub severity: DynamicIssueSeverity,
+    pub source: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indicator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DynamicIndicatorRouteSummary {
+    pub indicator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_indicator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_id: Option<String>,
+    pub route: String,
+    pub capability: String,
+    pub residency: DynamicResidencyTier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DynamicDoubleMaStrategyIrPreview {
     pub capability: StrategyCapabilityReport,
     pub requested_backend: StrategyPlanBackend,
     pub resolved_backend: StrategyPlanBackend,
+    #[serde(default = "default_dynamic_capability_schema_version")]
+    pub capability_schema_version: u16,
+    #[serde(default)]
+    pub issues: Vec<DynamicCapabilityIssue>,
+    #[serde(default = "default_dynamic_residency_tier")]
+    pub residency: DynamicResidencyTier,
+    #[serde(default = "default_dynamic_proof_class")]
+    pub proof_class: DynamicProofClass,
+    #[serde(default)]
+    pub fallback_reason_code: Option<String>,
+    #[serde(default)]
+    pub indicator_routes: Vec<DynamicIndicatorRouteSummary>,
 
     pub plan_fingerprint_hex: String,
     pub indicator_count: usize,
@@ -175,11 +348,148 @@ const DYNAMIC_V1_MAX_CONDITIONS: usize = 24;
 const DYNAMIC_V1_MAX_GROUPS: usize = 8;
 const DYNAMIC_V1_MAX_GROUP_CONDITIONS: usize = 8;
 
-fn enforce_dynamic_double_ma_v1_output_refs(
-    ir: &crate::strategy_ir::StrategyIr,
-) -> Result<(), String> {
-    use crate::indicator_catalog::{find_dynamic_indicator_descriptor, IndicatorValueType};
+fn dynamic_capability_issue(
+    code: DynamicCapabilityIssueCode,
+    severity: DynamicIssueSeverity,
+    source: &str,
+    message: String,
+) -> DynamicCapabilityIssue {
+    DynamicCapabilityIssue {
+        code,
+        severity,
+        source: source.to_string(),
+        message,
+        indicator_id: None,
+        output_id: None,
+    }
+}
 
+fn dynamic_capability_issue_for_output(
+    code: DynamicCapabilityIssueCode,
+    severity: DynamicIssueSeverity,
+    source: &str,
+    message: String,
+    indicator_id: String,
+    output_id: String,
+) -> DynamicCapabilityIssue {
+    DynamicCapabilityIssue {
+        code,
+        severity,
+        source: source.to_string(),
+        message,
+        indicator_id: Some(indicator_id),
+        output_id: Some(output_id),
+    }
+}
+
+fn issue_code_from_gpu_kernel_blocker_code(code: &str) -> DynamicCapabilityIssueCode {
+    match code {
+        "kaufman_stop_exit_gpu_kernel_unsupported" => {
+            DynamicCapabilityIssueCode::KaufmanStopExitGpuKernelUnsupported
+        }
+        "execution_overlays_gpu_kernel_unsupported" => {
+            DynamicCapabilityIssueCode::ExecutionOverlaysGpuKernelUnsupported
+        }
+        "regime_filter_kernel_disabled" => DynamicCapabilityIssueCode::RegimeFilterKernelDisabled,
+        "gpu_kernel_topk_too_large" => DynamicCapabilityIssueCode::GpuKernelTopkTooLarge,
+        "fast_ma_gpu_kernel_unsupported" => DynamicCapabilityIssueCode::FastMaGpuKernelUnsupported,
+        "slow_ma_gpu_kernel_unsupported" => DynamicCapabilityIssueCode::SlowMaGpuKernelUnsupported,
+        _ => DynamicCapabilityIssueCode::DynamicGpuV1NonCanonicalShape,
+    }
+}
+
+fn issue_code_from_dynamic_gpu_v1_reason(reason: &str) -> DynamicCapabilityIssueCode {
+    let normalized = reason.to_ascii_lowercase();
+    if normalized.contains("requires a gpuunified") {
+        DynamicCapabilityIssueCode::DynamicGpuV1NonGpuUnifiedPlan
+    } else if normalized.contains("supports only the doublema profile") {
+        DynamicCapabilityIssueCode::DynamicGpuV1ProfileUnsupported
+    } else if normalized.contains("halftrend") || normalized.contains("regime-gated") {
+        DynamicCapabilityIssueCode::DynamicGpuV1HalftrendUnsupported
+    } else if normalized.contains("plain crossover exit mode") {
+        DynamicCapabilityIssueCode::DynamicGpuV1ExitModeUnsupported
+    } else if normalized.contains("does not accept descriptor-driven") {
+        DynamicCapabilityIssueCode::DynamicGpuV1DescriptorSlotUnsupported
+    } else if normalized.contains("indicator and constant operands") {
+        DynamicCapabilityIssueCode::DynamicGpuV1OperandUnsupported
+    } else {
+        DynamicCapabilityIssueCode::DynamicGpuV1NonCanonicalShape
+    }
+}
+
+fn collect_dynamic_double_ma_preview_product_cap_issues(
+    ir: &crate::strategy_ir::StrategyIr,
+) -> Vec<DynamicCapabilityIssue> {
+    let mut issues = Vec::new();
+    let indicators = ir.program.indicators.len();
+    if indicators > DYNAMIC_V1_MAX_INDICATORS {
+        issues.push(dynamic_capability_issue(
+            DynamicCapabilityIssueCode::DynamicPreviewIndicatorCapExceeded,
+            DynamicIssueSeverity::Blocker,
+            "strategy_dynamic",
+            format!(
+                "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_INDICATORS} indicators, got {indicators}"
+            ),
+        ));
+    }
+    let conditions = ir.program.conditions.len();
+    if conditions > DYNAMIC_V1_MAX_CONDITIONS {
+        issues.push(dynamic_capability_issue(
+            DynamicCapabilityIssueCode::DynamicPreviewConditionCapExceeded,
+            DynamicIssueSeverity::Blocker,
+            "strategy_dynamic",
+            format!(
+                "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_CONDITIONS} conditions, got {conditions}"
+            ),
+        ));
+    }
+    let groups = ir.program.groups.len();
+    if groups > DYNAMIC_V1_MAX_GROUPS {
+        issues.push(dynamic_capability_issue(
+            DynamicCapabilityIssueCode::DynamicPreviewGroupCapExceeded,
+            DynamicIssueSeverity::Blocker,
+            "strategy_dynamic",
+            format!(
+                "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_GROUPS} groups, got {groups}"
+            ),
+        ));
+    }
+    for group in &ir.program.groups {
+        let group_conditions = group.condition_ids.len();
+        if group_conditions > DYNAMIC_V1_MAX_GROUP_CONDITIONS {
+            issues.push(dynamic_capability_issue(
+                DynamicCapabilityIssueCode::DynamicPreviewGroupConditionCapExceeded,
+                DynamicIssueSeverity::Blocker,
+                "strategy_dynamic",
+                format!(
+                    "dynamic double-ma preview group '{}' exceeds max condition count ({group_conditions} > {DYNAMIC_V1_MAX_GROUP_CONDITIONS})",
+                    group.id
+                ),
+            ));
+        }
+    }
+
+    if !ir.execution.strategy.long_only && ir.program.signals.short_entry_group.is_none() {
+        issues.push(dynamic_capability_issue(
+            DynamicCapabilityIssueCode::DynamicPreviewBidirectionalShortEntryMissing,
+            DynamicIssueSeverity::Blocker,
+            "strategy_dynamic",
+            "dynamic double-ma preview requires bidirectional plans to bind short_entry_group explicitly"
+                .to_string(),
+        ));
+    }
+
+    issues
+}
+
+fn collect_dynamic_double_ma_output_ref_issues(
+    ir: &crate::strategy_ir::StrategyIr,
+) -> Result<Vec<DynamicCapabilityIssue>, String> {
+    use crate::indicator_catalog::{
+        dynamic_output_admission_summary, find_dynamic_indicator_descriptor,
+    };
+
+    let mut issues = Vec::new();
     for indicator in &ir.program.indicators {
         let Some(source_indicator_id) = indicator.indicator_id.as_deref() else {
             continue;
@@ -195,65 +505,51 @@ fn enforce_dynamic_double_ma_v1_output_refs(
             descriptor.id.as_str(),
             indicator.output_id.as_deref(),
         )?;
-        let output = descriptor
-            .outputs
-            .iter()
-            .find(|candidate| candidate.id.eq_ignore_ascii_case(output_id.as_str()))
-            .ok_or_else(|| {
+        let summary = dynamic_output_admission_summary(descriptor, output_id.as_str());
+        if !summary.admissible {
+            let output = descriptor
+                .outputs
+                .iter()
+                .find(|candidate| candidate.id.eq_ignore_ascii_case(output_id.as_str()))
+                .ok_or_else(|| {
+                    format!(
+                        "indicator '{}' output '{}' is not in the registry descriptor",
+                        descriptor.id, output_id
+                    )
+                })?;
+            issues.push(dynamic_capability_issue_for_output(
+                DynamicCapabilityIssueCode::DynamicOutputNotFloatingScalar,
+                DynamicIssueSeverity::Blocker,
+                "strategy_dynamic",
                 format!(
-                    "indicator '{}' output '{}' is not in the registry descriptor",
-                    descriptor.id, output_id
-                )
-            })?;
-        if !matches!(
-            output.value_type,
-            IndicatorValueType::F64 | IndicatorValueType::F32
-        ) {
-            return Err(format!(
-                "dynamic gpu v1 supports only floating scalar outputs; indicator '{}' output '{}' is {:?}",
-                descriptor.id, output.id, output.value_type
+                    "dynamic gpu v1 supports only floating scalar outputs; indicator '{}' output '{}' is {:?}",
+                    descriptor.id, output.id, output.value_type
+                ),
+                descriptor.id.clone(),
+                output.id.clone(),
             ));
         }
     }
 
+    Ok(issues)
+}
+
+fn enforce_dynamic_double_ma_v1_output_refs(
+    ir: &crate::strategy_ir::StrategyIr,
+) -> Result<(), String> {
+    let issues = collect_dynamic_double_ma_output_ref_issues(ir)?;
+    if let Some(issue) = issues.into_iter().next() {
+        return Err(issue.message);
+    }
     Ok(())
 }
 
 fn enforce_dynamic_double_ma_preview_product_caps(
     ir: &crate::strategy_ir::StrategyIr,
 ) -> Result<(), String> {
-    let indicators = ir.program.indicators.len();
-    if indicators > DYNAMIC_V1_MAX_INDICATORS {
-        return Err(format!(
-            "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_INDICATORS} indicators, got {indicators}"
-        ));
-    }
-    let conditions = ir.program.conditions.len();
-    if conditions > DYNAMIC_V1_MAX_CONDITIONS {
-        return Err(format!(
-            "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_CONDITIONS} conditions, got {conditions}"
-        ));
-    }
-    let groups = ir.program.groups.len();
-    if groups > DYNAMIC_V1_MAX_GROUPS {
-        return Err(format!(
-            "dynamic double-ma preview supports at most {DYNAMIC_V1_MAX_GROUPS} groups, got {groups}"
-        ));
-    }
-    for group in &ir.program.groups {
-        let group_conditions = group.condition_ids.len();
-        if group_conditions > DYNAMIC_V1_MAX_GROUP_CONDITIONS {
-            return Err(format!(
-                "dynamic double-ma preview group '{}' exceeds max condition count ({group_conditions} > {DYNAMIC_V1_MAX_GROUP_CONDITIONS})",
-                group.id
-            ));
-        }
-    }
-
-    if !ir.execution.strategy.long_only && ir.program.signals.short_entry_group.is_none() {
-        return Err(
-            "dynamic double-ma preview requires bidirectional plans to bind short_entry_group explicitly".to_string(),
-        );
+    let issues = collect_dynamic_double_ma_preview_product_cap_issues(ir);
+    if let Some(issue) = issues.into_iter().next() {
+        return Err(issue.message);
     }
 
     enforce_dynamic_double_ma_v1_output_refs(ir)?;
@@ -508,6 +804,203 @@ pub(crate) fn validate_dynamic_double_ma_gpu_handle_v1(
     Ok(())
 }
 
+fn indicator_route_kind_wire_label(route: IndicatorRouteKind) -> &'static str {
+    match route {
+        IndicatorRouteKind::Cpu => "cpu",
+        IndicatorRouteKind::GpuKernel => "gpu_kernel",
+        IndicatorRouteKind::GpuSingle => "gpu_single",
+    }
+}
+
+fn legacy_indicator_ma_id<'a>(
+    ir: &'a crate::strategy_ir::StrategyIr,
+    slot: &crate::strategy_plan::IndicatorComputePlan,
+) -> Option<&'a str> {
+    match slot.indicator_kind {
+        Some(IndicatorKind::FastMa) => Some(ir.fast_ma.ma_type.as_str()),
+        Some(IndicatorKind::SlowMa) => Some(ir.slow_ma.ma_type.as_str()),
+        _ => None,
+    }
+}
+
+fn descriptor_indicator_capability(source_indicator_id: &str) -> &'static str {
+    let Some(descriptor) =
+        crate::indicator_catalog::find_dynamic_indicator_descriptor(source_indicator_id)
+    else {
+        return "unsupported";
+    };
+    if descriptor.supports_gpu_kernel {
+        "gpu_kernel"
+    } else if descriptor.supports_cuda_single
+        || descriptor.supports_cuda_sweep
+        || descriptor.supports_cuda_vram
+    {
+        "cuda_only"
+    } else if descriptor.supports_cpu_single || descriptor.supports_cpu_batch {
+        "cpu_only"
+    } else {
+        "unsupported"
+    }
+}
+
+fn descriptor_indicator_staging_reason(source_indicator_id: &str) -> Option<String> {
+    let descriptor =
+        crate::indicator_catalog::find_dynamic_indicator_descriptor(source_indicator_id)?;
+    if descriptor.prefers_gpu_by_speedup {
+        if descriptor.supports_gpu_kernel {
+            None
+        } else if descriptor.supports_cuda_single
+            || descriptor.supports_cuda_sweep
+            || descriptor.supports_cuda_vram
+        {
+            Some("gpu_single_host_readback".to_string())
+        } else {
+            Some("cuda_unavailable".to_string())
+        }
+    } else {
+        Some("cpu_preferred_by_speedup".to_string())
+    }
+}
+
+fn indicator_route_residency(
+    resolved_backend: StrategyPlanBackend,
+    route: IndicatorRouteKind,
+) -> DynamicResidencyTier {
+    if resolved_backend == StrategyPlanBackend::Cpu {
+        return DynamicResidencyTier::Cpu;
+    }
+    match route {
+        IndicatorRouteKind::Cpu => DynamicResidencyTier::CpuStaged,
+        IndicatorRouteKind::GpuKernel => DynamicResidencyTier::GpuResident,
+        IndicatorRouteKind::GpuSingle => DynamicResidencyTier::GpuIndicatorHostReadback,
+    }
+}
+
+fn build_dynamic_indicator_route_summaries(
+    ir: &crate::strategy_ir::StrategyIr,
+    plan: &CompiledStrategyPlan,
+    resolved_backend: StrategyPlanBackend,
+) -> Vec<DynamicIndicatorRouteSummary> {
+    plan.indicator_plan
+        .iter()
+        .map(|slot| {
+            let (capability, staging_reason) =
+                if let Some(source_indicator_id) = slot.source_indicator_id.as_deref() {
+                    (
+                        descriptor_indicator_capability(source_indicator_id).to_string(),
+                        match slot.route {
+                            IndicatorRouteKind::Cpu | IndicatorRouteKind::GpuSingle => {
+                                descriptor_indicator_staging_reason(source_indicator_id)
+                            }
+                            IndicatorRouteKind::GpuKernel => None,
+                        },
+                    )
+                } else if let Some(ma_id) = legacy_indicator_ma_id(ir, slot) {
+                    let decision = crate::ma_policy::plan_hybrid_indicator_route(ma_id);
+                    let staging_reason = match slot.route {
+                        IndicatorRouteKind::Cpu
+                            if resolved_backend == StrategyPlanBackend::GpuUnified =>
+                        {
+                            match decision.route {
+                                crate::ma_policy::HybridRouteTier::GpuKernel => None,
+                                crate::ma_policy::HybridRouteTier::CpuStaged => {
+                                    Some("cpu_staged_by_route_policy".to_string())
+                                }
+                                crate::ma_policy::HybridRouteTier::Unsupported => {
+                                    Some("unsupported".to_string())
+                                }
+                            }
+                        }
+                        _ => None,
+                    };
+                    (
+                        decision.capability.as_wire_label().to_string(),
+                        staging_reason,
+                    )
+                } else {
+                    ("strategy_local".to_string(), None)
+                };
+            DynamicIndicatorRouteSummary {
+                indicator_id: slot.indicator_id.clone(),
+                source_indicator_id: slot.source_indicator_id.clone(),
+                output_id: slot.output_id.clone(),
+                route: indicator_route_kind_wire_label(slot.route).to_string(),
+                capability,
+                residency: indicator_route_residency(resolved_backend, slot.route),
+                staging_reason,
+            }
+        })
+        .collect()
+}
+
+fn classify_dynamic_preview_residency(
+    resolved_backend: StrategyPlanBackend,
+    indicator_routes: &[DynamicIndicatorRouteSummary],
+) -> DynamicResidencyTier {
+    if resolved_backend == StrategyPlanBackend::Cpu {
+        return DynamicResidencyTier::Cpu;
+    }
+    if indicator_routes.is_empty() {
+        return DynamicResidencyTier::Unsupported;
+    }
+    if indicator_routes
+        .iter()
+        .any(|route| route.residency == DynamicResidencyTier::Unsupported)
+    {
+        return DynamicResidencyTier::Unsupported;
+    }
+    if indicator_routes
+        .iter()
+        .all(|route| route.residency == DynamicResidencyTier::GpuResident)
+    {
+        return DynamicResidencyTier::GpuResident;
+    }
+    if indicator_routes
+        .iter()
+        .all(|route| route.residency == DynamicResidencyTier::GpuIndicatorHostReadback)
+    {
+        return DynamicResidencyTier::GpuIndicatorHostReadback;
+    }
+    DynamicResidencyTier::Mixed
+}
+
+fn classify_dynamic_preview_proof_class(
+    requested_backend: StrategyPlanBackend,
+    resolved_backend: StrategyPlanBackend,
+    capability: &StrategyCapabilityReport,
+) -> DynamicProofClass {
+    if requested_backend == StrategyPlanBackend::GpuUnified
+        && resolved_backend == StrategyPlanBackend::Cpu
+    {
+        DynamicProofClass::ParityFallback
+    } else if resolved_backend == StrategyPlanBackend::GpuUnified
+        && capability.gpu_dynamic_supported
+    {
+        DynamicProofClass::StrategyPolicy
+    } else if resolved_backend == StrategyPlanBackend::Cpu && capability.cpu_dynamic_supported {
+        DynamicProofClass::HardCapability
+    } else {
+        DynamicProofClass::Unsupported
+    }
+}
+
+fn append_cpu_fallback_issue_if_needed(
+    issues: &mut Vec<DynamicCapabilityIssue>,
+    requested_backend: StrategyPlanBackend,
+    resolved_backend: StrategyPlanBackend,
+) {
+    if requested_backend == StrategyPlanBackend::GpuUnified
+        && resolved_backend == StrategyPlanBackend::Cpu
+    {
+        issues.push(dynamic_capability_issue(
+            DynamicCapabilityIssueCode::DynamicGpuV1CpuFallback,
+            DynamicIssueSeverity::Warning,
+            "strategy_dynamic",
+            "requested GPU-unified dynamic preview resolved to CPU fallback".to_string(),
+        ));
+    }
+}
+
 fn resolve_dynamic_double_ma_strategy_ir_preview(
     ir: &crate::strategy_ir::StrategyIr,
     requested_backend: StrategyPlanBackend,
@@ -530,6 +1023,33 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
         top_k,
         include_all,
     );
+    let mut issues: Vec<DynamicCapabilityIssue> = gpu_kernel_blocker_details_for_request(
+        ir.fast_ma.ma_type.as_str(),
+        ir.slow_ma.ma_type.as_str(),
+        &ir.execution.strategy,
+        regime_filter_present,
+        objective,
+        top_k,
+        include_all,
+    )
+    .into_iter()
+    .map(|detail| {
+        dynamic_capability_issue(
+            issue_code_from_gpu_kernel_blocker_code(detail.code),
+            DynamicIssueSeverity::Blocker,
+            "double_ma_backend",
+            detail.message,
+        )
+    })
+    .collect();
+    if !capability.cpu_dynamic_supported {
+        issues.push(dynamic_capability_issue(
+            DynamicCapabilityIssueCode::CpuDynamicMaUnsupported,
+            DynamicIssueSeverity::Blocker,
+            "double_ma_backend",
+            "CPU dynamic fallback cannot compute one or both selected moving averages".to_string(),
+        ));
+    }
 
     let mut compiled_backend = requested_backend;
     if compiled_backend == StrategyPlanBackend::GpuUnified
@@ -548,6 +1068,18 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
             capability.gpu_static_supported = false;
             capability.gpu_dynamic_supported = false;
             capability.reasons.push(err);
+            issues.push(dynamic_capability_issue(
+                issue_code_from_dynamic_gpu_v1_reason(
+                    capability
+                        .reasons
+                        .last()
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                ),
+                DynamicIssueSeverity::Blocker,
+                "strategy_dynamic",
+                capability.reasons.last().cloned().unwrap_or_default(),
+            ));
             compiled_backend = StrategyPlanBackend::Cpu;
             compile_strategy_plan_for_dynamic(ir, compiled_backend)?
         }
@@ -561,6 +1093,18 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
             capability.gpu_static_supported = false;
             capability.gpu_dynamic_supported = false;
             capability.reasons.push(reason);
+            issues.push(dynamic_capability_issue(
+                issue_code_from_dynamic_gpu_v1_reason(
+                    capability
+                        .reasons
+                        .last()
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                ),
+                DynamicIssueSeverity::Blocker,
+                "strategy_dynamic",
+                capability.reasons.last().cloned().unwrap_or_default(),
+            ));
             compiled_backend = StrategyPlanBackend::Cpu;
             plan = compile_strategy_plan_for_dynamic(ir, compiled_backend)?;
         } else {
@@ -568,11 +1112,37 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
         }
     }
 
+    append_cpu_fallback_issue_if_needed(&mut issues, requested_backend, compiled_backend);
+    let fallback_reason_code = if requested_backend == StrategyPlanBackend::GpuUnified
+        && compiled_backend == StrategyPlanBackend::Cpu
+    {
+        issues
+            .iter()
+            .find(|issue| issue.code != DynamicCapabilityIssueCode::DynamicGpuV1CpuFallback)
+            .map(|issue| issue.code.as_wire_label().to_string())
+    } else {
+        None
+    };
+    let indicator_routes = build_dynamic_indicator_route_summaries(ir, &plan, compiled_backend);
+    let proof_class =
+        classify_dynamic_preview_proof_class(requested_backend, compiled_backend, &capability);
+    let mut residency =
+        classify_dynamic_preview_residency(compiled_backend, indicator_routes.as_slice());
+    if proof_class == DynamicProofClass::Unsupported {
+        residency = DynamicResidencyTier::Unsupported;
+    }
+
     Ok(ResolvedDynamicDoubleMaPreview {
         preview: DynamicDoubleMaStrategyIrPreview {
             capability,
             requested_backend,
             resolved_backend: compiled_backend,
+            capability_schema_version: DYNAMIC_CAPABILITY_SCHEMA_VERSION,
+            issues,
+            residency,
+            proof_class,
+            fallback_reason_code,
+            indicator_routes,
             plan_fingerprint_hex: plan.ir_fingerprint_hex.clone(),
             indicator_count: plan.indicator_plan.len(),
             condition_count: plan.conditions.len(),
@@ -3688,6 +4258,18 @@ mod tests {
 
         assert!(preview.capability.gpu_dynamic_supported);
         assert_eq!(preview.resolved_backend, StrategyPlanBackend::GpuUnified);
+        assert_eq!(
+            preview.capability_schema_version,
+            DYNAMIC_CAPABILITY_SCHEMA_VERSION
+        );
+        assert!(preview.issues.is_empty());
+        assert_eq!(preview.residency, DynamicResidencyTier::GpuResident);
+        assert_eq!(preview.proof_class, DynamicProofClass::StrategyPolicy);
+        assert_eq!(preview.fallback_reason_code, None);
+        assert_eq!(preview.indicator_routes.len(), 2);
+        assert!(preview.indicator_routes.iter().all(|route| {
+            route.route == "gpu_kernel" && route.residency == DynamicResidencyTier::GpuResident
+        }));
         assert!(!preview.plan_fingerprint_hex.is_empty());
     }
 
@@ -3734,6 +4316,21 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("canonical double-ma gpu v1")));
+        assert_eq!(preview.residency, DynamicResidencyTier::Cpu);
+        assert_eq!(preview.proof_class, DynamicProofClass::ParityFallback);
+        assert_eq!(
+            preview.fallback_reason_code.as_deref(),
+            Some("dynamic_gpu_v1_non_canonical_shape")
+        );
+        assert!(preview.issues.iter().any(|issue| {
+            issue.code == DynamicCapabilityIssueCode::DynamicGpuV1NonCanonicalShape
+                && issue.severity == DynamicIssueSeverity::Blocker
+                && issue.source == "strategy_dynamic"
+        }));
+        assert!(preview.issues.iter().any(|issue| {
+            issue.code == DynamicCapabilityIssueCode::DynamicGpuV1CpuFallback
+                && issue.severity == DynamicIssueSeverity::Warning
+        }));
     }
 
     #[test]
@@ -3969,6 +4566,19 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("kaufman-stop exit")));
+        assert_eq!(
+            preview.fallback_reason_code.as_deref(),
+            Some("kaufman_stop_exit_gpu_kernel_unsupported")
+        );
+        assert!(preview.issues.iter().any(|issue| {
+            issue.code == DynamicCapabilityIssueCode::KaufmanStopExitGpuKernelUnsupported
+                && issue.severity == DynamicIssueSeverity::Blocker
+                && issue.source == "double_ma_backend"
+        }));
+        assert!(preview.issues.iter().any(|issue| {
+            issue.code == DynamicCapabilityIssueCode::DynamicGpuV1CpuFallback
+                && issue.severity == DynamicIssueSeverity::Warning
+        }));
     }
 
     #[test]
@@ -4058,6 +4668,13 @@ mod tests {
         )
         .expect_err("preview should reject unsupported non-float output refs");
         assert!(err.contains("floating scalar outputs"));
+        let issues = collect_dynamic_double_ma_output_ref_issues(&ir)
+            .expect("output issue collection should not fail");
+        assert!(issues.iter().any(|issue| {
+            issue.code == DynamicCapabilityIssueCode::DynamicOutputNotFloatingScalar
+                && issue.indicator_id.as_deref() == Some(indicator_id.as_str())
+                && issue.output_id.as_deref() == Some(output_id.as_str())
+        }));
     }
 
     #[test]
@@ -4101,6 +4718,10 @@ mod tests {
             err.contains("preview supports at most 12 indicators"),
             "unexpected error: {err}"
         );
+        let issues = collect_dynamic_double_ma_preview_product_cap_issues(&ir);
+        assert!(issues.iter().any(|issue| {
+            issue.code == DynamicCapabilityIssueCode::DynamicPreviewIndicatorCapExceeded
+        }));
     }
 
     #[test]

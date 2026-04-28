@@ -3,6 +3,20 @@ import { emptyAppScenario } from '../fixtures/scenarios'
 import { defineWorkflow } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow, expectNoStuckBusyState } from '../support/qaAssertions'
 
+const staleShellStateScenario = {
+  ...emptyAppScenario,
+  name: 'stale-shell-state',
+  description: 'Persisted workflow tab/step state contains stale tab vocabulary that must repair on launch.',
+  localStorage: {
+    ...emptyAppScenario.localStorage,
+    vta_workspace_tab_v1: 'workflow',
+    vta_workflow_tab_v1: 'settings',
+    vta_workflow_step_v1: 'settings',
+    vectorgrid_controls_tab_v1: 'advanced',
+    vectorgrid_results_tab_v1: 'debug',
+  },
+}
+
 defineWorkflow({
   id: 'shell.workspace.tabs',
   title: 'navigates every major workspace with stable QA actions',
@@ -27,6 +41,20 @@ defineWorkflow({
 
     await action('shell.workspace.workflow').click()
     await expect(page.locator('#workflowStepBar')).toBeVisible()
+  },
+})
+
+defineWorkflow({
+  id: 'shell.workflow.staleStateRepair',
+  title: 'repairs stale persisted workflow state before projecting shell tabs',
+  tags: ['@workflow', '@regression'],
+  scenario: staleShellStateScenario,
+  run: async ({ page, action }) => {
+    await expect(action('shell.workspace.workflow')).toHaveAttribute('aria-selected', 'true')
+    await expect(action('shell.workflowStep.data')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('#controls_panel_data')).toBeVisible()
+    await expect(page.locator('#results_panel_overview')).toBeVisible()
+    await expect(page.locator('#results_panel_debug')).toBeHidden()
   },
 })
 

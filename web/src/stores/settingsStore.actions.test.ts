@@ -580,6 +580,65 @@ describe("settings store actions", () => {
     ).toBe(false);
   });
 
+  it("repairs stale custom perspective workflow steps through the workflow store", () => {
+    const settingsStore = useSettingsStore();
+    const workflowStore = useWorkflowStore();
+    settingsStore.perspectives = [
+      ...settingsStore.perspectives,
+      {
+        id: "custom_stale_step",
+        name: "Stale step",
+        builtIn: false,
+        snapshot: {
+          mode: "conventional",
+          workspace: "workflow",
+          workflow: "optimize",
+          workflowStep: "settings",
+          controlsTab: "data",
+          resultsTab: "debug",
+          aggregateTab: "saved",
+          splitFraction: 0.44,
+          densityMode: "dense",
+        },
+      },
+    ];
+
+    settingsStore.applyPerspective("custom_stale_step");
+
+    expect(workflowStore.workspace).toBe("workflow");
+    expect(workflowStore.workflow).toBe("optimize");
+    expect(workflowStore.workflowStep).toBe("optimize");
+    expect(workflowStore.controlsTab).toBe("opt");
+    expect(workflowStore.resultsTab).toBe("overview");
+    expect(workflowStore.aggregateTab).toBe("saved");
+    expect(workflowStore.splitFraction).toBeCloseTo(0.44, 5);
+    expect(settingsStore.densityMode).toBe("dense");
+    expect(settingsStore.statusLine).toContain("Restored perspective: Stale step.");
+  });
+
+  it("preserves the live workspace when applying a custom perspective", () => {
+    const settingsStore = useSettingsStore();
+    const workflowStore = useWorkflowStore();
+
+    workflowStore.selectWorkflowStep("optimize", { persist: false });
+    workflowStore.selectControlsTab("strategy", { persist: false });
+    workflowStore.selectResultsTab("top", { persist: false });
+    workflowStore.selectWorkspace("live", undefined, { persist: false });
+    settingsStore.createPerspective("Live review");
+    const created = settingsStore.perspectives.find(
+      (entry) => entry.name === "Live review",
+    );
+
+    workflowStore.selectWorkspace("workflow", "data", { persist: false });
+    settingsStore.applyPerspective(String(created?.id || ""));
+
+    expect(workflowStore.workspace).toBe("live");
+    expect(workflowStore.workflow).toBe("optimize");
+    expect(workflowStore.workflowStep).toBe("optimize");
+    expect(workflowStore.controlsTab).toBe("strategy");
+    expect(workflowStore.resultsTab).toBe("top");
+  });
+
   it("protects built-in perspectives from rename and delete while allowing overwrite in place", () => {
     const settingsStore = useSettingsStore();
     const workflowStore = useWorkflowStore();

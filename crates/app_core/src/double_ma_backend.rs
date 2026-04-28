@@ -42,6 +42,12 @@ fn cpu_dynamic_supported_for_request(fast_ma: &str, slow_ma: &str) -> bool {
         && crate::double_ma::lookup_ma_info(slow_ma).is_some_and(|info| info.supports_cpu_single)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GpuKernelBlockerDetail {
+    pub code: &'static str,
+    pub message: String,
+}
+
 pub(crate) fn gpu_kernel_blockers_for_request(
     fast_ma: &str,
     slow_ma: &str,
@@ -51,34 +57,68 @@ pub(crate) fn gpu_kernel_blockers_for_request(
     top_k: usize,
     include_all: bool,
 ) -> Vec<String> {
+    gpu_kernel_blocker_details_for_request(
+        fast_ma,
+        slow_ma,
+        strategy,
+        regime_filter_present,
+        _objective,
+        top_k,
+        include_all,
+    )
+    .into_iter()
+    .map(|detail| detail.message)
+    .collect()
+}
+
+pub(crate) fn gpu_kernel_blocker_details_for_request(
+    fast_ma: &str,
+    slow_ma: &str,
+    strategy: &StrategyConfig,
+    regime_filter_present: bool,
+    _objective: ObjectiveKind,
+    top_k: usize,
+    include_all: bool,
+) -> Vec<GpuKernelBlockerDetail> {
     let mut blockers = Vec::new();
     if strategy.uses_kaufman_stop_exit() {
-        blockers.push("kaufman-stop exit is not supported by GPU kernel path".to_string());
+        blockers.push(GpuKernelBlockerDetail {
+            code: "kaufman_stop_exit_gpu_kernel_unsupported",
+            message: "kaufman-stop exit is not supported by GPU kernel path".to_string(),
+        });
     }
     if strategy.uses_execution_overlays() {
-        blockers.push(
-            "execution overlays (cooldown/persistence) are not supported by GPU kernel path"
-                .to_string(),
-        );
+        blockers.push(GpuKernelBlockerDetail {
+            code: "execution_overlays_gpu_kernel_unsupported",
+            message:
+                "execution overlays (cooldown/persistence) are not supported by GPU kernel path"
+                    .to_string(),
+        });
     }
     if regime_filter_present && !kernel_regime_filters_enabled() {
-        blockers
-            .push("regime filter provided while kernel regime filters are disabled".to_string());
+        blockers.push(GpuKernelBlockerDetail {
+            code: "regime_filter_kernel_disabled",
+            message: "regime filter provided while kernel regime filters are disabled".to_string(),
+        });
     }
     if !gpu_kernel_topk_supported(top_k, include_all) {
-        blockers.push(
-            "GPU kernel backend top_k too large (max 256 when include_all=false)".to_string(),
-        );
+        blockers.push(GpuKernelBlockerDetail {
+            code: "gpu_kernel_topk_too_large",
+            message: "GPU kernel backend top_k too large (max 256 when include_all=false)"
+                .to_string(),
+        });
     }
     if !crate::ma_policy::supports_gpu_kernel_ma(fast_ma) {
-        blockers.push(format!(
-            "fast MA '{fast_ma}' is not supported by GPU kernel path"
-        ));
+        blockers.push(GpuKernelBlockerDetail {
+            code: "fast_ma_gpu_kernel_unsupported",
+            message: format!("fast MA '{fast_ma}' is not supported by GPU kernel path"),
+        });
     }
     if !crate::ma_policy::supports_gpu_kernel_ma(slow_ma) {
-        blockers.push(format!(
-            "slow MA '{slow_ma}' is not supported by GPU kernel path"
-        ));
+        blockers.push(GpuKernelBlockerDetail {
+            code: "slow_ma_gpu_kernel_unsupported",
+            message: format!("slow MA '{slow_ma}' is not supported by GPU kernel path"),
+        });
     }
     blockers
 }
@@ -279,6 +319,50 @@ mod tests {
         assert!(include_all.gpu_dynamic_supported);
         assert!(include_all.cpu_dynamic_supported);
         assert!(include_all.reasons.is_empty());
+    }
+
+    #[test]
+    fn gpu_kernel_blocker_details_preserve_message_order_and_codes() {
+        let mut strategy = StrategyConfig::default();
+        strategy.exit_mode = ExitMode::KaufmanStop;
+        strategy.cooldown_bars = 2;
+
+        let details = gpu_kernel_blocker_details_for_request(
+            "__unknown_fast__",
+            "__unknown_slow__",
+            &strategy,
+            false,
+            ObjectiveKind::Sharpe,
+            257,
+            false,
+        );
+
+        let codes: Vec<&str> = details.iter().map(|detail| detail.code).collect();
+        assert_eq!(
+            codes,
+            vec![
+                "kaufman_stop_exit_gpu_kernel_unsupported",
+                "execution_overlays_gpu_kernel_unsupported",
+                "gpu_kernel_topk_too_large",
+                "fast_ma_gpu_kernel_unsupported",
+                "slow_ma_gpu_kernel_unsupported",
+            ]
+        );
+        assert_eq!(
+            gpu_kernel_blockers_for_request(
+                "__unknown_fast__",
+                "__unknown_slow__",
+                &strategy,
+                false,
+                ObjectiveKind::Sharpe,
+                257,
+                false,
+            ),
+            details
+                .iter()
+                .map(|detail| detail.message.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

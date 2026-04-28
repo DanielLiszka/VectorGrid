@@ -1,16 +1,71 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ML_SIGNAL_WORKFLOW_ALLOWED,
+  WORKFLOW_ALLOWED,
+  WORKFLOW_STEPS,
+  WORKFLOW_TABS,
+  WORKSPACE_TABS,
   mlSignalPrimaryActionForStep,
+  normalizeControlsTab,
+  normalizeResultsTab,
   normalizeShellMode,
+  normalizeWorkflowStep,
+  normalizeWorkflowTab,
+  normalizeWorkspaceTab,
   shellModeLabel,
   workflowStepForMlSignalStage,
   workflowAllowedForMode,
   workflowDefaultsForMode,
+  workflowStepFromWorkflow,
   workflowStepLabelForMode,
   workflowStepSubtitleForMode,
 } from './workflowModel'
 
 describe('workflowModel', () => {
+  it('keeps workflow tabs, workflow steps, and workspaces distinct', () => {
+    expect(WORKFLOW_TABS).toEqual([
+      'data',
+      'optimize',
+      'validate',
+      'analyze',
+      'finalize',
+      'history',
+      'settings',
+    ])
+    expect(WORKFLOW_STEPS).toEqual([
+      'data',
+      'optimize',
+      'validate',
+      'analyze',
+      'finalize',
+    ])
+    expect(WORKSPACE_TABS).toEqual([
+      'workflow',
+      'library',
+      'aggregate',
+      'pro',
+      'live',
+      'settings',
+    ])
+    expect(WORKFLOW_STEPS).not.toContain('history')
+    expect(WORKFLOW_STEPS).not.toContain('settings')
+    expect(workflowStepFromWorkflow('history')).toBe('data')
+    expect(workflowStepFromWorkflow('settings')).toBe('data')
+  })
+
+  it('rejects unknown shell vocabulary values through the canonical normalizers', () => {
+    expect(normalizeWorkflowTab(' HISTORY ')).toBe('history')
+    expect(normalizeWorkflowTab('review')).toBe('')
+    expect(normalizeWorkflowStep('settings')).toBe('')
+    expect(normalizeWorkflowStep('validate')).toBe('validate')
+    expect(normalizeWorkspaceTab('LIVE')).toBe('live')
+    expect(normalizeWorkspaceTab('execution')).toBe('')
+    expect(normalizeControlsTab('strategy')).toBe('strategy')
+    expect(normalizeControlsTab('chart')).toBe('')
+    expect(normalizeResultsTab('heatmap')).toBe('heatmap')
+    expect(normalizeResultsTab('orders')).toBe('')
+  })
+
   it('normalizes shell modes and resolves mode-scoped defaults and allowed tabs', () => {
     expect(normalizeShellMode('ML-SIGNAL')).toBe('ml-signal')
     expect(normalizeShellMode(' conventional ')).toBe('conventional')
@@ -36,6 +91,33 @@ describe('workflowModel', () => {
     ])
     expect(mlAllowed.optimize.controls).toEqual(['opt'])
     expect(mlAllowed.analyze.results).toEqual(['overview'])
+  })
+
+  it('keeps conventional and ML Signal allowed-tab maps intentionally different', () => {
+    expect(WORKFLOW_ALLOWED.data).toEqual({
+      controls: ['data'],
+      results: ['overview'],
+    })
+    expect(WORKFLOW_ALLOWED.optimize).toEqual({
+      controls: ['opt', 'strategy', 'advanced'],
+      results: ['overview', 'top', 'pareto', 'heatmap'],
+    })
+    expect(WORKFLOW_ALLOWED.settings).toEqual({
+      controls: ['advanced'],
+      results: ['meta', 'debug'],
+    })
+    expect(ML_SIGNAL_WORKFLOW_ALLOWED.optimize).toEqual({
+      controls: ['opt'],
+      results: ['overview'],
+    })
+    expect(ML_SIGNAL_WORKFLOW_ALLOWED.validate).toEqual({
+      controls: ['opt'],
+      results: ['overview'],
+    })
+    expect(ML_SIGNAL_WORKFLOW_ALLOWED.settings).toEqual({
+      controls: ['advanced'],
+      results: ['meta', 'debug'],
+    })
   })
 
   it('derives mode-aware labels and subtitles while keeping conventional fallback intact', () => {

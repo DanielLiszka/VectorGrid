@@ -114,6 +114,14 @@ mod tests {
             preview.preview.requested_backend,
             StrategyPlanBackend::GpuUnified
         );
+        assert_eq!(preview.preview.capability_schema_version, 1);
+        let preview_value =
+            serde_json::to_value(&preview.preview).expect("preview should serialize to json");
+        assert_eq!(preview_value["capability_schema_version"], 1);
+        assert!(preview_value["issues"].is_array());
+        assert_eq!(preview_value["residency"], "gpu_resident");
+        assert_eq!(preview_value["proof_class"], "strategy_policy");
+        assert!(preview_value["indicator_routes"].is_array());
         assert!(!preview.pretty_json.is_empty());
     }
 

@@ -145,6 +145,61 @@ fn requires_candles(input_kind: IndicatorInputKind) -> bool {
     !matches!(input_kind, IndicatorInputKind::Slice)
 }
 
+pub fn required_fields_for_indicator_input_kind(
+    input_kind: IndicatorInputKind,
+) -> &'static [&'static str] {
+    match input_kind {
+        IndicatorInputKind::Slice => &[],
+        IndicatorInputKind::Candles | IndicatorInputKind::Ohlcv => {
+            &["open", "high", "low", "close", "volume"]
+        }
+        IndicatorInputKind::Ohlc => &["open", "high", "low", "close"],
+        IndicatorInputKind::HighLow => &["high", "low"],
+        IndicatorInputKind::CloseVolume => &["close", "volume"],
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DynamicOutputAdmissionSummary {
+    pub output_id: String,
+    pub admissible: bool,
+    pub reason: Option<String>,
+}
+
+pub fn dynamic_output_admission_summary(
+    descriptor: &IndicatorDescriptor,
+    output_id: &str,
+) -> DynamicOutputAdmissionSummary {
+    let output_id = output_id.trim();
+    let Some(output) = descriptor
+        .outputs
+        .iter()
+        .find(|candidate| candidate.id.eq_ignore_ascii_case(output_id))
+    else {
+        return DynamicOutputAdmissionSummary {
+            output_id: output_id.to_string(),
+            admissible: false,
+            reason: Some("unknown_output".to_string()),
+        };
+    };
+    let floating = matches!(
+        output.value_type,
+        IndicatorValueType::F64 | IndicatorValueType::F32
+    );
+    DynamicOutputAdmissionSummary {
+        output_id: output.id.clone(),
+        admissible: floating,
+        reason: (!floating).then(|| "non_floating_output".to_string()),
+    }
+}
+
+pub fn dynamic_output_is_floating_scalar(
+    descriptor: &IndicatorDescriptor,
+    output_id: &str,
+) -> bool {
+    dynamic_output_admission_summary(descriptor, output_id).admissible
+}
+
 fn normalize_dynamic_indicator_descriptor(
     info: &vector_ta::indicators::registry::IndicatorInfo,
 ) -> IndicatorDescriptor {
@@ -561,6 +616,75 @@ mod tests {
                     normalized
                 );
             }
+        }
+    }
+
+    #[test]
+    fn required_fields_for_indicator_input_kind_matches_registry_shapes() {
+        assert_eq!(
+            required_fields_for_indicator_input_kind(IndicatorInputKind::Slice),
+            &[] as &[&str]
+        );
+        assert_eq!(
+            required_fields_for_indicator_input_kind(IndicatorInputKind::Candles),
+            &["open", "high", "low", "close", "volume"]
+        );
+        assert_eq!(
+            required_fields_for_indicator_input_kind(IndicatorInputKind::Ohlc),
+            &["open", "high", "low", "close"]
+        );
+        assert_eq!(
+            required_fields_for_indicator_input_kind(IndicatorInputKind::Ohlcv),
+            &["open", "high", "low", "close", "volume"]
+        );
+        assert_eq!(
+            required_fields_for_indicator_input_kind(IndicatorInputKind::HighLow),
+            &["high", "low"]
+        );
+        assert_eq!(
+            required_fields_for_indicator_input_kind(IndicatorInputKind::CloseVolume),
+            &["close", "volume"]
+        );
+    }
+
+    #[test]
+    fn dynamic_output_admission_summary_accepts_only_floating_outputs() {
+        let descriptors = list_dynamic_indicator_descriptors();
+        let floating = descriptors
+            .iter()
+            .find_map(|descriptor| {
+                descriptor
+                    .outputs
+                    .iter()
+                    .find(|output| {
+                        matches!(
+                            output.value_type,
+                            IndicatorValueType::F64 | IndicatorValueType::F32
+                        )
+                    })
+                    .map(|output| (descriptor, output.id.clone()))
+            })
+            .expect("expected at least one floating dynamic output");
+        assert!(dynamic_output_is_floating_scalar(
+            floating.0,
+            floating.1.as_str()
+        ));
+
+        if let Some((descriptor, output_id)) = descriptors.iter().find_map(|descriptor| {
+            descriptor
+                .outputs
+                .iter()
+                .find(|output| {
+                    matches!(
+                        output.value_type,
+                        IndicatorValueType::I32 | IndicatorValueType::Bool
+                    )
+                })
+                .map(|output| (descriptor, output.id.clone()))
+        }) {
+            let summary = dynamic_output_admission_summary(descriptor, output_id.as_str());
+            assert!(!summary.admissible);
+            assert_eq!(summary.reason.as_deref(), Some("non_floating_output"));
         }
     }
 

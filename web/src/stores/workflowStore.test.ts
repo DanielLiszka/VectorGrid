@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useWorkflowStore } from './workflowStore'
+import {
+  CONTROLS_TAB_KEY,
+  RESULTS_TAB_KEY,
+  WORKFLOW_MODE_KEY,
+  WORKFLOW_STEP_KEY,
+  WORKFLOW_TAB_KEY,
+  WORKSPACE_SPLIT_KEY,
+  WORKSPACE_TAB_KEY,
+} from '../utils/core/storageKeys'
 
 function ensureDocumentDataset(): Record<string, string> {
   const existing = (globalThis as { document?: { documentElement?: { dataset?: Record<string, string> } } }).document
@@ -10,10 +19,27 @@ function ensureDocumentDataset(): Record<string, string> {
   return dataset
 }
 
+function installLocalStorageHarness(): void {
+  const values: Record<string, string> = {}
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => (Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null),
+    setItem: (key: string, value: string) => {
+      values[key] = String(value)
+    },
+    removeItem: (key: string) => {
+      delete values[key]
+    },
+    clear: () => {
+      for (const key of Object.keys(values)) delete values[key]
+    },
+  })
+}
+
 describe('workflow store actions', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    if (typeof localStorage !== 'undefined') localStorage.clear()
+    installLocalStorageHarness()
+    localStorage.clear()
     const dataset = ensureDocumentDataset()
     for (const key of Object.keys(dataset)) {
       delete dataset[key]
@@ -210,6 +236,62 @@ describe('workflow store actions', () => {
     expect(dataset.workflow).toBe('settings')
     expect(dataset.resultsTab).toBe('debug')
     expect(dataset.workflowSubtitle).toBe(store.workflowSubtitle)
+  })
+
+  it('repairs impossible legacy snapshots through workflow-model defaults', () => {
+    const store = useWorkflowStore()
+    store.selectMode('ml-signal', { persist: false })
+
+    store.applyLegacySnapshot({
+      mode: 'conventional' as never,
+      workspace: 'not-a-workspace' as never,
+      workflow: 'optimize',
+      workflowStep: 'settings' as never,
+      controlsTab: 'data' as never,
+      resultsTab: 'debug' as never,
+      aggregateTab: 'not-a-tab' as never,
+      splitFraction: 42,
+    })
+
+    expect(store.mode).toBe('conventional')
+    expect(store.workspace).toBe('workflow')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workflowStep).toBe('optimize')
+    expect(store.controlsTab).toBe('opt')
+    expect(store.resultsTab).toBe('overview')
+    expect(store.aggregateTab).toBe('meta')
+    expect(store.splitFraction).toBe(0.9)
+  })
+
+  it('persists only canonical shell state after legacy repair is committed', () => {
+    const store = useWorkflowStore()
+
+    store.applyLegacySnapshot({
+      mode: 'ml-signal' as never,
+      workspace: 'live',
+      workflow: 'validate',
+      workflowStep: 'validate',
+      controlsTab: 'strategy' as never,
+      resultsTab: 'top' as never,
+      aggregateTab: 'compare',
+      splitFraction: 0.02,
+    })
+    store.commitState('vue', true)
+
+    expect(store.workspace).toBe('live')
+    expect(store.mode).toBe('ml-signal')
+    expect(store.workflow).toBe('validate')
+    expect(store.workflowStep).toBe('validate')
+    expect(store.controlsTab).toBe('opt')
+    expect(store.resultsTab).toBe('overview')
+    expect(store.splitFraction).toBe(0.1)
+    expect(localStorage.getItem(WORKFLOW_MODE_KEY)).toBe('ml-signal')
+    expect(localStorage.getItem(WORKSPACE_TAB_KEY)).toBe('live')
+    expect(localStorage.getItem(WORKFLOW_TAB_KEY)).toBe('validate')
+    expect(localStorage.getItem(WORKFLOW_STEP_KEY)).toBe('validate')
+    expect(localStorage.getItem(CONTROLS_TAB_KEY)).toBe('opt')
+    expect(localStorage.getItem(RESULTS_TAB_KEY)).toBe('overview')
+    expect(localStorage.getItem(WORKSPACE_SPLIT_KEY)).toBe('0.1')
   })
 
   it('ignores invalid values', () => {

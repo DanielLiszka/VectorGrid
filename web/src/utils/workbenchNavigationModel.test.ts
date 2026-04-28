@@ -70,6 +70,28 @@ describe('workbenchNavigationModel', () => {
     expect(state.activeResultsTab).toBe('overview')
   })
 
+  it('keeps history and settings out of workflow-step navigation while preserving live workspace navigation', () => {
+    const state = buildWorkbenchNavigationState({
+      workspace: 'live',
+      workflowStep: 'settings',
+      controlsTab: 'debug',
+      resultsTab: 'history',
+    })
+
+    expect(state.activeWorkspaceId).toBe('live')
+    expect(state.activeWorkflowStep).toBe('data')
+    expect(state.workspaceItems.find((item) => item.id === 'live')?.selected).toBe(true)
+    expect(state.stageItems.map((item) => item.id)).toEqual([
+      'data',
+      'optimize',
+      'validate',
+      'analyze',
+      'finalize',
+    ])
+    expect(state.stageItems.map((item) => item.id)).not.toContain('settings')
+    expect(state.stageItems.map((item) => item.id)).not.toContain('history')
+  })
+
   it('hides conventional result chrome for ML Signal workflow steps', () => {
     const state = buildWorkbenchNavigationState({
       workspace: 'workflow',

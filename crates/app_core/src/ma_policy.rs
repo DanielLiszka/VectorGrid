@@ -186,11 +186,34 @@ pub enum HybridCapabilityTier {
     Unsupported,
 }
 
+impl HybridCapabilityTier {
+    #[inline]
+    pub fn as_wire_label(self) -> &'static str {
+        match self {
+            HybridCapabilityTier::GpuKernel => "gpu_kernel",
+            HybridCapabilityTier::CudaOnly => "cuda_only",
+            HybridCapabilityTier::CpuOnly => "cpu_only",
+            HybridCapabilityTier::Unsupported => "unsupported",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HybridRouteTier {
     GpuKernel,
     CpuStaged,
     Unsupported,
+}
+
+impl HybridRouteTier {
+    #[inline]
+    pub fn as_wire_label(self) -> &'static str {
+        match self {
+            HybridRouteTier::GpuKernel => "gpu_kernel",
+            HybridRouteTier::CpuStaged => "cpu_staged",
+            HybridRouteTier::Unsupported => "unsupported",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -479,6 +502,23 @@ mod tests {
         let route = plan_hybrid_indicator_route("sma");
         assert_eq!(route.route, HybridRouteTier::GpuKernel);
         assert_eq!(route.capability, HybridCapabilityTier::GpuKernel);
+    }
+
+    #[test]
+    fn hybrid_capability_and_route_wire_labels_are_stable() {
+        assert_eq!(
+            HybridCapabilityTier::GpuKernel.as_wire_label(),
+            "gpu_kernel"
+        );
+        assert_eq!(HybridCapabilityTier::CudaOnly.as_wire_label(), "cuda_only");
+        assert_eq!(HybridCapabilityTier::CpuOnly.as_wire_label(), "cpu_only");
+        assert_eq!(
+            HybridCapabilityTier::Unsupported.as_wire_label(),
+            "unsupported"
+        );
+        assert_eq!(HybridRouteTier::GpuKernel.as_wire_label(), "gpu_kernel");
+        assert_eq!(HybridRouteTier::CpuStaged.as_wire_label(), "cpu_staged");
+        assert_eq!(HybridRouteTier::Unsupported.as_wire_label(), "unsupported");
     }
 
     #[test]
