@@ -28,6 +28,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `docs/gpt55_pro_hard_problem_atlas_2026-04-27.md` for the first repo-wide and web-research-backed hard-problem atlas, ranked candidate list, and recommended GPT-5.5 Pro dossier order
 - `docs/gpt55_pro_final_prompt_dossiers_2026-04-27.md` for ready-to-use GPT-5.5 Pro prompt dossiers with exact required and optional file packs for each hard-problem prompt
 - `docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md` for researched high-ROI prompt ideas beyond the active prompt pack, especially data lifecycle, native binary integrity, and prompt sequencing governance
+- `docs/artifact_replay_report_evidence_contract.md` for the current artifact/replay/report evidence contract, report mutation boundaries, replay classes, and output parity authority
 - `docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md` for the researched implementation plan covering native Tauri desktop plugins, IPC type generation, runtime validation, async cached reads, and low-regression advanced npm adoption
 - `docs/frontend_trading_technology_additions_implementation_plan_2026-04-27.md` for the follow-on frontend/npm technology plan focused on live trading backpressure, chart annotations, market-time correctness, and optional large-artifact analytics
 
@@ -363,6 +364,8 @@ Only then open:
 - `src-tauri/src/commands_reports.rs`
 
 ### If the task is artifacts, batch summaries, or run history
+
+Use `docs/artifact_replay_report_evidence_contract.md` when changing report mutation semantics, evidence labels, replay/reopen labels, or output parity claims.
 
 Open in this order:
 

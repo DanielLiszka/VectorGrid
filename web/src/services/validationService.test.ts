@@ -2710,6 +2710,93 @@ describe("validationService", () => {
       autoExport: true,
       returnedReportXlsxPath: true,
     });
+    expect(String(validationState.statusLine || "")).not.toContain(
+      "artifact report path persistence failed",
+    );
+  });
+
+  it("surfaces artifact update warnings from auto-export XLSX status", async () => {
+    (pinia.state.value as Record<string, unknown>).validation = {
+      candidates: "12",
+      seed: "1",
+      minPsr: "",
+      minDsr: "",
+      autoExportXlsx: true,
+      autoRevealReport: false,
+      autoExportTopN: "7",
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    };
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-02-25T12:00:00Z",
+        req: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-auto-export-warning",
+          backend: { backend: "GpuKernel", device_id: 0 },
+          ma_source: "close",
+          fast_ma_types: ["sma"],
+          slow_ma_types: ["ema"],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: "sma",
+                slow_ma_type: "ema",
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    });
+
+    const fallbackInvoke = invokeCommandMock.getMockImplementation();
+    const callFallbackInvoke = fallbackInvoke as
+      | ((command: string, args?: unknown) => unknown)
+      | undefined;
+    invokeCommandMock.mockImplementation(
+      async (command: string, args?: unknown) => {
+        if (command === "save_report_xlsx") {
+          return {
+            path: "runs/vectorgrid_report_validation_warning.xlsx",
+            artifact_updated: false,
+            artifact_update_warning:
+              "artifact report path persistence failed: report saved but run artifact was not updated",
+          };
+        }
+        return callFallbackInvoke ? callFallbackInvoke(command, args) : {};
+      },
+    );
+
+    await runValidation({ switchTab: false });
+
+    const validationState = (pinia.state.value as Record<string, unknown>)
+      .validation as Record<string, unknown>;
+    expect(String(validationState.statusLine || "")).toContain(
+      "Saved XLSX report: runs/vectorgrid_report_validation_warning.xlsx",
+    );
+    expect(String(validationState.statusLine || "")).toContain(
+      "artifact report path persistence failed: report saved but run artifact was not updated",
+    );
+
+    const perfEntries = readValidationReportPerfEntries();
+    expect(
+      perfEntries.find(
+        (entry) => entry.name === "validationService.exportReportXlsxTotalMs",
+      )?.meta,
+    ).toMatchObject({
+      artifactUpdateWarning: true,
+      outcome: "ok",
+    });
   });
 
   it("reuses artifact-backed dataset metadata when persisting validation artifacts", async () => {
@@ -4009,6 +4096,111 @@ describe("validationService", () => {
       artifactUpdated: true,
       outcome: "ok",
     });
+  });
+
+  it("surfaces artifact update warnings from manual artifact-backed XLSX export", async () => {
+    (pinia.state.value as Record<string, unknown>).validation = {
+      autoRevealReport: false,
+      autoExportTopN: "9",
+    };
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-03-10T12:34:56Z",
+        artifact_path: "runs/vectorgrid_run_validation_warning.json",
+        report_xlsx_path: "",
+        csv_path: "C:/data/AAPL.csv",
+        dataset_meta: {
+          csv_path: "C:/data/AAPL.csv",
+          timeframe: "1h",
+          label: "AAPL artifact",
+        },
+        req: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-export-warning",
+          ma_source: "close",
+          fast_ma_types: ["sma"],
+          slow_ma_types: ["ema"],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: "sma",
+                slow_ma_type: "ema",
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: {
+        ts: "2026-03-10T12:34:56Z",
+        req: {
+          data_id: "data-export-warning",
+          candidates: [
+            {
+              fast_ma_type: "sma",
+              slow_ma_type: "ema",
+              fast_len: 10,
+              slow_len: 40,
+            },
+          ],
+        },
+        res: {
+          candidates: [{ score: 1 }],
+        },
+      },
+    });
+
+    const fallbackInvoke = invokeCommandMock.getMockImplementation();
+    const callFallbackInvoke = fallbackInvoke as
+      | ((command: string, args?: unknown) => unknown)
+      | undefined;
+    invokeCommandMock.mockImplementation(
+      async (command: string, args?: unknown) => {
+        if (command === "save_report_xlsx_from_artifact") {
+          return {
+            path: "runs/vectorgrid_report_validation_warning.xlsx",
+            artifact_updated: false,
+            artifact_update_warning:
+              "artifact report path persistence failed: report saved but source artifact was not updated",
+          };
+        }
+        return callFallbackInvoke ? callFallbackInvoke(command, args) : {};
+      },
+    );
+
+    await exportReportXlsx();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "save_report_xlsx_from_artifact",
+      {
+        path: "runs/vectorgrid_run_validation_warning.json",
+        max_rows: 9,
+      },
+    );
+    expect(
+      invokeCommandMock.mock.calls.filter(
+        ([command]) => command === "save_run_artifact",
+      ),
+    ).toHaveLength(1);
+
+    const validationState = (pinia.state.value as Record<string, unknown>)
+      .validation as Record<string, unknown>;
+    expect(String(validationState.statusLine || "")).toContain(
+      "Saved XLSX report: runs/vectorgrid_report_validation_warning.xlsx",
+    );
+    expect(String(validationState.statusLine || "")).toContain(
+      "artifact report path persistence failed: report saved but source artifact was not updated",
+    );
+
+    const workflowStore = useWorkflowArtifactsStore(pinia);
+    expect(workflowStore.currentRun?.reportXlsxPath).toBe(
+      "runs/vectorgrid_report_validation_warning.xlsx",
+    );
   });
 
   it("keeps CompositeMo Pareto artifacts on pareto-frontier admission and artifact-backed XLSX export", async () => {

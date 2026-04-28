@@ -3030,7 +3030,13 @@ export async function runValidation(
             }),
           },
         );
-        autoExportStatus = exportResult.statusLine;
+        autoExportStatus = [
+          exportResult.statusLine,
+          exportResult.artifactUpdateWarning,
+        ]
+          .map((part) => normalizeText(part))
+          .filter((part) => part.length > 0)
+          .join(" • ");
         reportXlsxPath = exportResult.reportXlsxPath;
       } catch (error) {
         const reason = String(error || "").trim() || "unknown error";

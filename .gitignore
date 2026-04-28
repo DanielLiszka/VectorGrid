@@ -44,6 +44,7 @@ data/*.csv
 !/docs/gpt55_pro_hard_problem_atlas_2026-04-27.md
 !/docs/gpt55_pro_final_prompt_dossiers_2026-04-27.md
 !/docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md
+!/docs/artifact_replay_report_evidence_contract.md
 !/docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md
 !/docs/frontend_trading_technology_additions_implementation_plan_2026-04-27.md
 !/docs/trade22_cuda_device_shortlist_implementation_guide.md
