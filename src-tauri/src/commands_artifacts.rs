@@ -83,6 +83,17 @@ pub async fn list_artifact_library(
 }
 
 #[tauri::command]
+pub async fn rebuild_artifact_catalog(
+    app: tauri::AppHandle,
+) -> Result<ArtifactLibrarySnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::rebuild_artifact_catalog_blocking(app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn list_meta_artifacts(
     app: tauri::AppHandle,
 ) -> Result<Vec<MetaArtifactSummary>, String> {

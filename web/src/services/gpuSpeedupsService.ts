@@ -1,4 +1,6 @@
 import { invokeCommand } from '../tauri/invoke'
+import type { GpuSpeedupEntry as GeneratedGpuSpeedupEntry } from '../tauri/generatedBindings'
+import { readCachedCatalog, removeCachedCatalog } from './catalogReadCache'
 import { gpuSpeedupsQueryKey } from './catalogQueryKeys'
 
 export { gpuSpeedupsQueryKey }
@@ -11,13 +13,7 @@ export interface GpuSpeedupEntry {
   cudaMs: number
 }
 
-interface RawGpuSpeedupEntry {
-  indicator_id?: unknown
-  indicator_name?: unknown
-  speedup?: unknown
-  cpu_ms?: unknown
-  cuda_ms?: unknown
-}
+type RawGpuSpeedupEntry = Partial<GeneratedGpuSpeedupEntry>
 
 let gpuSpeedupsCache: GpuSpeedupEntry[] | null = null
 let gpuSpeedupMapCache: Record<string, GpuSpeedupEntry> | null = null
@@ -59,9 +55,15 @@ export function normalizeGpuSpeedups(value: unknown): GpuSpeedupEntry[] {
 }
 
 export async function listGpuSpeedups(forceRefresh = false): Promise<GpuSpeedupEntry[]> {
-  if (!forceRefresh && gpuSpeedupsCache) return gpuSpeedupsCache
-  const raw = await invokeCommand('list_gpu_speedups')
-  const entries = normalizeGpuSpeedups(raw)
+  const entries = await readCachedCatalog(
+    gpuSpeedupsQueryKey,
+    async () => {
+      if (!forceRefresh && gpuSpeedupsCache) return gpuSpeedupsCache
+      const raw = await invokeCommand('list_gpu_speedups')
+      return normalizeGpuSpeedups(raw)
+    },
+    { forceRefresh },
+  )
   gpuSpeedupsCache = entries
   gpuSpeedupMapCache = null
   return entries
@@ -81,4 +83,5 @@ export async function listGpuSpeedupMap(forceRefresh = false): Promise<Record<st
 export function resetGpuSpeedupsCacheForTests(): void {
   gpuSpeedupsCache = null
   gpuSpeedupMapCache = null
+  removeCachedCatalog(gpuSpeedupsQueryKey)
 }

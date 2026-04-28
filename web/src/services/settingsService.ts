@@ -1,5 +1,10 @@
 import { invokeCommand } from "../tauri/invoke";
 import type { WindowEffect } from "../utils/windowEffects";
+import {
+  readCachedCatalog,
+  writeCachedCatalog,
+} from "./catalogReadCache";
+import { artifactCatalogSummaryQueryKey } from "./catalogQueryKeys";
 
 export const ARTIFACT_RETENTION_FAMILY_ORDER = [
   "run",
@@ -94,6 +99,16 @@ interface ArtifactRetentionInfoResponse {
   effective?: unknown;
 }
 
+interface ArtifactLibrarySnapshotResponse {
+  runs?: unknown;
+  meta?: unknown;
+  stage5?: unknown;
+  policyEvals?: unknown;
+  policy_evals?: unknown;
+  optionsExpression?: unknown;
+  options_expression?: unknown;
+}
+
 export type ArtifactRetentionConfiguredSettingsSummary = Record<
   ArtifactRetentionFamilyKey,
   number | null
@@ -108,6 +123,15 @@ export interface ArtifactRetentionInfoSummary {
   configured: ArtifactRetentionConfiguredSettingsSummary;
   envOverrides: ArtifactRetentionConfiguredSettingsSummary;
   effective: ArtifactRetentionResolvedSettingsSummary;
+}
+
+export interface ArtifactCatalogSummary {
+  runs: number;
+  meta: number;
+  stage5: number;
+  policyEvals: number;
+  optionsExpression: number;
+  total: number;
 }
 
 function normalizePositiveInteger(value: unknown, fallback = 0): number {
@@ -192,6 +216,32 @@ function normalizeArtifactRetentionInfo(
   };
 }
 
+function countArray(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function normalizeArtifactCatalogSummary(raw: unknown): ArtifactCatalogSummary {
+  const row =
+    raw && typeof raw === "object"
+      ? (raw as ArtifactLibrarySnapshotResponse)
+      : {};
+  const runs = countArray(row.runs);
+  const meta = countArray(row.meta);
+  const stage5 = countArray(row.stage5);
+  const policyEvals = countArray(row.policyEvals ?? row.policy_evals);
+  const optionsExpression = countArray(
+    row.optionsExpression ?? row.options_expression,
+  );
+  return {
+    runs,
+    meta,
+    stage5,
+    policyEvals,
+    optionsExpression,
+    total: runs + meta + stage5 + policyEvals + optionsExpression,
+  };
+}
+
 function serializeArtifactRetentionSettings(
   settings: ArtifactRetentionConfiguredSettingsSummary,
 ): Partial<Record<ArtifactRetentionRawField, number>> {
@@ -243,4 +293,18 @@ export async function clearArtifactRetentionSettings(): Promise<ArtifactRetentio
   return normalizeArtifactRetentionInfo(
     await invokeCommand("clear_artifact_retention_settings"),
   );
+}
+
+export async function loadArtifactCatalogSummary(): Promise<ArtifactCatalogSummary> {
+  return readCachedCatalog(artifactCatalogSummaryQueryKey, async () =>
+    normalizeArtifactCatalogSummary(await invokeCommand("list_artifact_library")),
+  );
+}
+
+export async function rebuildArtifactCatalogSummary(): Promise<ArtifactCatalogSummary> {
+  const summary = normalizeArtifactCatalogSummary(
+    await invokeCommand("rebuild_artifact_catalog"),
+  );
+  writeCachedCatalog(artifactCatalogSummaryQueryKey, summary);
+  return summary;
 }

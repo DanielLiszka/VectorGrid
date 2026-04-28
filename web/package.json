@@ -10,7 +10,9 @@
   "scripts": {
     "gen:commands": "node ./scripts/generate-tauri-commands.mjs",
     "check:commands": "node ./scripts/generate-tauri-commands.mjs --check",
-    "lint": "eslint . --max-warnings=0 && npm run check:commands && node ./scripts/check-known-tauri-commands.mjs",
+    "gen:bindings": "cargo test -p ta_desktop_demo_app --test specta_bindings_export export_specta_bindings -- --ignored",
+    "check:bindings": "node ./scripts/check-specta-bindings.mjs",
+    "lint": "eslint . --max-warnings=0 && npm run check:commands && npm run check:bindings && node ./scripts/check-known-tauri-commands.mjs",
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json",
     "typecheck:desktop": "tsc --noEmit -p tsconfig.wdio.json",
@@ -73,6 +75,7 @@
   "dependencies": {
     "@floating-ui/vue": "1.1.10",
     "@pinia/colada": "1.2.0",
+    "@tanstack/vue-form": "^1.29.1",
     "@tanstack/vue-table": "^8.21.3",
     "@tanstack/vue-virtual": "3.13.19",
     "@tauri-apps/api": "2.10.1",
@@ -83,6 +86,8 @@
     "@tauri-apps/plugin-updater": "2.10.1",
     "@tauri-apps/plugin-window-state": "^2.4.1",
     "@vueuse/core": "14.2.1",
+    "@xstate/vue": "^5.0.0",
+    "echarts": "^6.0.0",
     "fuse.js": "^7.1.0",
     "lightweight-charts": "5.1.0",
     "lucide-vue-next": "^1.0.0",
@@ -90,6 +95,7 @@
     "reka-ui": "2.8.2",
     "ts-pattern": "5.9.0",
     "vue": "3.5.28",
+    "xstate": "^5.31.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
@@ -124,5 +130,9 @@
     "vitest": "4.0.18",
     "vue-tsc": "3.1.5",
     "webdriverio": "9.27.0"
+  },
+  "overrides": {
+    "diff": "8.0.4",
+    "serialize-javascript": "7.0.5"
   }
 }

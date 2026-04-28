@@ -274,6 +274,69 @@ describe('TopWorkspacePanel', () => {
     expect(selectionStatus?.textContent).toContain('3.4')
   })
 
+  it('adds metric visuals to numeric result cells without changing table text', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 2
+    analysisStore.topColumns = [
+      { key: 'rank', label: '#', sort: '', alignLeft: true },
+      { key: 'name', label: 'Name', sort: '', alignLeft: true },
+      { key: 'pnl', label: 'PnL', sort: '', alignLeft: false },
+      { key: 'max_dd', label: 'Max DD', sort: '', alignLeft: false },
+    ]
+    analysisStore.topTableRows = [
+      {
+        rowId: 'candidate_a',
+        selected: true,
+        cells: [
+          { text: '1', className: 'left', title: '1' },
+          { text: 'row 1', className: 'left', title: 'row 1' },
+          { text: '100', className: 'mono', title: '100' },
+          { text: '4', className: 'mono', title: '4' },
+        ],
+      },
+      {
+        rowId: 'candidate_b',
+        selected: false,
+        cells: [
+          { text: '2', className: 'left', title: '2' },
+          { text: 'row 2', className: 'left', title: 'row 2' },
+          { text: '300', className: 'mono', title: '300' },
+          { text: '12', className: 'mono', title: '12' },
+        ],
+      },
+    ]
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const text = Array.from(document.querySelectorAll('tbody td')).map((cell) =>
+      String(cell.textContent || '').trim(),
+    )
+    expect(text).toEqual(['1Pin', 'row 1', '100', '4', '2Pin', 'row 2', '300', '12'])
+
+    const pnlVisuals = Array.from(
+      document.querySelectorAll<HTMLElement>('td[data-column-key="pnl"] .appMetricCell'),
+    )
+    expect(pnlVisuals).toHaveLength(2)
+    expect(pnlVisuals[1]?.dataset.visualKind).toBe('bar')
+    expect(pnlVisuals[1]?.getAttribute('style')).toContain('--metric-fill: 100%')
+    expect(pnlVisuals[1]?.getAttribute('aria-label')).toBe('pnl 300')
+
+    const nameVisual = document.querySelector<HTMLElement>('td[data-column-key="name"] .appMetricCell')
+    expect(nameVisual?.dataset.visualKind).toBe('none')
+  })
+
   it('opens candidate detail when a ranked row is selected from the table', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

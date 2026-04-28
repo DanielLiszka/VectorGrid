@@ -84,8 +84,24 @@ vi.mock("../services/settingsService", () => ({
       optionsExpression: 100,
     },
   })),
+  loadArtifactCatalogSummary: vi.fn(async () => ({
+    runs: 2,
+    meta: 1,
+    stage5: 0,
+    policyEvals: 1,
+    optionsExpression: 1,
+    total: 5,
+  })),
   openReportsDir: vi.fn(async () => undefined),
   openRunsDir: vi.fn(async () => undefined),
+  rebuildArtifactCatalogSummary: vi.fn(async () => ({
+    runs: 3,
+    meta: 1,
+    stage5: 1,
+    policyEvals: 1,
+    optionsExpression: 2,
+    total: 8,
+  })),
   setArtifactRetentionSettings: vi.fn(async () => undefined),
   setWindowEffect: vi.fn(async () => undefined),
 }));
@@ -102,8 +118,14 @@ const clearArtifactRetentionSettingsMock = vi.mocked(
 const getArtifactRetentionInfoMock = vi.mocked(
   settingsService.getArtifactRetentionInfo,
 );
+const loadArtifactCatalogSummaryMock = vi.mocked(
+  settingsService.loadArtifactCatalogSummary,
+);
 const openReportsDirMock = vi.mocked(settingsService.openReportsDir);
 const openRunsDirMock = vi.mocked(settingsService.openRunsDir);
+const rebuildArtifactCatalogSummaryMock = vi.mocked(
+  settingsService.rebuildArtifactCatalogSummary,
+);
 const setArtifactRetentionSettingsMock = vi.mocked(
   settingsService.setArtifactRetentionSettings,
 );
@@ -228,6 +250,22 @@ describe("settings store actions", () => {
     getArtifactRetentionInfoMock.mockResolvedValue(
       defaultArtifactRetentionInfo,
     );
+    loadArtifactCatalogSummaryMock.mockResolvedValue({
+      runs: 2,
+      meta: 1,
+      stage5: 0,
+      policyEvals: 1,
+      optionsExpression: 1,
+      total: 5,
+    });
+    rebuildArtifactCatalogSummaryMock.mockResolvedValue({
+      runs: 3,
+      meta: 1,
+      stage5: 1,
+      policyEvals: 1,
+      optionsExpression: 2,
+      total: 8,
+    });
     setArtifactRetentionSettingsMock.mockResolvedValue(
       undefined as never,
     );
@@ -469,6 +507,27 @@ describe("settings store actions", () => {
     expect(settingsStore.artifactRetentionInfo.effective.run).toBe(200);
     expect(settingsStore.artifactRetentionStatusLine).toContain(
       "Reset artifact retention settings to defaults",
+    );
+  });
+
+  it("loads and rebuilds artifact catalog diagnostics through the backend service", async () => {
+    const settingsStore = useSettingsStore();
+
+    await settingsStore.loadArtifactCatalogSummary();
+
+    expect(loadArtifactCatalogSummaryMock).toHaveBeenCalledTimes(1);
+    expect(settingsStore.artifactCatalogLoaded).toBe(true);
+    expect(settingsStore.artifactCatalogSummary.total).toBe(5);
+    expect(settingsStore.artifactCatalogStatusLine).toContain(
+      "Loaded artifact catalog counts for 5 artifacts.",
+    );
+
+    await settingsStore.rebuildArtifactCatalog();
+
+    expect(rebuildArtifactCatalogSummaryMock).toHaveBeenCalledTimes(1);
+    expect(settingsStore.artifactCatalogSummary.total).toBe(8);
+    expect(settingsStore.artifactCatalogStatusLine).toContain(
+      "Rebuilt artifact catalog for 8 artifacts.",
     );
   });
 

@@ -435,6 +435,7 @@ describe('ValidationWorkspacePanel', () => {
     expect(document.querySelector('[data-qa-state="validation.rowDetail.col_2"]')?.textContent).toContain('1.2400')
     wrapper.unmount()
   })
+
   it('persists visible validation result columns and restores defaults', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

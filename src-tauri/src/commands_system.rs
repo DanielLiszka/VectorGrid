@@ -1,6 +1,7 @@
 use serde::Serialize;
+use specta::Type;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Type)]
 pub struct GpuStatus {
     pub built_with_cuda: bool,
     pub built_with_cuda_backtest_kernel: bool,

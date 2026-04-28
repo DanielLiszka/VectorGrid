@@ -1,4 +1,5 @@
 import { createPinia, setActivePinia } from "pinia";
+import { PiniaColada } from "@pinia/colada";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,7 +149,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -169,7 +170,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -194,7 +195,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -220,7 +221,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -253,7 +254,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -278,7 +279,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -306,7 +307,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -334,7 +335,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -367,7 +368,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -397,7 +398,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -435,7 +436,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -465,7 +466,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -533,7 +534,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -560,7 +561,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
     await flushPanel();
@@ -597,7 +598,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
 
@@ -673,7 +674,7 @@ describe("OptimizeWorkspacePanel", () => {
     vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
 
     const wrapper = mount(OptimizeWorkspacePanel, {
-      global: { plugins: [pinia] },
+      global: { plugins: [pinia, PiniaColada] },
       attachTo: document.body,
     });
 

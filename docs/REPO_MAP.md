@@ -29,6 +29,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `docs/gpt55_pro_final_prompt_dossiers_2026-04-27.md` for ready-to-use GPT-5.5 Pro prompt dossiers with exact required and optional file packs for each hard-problem prompt
 - `docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md` for researched high-ROI prompt ideas beyond the active prompt pack, especially data lifecycle, native binary integrity, and prompt sequencing governance
 - `docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md` for the researched implementation plan covering native Tauri desktop plugins, IPC type generation, runtime validation, async cached reads, and low-regression advanced npm adoption
+- `docs/frontend_trading_technology_additions_implementation_plan_2026-04-27.md` for the follow-on frontend/npm technology plan focused on live trading backpressure, chart annotations, market-time correctness, and optional large-artifact analytics
 
 Archived planning and implementation notes under `docs/archive/` plus dated notes under `docs/options_research/` are optional background only. Do not open them by default unless this map routes you there for the exact task you are doing.
 

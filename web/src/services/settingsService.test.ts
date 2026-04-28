@@ -3,8 +3,10 @@ import { invokeCommand } from "../tauri/invoke";
 import {
   clearArtifactRetentionSettings,
   getArtifactRetentionInfo,
+  loadArtifactCatalogSummary,
   openReportsDir,
   openRunsDir,
+  rebuildArtifactCatalogSummary,
   setArtifactRetentionSettings,
   setWindowEffect,
 } from "./settingsService";
@@ -152,5 +154,43 @@ describe("settings service", () => {
     expect(invokeCommandMock).toHaveBeenCalledWith(
       "clear_artifact_retention_settings",
     );
+  });
+
+  it("loads and rebuilds artifact catalog count summaries", async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        runs: [{ path: "run.json" }, { path: "run2.json" }],
+        meta: [{}],
+        stage5: [],
+        policyEvals: [{}],
+        optionsExpression: [{ path: "options.json" }],
+      })
+      .mockResolvedValueOnce({
+        runs: [{ path: "run.json" }],
+        meta: [],
+        stage5: [{}],
+        policy_evals: [{}, {}],
+        options_expression: [],
+      });
+
+    await expect(loadArtifactCatalogSummary()).resolves.toEqual({
+      runs: 2,
+      meta: 1,
+      stage5: 0,
+      policyEvals: 1,
+      optionsExpression: 1,
+      total: 5,
+    });
+    await expect(rebuildArtifactCatalogSummary()).resolves.toEqual({
+      runs: 1,
+      meta: 0,
+      stage5: 1,
+      policyEvals: 2,
+      optionsExpression: 0,
+      total: 4,
+    });
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "list_artifact_library");
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "rebuild_artifact_catalog");
   });
 });

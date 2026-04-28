@@ -15,6 +15,7 @@ export const shellSelectors = {
   settingsDiagnosticsTaskPostureCard: '[aria-label="Task posture diagnostics card"]',
   settingsDiagnosticsDesktopLogsCard: '[aria-label="Desktop logs diagnostics card"]',
   settingsDesktopNotificationPermission: '[aria-label="Desktop notification permission"]',
+  settingsDesktopUpdaterStatus: '[aria-label="Desktop updater status"]',
   settingsDesktopWindowStateSummary: '[aria-label="Desktop window state summary"]',
   settingsDesktopPresenceSummary: '[aria-label="Desktop presence summary"]',
   settingsOpenTaskCenterButton: 'button[aria-label="Open task center"]',

@@ -18,6 +18,14 @@ vi.mock('../services/analysisService', () => ({
   drillParetoPoint: analysisServiceMocks.drillParetoPoint,
 }))
 
+vi.mock('./visualizations/MetricDistributionChart.vue', () => ({
+  default: {
+    name: 'MetricDistributionChart',
+    props: ['title', 'columns', 'rows', 'preferredKeys'],
+    template: '<section data-test="metric-distribution-chart">{{ title }}</section>',
+  },
+}))
+
 const paretoModel: ParetoRenderModel = {
   xKey: 'max_dd',
   yKey: 'pnl',
@@ -182,6 +190,9 @@ describe('ParetoWorkspacePanel', () => {
     await flushPanel()
 
     expect(document.querySelector('#paretoWrapVue')).not.toBeNull()
+    expect(document.querySelector('[data-test="metric-distribution-chart"]')?.textContent).toContain(
+      'Pareto metric distribution',
+    )
     expect(document.body.textContent || '').toContain('#1 - max_dd=0.2 - pnl=0.05')
 
     const chartSurface = document.querySelector('.paretoChartSurface')

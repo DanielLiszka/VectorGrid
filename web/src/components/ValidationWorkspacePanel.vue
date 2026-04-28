@@ -17,6 +17,7 @@ import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import ContextHelpTip from './ContextHelpTip.vue'
 import AppDataTableShell from './ui/AppDataTableShell.vue'
+import AppMetricCell from './ui/AppMetricCell.vue'
 import AppTableDensityControl from './ui/AppTableDensityControl.vue'
 import AppTableViewPresetControl from './ui/AppTableViewPresetControl.vue'
 import type { TableViewPresetOption } from './ui/tableViewPresets'
@@ -31,6 +32,11 @@ import {
   VALIDATION_RESULTS_TABLE_STATE_KEY,
 } from '../utils/core/storageKeys'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import {
+  buildMetricColumnVisualRanges,
+  resolveMetricCellVisual,
+  type MetricCellVisual,
+} from '../visualizations/metricCellVisualModel'
 
 interface ValidationColumn {
   key?: string
@@ -268,6 +274,9 @@ const {
     columnWidths,
     enableClientSorting: true,
   },
+)
+const validationMetricVisualRanges = computed(() =>
+  buildMetricColumnVisualRanges(orderedColumns.value, renderedRows.value),
 )
 const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
 const renderedMonteCarloHistogram = computed(() =>
@@ -622,6 +631,11 @@ function validationHeaderStyle(header: Header<ValidationRow, unknown>): Record<s
 function validationCellStyle(cell: Cell<ValidationRow, unknown>): Record<string, string> {
   const meta = cell.column.columnDef.meta as MatrixColumnMeta
   return columnWidthStyle(meta.columnKey)
+}
+
+function validationCellVisual(cell: Cell<ValidationRow, unknown>): MetricCellVisual | null {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta
+  return resolveMetricCellVisual(meta.columnKey, validationCellPayload(cell), validationMetricVisualRanges.value)
 }
 
 function clickValidationHeader(header: Header<ValidationRow, unknown>): void {
@@ -1507,7 +1521,11 @@ onBeforeUnmount(() => {
                       :style="validationCellStyle(cell)"
                       :title="validationCellPayload(cell).title || undefined"
                     >
-                      {{ validationCellPayload(cell).text }}
+                      <AppMetricCell
+                        :text="validationCellPayload(cell).text"
+                        :visual="validationCellVisual(cell)"
+                        :align="(cell.column.columnDef.meta as MatrixColumnMeta).alignLeft ? 'left' : 'right'"
+                      />
                     </td>
                   </template>
                 </tr>

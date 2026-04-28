@@ -10,6 +10,7 @@ import { buildDatasetMetaForArtifact } from "../utils/core/datasetMeta";
 import { buildRouteProvenanceFromRun } from "../utils/core/runArtifactReview";
 import type { MaParamsAndSweeps } from "./optimizeRequestBuilder";
 import { resolveRecommendedOptimizationDefaults } from "./recommendedOptimizationDefaults";
+import type { GpuStatus as GeneratedGpuStatus } from "../tauri/generatedBindings";
 
 let optimizeRequestBuilderPromise:
   | Promise<typeof import("./optimizeRequestBuilder")>
@@ -24,14 +25,7 @@ function loadOptimizeRequestBuilder(): Promise<
   return optimizeRequestBuilderPromise;
 }
 
-interface GpuStatusResponse {
-  built_with_cuda?: unknown;
-  built_with_cuda_backtest_kernel?: unknown;
-  cuda_available?: unknown;
-  auto_device_name?: unknown;
-  auto_device_memory_bytes?: unknown;
-  auto_device_error?: unknown;
-}
+type GpuStatusResponse = Partial<GeneratedGpuStatus>;
 
 export interface GpuStatusSummary {
   builtWithCuda: boolean;

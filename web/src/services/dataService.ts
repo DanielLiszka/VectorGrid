@@ -1,4 +1,5 @@
 import { invokeCommand } from "../tauri/invoke";
+import type { SampleCsv as GeneratedSampleCsv } from "../tauri/generatedBindings";
 import {
   parseBoundaryArray,
   parseBoundaryObject,
@@ -76,10 +77,7 @@ interface PolygonDownloadAndLoadResponse {
   load_source?: unknown;
 }
 
-interface SampleCsvEntry {
-  label?: unknown;
-  path?: unknown;
-}
+type SampleCsvEntry = Partial<GeneratedSampleCsv>;
 
 interface PriceDataMetaResponse {
   len?: unknown;

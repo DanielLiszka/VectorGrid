@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const allowedRawTauriImports = new Set([
   path.resolve(srcRoot, 'tauri', 'events.ts'),
+  path.resolve(srcRoot, 'tauri', 'generatedBindings.ts'),
   path.resolve(srcRoot, 'tauri', 'invoke.ts'),
 ])
 

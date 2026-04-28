@@ -1,7 +1,10 @@
-use serde::Serialize;
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use ta_app_core::OptionsExpressionArtifactV1;
 use tauri::Manager;
 
@@ -27,6 +30,8 @@ const DEFAULT_ML_POLICY_EVAL_ARTIFACT_KEEP_NEWEST: usize = 100;
 const DEFAULT_BATCH_SUMMARY_ARTIFACT_KEEP_NEWEST: usize = 100;
 const DEFAULT_CAMPAIGN_SUMMARY_ARTIFACT_KEEP_NEWEST: usize = 100;
 const DEFAULT_OPTIONS_EXPRESSION_ARTIFACT_KEEP_NEWEST: usize = 100;
+const ARTIFACT_CATALOG_DB_FILE: &str = "artifact_catalog.sqlite3";
+const ARTIFACT_CATALOG_SCHEMA_VERSION: &str = "1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArtifactFamily {
@@ -436,19 +441,19 @@ pub(super) fn is_known_non_run_artifact_file_name(name: &str) -> bool {
     )
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveRunArtifactResponse {
     pub path: String,
     pub bytes: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveBatchSummaryResponse {
     pub path: String,
     pub bytes: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactLineageSummary {
     pub parent_artifact_path: String,
@@ -458,7 +463,7 @@ pub struct ArtifactLineageSummary {
     pub lineage_relation: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteProvenanceSummary {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -472,7 +477,7 @@ pub struct RouteProvenanceSummary {
     pub fallback_reason: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunArtifactSummary {
     pub ts: String,
     pub path: String,
@@ -562,7 +567,7 @@ pub struct RunArtifactSummary {
     pub ml_score_note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSessionArtifactSummary {
     pub ts: String,
@@ -584,7 +589,7 @@ pub struct LiveSessionArtifactSummary {
     pub broker_snapshot_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSessionEventDetail {
     pub provenance: String,
@@ -607,7 +612,7 @@ pub struct LiveSessionEventDetail {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSessionBrokerSnapshotDetail {
     pub source_command: String,
@@ -629,7 +634,7 @@ pub struct LiveSessionBrokerSnapshotDetail {
     pub order_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSessionArtifactDetailResponse {
     pub ts: String,
@@ -659,7 +664,7 @@ pub struct LiveSessionArtifactDetailResponse {
     pub broker_snapshots: Vec<LiveSessionBrokerSnapshotDetail>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaArtifactSummary {
     pub ts: String,
     pub path: String,
@@ -677,7 +682,7 @@ pub struct MetaArtifactSummary {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stage5ArtifactSummary {
     pub ts: String,
     pub path: String,
@@ -697,7 +702,7 @@ pub struct Stage5ArtifactSummary {
 
 pub type Stage4ArtifactSummary = Stage5ArtifactSummary;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MlPolicyEvalArtifactSummary {
     pub ts: String,
     pub path: String,
@@ -722,7 +727,7 @@ struct ArtifactScanEntry {
     value: Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactLibrarySnapshot {
     pub runs: Vec<RunArtifactSummary>,
@@ -2049,7 +2054,7 @@ fn normalize_dataset_meta(ds: &mut serde_json::Map<String, Value>, csv_path: &st
     }
 }
 
-pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
+pub fn save_run_artifact_blocking<R: tauri::Runtime>(
     mut artifact: Value,
     app: tauri::AppHandle<R>,
     existing_path: Option<String>,
@@ -2250,6 +2255,371 @@ fn read_artifact_scan_entry(path: PathBuf, file_name: String) -> Option<Artifact
         bytes,
         value,
     })
+}
+
+#[derive(Debug, Clone)]
+struct ArtifactFileIdentity {
+    path: String,
+    bytes: u64,
+    mtime_utc_ms: i64,
+}
+
+fn artifact_catalog_db_path_for_base(app_local_data_dir: &Path) -> PathBuf {
+    app_local_data_dir.join(ARTIFACT_CATALOG_DB_FILE)
+}
+
+fn artifact_catalog_db_path(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<PathBuf, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    Ok(artifact_catalog_db_path_for_base(&base))
+}
+
+fn system_time_to_unix_ms(value: SystemTime) -> i64 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| {
+            let millis = duration.as_millis();
+            millis.min(i64::MAX as u128) as i64
+        })
+        .unwrap_or(0)
+}
+
+fn scan_artifact_file_identities_in_dir(dir: &Path) -> Result<Vec<ArtifactFileIdentity>, String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        if !metadata.is_file() {
+            continue;
+        }
+        out.push(ArtifactFileIdentity {
+            path: path.to_string_lossy().to_string(),
+            bytes: metadata.len(),
+            mtime_utc_ms: metadata.modified().map(system_time_to_unix_ms).unwrap_or(0),
+        });
+    }
+    out.sort_by(|lhs, rhs| lhs.path.cmp(&rhs.path));
+    Ok(out)
+}
+
+fn artifact_catalog_fingerprint(identities: &[ArtifactFileIdentity]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(ARTIFACT_CATALOG_SCHEMA_VERSION.as_bytes());
+    hasher.update([0]);
+    for identity in identities {
+        hasher.update(identity.path.as_bytes());
+        hasher.update([0]);
+        hasher.update(identity.bytes.to_le_bytes());
+        hasher.update(identity.mtime_utc_ms.to_le_bytes());
+        hasher.update([0xff]);
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn sort_artifact_library_snapshot(snapshot: &mut ArtifactLibrarySnapshot) {
+    snapshot.runs.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    snapshot.meta.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    snapshot.stage5.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    snapshot
+        .policy_evals
+        .sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    snapshot
+        .options_expression
+        .sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+}
+
+fn build_artifact_library_snapshot_from_entries(
+    entries: Vec<ArtifactScanEntry>,
+) -> ArtifactLibrarySnapshot {
+    let mut snapshot = ArtifactLibrarySnapshot {
+        runs: Vec::new(),
+        meta: Vec::new(),
+        stage5: Vec::new(),
+        policy_evals: Vec::new(),
+        options_expression: Vec::new(),
+    };
+
+    for entry in entries {
+        if let Some(summary) = build_run_artifact_summary(&entry.path, entry.bytes, &entry.value) {
+            snapshot.runs.push(summary);
+        }
+        if let Some(summary) = build_meta_artifact_summary(&entry.path, entry.bytes, &entry.value) {
+            snapshot.meta.push(summary);
+        }
+        if let Some(summary) = build_stage5_artifact_summary(&entry.path, entry.bytes, &entry.value)
+        {
+            snapshot.stage5.push(summary);
+        }
+        if let Some(summary) = build_ml_policy_eval_summary(&entry.path, entry.bytes, &entry.value)
+        {
+            snapshot.policy_evals.push(summary);
+        }
+        if let Some(summary) =
+            build_options_expression_artifact_summary(&entry.path, entry.bytes, &entry.value)
+        {
+            snapshot.options_expression.push(summary);
+        }
+    }
+
+    sort_artifact_library_snapshot(&mut snapshot);
+    snapshot
+}
+
+fn insert_artifact_catalog_summary<T: Serialize>(
+    tx: &Transaction<'_>,
+    family: &str,
+    ts: &str,
+    path: &str,
+    kind: &str,
+    bytes: u64,
+    summary: &T,
+) -> Result<(), String> {
+    let summary_json = serde_json::to_string(summary).map_err(|e| e.to_string())?;
+    tx.execute(
+        r#"
+        INSERT INTO artifact_index (path, family, ts, kind, bytes, summary_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+        params![
+            path,
+            family,
+            ts,
+            kind,
+            bytes.min(i64::MAX as u64) as i64,
+            summary_json
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn write_artifact_catalog_snapshot(
+    path: &Path,
+    fingerprint: &str,
+    snapshot: &ArtifactLibrarySnapshot,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+        PRAGMA busy_timeout = 5000;
+        CREATE TABLE IF NOT EXISTS catalog_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS artifact_index (
+            path TEXT PRIMARY KEY,
+            family TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            summary_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_artifact_index_family_ts
+            ON artifact_index (family, ts DESC, path ASC);
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM artifact_index", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM catalog_meta", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO catalog_meta (key, value) VALUES (?1, ?2)",
+        params!["schema_version", ARTIFACT_CATALOG_SCHEMA_VERSION],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO catalog_meta (key, value) VALUES (?1, ?2)",
+        params!["fingerprint", fingerprint],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO catalog_meta (key, value) VALUES (?1, ?2)",
+        params![
+            "generated_at_unix_ms",
+            system_time_to_unix_ms(SystemTime::now()).to_string()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    for summary in &snapshot.runs {
+        insert_artifact_catalog_summary(
+            &tx,
+            "runs",
+            &summary.ts,
+            &summary.path,
+            &summary.kind,
+            summary.bytes,
+            summary,
+        )?;
+    }
+    for summary in &snapshot.meta {
+        insert_artifact_catalog_summary(
+            &tx,
+            "meta",
+            &summary.ts,
+            &summary.path,
+            &summary.kind,
+            summary.bytes,
+            summary,
+        )?;
+    }
+    for summary in &snapshot.stage5 {
+        insert_artifact_catalog_summary(
+            &tx,
+            "stage5",
+            &summary.ts,
+            &summary.path,
+            &summary.kind,
+            summary.bytes,
+            summary,
+        )?;
+    }
+    for summary in &snapshot.policy_evals {
+        insert_artifact_catalog_summary(
+            &tx,
+            "policy_evals",
+            &summary.ts,
+            &summary.path,
+            &summary.kind,
+            summary.bytes,
+            summary,
+        )?;
+    }
+    for summary in &snapshot.options_expression {
+        insert_artifact_catalog_summary(
+            &tx,
+            "options_expression",
+            &summary.ts,
+            &summary.path,
+            &summary.kind,
+            summary.bytes,
+            summary,
+        )?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn load_artifact_catalog_snapshot(
+    path: &Path,
+    expected_fingerprint: &str,
+) -> Result<Option<ArtifactLibrarySnapshot>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute_batch("PRAGMA busy_timeout = 5000;")
+        .map_err(|e| e.to_string())?;
+
+    let schema_version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM catalog_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if schema_version.as_deref() != Some(ARTIFACT_CATALOG_SCHEMA_VERSION) {
+        return Ok(None);
+    }
+
+    let fingerprint: Option<String> = conn
+        .query_row(
+            "SELECT value FROM catalog_meta WHERE key = 'fingerprint'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if fingerprint.as_deref() != Some(expected_fingerprint) {
+        return Ok(None);
+    }
+
+    let mut snapshot = ArtifactLibrarySnapshot {
+        runs: Vec::new(),
+        meta: Vec::new(),
+        stage5: Vec::new(),
+        policy_evals: Vec::new(),
+        options_expression: Vec::new(),
+    };
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT family, summary_json
+            FROM artifact_index
+            ORDER BY family ASC, ts DESC, path ASC
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let family: String = row.get(0).map_err(|e| e.to_string())?;
+        let summary_json: String = row.get(1).map_err(|e| e.to_string())?;
+        match family.as_str() {
+            "runs" => snapshot
+                .runs
+                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+            "meta" => snapshot
+                .meta
+                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+            "stage5" => snapshot
+                .stage5
+                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+            "policy_evals" => snapshot
+                .policy_evals
+                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+            "options_expression" => snapshot
+                .options_expression
+                .push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?),
+            _ => return Ok(None),
+        }
+    }
+
+    sort_artifact_library_snapshot(&mut snapshot);
+    Ok(Some(snapshot))
+}
+
+fn maybe_write_artifact_catalog_snapshot(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+    identities: &[ArtifactFileIdentity],
+    snapshot: &ArtifactLibrarySnapshot,
+) {
+    let path = match artifact_catalog_db_path(app) {
+        Ok(path) => path,
+        Err(error) => {
+            log::warn!("failed to resolve artifact catalog path: {error}");
+            return;
+        }
+    };
+    let fingerprint = artifact_catalog_fingerprint(identities);
+    if let Err(error) = write_artifact_catalog_snapshot(&path, &fingerprint, snapshot) {
+        log::warn!(
+            "failed to write artifact catalog {}: {error}",
+            path.display()
+        );
+    }
 }
 
 fn run_artifact_selection_key(entry: &ArtifactScanEntry) -> (String, String, String) {
@@ -3609,51 +3979,41 @@ fn build_ml_policy_eval_summary(
     })
 }
 
-pub(super) fn list_artifact_library_blocking(
-    app: tauri::AppHandle,
+pub fn list_artifact_library_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<ArtifactLibrarySnapshot, String> {
-    let entries = scan_artifact_library(&app)?;
-    let mut runs = Vec::new();
-    let mut meta = Vec::new();
-    let mut stage5 = Vec::new();
-    let mut policy_evals = Vec::new();
-    let mut options_expression = Vec::new();
-
-    for entry in entries {
-        if let Some(summary) = build_run_artifact_summary(&entry.path, entry.bytes, &entry.value) {
-            runs.push(summary);
-        }
-        if let Some(summary) = build_meta_artifact_summary(&entry.path, entry.bytes, &entry.value) {
-            meta.push(summary);
-        }
-        if let Some(summary) = build_stage5_artifact_summary(&entry.path, entry.bytes, &entry.value)
-        {
-            stage5.push(summary);
-        }
-        if let Some(summary) = build_ml_policy_eval_summary(&entry.path, entry.bytes, &entry.value)
-        {
-            policy_evals.push(summary);
-        }
-        if let Some(summary) =
-            build_options_expression_artifact_summary(&entry.path, entry.bytes, &entry.value)
-        {
-            options_expression.push(summary);
+    let dir = runs_dir(&app)?;
+    let identities = scan_artifact_file_identities_in_dir(&dir)?;
+    let fingerprint = artifact_catalog_fingerprint(&identities);
+    if let Ok(path) = artifact_catalog_db_path(&app) {
+        match load_artifact_catalog_snapshot(&path, &fingerprint) {
+            Ok(Some(snapshot)) => return Ok(snapshot),
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!(
+                    "artifact catalog {} could not be used; rebuilding from JSON: {error}",
+                    path.display()
+                );
+            }
         }
     }
 
-    runs.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
-    meta.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
-    stage5.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
-    policy_evals.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
-    options_expression.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    let snapshot = build_artifact_library_snapshot_from_entries(scan_artifact_library(&app)?);
+    maybe_write_artifact_catalog_snapshot(&app, &identities, &snapshot);
+    Ok(snapshot)
+}
 
-    Ok(ArtifactLibrarySnapshot {
-        runs,
-        meta,
-        stage5,
-        policy_evals,
-        options_expression,
-    })
+pub fn rebuild_artifact_catalog_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<ArtifactLibrarySnapshot, String> {
+    let dir = runs_dir(&app)?;
+    let entries = scan_artifact_library(&app)?;
+    let snapshot = build_artifact_library_snapshot_from_entries(entries);
+    let identities = scan_artifact_file_identities_in_dir(&dir)?;
+    let path = artifact_catalog_db_path(&app)?;
+    let fingerprint = artifact_catalog_fingerprint(&identities);
+    write_artifact_catalog_snapshot(&path, &fingerprint, &snapshot)?;
+    Ok(snapshot)
 }
 
 pub(super) fn load_meta_artifacts_with_paths_blocking(
@@ -4204,7 +4564,7 @@ pub(super) fn delete_artifact_blocking<R: tauri::Runtime>(
     std::fs::remove_file(&entry.path).map_err(|e| e.to_string())
 }
 
-pub(super) fn update_artifact_tags_blocking(
+pub fn update_artifact_tags_blocking(
     path: String,
     tags: Vec<String>,
     app: tauri::AppHandle<impl tauri::Runtime>,

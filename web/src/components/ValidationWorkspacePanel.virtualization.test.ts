@@ -74,9 +74,9 @@ describe('ValidationWorkspacePanel virtualization', () => {
     validationStore.tableVisible = true
     validationStore.tableRowCount = 4
     validationStore.validationColumns = [
-      { label: 'Route', alignLeft: true },
-      { label: 'Verdict', alignLeft: true },
-      { label: 'Sharpe', alignLeft: false },
+      { key: 'route', label: 'Route', alignLeft: true },
+      { key: 'gate', label: 'Gate', alignLeft: true },
+      { key: 'sharpe', label: 'Sharpe', alignLeft: false },
     ]
     validationStore.validationRows = [
       {
@@ -89,7 +89,7 @@ describe('ValidationWorkspacePanel virtualization', () => {
       {
         cells: [
           { text: 'route 2', className: 'left', title: 'route 2' },
-          { text: 'watch', className: 'left', title: 'watch' },
+          { text: 'warn', className: 'left', title: 'warn' },
           { text: '0.92', className: 'mono', title: '0.92' },
         ],
       },
@@ -131,6 +131,14 @@ describe('ValidationWorkspacePanel virtualization', () => {
     expect(table?.textContent || '').toContain('route 3')
     expect(table?.textContent || '').not.toContain('route 1')
     expect(table?.textContent || '').not.toContain('route 4')
+    const gateVisuals = Array.from(document.querySelectorAll<HTMLElement>('.validationTableVue td .appMetricCell'))
+      .filter((cell) => cell.getAttribute('aria-label')?.startsWith('gate '))
+    expect(gateVisuals.map((cell) => cell.dataset.visualKind)).toEqual(['badge', 'badge'])
+    expect(gateVisuals.map((cell) => cell.getAttribute('aria-label'))).toEqual(['gate warn', 'gate pass'])
+    const sharpeVisuals = Array.from(document.querySelectorAll<HTMLElement>('.validationTableVue td .appMetricCell'))
+      .filter((cell) => cell.getAttribute('aria-label')?.startsWith('sharpe '))
+    expect(sharpeVisuals).toHaveLength(2)
+    expect(sharpeVisuals[1]?.getAttribute('style')).toContain('--metric-fill: 100%')
     expect(virtualizerState.scrollCalls).toEqual([0])
   })
 })

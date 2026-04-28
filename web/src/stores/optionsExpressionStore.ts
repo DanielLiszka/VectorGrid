@@ -29,6 +29,13 @@ import {
   runOptionsExpression,
   validateOptionsExpressionArtifact,
 } from "../services/optionsExpressionService";
+import {
+  createOptionsValidationFormValues,
+  optionsValidationErrorMessages,
+  toOptionsValidationCommandRequest,
+  validateOptionsValidationFormValues,
+  type OptionsValidationFormValues,
+} from "../utils/optionsValidationForm";
 
 export const OPTIONS_MONEYNESS_BUCKET_OPTIONS = [
   "atm",
@@ -230,28 +237,6 @@ function normalizeOptionalInteger(value: unknown): number | null {
   return parsed == null ? null : Math.max(0, Math.floor(parsed));
 }
 
-function parseRequiredPositiveIntegerInput(
-  value: unknown,
-  label: string,
-): number {
-  const raw = normalizeText(value);
-  const parsed = Number(raw);
-  if (!raw || !Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${label} must be a positive whole number.`);
-  }
-  return parsed;
-}
-
-function parseUtcDateInputToMs(value: unknown, label: string): number {
-  const raw = normalizeText(value);
-  if (!raw) throw new Error(`${label} is required.`);
-  const parsed = Date.parse(`${raw}T00:00:00.000Z`);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`${label} must be a valid YYYY-MM-DD date.`);
-  }
-  return parsed;
-}
-
 function parseOptionalFiniteInput(value: unknown): {
   raw: string;
   value: number | null;
@@ -413,6 +398,55 @@ function pickSupported<T extends string>(
   return (allowed.includes(normalized as T) ? normalized : fallback) as T;
 }
 
+function optionsValidationValuesFromState(state: {
+  latestRun: RunOptionsExpressionSummary | null;
+  activeArtifact: OptionsExpressionArtifactRecord | null;
+  selectedArtifactPath: string;
+  selectedDatasetId: string;
+  validationDatasetPolicy: string;
+  validationPlanMode: string;
+  validationStartDateInput: string;
+  validationEndDateInput: string;
+  validationTrainSessionCountInput: string;
+  validationSessionCountInput: string;
+  validationStepSessionCountInput: string;
+  validationTupleIndexesInput: string;
+  validationIncludeSealedFinalists: boolean;
+  validationIncludeRobustLeader: boolean;
+  validationIncludeHoldoutLeader: boolean;
+  minValidTradesInput: string;
+}): OptionsValidationFormValues {
+  const activeArtifactPath =
+    normalizeText(state.latestRun?.artifactPath) ||
+    normalizeText(state.activeArtifact?.artifactPath) ||
+    normalizeText(state.selectedArtifactPath);
+  return createOptionsValidationFormValues({
+    artifactPath: activeArtifactPath,
+    activeArtifactOptionsDatasetId: state.activeArtifact?.optionsDatasetId || "",
+    selectedDatasetId: state.selectedDatasetId,
+    datasetPolicy: pickSupported(
+      state.validationDatasetPolicy,
+      OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS,
+      "require_exact_replay",
+    ),
+    validationPlanMode: pickSupported(
+      state.validationPlanMode,
+      OPTIONS_VALIDATION_PLAN_MODE_OPTIONS,
+      "original_embedded_splits",
+    ),
+    startDate: state.validationStartDateInput,
+    endDate: state.validationEndDateInput,
+    trainSessionCountInput: state.validationTrainSessionCountInput,
+    validationSessionCountInput: state.validationSessionCountInput,
+    stepSessionCountInput: state.validationStepSessionCountInput,
+    tupleIndexesInput: state.validationTupleIndexesInput,
+    includeSealedFinalists: state.validationIncludeSealedFinalists,
+    includeRobustLeader: state.validationIncludeRobustLeader,
+    includeHoldoutLeader: state.validationIncludeHoldoutLeader,
+    minValidTradesInput: state.minValidTradesInput,
+  });
+}
+
 export const useOptionsExpressionStore = defineStore("optionsExpression", {
   state: () => ({
     parentArtifactPath: "",
@@ -541,6 +575,16 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
 
     validationAcceptance(state) {
       return state.latestValidation?.result.acceptanceSummary || null;
+    },
+
+    validationFormErrorMessages(state): string[] {
+      return optionsValidationErrorMessages(optionsValidationValuesFromState(state));
+    },
+
+    validationFormValid(state): boolean {
+      return !validateOptionsValidationFormValues(
+        optionsValidationValuesFromState(state),
+      );
     },
 
     activeArtifactTimestamp(state): string {
@@ -1249,84 +1293,14 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     },
 
     buildValidationRequest(): Record<string, unknown> {
-      const artifactPath = this.activeArtifactPath;
-      if (!artifactPath) {
-        throw new Error("Load or run an options expression artifact before validation.");
-      }
-      const datasetPolicy = pickSupported(
-        this.validationDatasetPolicy,
-        OPTIONS_VALIDATION_DATASET_POLICY_OPTIONS,
-        "require_exact_replay",
-      );
-      const replacementPolicy = datasetPolicy !== "require_exact_replay";
-      if (replacementPolicy && !this.selectedDatasetId) {
-        throw new Error(
-          "Select a Polygon.io replacement dataset before using a replacement validation policy.",
-        );
-      }
-      const tupleIndexes = parseIntegerList(
-        this.validationTupleIndexesInput,
-        [],
-      );
-      const validationPlanMode = pickSupported(
-        this.validationPlanMode,
-        OPTIONS_VALIDATION_PLAN_MODE_OPTIONS,
-        "original_embedded_splits",
-      );
-      const validationPlan: Record<string, unknown> = {
-        mode: validationPlanMode,
-      };
-      if (validationPlanMode === "date_range_holdout") {
-        const start = parseUtcDateInputToMs(
-          this.validationStartDateInput,
-          "Validation start date",
-        );
-        const end = parseUtcDateInputToMs(
-          this.validationEndDateInput,
-          "Validation end date",
-        );
-        if (start >= end) {
-          throw new Error(
-            "Validation start date must be before validation end date.",
-          );
-        }
-        validationPlan.start_timestamp_ms = start;
-        validationPlan.end_timestamp_ms = end;
-      }
-      if (
-        validationPlanMode === "anchored_walk_forward" ||
-        validationPlanMode === "rolling_session_walk_forward"
-      ) {
-        validationPlan.train_session_count =
-          parseRequiredPositiveIntegerInput(
-            this.validationTrainSessionCountInput,
-            "Train sessions",
-          );
-        validationPlan.validation_session_count =
-          parseRequiredPositiveIntegerInput(
-            this.validationSessionCountInput,
-            "Validation sessions",
-          );
-        validationPlan.step_session_count = parseRequiredPositiveIntegerInput(
-          this.validationStepSessionCountInput,
-          "Step sessions",
-        );
-      }
-      return {
-        artifact_path: artifactPath,
-        options_dataset_id: replacementPolicy
-          ? this.selectedDatasetId
-          : this.activeArtifact?.optionsDatasetId || this.selectedDatasetId,
-        dataset_policy: datasetPolicy,
-        tuple_selection: {
-          include_sealed_finalists: this.validationIncludeSealedFinalists,
-          include_robust_leader: this.validationIncludeRobustLeader,
-          include_holdout_leader: this.validationIncludeHoldoutLeader,
-          tuple_indexes: tupleIndexes,
-        },
-        validation_plan: validationPlan,
-        min_valid_trades: normalizeOptionalInteger(this.minValidTradesInput),
-      };
+      const values = optionsValidationValuesFromState(this);
+      const errors = validateOptionsValidationFormValues(values);
+      const firstError = Object.values(errors?.fields ?? {})[0];
+      if (firstError) throw new Error(firstError);
+      return toOptionsValidationCommandRequest(values) as unknown as Record<
+        string,
+        unknown
+      >;
     },
 
     async previewValidationFeasibility(): Promise<void> {

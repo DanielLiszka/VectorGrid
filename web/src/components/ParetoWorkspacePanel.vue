@@ -8,8 +8,9 @@ import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import ChartEmptyState from './visualizations/ChartEmptyState.vue'
+import MetricDistributionChart from './visualizations/MetricDistributionChart.vue'
 import ParetoScatter from './visualizations/ParetoScatter.vue'
-import type { ParetoRenderPoint } from '../visualizations/paretoModel'
+import { formatParetoDisplay, type ParetoRenderPoint } from '../visualizations/paretoModel'
 
 interface OptionItem {
   value: string
@@ -54,6 +55,34 @@ function resolvedOptions(options: OptionItem[], fallbackValue: string, fallbackL
 
 const xOptions = computed(() => resolvedOptions(paretoXOptions.value as OptionItem[], paretoX.value, paretoX.value || 'max_dd'))
 const yOptions = computed(() => resolvedOptions(paretoYOptions.value as OptionItem[], paretoY.value, paretoY.value || 'pnl'))
+const paretoDistributionColumns = computed(() => {
+  const model = paretoModel.value
+  if (!model || model.status !== 'ready') return []
+  const xLabel = xOptions.value.find((option) => option.value === model.xKey)?.label || model.xKey
+  const yLabel = yOptions.value.find((option) => option.value === model.yKey)?.label || model.yKey
+  return [
+    { key: model.xKey, label: xLabel },
+    { key: model.yKey, label: yLabel },
+  ]
+})
+const paretoDistributionRows = computed(() => {
+  const model = paretoModel.value
+  if (!model || model.status !== 'ready') return []
+  return model.points.map((point) => ({
+    cells: [
+      {
+        text: formatParetoDisplay(point.x, 4),
+        title: String(point.x),
+        className: 'mono',
+      },
+      {
+        text: formatParetoDisplay(point.y, 4),
+        title: String(point.y),
+        className: 'mono',
+      },
+    ],
+  }))
+})
 
 watch(
   () => [
@@ -169,6 +198,13 @@ function selectParetoPoint(point: ParetoRenderPoint): void {
           v-if="paretoStage === 'ready'"
           :model="paretoModel"
           @select-point="selectParetoPoint"
+        />
+        <MetricDistributionChart
+          v-if="paretoStage === 'ready'"
+          title="Pareto metric distribution"
+          :columns="paretoDistributionColumns"
+          :rows="paretoDistributionRows"
+          :preferred-keys="[paretoY || 'pnl', paretoX || 'max_dd']"
         />
       </section>
 

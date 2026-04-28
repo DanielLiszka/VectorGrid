@@ -28,9 +28,15 @@ import {
 import { compareActionIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import AppDataTableShell from './ui/AppDataTableShell.vue'
+import AppMetricCell from './ui/AppMetricCell.vue'
 import AppTableDensityControl from './ui/AppTableDensityControl.vue'
 import AppTableViewPresetControl from './ui/AppTableViewPresetControl.vue'
 import type { TableViewPresetOption } from './ui/tableViewPresets'
+import {
+  buildMetricColumnVisualRanges,
+  resolveMetricCellVisual,
+  type MetricCellVisual,
+} from '../visualizations/metricCellVisualModel'
 
 interface TopColumn {
   key: string
@@ -155,6 +161,9 @@ const { headerGroups, rowModelRows, visibleLeafColumns, toggleSortColumn } = use
       analysisStore.sortTopTable(columnKey)
     },
   },
+)
+const topMetricVisualRanges = computed(() =>
+  buildMetricColumnVisualRanges(orderedColumns.value, renderedRows.value),
 )
 const hasTopResults = computed(() => Number(topRows.value || 0) > 0)
 const topDisabledForRun = computed(() => String(topFilterMeta.value || '').toLowerCase().includes('top k disabled'))
@@ -455,6 +464,11 @@ function topHeaderStyle(header: Header<TopRow, unknown>): Record<string, string>
 function topCellStyle(cell: Cell<TopRow, unknown>): Record<string, string> {
   const meta = cell.column.columnDef.meta as MatrixColumnMeta
   return columnWidthStyle(meta.columnKey)
+}
+
+function topCellVisual(cell: Cell<TopRow, unknown>): MetricCellVisual | null {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta
+  return resolveMetricCellVisual(meta.columnKey, topCellPayload(cell), topMetricVisualRanges.value)
 }
 
 function finishTopColumnResize(): void {
@@ -878,8 +892,11 @@ onBeforeUnmount(() => {
                       :title="topCellPayload(cell).title || undefined"
                       role="gridcell"
                     >
-                      <div class="topCellContent">
-                        <span>{{ topCellPayload(cell).text }}</span>
+                      <AppMetricCell
+                        :text="topCellPayload(cell).text"
+                        :visual="topCellVisual(cell)"
+                        :align="(cell.column.columnDef.meta as MatrixColumnMeta).alignLeft ? 'left' : 'right'"
+                      >
                         <button
                           v-if="visibleCellIndex === 0"
                           type="button"
@@ -890,7 +907,7 @@ onBeforeUnmount(() => {
                         >
                           {{ pinCellLabel(virtualRow.row.original.rowId) }}
                         </button>
-                      </div>
+                      </AppMetricCell>
                     </td>
                   </template>
                 </tr>
@@ -1197,13 +1214,6 @@ onBeforeUnmount(() => {
 .topTableVue tbody tr.spacerRow td {
   border-bottom: none;
   padding: 0;
-}
-
-.topCellContent {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
 }
 
 .pinCellBtn {

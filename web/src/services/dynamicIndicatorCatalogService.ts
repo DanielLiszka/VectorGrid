@@ -1,4 +1,5 @@
 import { invokeCommand } from '../tauri/invoke'
+import { readCachedCatalog, removeCachedCatalog } from './catalogReadCache'
 import { dynamicIndicatorCatalogQueryKey } from './catalogQueryKeys'
 
 export { dynamicIndicatorCatalogQueryKey }
@@ -263,13 +264,20 @@ export function normalizeDynamicIndicatorCatalog(value: unknown): DynamicIndicat
 }
 
 export async function listDynamicIndicatorCatalog(forceRefresh = false): Promise<DynamicIndicatorCatalogEntry[]> {
-  if (!forceRefresh && catalogCache) return catalogCache
-  const raw = await invokeCommand('list_dynamic_indicators')
-  const catalog = normalizeDynamicIndicatorCatalog(raw)
+  const catalog = await readCachedCatalog(
+    dynamicIndicatorCatalogQueryKey,
+    async () => {
+      if (!forceRefresh && catalogCache) return catalogCache
+      const raw = await invokeCommand('list_dynamic_indicators')
+      return normalizeDynamicIndicatorCatalog(raw)
+    },
+    { forceRefresh },
+  )
   catalogCache = catalog
   return catalog
 }
 
 export function resetDynamicIndicatorCatalogCacheForTests(): void {
   catalogCache = null
+  removeCachedCatalog(dynamicIndicatorCatalogQueryKey)
 }

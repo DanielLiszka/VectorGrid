@@ -12,6 +12,7 @@ describe('tauri command registry', () => {
     expect(isTauriCommand('list_artifact_library')).toBe(true)
     expect(isTauriCommand('load_latest_run_artifact_hydration')).toBe(true)
     expect(isTauriCommand('load_latest_run_artifact_summary')).toBe(true)
+    expect(isTauriCommand('rebuild_artifact_catalog')).toBe(true)
     expect(isTauriCommand('load_run_artifact_hydration')).toBe(true)
     expect(isTauriCommand('load_run_artifact_detail')).toBe(true)
     expect(isTauriCommand('load_meta_artifact_replay')).toBe(true)

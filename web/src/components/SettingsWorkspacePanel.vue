@@ -87,6 +87,10 @@ const {
   artifactRetentionLoading,
   artifactRetentionSaving,
   artifactRetentionStatusLine,
+  artifactCatalogSummary,
+  artifactCatalogLoading,
+  artifactCatalogRebuilding,
+  artifactCatalogStatusLine,
   canManageArtifactRetention,
   canBrowseMarketDataDir,
   canSetMarketDataDir,
@@ -426,6 +430,15 @@ const diagnosticsTaskChips = computed(() => {
     counts.completed ? `${counts.completed} completed` : "",
   ].filter((chip) => chip.length > 0);
 });
+const artifactCatalogSummaryText = computed(() => {
+  const summary = artifactCatalogSummary.value;
+  return `${summary.total} total · runs ${summary.runs} · meta ${summary.meta} · stage5 ${summary.stage5} · policy ${summary.policyEvals} · options ${summary.optionsExpression}`;
+});
+const artifactCatalogStamp = computed(() => {
+  if (artifactCatalogRebuilding.value) return "Rebuilding";
+  if (artifactCatalogLoading.value) return "Refreshing";
+  return artifactCatalogSummary.value.total > 0 ? "Catalog loaded" : "Catalog idle";
+});
 const taskAttentionLine = computed(() => {
   const failed = taskPosture.value.failed[0] ?? null;
   if (failed)
@@ -535,6 +548,10 @@ const desktopDiagnosticsSnapshot = computed(() => {
     `- minimize: ${desktopPresenceMinimizeDetail}`,
     `- close: ${desktopPresenceCloseDetail}`,
     `- task center: ${desktopPresenceTaskCenterDetail}`,
+    "",
+    "Artifact catalog",
+    `- status: ${artifactCatalogStatusLine.value}`,
+    `- counts: ${artifactCatalogSummaryText.value}`,
     "",
     "Task posture",
     `- center: ${centerStatusLabel.value}`,
@@ -1668,6 +1685,50 @@ onBeforeUnmount(() => {
 
             <section
               class="diagnosticsCard"
+              aria-label="Artifact catalog diagnostics card"
+            >
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Artifact catalog</div>
+                <div class="mono diagnosticsStamp">
+                  {{ artifactCatalogStamp }}
+                </div>
+              </header>
+              <div class="diagnosticsPrimary">
+                {{ artifactCatalogSummaryText }}
+              </div>
+              <div class="panelMuted">
+                {{ artifactCatalogStatusLine }}
+              </div>
+              <div class="actions diagnosticsInlineActions">
+                <button
+                  type="button"
+                  data-qa-action="settings.artifactCatalog.refresh"
+                  :disabled="artifactCatalogLoading || artifactCatalogRebuilding"
+                  @click="settingsStore.loadArtifactCatalogSummary(true)"
+                >
+                  {{
+                    artifactCatalogLoading
+                      ? "Refreshing catalog…"
+                      : "Refresh catalog"
+                  }}
+                </button>
+                <button
+                  type="button"
+                  data-qa-action="settings.artifactCatalog.rebuild"
+                  :disabled="artifactCatalogLoading || artifactCatalogRebuilding"
+                  @click="settingsStore.rebuildArtifactCatalog()"
+                >
+                  {{
+                    artifactCatalogRebuilding
+                      ? "Rebuilding catalog…"
+                      : "Rebuild catalog"
+                  }}
+                </button>
+              </div>
+            </section>
+
+            <section
+              class="diagnosticsCard"
               aria-label="Desktop presence diagnostics card"
             >
               <header class="diagnosticsHead">
@@ -2114,6 +2175,10 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: end;
+}
+
+.diagnosticsInlineActions {
+  margin-top: 0.7rem;
 }
 
 .diagnosticsControl {

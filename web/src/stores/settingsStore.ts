@@ -14,11 +14,14 @@ import {
 import {
   clearArtifactRetentionSettings as clearArtifactRetentionSettingsService,
   getArtifactRetentionInfo as getArtifactRetentionInfoService,
+  loadArtifactCatalogSummary as loadArtifactCatalogSummaryService,
   openReportsDir as openReportsDirService,
   openRunsDir as openRunsDirService,
+  rebuildArtifactCatalogSummary as rebuildArtifactCatalogSummaryService,
   setArtifactRetentionSettings as setArtifactRetentionSettingsService,
   setWindowEffect,
   ARTIFACT_RETENTION_FAMILY_ORDER,
+  type ArtifactCatalogSummary,
   type ArtifactRetentionConfiguredSettingsSummary,
   type ArtifactRetentionInfoSummary,
   type ArtifactRetentionResolvedSettingsSummary,
@@ -100,6 +103,33 @@ function buildConfiguredArtifactRetentionSettings(): ArtifactRetentionConfigured
     batchSummary: null,
     campaignSummary: null,
     optionsExpression: null,
+  };
+}
+
+function emptyArtifactCatalogSummary(): ArtifactCatalogSummary {
+  return {
+    runs: 0,
+    meta: 0,
+    stage5: 0,
+    policyEvals: 0,
+    optionsExpression: 0,
+    total: 0,
+  };
+}
+
+function cloneArtifactCatalogSummary(
+  value: ArtifactCatalogSummary = emptyArtifactCatalogSummary(),
+): ArtifactCatalogSummary {
+  return {
+    runs: Math.max(0, Math.floor(Number(value.runs || 0))),
+    meta: Math.max(0, Math.floor(Number(value.meta || 0))),
+    stage5: Math.max(0, Math.floor(Number(value.stage5 || 0))),
+    policyEvals: Math.max(0, Math.floor(Number(value.policyEvals || 0))),
+    optionsExpression: Math.max(
+      0,
+      Math.floor(Number(value.optionsExpression || 0)),
+    ),
+    total: Math.max(0, Math.floor(Number(value.total || 0))),
   };
 }
 
@@ -566,6 +596,11 @@ interface SettingsState {
   artifactRetentionLoading: boolean;
   artifactRetentionSaving: boolean;
   artifactRetentionStatusLine: string;
+  artifactCatalogSummary: ArtifactCatalogSummary;
+  artifactCatalogLoaded: boolean;
+  artifactCatalogLoading: boolean;
+  artifactCatalogRebuilding: boolean;
+  artifactCatalogStatusLine: string;
   canManageArtifactRetention: boolean;
   canBrowseMarketDataDir: boolean;
   canSetMarketDataDir: boolean;
@@ -617,6 +652,11 @@ export const useSettingsStore = defineStore("settings", {
     artifactRetentionLoading: false,
     artifactRetentionSaving: false,
     artifactRetentionStatusLine: "Artifact retention settings not loaded yet.",
+    artifactCatalogSummary: emptyArtifactCatalogSummary(),
+    artifactCatalogLoaded: false,
+    artifactCatalogLoading: false,
+    artifactCatalogRebuilding: false,
+    artifactCatalogStatusLine: "Artifact catalog counts not loaded yet.",
     canManageArtifactRetention: true,
     canBrowseMarketDataDir: true,
     canSetMarketDataDir: true,
@@ -700,6 +740,24 @@ export const useSettingsStore = defineStore("settings", {
             this.artifactRetentionStatusLine ??
             "Artifact retention settings not loaded yet.",
         ).trim() || "Artifact retention settings not loaded yet.";
+      this.artifactCatalogSummary = cloneArtifactCatalogSummary(
+        snapshot.artifactCatalogSummary ?? this.artifactCatalogSummary,
+      );
+      this.artifactCatalogLoaded = Boolean(
+        snapshot.artifactCatalogLoaded ?? this.artifactCatalogLoaded,
+      );
+      this.artifactCatalogLoading = Boolean(
+        snapshot.artifactCatalogLoading ?? this.artifactCatalogLoading,
+      );
+      this.artifactCatalogRebuilding = Boolean(
+        snapshot.artifactCatalogRebuilding ?? this.artifactCatalogRebuilding,
+      );
+      this.artifactCatalogStatusLine =
+        String(
+          snapshot.artifactCatalogStatusLine ??
+            this.artifactCatalogStatusLine ??
+            "Artifact catalog counts not loaded yet.",
+        ).trim() || "Artifact catalog counts not loaded yet.";
       this.canManageArtifactRetention = Boolean(
         snapshot.canManageArtifactRetention ?? this.canManageArtifactRetention,
       );
@@ -1004,6 +1062,59 @@ export const useSettingsStore = defineStore("settings", {
         this.statusLine = message;
       } finally {
         this.artifactRetentionSaving = false;
+        this.markVueUpdate();
+      }
+    },
+
+    applyArtifactCatalogSummary(summary: ArtifactCatalogSummary): void {
+      this.artifactCatalogSummary = cloneArtifactCatalogSummary(summary);
+      this.artifactCatalogLoaded = true;
+      this.markVueUpdate();
+    },
+
+    async loadArtifactCatalogSummary(force = false): Promise<void> {
+      if (this.artifactCatalogLoading || this.artifactCatalogRebuilding) return;
+      if (this.artifactCatalogLoaded && !force) return;
+      this.artifactCatalogLoading = true;
+      this.artifactCatalogStatusLine = "Loading artifact catalog counts...";
+      this.markVueUpdate();
+      try {
+        const summary = await loadArtifactCatalogSummaryService();
+        this.applyArtifactCatalogSummary(summary);
+        this.artifactCatalogStatusLine = `Loaded artifact catalog counts for ${summary.total} artifact${summary.total === 1 ? "" : "s"}.`;
+        this.statusLine = "Loaded artifact catalog counts.";
+      } catch (error) {
+        const message = normalizeErrorMessage(
+          error,
+          "Artifact catalog counts unavailable.",
+        );
+        this.artifactCatalogStatusLine = message;
+        this.statusLine = message;
+      } finally {
+        this.artifactCatalogLoading = false;
+        this.markVueUpdate();
+      }
+    },
+
+    async rebuildArtifactCatalog(): Promise<void> {
+      if (this.artifactCatalogLoading || this.artifactCatalogRebuilding) return;
+      this.artifactCatalogRebuilding = true;
+      this.artifactCatalogStatusLine = "Rebuilding artifact catalog...";
+      this.markVueUpdate();
+      try {
+        const summary = await rebuildArtifactCatalogSummaryService();
+        this.applyArtifactCatalogSummary(summary);
+        this.artifactCatalogStatusLine = `Rebuilt artifact catalog for ${summary.total} artifact${summary.total === 1 ? "" : "s"}.`;
+        this.statusLine = "Rebuilt artifact catalog.";
+      } catch (error) {
+        const message = normalizeErrorMessage(
+          error,
+          "Failed to rebuild artifact catalog.",
+        );
+        this.artifactCatalogStatusLine = message;
+        this.statusLine = message;
+      } finally {
+        this.artifactCatalogRebuilding = false;
         this.markVueUpdate();
       }
     },

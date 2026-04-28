@@ -20,8 +20,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
 sha2 = "0.10"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 clap = { version = "4.5", features = ["derive"] }
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+specta-typescript = "0.0.9"
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 
 vector-ta = "0.2.4"
 ta_app_core = { path = "../crates/app_core" }

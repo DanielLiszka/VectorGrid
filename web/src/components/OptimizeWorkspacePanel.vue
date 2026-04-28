@@ -9,27 +9,23 @@ import {
   watch,
 } from "vue";
 import { storeToRefs } from "pinia";
+import { useOptimizeCatalogQueries } from "../composables/useOptimizeCatalogQueries";
 import { useShellMount } from "../composables/useShellMount";
 import { useOptimizeStore, type OptimizeOption } from "../stores/optimizeStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import {
-  listMovingAverageCatalog,
   type MaParamDescriptor,
   type MaParamKind,
   type MovingAverageCatalogEntry,
 } from "../services/movingAverageCatalogService";
 import {
-  listDynamicIndicatorCatalog,
   type DynamicIndicatorCatalogEntry,
   type DynamicIndicatorParamDescriptor,
   type DynamicIndicatorParamValue,
 } from "../services/dynamicIndicatorCatalogService";
-import {
-  listGpuSpeedupMap,
-  type GpuSpeedupEntry,
-} from "../services/gpuSpeedupsService";
+import type { GpuSpeedupEntry } from "../services/gpuSpeedupsService";
 import { tauriRuntimeAvailable } from "../tauri/invoke";
 import { describeStrategyOptimizationCapabilities } from "../utils/strategyOptimizationCapabilities";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
@@ -160,6 +156,7 @@ const visible = computed(
   () => String(controlsTab.value || "").trim() === "opt",
 );
 const hasTauriRuntime = computed(() => tauriRuntimeAvailable());
+const catalogQueries = useOptimizeCatalogQueries({ enabled: hasTauriRuntime });
 const strategyCapabilities = computed(() =>
   describeStrategyOptimizationCapabilities(
     strategyDraft.value || strategyKind.value,
@@ -1456,7 +1453,11 @@ function waitForNextPaint(): Promise<void> {
 
 async function loadMaParamCatalog(): Promise<void> {
   try {
-    const catalog = await listMovingAverageCatalog();
+    const state = await catalogQueries.movingAverageCatalogQuery.refresh(true);
+    const catalog =
+      state.status === "success"
+        ? state.data
+        : catalogQueries.movingAverageCatalogQuery.data.value ?? [];
     if (panelDisposed) return;
     const nextMap: Record<string, MaParamDescriptor[]> = {};
     for (const item of catalog) {
@@ -1475,7 +1476,8 @@ async function loadMaParamCatalog(): Promise<void> {
 
 async function loadMaSpeedups(): Promise<void> {
   try {
-    const speedupMap = await listGpuSpeedupMap();
+    await catalogQueries.gpuSpeedupsQuery.refresh(true);
+    const speedupMap = catalogQueries.gpuSpeedupById.value;
     if (panelDisposed) return;
     maSpeedupById.value = speedupMap;
   } catch {
@@ -1493,7 +1495,11 @@ async function loadDynamicCatalogMeta(): Promise<void> {
     return;
   }
   try {
-    const catalog = await listDynamicIndicatorCatalog();
+    const state = await catalogQueries.dynamicIndicatorCatalogQuery.refresh(true);
+    const catalog =
+      state.status === "success"
+        ? state.data
+        : catalogQueries.dynamicIndicatorCatalogQuery.data.value ?? [];
     if (panelDisposed) return;
     dynamicCatalogEntries.value = catalog;
     if (isDynamicDoubleMaKind.value) ensureDynamicBuilderSeeded(true);

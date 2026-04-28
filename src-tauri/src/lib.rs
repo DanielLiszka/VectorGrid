@@ -1,4 +1,5 @@
 pub mod broker_paper;
+pub mod command_bindings;
 pub mod commands;
 pub mod data_cache;
 pub mod desktop_menu;
@@ -222,6 +223,7 @@ pub fn run_tauri() {
             load_latest_run_artifact_summary,
             load_latest_run_artifact_hydration,
             list_artifact_library,
+            rebuild_artifact_catalog,
             list_meta_artifacts,
             list_stage4_artifacts,
             list_stage5_artifacts,

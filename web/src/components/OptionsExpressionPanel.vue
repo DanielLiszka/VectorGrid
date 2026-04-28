@@ -109,6 +109,8 @@ const {
   validationAcceptance,
   validationBusy,
   validationDatasetPolicy,
+  validationFormErrorMessages,
+  validationFormValid,
   validationFeasibilityBusy,
   validationIncludeHoldoutLeader,
   validationIncludeRobustLeader,
@@ -5283,11 +5285,22 @@ function focusTupleIndex(index: number): void {
           </div>
         </div>
 
+        <div
+          v-if="validationFormErrorMessages.length"
+          class="panelMuted validationFormErrors"
+          role="status"
+          aria-live="polite"
+        >
+          {{ validationFormErrorMessages.join(" ") }}
+        </div>
+
         <div class="actions">
           <button
             type="button"
             data-qa-action="options.validation.preview"
-            :disabled="validationFeasibilityBusy || !activeArtifactPath"
+            :disabled="
+              validationFeasibilityBusy || !activeArtifactPath || !validationFormValid
+            "
             @click="store.previewValidationFeasibility()"
           >
             {{
@@ -5299,7 +5312,7 @@ function focusTupleIndex(index: number): void {
           <button
             type="button"
             data-qa-action="options.validation.run"
-            :disabled="validationBusy || !activeArtifactPath"
+            :disabled="validationBusy || !activeArtifactPath || !validationFormValid"
             @click="store.validateActiveArtifact()"
           >
             {{ validationBusy ? "Validating…" : "Validate artifact" }}

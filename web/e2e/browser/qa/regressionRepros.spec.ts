@@ -267,7 +267,8 @@ defineWorkflow({
     const beforePreviewCount = (await readTauriInvokeLog(page))
       .filter((entry) => entry.command === 'analyze_options_expression_validation_feasibility').length
 
-    await action('options.validation.preview').click()
+    await expect(action('options.validation.preview')).toBeDisabled()
+    await expect(action('options.validation.run')).toBeDisabled()
     await expect(page.getByText(/Validation start date must be before validation end date/i).first()).toBeVisible()
 
     const afterPreviewCount = (await readTauriInvokeLog(page))

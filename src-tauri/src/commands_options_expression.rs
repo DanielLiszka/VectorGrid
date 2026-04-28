@@ -123,7 +123,7 @@ pub struct SaveOptionsCsvResponse {
     pub bytes: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionsExpressionArtifactLeaderSummary {
     pub search_leader_tuple_index: Option<usize>,
     pub robust_leader_tuple_index: Option<usize>,
@@ -138,7 +138,7 @@ pub struct OptionsExpressionArtifactLeaderSummary {
     pub robust_leader_sealed_final_rank: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionsExpressionArtifactSummary {
     pub ts: String,
     pub path: String,

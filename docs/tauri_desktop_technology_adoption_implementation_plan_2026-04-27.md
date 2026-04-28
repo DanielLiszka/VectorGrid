@@ -2,7 +2,7 @@
 
 Date: 2026-04-27
 
-Status: core low-regression implementation completed; higher-risk pilots remain deferred
+Status: adopted technology slices implemented; Comlink remains deferred pending profiling evidence
 
 ## Goal
 
@@ -32,15 +32,16 @@ Completed in the first implementation pass:
 - Zod runtime-boundary schemas for selected Tauri service responses.
 - `@pinia/testing` helper adoption in representative component tests.
 - `@pinia/colada` app registration and stable catalog query-key helpers for idempotent read surfaces.
+- `@pinia/colada` production query adoption for Optimize catalog hydration and shared idempotent catalog reads.
 - `ts-pattern` pilot in pure workflow-model branching.
+- `specta` / `tauri-specta` generated bindings as a dedicated generate-and-check lane.
+- Rust-owned SQLite artifact catalog as a rebuildable index, with JSON artifacts still the source of truth.
+- `@tanstack/vue-form` options-validation form/request pilot.
+- `xstate` live-execution lifecycle pilot wired through the production store.
 
-Deliberately deferred because they would not be low-regression additive changes in this pass:
+Deliberately deferred:
 
-- `specta` / `tauri-specta` generated bindings: still worthwhile, but it should start as a dedicated generate-and-check lane because the command surface is broad.
-- Rust-owned SQLite catalog: still potentially high ROI for artifact/options dataset search, but it needs a rebuildable-index design and migration tests before touching runtime data flows.
-- `@tanstack/vue-form`: wait until a specific dynamic form is migrated with request-builder parity tests.
-- `xstate` / `@xstate/vue`: wait for a dedicated live-execution lifecycle pilot with transition-table coverage.
-- `comlink`: wait for profiling evidence of a frontend CPU hot path.
+- `comlink`: current UI performance budgets do not show a frontend CPU hot path that justifies a worker/RPC boundary.
 
 ## Research Basis
 
@@ -441,6 +442,14 @@ Adopt one async cache layer for idempotent Tauri reads. Use `@pinia/colada` firs
 4. Keep store actions as compatibility facades during the first pass.
 5. Do not move optimize, validation, execution runner, meta, or options-expression run commands into the query layer during this phase.
 
+### Implemented Slice
+
+- Added `web/src/composables/useOptimizeCatalogQueries.ts` with Pinia Colada queries for moving-average catalog, GPU speedups, and dynamic-indicator catalog metadata.
+- Added a small shared catalog read-cache helper for setup-context idempotent reads and service/test reset paths.
+- Kept the existing service APIs and module caches as compatibility fallbacks for headless tests and non-setup callers.
+- Wired `OptimizeWorkspacePanel` catalog hydration through the Colada query entries without changing Tauri command names or panel state shape.
+- Added artifact-catalog summary query keys for the Settings diagnostics surface.
+
 ### Tests
 
 - Existing service tests for the four candidate services.
@@ -494,12 +503,20 @@ Add Rust-to-TypeScript type generation as a non-invasive contract drift guard.
 1. Add current Tauri 2-compatible Specta/tauri-specta versions after confirming crate compatibility in `cargo tree`.
 2. Start with a small command cluster:
    - `get_gpu_status`
-   - `list_moving_averages`
-   - `list_dynamic_indicators`
+   - `list_gpu_speedups`
+   - `list_sample_csvs`
+   - `list_repo_data_csvs`
 3. Derive or implement exported types only for the selected request/response structures.
 4. Generate a separate file such as `web/src/tauri/generatedBindings.ts`.
 5. Add a check script that fails when generated bindings are stale.
 6. Do not replace the existing `TAURI_COMMANDS` parity generator until the generated-binding lane is stable.
+
+### Implemented Slice
+
+- Added a separate Specta export lane in `src-tauri/src/command_bindings.rs`.
+- Generated `web/src/tauri/generatedBindings.ts` without replacing existing invoke wrappers.
+- Added `npm --prefix web run gen:bindings` and `npm --prefix web run check:bindings`.
+- Kept the first command cluster limited to primitive/local DTOs to avoid broad app-core type churn.
 
 ### Regression Risks
 
@@ -550,6 +567,14 @@ Introduce a local metadata index for artifact and dataset listing/search perform
    - If rebuild fails, existing JSON scanning continues to work.
 6. Do not expose frontend SQL.
 
+### Implemented Slice
+
+- Added a `rusqlite` artifact catalog at `artifact_catalog.sqlite3`.
+- `list_artifact_library` now uses the catalog when its fingerprint matches the JSON artifact set.
+- Missing, stale, or unreadable catalog state falls back to JSON scanning and rewrites the catalog best-effort.
+- Added explicit `rebuild_artifact_catalog` command and integration coverage for rebuild plus JSON mutation invalidation.
+- Deferred generic SQL-like query/status commands until there is a frontend workflow that needs them.
+
 ### Verification
 
 - Rust unit tests with temporary app data directories.
@@ -577,6 +602,11 @@ Evaluate TanStack Form for one complex form slice only after Zod schemas are in 
 3. Reuse Zod/Standard Schema definitions where feasible.
 4. Ensure request-builder validation remains authoritative until parity is proven.
 5. Compare generated request payloads before and after the form change.
+
+### Implemented Slice
+
+- Added `web/src/utils/optionsValidationForm.ts` as a TanStack Form-compatible options validation form model.
+- Kept request mapping additive and covered by focused schema/factory/request tests.
 
 ### Verification
 
@@ -610,6 +640,11 @@ Add an explicit lifecycle state machine only where the app has real multi-state 
 4. Keep Pinia as the UI-facing state facade until parity is proven.
 5. Add transition-table tests before wiring into components.
 
+### Implemented Slice
+
+- Added `web/src/services/liveExecutionLifecycleMachine.ts` with XState v5 lifecycle transitions.
+- Added transition-table tests for live stream, runner, recovery, and emergency-halt paths.
+
 ### Verification
 
 - `npm --prefix web run test -- executionStore executionService`
@@ -639,6 +674,10 @@ Do not add Comlink during the first implementation unless UI performance evidenc
 - Before/after `npm --prefix web run perf:ui:budget`
 - Worker error fallback tests.
 - E2E workflow smoke for the affected panel.
+
+### Current Decision
+
+- Not implemented. The latest `npm --prefix web run perf:ui:budget` pass remains comfortably within budget, so adding Comlink would introduce a new worker boundary without measured need.
 
 ## Global QA Gate
 

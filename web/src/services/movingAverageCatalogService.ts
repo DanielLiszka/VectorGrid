@@ -1,4 +1,5 @@
 import { invokeCommand } from '../tauri/invoke'
+import { readCachedCatalog, removeCachedCatalog } from './catalogReadCache'
 import { movingAverageCatalogQueryKey } from './catalogQueryKeys'
 
 export { movingAverageCatalogQueryKey }
@@ -148,13 +149,20 @@ export function normalizeMovingAverageCatalog(value: unknown): MovingAverageCata
 }
 
 export async function listMovingAverageCatalog(forceRefresh = false): Promise<MovingAverageCatalogEntry[]> {
-  if (!forceRefresh && catalogCache) return catalogCache
-  const raw = await invokeCommand('list_moving_averages')
-  const catalog = normalizeMovingAverageCatalog(raw)
+  const catalog = await readCachedCatalog(
+    movingAverageCatalogQueryKey,
+    async () => {
+      if (!forceRefresh && catalogCache) return catalogCache
+      const raw = await invokeCommand('list_moving_averages')
+      return normalizeMovingAverageCatalog(raw)
+    },
+    { forceRefresh },
+  )
   catalogCache = catalog
   return catalog
 }
 
 export function resetMovingAverageCatalogCacheForTests(): void {
   catalogCache = null
+  removeCachedCatalog(movingAverageCatalogQueryKey)
 }

@@ -90,6 +90,7 @@ const {
   keyStateDetail,
   liveLifecycleLabel,
   runnerLifecycleLabel,
+  automationLifecycleLabel,
   recoveryStatusLabel,
   brokerReviewRefreshRequired,
   refreshOrdersBlockedReasons,
@@ -287,6 +288,19 @@ const runnerPostureTone = computed<ExecutionPostureItem['tone']>(() => {
   if (runnerStateLabel.value === 'Signal processed') return 'info'
   return 'neutral'
 })
+const automationPostureTone = computed<ExecutionPostureItem['tone']>(() => {
+  if (automationLifecycleLabel.value === 'Halted') return 'danger'
+  if (automationLifecycleLabel.value === 'Review required') return 'warn'
+  if (
+    automationLifecycleLabel.value === 'Runner active' ||
+    automationLifecycleLabel.value === 'Feed ready'
+  ) return brokerArmed.value ? 'warn' : 'info'
+  if (
+    automationLifecycleLabel.value === 'Starting feed' ||
+    automationLifecycleLabel.value === 'Starting runner'
+  ) return 'info'
+  return 'neutral'
+})
 const executionPostureItems = computed<ExecutionPostureItem[]>(() => [
   {
     label: 'Broker mode',
@@ -307,6 +321,11 @@ const executionPostureItems = computed<ExecutionPostureItem[]>(() => [
     label: 'Runner',
     value: runnerStateLabel.value,
     tone: runnerPostureTone.value,
+  },
+  {
+    label: 'Lifecycle',
+    value: automationLifecycleLabel.value,
+    tone: automationPostureTone.value,
   },
   {
     label: 'Key state',
@@ -1420,6 +1439,7 @@ watch(
             <div><span class="panelMetricKey">Live state</span><span class="panelMetricValue mono panelNumeric">{{ liveLifecycleLabel }}</span></div>
             <div><span class="panelMetricKey">Runner</span><span class="panelMetricValue mono panelNumeric">{{ runnerStatusHint }}</span></div>
             <div><span class="panelMetricKey">Runner state</span><span class="panelMetricValue mono panelNumeric">{{ runnerLifecycleLabel }}</span></div>
+            <div><span class="panelMetricKey">Lifecycle</span><span class="panelMetricValue mono panelNumeric">{{ automationLifecycleLabel }}</span></div>
             <div><span class="panelMetricKey">Execution</span><span class="panelMetricValue mono panelNumeric">{{ statusHint }}</span></div>
             <div><span class="panelMetricKey">Account</span><span class="panelMetricValue mono panelNumeric">{{ accountMeta }}</span></div>
             <div><span class="panelMetricKey">Review</span><span class="panelMetricValue mono panelNumeric">{{ reviewMeta }}</span></div>

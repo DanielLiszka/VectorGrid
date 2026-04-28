@@ -106,8 +106,24 @@ vi.mock("../services/settingsService", () => ({
     async () => defaultArtifactRetentionInfo,
   ),
   getArtifactRetentionInfo: vi.fn(async () => defaultArtifactRetentionInfo),
+  loadArtifactCatalogSummary: vi.fn(async () => ({
+    runs: 2,
+    meta: 1,
+    stage5: 0,
+    policyEvals: 1,
+    optionsExpression: 1,
+    total: 5,
+  })),
   openReportsDir: vi.fn(async () => undefined),
   openRunsDir: vi.fn(async () => undefined),
+  rebuildArtifactCatalogSummary: vi.fn(async () => ({
+    runs: 3,
+    meta: 1,
+    stage5: 1,
+    policyEvals: 1,
+    optionsExpression: 2,
+    total: 8,
+  })),
   setArtifactRetentionSettings: vi.fn(async () => defaultArtifactRetentionInfo),
   setWindowEffect: vi.fn(async () => undefined),
 }));
@@ -117,6 +133,12 @@ const clearArtifactRetentionSettingsMock = vi.mocked(
 );
 const getArtifactRetentionInfoMock = vi.mocked(
   settingsService.getArtifactRetentionInfo,
+);
+const loadArtifactCatalogSummaryMock = vi.mocked(
+  settingsService.loadArtifactCatalogSummary,
+);
+const rebuildArtifactCatalogSummaryMock = vi.mocked(
+  settingsService.rebuildArtifactCatalogSummary,
 );
 const setArtifactRetentionSettingsMock = vi.mocked(
   settingsService.setArtifactRetentionSettings,
@@ -131,6 +153,22 @@ describe("SettingsWorkspacePanel", () => {
     getArtifactRetentionInfoMock.mockResolvedValue(
       defaultArtifactRetentionInfo,
     );
+    loadArtifactCatalogSummaryMock.mockResolvedValue({
+      runs: 2,
+      meta: 1,
+      stage5: 0,
+      policyEvals: 1,
+      optionsExpression: 1,
+      total: 5,
+    });
+    rebuildArtifactCatalogSummaryMock.mockResolvedValue({
+      runs: 3,
+      meta: 1,
+      stage5: 1,
+      policyEvals: 1,
+      optionsExpression: 2,
+      total: 8,
+    });
     setArtifactRetentionSettingsMock.mockResolvedValue(
       undefined as never,
     );
@@ -152,6 +190,15 @@ describe("SettingsWorkspacePanel", () => {
 
     const workflowStore = useWorkflowStore(pinia);
     workflowStore.selectWorkspace("settings");
+    const settingsStore = useSettingsStore(pinia);
+    settingsStore.applyArtifactCatalogSummary({
+      runs: 2,
+      meta: 1,
+      stage5: 0,
+      policyEvals: 1,
+      optionsExpression: 1,
+      total: 5,
+    });
 
     const runtimeStore = useRuntimeStore(pinia);
     runtimeStore.markError(new Error("Renderer boot failed"));
@@ -232,6 +279,8 @@ describe("SettingsWorkspacePanel", () => {
     expect(text).toContain("Optimization failed.");
     expect(text).toContain("Error");
     expect(text).toContain("Desktop logs");
+    expect(text).toContain("Artifact catalog");
+    expect(text).toContain("5 total");
     expect(text).toContain("Desktop runtime bridge ready.");
     expect(text).toContain(
       "Window geometry persists to vectorgrid-window-state.json.",
@@ -247,6 +296,9 @@ describe("SettingsWorkspacePanel", () => {
     ).not.toBeNull();
     expect(
       document.querySelector('[aria-label="Native desktop diagnostics card"]'),
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[aria-label="Artifact catalog diagnostics card"]'),
     ).not.toBeNull();
     expect(
       document.querySelector(
@@ -296,6 +348,42 @@ describe("SettingsWorkspacePanel", () => {
 
     expect(localStorage.getItem("VTA_TASK_CENTER_OPEN_V1")).toBe("true");
     wrapper.unmount();
+  });
+
+  it("refreshes and rebuilds artifact catalog diagnostics from settings", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+
+    const workflowStore = useWorkflowStore(pinia);
+    workflowStore.selectWorkspace("settings");
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await nextTick();
+    await nextTick();
+
+    const refreshButton = document.querySelector<HTMLButtonElement>(
+      '[data-qa-action="settings.artifactCatalog.refresh"]',
+    );
+    const rebuildButton = document.querySelector<HTMLButtonElement>(
+      '[data-qa-action="settings.artifactCatalog.rebuild"]',
+    );
+    expect(refreshButton).not.toBeNull();
+    expect(rebuildButton).not.toBeNull();
+
+    refreshButton?.click();
+    await nextTick();
+    await nextTick();
+    expect(loadArtifactCatalogSummaryMock).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent || "").toContain("5 total");
+
+    rebuildButton?.click();
+    await nextTick();
+    await nextTick();
+    expect(rebuildArtifactCatalogSummaryMock).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent || "").toContain("8 total");
   });
 
   it("exposes the Guided/Advanced interface preference without hiding advanced scope", async () => {

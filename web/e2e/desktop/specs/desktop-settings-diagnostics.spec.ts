@@ -19,6 +19,15 @@ describe('desktop settings diagnostics', () => {
     await expect($(shellSelectors.settingsOpenTaskCenterButton)).toBeDisplayed()
     await expect($(shellSelectors.settingsCopyDiagnosticsButton)).toBeDisplayed()
     await expect($(shellSelectors.settingsDesktopNotificationPermission)).toBeDisplayed()
+    await expect($(shellSelectors.settingsDesktopUpdaterStatus)).toBeDisplayed()
+
+    const nativeDesktopDiagnosticsText = await (await $(
+      shellSelectors.settingsDiagnosticsNativeDesktopCard,
+    )).getText()
+    expect(nativeDesktopDiagnosticsText).toContain('Updates: Updater idle')
+    expect(nativeDesktopDiagnosticsText).toContain(
+      'Update checks are installed but disabled until signed release metadata is configured.',
+    )
 
     const windowStateText = await (await $(shellSelectors.settingsDesktopWindowStateSummary)).getText()
     expect(windowStateText).toMatch(/Window (geometry persists|state persistence)/)

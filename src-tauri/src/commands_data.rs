@@ -7,6 +7,7 @@ use crate::state::LiveCandleStreamTask;
 use crate::state::LoadPriceDataResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -99,7 +100,7 @@ pub async fn list_dynamic_indicators() -> Result<Vec<ta_app_core::IndicatorDescr
         .map_err(|e| e.to_string())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Type)]
 pub struct GpuSpeedupEntry {
     pub indicator_id: String,
     pub indicator_name: String,
@@ -246,7 +247,7 @@ pub async fn list_gpu_speedups() -> Result<Vec<GpuSpeedupEntry>, String> {
         .map_err(|e| e.to_string())?
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Type)]
 pub struct SampleCsv {
     pub id: String,
     pub label: String,
@@ -290,7 +291,7 @@ pub fn list_sample_csvs() -> Vec<SampleCsv> {
     sample_csvs_from_root(&root)
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Type)]
 pub struct RepoDataCsvEntry {
     pub csv_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -299,7 +300,7 @@ pub struct RepoDataCsvEntry {
     pub source_mtime_utc_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Type)]
 pub struct RepoDataCsvList {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,

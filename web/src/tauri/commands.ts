@@ -87,6 +87,7 @@ export const TAURI_COMMANDS = [
   'load_latest_run_artifact_summary',
   'load_latest_run_artifact_hydration',
   'list_artifact_library',
+  'rebuild_artifact_catalog',
   'list_meta_artifacts',
   'list_stage4_artifacts',
   'list_stage5_artifacts',

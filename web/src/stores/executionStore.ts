@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { markRaw } from 'vue'
+import { createActor, type ActorRefFrom } from 'xstate'
 import {
   cancelOpenOrders as cancelOpenOrdersAction,
   canonicalSymbol,
@@ -41,6 +42,13 @@ import {
   type ExecutionStoredCredentialStatus,
   type ExecutionTarget,
 } from '../services/executionService'
+import {
+  liveExecutionLifecycleMachine,
+  liveExecutionLifecycleStateName,
+  type LiveExecutionLifecycleEvent,
+  type LiveExecutionLifecycleState,
+  type LiveExecutionTarget,
+} from '../services/liveExecutionLifecycleMachine'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 function applyVueTextFieldUpdate(state: ExecutionState, field: string, value: string): boolean {
@@ -220,6 +228,7 @@ interface ExecutionStoreRuntimeHost {
   _runtimeSubscriptionsPromise?: Promise<void> | null
   _runtimeSubscriptionsTeardown?: (() => void) | null
   _credentialHydrationPromise?: Promise<void> | null
+  _liveExecutionLifecycleActor?: ActorRefFrom<typeof liveExecutionLifecycleMachine> | null
 }
 
 function runtimeHost(store: unknown): ExecutionStoreRuntimeHost {
@@ -812,6 +821,10 @@ function targetIsLocalPaper(state: Pick<ExecutionState, 'executionTarget' | 'mod
   return currentExecutionTarget(state) === 'local_paper'
 }
 
+function liveExecutionTarget(state: Pick<ExecutionState, 'executionTarget' | 'mode' | 'dryRun'>): LiveExecutionTarget {
+  return currentExecutionTarget(state) as LiveExecutionTarget
+}
+
 function targetLabel(target: ExecutionTarget): string {
   if (target === 'local_paper') return 'Local paper'
   if (target === 'alpaca_paper') return 'Paper'
@@ -828,6 +841,69 @@ function applyExecutionTarget(state: ExecutionState, rawTarget: unknown): void {
     state.dryRun = false
     state.mode = target === 'alpaca_live' ? 'live' : 'paper'
   }
+}
+
+function liveLifecycleActor(state: ExecutionState): ActorRefFrom<typeof liveExecutionLifecycleMachine> {
+  const host = runtimeHost(state)
+  if (!host._liveExecutionLifecycleActor) {
+    const actor = createActor(liveExecutionLifecycleMachine)
+    actor.start()
+    host._liveExecutionLifecycleActor = markRaw(actor)
+  }
+  return host._liveExecutionLifecycleActor
+}
+
+function syncLiveExecutionLifecycleSnapshot(
+  state: ExecutionState,
+  event: LiveExecutionLifecycleEvent,
+): boolean {
+  const before = {
+    automationLifecycleState: state.automationLifecycleState,
+    automationRecoveryReviewRequired: state.automationRecoveryReviewRequired,
+    automationLastError: state.automationLastError,
+    recoveryReviewRequired: state.recoveryReviewRequired,
+    recoveryCause: state.recoveryCause,
+  }
+  const actor = liveLifecycleActor(state)
+  actor.send(event)
+  const snapshot = actor.getSnapshot()
+  state.automationLifecycleState = liveExecutionLifecycleStateName(snapshot.value)
+  state.automationRecoveryReviewRequired = snapshot.context.recoveryReviewRequired
+  state.automationLastError = snapshot.context.lastError
+  if (snapshot.context.recoveryReviewRequired) {
+    state.recoveryReviewRequired = true
+    if (snapshot.context.lastError && !state.recoveryCause) {
+      state.recoveryCause = snapshot.context.lastError
+    }
+  } else if (
+    event.type === 'BROKER_REVIEW_CONFIRMED' ||
+    event.type === 'LIVE_STOPPED' ||
+    event.type === 'RESET'
+  ) {
+    state.recoveryReviewRequired = false
+    state.recoveryCause = ''
+  }
+  return (
+    before.automationLifecycleState !== state.automationLifecycleState ||
+    before.automationRecoveryReviewRequired !== state.automationRecoveryReviewRequired ||
+    before.automationLastError !== state.automationLastError ||
+    before.recoveryReviewRequired !== state.recoveryReviewRequired ||
+    before.recoveryCause !== state.recoveryCause
+  )
+}
+
+function ensureLiveLifecycleStarted(
+  state: ExecutionState,
+  symbol: string,
+  delayed: boolean,
+): boolean {
+  if (state.automationLifecycleState !== 'idle') return false
+  return syncLiveExecutionLifecycleSnapshot(state, {
+    type: 'START_LIVE',
+    symbol,
+    target: liveExecutionTarget(state),
+    delayed,
+  })
 }
 
 function legacyExecutionTarget(mode: unknown, dryRun: unknown): ExecutionTarget {
@@ -1136,6 +1212,7 @@ function applyActionResult(state: ExecutionState, result: ExecutionActionResult)
     state.recoveryReviewRequired = false
     state.brokerReviewRefreshRequired = false
     state.recoveryCause = ''
+    syncLiveExecutionLifecycleSnapshot(state, { type: 'BROKER_REVIEW_CONFIRMED' })
   }
   if (typeof result.recoveryReviewRequired === 'boolean') {
     state.recoveryReviewRequired = result.recoveryReviewRequired
@@ -1224,6 +1301,9 @@ interface ExecutionState {
   liveUseDelayed: boolean
   liveLifecycleState: ExecutionLiveLifecycleState
   runnerLifecycleState: ExecutionRunnerLifecycleState
+  automationLifecycleState: LiveExecutionLifecycleState
+  automationRecoveryReviewRequired: boolean
+  automationLastError: string
   recoveryReviewRequired: boolean
   recoveryCause: string
   brokerReviewRefreshRequired: boolean
@@ -1305,6 +1385,9 @@ export const useExecutionStore = defineStore('execution', {
       liveUseDelayed: true,
       liveLifecycleState: 'off',
       runnerLifecycleState: 'off',
+      automationLifecycleState: 'idle',
+      automationRecoveryReviewRequired: false,
+      automationLastError: '',
       recoveryReviewRequired: false,
       recoveryCause: '',
       brokerReviewRefreshRequired: false,
@@ -1365,6 +1448,27 @@ export const useExecutionStore = defineStore('execution', {
     },
     feedStateLabel: (state): string => liveStateSummaryLabel(state),
     runnerStateLabel: (state): string => runnerStateSummaryLabel(state),
+    automationLifecycleLabel: (state): string => {
+      switch (state.automationLifecycleState) {
+        case 'liveStarting':
+          return 'Starting feed'
+        case 'liveStreaming':
+          return 'Feed ready'
+        case 'runnerStarting':
+          return 'Starting runner'
+        case 'running':
+          return 'Runner active'
+        case 'runnerStopped':
+          return 'Runner stopped'
+        case 'recoveryRequired':
+          return 'Review required'
+        case 'halted':
+          return 'Halted'
+        case 'idle':
+        default:
+          return 'Idle'
+      }
+    },
     requestedSymbolLabel: (state): string => canonicalSymbol(state.symbol) || 'No symbol',
     liveSymbolMatchesRequested: (state): boolean => {
       const requestedSymbol = canonicalSymbol(state.symbol)
@@ -1432,6 +1536,19 @@ export const useExecutionStore = defineStore('execution', {
       this.liveUseDelayed = Boolean(snapshot.liveUseDelayed ?? this.liveUseDelayed)
       this.liveLifecycleState = String((snapshot as Partial<ExecutionState>).liveLifecycleState ?? this.liveLifecycleState ?? 'off').trim() as ExecutionLiveLifecycleState || 'off'
       this.runnerLifecycleState = String((snapshot as Partial<ExecutionState>).runnerLifecycleState ?? this.runnerLifecycleState ?? 'off').trim() as ExecutionRunnerLifecycleState || 'off'
+      this.automationLifecycleState = liveExecutionLifecycleStateName(
+        (snapshot as Partial<ExecutionState>).automationLifecycleState ??
+          this.automationLifecycleState ??
+          'idle',
+      )
+      this.automationRecoveryReviewRequired = Boolean(
+        (snapshot as Partial<ExecutionState>).automationRecoveryReviewRequired ?? false,
+      )
+      this.automationLastError = String(
+        (snapshot as Partial<ExecutionState>).automationLastError ??
+          this.automationLastError ??
+          '',
+      ).trim()
       this.recoveryReviewRequired = Boolean((snapshot as Partial<ExecutionState>).recoveryReviewRequired ?? false)
       this.recoveryCause = String((snapshot as Partial<ExecutionState>).recoveryCause ?? '').trim()
       this.brokerReviewRefreshRequired = Boolean((snapshot as Partial<ExecutionState>).brokerReviewRefreshRequired ?? false)
@@ -1753,6 +1870,11 @@ export const useExecutionStore = defineStore('execution', {
         }
       }
       if ((event.status === 'closed' || event.status === 'error') && !targetIsDryRun(this)) {
+        changed = ensureLiveLifecycleStarted(this, event.symbol || this.liveSymbol || this.symbol, event.delayed ?? this.liveDelayed) || changed
+        changed = syncLiveExecutionLifecycleSnapshot(this, {
+          type: 'LIVE_INTERRUPTED',
+          reason: event.message || event.status || 'live feed interrupted',
+        }) || changed
         if (!this.recoveryReviewRequired) {
           this.recoveryReviewRequired = true
           changed = true
@@ -1762,10 +1884,16 @@ export const useExecutionStore = defineStore('execution', {
           this.recoveryCause = nextCause
           changed = true
         }
-      } else if (event.status === 'stopped' && this.recoveryReviewRequired) {
-        this.recoveryReviewRequired = false
-        this.recoveryCause = ''
-        changed = true
+      } else if (event.status === 'stopped') {
+        changed = syncLiveExecutionLifecycleSnapshot(this, { type: 'LIVE_STOPPED' }) || changed
+        if (this.recoveryReviewRequired) {
+          this.recoveryReviewRequired = false
+          this.recoveryCause = ''
+          changed = true
+        }
+      } else if (event.active || event.status === 'subscribed' || event.status === 'started') {
+        changed = ensureLiveLifecycleStarted(this, event.symbol || this.liveSymbol || this.symbol, event.delayed ?? this.liveDelayed) || changed
+        changed = syncLiveExecutionLifecycleSnapshot(this, { type: 'LIVE_SUBSCRIBED' }) || changed
       }
       if (!changed) return
       syncExecutionReviewState(this)
@@ -1826,6 +1954,13 @@ export const useExecutionStore = defineStore('execution', {
       ) {
         this.recoveryReviewRequired = true
         changed = true
+      }
+      if (event.status === 'started') {
+        changed = ensureLiveLifecycleStarted(this, event.symbol || this.liveSymbol || this.symbol, this.liveDelayed) || changed
+        changed = syncLiveExecutionLifecycleSnapshot(this, { type: 'START_RUNNER' }) || changed
+        changed = syncLiveExecutionLifecycleSnapshot(this, { type: 'RUNNER_STARTED' }) || changed
+      } else if (event.status === 'stopped' || event.status === 'cancelled') {
+        changed = syncLiveExecutionLifecycleSnapshot(this, { type: 'RUNNER_STOPPED' }) || changed
       }
       if (!changed) return
       syncExecutionReviewState(this)
@@ -1971,7 +2106,13 @@ export const useExecutionStore = defineStore('execution', {
       void this.ensureRuntimeSubscriptions().catch(() => {})
       this.beginAction('emergencyHalt', 'Applying emergency halt...')
       void emergencyHaltAction()
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncLiveExecutionLifecycleSnapshot(this, {
+            type: 'EMERGENCY_HALT',
+            reason: result.statusLine || result.statusHint || 'operator halt',
+          })
+        })
         .catch((error) => this.failAction('Emergency halt failed', error))
         .finally(() => this.finishAction('emergencyHalt'))
     },
@@ -1981,7 +2122,16 @@ export const useExecutionStore = defineStore('execution', {
       void this.ensureRuntimeSubscriptions().catch(() => {})
       this.beginAction('startLive', 'Starting live candles...')
       void startLiveAction(this.buildActionOptions())
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncLiveExecutionLifecycleSnapshot(this, {
+            type: 'START_LIVE',
+            symbol: result.liveSymbol || this.symbol,
+            target: liveExecutionTarget(this),
+            delayed: result.liveDelayed ?? this.liveUseDelayed,
+          })
+          syncLiveExecutionLifecycleSnapshot(this, { type: 'LIVE_SUBSCRIBED' })
+        })
         .catch((error) => this.failAction('Live start failed', error))
         .finally(() => this.finishAction('startLive'))
     },
@@ -1991,7 +2141,10 @@ export const useExecutionStore = defineStore('execution', {
       void this.ensureRuntimeSubscriptions().catch(() => {})
       this.beginAction('stopLive', 'Stopping live candles...')
       void stopLiveAction()
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncLiveExecutionLifecycleSnapshot(this, { type: 'LIVE_STOPPED' })
+        })
         .catch((error) => this.failAction('Live stop failed', error))
         .finally(() => this.finishAction('stopLive'))
     },
@@ -2004,6 +2157,9 @@ export const useExecutionStore = defineStore('execution', {
       void startRunnerAction(this.buildActionOptions())
         .then(async (result) => {
           this.applyActionResult(result)
+          ensureLiveLifecycleStarted(this, result.liveSymbol || this.liveSymbol || this.symbol, this.liveDelayed)
+          syncLiveExecutionLifecycleSnapshot(this, { type: 'START_RUNNER' })
+          syncLiveExecutionLifecycleSnapshot(this, { type: 'RUNNER_STARTED' })
           await this.refreshStoredCredentialStatus().catch(() => {})
           if (persistedTypedCredentials) this.typedCredentialStorePending = false
         })
@@ -2016,7 +2172,10 @@ export const useExecutionStore = defineStore('execution', {
       void this.ensureRuntimeSubscriptions().catch(() => {})
       this.beginAction('stopRunner', 'Stopping auto-runner...')
       void stopRunnerAction()
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncLiveExecutionLifecycleSnapshot(this, { type: 'RUNNER_STOPPED' })
+        })
         .catch((error) => this.failAction('Auto-runner stop failed', error))
         .finally(() => this.finishAction('stopRunner'))
     },
