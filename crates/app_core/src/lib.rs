@@ -246,11 +246,12 @@ pub use options_types::{
     OptionsExpressionValidationPlanMode, OptionsExpressionValidationRequest,
     OptionsExpressionValidationResult, OptionsExpressionValidationTupleDriftSummary,
     OptionsExpressionValidationTupleResult, OptionsExpressionValidationTupleSelection,
-    OptionsFillModelFamily, OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics,
-    OptionsSignalEvent, OptionsSignalEventManifestV1, OptionsSplitAssignmentMode,
-    OptionsStaticFilterBundle, OptionsTupleSpec, SignalSide, OPTIONS_DATASET_MANIFEST_VERSION,
-    OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_EXPRESSION_VALIDATION_ARTIFACT_VERSION,
-    OPTIONS_SIGNAL_MANIFEST_VERSION,
+    OptionsFillModelFamily, OptionsMoneynessBucket, OptionsObjectiveConfig,
+    OptionsObjectiveProfile, OptionsObjectiveScoreComponents, OptionsPriceRow,
+    OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1,
+    OptionsSplitAssignmentMode, OptionsStaticFilterBundle, OptionsTupleSpec, SignalSide,
+    OPTIONS_DATASET_MANIFEST_VERSION, OPTIONS_EXPRESSION_ARTIFACT_VERSION,
+    OPTIONS_EXPRESSION_VALIDATION_ARTIFACT_VERSION, OPTIONS_SIGNAL_MANIFEST_VERSION,
 };
 
 pub use sharpe_stats::{

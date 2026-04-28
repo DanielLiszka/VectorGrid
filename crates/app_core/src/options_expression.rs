@@ -17,7 +17,8 @@ use crate::options_types::{
     OptionsExpressionValidationLaneSummary, OptionsExpressionValidationPlan,
     OptionsExpressionValidationPlanMode, OptionsExpressionValidationTupleDriftSummary,
     OptionsExpressionValidationTupleResult, OptionsFillModelFamily, OptionsMoneynessBucket,
-    OptionsMoneynessBucketCoverage, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
+    OptionsMoneynessBucketCoverage, OptionsObjectiveConfig, OptionsObjectiveProfile,
+    OptionsObjectiveScoreComponents, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
     OptionsSignalEventManifestV1, OptionsSplitAssignmentMode, OptionsStructureFamily,
     OptionsTupleSpec, SignalSide,
 };
@@ -59,6 +60,11 @@ const OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE: f64 = 0.50;
 const OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD: f64 = 0.40;
 const OPTIONS_EXACTIFY_BUFFER_SURPLUS_MAX: usize = 8;
 const OPTIONS_VALIDATION_DATE_RANGE_END_EXCLUSIVE_LABEL: &str = "end-exclusive";
+const OPTIONS_BALANCED_SEARCH_WEIGHT: f64 = 0.45;
+const OPTIONS_BALANCED_HOLDOUT_WEIGHT: f64 = 0.25;
+const OPTIONS_BALANCED_STRESS_WEIGHT: f64 = 0.15;
+const OPTIONS_BALANCED_HARSHER_STRESS_WEIGHT: f64 = 0.10;
+const OPTIONS_BALANCED_EXTREME_STRESS_WEIGHT: f64 = 0.05;
 
 #[cfg(all(test, feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn forced_options_expression_cuda_device_id() -> &'static Mutex<Option<Option<u32>>> {
@@ -2563,6 +2569,7 @@ struct PreparedOptionsExpressionRun {
     harsher_exit_summary_cache: ExitSummaryCache,
     diagnostics: OptionsExpressionDiagnostics,
     overlap_window: OptionsExpressionOverlapWindowSummary,
+    objective_config: OptionsObjectiveConfig,
     staging: OptionsExpressionStagingStats,
     timings: OptionsExpressionFeasibilityTimingStats,
     cache_stats: OptionsExpressionFeasibilityCacheStats,
@@ -2619,6 +2626,28 @@ fn measured_best_available_backend(
     "cpu_reference"
 }
 
+fn unsupported_options_objective_profile_reason(profile: OptionsObjectiveProfile) -> String {
+    format!(
+        "Options objective profile '{}' is not executable yet; only the no-op balanced profile is currently supported.",
+        profile.as_str()
+    )
+}
+
+fn ensure_supported_options_objective_config(config: OptionsObjectiveConfig) -> Result<(), String> {
+    if config.is_balanced() {
+        Ok(())
+    } else {
+        Err(unsupported_options_objective_profile_reason(config.profile))
+    }
+}
+
+fn unsupported_gpu_objective_profile_reason(profile: OptionsObjectiveProfile) -> String {
+    format!(
+        "Options objective profile '{}' is not GPU eligible; only the no-op balanced profile has CPU/GPU parity coverage.",
+        profile.as_str()
+    )
+}
+
 fn evaluate_auto_backend_decision(
     prepared: &PreparedOptionsExpressionRun,
     gpu_available: bool,
@@ -2633,6 +2662,11 @@ fn evaluate_auto_backend_decision(
 
     if !gpu_available {
         reasons.push("CUDA device unavailable for auto backend selection.".to_string());
+    }
+    if !prepared.objective_config.is_balanced() {
+        reasons.push(unsupported_gpu_objective_profile_reason(
+            prepared.objective_config.profile,
+        ));
     }
     if candidate_density < OPTIONS_AUTO_GPU_MIN_CANDIDATE_DENSITY {
         reasons.push(format!(
@@ -3121,6 +3155,7 @@ fn prepare_options_expression_run(
         harsher_exit_summary_cache,
         diagnostics,
         overlap_window,
+        objective_config: req.objective_config,
         staging,
         timings,
         cache_stats,
@@ -3256,14 +3291,7 @@ fn refresh_validation_verdicts(ranked_results: &mut [RankedCompiledTuple]) {
 
 fn recompute_retained_robust_scores(ranked_results: &mut [RankedCompiledTuple]) {
     for ranked in ranked_results.iter_mut() {
-        ranked.result.robust_score = robust_score(
-            &ranked.result.selection_metrics,
-            ranked.result.holdout_metrics.as_ref(),
-            None,
-            ranked.result.stress_metrics.as_ref(),
-            ranked.result.harsher_stress_metrics.as_ref(),
-            ranked.result.extreme_stress_metrics.as_ref(),
-        );
+        assign_balanced_objective_score_components(&mut ranked.result);
     }
 }
 
@@ -3758,6 +3786,13 @@ mod gpu_scoring {
             harsher_stress_metrics.as_ref(),
             None,
         );
+        let objective_score_components = balanced_objective_score_components(
+            &selection_metrics,
+            holdout_metrics.as_ref(),
+            stress_metrics.as_ref(),
+            harsher_stress_metrics.as_ref(),
+            None,
+        );
 
         RankedCompiledTuple {
             compiled: compiled_tuple.clone(),
@@ -3776,6 +3811,7 @@ mod gpu_scoring {
                 extreme_stress_metrics: None,
                 sealed_extreme_stress_metrics: None,
                 validation_verdict: Default::default(),
+                objective_score_components: Some(objective_score_components),
                 robust_score: robust,
             },
             retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
@@ -3879,6 +3915,16 @@ mod gpu_scoring {
             req.backend_preference,
             OptionsExpressionBackendPreference::CpuReference
         ) {
+            return Ok(None);
+        }
+        if !req.objective_config.is_balanced() {
+            let reason = unsupported_gpu_objective_profile_reason(req.objective_config.profile);
+            if matches!(
+                req.backend_preference,
+                OptionsExpressionBackendPreference::GpuCompiledTensor
+            ) {
+                return Err(reason);
+            }
             return Ok(None);
         }
         let Some(device_id) = resolved_device_id else {
@@ -4035,6 +4081,13 @@ mod gpu_scoring {
                     harsher_stress_metrics.as_ref(),
                     None,
                 );
+                let objective_score_components = balanced_objective_score_components(
+                    &selection_metrics,
+                    holdout_metrics.as_ref(),
+                    stress_metrics.as_ref(),
+                    harsher_stress_metrics.as_ref(),
+                    None,
+                );
                 ranked.push(RankedCompiledTuple {
                     compiled: compiled_tuple.clone(),
                     result: OptionsExpressionTupleResult {
@@ -4052,6 +4105,7 @@ mod gpu_scoring {
                         extreme_stress_metrics: None,
                         sealed_extreme_stress_metrics: None,
                         validation_verdict: Default::default(),
+                        objective_score_components: Some(objective_score_components),
                         robust_score: robust,
                     },
                     retained_summary_state: RetainedSummaryState::gpu_initial(holdout_events),
@@ -4092,6 +4146,16 @@ mod gpu_scoring {
             req.backend_preference,
             OptionsExpressionBackendPreference::CpuReference
         ) {
+            return Ok(None);
+        }
+        if !req.objective_config.is_balanced() {
+            let reason = unsupported_gpu_objective_profile_reason(req.objective_config.profile);
+            if matches!(
+                req.backend_preference,
+                OptionsExpressionBackendPreference::GpuCompiledTensor
+            ) {
+                return Err(reason);
+            }
             return Ok(None);
         }
         let Some(_) = resolved_device_id else {
@@ -4167,6 +4231,13 @@ fn rank_compiled_tuples_cpu(
             None,
             None,
         );
+        let objective_score_components = balanced_objective_score_components(
+            &selection_metrics,
+            holdout_metrics.as_ref(),
+            stress_metrics.as_ref(),
+            None,
+            None,
+        );
 
         ranked_results.push(RankedCompiledTuple {
             compiled: compiled_tuple.clone(),
@@ -4185,6 +4256,7 @@ fn rank_compiled_tuples_cpu(
                 extreme_stress_metrics: None,
                 sealed_extreme_stress_metrics: None,
                 validation_verdict: Default::default(),
+                objective_score_components: Some(objective_score_components),
                 robust_score: robust,
             },
             retained_summary_state: RetainedSummaryState::cpu_initial(holdout_events),
@@ -4814,23 +4886,74 @@ fn robust_score(
     harsher_stress: Option<&OptionsExpressionMetrics>,
     extreme_stress: Option<&OptionsExpressionMetrics>,
 ) -> f64 {
-    fn lane_utility(metrics: &OptionsExpressionMetrics) -> f64 {
-        (1.0 - metrics.invalid_rate).clamp(0.0, 1.0) * metrics.expectancy_per_premium
+    balanced_objective_score_components(search, holdout, stress, harsher_stress, extreme_stress)
+        .total_score
+}
+
+fn objective_lane_utility(metrics: &OptionsExpressionMetrics) -> f64 {
+    (1.0 - metrics.invalid_rate).clamp(0.0, 1.0) * metrics.expectancy_per_premium
+}
+
+fn balanced_objective_score_components(
+    search: &OptionsExpressionMetrics,
+    holdout: Option<&OptionsExpressionMetrics>,
+    stress: Option<&OptionsExpressionMetrics>,
+    harsher_stress: Option<&OptionsExpressionMetrics>,
+    extreme_stress: Option<&OptionsExpressionMetrics>,
+) -> OptionsObjectiveScoreComponents {
+    let search_utility = objective_lane_utility(search);
+    let holdout_utility = holdout
+        .map(objective_lane_utility)
+        .unwrap_or(search_utility);
+    let stress_utility = stress.map(objective_lane_utility).unwrap_or(search_utility);
+    let harsher_stress_utility = harsher_stress
+        .map(objective_lane_utility)
+        .unwrap_or(stress_utility);
+    let extreme_stress_utility = extreme_stress
+        .map(objective_lane_utility)
+        .unwrap_or(harsher_stress_utility);
+    let search_contribution = OPTIONS_BALANCED_SEARCH_WEIGHT * search_utility;
+    let holdout_contribution = OPTIONS_BALANCED_HOLDOUT_WEIGHT * holdout_utility;
+    let stress_contribution = OPTIONS_BALANCED_STRESS_WEIGHT * stress_utility;
+    let harsher_stress_contribution =
+        OPTIONS_BALANCED_HARSHER_STRESS_WEIGHT * harsher_stress_utility;
+    let extreme_stress_contribution =
+        OPTIONS_BALANCED_EXTREME_STRESS_WEIGHT * extreme_stress_utility;
+    OptionsObjectiveScoreComponents {
+        profile: OptionsObjectiveProfile::Balanced,
+        search_utility,
+        search_weight: OPTIONS_BALANCED_SEARCH_WEIGHT,
+        search_contribution,
+        holdout_utility,
+        holdout_weight: OPTIONS_BALANCED_HOLDOUT_WEIGHT,
+        holdout_contribution,
+        stress_utility,
+        stress_weight: OPTIONS_BALANCED_STRESS_WEIGHT,
+        stress_contribution,
+        harsher_stress_utility,
+        harsher_stress_weight: OPTIONS_BALANCED_HARSHER_STRESS_WEIGHT,
+        harsher_stress_contribution,
+        extreme_stress_utility,
+        extreme_stress_weight: OPTIONS_BALANCED_EXTREME_STRESS_WEIGHT,
+        extreme_stress_contribution,
+        total_score: search_contribution
+            + holdout_contribution
+            + stress_contribution
+            + harsher_stress_contribution
+            + extreme_stress_contribution,
     }
+}
 
-    let search_score = lane_utility(search);
-    let holdout_score = holdout.map(lane_utility).unwrap_or(search_score);
-    let stress_score = stress.map(lane_utility).unwrap_or(search_score);
-    let harsher_stress_score = harsher_stress.map(lane_utility).unwrap_or(stress_score);
-    let extreme_stress_score = extreme_stress
-        .map(lane_utility)
-        .unwrap_or(harsher_stress_score);
-
-    0.45 * search_score
-        + 0.25 * holdout_score
-        + 0.15 * stress_score
-        + 0.10 * harsher_stress_score
-        + 0.05 * extreme_stress_score
+fn assign_balanced_objective_score_components(result: &mut OptionsExpressionTupleResult) {
+    let components = balanced_objective_score_components(
+        &result.selection_metrics,
+        result.holdout_metrics.as_ref(),
+        result.stress_metrics.as_ref(),
+        result.harsher_stress_metrics.as_ref(),
+        result.extreme_stress_metrics.as_ref(),
+    );
+    result.robust_score = components.total_score;
+    result.objective_score_components = Some(components);
 }
 
 fn build_event_detail_row(
@@ -5639,6 +5762,7 @@ pub fn run_options_expression_blocking(
     dataset: &ImportedOptionsDataset,
 ) -> Result<OptionsExpressionRunResult, String> {
     let _nvtx_scope = crate::nvtx::scope("engine", "options_engine_run_total");
+    ensure_supported_options_objective_config(req.objective_config)?;
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
     let ranked_pass = rank_compiled_tuples(&req, &prepared, dataset)?;
     let _result_scope = crate::nvtx::scope("engine", "options_result_finalize");
@@ -5682,6 +5806,7 @@ pub fn run_options_expression_blocking(
             .manifest
             .price_semantics
             .exactness_semantics_for_backend(&ranked_pass.backend_used),
+        objective_config: prepared.objective_config,
         tuple_count: ranked_results.len(),
         staging: Some(staging),
         overlap_window: prepared.overlap_window,
@@ -6010,6 +6135,13 @@ pub fn validate_options_expression_tuples_blocking(
             harsher_stress_metrics.as_ref(),
             extreme_stress_metrics.as_ref(),
         );
+        let objective_score_components = balanced_objective_score_components(
+            &selection_metrics,
+            holdout_metrics.as_ref(),
+            stress_metrics.as_ref(),
+            harsher_stress_metrics.as_ref(),
+            extreme_stress_metrics.as_ref(),
+        );
         let mut validated_tuple = OptionsExpressionTupleResult {
             tuple: compiled.tuple.clone(),
             pre_sealed_rank: source_tuple.pre_sealed_rank,
@@ -6025,6 +6157,7 @@ pub fn validate_options_expression_tuples_blocking(
             extreme_stress_metrics,
             sealed_extreme_stress_metrics,
             validation_verdict: Default::default(),
+            objective_score_components: Some(objective_score_components),
             robust_score: robust,
         };
         validated_tuple.validation_verdict = validated_tuple.inferred_validation_verdict();
@@ -6435,6 +6568,7 @@ pub fn analyze_options_expression_feasibility_blocking(
             .manifest
             .price_semantics
             .exactness_semantics_for_backend(&best_available_backend),
+        objective_config: prepared.objective_config,
         fill_model: req.fill_model,
         best_available_backend,
         auto_backend_decision,
@@ -7456,6 +7590,7 @@ mod tests {
             options_dataset_id: "spy_options".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -7528,6 +7663,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -7600,6 +7736,7 @@ mod tests {
                 extreme_stress_metrics: None,
                 sealed_extreme_stress_metrics: None,
                 validation_verdict: Default::default(),
+                objective_score_components: None,
                 robust_score: 0.0,
             },
             retained_summary_state: RetainedSummaryState::gpu_initial(
@@ -8051,6 +8188,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -8071,8 +8209,17 @@ mod tests {
         let result =
             run_options_expression_blocking(req, &test_manifest(), &test_dataset()).expect("run");
         assert_eq!(result.backend_used, "cpu_reference");
+        assert_eq!(
+            result.objective_config.profile,
+            OptionsObjectiveProfile::Balanced
+        );
         assert!(result.tuple_count > 0);
         assert!(!result.ranked_results.is_empty());
+        let components = result.ranked_results[0]
+            .objective_score_components
+            .as_ref()
+            .expect("balanced objective components");
+        assert!((components.total_score - result.ranked_results[0].robust_score).abs() < 1e-12);
     }
 
     #[test]
@@ -8083,6 +8230,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0, 5],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
@@ -8184,6 +8332,7 @@ mod tests {
                         structure_family,
                         backend_preference:
                             crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+                        objective_config: Default::default(),
                         delay_minutes: vec![0],
                         dte_buckets: vec![1],
                         moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -8334,6 +8483,7 @@ mod tests {
                     structure_family: OptionsStructureFamily::LongSingle,
                     backend_preference:
                         crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+                    objective_config: Default::default(),
                     delay_minutes: vec![0],
                     dte_buckets: vec![1],
                     moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -8498,6 +8648,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0, 1],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
@@ -8653,6 +8804,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0, 1],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
@@ -8720,6 +8872,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0, 1],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
@@ -8782,6 +8935,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -8839,6 +8993,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1, 9],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -8968,6 +9123,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9020,6 +9176,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9083,6 +9240,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0, 5],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9150,6 +9308,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9196,6 +9355,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9258,6 +9418,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9315,6 +9476,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0, 1, 2, 3],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9373,6 +9535,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0, 1, 2, 3],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -9406,6 +9569,34 @@ mod tests {
             .reasons
             .iter()
             .any(|entry| entry.contains("Measured GPU hybrid speedup")));
+    }
+
+    #[test]
+    fn auto_backend_decision_marks_non_balanced_objectives_gpu_ineligible() {
+        let mut req = test_request();
+        req.objective_config.profile = OptionsObjectiveProfile::ValidationFirst;
+        let prepared =
+            prepare_options_expression_run(&req, &test_manifest(), &test_dataset()).expect("run");
+        let decision = evaluate_auto_backend_decision(&prepared, true, None);
+
+        assert!(!decision.gpu_eligible);
+        assert_eq!(decision.recommended_backend, "cpu_reference");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|entry| entry.contains("validation_first")));
+    }
+
+    #[test]
+    fn non_balanced_objective_profiles_are_rejected_until_cpu_oracle_exists() {
+        let mut req = test_request();
+        req.objective_config.profile = OptionsObjectiveProfile::StressResistant;
+
+        let err = run_options_expression_blocking(req, &test_manifest(), &test_dataset())
+            .expect_err("non-default objective should not execute yet");
+
+        assert!(err.contains("stress_resistant"));
+        assert!(err.contains("only the no-op balanced profile"));
     }
 
     #[test]
@@ -9552,6 +9743,46 @@ mod tests {
     }
 
     #[test]
+    fn balanced_objective_components_match_legacy_robust_score() {
+        let search = metrics_with_invalid_rate(0.20, 0.10);
+        let holdout = metrics_with_invalid_rate(0.10, 0.20);
+        let stress = metrics_with_invalid_rate(0.05, 0.30);
+        let harsher = metrics_with_invalid_rate(0.03, 0.40);
+        let extreme = metrics_with_invalid_rate(-0.02, 0.50);
+
+        let score = robust_score(
+            &search,
+            Some(&holdout),
+            None,
+            Some(&stress),
+            Some(&harsher),
+            Some(&extreme),
+        );
+        let components = balanced_objective_score_components(
+            &search,
+            Some(&holdout),
+            Some(&stress),
+            Some(&harsher),
+            Some(&extreme),
+        );
+
+        assert_eq!(components.profile, OptionsObjectiveProfile::Balanced);
+        assert!((components.total_score - score).abs() < 1e-12);
+        assert!(
+            (components.search_contribution
+                + components.holdout_contribution
+                + components.stress_contribution
+                + components.harsher_stress_contribution
+                + components.extreme_stress_contribution
+                - score)
+                .abs()
+                < 1e-12
+        );
+        assert_eq!(components.search_weight, OPTIONS_BALANCED_SEARCH_WEIGHT);
+        assert_eq!(components.holdout_weight, OPTIONS_BALANCED_HOLDOUT_WEIGHT);
+    }
+
+    #[test]
     fn buffered_exactify_limit_adds_bounded_surplus() {
         assert_eq!(buffered_exactify_limit(1, 0), 0);
         assert_eq!(buffered_exactify_limit(1, 1), 1);
@@ -9572,6 +9803,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
@@ -9711,6 +9943,7 @@ mod tests {
                     extreme_stress_metrics: None,
                     sealed_extreme_stress_metrics: None,
                     validation_verdict: Default::default(),
+                    objective_score_components: None,
                     robust_score: provisional_score,
                 },
                 retained_summary_state: missing_summary_state,
@@ -9803,6 +10036,7 @@ mod tests {
                     extreme_stress_metrics: None,
                     sealed_extreme_stress_metrics: Some(metrics(4, 0.02, 0.01, 0.50)),
                     validation_verdict: Default::default(),
+                    objective_score_components: None,
                     robust_score: 0.30,
                 },
                 retained_summary_state: RetainedSummaryState::cpu_initial(0),
@@ -9824,6 +10058,7 @@ mod tests {
                     extreme_stress_metrics: None,
                     sealed_extreme_stress_metrics: Some(metrics(4, 0.07, 0.05, 0.50)),
                     validation_verdict: Default::default(),
+                    objective_score_components: None,
                     robust_score: 0.20,
                 },
                 retained_summary_state: RetainedSummaryState::cpu_initial(0),
@@ -9899,6 +10134,7 @@ mod tests {
                 extreme_stress_metrics: None,
                 sealed_extreme_stress_metrics: None,
                 validation_verdict: OptionsExpressionValidationVerdict::SealedFinalist,
+                objective_score_components: None,
                 robust_score: 0.18,
             },
             retained_summary_state: RetainedSummaryState::cpu_initial(2),
@@ -9930,6 +10166,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm, OptionsMoneynessBucket::Otm1],
@@ -9984,6 +10221,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -10058,6 +10296,7 @@ mod tests {
                 extreme_stress_metrics: None,
                 sealed_extreme_stress_metrics: None,
                 validation_verdict: Default::default(),
+                objective_score_components: None,
                 robust_score: robust_score(
                     &selection_metrics,
                     holdout_metrics.as_ref(),
@@ -10103,6 +10342,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -10199,6 +10439,7 @@ mod tests {
                 extreme_stress_metrics: None,
                 sealed_extreme_stress_metrics: None,
                 validation_verdict: Default::default(),
+                objective_score_components: None,
                 robust_score: robust_score(
                     &selection_gpu,
                     Some(&holdout_gpu),
@@ -10335,6 +10576,7 @@ mod tests {
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -10403,6 +10645,7 @@ mod tests {
             structure_family: OptionsStructureFamily::LongSingle,
             backend_preference:
                 crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            objective_config: Default::default(),
             delay_minutes: vec![1],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -10482,6 +10725,7 @@ mod tests {
             structure_family: OptionsStructureFamily::DebitVertical,
             backend_preference:
                 crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -10518,6 +10762,7 @@ mod tests {
             structure_family: OptionsStructureFamily::LongPair,
             backend_preference:
                 crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -10560,6 +10805,7 @@ mod tests {
             structure_family: OptionsStructureFamily::DebitVertical,
             backend_preference:
                 crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -10600,6 +10846,7 @@ mod tests {
             structure_family: OptionsStructureFamily::LongPair,
             backend_preference:
                 crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            objective_config: Default::default(),
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],

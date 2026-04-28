@@ -224,6 +224,7 @@ describe("optionsExpressionService", () => {
           request: {
             parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
             options_dataset_id: "spy_options",
+            objective_config: { profile: "balanced" },
             split_assignment_mode: "session_chronological",
             delay_minutes: [0, 1],
             dte_buckets: [1, 3],
@@ -252,6 +253,7 @@ describe("optionsExpressionService", () => {
             exact_pruning_contract:
               "requires_exact_extreme_lane_and_interval_certificate",
           },
+          objective_config: { profile: "balanced" },
           price_semantics: "minute_aggregate",
           tuple_count: 2,
           staging: {
@@ -337,6 +339,25 @@ describe("optionsExpressionService", () => {
               sealed_finalist: false,
               sealed_final_rank: 0,
               validation_verdict: "stress_fragile",
+              objective_score_components: {
+                profile: "balanced",
+                search_utility: 0.1667,
+                search_weight: 0.45,
+                search_contribution: 0.075015,
+                holdout_utility: 0.1,
+                holdout_weight: 0.25,
+                holdout_contribution: 0.025,
+                stress_utility: 0.04,
+                stress_weight: 0.15,
+                stress_contribution: 0.006,
+                harsher_stress_utility: 0.02,
+                harsher_stress_weight: 0.1,
+                harsher_stress_contribution: 0.002,
+                extreme_stress_utility: -0.01,
+                extreme_stress_weight: 0.05,
+                extreme_stress_contribution: -0.0005,
+                total_score: 0.107515,
+              },
               selection_metrics: {
                 valid_trades: 5,
                 invalid_events: 1,
@@ -434,6 +455,7 @@ describe("optionsExpressionService", () => {
             backend_fallback_reason: "GPU planner probe failed; using CPU.",
             price_semantics: "minute_aggregate",
             request_backend_preference: "auto",
+            request_objective_profile: "balanced",
             request_fill_model: "aggregate_research",
             request_structure_family: "long_single",
             request_split_assignment_mode: "event_chronological",
@@ -508,14 +530,22 @@ describe("optionsExpressionService", () => {
     expect(run.backendFallbackReason).toBe(
       "GPU planner probe failed; using CPU.",
     );
+    expect(run.objectiveConfig?.profile).toBe("balanced");
     expect(run.staging?.compiledCandidateCount).toBe(9);
     expect(run.rankedResults[0]?.selectionMetrics.validTrades).toBe(5);
     expect(run.request?.splitAssignmentMode).toBe("session_chronological");
+    expect(run.request?.objectiveConfig?.profile).toBe("balanced");
     expect(run.request?.delayMinutes).toEqual([0, 1]);
     expect(run.request?.sealedFinalistCount).toBe(5);
     expect(run.rankedResults[0]?.preSealedRank).toBe(0);
     expect(run.rankedResults[0]?.sealedFinalist).toBe(false);
     expect(run.rankedResults[0]?.validationVerdict).toBe("stress_fragile");
+    expect(run.rankedResults[0]?.objectiveScoreComponents?.profile).toBe(
+      "balanced",
+    );
+    expect(run.rankedResults[0]?.objectiveScoreComponents?.totalScore).toBe(
+      0.107515,
+    );
     expect(run.rankedResults[0]?.selectionMetrics.meanReturnOnPremium).toBe(
       0.16,
     );
@@ -586,6 +616,7 @@ describe("optionsExpressionService", () => {
       "GPU planner probe failed; using CPU.",
     );
     expect(artifacts[0]?.requestBackendPreference).toBe("auto");
+    expect(artifacts[0]?.requestObjectiveProfile).toBe("balanced");
     expect(artifacts[0]?.requestFillModel).toBe("aggregate_research");
     expect(artifacts[0]?.requestStructureFamily).toBe("long_single");
     expect(artifacts[0]?.requestSplitAssignmentMode).toBe(
@@ -663,6 +694,7 @@ describe("optionsExpressionService", () => {
     expect(artifacts[0]?.supportedHoldoutTupleCount).toBe(0);
     expect(artifacts[0]?.supportedSealedTupleCount).toBe(0);
     expect(artifacts[0]?.supportedStressTupleCount).toBe(0);
+    expect(artifacts[0]?.requestObjectiveProfile).toBe("balanced");
   });
 
   it("normalizes feasibility preview responses", async () => {
@@ -695,6 +727,7 @@ describe("optionsExpressionService", () => {
           retained_frontier_certification: "provisional_mixed_precision",
           exact_pruning_contract: "requires_interval_certificate",
         },
+        objective_config: { profile: "balanced" },
         diagnostics: {
           parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
           options_dataset_id: "spy_options",
@@ -919,6 +952,7 @@ describe("optionsExpressionService", () => {
       retainedFrontierCertification: "provisional_mixed_precision",
       exactPruningContract: "requires_interval_certificate",
     });
+    expect(preview.objectiveConfig?.profile).toBe("balanced");
     expect(preview.compiledTupleCount).toBe(12);
     expect(preview.eventCoverage.totalEventsWithCandidates).toBe(9);
     expect(preview.cacheStats.structuralCacheHits).toBe(2);
@@ -1358,6 +1392,7 @@ describe("optionsExpressionService", () => {
       "GPU planner probe failed; using CPU.",
     );
     expect(artifact.request.splitAssignmentMode).toBe("event_chronological");
+    expect(artifact.request.objectiveConfig?.profile).toBe("balanced");
     expect(artifact.request.delayMinutes).toEqual([0, 1]);
     expect(artifact.overlapWindow.searchOverlapRate).toBe(0.8333);
     expect(artifact.coverageAdequacy.verdict).toBe("mixed_fragile");
@@ -1369,6 +1404,7 @@ describe("optionsExpressionService", () => {
     expect(
       artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium,
     ).toBe(0.05);
+    expect(artifact.selectionMetrics[0]?.objectiveScoreComponents).toBeNull();
   });
 
   it("defaults missing single-pass expansion metric fields for older artifacts", async () => {

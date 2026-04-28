@@ -137,6 +137,7 @@ function makeRunSummary(overrides: Record<string, unknown> = {}) {
     artifactTs: "2026-04-05T12:00:00Z",
     parentArtifactId: "vectorgrid_run_1",
     optionsDatasetHash: "hash-1",
+    objectiveConfig: { profile: "balanced" },
     backendUsed: "cpu_reference",
     priceSemantics: "minute_aggregate",
     tupleCount: 0,
@@ -157,6 +158,7 @@ function makeFeasibilitySummary(overrides: Record<string, unknown> = {}) {
     totalPreviewMs: 41,
     replayBuildTiming: null,
     diagnostics: makeDiagnosticsSummary(),
+    objectiveConfig: { profile: "balanced" },
     priceSemantics: "minute_aggregate",
     fillModel: "aggregate_research",
     bestAvailableBackend: "cpu_reference",
@@ -284,6 +286,7 @@ function makeArtifactRecord(overrides: Record<string, unknown> = {}) {
       parentArtifactPath: "C:/runs/vectorgrid_run_1.json",
       parentCandidateIndex: null,
       optionsDatasetId: "spy_options",
+      objectiveConfig: { profile: "balanced" },
       splitAssignmentMode: "event_chronological",
       delayMinutes: [0],
       dteBuckets: [1],
@@ -556,6 +559,7 @@ describe("optionsExpressionStore", () => {
         parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
         options_dataset_id: "spy_options",
         backend_preference: "gpu_compiled_tensor",
+        objective_config: { profile: "balanced" },
         fill_model: "aggregate_research",
         split_assignment_mode: "session_chronological",
         delay_minutes: [0, 1, 5],
@@ -705,6 +709,7 @@ describe("optionsExpressionStore", () => {
         parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
         options_dataset_id: "spy_options",
         backend_preference: "cpu_reference",
+        objective_config: { profile: "balanced" },
         split_assignment_mode: "session_chronological",
         delay_minutes: [0, 1, 5],
         moneyness_buckets: ["atm", "otm_1"],
@@ -1034,6 +1039,7 @@ describe("optionsExpressionStore", () => {
     await store.loadArtifact("C:/runs/vectorgrid_options_expression_1.json");
 
     expect(store.activeArtifact?.parentArtifactId).toBe("vectorgrid_run_1");
+    expect(store.objectiveProfile).toBe("balanced");
     expect(store.activeBackendFallbackReason).toBe(
       "GPU planner probe failed; using CPU.",
     );

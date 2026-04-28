@@ -152,6 +152,7 @@ pub struct OptionsExpressionArtifactSummary {
     pub backend_fallback_reason: Option<String>,
     pub price_semantics: OptionsPriceSemantics,
     pub request_backend_preference: String,
+    pub request_objective_profile: String,
     pub request_fill_model: String,
     pub request_structure_family: String,
     pub request_split_assignment_mode: String,
@@ -1651,6 +1652,12 @@ fn summarize_options_expression_artifact_with_runs_dir(
         request_backend_preference: serialize_scalar_to_string(
             &artifact.request.backend_preference,
         ),
+        request_objective_profile: artifact
+            .request
+            .objective_config
+            .profile
+            .as_str()
+            .to_string(),
         request_fill_model: serialize_scalar_to_string(&artifact.request.fill_model),
         request_structure_family: serialize_scalar_to_string(&artifact.request.structure_family),
         request_split_assignment_mode: serialize_scalar_to_string(
@@ -3413,6 +3420,7 @@ mod tests {
             } else {
                 OptionsExpressionValidationVerdict::HoldoutSupported
             },
+            objective_score_components: None,
             robust_score,
         }
     }
@@ -3437,6 +3445,7 @@ mod tests {
             price_semantics: OptionsPriceSemantics::MinuteAggregate,
             exactness_semantics: OptionsPriceSemantics::MinuteAggregate
                 .exactness_semantics_for_backend("cpu_reference"),
+            objective_config: Default::default(),
             fill_model: OptionsFillModelFamily::AggregateResearch,
             best_available_backend: "cpu_reference".to_string(),
             auto_backend_decision: Default::default(),
@@ -3879,6 +3888,7 @@ mod tests {
                 total_pnl_per_contract: -2.0,
             }),
             validation_verdict: OptionsExpressionValidationVerdict::SearchOnly,
+            objective_score_components: None,
             robust_score: 0.14,
         };
         let artifact = OptionsExpressionArtifactV1 {
@@ -3983,6 +3993,7 @@ mod tests {
         );
         assert_eq!(summary.parent_strategy_kind, "DoubleMa");
         assert_eq!(summary.request_backend_preference, "auto");
+        assert_eq!(summary.request_objective_profile, "balanced");
         assert_eq!(summary.request_fill_model, "aggregate_research");
         assert_eq!(summary.request_structure_family, "long_single");
         assert_eq!(summary.request_split_assignment_mode, "event_chronological");
@@ -4114,6 +4125,7 @@ mod tests {
             extreme_stress_metrics: None,
             sealed_extreme_stress_metrics: None,
             validation_verdict: OptionsExpressionValidationVerdict::SealedFinalist,
+            objective_score_components: None,
             robust_score: 0.14,
         }];
         std::fs::write(

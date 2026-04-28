@@ -137,6 +137,37 @@ export interface OptionsExpressionMetricsSummary {
   totalPnlPerContract: number;
 }
 
+export type OptionsObjectiveProfile =
+  | "balanced"
+  | "validation_first"
+  | "stress_resistant"
+  | "liquidity_aware"
+  | string;
+
+export interface OptionsObjectiveConfigSummary {
+  profile: OptionsObjectiveProfile;
+}
+
+export interface OptionsObjectiveScoreComponentsSummary {
+  profile: OptionsObjectiveProfile;
+  searchUtility: number;
+  searchWeight: number;
+  searchContribution: number;
+  holdoutUtility: number;
+  holdoutWeight: number;
+  holdoutContribution: number;
+  stressUtility: number;
+  stressWeight: number;
+  stressContribution: number;
+  harsherStressUtility: number;
+  harsherStressWeight: number;
+  harsherStressContribution: number;
+  extremeStressUtility: number;
+  extremeStressWeight: number;
+  extremeStressContribution: number;
+  totalScore: number;
+}
+
 export interface OptionsStaticFilterBundleSummary {
   maxEntryLagMinutes: number | null;
   maxPremium: number | null;
@@ -151,6 +182,7 @@ export interface OptionsExpressionRequestSummary {
   optionsDatasetId: string;
   structureFamily?: string;
   backendPreference?: string;
+  objectiveConfig?: OptionsObjectiveConfigSummary;
   splitAssignmentMode: string;
   delayMinutes: number[];
   dteBuckets: number[];
@@ -188,6 +220,7 @@ export interface OptionsExpressionTupleSummary {
   sealedFinalist?: boolean | undefined;
   sealedFinalRank?: number | undefined;
   validationVerdict?: OptionsExpressionValidationVerdict | undefined;
+  objectiveScoreComponents?: OptionsObjectiveScoreComponentsSummary | null;
   robustScore: number;
   selectionMetrics: OptionsExpressionMetricsSummary;
   holdoutMetrics: OptionsExpressionMetricsSummary | null;
@@ -420,6 +453,7 @@ export interface AnalyzeOptionsExpressionFeasibilitySummary {
   totalPreviewMs: number;
   replayBuildTiming: OptionsExpressionReplayBuildTimingSummary | null;
   exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
+  objectiveConfig?: OptionsObjectiveConfigSummary;
   diagnostics: OptionsExpressionDiagnosticsSummary;
   priceSemantics: string;
   fillModel: string;
@@ -463,6 +497,7 @@ export interface RunOptionsExpressionSummary {
   parentArtifactId: string;
   optionsDatasetHash: string;
   exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
+  objectiveConfig?: OptionsObjectiveConfigSummary;
   backendUsed: string;
   backendFallbackReason?: string;
   priceSemantics: string;
@@ -489,6 +524,7 @@ export interface OptionsExpressionArtifactSummary {
   backendFallbackReason?: string;
   priceSemantics: string;
   requestBackendPreference?: string;
+  requestObjectiveProfile?: string;
   requestFillModel?: string;
   requestStructureFamily?: string;
   requestSplitAssignmentMode?: string;
@@ -902,6 +938,48 @@ function normalizeMetrics(raw: unknown): OptionsExpressionMetricsSummary {
   };
 }
 
+function normalizeObjectiveProfile(raw: unknown): OptionsObjectiveProfile {
+  return normalizeText(raw) || "balanced";
+}
+
+function normalizeObjectiveConfig(raw: unknown): OptionsObjectiveConfigSummary {
+  const row = parseBoundaryObject(raw);
+  return {
+    profile: normalizeObjectiveProfile(row.profile),
+  };
+}
+
+function normalizeObjectiveScoreComponents(
+  raw: unknown,
+): OptionsObjectiveScoreComponentsSummary | null {
+  if (!raw) return null;
+  const row = parseBoundaryObject(raw);
+  if (Object.keys(row).length === 0) return null;
+  return {
+    profile: normalizeObjectiveProfile(row.profile),
+    searchUtility: normalizeNumber(row.search_utility),
+    searchWeight: normalizeNumber(row.search_weight),
+    searchContribution: normalizeNumber(row.search_contribution),
+    holdoutUtility: normalizeNumber(row.holdout_utility),
+    holdoutWeight: normalizeNumber(row.holdout_weight),
+    holdoutContribution: normalizeNumber(row.holdout_contribution),
+    stressUtility: normalizeNumber(row.stress_utility),
+    stressWeight: normalizeNumber(row.stress_weight),
+    stressContribution: normalizeNumber(row.stress_contribution),
+    harsherStressUtility: normalizeNumber(row.harsher_stress_utility),
+    harsherStressWeight: normalizeNumber(row.harsher_stress_weight),
+    harsherStressContribution: normalizeNumber(
+      row.harsher_stress_contribution,
+    ),
+    extremeStressUtility: normalizeNumber(row.extreme_stress_utility),
+    extremeStressWeight: normalizeNumber(row.extreme_stress_weight),
+    extremeStressContribution: normalizeNumber(
+      row.extreme_stress_contribution,
+    ),
+    totalScore: normalizeNumber(row.total_score),
+  };
+}
+
 function normalizeValidationVerdict(
   raw: unknown,
 ): OptionsExpressionValidationVerdict | undefined {
@@ -941,6 +1019,9 @@ function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
         ? undefined
         : normalizeNumber(row.sealed_final_rank),
     validationVerdict: normalizeValidationVerdict(row.validation_verdict),
+    objectiveScoreComponents: normalizeObjectiveScoreComponents(
+      row.objective_score_components,
+    ),
     robustScore: normalizeNumber(row.robust_score),
     selectionMetrics: normalizeMetrics(row.selection_metrics),
     holdoutMetrics: row.holdout_metrics
@@ -1655,6 +1736,7 @@ function normalizeFeasibilityResponse(
         report.exactness_semantics ??
         report.exactnessSemantics,
     ),
+    objectiveConfig: normalizeObjectiveConfig(report.objective_config),
     diagnostics: normalizeDiagnostics(report.diagnostics),
     priceSemantics: normalizeText(report.price_semantics),
     fillModel: normalizeText(report.fill_model),
@@ -1731,6 +1813,7 @@ function normalizeRunOptionsExpression(
   const row = parseBoundaryObject(raw);
   const result = parseBoundaryObject(row.result);
   const artifact = parseBoundaryObject(row.artifact);
+  const artifactRequest = parseBoundaryObject(artifact.request);
   const ranked = parseBoundaryArray(result.ranked_results);
   return {
     artifactPath: normalizeText(row.artifact_path),
@@ -1745,13 +1828,16 @@ function normalizeRunOptionsExpression(
         artifact.exactness_semantics ??
         artifact.exactnessSemantics,
     ),
+    objectiveConfig: normalizeObjectiveConfig(
+      result.objective_config ?? artifactRequest.objective_config,
+    ),
     backendUsed: normalizeText(result.backend_used),
     backendFallbackReason: normalizeText(result.backend_fallback_reason),
     priceSemantics: normalizeText(result.price_semantics),
     tupleCount: normalizeNumber(result.tuple_count),
     request:
       Object.keys(artifact).length > 0
-        ? normalizeRequest(artifact.request)
+        ? normalizeRequest(artifactRequest)
         : null,
     diagnostics: normalizeDiagnostics(result.diagnostics),
     staging: normalizeStaging(result.staging),
@@ -1799,6 +1885,7 @@ function normalizeRequest(raw: unknown): OptionsExpressionRequestSummary {
     optionsDatasetId: normalizeText(row.options_dataset_id),
     structureFamily: normalizeText(row.structure_family),
     backendPreference: normalizeText(row.backend_preference),
+    objectiveConfig: normalizeObjectiveConfig(row.objective_config),
     splitAssignmentMode:
       normalizeText(row.split_assignment_mode) || "event_chronological",
     delayMinutes: normalizeIntegerList(row.delay_minutes),
@@ -1838,6 +1925,8 @@ function normalizeOptionsExpressionArtifactSummary(
     backendFallbackReason: normalizeText(row.backend_fallback_reason),
     priceSemantics: normalizeText(row.price_semantics),
     requestBackendPreference: normalizeText(row.request_backend_preference),
+    requestObjectiveProfile:
+      normalizeText(row.request_objective_profile) || "balanced",
     requestFillModel: normalizeText(row.request_fill_model),
     requestStructureFamily: normalizeText(row.request_structure_family),
     requestSplitAssignmentMode: normalizeText(

@@ -1486,6 +1486,7 @@ fn build_request(
         options_dataset_id: dataset_id.to_string(),
         structure_family: ta_app_core::options_types::OptionsStructureFamily::LongSingle,
         backend_preference: parse_backend_preference(&cli.backend_preference)?,
+        objective_config: Default::default(),
         delay_minutes: parse_u16_list(&cli.delay_minutes)?,
         dte_buckets: parse_u16_list(&cli.dte_buckets)?,
         moneyness_buckets: parse_moneyness_buckets(&cli.moneyness_buckets)?,

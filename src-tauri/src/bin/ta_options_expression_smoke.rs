@@ -317,6 +317,7 @@ fn smoke_request(
         options_dataset_id: "synthetic_spy".to_string(),
         structure_family: ta_app_core::options_types::OptionsStructureFamily::LongSingle,
         backend_preference,
+        objective_config: Default::default(),
         delay_minutes: vec![0, 1, 5],
         dte_buckets: vec![1, 3, 5],
         moneyness_buckets: vec![

@@ -64,6 +64,7 @@ export const OPTIONS_BACKEND_PREFERENCE_OPTIONS = [
   "cpu_reference",
   "gpu_compiled_tensor",
 ] as const;
+export const OPTIONS_OBJECTIVE_PROFILE_OPTIONS = ["balanced"] as const;
 export const OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS = [
   "event_chronological",
   "session_chronological",
@@ -493,6 +494,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     fillModel: "aggregate_research",
     structureFamily: "long_single",
     backendPreference: "auto",
+    objectiveProfile: "balanced",
     splitAssignmentMode: "event_chronological",
     validationDatasetPolicy: "require_exact_replay",
     validationPlanMode: "original_embedded_splits",
@@ -1095,6 +1097,13 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           OPTIONS_BACKEND_PREFERENCE_OPTIONS,
           "auto",
         ),
+        objective_config: {
+          profile: pickSupported(
+            this.objectiveProfile,
+            OPTIONS_OBJECTIVE_PROFILE_OPTIONS,
+            "balanced",
+          ),
+        },
         split_assignment_mode: pickSupported(
           this.splitAssignmentMode,
           OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
@@ -1225,6 +1234,13 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
             OPTIONS_BACKEND_PREFERENCE_OPTIONS,
             "auto",
           ),
+          objective_config: {
+            profile: pickSupported(
+              this.objectiveProfile,
+              OPTIONS_OBJECTIVE_PROFILE_OPTIONS,
+              "balanced",
+            ),
+          },
           split_assignment_mode: pickSupported(
             this.splitAssignmentMode,
             OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
@@ -1273,6 +1289,11 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
         this.fillModel = coerceFillModelForPriceSemantics(
           normalizeText(artifact.request?.fillModel) || this.fillModel,
           this.importPriceSemantics,
+        );
+        this.objectiveProfile = pickSupported(
+          artifact.request?.objectiveConfig?.profile ?? "",
+          OPTIONS_OBJECTIVE_PROFILE_OPTIONS,
+          "balanced",
         );
         this.latestRun = null;
         this.latestFeasibility = null;

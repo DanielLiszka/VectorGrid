@@ -610,6 +610,81 @@ impl OptionsExpressionMetrics {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum OptionsObjectiveProfile {
+    #[default]
+    Balanced,
+    ValidationFirst,
+    StressResistant,
+    LiquidityAware,
+}
+
+impl OptionsObjectiveProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::ValidationFirst => "validation_first",
+            Self::StressResistant => "stress_resistant",
+            Self::LiquidityAware => "liquidity_aware",
+        }
+    }
+
+    pub fn is_balanced(self) -> bool {
+        matches!(self, Self::Balanced)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub struct OptionsObjectiveConfig {
+    #[serde(default)]
+    pub profile: OptionsObjectiveProfile,
+}
+
+impl OptionsObjectiveConfig {
+    pub fn is_balanced(self) -> bool {
+        self.profile.is_balanced()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct OptionsObjectiveScoreComponents {
+    #[serde(default)]
+    pub profile: OptionsObjectiveProfile,
+    #[serde(default)]
+    pub search_utility: f64,
+    #[serde(default)]
+    pub search_weight: f64,
+    #[serde(default)]
+    pub search_contribution: f64,
+    #[serde(default)]
+    pub holdout_utility: f64,
+    #[serde(default)]
+    pub holdout_weight: f64,
+    #[serde(default)]
+    pub holdout_contribution: f64,
+    #[serde(default)]
+    pub stress_utility: f64,
+    #[serde(default)]
+    pub stress_weight: f64,
+    #[serde(default)]
+    pub stress_contribution: f64,
+    #[serde(default)]
+    pub harsher_stress_utility: f64,
+    #[serde(default)]
+    pub harsher_stress_weight: f64,
+    #[serde(default)]
+    pub harsher_stress_contribution: f64,
+    #[serde(default)]
+    pub extreme_stress_utility: f64,
+    #[serde(default)]
+    pub extreme_stress_weight: f64,
+    #[serde(default)]
+    pub extreme_stress_contribution: f64,
+    #[serde(default)]
+    pub total_score: f64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum OptionsExpressionValidationVerdict {
     #[default]
     SearchOnly,
@@ -648,6 +723,8 @@ pub struct OptionsExpressionTupleResult {
     pub sealed_extreme_stress_metrics: Option<OptionsExpressionMetrics>,
     #[serde(default)]
     pub validation_verdict: OptionsExpressionValidationVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_score_components: Option<OptionsObjectiveScoreComponents>,
     #[serde(default)]
     pub robust_score: f64,
 }
@@ -1112,6 +1189,8 @@ pub struct OptionsExpressionFeasibilityReport {
     pub price_semantics: OptionsPriceSemantics,
     #[serde(default)]
     pub exactness_semantics: OptionsExpressionExactnessSemantics,
+    #[serde(default)]
+    pub objective_config: OptionsObjectiveConfig,
     pub fill_model: OptionsFillModelFamily,
     pub best_available_backend: String,
     #[serde(default)]
@@ -1163,6 +1242,8 @@ pub struct OptionsExpressionRunRequest {
     pub structure_family: OptionsStructureFamily,
     #[serde(default = "default_backend_preference")]
     pub backend_preference: OptionsExpressionBackendPreference,
+    #[serde(default)]
+    pub objective_config: OptionsObjectiveConfig,
     #[serde(default = "default_delay_minutes")]
     pub delay_minutes: Vec<u16>,
     #[serde(default = "default_dte_buckets")]
@@ -1204,6 +1285,8 @@ pub struct OptionsExpressionRunResult {
     pub price_semantics: OptionsPriceSemantics,
     #[serde(default)]
     pub exactness_semantics: OptionsExpressionExactnessSemantics,
+    #[serde(default)]
+    pub objective_config: OptionsObjectiveConfig,
     pub tuple_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging: Option<OptionsExpressionStagingStats>,
@@ -1607,6 +1690,7 @@ mod tests {
             extreme_stress_metrics: None,
             sealed_extreme_stress_metrics: None,
             validation_verdict: OptionsExpressionValidationVerdict::SearchOnly,
+            objective_score_components: None,
             robust_score: 0.0,
         }
     }
@@ -1631,7 +1715,21 @@ mod tests {
         );
         assert_eq!(req.sealed_finalist_count, 5);
         assert_eq!(req.structure_family, OptionsStructureFamily::LongSingle);
+        assert_eq!(
+            req.objective_config.profile,
+            OptionsObjectiveProfile::Balanced
+        );
         assert!(!req.delay_minutes.is_empty());
+    }
+
+    #[test]
+    fn objective_score_components_default_missing_fields_to_balanced_zeroes() {
+        let components: OptionsObjectiveScoreComponents =
+            serde_json::from_value(serde_json::json!({})).expect("components");
+
+        assert_eq!(components.profile, OptionsObjectiveProfile::Balanced);
+        assert_eq!(components.total_score, 0.0);
+        assert_eq!(components.search_weight, 0.0);
     }
 
     #[test]
@@ -1868,6 +1966,7 @@ mod tests {
             OptionsExpressionValidationVerdict::SearchOnly
         );
         assert_eq!(tuple.robust_score, 0.0);
+        assert!(tuple.objective_score_components.is_none());
         assert_eq!(
             tuple.inferred_validation_verdict(),
             OptionsExpressionValidationVerdict::SearchOnly
@@ -1921,6 +2020,10 @@ mod tests {
 
         assert_eq!(run_result.tuple_count, 7);
         assert_eq!(run_result.ranked_results.len(), 1);
+        assert_eq!(
+            run_result.objective_config.profile,
+            OptionsObjectiveProfile::Balanced
+        );
         assert_eq!(
             run_result
                 .exactness_semantics
