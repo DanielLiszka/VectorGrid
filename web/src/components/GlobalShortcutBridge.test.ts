@@ -8,6 +8,7 @@ import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 
 const tauriEventsMock = vi.hoisted(() => ({
   off: vi.fn(),
@@ -43,6 +44,7 @@ describe('GlobalShortcutBridge', () => {
   beforeEach(() => {
     localStorage.clear()
     document.body.innerHTML = ''
+    useTaskCenterVisibility().value = false
     tauriEventsMock.listenEvent.mockClear()
     tauriEventsMock.off.mockClear()
     tauriEventsMock.listenEvent.mockImplementation(async () => tauriEventsMock.off)
@@ -212,6 +214,7 @@ describe('GlobalShortcutBridge', () => {
     const runSpy = vi.spyOn(actionStore, 'runOptimization').mockImplementation(() => {})
     const cancelSpy = vi.spyOn(actionStore, 'cancelOptimization').mockImplementation(() => {})
     optimizeStore.canCancel = true
+    const taskCenterOpen = useTaskCenterVisibility()
 
     const wrapper = mount(GlobalShortcutBridge, { global: { plugins: [pinia] } })
     await Promise.resolve()
@@ -220,10 +223,12 @@ describe('GlobalShortcutBridge', () => {
     handler({ commandId: 'open_command_palette', source: 'native-menu' })
     handler({ commandId: 'run', source: 'native-menu' })
     handler({ commandId: 'cancel_run', source: 'native-menu' })
+    handler({ commandId: 'open_task_center', source: 'native-tray' })
 
     expect(openPaletteSpy).toHaveBeenCalledTimes(1)
     expect(runSpy).toHaveBeenCalledTimes(1)
     expect(cancelSpy).toHaveBeenCalledTimes(1)
+    expect(taskCenterOpen.value).toBe(true)
 
     wrapper.unmount()
     await Promise.resolve()

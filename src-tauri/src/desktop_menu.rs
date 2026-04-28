@@ -207,6 +207,13 @@ const CHECKED_VIEW_COMMANDS: &[DesktopMenuCheckCommand] = &[DesktopMenuCheckComm
     initial_checked: true,
 }];
 
+const VIEW_COMMANDS: &[DesktopMenuCommand] = &[DesktopMenuCommand {
+    command_id: "open_task_center",
+    label: "Task Center",
+    accelerator: None,
+    initial_enabled: true,
+}];
+
 fn shell_menu_item_id(command_id: &str) -> String {
     format!("{SHELL_MENU_ID_PREFIX}{command_id}")
 }
@@ -217,6 +224,7 @@ fn shared_shell_menu_command_ids() -> Vec<&'static str> {
         .iter()
         .chain(RUN_COMMANDS.iter())
         .chain(EXPORT_COMMANDS.iter())
+        .chain(VIEW_COMMANDS.iter())
         .map(|command| command.command_id)
         .chain(
             CHECKED_VIEW_COMMANDS
@@ -358,13 +366,15 @@ pub fn install_desktop_menu(app: &AppHandle) -> tauri::Result<()> {
         RUN_COMMANDS,
     )?
     .build()?;
-    let view_menu = append_check_command_items(
+    let view_menu = append_command_items(
         app,
         &menu_state,
         SubmenuBuilder::new(app, "View"),
-        CHECKED_VIEW_COMMANDS,
+        VIEW_COMMANDS,
     )?
-    .build()?;
+    .separator();
+    let view_menu =
+        append_check_command_items(app, &menu_state, view_menu, CHECKED_VIEW_COMMANDS)?.build()?;
 
     let menu = Menu::with_items(app, &[&app_menu, &file_menu, &run_menu, &view_menu])?;
     app.set_menu(menu)?;
@@ -402,6 +412,7 @@ mod tests {
                 "validate",
                 "export_csv",
                 "export_json",
+                "open_task_center",
                 "toggle_controls",
             ]
         );

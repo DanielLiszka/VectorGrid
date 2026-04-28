@@ -8,6 +8,7 @@ import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { openTaskCenter, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import {
   createSharedShellShortcutCommandEnabledStates,
   createSharedShellShortcutCommands,
@@ -29,6 +30,7 @@ const commandPaletteStore = useCommandPaletteStore()
 const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
 const settingsStore = useSettingsStore()
+const taskCenterOpen = useTaskCenterVisibility()
 
 const { canExportCsv, canExportJson } = storeToRefs(analysisStore)
 const { canOpenLatestMetaReport, canOpenLatestReport } = storeToRefs(commandActionStore)
@@ -99,6 +101,9 @@ function sharedShellShortcutContext(): SharedShellShortcutContext {
     },
     openLatestMetaReport: () => {
       commandActionStore.openLatestMetaReport()
+    },
+    openTaskCenter: () => {
+      openTaskCenter(taskCenterOpen, document.activeElement instanceof HTMLElement ? document.activeElement : null)
     },
   }
 }

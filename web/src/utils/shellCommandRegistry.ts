@@ -9,6 +9,7 @@ export type SharedShellCommandId =
   | 'export_json'
   | 'open_latest_report'
   | 'open_latest_meta_report'
+  | 'open_task_center'
   | 'toggle_controls'
 
 export interface ShellCommandRuntimeContext {
@@ -32,6 +33,7 @@ export interface ShellCommandRuntimeContext {
   exportTopJson: () => void
   openLatestReport: () => void
   openLatestMetaReport: () => void
+  openTaskCenter: () => void
 }
 
 export interface ShellCommand {
@@ -180,6 +182,17 @@ const SHARED_SHELL_COMMAND_DEFS: readonly SharedShellCommandDef[] = [
     enabled: (ctx) => ctx.canOpenLatestMetaReport,
     run: (ctx) => ctx.openLatestMetaReport(),
     matches: (event) => matchesModifiedKey(event, 'm', true),
+  },
+  {
+    id: 'open_task_center',
+    group: 'layout',
+    name: 'Open Task Center',
+    desc: 'Review active commands, recent events, and command timeline.',
+    keys: [],
+    keywords: ['task', 'center', 'jobs', 'events', 'timeline', 'status'],
+    enabled: () => true,
+    run: (ctx) => ctx.openTaskCenter(),
+    matches: () => false,
   },
   {
     id: 'toggle_controls',

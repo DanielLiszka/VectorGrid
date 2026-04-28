@@ -24,8 +24,10 @@
         "create": false,
         "width": 1280,
         "height": 720,
+        "minWidth": 1024,
+        "minHeight": 640,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
         "visible": false
       }
     ]

@@ -29,6 +29,7 @@ function runtimeContext(overrides: Partial<ShellCommandRuntimeContext> = {}): Sh
     exportTopJson: vi.fn(),
     openLatestReport: vi.fn(),
     openLatestMetaReport: vi.fn(),
+    openTaskCenter: vi.fn(),
     ...overrides,
   }
 }
@@ -59,6 +60,7 @@ describe('shellCommandRegistry', () => {
       'export_json',
       'open_latest_report',
       'open_latest_meta_report',
+      'open_task_center',
       'toggle_controls',
     ])
     expect(new Set(ids).size).toBe(ids.length)
@@ -92,6 +94,7 @@ describe('shellCommandRegistry', () => {
     expect(states).toContainEqual({ commandId: 'run', enabled: false })
     expect(states).toContainEqual({ commandId: 'cancel_run', enabled: true })
     expect(states).toContainEqual({ commandId: 'export_json', enabled: false })
+    expect(states).toContainEqual({ commandId: 'open_task_center', enabled: true })
     expect(states).toContainEqual({ commandId: 'toggle_controls', enabled: true, checked: false })
     expect(states.map((state) => state.commandId)).toEqual(
       createSharedShellCommands(runtimeContext()).map((command) => command.id),

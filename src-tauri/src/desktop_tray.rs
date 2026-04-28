@@ -8,6 +8,7 @@ const SHELL_COMMAND_EVENT: &str = "shell-command";
 const TRAY_MENU_ID_PREFIX: &str = "vta:tray:";
 const SHOW_WINDOW_COMMAND_ID: &str = "show_window";
 const COMMAND_PALETTE_COMMAND_ID: &str = "open_command_palette";
+const OPEN_TASK_CENTER_COMMAND_ID: &str = "open_task_center";
 const OPEN_LATEST_REPORT_COMMAND_ID: &str = "open_latest_report";
 const QUIT_COMMAND_ID: &str = "quit";
 
@@ -59,7 +60,9 @@ fn handle_tray_menu_event(app: &AppHandle, menu_id: &str) {
     match command_id {
         SHOW_WINDOW_COMMAND_ID => show_main_window(app),
         QUIT_COMMAND_ID => app.exit(0),
-        COMMAND_PALETTE_COMMAND_ID | OPEN_LATEST_REPORT_COMMAND_ID => {
+        COMMAND_PALETTE_COMMAND_ID
+        | OPEN_TASK_CENTER_COMMAND_ID
+        | OPEN_LATEST_REPORT_COMMAND_ID => {
             show_main_window(app);
             emit_shell_command(app, command_id);
         }
@@ -84,10 +87,20 @@ fn tray_menu_item(
 pub fn install_desktop_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = tray_menu_item(app, SHOW_WINDOW_COMMAND_ID, "Show VectorGrid")?;
     let command_palette = tray_menu_item(app, COMMAND_PALETTE_COMMAND_ID, "Command Palette")?;
+    let task_center = tray_menu_item(app, OPEN_TASK_CENTER_COMMAND_ID, "Task Center")?;
     let open_latest_report =
         tray_menu_item(app, OPEN_LATEST_REPORT_COMMAND_ID, "Open Latest Report")?;
     let quit = tray_menu_item(app, QUIT_COMMAND_ID, "Quit VectorGrid")?;
-    let menu = Menu::with_items(app, &[&show, &command_palette, &open_latest_report, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show,
+            &command_palette,
+            &task_center,
+            &open_latest_report,
+            &quit,
+        ],
+    )?;
 
     let mut builder = TrayIconBuilder::new()
         .tooltip("VectorGrid")

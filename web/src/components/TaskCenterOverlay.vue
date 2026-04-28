@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useStorage } from '@vueuse/core'
 import AppVisualIcon from './AppVisualIcon.vue'
 import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
+import { vMotionList } from '../directives/motionList'
 import {
   TASK_CENTER_PANEL_ID,
   closeTaskCenter,
@@ -459,7 +460,7 @@ function openRelatedView(task: TrackedTask): void {
       </button>
     </div>
 
-    <section v-if="toastItems.length > 0" class="toastStack">
+    <section v-if="toastItems.length > 0" v-motion-list class="toastStack">
       <article
         v-for="(toast, index) in toastItems"
         :key="toast.id"
@@ -519,7 +520,7 @@ function openRelatedView(task: TrackedTask): void {
               <span class="eventBadge running">{{ runningTasks.length }}</span>
             </div>
             <div v-if="runningTasks.length === 0" class="muted">{{ sectionEmptyLabel('running') }}</div>
-            <div v-else class="taskList">
+            <div v-else v-motion-list class="taskList">
               <article v-for="task in runningTasks" :key="task.id" class="taskCard">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
@@ -554,7 +555,7 @@ function openRelatedView(task: TrackedTask): void {
               <span class="eventBadge queued">{{ queuedTasks.length }}</span>
             </div>
             <div v-if="queuedTasks.length === 0" class="muted">{{ sectionEmptyLabel('queued') }}</div>
-            <div v-else class="taskList">
+            <div v-else v-motion-list class="taskList">
               <article v-for="task in queuedTasks" :key="task.id" class="taskCard taskCardQueued">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
@@ -584,7 +585,7 @@ function openRelatedView(task: TrackedTask): void {
               <span class="eventBadge cancelling">{{ cancellingTasks.length }}</span>
             </div>
             <div v-if="cancellingTasks.length === 0" class="muted">{{ sectionEmptyLabel('cancelling') }}</div>
-            <div v-else class="taskList">
+            <div v-else v-motion-list class="taskList">
               <article v-for="task in cancellingTasks" :key="task.id" class="taskCard taskCardCancelling">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
@@ -610,7 +611,7 @@ function openRelatedView(task: TrackedTask): void {
               <span class="eventBadge warn">{{ failedTasks.length + cancelledTasks.length }}</span>
             </div>
             <div v-if="failedTasks.length + cancelledTasks.length === 0" class="muted">{{ sectionEmptyLabel('attention') }}</div>
-            <div v-else class="taskList">
+            <div v-else v-motion-list class="taskList">
               <article
                 v-for="task in [...failedTasks, ...cancelledTasks]"
                 :key="task.id"
@@ -645,7 +646,7 @@ function openRelatedView(task: TrackedTask): void {
               <span class="eventBadge success">{{ completedTasks.length }}</span>
             </div>
             <div v-if="completedTasks.length === 0" class="muted">{{ sectionEmptyLabel('completed') }}</div>
-            <div v-else class="taskList">
+            <div v-else v-motion-list class="taskList">
               <article v-for="task in completedTasks" :key="task.id" class="taskCard taskCardSuccess">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
@@ -675,7 +676,7 @@ function openRelatedView(task: TrackedTask): void {
       <div class="section" aria-label="Task center events">
         <div class="sectionTitle">Events</div>
         <div v-if="eventItems.length === 0" class="muted">No events yet.</div>
-        <div v-else class="miniList">
+        <div v-else v-motion-list class="miniList">
           <div
             v-for="(evt, index) in eventItems"
             :key="evt.id"
@@ -698,7 +699,7 @@ function openRelatedView(task: TrackedTask): void {
       <div class="section" aria-label="Task center timeline">
         <div class="sectionTitle">Timeline</div>
         <div v-if="timelineItems.length === 0" class="muted">No timeline entries yet.</div>
-        <div v-else class="miniList">
+        <div v-else v-motion-list class="miniList">
           <div
             v-for="(entry, index) in timelineItems"
             :key="entry.id"

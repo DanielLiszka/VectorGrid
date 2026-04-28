@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 import CommandPaletteOverlay from './CommandPaletteOverlay.vue'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
+import { useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -12,6 +13,7 @@ describe('CommandPaletteOverlay', () => {
     localStorage.clear()
     localStorage.setItem('vta_ui_mode_v1', 'advanced')
     document.body.innerHTML = ''
+    useTaskCenterVisibility().value = false
   })
 
   it('focuses the query input when opened and closes on Escape', async () => {
@@ -175,6 +177,33 @@ describe('CommandPaletteOverlay', () => {
     await nextTick()
     expect(settingsStore.uiMode).toBe('advanced')
     expect(workflowStore.workspace).toBe('aggregate')
+
+    wrapper.unmount()
+  })
+
+  it('routes the shared task center command from palette search', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    const taskCenterOpen = useTaskCenterVisibility()
+    paletteStore.openPalette()
+
+    const wrapper = mount(CommandPaletteOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    paletteStore.setQuery('task center')
+    await nextTick()
+    const firstRow = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="option"]')
+    expect(firstRow?.textContent).toContain('Open Task Center')
+    firstRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+
+    expect(taskCenterOpen.value).toBe(true)
+    expect(paletteStore.open).toBe(false)
 
     wrapper.unmount()
   })

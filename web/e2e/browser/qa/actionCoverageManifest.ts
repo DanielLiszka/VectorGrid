@@ -29,6 +29,7 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
   { actionId: 'commandPalette.command.openLatestMetaReport', surface: 'commandPalette', required: false, priority: 'extended', coveredBy: [], waiver: { reason: 'Requires a saved meta report artifact.', owner: 'frontend-qa', expires: '2026-06-01' } },
   { actionId: 'commandPalette.command.openLatestReport', surface: 'commandPalette', required: false, priority: 'extended', coveredBy: [], waiver: { reason: 'Requires a saved optimization/validation report artifact.', owner: 'frontend-qa', expires: '2026-06-01' } },
   { actionId: 'commandPalette.command.openPolygon', surface: 'commandPalette', required: true, priority: 'important', coveredBy: ['responsive.mobile.commandPalette'] },
+  { actionId: 'commandPalette.command.openTaskCenter', surface: 'commandPalette', required: true, priority: 'important', coveredBy: ['shell.commandPalette.navigation', 'shell.taskCenter'] },
   { actionId: 'commandPalette.command.run', surface: 'commandPalette', required: true, priority: 'critical', coveredBy: ['optimize.blocked.noData'] },
   { actionId: 'commandPalette.command.switchAdvancedMode', surface: 'commandPalette', required: true, priority: 'important', coveredBy: ['shell.commandPalette.navigation'] },
   { actionId: 'commandPalette.command.switchGuidedMode', surface: 'commandPalette', required: true, priority: 'important', coveredBy: ['shell.commandPalette.navigation'] },

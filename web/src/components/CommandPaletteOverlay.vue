@@ -11,6 +11,8 @@ import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { openTaskCenter, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
+import { vMotionList } from '../directives/motionList'
 import {
   createSharedShellShortcutCommands,
   type SharedShellShortcutGroup,
@@ -48,6 +50,7 @@ const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
 const settingsStore = useSettingsStore()
 const workflowStore = useWorkflowStore()
+const taskCenterOpen = useTaskCenterVisibility()
 
 const { canExportCsv, canExportJson } = storeToRefs(analysisStore)
 const { canOpenLatestMetaReport, canOpenLatestReport } = storeToRefs(commandActionStore)
@@ -120,6 +123,9 @@ const sharedShortcutCommands = computed<PaletteCommand[]>(() => createSharedShel
   },
   openLatestMetaReport: () => {
     commandActionStore.openLatestMetaReport()
+  },
+  openTaskCenter: () => {
+    openTaskCenter(taskCenterOpen, document.activeElement instanceof HTMLElement ? document.activeElement : null)
   },
 }))
 
@@ -392,6 +398,7 @@ function commandQaAction(commandId: string): string {
     open_latest_meta_report: 'openLatestMetaReport',
     open_latest_report: 'openLatestReport',
     open_polygon: 'openPolygon',
+    open_task_center: 'openTaskCenter',
     switch_advanced_mode: 'switchAdvancedMode',
     switch_guided_mode: 'switchGuidedMode',
     toggle_controls: 'toggleControls',
@@ -505,10 +512,11 @@ function onKeydown(event: KeyboardEvent): void {
           @input="commandPaletteStore.setQuery(String(($event.target as HTMLInputElement).value || ''))"
         />
         <div :id="searchSummaryId" class="summary" aria-live="polite">{{ searchSummary }}</div>
-        <div :id="commandListId" class="list overflowShadowY" role="listbox" aria-label="Available commands">
+        <div :id="commandListId" v-motion-list class="list overflowShadowY" role="listbox" aria-label="Available commands">
           <section
             v-for="group in groupedFilteredCommands"
             :key="group.id"
+            v-motion-list
             class="group"
             role="group"
             :aria-labelledby="`commandPaletteGroup_${group.id}`"
