@@ -366,6 +366,10 @@ pub struct BrokerReconciliationEvent {
     pub filled_avg_price: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refreshed_position_qty: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_broker_review: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rearm_blocked_reason: Option<String>,
     pub terminal: bool,
     pub timed_out: bool,
 }
@@ -1234,6 +1238,16 @@ fn should_attach_opening_bracket(current_position_qty: f64, target_position_qty:
     current_position_qty.abs() < 1e-6 && target_position_qty.abs() > 1e-6
 }
 
+fn local_paper_bracket_child_orders_required_but_unsupported(
+    policy: &ExecutionRiskPolicySettings,
+    opening_new_position: bool,
+) -> bool {
+    opening_new_position
+        && policy
+            .require_bracket
+            .is_some_and(|require_bracket| require_bracket)
+}
+
 fn validate_live_runner_stream_preconditions(
     stream: Option<&crate::state::LiveCandleStreamInfo>,
     requested_symbol: &str,
@@ -1652,6 +1666,13 @@ fn validate_live_execution_source_context(
     Ok(())
 }
 
+fn validate_execution_source_preconditions(
+    req: &ExecuteStrategySignalRequest,
+    execution_target: ExecutionBrokerTarget,
+) -> Result<(), String> {
+    validate_live_execution_source_context(req, execution_target)
+}
+
 fn validate_alpaca_live_broker_preflight(
     client: &Client,
     req: &ExecuteStrategySignalRequest,
@@ -1968,45 +1989,135 @@ fn normalize_order_snapshot(v: &serde_json::Value) -> Option<LiveOrderSnapshot> 
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BrokerOrderStatusClass {
+    OpenCancelable,
+    OpenNonCancelable,
+    PartialFill,
+    DoneForDayReviewRequired,
+    TerminalFilled,
+    TerminalCanceled,
+    TerminalExpired,
+    TerminalRejected,
+    TerminalReplaced,
+    SuspendedReviewRequired,
+    UnknownReviewRequired,
+}
+
+fn classify_broker_order_status(status: &str) -> BrokerOrderStatusClass {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "new" | "accepted" | "pending_new" | "accepted_for_bidding" => {
+            BrokerOrderStatusClass::OpenCancelable
+        }
+        "pending_cancel" | "pending_replace" => BrokerOrderStatusClass::OpenNonCancelable,
+        "partially_filled" => BrokerOrderStatusClass::PartialFill,
+        "filled" => BrokerOrderStatusClass::TerminalFilled,
+        "canceled" => BrokerOrderStatusClass::TerminalCanceled,
+        "expired" => BrokerOrderStatusClass::TerminalExpired,
+        "rejected" => BrokerOrderStatusClass::TerminalRejected,
+        "replaced" => BrokerOrderStatusClass::TerminalReplaced,
+        "done_for_day" => BrokerOrderStatusClass::DoneForDayReviewRequired,
+        "stopped" | "suspended" | "calculated" | "held" => {
+            BrokerOrderStatusClass::SuspendedReviewRequired
+        }
+        _ => BrokerOrderStatusClass::UnknownReviewRequired,
+    }
+}
+
+fn broker_status_class_requires_review(class: BrokerOrderStatusClass) -> bool {
+    matches!(
+        class,
+        BrokerOrderStatusClass::PartialFill
+            | BrokerOrderStatusClass::DoneForDayReviewRequired
+            | BrokerOrderStatusClass::TerminalFilled
+            | BrokerOrderStatusClass::TerminalCanceled
+            | BrokerOrderStatusClass::TerminalExpired
+            | BrokerOrderStatusClass::TerminalRejected
+            | BrokerOrderStatusClass::TerminalReplaced
+            | BrokerOrderStatusClass::SuspendedReviewRequired
+            | BrokerOrderStatusClass::UnknownReviewRequired
+    )
+}
+
+fn broker_status_review_reason(class: BrokerOrderStatusClass, status: &str) -> Option<String> {
+    let normalized = status.trim();
+    match class {
+        BrokerOrderStatusClass::PartialFill => {
+            Some("partial_fill_requires_broker_review_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::DoneForDayReviewRequired => {
+            Some("done_for_day_requires_broker_review_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::TerminalFilled => {
+            Some("terminal_filled_requires_position_refresh_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::TerminalCanceled => {
+            Some("terminal_canceled_requires_broker_review_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::TerminalExpired => {
+            Some("terminal_expired_requires_broker_review_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::TerminalRejected => {
+            Some("terminal_rejected_requires_broker_review_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::TerminalReplaced => {
+            Some("terminal_replaced_requires_broker_review_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::SuspendedReviewRequired => Some(format!(
+            "broker_status_{}_requires_review_before_rearm",
+            normalized.to_ascii_lowercase()
+        )),
+        BrokerOrderStatusClass::UnknownReviewRequired => {
+            Some("broker_unknown_status_requires_review_before_rearm".to_string())
+        }
+        BrokerOrderStatusClass::OpenCancelable | BrokerOrderStatusClass::OpenNonCancelable => None,
+    }
+}
+
 fn is_broker_cancelable_order_status(status: &str) -> bool {
     matches!(
-        status.trim().to_ascii_lowercase().as_str(),
-        "new"
-            | "accepted"
-            | "pending_new"
-            | "accepted_for_bidding"
-            | "partially_filled"
-            | "pending_replace"
-            | "calculated"
+        classify_broker_order_status(status),
+        BrokerOrderStatusClass::OpenCancelable | BrokerOrderStatusClass::PartialFill
     )
 }
 
 fn is_broker_open_order_status(status: &str) -> bool {
-    is_broker_cancelable_order_status(status)
-        || matches!(
-            status.trim().to_ascii_lowercase().as_str(),
-            "pending_cancel" | "held" | "stopped" | "suspended"
-        )
+    matches!(
+        classify_broker_order_status(status),
+        BrokerOrderStatusClass::OpenCancelable
+            | BrokerOrderStatusClass::OpenNonCancelable
+            | BrokerOrderStatusClass::PartialFill
+            | BrokerOrderStatusClass::SuspendedReviewRequired
+    )
 }
 
 fn is_broker_terminal_order_status(status: &str) -> bool {
     matches!(
-        status.trim().to_ascii_lowercase().as_str(),
-        "filled" | "canceled" | "expired" | "rejected" | "replaced"
+        classify_broker_order_status(status),
+        BrokerOrderStatusClass::TerminalFilled
+            | BrokerOrderStatusClass::TerminalCanceled
+            | BrokerOrderStatusClass::TerminalExpired
+            | BrokerOrderStatusClass::TerminalRejected
+            | BrokerOrderStatusClass::TerminalReplaced
     )
 }
 
 fn alpaca_intent_status_for_order_snapshot(order: &LiveOrderSnapshot) -> String {
-    match order.status.trim().to_ascii_lowercase().as_str() {
-        "filled" => "filled".to_string(),
-        "canceled" => "terminal_canceled".to_string(),
-        "expired" => "terminal_expired".to_string(),
-        "rejected" => "terminal_rejected".to_string(),
-        "replaced" => "terminal_replaced".to_string(),
-        "partially_filled" => "partial_fill".to_string(),
-        status if is_broker_open_order_status(status) => "broker_open".to_string(),
-        status if status.is_empty() => "broker_unknown".to_string(),
-        status => format!("broker_{status}"),
+    match classify_broker_order_status(&order.status) {
+        BrokerOrderStatusClass::OpenCancelable | BrokerOrderStatusClass::OpenNonCancelable => {
+            "broker_open".to_string()
+        }
+        BrokerOrderStatusClass::PartialFill => "partial_fill".to_string(),
+        BrokerOrderStatusClass::DoneForDayReviewRequired => {
+            "done_for_day_review_required".to_string()
+        }
+        BrokerOrderStatusClass::TerminalFilled => "terminal_filled_review_required".to_string(),
+        BrokerOrderStatusClass::TerminalCanceled => "terminal_canceled_review_required".to_string(),
+        BrokerOrderStatusClass::TerminalExpired => "terminal_expired_review_required".to_string(),
+        BrokerOrderStatusClass::TerminalRejected => "terminal_rejected_review_required".to_string(),
+        BrokerOrderStatusClass::TerminalReplaced => "terminal_replaced_review_required".to_string(),
+        BrokerOrderStatusClass::SuspendedReviewRequired => "suspended_review_required".to_string(),
+        BrokerOrderStatusClass::UnknownReviewRequired => "broker_unknown".to_string(),
     }
 }
 
@@ -2015,7 +2126,9 @@ fn broker_reconciliation_event_from_snapshot(
     terminal: bool,
     timed_out: bool,
 ) -> BrokerReconciliationEvent {
+    let status_class = classify_broker_order_status(&order.status);
     let status = alpaca_intent_status_for_order_snapshot(order);
+    let requires_review = timed_out || broker_status_class_requires_review(status_class);
     let message = if terminal {
         format!(
             "Alpaca order reconciled to terminal status {}.",
@@ -2040,6 +2153,15 @@ fn broker_reconciliation_event_from_snapshot(
         filled_qty: order.filled_qty,
         filled_avg_price: order.filled_avg_price,
         refreshed_position_qty: None,
+        requires_broker_review: requires_review.then_some(true),
+        rearm_blocked_reason: broker_status_review_reason(status_class, &order.status).or_else(
+            || {
+                timed_out.then(|| {
+                    "broker_open_after_reconciliation_timeout_requires_review_before_rearm"
+                        .to_string()
+                })
+            },
+        ),
         terminal,
         timed_out,
     }
@@ -2051,6 +2173,10 @@ fn broker_reconciliation_event(
     order_id: Option<String>,
     client_order_id: Option<String>,
 ) -> BrokerReconciliationEvent {
+    let requires_review = matches!(
+        status,
+        "reconciliation_unknown" | "reconciliation_error" | "submit_error_unconfirmed"
+    );
     BrokerReconciliationEvent {
         provenance: "broker_reconciliation".to_string(),
         status: status.to_string(),
@@ -2062,6 +2188,9 @@ fn broker_reconciliation_event(
         filled_qty: None,
         filled_avg_price: None,
         refreshed_position_qty: None,
+        requires_broker_review: requires_review.then_some(true),
+        rearm_blocked_reason: requires_review
+            .then(|| format!("{status}_requires_broker_review_before_rearm")),
         terminal: false,
         timed_out: false,
     }
@@ -2085,6 +2214,8 @@ fn broker_position_refreshed_event(
         filled_qty: None,
         filled_avg_price: None,
         refreshed_position_qty: Some(refreshed_position_qty),
+        requires_broker_review: Some(false),
+        rearm_blocked_reason: None,
         terminal: true,
         timed_out: false,
     }
@@ -2273,12 +2404,53 @@ fn flatten_position_order_payload(
     ))
 }
 
+fn format_alpaca_price_by_increment(price: f64) -> Result<String, String> {
+    if !price.is_finite() || price <= 0.0 {
+        return Err("Alpaca bracket price must be finite and > 0.".to_string());
+    }
+    let decimals: i32 = if price >= 1.0 { 2 } else { 4 };
+    let scale = 10_f64.powi(decimals);
+    let rounded = (price * scale).round() / scale;
+    if !rounded.is_finite() || rounded <= 0.0 {
+        return Err("Alpaca bracket price rounded to a non-positive value.".to_string());
+    }
+    let decimals: usize = if rounded >= 1.0 { 2 } else { 4 };
+    let scale = 10_f64.powi(decimals as i32);
+    let rounded = (price * scale).round() / scale;
+    if !rounded.is_finite() || rounded <= 0.0 {
+        return Err("Alpaca bracket price rounded to a non-positive value.".to_string());
+    }
+    Ok(format!("{rounded:.decimals$}"))
+}
+
+fn validate_formatted_alpaca_bracket_prices(
+    side: &str,
+    stop_price: &str,
+    take_profit_price: &str,
+) -> Result<(), String> {
+    let stop = stop_price
+        .parse::<f64>()
+        .map_err(|_| "formatted Alpaca stop price was not numeric".to_string())?;
+    let take = take_profit_price
+        .parse::<f64>()
+        .map_err(|_| "formatted Alpaca take-profit price was not numeric".to_string())?;
+    match side {
+        "buy" if take <= stop => Err(format!(
+            "Alpaca buy bracket would invert after price rounding: take_profit={take_profit_price} stop_loss={stop_price}."
+        )),
+        "sell" if take >= stop => Err(format!(
+            "Alpaca sell bracket would invert after price rounding: take_profit={take_profit_price} stop_loss={stop_price}."
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn alpaca_order_payload(
     symbol: &str,
     delta_qty: f64,
     cfg: &ta_strategies::double_ma::StrategyConfig,
     last_close: f64,
-) -> (serde_json::Value, Vec<String>) {
+) -> Result<(serde_json::Value, Vec<String>), String> {
     let mut warnings: Vec<String> = Vec::new();
     let qty = delta_qty.abs();
     let side = if delta_qty > 0.0 { "buy" } else { "sell" };
@@ -2305,15 +2477,18 @@ fn alpaca_order_payload(
                 (last_close * (1.0 - take_pct)).max(0.01),
             )
         };
+        let stop_price = format_alpaca_price_by_increment(stop_px)?;
+        let take_profit_price = format_alpaca_price_by_increment(take_px)?;
+        validate_formatted_alpaca_bracket_prices(side, &stop_price, &take_profit_price)?;
         if let Some(obj) = payload.as_object_mut() {
             obj.insert("order_class".to_string(), serde_json::json!("bracket"));
             obj.insert(
                 "take_profit".to_string(),
-                serde_json::json!({ "limit_price": format!("{take_px:.4}") }),
+                serde_json::json!({ "limit_price": take_profit_price }),
             );
             obj.insert(
                 "stop_loss".to_string(),
-                serde_json::json!({ "stop_price": format!("{stop_px:.4}") }),
+                serde_json::json!({ "stop_price": stop_price }),
             );
         }
     } else if stop.is_some() || take.is_some() {
@@ -2323,7 +2498,7 @@ fn alpaca_order_payload(
         );
     }
 
-    (payload, warnings)
+    Ok((payload, warnings))
 }
 
 fn paper_order_side_for_delta(delta_qty: f64) -> PaperOrderSide {
@@ -2704,8 +2879,9 @@ fn update_alpaca_order_intent_status(
 }
 
 fn unresolved_alpaca_intent_status(status: &str) -> bool {
+    let status = status.trim().to_ascii_lowercase();
     matches!(
-        status.trim().to_ascii_lowercase().as_str(),
+        status.as_str(),
         "pending_submit"
             | "submitted"
             | "reused_existing"
@@ -2713,7 +2889,13 @@ fn unresolved_alpaca_intent_status(status: &str) -> bool {
             | "partial_fill"
             | "reconciliation_unknown"
             | "reconciliation_error"
-    )
+            | "submit_error"
+            | "submit_error_unconfirmed"
+            | "done_for_day_review_required"
+            | "suspended_review_required"
+            | "broker_unknown"
+    ) || status.ends_with("_review_required")
+        || status.starts_with("broker_")
 }
 
 fn block_unresolved_alpaca_intents_before_submit(
@@ -3132,6 +3314,29 @@ fn execute_strategy_signal_blocking(
             "app local data directory is required for local paper execution".to_string()
         })?;
         let side = paper_order_side_for_delta(delta_qty);
+        if local_paper_bracket_child_orders_required_but_unsupported(&effective_policy, opening_new)
+        {
+            warnings.push(
+                "Local paper cannot satisfy require_bracket=true because bracket child orders are not simulated."
+                    .to_string(),
+            );
+            return Ok(ExecuteStrategySignalResponse {
+                symbol,
+                mode: req.mode,
+                desired_position: decision.desired_position,
+                current_position_qty,
+                target_position_qty,
+                delta_qty,
+                order_submitted: false,
+                order_id: None,
+                client_order_id: None,
+                action: "policy_blocked:local_paper_bracket_unsupported".to_string(),
+                last_bar_ts: decision.last_bar_ts,
+                last_close: Some(decision.last_close),
+                broker_reconciliation_events: Vec::new(),
+                warnings,
+            });
+        }
         if opening_new
             && (decision.cfg.stop_loss_pct().is_some() || decision.cfg.take_profit_pct().is_some())
         {
@@ -3180,7 +3385,7 @@ fn execute_strategy_signal_blocking(
     }
     let client = alpaca_client()?;
     let (mut payload, bracket_warnings) = if opening_new {
-        alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)
+        alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)?
     } else {
         (
             serde_json::json!({
@@ -3244,13 +3449,13 @@ fn execute_strategy_signal_blocking(
             if let Err(update_error) = update_alpaca_order_intent_status(
                 intent_base,
                 &client_order_id,
-                "submit_error",
+                "submit_error_unconfirmed",
                 None,
                 Some(error.clone()),
                 now_unix_ms(),
             ) {
                 return Err(format!(
-                    "{error}. Also failed to persist Alpaca intent submit_error: {update_error}"
+                    "{error}. Also failed to persist Alpaca intent submit_error_unconfirmed: {update_error}"
                 ));
             }
             return Err(error);
@@ -3285,37 +3490,13 @@ fn execute_strategy_signal_blocking(
     ) {
         Ok(outcome) => {
             if let Some(snapshot) = outcome.snapshot.as_ref() {
-                let intent_status = alpaca_intent_status_for_order_snapshot(snapshot);
-                if let Err(update_error) = update_alpaca_order_intent_status(
-                    intent_base,
-                    &client_order_id,
-                    &intent_status,
-                    Some(snapshot.id.clone()),
-                    None,
-                    now_unix_ms(),
-                ) {
-                    warnings.push(format!(
-                        "Alpaca order was reconciled as {}, but intent status update failed: {update_error}",
-                        snapshot.status
-                    ));
-                }
+                let mut intent_status = alpaca_intent_status_for_order_snapshot(snapshot);
+                let mut intent_error: Option<String> = None;
                 if outcome.terminal {
                     warnings.push(format!(
                         "Alpaca order reconciled to terminal status {}.",
                         snapshot.status
                     ));
-                } else if outcome.timed_out {
-                    warnings.push(format!(
-                        "Alpaca order is still {} after post-submit reconciliation; refresh broker review before another broker action.",
-                        snapshot.status
-                    ));
-                }
-                broker_reconciliation_events.push(broker_reconciliation_event_from_snapshot(
-                    snapshot,
-                    outcome.terminal,
-                    outcome.timed_out,
-                ));
-                if outcome.terminal {
                     match fetch_alpaca_position_qty(
                         client,
                         req.mode,
@@ -3324,17 +3505,49 @@ fn execute_strategy_signal_blocking(
                         &symbol,
                     ) {
                         Ok(refreshed_qty) => {
+                            if matches!(
+                                classify_broker_order_status(&snapshot.status),
+                                BrokerOrderStatusClass::TerminalFilled
+                            ) {
+                                intent_status = "filled".to_string();
+                            }
                             broker_reconciliation_events.push(broker_position_refreshed_event(
                                 Some(snapshot.id.clone()),
                                 snapshot.client_order_id.clone(),
                                 refreshed_qty,
                             ));
                         }
-                        Err(error) => warnings.push(format!(
-                            "Alpaca order reached terminal status, but position refresh failed: {error}"
-                        )),
+                        Err(error) => {
+                            intent_error = Some(error.clone());
+                            warnings.push(format!(
+                                "Alpaca order reached terminal status, but position refresh failed: {error}"
+                            ));
+                        }
                     }
+                } else if outcome.timed_out {
+                    warnings.push(format!(
+                        "Alpaca order is still {} after post-submit reconciliation; refresh broker review before another broker action.",
+                        snapshot.status
+                    ));
                 }
+                if let Err(update_error) = update_alpaca_order_intent_status(
+                    intent_base,
+                    &client_order_id,
+                    &intent_status,
+                    Some(snapshot.id.clone()),
+                    intent_error,
+                    now_unix_ms(),
+                ) {
+                    warnings.push(format!(
+                        "Alpaca order was reconciled as {}, but intent status update failed: {update_error}",
+                        snapshot.status
+                    ));
+                }
+                broker_reconciliation_events.push(broker_reconciliation_event_from_snapshot(
+                    snapshot,
+                    outcome.terminal,
+                    outcome.timed_out,
+                ));
             } else {
                 let _ = update_alpaca_order_intent_status(
                     intent_base,
@@ -3428,6 +3641,7 @@ pub async fn execute_strategy_signal_once(
         req.alpaca_api_secret = api_secret;
     }
     let (req, symbol, qty) = normalize_execute_request(req)?;
+    validate_execution_source_preconditions(&req, execution_target)?;
     let data_id = strategy_data_id(&req.strategy).to_string();
     let strategy_kind = strategy_kind_label(&req.strategy);
     let candles = state.get_candles(&data_id)?;
@@ -4603,7 +4817,11 @@ mod tests {
             "pending_new",
             "partially_filled",
             "pending_cancel",
+            "pending_replace",
             "held",
+            "stopped",
+            "suspended",
+            "calculated",
         ] {
             assert!(
                 is_broker_open_order_status(status),
@@ -4622,8 +4840,11 @@ mod tests {
     fn broker_cancelable_status_is_stricter_than_action_blocking_status() {
         assert!(!is_broker_cancelable_order_status("pending_cancel"));
         assert!(is_broker_open_order_status("pending_cancel"));
+        assert!(!is_broker_cancelable_order_status("pending_replace"));
+        assert!(is_broker_open_order_status("pending_replace"));
         assert!(!is_broker_cancelable_order_status("held"));
         assert!(is_broker_open_order_status("held"));
+        assert!(is_broker_cancelable_order_status("partially_filled"));
     }
 
     #[test]
@@ -4640,6 +4861,32 @@ mod tests {
                 "expected non-terminal status {status}"
             );
         }
+    }
+
+    #[test]
+    fn broker_status_classifier_marks_review_required_states() {
+        assert_eq!(
+            classify_broker_order_status("pending_replace"),
+            BrokerOrderStatusClass::OpenNonCancelable
+        );
+        assert_eq!(
+            classify_broker_order_status("done_for_day"),
+            BrokerOrderStatusClass::DoneForDayReviewRequired
+        );
+        assert_eq!(
+            classify_broker_order_status("held"),
+            BrokerOrderStatusClass::SuspendedReviewRequired
+        );
+        assert_eq!(
+            classify_broker_order_status(""),
+            BrokerOrderStatusClass::UnknownReviewRequired
+        );
+        assert!(broker_status_class_requires_review(
+            BrokerOrderStatusClass::DoneForDayReviewRequired
+        ));
+        assert!(broker_status_class_requires_review(
+            BrokerOrderStatusClass::UnknownReviewRequired
+        ));
     }
 
     #[test]
@@ -4672,11 +4919,19 @@ mod tests {
             "partial_fill"
         );
         order.status = "filled".to_string();
-        assert_eq!(alpaca_intent_status_for_order_snapshot(&order), "filled");
+        assert_eq!(
+            alpaca_intent_status_for_order_snapshot(&order),
+            "terminal_filled_review_required"
+        );
         order.status = "rejected".to_string();
         assert_eq!(
             alpaca_intent_status_for_order_snapshot(&order),
-            "terminal_rejected"
+            "terminal_rejected_review_required"
+        );
+        order.status = "done_for_day".to_string();
+        assert_eq!(
+            alpaca_intent_status_for_order_snapshot(&order),
+            "done_for_day_review_required"
         );
     }
 
@@ -4708,16 +4963,22 @@ mod tests {
             Some("partially_filled")
         );
         assert_eq!(partial.filled_qty, Some(1.0));
+        assert_eq!(partial.requires_broker_review, Some(true));
+        assert_eq!(
+            partial.rearm_blocked_reason.as_deref(),
+            Some("partial_fill_requires_broker_review_before_rearm")
+        );
         assert!(partial.timed_out);
         assert!(!partial.terminal);
 
         order.status = "filled".to_string();
         order.filled_qty = Some(2.0);
         let filled = broker_reconciliation_event_from_snapshot(&order, true, false);
-        assert_eq!(filled.status, "filled");
+        assert_eq!(filled.status, "terminal_filled_review_required");
         assert!(filled.terminal);
         assert!(!filled.timed_out);
         assert_eq!(filled.refreshed_position_qty, None);
+        assert_eq!(filled.requires_broker_review, Some(true));
 
         let refreshed = broker_position_refreshed_event(
             Some("ord_1".to_string()),
@@ -4726,6 +4987,7 @@ mod tests {
         );
         assert_eq!(refreshed.status, "position_refreshed_after_terminal");
         assert_eq!(refreshed.refreshed_position_qty, Some(2.0));
+        assert_eq!(refreshed.requires_broker_review, Some(false));
 
         let value = broker_reconciliation_event_value("AAPL", "buy", &filled);
         assert_eq!(value.get("symbol").and_then(Value::as_str), Some("AAPL"));
@@ -5326,10 +5588,10 @@ mod tests {
         assert!(err.contains("source-run config fingerprint"));
 
         req.source_run_config_fingerprint = "cfg1-fnv1a64-live".to_string();
-        validate_live_execution_source_context(&req, ExecutionBrokerTarget::AlpacaLive)
+        validate_execution_source_preconditions(&req, ExecutionBrokerTarget::AlpacaLive)
             .expect("fingerprinted live source should pass");
         req.source_run_config_fingerprint.clear();
-        validate_live_execution_source_context(&req, ExecutionBrokerTarget::AlpacaPaper)
+        validate_execution_source_preconditions(&req, ExecutionBrokerTarget::AlpacaPaper)
             .expect("paper target should not require live validation fingerprint");
     }
 
@@ -5404,6 +5666,36 @@ mod tests {
         .expect("mark terminal");
         block_unresolved_alpaca_intents_before_submit(&base, "AAPL", "vg-new")
             .expect("terminal prior intent should not block new client order");
+    }
+
+    #[test]
+    fn unresolved_alpaca_intent_statuses_fail_closed_for_review_required_states() {
+        for status in [
+            "pending_submit",
+            "submitted",
+            "reused_existing",
+            "broker_open",
+            "partial_fill",
+            "reconciliation_unknown",
+            "reconciliation_error",
+            "submit_error",
+            "submit_error_unconfirmed",
+            "done_for_day_review_required",
+            "terminal_filled_review_required",
+            "terminal_rejected_review_required",
+            "terminal_canceled_review_required",
+            "terminal_expired_review_required",
+            "terminal_replaced_review_required",
+            "suspended_review_required",
+            "broker_unknown",
+            "broker_surprise_status",
+        ] {
+            assert!(
+                unresolved_alpaca_intent_status(status),
+                "expected status {status} to remain unresolved"
+            );
+        }
+        assert!(!unresolved_alpaca_intent_status("filled"));
     }
 
     #[test]
@@ -5697,6 +5989,28 @@ mod tests {
         assert!(!should_attach_opening_bracket(0.0, 0.0));
     }
 
+    #[test]
+    fn local_paper_blocks_when_required_bracket_needs_child_orders() {
+        let required = ExecutionRiskPolicySettings {
+            require_bracket: Some(true),
+            ..ExecutionRiskPolicySettings::default()
+        };
+        let optional = ExecutionRiskPolicySettings {
+            require_bracket: Some(false),
+            ..ExecutionRiskPolicySettings::default()
+        };
+
+        assert!(local_paper_bracket_child_orders_required_but_unsupported(
+            &required, true
+        ));
+        assert!(!local_paper_bracket_child_orders_required_but_unsupported(
+            &required, false
+        ));
+        assert!(!local_paper_bracket_child_orders_required_but_unsupported(
+            &optional, true
+        ));
+    }
+
     fn test_live_stream_info(
         symbol: &str,
         delayed: bool,
@@ -5962,7 +6276,8 @@ mod tests {
         cfg.stop_loss_pct = Some(0.05);
         cfg.take_profit_pct = Some(0.10);
 
-        let (payload, warnings) = alpaca_order_payload("AAPL", 2.0, &cfg, 100.0);
+        let (payload, warnings) =
+            alpaca_order_payload("AAPL", 2.0, &cfg, 100.0).expect("bracket payload");
         assert!(warnings.is_empty());
         assert_eq!(
             payload.get("order_class").and_then(|value| value.as_str()),
@@ -5973,18 +6288,19 @@ mod tests {
                 .get("take_profit")
                 .and_then(|value| value.get("limit_price"))
                 .and_then(|value| value.as_str()),
-            Some("110.0000")
+            Some("110.00")
         );
         assert_eq!(
             payload
                 .get("stop_loss")
                 .and_then(|value| value.get("stop_price"))
                 .and_then(|value| value.as_str()),
-            Some("95.0000")
+            Some("95.00")
         );
 
         cfg.take_profit_pct = None;
-        let (payload, warnings) = alpaca_order_payload("AAPL", 2.0, &cfg, 100.0);
+        let (payload, warnings) =
+            alpaca_order_payload("AAPL", 2.0, &cfg, 100.0).expect("unbracketed payload");
         assert!(payload.get("order_class").is_none());
         assert_eq!(
             warnings,
@@ -5992,6 +6308,65 @@ mod tests {
                 "Live bracket was skipped: Alpaca bracket requires both stop_loss_pct and take_profit_pct."
                     .to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn alpaca_price_formatting_uses_broker_precision_rules() {
+        assert_eq!(
+            format_alpaca_price_by_increment(123.456).expect("format above one"),
+            "123.46"
+        );
+        assert_eq!(
+            format_alpaca_price_by_increment(0.123456).expect("format below one"),
+            "0.1235"
+        );
+        assert_eq!(
+            format_alpaca_price_by_increment(0.99996).expect("format rounded to one"),
+            "1.00"
+        );
+        assert!(format_alpaca_price_by_increment(0.0).is_err());
+        assert!(format_alpaca_price_by_increment(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn alpaca_order_payload_rejects_bracket_prices_that_round_to_inversion() {
+        let mut cfg = StrategyConfig::default();
+        cfg.stop_loss_pct = Some(0.00001);
+        cfg.take_profit_pct = Some(0.00001);
+
+        let err = alpaca_order_payload("AAPL", 2.0, &cfg, 100.00)
+            .expect_err("rounded buy bracket should invert to equal prices");
+        assert!(err.contains("buy bracket would invert"));
+
+        let err = alpaca_order_payload("AAPL", -2.0, &cfg, 100.00)
+            .expect_err("rounded sell bracket should invert to equal prices");
+        assert!(err.contains("sell bracket would invert"));
+    }
+
+    #[test]
+    fn alpaca_order_payload_uses_four_decimals_below_one_dollar() {
+        let mut cfg = StrategyConfig::default();
+        cfg.stop_loss_pct = Some(0.05);
+        cfg.take_profit_pct = Some(0.10);
+
+        let (payload, warnings) =
+            alpaca_order_payload("PENNY", 2.0, &cfg, 0.50).expect("below-dollar bracket payload");
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            payload
+                .get("take_profit")
+                .and_then(|value| value.get("limit_price"))
+                .and_then(|value| value.as_str()),
+            Some("0.5500")
+        );
+        assert_eq!(
+            payload
+                .get("stop_loss")
+                .and_then(|value| value.get("stop_price"))
+                .and_then(|value| value.as_str()),
+            Some("0.4750")
         );
     }
 
