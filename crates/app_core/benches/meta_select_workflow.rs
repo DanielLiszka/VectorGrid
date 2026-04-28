@@ -7,6 +7,16 @@ use ta_app_core::{
     MetaScoreWeights, MetaSelectionRequest,
 };
 
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+        "strategy=MetaSelect".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
 fn make_artifacts(n_artifacts: usize, n_groups: usize, cands_per_artifact: usize) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(n_artifacts);
 
@@ -160,6 +170,35 @@ fn make_context_grouped_artifacts(
 fn bench_meta_select(c: &mut Criterion) {
     let artifacts = make_artifacts(1_000, 50, 4);
 
+    print_bench_metadata(
+        "meta_select/workflow/1000_artifacts/4cands",
+        &[
+            (
+                "workload_shape",
+                "artifact_scan_quantile_grouping".to_string(),
+            ),
+            ("artifacts", "1000".to_string()),
+            ("cands_per_artifact", "4".to_string()),
+            ("candidate_rows_estimate", (1_000 * 4).to_string()),
+            ("groups", "50".to_string()),
+            ("grouping_modes", "exact,clustered".to_string()),
+            ("input_bytes_estimate", (1_000usize * 4 * 256).to_string()),
+            ("output_bytes_estimate", (50usize * 256).to_string()),
+            (
+                "arithmetic_intensity_estimate",
+                "low_json_scalar_reduce".to_string(),
+            ),
+            ("gemm_like", "false".to_string()),
+            ("dense_matrix_candidate", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            ("tensor_core_disposition", "kill".to_string()),
+            (
+                "reason",
+                "json_grouping_quantiles_topk_not_dense_similarity".to_string(),
+            ),
+        ],
+    );
+
     let mut group = c.benchmark_group("meta_select/workflow/1000_artifacts/4cands");
     group.measurement_time(Duration::from_secs(6));
     group.sample_size(10);
@@ -186,6 +225,25 @@ fn bench_meta_select(c: &mut Criterion) {
         cluster_representatives: 2,
     };
 
+    print_bench_metadata(
+        "meta_select/workflow/1000_artifacts/4cands/exact",
+        &[
+            (
+                "workload_shape",
+                "artifact_scan_quantile_grouping".to_string(),
+            ),
+            ("artifacts", "1000".to_string()),
+            ("cands_per_artifact", "4".to_string()),
+            ("groups", "50".to_string()),
+            ("grouping_mode", "exact".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "json_grouping_quantiles_topk_not_dense_similarity".to_string(),
+            ),
+        ],
+    );
     group.bench_function("exact", |b| {
         b.iter(|| {
             let _ = meta_select_from_artifacts(&exact, &artifacts, None);
@@ -197,6 +255,26 @@ fn bench_meta_select(c: &mut Criterion) {
         ..exact
     };
 
+    print_bench_metadata(
+        "meta_select/workflow/1000_artifacts/4cands/clustered",
+        &[
+            (
+                "workload_shape",
+                "artifact_scan_quantile_grouping".to_string(),
+            ),
+            ("artifacts", "1000".to_string()),
+            ("cands_per_artifact", "4".to_string()),
+            ("groups", "50".to_string()),
+            ("grouping_mode", "clustered".to_string()),
+            ("cluster_semantics", "quantized_grouping".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "clustered_mode_is_not_dense_pairwise_clustering".to_string(),
+            ),
+        ],
+    );
     group.bench_function("clustered", |b| {
         b.iter(|| {
             let _ = meta_select_from_artifacts(&clustered, &artifacts, None);
@@ -206,6 +284,37 @@ fn bench_meta_select(c: &mut Criterion) {
     group.finish();
 
     let context_artifacts = make_context_grouped_artifacts(1_200, 24, 8);
+    print_bench_metadata(
+        "meta_select/workflow/context_grouped/1200_artifacts/8cands",
+        &[
+            (
+                "workload_shape",
+                "artifact_scan_quantile_grouping".to_string(),
+            ),
+            ("artifacts", "1200".to_string()),
+            ("cands_per_artifact", "8".to_string()),
+            ("candidate_rows_estimate", (1_200 * 8).to_string()),
+            ("groups", "24".to_string()),
+            (
+                "grouping_modes",
+                "context_exact,context_clustered".to_string(),
+            ),
+            ("input_bytes_estimate", (1_200usize * 8 * 384).to_string()),
+            ("output_bytes_estimate", (24usize * 384).to_string()),
+            (
+                "arithmetic_intensity_estimate",
+                "low_json_scalar_reduce".to_string(),
+            ),
+            ("gemm_like", "false".to_string()),
+            ("dense_matrix_candidate", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            ("tensor_core_disposition", "kill".to_string()),
+            (
+                "reason",
+                "json_grouping_quantiles_topk_not_dense_similarity".to_string(),
+            ),
+        ],
+    );
     let mut grouped =
         c.benchmark_group("meta_select/workflow/context_grouped/1200_artifacts/8cands");
     grouped.measurement_time(Duration::from_secs(6));
@@ -236,6 +345,25 @@ fn bench_meta_select(c: &mut Criterion) {
         cluster_representatives: 3,
     };
 
+    print_bench_metadata(
+        "meta_select/workflow/context_grouped/1200_artifacts/8cands/context_exact",
+        &[
+            (
+                "workload_shape",
+                "artifact_scan_quantile_grouping".to_string(),
+            ),
+            ("artifacts", "1200".to_string()),
+            ("cands_per_artifact", "8".to_string()),
+            ("groups", "24".to_string()),
+            ("grouping_mode", "context_exact".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "context_json_grouping_not_dense_similarity".to_string(),
+            ),
+        ],
+    );
     grouped.bench_function("context_exact", |b| {
         b.iter(|| {
             let _ = meta_select_from_artifacts(&context_exact, &context_artifacts, None);
@@ -247,6 +375,26 @@ fn bench_meta_select(c: &mut Criterion) {
         ..context_exact
     };
 
+    print_bench_metadata(
+        "meta_select/workflow/context_grouped/1200_artifacts/8cands/context_clustered",
+        &[
+            (
+                "workload_shape",
+                "artifact_scan_quantile_grouping".to_string(),
+            ),
+            ("artifacts", "1200".to_string()),
+            ("cands_per_artifact", "8".to_string()),
+            ("groups", "24".to_string()),
+            ("grouping_mode", "context_clustered".to_string()),
+            ("cluster_semantics", "quantized_grouping".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "context_clustered_mode_is_not_dense_pairwise_clustering".to_string(),
+            ),
+        ],
+    );
     grouped.bench_function("context_clustered", |b| {
         b.iter(|| {
             let _ = meta_select_from_artifacts(&context_clustered, &context_artifacts, None);

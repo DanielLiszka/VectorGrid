@@ -98,6 +98,27 @@ function installDefaultInvokeCommandMock(): void {
           top_candidate_track_record_bars: 120,
           top_candidate_min_track_record_length_bars: 240,
         },
+        evidence_policy_summary: {
+          version: 1,
+          workflow: "general_validation",
+          summary_role: "interpretation_metadata_only",
+          metrics: [
+            {
+              metric: "psr",
+              metric_class: "confidence_bounded",
+              gate_role: "advisory",
+              sample_unit: "raw_bars",
+              interpretation: "Probabilistic Sharpe Ratio.",
+            },
+            {
+              metric: "cscv_pbo",
+              metric_class: "approximate",
+              gate_role: "advisory",
+              sample_unit: "candidate_set_slices",
+              interpretation: "Set-level overfit evidence.",
+            },
+          ],
+        },
         spa: {
           scope: "validation_candidates",
           candidate_count: 1,
@@ -327,6 +348,9 @@ describe("validationService", () => {
     );
     expect(String(validationState.validationMeta || "")).toContain(
       "rec=evidence_too_short_min_track_record",
+    );
+    expect(String(validationState.validationMeta || "")).toContain(
+      "evidence=prob raw_bars, cscv set-level",
     );
     const saveCall = invokeCommandMock.mock.calls.find(
       ([commandName]) => commandName === "save_run_artifact",

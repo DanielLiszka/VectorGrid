@@ -24,6 +24,34 @@ fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
     println!("benchmark metadata {group_name}: {}", fields.join(" "));
 }
 
+fn sweep_axis_len_f64(axis: &MlSignalSweepAxisF64) -> usize {
+    if !axis.start.is_finite()
+        || !axis.end.is_finite()
+        || !axis.step.is_finite()
+        || axis.step <= 0.0
+        || axis.end < axis.start
+    {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut value = axis.start;
+    while value <= axis.end + (axis.step * 1.0e-9) {
+        count = count.saturating_add(1);
+        value += axis.step;
+        if count > 4096 {
+            break;
+        }
+    }
+    count
+}
+
+fn sweep_axis_len_usize(axis: &MlSignalSweepAxisUsize) -> usize {
+    if axis.step == 0 || axis.end < axis.start {
+        return 0;
+    }
+    ((axis.end - axis.start) / axis.step).saturating_add(1)
+}
+
 fn temp_file_path(name: &str, ext: &str) -> String {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -70,7 +98,7 @@ fn sample_candles(len: usize) -> Candles {
     )
 }
 
-fn write_probability_scores_csv(path: &str, candles: &Candles) {
+fn write_probability_scores_csv(path: &str, candles: &Candles) -> usize {
     let mut writer = WriterBuilder::new()
         .has_headers(true)
         .from_path(path)
@@ -84,6 +112,7 @@ fn write_probability_scores_csv(path: &str, candles: &Candles) {
             "raw_short",
         ])
         .expect("header");
+    let mut rows = 0usize;
     for (idx, ts) in candles.timestamp.iter().enumerate().skip(5).take(180) {
         let (p_long, p_short) = if idx % 7 < 4 {
             (0.74, 0.21)
@@ -99,21 +128,86 @@ fn write_probability_scores_csv(path: &str, candles: &Candles) {
                 ((p_short - 0.5) * 4.0).to_string(),
             ])
             .expect("row");
+        rows = rows.saturating_add(1);
     }
     writer.flush().expect("flush score csv");
+    rows
 }
 
 fn bench_ml_signal_workflow(c: &mut Criterion) {
     let cancel = AtomicBool::new(false);
     let candles = sample_candles(256);
     let input_path = temp_file_path("scores_input", "csv");
-    write_probability_scores_csv(&input_path, &candles);
+    let score_rows_written = write_probability_scores_csv(&input_path, &candles);
+    let score_input_bytes_estimate = score_rows_written * (8 + 4 * 8);
+    let score_output_bytes_estimate = score_rows_written * (8 + 2 * 8);
+    let policy_sweep_size = sweep_axis_len_f64(&MlSignalSweepAxisF64 {
+        start: 0.55,
+        end: 0.65,
+        step: 0.05,
+    }) * sweep_axis_len_f64(&MlSignalSweepAxisF64 {
+        start: 0.55,
+        end: 0.65,
+        step: 0.05,
+    }) * sweep_axis_len_f64(&MlSignalSweepAxisF64 {
+        start: 0.05,
+        end: 0.10,
+        step: 0.05,
+    }) * sweep_axis_len_usize(&MlSignalSweepAxisUsize {
+        start: 8,
+        end: 10,
+        step: 2,
+    }) * 2
+        * 1;
 
     print_bench_metadata(
         "ml_signal_workflow",
         &[
             ("strategy", "MlSignal".to_string()),
+            ("workload_shape", "score_cache_policy_scan".to_string()),
             ("candles", candles.close.len().to_string()),
+            ("score_rows_written", score_rows_written.to_string()),
+            ("score_source", "csv_score_cache".to_string()),
+            ("native_backend_preference", "score_cache_only".to_string()),
+            (
+                "input_bytes_estimate",
+                score_input_bytes_estimate.to_string(),
+            ),
+            (
+                "output_bytes_estimate",
+                score_output_bytes_estimate.to_string(),
+            ),
+            (
+                "arithmetic_intensity_estimate",
+                "low_scalar_scan".to_string(),
+            ),
+            ("gemm_like", "false".to_string()),
+            ("dense_matrix_candidate", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            ("tensor_core_disposition", "kill".to_string()),
+            (
+                "reason",
+                "score_cache_validation_and_policy_sweep_not_gemm".to_string(),
+            ),
+        ],
+    );
+
+    print_bench_metadata(
+        "ml_signal_score_cache_build",
+        &[
+            ("strategy", "MlSignal".to_string()),
+            ("workload_shape", "score_cache_scan".to_string()),
+            ("candles", candles.close.len().to_string()),
+            ("score_rows_written", score_rows_written.to_string()),
+            ("score_backend", "score_cache_only".to_string()),
+            ("native_inference_matrix", "absent".to_string()),
+            ("cpu_only_safe", "true".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "csv_probability_rows_to_score_cache_not_gemm".to_string(),
+            ),
         ],
     );
 
@@ -184,6 +278,25 @@ fn bench_ml_signal_workflow(c: &mut Criterion) {
     )
     .expect("prebuild score cache");
 
+    print_bench_metadata(
+        "ml_signal_validation",
+        &[
+            ("strategy", "MlSignal".to_string()),
+            ("workload_shape", "score_cache_policy_scan".to_string()),
+            ("candles", candles.close.len().to_string()),
+            ("score_rows_written", score_rows_written.to_string()),
+            ("validation_candidates", "1".to_string()),
+            ("score_backend", "score_cache_only".to_string()),
+            ("cpu_only_safe", "true".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "probability_thresholding_and_trade_overlay_not_gemm".to_string(),
+            ),
+        ],
+    );
+
     c.bench_function("ml_signal_validation", |b| {
         b.iter(|| {
             let mut strategy = StrategyConfig::default();
@@ -213,6 +326,23 @@ fn bench_ml_signal_workflow(c: &mut Criterion) {
             .expect("validation");
         });
     });
+
+    print_bench_metadata(
+        "ml_signal_policy_sweep",
+        &[
+            ("strategy", "MlSignal".to_string()),
+            ("workload_shape", "score_cache_policy_scan".to_string()),
+            ("candles", candles.close.len().to_string()),
+            ("score_rows_written", score_rows_written.to_string()),
+            ("sweep_size", policy_sweep_size.to_string()),
+            ("top_k", "5".to_string()),
+            ("score_backend", "score_cache_only".to_string()),
+            ("cpu_only_safe", "true".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            ("reason", "threshold_grid_scan_not_gemm".to_string()),
+        ],
+    );
 
     c.bench_function("ml_signal_policy_sweep", |b| {
         b.iter(|| {

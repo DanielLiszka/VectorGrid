@@ -24,6 +24,34 @@ fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
     println!("benchmark metadata {group_name}: {}", fields.join(" "));
 }
 
+fn sweep_axis_len_f64(axis: &MlSignalSweepAxisF64) -> usize {
+    if !axis.start.is_finite()
+        || !axis.end.is_finite()
+        || !axis.step.is_finite()
+        || axis.step <= 0.0
+        || axis.end < axis.start
+    {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut value = axis.start;
+    while value <= axis.end + (axis.step * 1.0e-9) {
+        count = count.saturating_add(1);
+        value += axis.step;
+        if count > 4096 {
+            break;
+        }
+    }
+    count
+}
+
+fn sweep_axis_len_usize(axis: &MlSignalSweepAxisUsize) -> usize {
+    if axis.step == 0 || axis.end < axis.start {
+        return 0;
+    }
+    ((axis.end - axis.start) / axis.step).saturating_add(1)
+}
+
 fn temp_file_path(name: &str, ext: &str) -> String {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -73,6 +101,7 @@ fn sample_candles(len: usize) -> Candles {
 struct MlSignalBenchFixture {
     candles: Candles,
     score_cache_path: String,
+    score_rows_written: usize,
     cancel: AtomicBool,
 }
 
@@ -90,6 +119,7 @@ impl MlSignalBenchFixture {
         writer
             .write_record(["timestamp", "p_long_cal", "p_short_cal", "score_scope"])
             .expect("header");
+        let mut score_rows_written = 0usize;
         for (idx, ts) in candles.timestamp.iter().enumerate().skip(8).take(420) {
             let (p_long, p_short) = if idx % 12 < 6 {
                 (0.76, 0.18)
@@ -104,6 +134,7 @@ impl MlSignalBenchFixture {
                     "walkforward_test".to_string(),
                 ])
                 .expect("row");
+            score_rows_written = score_rows_written.saturating_add(1);
         }
         writer.flush().expect("flush score csv");
 
@@ -139,6 +170,7 @@ impl MlSignalBenchFixture {
         Self {
             candles,
             score_cache_path: cache_path,
+            score_rows_written,
             cancel,
         }
     }
@@ -154,7 +186,32 @@ fn bench_ml_signal_validation(c: &mut Criterion) {
 
     print_bench_metadata(
         "ml_signal_validation",
-        &[("candles", fixture.candles.close.len().to_string())],
+        &[
+            ("workload_shape", "score_cache_policy_scan".to_string()),
+            ("candles", fixture.candles.close.len().to_string()),
+            ("score_rows_written", fixture.score_rows_written.to_string()),
+            ("score_backend", "score_cache_only".to_string()),
+            (
+                "input_bytes_estimate",
+                (fixture.score_rows_written * (8 + 3 * 8)).to_string(),
+            ),
+            (
+                "output_bytes_estimate",
+                (fixture.score_rows_written * (8 + 2 * 8)).to_string(),
+            ),
+            (
+                "arithmetic_intensity_estimate",
+                "low_scalar_scan".to_string(),
+            ),
+            ("gemm_like", "false".to_string()),
+            ("dense_matrix_candidate", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            ("tensor_core_disposition", "kill".to_string()),
+            (
+                "reason",
+                "probability_thresholding_and_trade_overlay_not_gemm".to_string(),
+            ),
+        ],
     );
 
     let validation_req = MlSignalValidationRequest {
@@ -175,6 +232,27 @@ fn bench_ml_signal_validation(c: &mut Criterion) {
         min_dsr: None,
         validation_context: None,
     };
+
+    print_bench_metadata(
+        "ml_signal_validation_single_candidate",
+        &[
+            ("workload_shape", "score_cache_policy_scan".to_string()),
+            ("candles", fixture.candles.close.len().to_string()),
+            ("score_rows_written", fixture.score_rows_written.to_string()),
+            (
+                "validation_candidates",
+                validation_req.candidates.len().to_string(),
+            ),
+            ("score_backend", "score_cache_only".to_string()),
+            ("cpu_only_safe", "true".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "single_policy_validation_overlay_not_gemm".to_string(),
+            ),
+        ],
+    );
 
     c.bench_function("ml_signal_validation_single_candidate", |b| {
         b.iter(|| {
@@ -219,6 +297,52 @@ fn bench_ml_signal_validation(c: &mut Criterion) {
         validation_context: None,
         top_k: 10,
     };
+    let sweep_size = sweep_req
+        .t_long
+        .as_ref()
+        .map(sweep_axis_len_f64)
+        .unwrap_or(1)
+        * sweep_req
+            .t_short
+            .as_ref()
+            .map(sweep_axis_len_f64)
+            .unwrap_or(1)
+        * sweep_req
+            .delta
+            .as_ref()
+            .map(sweep_axis_len_f64)
+            .unwrap_or(1)
+        * sweep_req
+            .max_hold_bars
+            .as_ref()
+            .map(sweep_axis_len_usize)
+            .unwrap_or(1)
+        * sweep_req
+            .exit_on_flat_values
+            .as_ref()
+            .map(|values| values.len())
+            .unwrap_or(1)
+        * sweep_req
+            .exit_on_opposite_values
+            .as_ref()
+            .map(|values| values.len())
+            .unwrap_or(1);
+
+    print_bench_metadata(
+        "ml_signal_policy_sweep_small",
+        &[
+            ("workload_shape", "score_cache_policy_scan".to_string()),
+            ("candles", fixture.candles.close.len().to_string()),
+            ("score_rows_written", fixture.score_rows_written.to_string()),
+            ("sweep_size", sweep_size.to_string()),
+            ("top_k", sweep_req.top_k.to_string()),
+            ("score_backend", "score_cache_only".to_string()),
+            ("cpu_only_safe", "true".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            ("reason", "threshold_grid_scan_not_gemm".to_string()),
+        ],
+    );
 
     c.bench_function("ml_signal_policy_sweep_small", |b| {
         b.iter(|| {

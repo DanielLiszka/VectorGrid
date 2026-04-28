@@ -107,8 +107,9 @@ use crate::rocb_gpu_kernel::{
     eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
 };
 use crate::validation_pipeline::{
-    build_run_verdict, build_validation_semantics_provenance, sanitize_hard_gates,
-    ValidationCandidateVerdict, ValidationPostCandidate, ValidationRunVerdict,
+    build_general_validation_evidence_policy_summary, build_run_verdict,
+    build_validation_semantics_provenance, sanitize_hard_gates, ValidationCandidateVerdict,
+    ValidationPostCandidate, ValidationRunVerdict,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::vcc_momentum_roundtrip_parity;
@@ -180,11 +181,12 @@ use crate::validation_shared::{canonical_json_eq, canonical_json_key_bytes};
 use crate::validation_shared::{canonical_json_key, ValidationAuxWorkMask};
 pub use crate::validation_shared::{
     CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta, CrossTickerGateConfig,
-    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, MonteCarloValidationConfig,
-    MonteCarloValidationStats, PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional,
-    ReoptWalkForwardStats, ReoptWalkForwardWindowStats, SpaBenchmarkKind, SpaConfigOptional,
-    SpaValidationStats, TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
-    ValidationSemanticsProvenance, WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
+    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, EvidencePolicySummary,
+    MonteCarloValidationConfig, MonteCarloValidationStats, PerturbConfig, PerturbStats,
+    ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
+    SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
+    TradeBootstrapStats, ValidationArtifactContext, ValidationSemanticsProvenance,
+    WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
 };
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -9721,6 +9723,8 @@ pub struct CompositeValidationResult {
     pub cscv_pbo: Option<CscvPboResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validation_provenance: Option<ValidationSemanticsProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_policy_summary: Option<EvidencePolicySummary>,
     pub run_verdict: ValidationRunVerdict,
 }
 
@@ -12872,6 +12876,11 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
         None,
         Some("volatility_terciles_plus_trend_range"),
     ));
+    let evidence_policy_summary = Some(build_general_validation_evidence_policy_summary(
+        &hard_gates,
+        req.cscv_pbo.is_some(),
+        cscv_pbo.as_ref(),
+    ));
     let route_diagnostics = take_validation_strategy_route_diagnostics(&req.candidates)
         .filter(|entries| !entries.is_empty());
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -12901,6 +12910,7 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
         cross_ticker: None,
         cscv_pbo,
         validation_provenance,
+        evidence_policy_summary,
         run_verdict,
     })
 }
@@ -13911,6 +13921,18 @@ mod tests {
                 .pointer("/validation_provenance/passed_semantics")
                 .and_then(|entry| entry.as_str()),
             Some("hard_gates_only")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidence_policy_summary/workflow")
+                .and_then(|entry| entry.as_str()),
+            Some("general_validation")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidence_policy_summary/metrics/0/sample_unit")
+                .and_then(|entry| entry.as_str()),
+            Some("raw_bars")
         );
     }
 

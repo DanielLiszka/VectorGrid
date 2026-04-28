@@ -168,6 +168,28 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
         groups_considered: 2,
         min_ml_confidence: 0.55,
         decision_counts: { accept: 1, review: 0, reject: 1 },
+        evidence_policy_summary: {
+          version: 1,
+          workflow: "meta_stage5_ml_confidence",
+          summary_role: "interpretation_metadata_only",
+          metrics: [
+            {
+              metric: "ml_confidence",
+              metric_class: "approximate",
+              gate_role: "run_recommendation",
+              sample_unit: "meta_group_features",
+              interpretation:
+                "Model-estimated holdout success probability for a meta-selection group.",
+            },
+            {
+              metric: "decision_bucket",
+              metric_class: "metadata_only",
+              gate_role: "advisory",
+              sample_unit: "selected_group",
+              interpretation: "Threshold review bucket.",
+            },
+          ],
+        },
         selected_groups: [
           {
             stage4_rank: 1,
@@ -175,6 +197,10 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
             final_rank_score: 0.9,
             ml_confidence: 0.8,
             ml_uncertainty: 0.1,
+            ml_confidence_semantics:
+              "model_estimated_holdout_success_probability",
+            decision_bucket_semantics:
+              "threshold_review_bucket_not_deployability_proof",
             params: {
               fast_ma_type: "ema",
               fast_len: 10,
@@ -493,6 +519,28 @@ describe("meta service", () => {
             groups_considered: 2,
             min_ml_confidence: 0.55,
             decision_counts: { accept: 1, review: 0, reject: 1 },
+            evidence_policy_summary: {
+              version: 1,
+              workflow: "meta_stage5_ml_confidence",
+              summary_role: "interpretation_metadata_only",
+              metrics: [
+                {
+                  metric: "ml_confidence",
+                  metric_class: "approximate",
+                  gate_role: "run_recommendation",
+                  sample_unit: "meta_group_features",
+                  interpretation:
+                    "Model-estimated holdout success probability for a meta-selection group.",
+                },
+                {
+                  metric: "decision_bucket",
+                  metric_class: "metadata_only",
+                  gate_role: "advisory",
+                  sample_unit: "selected_group",
+                  interpretation: "Threshold review bucket.",
+                },
+              ],
+            },
             selected_groups: [
               {
                 stage4_rank: 1,
@@ -500,6 +548,10 @@ describe("meta service", () => {
                 final_rank_score: 0.9,
                 ml_confidence: 0.8,
                 ml_uncertainty: 0.1,
+                ml_confidence_semantics:
+                  "model_estimated_holdout_success_probability",
+                decision_bucket_semantics:
+                  "threshold_review_bucket_not_deployability_proof",
                 params: {
                   fast_ma_type: "ema",
                   fast_len: 10,
@@ -568,6 +620,9 @@ describe("meta service", () => {
       (call?.[1] as { req?: { source_meta_path?: string | null } }).req
         ?.source_meta_path,
     ).toBe("C:/runs/vectorgrid_meta.json");
+    expect(analysisStore.metaStage4OutputPreview).toContain(
+      "evidence=ml_confidence=model_estimated_holdout_success_probability decision_bucket=review_label_not_deployability_proof",
+    );
   });
 
   it("runs ML policy evaluation with auto-built request without waiting on saved refresh", async () => {

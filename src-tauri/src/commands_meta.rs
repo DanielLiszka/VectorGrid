@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ta_app_core::{
+    EvidenceGateRole, EvidenceMetricClass, EvidencePolicyMetric, EvidencePolicySummary,
     MetaSelectionRequest, MetaSelectionResult, MlConfidenceCompatibilityKey,
     MlConfidenceGroupFeatures, MlConfidenceLabelConfig, MlConfidenceModel,
     MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
@@ -322,6 +323,7 @@ pub struct MetaStage4Result {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
     pub training_manifest: Stage5TrainingManifest,
+    pub evidence_policy_summary: EvidencePolicySummary,
     pub warnings: Vec<String>,
 }
 
@@ -1154,6 +1156,83 @@ fn decision_bucket_label(
         "review"
     } else {
         "reject"
+    }
+}
+
+fn stage5_evidence_policy_summary() -> EvidencePolicySummary {
+    EvidencePolicySummary {
+        version: 1,
+        workflow: "meta_stage5_ml_confidence".to_string(),
+        summary_role: "interpretation_metadata_only".to_string(),
+        metrics: vec![
+            EvidencePolicyMetric {
+                metric: "ml_confidence".to_string(),
+                metric_class: EvidenceMetricClass::Approximate,
+                gate_role: EvidenceGateRole::RunRecommendation,
+                sample_unit: "meta_group_features".to_string(),
+                interpretation:
+                    "Model-estimated holdout success probability for a meta-selection group."
+                        .to_string(),
+                caveats: vec![
+                    "This is not deployability proof and does not replace holdout review."
+                        .to_string(),
+                ],
+            },
+            EvidencePolicyMetric {
+                metric: "ml_uncertainty".to_string(),
+                metric_class: EvidenceMetricClass::Approximate,
+                gate_role: EvidenceGateRole::RunRecommendation,
+                sample_unit: "predicted_probability".to_string(),
+                interpretation:
+                    "Probability-derived uncertainty used by Stage 5 blended ranking."
+                        .to_string(),
+                caveats: vec![
+                    "Uncertainty is derived from model probability and is not an independent calibration guarantee."
+                        .to_string(),
+                ],
+            },
+            EvidencePolicyMetric {
+                metric: "final_rank_score".to_string(),
+                metric_class: EvidenceMetricClass::RankingOnly,
+                gate_role: EvidenceGateRole::RunRecommendation,
+                sample_unit: "selected_candidate_set".to_string(),
+                interpretation:
+                    "Weighted rank score combining meta evidence, ML confidence, and uncertainty."
+                        .to_string(),
+                caveats: vec![
+                    "Final rank score orders candidates but is not a hard validation proof.".to_string(),
+                ],
+            },
+            EvidencePolicyMetric {
+                metric: "decision_bucket".to_string(),
+                metric_class: EvidenceMetricClass::MetadataOnly,
+                gate_role: EvidenceGateRole::Advisory,
+                sample_unit: "selected_group".to_string(),
+                interpretation:
+                    "Threshold bucket derived from confidence and uncertainty settings.".to_string(),
+                caveats: vec![
+                    "Decision buckets are review labels, not execution approval or deployability proof."
+                        .to_string(),
+                ],
+            },
+            EvidencePolicyMetric {
+                metric: "training_history_policy".to_string(),
+                metric_class: EvidenceMetricClass::MetadataOnly,
+                gate_role: EvidenceGateRole::Provenance,
+                sample_unit: "meta_artifact_history".to_string(),
+                interpretation:
+                    "Training-history policy records how source/future artifacts are excluded."
+                        .to_string(),
+                caveats: vec![
+                    "The policy documents leakage controls without changing saved artifact replay semantics."
+                        .to_string(),
+                ],
+            },
+        ],
+        caveats: vec![
+            "Stage 5 labels are additive metadata and do not change ranking, thresholds, replay, or saved artifact compatibility.".to_string(),
+            "ML confidence is a model-estimated holdout success probability, not deployability proof.".to_string(),
+        ],
     }
 }
 
@@ -2106,6 +2185,14 @@ fn run_meta_stage5_ml_confidence_blocking(
             } else {
                 obj.insert("ml_uncertainty".to_string(), Value::Null);
             }
+            obj.insert(
+                "ml_confidence_semantics".to_string(),
+                serde_json::json!("model_estimated_holdout_success_probability"),
+            );
+            obj.insert(
+                "stage5_decision_semantics".to_string(),
+                serde_json::json!("review_label_not_deployability_proof"),
+            );
             obj.insert("final_rank_score".to_string(), Value::Null);
         }
         entries.push(Stage4Entry {
@@ -2233,6 +2320,10 @@ fn run_meta_stage5_ml_confidence_blocking(
             let unc = obj.get("ml_uncertainty").and_then(|v| v.as_f64());
             let bucket = decision_bucket_label(&req, ml, unc);
             obj.insert("decision_bucket".to_string(), serde_json::json!(bucket));
+            obj.insert(
+                "decision_bucket_semantics".to_string(),
+                serde_json::json!("threshold_review_bucket_not_deployability_proof"),
+            );
             match bucket {
                 "accept" => decision_counts.accept = decision_counts.accept.saturating_add(1),
                 "review" => decision_counts.review = decision_counts.review.saturating_add(1),
@@ -2273,6 +2364,7 @@ fn run_meta_stage5_ml_confidence_blocking(
         selected_groups,
         fallback_reason,
         training_manifest,
+        evidence_policy_summary: stage5_evidence_policy_summary(),
         warnings,
     };
 
@@ -4029,8 +4121,8 @@ mod tests {
         ml_confidence_model_path_read_only, ml_uncertainty_from_prob,
         normalize_ml_policy_evaluation_request, normalize_ml_scope,
         should_block_stage4_for_unhealthy_model, stable_logit, stage4_autotrain_failure_fallback,
-        stage4_training_metas_for_policy, strategy_supports_holdout,
-        strategy_uses_double_ma_validation, suggest_meta_report_path,
+        stage4_training_metas_for_policy, stage5_evidence_policy_summary,
+        strategy_supports_holdout, strategy_uses_double_ma_validation, suggest_meta_report_path,
         summarize_holdout_metric_columns, update_policy_arm_metrics, write_bytes_atomically,
         HoldoutAcc, HoldoutMetricSample, HoldoutSummaryScratch, MlConfidenceModelState,
         MlConfidencePolicyArmMetrics, MlConfidencePolicyEvaluationRequest,
@@ -4379,6 +4471,25 @@ mod tests {
             filtered[0].get("ts").and_then(|v| v.as_str()),
             Some("2026-01-01T00:01:00Z")
         );
+    }
+
+    #[test]
+    fn stage5_evidence_policy_labels_confidence_as_holdout_probability() {
+        let summary = stage5_evidence_policy_summary();
+        assert_eq!(summary.workflow, "meta_stage5_ml_confidence");
+        let confidence = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "ml_confidence")
+            .expect("ml confidence metric");
+        assert_eq!(
+            confidence.interpretation,
+            "Model-estimated holdout success probability for a meta-selection group."
+        );
+        assert!(summary
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("not deployability proof")));
     }
 
     #[test]

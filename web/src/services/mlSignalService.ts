@@ -188,6 +188,8 @@ interface MlSignalArtifactLike {
   deployability?: unknown;
   deployability_state?: unknown;
   deployabilityState?: unknown;
+  evidence_policy_summary?: unknown;
+  evidencePolicySummary?: unknown;
 }
 
 function normalizeText(value: unknown): string {
@@ -1726,11 +1728,15 @@ function buildMlSignalArtifactPayload(
       ),
     ),
     deployability:
+      readOptionalRecord(validationResRecord?.deployability) ??
       readOptionalRecord(runResRecord?.deployability) ??
       readOptionalRecord(prior.deployability) ??
       null,
     deployability_state: normalizeText(
       firstMeaningfulValue(
+        readOptionalRecord(validationResRecord?.deployability)?.state,
+        validationResRecord?.deployability_state,
+        validationResRecord?.deployabilityState,
         readOptionalRecord(runResRecord?.deployability)?.state,
         runResRecord?.deployability_state,
         runResRecord?.deployabilityState,
@@ -1739,6 +1745,11 @@ function buildMlSignalArtifactPayload(
         prior.deployabilityState,
       ),
     ),
+    evidence_policy_summary:
+      resolveMlEvidencePolicySummaryRecord(validationResRecord) ??
+      readOptionalRecord(prior.evidence_policy_summary) ??
+      readOptionalRecord(prior.evidencePolicySummary) ??
+      null,
     policy:
       validationReq && validationRes
         ? extractMlPolicy(validationReq, validationRes)
@@ -2000,6 +2011,51 @@ function formatMlDeployabilityMeta(
     .filter((part) => part)
     .join(", ");
   return `deployability ${state}${suffix ? ` (${suffix})` : ""}`;
+}
+
+function resolveMlEvidencePolicySummaryRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const direct = readOptionalRecord(
+    row.evidence_policy_summary ?? row.evidencePolicySummary,
+  );
+  if (direct) return direct;
+  return readOptionalRecord(
+    readOptionalRecord(row.validation)?.evidence_policy_summary ??
+      readOptionalRecord(row.validation)?.evidencePolicySummary,
+  );
+}
+
+function formatMlEvidencePolicyMeta(value: unknown): string {
+  const summary = resolveMlEvidencePolicySummaryRecord(value);
+  const metrics = Array.isArray(summary?.metrics)
+    ? summary.metrics
+        .map((entry) => readOptionalRecord(entry))
+        .filter((entry): entry is Record<string, unknown> => !!entry)
+    : [];
+  if (!metrics.length) return "";
+
+  const probabilitySampleUnits = metrics
+    .filter((metric) => {
+      const name = normalizeText(metric.metric).toLowerCase();
+      return name === "psr" || name === "dsr";
+    })
+    .map((metric) => normalizeText(metric.sample_unit))
+    .filter(
+      (value, index, values) =>
+        value.length > 0 && values.indexOf(value) === index,
+    );
+  const hasDeployabilityLabel = metrics.some(
+    (metric) => normalizeText(metric.metric).toLowerCase() === "deployability",
+  );
+  const parts: string[] = [];
+  if (probabilitySampleUnits.length > 0) {
+    parts.push(`prob ${probabilitySampleUnits.join("/")}`);
+  }
+  if (hasDeployabilityLabel) parts.push("deployability metadata");
+  return parts.length > 0 ? `evidence ${parts.join(", ")}` : "";
 }
 
 function formatMlStageStatus(
@@ -2313,6 +2369,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
       : [];
     const scoreCoverageMeta = formatMlScoreCoverageMeta(validationRecord);
     const deployabilityMeta = formatMlDeployabilityMeta(validationRecord);
+    const evidencePolicyMeta = formatMlEvidencePolicyMeta(validationRecord);
     const scopeAdvisory = formatMlScoreScopeAdvisory(validationRecord);
     const boundaryAdvisory = formatMlBoundaryAdvisory(validationRecord);
     patchOptimizeState({
@@ -2320,6 +2377,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
         `ML validation: ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} tested`,
         scoreCoverageMeta,
         deployabilityMeta,
+        evidencePolicyMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]
@@ -2328,6 +2386,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
       progressMeta: `ML validation • ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`,
       statusLine: [
         formatMlStageStatus("ML validation completed.", validationRecord),
+        evidencePolicyMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]
@@ -2500,6 +2559,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
     )}`;
     const scoreCoverageMeta = formatMlScoreCoverageMeta(sweepRow);
     const deployabilityMeta = formatMlDeployabilityMeta(sweepRow);
+    const evidencePolicyMeta = formatMlEvidencePolicyMeta(sweepRow);
     const scopeAdvisory = formatMlScoreScopeAdvisory(sweepRow);
     const boundaryAdvisory = formatMlBoundaryAdvisory(sweepRow);
     patchOptimizeState({
@@ -2510,6 +2570,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
         bestLabel || "",
         scoreCoverageMeta,
         deployabilityMeta,
+        evidencePolicyMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]
@@ -2521,6 +2582,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
         retainedCount > 0 ? `${retainedCount} retained` : "",
         scoreCoverageMeta,
         deployabilityMeta,
+        evidencePolicyMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]
@@ -2530,6 +2592,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
       statusLine: [
         formatMlStageStatus("ML policy sweep completed.", sweepRow),
         `${sweepFlow} -> ${verdictFlow}`,
+        evidencePolicyMeta,
         scopeAdvisory,
         boundaryAdvisory,
       ]

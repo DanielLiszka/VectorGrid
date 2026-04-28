@@ -940,6 +940,26 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   updateMetaStage4Buttons();
 }
 
+function formatStage5EvidencePolicyMeta(result: Record<string, unknown>): string {
+  const summary = asRecord(result.evidence_policy_summary);
+  const metrics = asRecordArray(summary?.metrics);
+  if (!metrics.length) return "";
+  const confidence = metrics.find(
+    (metric) => normalizeText(metric.metric) === "ml_confidence",
+  );
+  const decision = metrics.find(
+    (metric) => normalizeText(metric.metric) === "decision_bucket",
+  );
+  const parts: string[] = [];
+  if (confidence) {
+    parts.push("ml_confidence=model_estimated_holdout_success_probability");
+  }
+  if (decision) {
+    parts.push("decision_bucket=review_label_not_deployability_proof");
+  }
+  return parts.length > 0 ? `evidence=${parts.join(" ")}` : "";
+}
+
 function renderMetaStage4(resp: Record<string, unknown> | null): void {
   LAST_META_STAGE4_RUN = resp;
   const result = asRecord(resp?.result);
@@ -977,6 +997,10 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   lines.push(
     "selection=weighted rank -> min_ml filter -> optional meta fallback -> decision buckets",
   );
+  const evidencePolicyMeta = formatStage5EvidencePolicyMeta(result);
+  if (evidencePolicyMeta) {
+    lines.push(evidencePolicyMeta);
+  }
   lines.push(
     "auto_train excludes the active source meta artifact from history to avoid train/score leakage",
   );

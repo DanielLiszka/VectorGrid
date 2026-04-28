@@ -4,12 +4,14 @@ use crate::dynamic_indicator_adapter::{compute_dynamic_indicator_cpu, DynamicInd
 use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
 use crate::iterative_sim::{simulate_iterative_from_signals, IterativeSimConfig, OhlcSlice};
 use crate::validation_pipeline::{
-    apply_candidate_hard_gates, build_run_verdict,
+    apply_candidate_hard_gates, build_ml_signal_evidence_policy_summary, build_run_verdict,
     compute_probability_metrics_with_effective_counts, mark_robust_pareto,
     robust_score_from_metrics, sanitize_hard_gates, ValidationCandidateVerdict,
     ValidationPostCandidate, ValidationRunVerdict,
 };
-use crate::validation_shared::{canonical_json_key_bytes, ValidationArtifactContext};
+use crate::validation_shared::{
+    canonical_json_key_bytes, EvidencePolicySummary, ValidationArtifactContext,
+};
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use libloading::Library;
 use serde::{Deserialize, Serialize};
@@ -108,6 +110,17 @@ pub enum MlSignalScoreScope {
     CalibrationSlice,
     WalkforwardTest,
     CustomPartial,
+}
+
+impl MlSignalScoreScope {
+    fn as_snake_str(self) -> &'static str {
+        match self {
+            Self::FullDataset => "full_dataset",
+            Self::CalibrationSlice => "calibration_slice",
+            Self::WalkforwardTest => "walkforward_test",
+            Self::CustomPartial => "custom_partial",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -742,6 +755,8 @@ pub struct MlSignalValidationResult {
     pub dependence_summary: Option<MlSignalDependenceSummary>,
     pub deployability: MlSignalDeployability,
     pub candidates: Vec<MlSignalValidationCandidateResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_policy_summary: Option<EvidencePolicySummary>,
     pub run_verdict: ValidationRunVerdict,
 }
 
@@ -5142,6 +5157,11 @@ fn validate_ml_signal_candidates(
         Some(&dependence_summary),
         &run_verdict,
     );
+    let evidence_policy_summary = Some(build_ml_signal_evidence_policy_summary(
+        &gates,
+        true,
+        Some(score_summary.score_scope.as_snake_str()),
+    ));
 
     Ok(MlSignalValidationResult {
         data_id,
@@ -5154,6 +5174,7 @@ fn validate_ml_signal_candidates(
         dependence_summary: Some(dependence_summary),
         deployability,
         candidates: out,
+        evidence_policy_summary,
         run_verdict,
     })
 }
@@ -7636,6 +7657,28 @@ mod tests {
             Some(2)
         );
         assert_eq!(dependence.walkforward_test_bars_covered, Some(12));
+        let evidence = validation
+            .evidence_policy_summary
+            .as_ref()
+            .expect("evidence policy summary");
+        assert_eq!(evidence.workflow, "ml_signal_validation");
+        let psr_evidence = evidence
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "psr")
+            .expect("psr evidence");
+        assert_eq!(
+            psr_evidence.sample_unit,
+            "effective_score_observations_lower_bound"
+        );
+        assert!(evidence
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "deployability")
+            .expect("deployability evidence")
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("not deployment proof")));
         assert!(validation
             .run_verdict
             .warning_flags

@@ -11,6 +11,16 @@ use ta_strategies::double_ma::StrategyConfig;
 
 use vector_ta::utilities::data_loader::Candles;
 
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+        "strategy=CompositeMo".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
 fn make_synth_candles(len: usize) -> Candles {
     let mut ts = Vec::with_capacity(len);
     let mut open = Vec::with_capacity(len);
@@ -39,6 +49,38 @@ fn make_synth_candles(len: usize) -> Candles {
 fn bench_composite_mo_random(c: &mut Criterion) {
     let candles = make_synth_candles(50_000);
     let cancel = AtomicBool::new(false);
+    let trials = 256usize;
+
+    print_bench_metadata(
+        "composite_mo/random/50k",
+        &[
+            (
+                "workload_shape",
+                "strategy_search_state_machine_scan".to_string(),
+            ),
+            ("candles", candles.close.len().to_string()),
+            ("trials", trials.to_string()),
+            ("sampler", "random".to_string()),
+            ("candidate_metric_rows_estimate", trials.to_string()),
+            (
+                "input_bytes_estimate",
+                (candles.close.len() * 6 * 8).to_string(),
+            ),
+            ("output_bytes_estimate", (trials * 256).to_string()),
+            (
+                "arithmetic_intensity_estimate",
+                "stateful_indicator_scan".to_string(),
+            ),
+            ("gemm_like", "false".to_string()),
+            ("dense_matrix_candidate", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            ("tensor_core_disposition", "kill".to_string()),
+            (
+                "reason",
+                "search_and_strategy_path_evaluation_not_gemm".to_string(),
+            ),
+        ],
+    );
 
     let mut group = c.benchmark_group("composite_mo/random/50k");
     group.measurement_time(Duration::from_secs(8));
@@ -80,16 +122,33 @@ fn bench_composite_mo_random(c: &mut Criterion) {
             minimize: ObjectiveKind::MaxDrawdown,
         },
         sampler: CompositeMoSampler::Random {
-            config: RandomMoConfig {
-                seed: 123,
-                trials: 256,
-            },
+            config: RandomMoConfig { seed: 123, trials },
         },
         constraints: None,
         gpu_prescan: None,
         mode: None,
     };
 
+    print_bench_metadata(
+        "composite_mo/random/50k/fixed_ma_types/256_trials",
+        &[
+            (
+                "workload_shape",
+                "strategy_search_state_machine_scan".to_string(),
+            ),
+            ("candles", candles.close.len().to_string()),
+            ("trials", trials.to_string()),
+            ("sampler", "random".to_string()),
+            ("fixed_ma_types", "true".to_string()),
+            ("ma_type_search", "false".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "fixed_ma_random_strategy_eval_not_gemm".to_string(),
+            ),
+        ],
+    );
     group.bench_function("fixed_ma_types/256_trials", |b| {
         b.iter(|| {
             let req2 = base.clone();
@@ -120,6 +179,26 @@ fn bench_composite_mo_random(c: &mut Criterion) {
         },
     );
 
+    print_bench_metadata(
+        "composite_mo/random/50k/search_ma_types/256_trials",
+        &[
+            (
+                "workload_shape",
+                "strategy_search_state_machine_scan".to_string(),
+            ),
+            ("candles", candles.close.len().to_string()),
+            ("trials", trials.to_string()),
+            ("sampler", "random".to_string()),
+            ("fixed_ma_types", "false".to_string()),
+            ("ma_type_search", "true".to_string()),
+            ("gemm_like", "false".to_string()),
+            ("tensor_core_candidate", "false".to_string()),
+            (
+                "reason",
+                "ma_type_search_and_strategy_eval_not_gemm".to_string(),
+            ),
+        ],
+    );
     group.bench_function("search_ma_types/256_trials", |b| {
         b.iter(|| {
             let req2 = with_ma_types.clone();

@@ -644,6 +644,49 @@ pub struct ValidationSemanticsProvenance {
     pub regime_summary_descriptive_only: Option<bool>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceMetricClass {
+    Exact,
+    ToleranceBounded,
+    Approximate,
+    ConfidenceBounded,
+    WarningOnly,
+    RankingOnly,
+    MetadataOnly,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceGateRole {
+    HardGate,
+    RunRecommendation,
+    Advisory,
+    Provenance,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EvidencePolicyMetric {
+    pub metric: String,
+    pub metric_class: EvidenceMetricClass,
+    pub gate_role: EvidenceGateRole,
+    pub sample_unit: String,
+    pub interpretation: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EvidencePolicySummary {
+    pub version: u32,
+    pub workflow: String,
+    pub summary_role: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metrics: Vec<EvidencePolicyMetric>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CrossTickerStats {
     pub datasets: usize,

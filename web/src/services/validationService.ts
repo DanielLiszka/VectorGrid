@@ -1471,6 +1471,38 @@ function selectWorkflowResultsTab(tab: "validate", persist: boolean): void {
   workflowStore.selectResultsTab(tab, { persist });
 }
 
+function formatValidationEvidencePolicyMeta(result: unknown): string {
+  const row = asRecord(result);
+  const summary = asRecord(row?.evidence_policy_summary);
+  const metrics = Array.isArray(summary?.metrics)
+    ? summary.metrics
+        .map((entry) => asRecord(entry))
+        .filter((entry): entry is Record<string, unknown> => !!entry)
+    : [];
+  if (!metrics.length) return "";
+
+  const probabilitySampleUnits = metrics
+    .filter((metric) => {
+      const name = normalizeText(metric?.metric).toLowerCase();
+      return name === "psr" || name === "dsr";
+    })
+    .map((metric) => normalizeText(metric?.sample_unit))
+    .filter(
+      (value, index, values) =>
+        value.length > 0 && values.indexOf(value) === index,
+    );
+  const hasSetLevelCscv = metrics.some(
+    (metric) => normalizeText(metric?.metric).toLowerCase() === "cscv_pbo",
+  );
+
+  const parts: string[] = [];
+  if (probabilitySampleUnits.length > 0) {
+    parts.push(`prob ${probabilitySampleUnits.join("/")}`);
+  }
+  if (hasSetLevelCscv) parts.push("cscv set-level");
+  return parts.length > 0 ? ` • evidence=${parts.join(", ")}` : "";
+}
+
 function buildValidationMetaText(
   result: unknown,
   validationReq?: unknown,
@@ -1622,8 +1654,9 @@ function buildValidationMetaText(
         : "") +
       (admissionHeads ? ` heads=${admissionHeads}` : "")
     : "";
+  const evidencePolicySuffix = formatValidationEvidencePolicyMeta(result);
 
-  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${admissionSummary}${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${runReasonSuffix}${minTrlSuffix}`;
+  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${admissionSummary}${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${runReasonSuffix}${minTrlSuffix}${evidencePolicySuffix}`;
 }
 
 function buildValidationHintText(result: unknown): string {

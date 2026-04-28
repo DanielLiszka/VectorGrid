@@ -10,15 +10,17 @@ use crate::double_ma::{ma_matrix_cpu_f32_staging, GpuExecutionPolicy};
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::progress::ProgressSink;
 use crate::validation_pipeline::{
-    build_run_verdict, build_validation_semantics_provenance, sanitize_hard_gates,
-    ValidationCandidateVerdict, ValidationPostCandidate, ValidationRunVerdict,
+    build_general_validation_evidence_policy_summary, build_run_verdict,
+    build_validation_semantics_provenance, sanitize_hard_gates, ValidationCandidateVerdict,
+    ValidationPostCandidate, ValidationRunVerdict,
 };
 use crate::validation_shared::{
     canonical_json_key, CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary,
-    MonteCarloValidationConfig, MonteCarloValidationStats, PerturbConfig, PerturbStats,
-    ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, SpaBenchmarkKind, SpaConfigOptional,
-    SpaValidationStats, TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
-    ValidationSemanticsProvenance, WalkForwardConfigOptional, WalkForwardStats,
+    EvidencePolicySummary, MonteCarloValidationConfig, MonteCarloValidationStats, PerturbConfig,
+    PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, SpaBenchmarkKind,
+    SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig, TradeBootstrapStats,
+    ValidationArtifactContext, ValidationSemanticsProvenance, WalkForwardConfigOptional,
+    WalkForwardStats,
 };
 
 use rand::rngs::StdRng;
@@ -1707,6 +1709,8 @@ pub struct DoubleMaValidationResult {
     pub execution_profile: Option<ValidationExecutionProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validation_provenance: Option<ValidationSemanticsProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_policy_summary: Option<EvidencePolicySummary>,
     pub run_verdict: ValidationRunVerdict,
 }
 
@@ -4549,6 +4553,11 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         None,
         Some("volatility_terciles_plus_trend_range"),
     ));
+    let evidence_policy_summary = Some(build_general_validation_evidence_policy_summary(
+        &hard_gates,
+        req.cscv_pbo.is_some(),
+        cscv_pbo.as_ref(),
+    ));
     let (backend_used, backend_route, backend_fallback_reason) =
         if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
             (
@@ -4571,6 +4580,7 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         cross_ticker: None,
         cscv_pbo,
         validation_provenance,
+        evidence_policy_summary,
         run_verdict,
         execution_profile: gpu_fixed_eval
             .as_ref()
@@ -5000,6 +5010,24 @@ mod tests {
                 .pointer("/validation_provenance/approved_semantics")
                 .and_then(|entry| entry.as_str()),
             Some("passed_and_min_track_record_length_satisfied")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidence_policy_summary/workflow")
+                .and_then(|entry| entry.as_str()),
+            Some("general_validation")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidence_policy_summary/metrics/0/metric")
+                .and_then(|entry| entry.as_str()),
+            Some("psr")
+        );
+        assert_eq!(
+            value
+                .pointer("/evidence_policy_summary/metrics/0/sample_unit")
+                .and_then(|entry| entry.as_str()),
+            Some("raw_bars")
         );
     }
 

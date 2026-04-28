@@ -96,6 +96,14 @@ name = "meta_select_workflow"
 harness = false
 
 [[bench]]
+name = "ml_signal_workflow"
+harness = false
+
+[[bench]]
+name = "ml_signal_validation"
+harness = false
+
+[[bench]]
 name = "e2e_workflow_ml"
 harness = false
 

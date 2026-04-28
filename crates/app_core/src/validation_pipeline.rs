@@ -9,7 +9,8 @@ use crate::iterative_sim::{
 use crate::progress::ProgressSink;
 use crate::stats_common::{worst_max, worst_min, worst_min_u32};
 use crate::validation_shared::{
-    CrossTickerValidationSummary, MonteCarloAdvisory, MonteCarloDistributionBins, MonteCarloMode,
+    CrossTickerValidationSummary, EvidenceGateRole, EvidenceMetricClass, EvidencePolicyMetric,
+    EvidencePolicySummary, MonteCarloAdvisory, MonteCarloDistributionBins, MonteCarloMode,
     MonteCarloModeStats, MonteCarloThresholdConfig, MonteCarloValidationConfig,
     MonteCarloValidationStats, PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional,
     ReoptWalkForwardStats, ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats,
@@ -96,6 +97,193 @@ pub struct ValidationRunVerdict {
     pub pbo: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_pbo: Option<f64>,
+}
+
+fn evidence_role_for_gate(enabled: bool) -> EvidenceGateRole {
+    if enabled {
+        EvidenceGateRole::HardGate
+    } else {
+        EvidenceGateRole::Advisory
+    }
+}
+
+fn evidence_policy_metric(
+    metric: &str,
+    metric_class: EvidenceMetricClass,
+    gate_role: EvidenceGateRole,
+    sample_unit: &str,
+    interpretation: &str,
+    caveats: &[&str],
+) -> EvidencePolicyMetric {
+    EvidencePolicyMetric {
+        metric: metric.to_string(),
+        metric_class,
+        gate_role,
+        sample_unit: sample_unit.to_string(),
+        interpretation: interpretation.to_string(),
+        caveats: caveats.iter().map(|entry| (*entry).to_string()).collect(),
+    }
+}
+
+pub fn build_general_validation_evidence_policy_summary(
+    hard_gates: &ValidationHardGateConfig,
+    cscv_requested: bool,
+    cscv_pbo: Option<&CscvPboResult>,
+) -> EvidencePolicySummary {
+    let cscv_role = evidence_role_for_gate(
+        hard_gates.min_cscv_oos_rank_frac.is_some()
+            || hard_gates.min_cscv_oos_metric.is_some()
+            || hard_gates.max_pbo.is_some(),
+    );
+    let cscv_state = if !cscv_requested {
+        "not_requested"
+    } else if let Some(result) = cscv_pbo {
+        if result.skipped_reason.is_some() || result.combinations == 0 {
+            "requested_but_skipped"
+        } else {
+            "evaluated"
+        }
+    } else {
+        "requested_but_unavailable"
+    };
+
+    EvidencePolicySummary {
+        version: 1,
+        workflow: "general_validation".to_string(),
+        summary_role: "interpretation_metadata_only".to_string(),
+        metrics: vec![
+            evidence_policy_metric(
+                "psr",
+                EvidenceMetricClass::ConfidenceBounded,
+                evidence_role_for_gate(hard_gates.min_psr.is_some()),
+                "raw_bars",
+                "Probabilistic Sharpe Ratio used as candidate evidence and optional hard gate.",
+                &["General validation PSR currently uses raw bar counts unless a later effective-count audit supplies a narrower unit."],
+            ),
+            evidence_policy_metric(
+                "dsr",
+                EvidenceMetricClass::ConfidenceBounded,
+                evidence_role_for_gate(hard_gates.min_dsr.is_some()),
+                "raw_bars",
+                "Deflated Sharpe Ratio used as candidate evidence and optional hard gate.",
+                &["General validation DSR currently uses raw bar counts unless a later effective-count audit supplies a narrower unit."],
+            ),
+            evidence_policy_metric(
+                "min_track_record_length",
+                EvidenceMetricClass::ConfidenceBounded,
+                EvidenceGateRole::RunRecommendation,
+                "raw_bars",
+                "Track-record length support used by the retained run recommendation layer.",
+                &["This recommendation layer can make approved diverge from passed without changing hard-gate survival."],
+            ),
+            evidence_policy_metric(
+                "cscv_pbo",
+                EvidenceMetricClass::Approximate,
+                cscv_role,
+                "candidate_set_slices",
+                &format!("CSCV/PBO set-level overfit evidence state: {cscv_state}."),
+                &["CSCV/PBO is set-level overfit evidence, not a candidate-specific proof."],
+            ),
+            evidence_policy_metric(
+                "robust_score",
+                EvidenceMetricClass::RankingOnly,
+                EvidenceGateRole::RunRecommendation,
+                "candidate_metric_surface",
+                "Ranking score used to order retained validation candidates.",
+                &["Robust score is not a hard-gate proof and does not change passed semantics."],
+            ),
+            evidence_policy_metric(
+                "passed_approved_contract",
+                EvidenceMetricClass::MetadataOnly,
+                EvidenceGateRole::Provenance,
+                "validation_run",
+                "passed is hard-gate survival; approved also requires retained final verdict support.",
+                &[],
+            ),
+        ],
+        caveats: vec![
+            "Evidence policy summary is additive metadata and does not alter candidate math, order, passed, or approved semantics.".to_string(),
+            "General validation probability metrics are labeled raw-bar based until an explicit effective-count audit is implemented.".to_string(),
+            "CSCV/PBO is set-level overfit evidence rather than a candidate-specific proof.".to_string(),
+        ],
+    }
+}
+
+pub fn build_ml_signal_evidence_policy_summary(
+    hard_gates: &ValidationHardGateConfig,
+    dependence_summary_present: bool,
+    score_scope: Option<&str>,
+) -> EvidencePolicySummary {
+    let sample_unit = if dependence_summary_present {
+        "effective_score_observations_lower_bound"
+    } else {
+        "score_observations"
+    };
+    let score_scope = score_scope
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .unwrap_or("unknown");
+
+    EvidencePolicySummary {
+        version: 1,
+        workflow: "ml_signal_validation".to_string(),
+        summary_role: "interpretation_metadata_only".to_string(),
+        metrics: vec![
+            evidence_policy_metric(
+                "psr",
+                EvidenceMetricClass::ConfidenceBounded,
+                evidence_role_for_gate(hard_gates.min_psr.is_some()),
+                sample_unit,
+                "Probabilistic Sharpe Ratio over score-cache validation outcomes.",
+                &["ML Signal PSR uses dependence-adjusted effective score observations when dependence metadata is present."],
+            ),
+            evidence_policy_metric(
+                "dsr",
+                EvidenceMetricClass::ConfidenceBounded,
+                evidence_role_for_gate(hard_gates.min_dsr.is_some()),
+                sample_unit,
+                "Deflated Sharpe Ratio over score-cache validation outcomes.",
+                &["ML Signal DSR uses dependence-adjusted effective score observations when dependence metadata is present."],
+            ),
+            evidence_policy_metric(
+                "score_scope",
+                EvidenceMetricClass::MetadataOnly,
+                EvidenceGateRole::Provenance,
+                "score_cache",
+                &format!("Score cache scope recorded as {score_scope}."),
+                &["Non-walk-forward score scopes remain advisory through existing warning and deployability metadata."],
+            ),
+            evidence_policy_metric(
+                "deployability",
+                EvidenceMetricClass::MetadataOnly,
+                EvidenceGateRole::Provenance,
+                "validation_run",
+                "Deployability state summarizes existing review gates for the ML Signal artifact.",
+                &["Deployability metadata is not deployment proof and does not replace validation evidence review."],
+            ),
+            evidence_policy_metric(
+                "robust_score",
+                EvidenceMetricClass::RankingOnly,
+                EvidenceGateRole::RunRecommendation,
+                "candidate_metric_surface",
+                "Ranking score used to order retained ML Signal validation candidates.",
+                &["Robust score is not a hard-gate proof and does not change passed semantics."],
+            ),
+            evidence_policy_metric(
+                "passed_approved_contract",
+                EvidenceMetricClass::MetadataOnly,
+                EvidenceGateRole::Provenance,
+                "validation_run",
+                "passed is hard-gate survival; approved also requires retained final verdict support.",
+                &[],
+            ),
+        ],
+        caveats: vec![
+            "Evidence policy summary is additive metadata and does not alter candidate math, order, passed, approved, or deployability semantics.".to_string(),
+            "ML Signal probability metrics are labeled effective-score-observation based when dependence metadata is present.".to_string(),
+            "Deployability metadata is a review summary, not proof that a model is production safe.".to_string(),
+        ],
+    }
 }
 
 pub trait ValidationPostCandidate {
@@ -3696,6 +3884,73 @@ mod tests {
             provenance.regime_summary_role.as_deref(),
             Some("descriptive_only")
         );
+    }
+
+    #[test]
+    fn general_evidence_policy_labels_probability_metrics_as_raw_bars() {
+        let gates = ValidationHardGateConfig {
+            min_psr: Some(0.80),
+            max_pbo: Some(0.35),
+            ..ValidationHardGateConfig::default()
+        };
+        let summary = build_general_validation_evidence_policy_summary(&gates, true, None);
+
+        let psr = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "psr")
+            .expect("psr metric");
+        assert_eq!(psr.sample_unit, "raw_bars");
+        assert_eq!(psr.gate_role, EvidenceGateRole::HardGate);
+        assert_eq!(psr.metric_class, EvidenceMetricClass::ConfidenceBounded);
+
+        let cscv = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "cscv_pbo")
+            .expect("cscv metric");
+        assert_eq!(cscv.sample_unit, "candidate_set_slices");
+        assert_eq!(cscv.gate_role, EvidenceGateRole::HardGate);
+        assert!(cscv
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("set-level overfit evidence")));
+        assert!(summary
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("does not alter candidate math")));
+    }
+
+    #[test]
+    fn ml_signal_evidence_policy_labels_effective_score_observations() {
+        let gates = ValidationHardGateConfig {
+            min_dsr: Some(0.40),
+            ..ValidationHardGateConfig::default()
+        };
+        let summary =
+            build_ml_signal_evidence_policy_summary(&gates, true, Some("walkforward_test"));
+
+        let dsr = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "dsr")
+            .expect("dsr metric");
+        assert_eq!(dsr.sample_unit, "effective_score_observations_lower_bound");
+        assert_eq!(dsr.gate_role, EvidenceGateRole::HardGate);
+
+        let deployability = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "deployability")
+            .expect("deployability metric");
+        assert_eq!(
+            deployability.metric_class,
+            EvidenceMetricClass::MetadataOnly
+        );
+        assert!(deployability
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("not deployment proof")));
     }
 
     #[test]

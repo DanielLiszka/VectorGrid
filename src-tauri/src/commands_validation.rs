@@ -643,6 +643,13 @@ fn apply_cross_ticker_validation_with_stack(
             Some("volatility_terciles_plus_trend_range"),
         ),
     );
+    res.evidence_policy_summary = Some(
+        ta_app_core::validation_pipeline::build_general_validation_evidence_policy_summary(
+            &hard_gates,
+            res.cscv_pbo.is_some(),
+            res.cscv_pbo.as_ref(),
+        ),
+    );
     Ok(())
 }
 
@@ -944,6 +951,13 @@ fn apply_cross_ticker_validation_double_ma(
             res.cscv_pbo.as_ref(),
             res.cross_ticker.as_ref(),
             Some("volatility_terciles_plus_trend_range"),
+        ),
+    );
+    res.evidence_policy_summary = Some(
+        ta_app_core::validation_pipeline::build_general_validation_evidence_policy_summary(
+            &hard_gates,
+            res.cscv_pbo.is_some(),
+            res.cscv_pbo.as_ref(),
         ),
     );
     Ok(())

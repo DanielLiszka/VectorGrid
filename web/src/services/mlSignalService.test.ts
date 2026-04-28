@@ -392,6 +392,27 @@ describe("mlSignalService", () => {
               "score_scope_walkforward_overlap_adjusted",
             ],
           },
+          evidence_policy_summary: {
+            version: 1,
+            workflow: "ml_signal_validation",
+            summary_role: "interpretation_metadata_only",
+            metrics: [
+              {
+                metric: "psr",
+                metric_class: "confidence_bounded",
+                gate_role: "advisory",
+                sample_unit: "effective_score_observations_lower_bound",
+                interpretation: "Probabilistic Sharpe Ratio.",
+              },
+              {
+                metric: "deployability",
+                metric_class: "metadata_only",
+                gate_role: "provenance",
+                sample_unit: "validation_run",
+                interpretation: "Deployability metadata.",
+              },
+            ],
+          },
         };
       }
       if (command === "save_run_artifact") {
@@ -453,6 +474,9 @@ describe("mlSignalService", () => {
           score_contract_version: "3",
           score_space: "Probability",
           score_scope: "CalibrationSlice",
+          evidence_policy_summary: expect.objectContaining({
+            workflow: "ml_signal_validation",
+          }),
         }),
       }),
     });
@@ -519,6 +543,11 @@ describe("mlSignalService", () => {
     expect(workflowArtifacts.currentRun?.mlSignal?.skippedRows).toBe(4);
     expect(workflowArtifacts.currentRun?.mlSignal?.coverageRatio).toBe(0.75);
     expect(workflowArtifacts.currentRun?.mlSignal?.duplicateTimestamps).toBe(2);
+    expect(
+      workflowArtifacts.currentRun?.mlSignal?.evidencePolicySummary,
+    ).toMatchObject({
+      workflow: "ml_signal_validation",
+    });
     expect(workflowArtifacts.currentValidation?.req).toMatchObject({
       data_id: "data-1",
       score_cache_path: "C:\\data\\score_cache.json",
@@ -537,6 +566,9 @@ describe("mlSignalService", () => {
     );
     expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
       "boundary long~25.0%, delta~12.5%",
+    );
+    expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
+      "evidence prob effective_score_observations_lower_bound, deployability metadata",
     );
     expect(useOptimizeStore(pinia).statusLine).toContain(
       "calibration-only score scope",

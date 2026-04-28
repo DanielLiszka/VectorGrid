@@ -150,7 +150,8 @@ pub use double_ma_validate::{
 
 pub use validation_shared::{
     CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta, CrossTickerGateConfig,
-    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, MonteCarloAdvisory,
+    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, EvidenceGateRole,
+    EvidenceMetricClass, EvidencePolicyMetric, EvidencePolicySummary, MonteCarloAdvisory,
     MonteCarloDistributionBins, MonteCarloMode, MonteCarloModeStats, MonteCarloThresholdConfig,
     MonteCarloValidationConfig, MonteCarloValidationStats, PerturbConfig, PerturbStats,
     ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
