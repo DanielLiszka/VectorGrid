@@ -451,6 +451,10 @@ pub struct OptionsDatasetManifestV1 {
     pub contract_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate_price_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_rows_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_semantic_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1485,6 +1489,10 @@ pub struct OptionsExpressionValidationResult {
     pub root_symbol: String,
     pub options_dataset_id: String,
     pub options_dataset_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_dataset_normalized_rows_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_dataset_manifest_semantic_sha256: Option<String>,
     pub dataset_policy: OptionsExpressionValidationDatasetPolicy,
     pub replacement_dataset: bool,
     pub validation_plan: OptionsExpressionValidationPlan,
@@ -1516,6 +1524,10 @@ pub struct OptionsExpressionDatasetProvenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_reference_as_of_utc: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_rows_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_semantic_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote_quality: Option<OptionsExpressionDatasetQuoteQualitySummary>,
 }
 
@@ -1528,6 +1540,14 @@ pub struct OptionsExpressionContractQuoteQualitySummary {
     pub mid_row_count: usize,
     pub quote_age_row_count: usize,
     pub stale_quote_row_count: usize,
+    #[serde(default)]
+    pub zero_bid_row_count: usize,
+    #[serde(default)]
+    pub locked_bid_ask_row_count: usize,
+    #[serde(default)]
+    pub crossed_bid_ask_row_count: usize,
+    #[serde(default)]
+    pub invalid_bid_ask_row_count: usize,
     pub any_quote_coverage_rate: f64,
     pub bid_ask_coverage_rate: f64,
     pub mid_coverage_rate: f64,
@@ -1538,6 +1558,8 @@ pub struct OptionsExpressionContractQuoteQualitySummary {
     pub max_spread_bps: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_quote_age_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1554,6 +1576,14 @@ pub struct OptionsExpressionDatasetQuoteQualitySummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_quote_threshold_ms: Option<i64>,
     pub stale_quote_row_count: usize,
+    #[serde(default)]
+    pub zero_bid_row_count: usize,
+    #[serde(default)]
+    pub locked_bid_ask_row_count: usize,
+    #[serde(default)]
+    pub crossed_bid_ask_row_count: usize,
+    #[serde(default)]
+    pub invalid_bid_ask_row_count: usize,
     pub any_quote_coverage_rate: f64,
     pub bid_ask_coverage_rate: f64,
     pub mid_coverage_rate: f64,
@@ -1568,6 +1598,8 @@ pub struct OptionsExpressionDatasetQuoteQualitySummary {
     pub max_quote_age_ms: Option<i64>,
     #[serde(default)]
     pub per_contract: Vec<OptionsExpressionContractQuoteQualitySummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl Default for OptionsExpressionDatasetQuoteQualitySummary {
@@ -1584,6 +1616,10 @@ impl Default for OptionsExpressionDatasetQuoteQualitySummary {
             quote_age_row_count: 0,
             stale_quote_threshold_ms: None,
             stale_quote_row_count: 0,
+            zero_bid_row_count: 0,
+            locked_bid_ask_row_count: 0,
+            crossed_bid_ask_row_count: 0,
+            invalid_bid_ask_row_count: 0,
             any_quote_coverage_rate: 0.0,
             bid_ask_coverage_rate: 0.0,
             mid_coverage_rate: 0.0,
@@ -1593,6 +1629,7 @@ impl Default for OptionsExpressionDatasetQuoteQualitySummary {
             max_spread_bps: None,
             max_quote_age_ms: None,
             per_contract: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -1609,6 +1646,10 @@ pub struct OptionsExpressionArtifactV1 {
     pub root_symbol: String,
     pub options_dataset_id: String,
     pub options_dataset_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_dataset_normalized_rows_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_dataset_manifest_semantic_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signal_manifest_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1496,6 +1496,24 @@ const selectedDatasetDetailRows = computed(() => {
       label: "Dataset path",
       value: normalizeText(selected.datasetPath) || "—",
     },
+    ...(selected.normalizedRowsSha256
+      ? [
+          {
+            key: "rows-sha256",
+            label: "Rows SHA-256",
+            value: selected.normalizedRowsSha256,
+          },
+        ]
+      : []),
+    ...(selected.manifestSemanticSha256
+      ? [
+          {
+            key: "manifest-sha256",
+            label: "Manifest SHA-256",
+            value: selected.manifestSemanticSha256,
+          },
+        ]
+      : []),
   ];
 });
 
@@ -5484,6 +5502,37 @@ function focusTupleIndex(index: number): void {
               }}
             </span>
           </div>
+          <div>
+            <span class="panelMetricKey">Quote warnings</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{
+                latestValidation.result.datasetProvenance.quoteQuality
+                  .warnings.length
+              }}
+            </span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Invalid bid/ask</span>
+            <span class="panelMetricValue mono panelNumeric">
+              {{
+                latestValidation.result.datasetProvenance.quoteQuality
+                  .invalidBidAskRowCount
+              }}
+            </span>
+          </div>
+        </div>
+        <div
+          v-if="
+            latestValidation?.result.datasetProvenance?.quoteQuality?.warnings
+              .length
+          "
+          class="panelMuted"
+        >
+          {{
+            latestValidation.result.datasetProvenance.quoteQuality.warnings.join(
+              " ",
+            )
+          }}
         </div>
 
         <div
@@ -7392,6 +7441,10 @@ function focusTupleIndex(index: number): void {
 
 .detailGridSpan2 {
   grid-column: span 2;
+}
+
+.metricValue {
+  overflow-wrap: anywhere;
 }
 
 .tableWrap {

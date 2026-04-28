@@ -233,6 +233,8 @@ fn synthetic_dataset(rows: usize) -> ImportedOptionsDataset {
             row_count: contracts.iter().map(|series| series.rows.len()).sum(),
             contract_count: contracts.len(),
             aggregate_price_field: Some("close".to_string()),
+            normalized_rows_sha256: None,
+            manifest_semantic_sha256: None,
         },
         contracts,
     }

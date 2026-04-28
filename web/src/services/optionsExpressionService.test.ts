@@ -56,6 +56,8 @@ describe("optionsExpressionService", () => {
       row_count: 42,
       contract_count: 3,
       aggregate_price_field: "close",
+      normalized_rows_sha256: "rows-sha256-1",
+      manifest_semantic_sha256: "manifest-sha256-1",
     });
 
     const summary = await importOptionsDataset({
@@ -66,6 +68,8 @@ describe("optionsExpressionService", () => {
     expect(summary.rootSymbol).toBe("SPY");
     expect(summary.rowCount).toBe(42);
     expect(summary.priceSemantics).toBe("minute_aggregate");
+    expect(summary.normalizedRowsSha256).toBe("rows-sha256-1");
+    expect(summary.manifestSemanticSha256).toBe("manifest-sha256-1");
     expect(invokeCommandMock).toHaveBeenCalledWith("import_options_dataset", {
       req: { csv_path: "C:/data/options.csv" },
     });
@@ -221,6 +225,8 @@ describe("optionsExpressionService", () => {
           ts: "2026-04-05T12:00:00Z",
           parent_artifact_id: "vectorgrid_run_1",
           options_dataset_hash: "hash-1",
+          options_dataset_normalized_rows_sha256: "rows-sha256-1",
+          options_dataset_manifest_semantic_sha256: "manifest-sha256-1",
           request: {
             parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
             options_dataset_id: "spy_options",
@@ -519,6 +525,8 @@ describe("optionsExpressionService", () => {
     );
     expect(run.artifactTs).toBe("2026-04-05T12:00:00Z");
     expect(run.optionsDatasetHash).toBe("hash-1");
+    expect(run.optionsDatasetNormalizedRowsSha256).toBe("rows-sha256-1");
+    expect(run.optionsDatasetManifestSemanticSha256).toBe("manifest-sha256-1");
     expect(run.backendUsed).toBe("cpu_reference");
     expect(run.exactnessSemantics).toEqual({
       exactnessClass: "aggregate_class",
@@ -1011,6 +1019,8 @@ describe("optionsExpressionService", () => {
         source_artifact_hash: "source-hash",
         options_dataset_id: "spy_options",
         options_dataset_hash: "hash-1",
+        options_dataset_normalized_rows_sha256: "rows-sha256-preview",
+        options_dataset_manifest_semantic_sha256: "manifest-sha256-preview",
         dataset_policy: "require_exact_replay",
         replacement_dataset: false,
         validation_plan: {
@@ -1031,6 +1041,8 @@ describe("optionsExpressionService", () => {
           provider_name: "polygon.io",
           provider_source_surface: "top_of_book_quote",
           quote_resolution: "1m",
+          normalized_rows_sha256: "rows-sha256-preview",
+          manifest_semantic_sha256: "manifest-sha256-preview",
           quote_quality: {
             price_semantics: "top_of_book_quote",
             row_count: 10,
@@ -1043,6 +1055,10 @@ describe("optionsExpressionService", () => {
             quote_age_row_count: 8,
             stale_quote_threshold_ms: 900000,
             stale_quote_row_count: 1,
+            zero_bid_row_count: 1,
+            locked_bid_ask_row_count: 0,
+            crossed_bid_ask_row_count: 1,
+            invalid_bid_ask_row_count: 1,
             any_quote_coverage_rate: 0.8,
             bid_ask_coverage_rate: 0.7,
             mid_coverage_rate: 0.8,
@@ -1051,6 +1067,7 @@ describe("optionsExpressionService", () => {
             median_spread_bps: 40,
             max_spread_bps: 80,
             max_quote_age_ms: 1200000,
+            warnings: ["Invalid bid/ask rows detected."],
             per_contract: [
               {
                 contract_id: "SPY-2026-04-03-C-645",
@@ -1060,6 +1077,10 @@ describe("optionsExpressionService", () => {
                 mid_row_count: 4,
                 quote_age_row_count: 4,
                 stale_quote_row_count: 1,
+                zero_bid_row_count: 1,
+                locked_bid_ask_row_count: 0,
+                crossed_bid_ask_row_count: 1,
+                invalid_bid_ask_row_count: 1,
                 any_quote_coverage_rate: 0.8,
                 bid_ask_coverage_rate: 0.8,
                 mid_coverage_rate: 0.8,
@@ -1067,6 +1088,7 @@ describe("optionsExpressionService", () => {
                 mean_spread_bps: 40,
                 max_spread_bps: 80,
                 max_quote_age_ms: 1200000,
+                warnings: ["Zero-bid rows detected."],
               },
             ],
           },
@@ -1091,6 +1113,8 @@ describe("optionsExpressionService", () => {
           root_symbol: "SPY",
           options_dataset_id: "spy_options",
           options_dataset_hash: "hash-1",
+          options_dataset_normalized_rows_sha256: "rows-sha256-result",
+          options_dataset_manifest_semantic_sha256: "manifest-sha256-result",
           dataset_policy: "require_exact_replay",
           replacement_dataset: false,
           validation_plan: {
@@ -1109,6 +1133,8 @@ describe("optionsExpressionService", () => {
             provider_name: "polygon.io",
             provider_source_surface: "top_of_book_quote",
             quote_resolution: "1m",
+            normalized_rows_sha256: "rows-sha256-result",
+            manifest_semantic_sha256: "manifest-sha256-result",
             quote_quality: {
               price_semantics: "top_of_book_quote",
               row_count: 10,
@@ -1121,6 +1147,10 @@ describe("optionsExpressionService", () => {
               quote_age_row_count: 8,
               stale_quote_threshold_ms: 900000,
               stale_quote_row_count: 1,
+              zero_bid_row_count: 0,
+              locked_bid_ask_row_count: 0,
+              crossed_bid_ask_row_count: 0,
+              invalid_bid_ask_row_count: 0,
               any_quote_coverage_rate: 0.8,
               bid_ask_coverage_rate: 0.7,
               mid_coverage_rate: 0.8,
@@ -1129,6 +1159,7 @@ describe("optionsExpressionService", () => {
               median_spread_bps: 40,
               max_spread_bps: 80,
               max_quote_age_ms: 1200000,
+              warnings: [],
               per_contract: [],
             },
           },
@@ -1215,13 +1246,28 @@ describe("optionsExpressionService", () => {
 
     expect(preview.selectedTupleIndexes).toEqual([0, 2]);
     expect(preview.datasetProvenance?.providerName).toBe("polygon.io");
+    expect(preview.optionsDatasetNormalizedRowsSha256).toBe(
+      "rows-sha256-preview",
+    );
+    expect(preview.datasetProvenance?.manifestSemanticSha256).toBe(
+      "manifest-sha256-preview",
+    );
     expect(preview.validationPlan.mode).toBe("date_range_holdout");
     expect(preview.validationPlan.startTimestampMs).toBe(1_775_174_400_000);
     expect(preview.datasetProvenance?.quoteQuality?.bidAskCoverageRate).toBe(
       0.7,
     );
+    expect(preview.datasetProvenance?.quoteQuality?.invalidBidAskRowCount).toBe(
+      1,
+    );
+    expect(
+      preview.datasetProvenance?.quoteQuality?.perContract[0]?.warnings[0],
+    ).toContain("Zero-bid");
     expect(validation.artifactPath).toBe(
       "C:/runs/vectorgrid_options_validation_1.json",
+    );
+    expect(validation.result.optionsDatasetManifestSemanticSha256).toBe(
+      "manifest-sha256-result",
     );
     expect(validation.result.validationPlan.mode).toBe("date_range_holdout");
     expect(
@@ -1252,6 +1298,8 @@ describe("optionsExpressionService", () => {
       root_symbol: "SPY",
       options_dataset_id: "spy_options",
       options_dataset_hash: "hash-1",
+      options_dataset_normalized_rows_sha256: "rows-sha256-artifact",
+      options_dataset_manifest_semantic_sha256: "manifest-sha256-artifact",
       exactness_semantics: {
         exactness_class: "aggregate_class",
         median_replay_contract: "ranking_irrelevant_deferred",
@@ -1380,6 +1428,9 @@ describe("optionsExpressionService", () => {
     );
 
     expect(artifact.kind).toBe("vectorgrid_options_expression_v1");
+    expect(artifact.optionsDatasetNormalizedRowsSha256).toBe(
+      "rows-sha256-artifact",
+    );
     expect(artifact.staging?.candidateSlotCount).toBe(12);
     expect(artifact.exactnessSemantics).toEqual({
       exactnessClass: "aggregate_class",

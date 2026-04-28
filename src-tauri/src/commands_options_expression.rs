@@ -73,6 +73,10 @@ pub struct AnalyzeOptionsExpressionValidationFeasibilityResponse {
     pub source_artifact_hash: String,
     pub options_dataset_id: String,
     pub options_dataset_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_dataset_normalized_rows_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_dataset_manifest_semantic_sha256: Option<String>,
     pub dataset_policy: OptionsExpressionValidationDatasetPolicy,
     pub replacement_dataset: bool,
     pub validation_plan: OptionsExpressionValidationPlan,
@@ -270,6 +274,10 @@ struct PersistedOptionsDatasetManifestV1 {
     contract_count: usize,
     #[serde(default)]
     aggregate_price_field: Option<String>,
+    #[serde(default)]
+    normalized_rows_sha256: Option<String>,
+    #[serde(default)]
+    manifest_semantic_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -358,6 +366,8 @@ impl From<&ta_app_core::options_types::OptionsDatasetManifestV1>
             row_count: manifest.row_count,
             contract_count: manifest.contract_count,
             aggregate_price_field: manifest.aggregate_price_field.clone(),
+            normalized_rows_sha256: manifest.normalized_rows_sha256.clone(),
+            manifest_semantic_sha256: manifest.manifest_semantic_sha256.clone(),
         }
     }
 }
@@ -389,6 +399,8 @@ impl From<PersistedOptionsDatasetManifestV1>
             row_count: manifest.row_count,
             contract_count: manifest.contract_count,
             aggregate_price_field: manifest.aggregate_price_field,
+            normalized_rows_sha256: manifest.normalized_rows_sha256,
+            manifest_semantic_sha256: manifest.manifest_semantic_sha256,
         }
     }
 }
@@ -1168,6 +1180,12 @@ fn build_options_expression_artifact(
     request: OptionsExpressionRunRequest,
     result: &OptionsExpressionRunResult,
 ) -> OptionsExpressionArtifactV1 {
+    let options_dataset_normalized_rows_sha256 = dataset_provenance
+        .as_ref()
+        .and_then(|provenance| provenance.normalized_rows_sha256.clone());
+    let options_dataset_manifest_semantic_sha256 = dataset_provenance
+        .as_ref()
+        .and_then(|provenance| provenance.manifest_semantic_sha256.clone());
     OptionsExpressionArtifactV1 {
         version: OPTIONS_EXPRESSION_ARTIFACT_VERSION,
         kind: "vectorgrid_options_expression_v1".to_string(),
@@ -1178,6 +1196,8 @@ fn build_options_expression_artifact(
         root_symbol: result.diagnostics.root_symbol.clone(),
         options_dataset_id: result.diagnostics.options_dataset_id.clone(),
         options_dataset_hash,
+        options_dataset_normalized_rows_sha256,
+        options_dataset_manifest_semantic_sha256,
         signal_manifest_id,
         dataset_provenance,
         backend_used: result.backend_used.clone(),
@@ -1206,6 +1226,10 @@ struct QuoteQualityCounts {
     mid_row_count: usize,
     quote_age_row_count: usize,
     stale_quote_row_count: usize,
+    zero_bid_row_count: usize,
+    locked_bid_ask_row_count: usize,
+    crossed_bid_ask_row_count: usize,
+    invalid_bid_ask_row_count: usize,
     max_quote_age_ms: Option<i64>,
     spread_bps_values: Vec<f64>,
 }
@@ -1255,6 +1279,21 @@ fn accumulate_quote_quality_row(
     if has_mid {
         counts.mid_row_count = counts.mid_row_count.saturating_add(1);
     }
+    if let Some(bid) = row.bid {
+        if bid.is_finite() && bid == 0.0 {
+            counts.zero_bid_row_count = counts.zero_bid_row_count.saturating_add(1);
+        }
+    }
+    if let (Some(bid), Some(ask)) = (row.bid, row.ask) {
+        if !bid.is_finite() || !ask.is_finite() || bid < 0.0 || ask < 0.0 {
+            counts.invalid_bid_ask_row_count = counts.invalid_bid_ask_row_count.saturating_add(1);
+        } else if bid > ask {
+            counts.crossed_bid_ask_row_count = counts.crossed_bid_ask_row_count.saturating_add(1);
+            counts.invalid_bid_ask_row_count = counts.invalid_bid_ask_row_count.saturating_add(1);
+        } else if bid == ask {
+            counts.locked_bid_ask_row_count = counts.locked_bid_ask_row_count.saturating_add(1);
+        }
+    }
     if let Some(age_ms) = row.quote_age_ms {
         counts.quote_age_row_count = counts.quote_age_row_count.saturating_add(1);
         counts.max_quote_age_ms = Some(counts.max_quote_age_ms.unwrap_or(age_ms).max(age_ms));
@@ -1296,10 +1335,39 @@ fn max_value(values: &[f64]) -> Option<f64> {
         .reduce(f64::max)
 }
 
+fn quote_quality_warnings(counts: &QuoteQualityCounts) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if counts.invalid_bid_ask_row_count > 0 {
+        warnings.push(
+            "Invalid bid/ask rows detected; treat quote-aware replay as advisory until provider cleanup is confirmed."
+                .to_string(),
+        );
+    }
+    if counts.crossed_bid_ask_row_count > 0 {
+        warnings.push(
+            "Crossed bid/ask rows detected; provider cleanup or row exclusion is recommended before promotion."
+                .to_string(),
+        );
+    }
+    if counts.locked_bid_ask_row_count > 0 {
+        warnings.push(
+            "Locked bid/ask rows detected; spreads may understate execution cost.".to_string(),
+        );
+    }
+    if counts.zero_bid_row_count > 0 {
+        warnings.push(
+            "Zero-bid rows detected; liquidity and admission filters should be reviewed before promotion."
+                .to_string(),
+        );
+    }
+    warnings
+}
+
 fn contract_quote_quality_summary(
     contract_id: &str,
     counts: QuoteQualityCounts,
 ) -> OptionsExpressionContractQuoteQualitySummary {
+    let warnings = quote_quality_warnings(&counts);
     OptionsExpressionContractQuoteQualitySummary {
         contract_id: contract_id.to_string(),
         row_count: counts.row_count,
@@ -1308,6 +1376,10 @@ fn contract_quote_quality_summary(
         mid_row_count: counts.mid_row_count,
         quote_age_row_count: counts.quote_age_row_count,
         stale_quote_row_count: counts.stale_quote_row_count,
+        zero_bid_row_count: counts.zero_bid_row_count,
+        locked_bid_ask_row_count: counts.locked_bid_ask_row_count,
+        crossed_bid_ask_row_count: counts.crossed_bid_ask_row_count,
+        invalid_bid_ask_row_count: counts.invalid_bid_ask_row_count,
         any_quote_coverage_rate: quote_quality_ratio(counts.any_quote_row_count, counts.row_count),
         bid_ask_coverage_rate: quote_quality_ratio(counts.bid_ask_row_count, counts.row_count),
         mid_coverage_rate: quote_quality_ratio(counts.mid_row_count, counts.row_count),
@@ -1315,6 +1387,7 @@ fn contract_quote_quality_summary(
         mean_spread_bps: mean(&counts.spread_bps_values),
         max_spread_bps: max_value(&counts.spread_bps_values),
         max_quote_age_ms: counts.max_quote_age_ms,
+        warnings,
     }
 }
 
@@ -1358,6 +1431,10 @@ fn dataset_quote_quality_from_imported_dataset(
         quote_age_row_count: global.quote_age_row_count,
         stale_quote_threshold_ms: Some(stale_threshold_ms),
         stale_quote_row_count: global.stale_quote_row_count,
+        zero_bid_row_count: global.zero_bid_row_count,
+        locked_bid_ask_row_count: global.locked_bid_ask_row_count,
+        crossed_bid_ask_row_count: global.crossed_bid_ask_row_count,
+        invalid_bid_ask_row_count: global.invalid_bid_ask_row_count,
         any_quote_coverage_rate: quote_quality_ratio(global.any_quote_row_count, global.row_count),
         bid_ask_coverage_rate: quote_quality_ratio(global.bid_ask_row_count, global.row_count),
         mid_coverage_rate: quote_quality_ratio(global.mid_row_count, global.row_count),
@@ -1367,6 +1444,7 @@ fn dataset_quote_quality_from_imported_dataset(
         max_spread_bps: max_value(&global.spread_bps_values),
         max_quote_age_ms: global.max_quote_age_ms,
         per_contract,
+        warnings: quote_quality_warnings(&global),
     })
 }
 
@@ -1387,6 +1465,20 @@ fn dataset_provenance_from_imported_dataset(
         contract_reference_as_of_utc: dataset
             .manifest
             .contract_reference_as_of_utc
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        normalized_rows_sha256: dataset
+            .manifest
+            .normalized_rows_sha256
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        manifest_semantic_sha256: dataset
+            .manifest
+            .manifest_semantic_sha256
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -1721,6 +1813,67 @@ struct OptionsExpressionReplayInputs {
     options_dataset_hash: String,
 }
 
+fn non_empty_hash(value: Option<&String>) -> Option<&str> {
+    value
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn saved_artifact_normalized_rows_sha256(artifact: &OptionsExpressionArtifactV1) -> Option<&str> {
+    non_empty_hash(artifact.options_dataset_normalized_rows_sha256.as_ref()).or_else(|| {
+        artifact
+            .dataset_provenance
+            .as_ref()
+            .and_then(|provenance| non_empty_hash(provenance.normalized_rows_sha256.as_ref()))
+    })
+}
+
+fn saved_artifact_manifest_semantic_sha256(artifact: &OptionsExpressionArtifactV1) -> Option<&str> {
+    non_empty_hash(artifact.options_dataset_manifest_semantic_sha256.as_ref()).or_else(|| {
+        artifact
+            .dataset_provenance
+            .as_ref()
+            .and_then(|provenance| non_empty_hash(provenance.manifest_semantic_sha256.as_ref()))
+    })
+}
+
+fn compare_exact_replay_optional_hash(
+    label: &str,
+    saved: Option<&str>,
+    current: Option<&str>,
+    dataset_id: &str,
+) -> Result<(), String> {
+    if let (Some(saved), Some(current)) = (saved, current) {
+        if saved != current {
+            return Err(format!(
+                "saved artifact {label} '{}' no longer matches the currently imported dataset {label} '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+                saved, current, dataset_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn optional_replay_identity_hash_drift(
+    artifact: &OptionsExpressionArtifactV1,
+    replay: &OptionsExpressionReplayInputs,
+) -> bool {
+    matches!(
+        (
+            saved_artifact_normalized_rows_sha256(artifact),
+            non_empty_hash(replay.dataset.manifest.normalized_rows_sha256.as_ref())
+        ),
+        (Some(saved), Some(current)) if saved != current
+    ) || matches!(
+        (
+            saved_artifact_manifest_semantic_sha256(artifact),
+            non_empty_hash(replay.dataset.manifest.manifest_semantic_sha256.as_ref())
+        ),
+        (Some(saved), Some(current)) if saved != current
+    )
+}
+
 fn validate_saved_artifact_replay_provenance(
     artifact: &OptionsExpressionArtifactV1,
     replay: &OptionsExpressionReplayInputs,
@@ -1759,6 +1912,18 @@ fn validate_saved_artifact_replay_provenance(
             artifact.options_dataset_hash, replay.options_dataset_hash, artifact.options_dataset_id
         ));
     }
+    compare_exact_replay_optional_hash(
+        "normalized_rows_sha256",
+        saved_artifact_normalized_rows_sha256(artifact),
+        non_empty_hash(replay.dataset.manifest.normalized_rows_sha256.as_ref()),
+        &artifact.options_dataset_id,
+    )?;
+    compare_exact_replay_optional_hash(
+        "manifest_semantic_sha256",
+        saved_artifact_manifest_semantic_sha256(artifact),
+        non_empty_hash(replay.dataset.manifest.manifest_semantic_sha256.as_ref()),
+        &artifact.options_dataset_id,
+    )?;
     if replay.dataset.manifest.price_semantics != artifact.price_semantics {
         return Err(format!(
             "saved artifact price semantics '{:?}' no longer match the currently imported dataset price semantics '{:?}' for '{}'; re-import the original dataset or rerun the options expression optimization",
@@ -1907,7 +2072,8 @@ fn validate_options_expression_validation_replay_provenance(
             }
             Ok(
                 replay.normalized_req.options_dataset_id != artifact.options_dataset_id
-                    || replay.options_dataset_hash != artifact.options_dataset_hash,
+                    || replay.options_dataset_hash != artifact.options_dataset_hash
+                    || optional_replay_identity_hash_drift(artifact, replay),
             )
         }
         OptionsExpressionValidationDatasetPolicy::AllowExplicitCrossLaneComparison => {
@@ -1926,7 +2092,8 @@ fn validate_options_expression_validation_replay_provenance(
             Ok(
                 replay.normalized_req.options_dataset_id != artifact.options_dataset_id
                     || replay.options_dataset_hash != artifact.options_dataset_hash
-                    || replay.dataset.manifest.price_semantics != artifact.price_semantics,
+                    || replay.dataset.manifest.price_semantics != artifact.price_semantics
+                    || optional_replay_identity_hash_drift(artifact, replay),
             )
         }
     }
@@ -2726,6 +2893,16 @@ fn build_options_expression_validation_result(
         root_symbol: replay.dataset.manifest.root_symbol.clone(),
         options_dataset_id: replay.normalized_req.options_dataset_id.clone(),
         options_dataset_hash: replay.options_dataset_hash.clone(),
+        options_dataset_normalized_rows_sha256: replay
+            .dataset
+            .manifest
+            .normalized_rows_sha256
+            .clone(),
+        options_dataset_manifest_semantic_sha256: replay
+            .dataset
+            .manifest
+            .manifest_semantic_sha256
+            .clone(),
         dataset_policy: req.dataset_policy,
         replacement_dataset,
         validation_plan: req.validation_plan,
@@ -2847,6 +3024,18 @@ fn analyze_options_expression_validation_feasibility_blocking_impl(
         source_artifact_hash,
         options_dataset_id: replay.inputs.normalized_req.options_dataset_id,
         options_dataset_hash: replay.inputs.options_dataset_hash,
+        options_dataset_normalized_rows_sha256: replay
+            .inputs
+            .dataset
+            .manifest
+            .normalized_rows_sha256
+            .clone(),
+        options_dataset_manifest_semantic_sha256: replay
+            .inputs
+            .dataset
+            .manifest
+            .manifest_semantic_sha256
+            .clone(),
         dataset_policy: req.dataset_policy,
         replacement_dataset,
         validation_plan: req.validation_plan,
@@ -3295,6 +3484,12 @@ mod tests {
             root_symbol: "SPY".to_string(),
             options_dataset_id: options_dataset_id.to_string(),
             options_dataset_hash: "hash-1".to_string(),
+            options_dataset_normalized_rows_sha256: Some(format!(
+                "rows-sha256-{options_dataset_id}"
+            )),
+            options_dataset_manifest_semantic_sha256: Some(format!(
+                "manifest-semantic-sha256-{options_dataset_id}"
+            )),
             signal_manifest_id: sample_signal_manifest().manifest_id,
             dataset_provenance: Some(dataset_provenance_from_imported_dataset(
                 &sample_replay_dataset(options_dataset_id, price_semantics),
@@ -3901,6 +4096,10 @@ mod tests {
             root_symbol: "SPY".to_string(),
             options_dataset_id: "spy_options".to_string(),
             options_dataset_hash: "hash-1".to_string(),
+            options_dataset_normalized_rows_sha256: Some("rows-sha256-spy_options".to_string()),
+            options_dataset_manifest_semantic_sha256: Some(
+                "manifest-semantic-sha256-spy_options".to_string(),
+            ),
             signal_manifest_id: sample_signal_manifest().manifest_id,
             dataset_provenance: Some(dataset_provenance_from_imported_dataset(
                 &sample_replay_dataset("spy_options", OptionsPriceSemantics::MinuteAggregate),
@@ -4440,6 +4639,10 @@ mod tests {
                 } else {
                     None
                 },
+                normalized_rows_sha256: Some(format!("rows-sha256-{options_dataset_id}")),
+                manifest_semantic_sha256: Some(format!(
+                    "manifest-semantic-sha256-{options_dataset_id}"
+                )),
             },
             contracts: vec![OptionsContractSeries {
                 root_symbol: "SPY".to_string(),
@@ -4510,6 +4713,14 @@ mod tests {
         let dataset = sample_replay_dataset("spy_quotes", OptionsPriceSemantics::TopOfBookQuote);
 
         let provenance = dataset_provenance_from_imported_dataset(&dataset);
+        assert_eq!(
+            provenance.normalized_rows_sha256.as_deref(),
+            Some("rows-sha256-spy_quotes")
+        );
+        assert_eq!(
+            provenance.manifest_semantic_sha256.as_deref(),
+            Some("manifest-semantic-sha256-spy_quotes")
+        );
         let quote_quality = provenance
             .quote_quality
             .expect("quote quality should be present for quote datasets");
@@ -4521,6 +4732,9 @@ mod tests {
         assert_eq!(quote_quality.mid_row_count, 1);
         assert_eq!(quote_quality.quote_age_row_count, 1);
         assert_eq!(quote_quality.stale_quote_row_count, 0);
+        assert_eq!(quote_quality.invalid_bid_ask_row_count, 0);
+        assert_eq!(quote_quality.crossed_bid_ask_row_count, 0);
+        assert!(quote_quality.warnings.is_empty());
         assert_eq!(quote_quality.per_contract.len(), 1);
         assert_eq!(
             quote_quality.per_contract[0].contract_id,
@@ -4528,6 +4742,34 @@ mod tests {
         );
         assert!((quote_quality.bid_ask_coverage_rate - 0.5).abs() < 1e-12);
         assert!(quote_quality.mean_spread_bps.unwrap_or_default() > 1_800.0);
+    }
+
+    #[test]
+    fn dataset_quote_quality_flags_advisory_bid_ask_conditions() {
+        let mut dataset =
+            sample_replay_dataset("spy_quote_advisory", OptionsPriceSemantics::TopOfBookQuote);
+        let rows = &mut dataset.contracts[0].rows;
+        rows[0].bid = Some(2.4);
+        rows[0].ask = Some(2.0);
+        rows[1].bid = Some(0.0);
+        rows[1].ask = Some(0.0);
+        rows[1].mid = Some(0.0);
+
+        let quote_quality = dataset_quote_quality_from_imported_dataset(&dataset)
+            .expect("quote quality should be present");
+
+        assert_eq!(quote_quality.invalid_bid_ask_row_count, 1);
+        assert_eq!(quote_quality.crossed_bid_ask_row_count, 1);
+        assert_eq!(quote_quality.locked_bid_ask_row_count, 1);
+        assert_eq!(quote_quality.zero_bid_row_count, 1);
+        assert!(quote_quality
+            .warnings
+            .iter()
+            .any(|entry| { entry.contains("Invalid bid/ask rows detected") }));
+        assert!(quote_quality.per_contract[0]
+            .warnings
+            .iter()
+            .any(|entry| entry.contains("Zero-bid rows detected")));
     }
 
     #[test]
@@ -4645,6 +4887,41 @@ mod tests {
         let provider_error = validate_saved_artifact_replay_provenance(&artifact, &provider_drift)
             .expect_err("provider provenance drift should fail");
         assert!(provider_error.contains("provider identity"));
+
+        let mut row_hash_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        Arc::make_mut(&mut row_hash_drift.dataset)
+            .manifest
+            .normalized_rows_sha256 = Some("rows-sha256-drift".to_string());
+        let row_hash_error = validate_saved_artifact_replay_provenance(&artifact, &row_hash_drift)
+            .expect_err("row SHA-256 drift should fail exact replay");
+        assert!(row_hash_error.contains("normalized_rows_sha256"));
+
+        let mut manifest_hash_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        Arc::make_mut(&mut manifest_hash_drift.dataset)
+            .manifest
+            .manifest_semantic_sha256 = Some("manifest-semantic-sha256-drift".to_string());
+        let manifest_hash_error =
+            validate_saved_artifact_replay_provenance(&artifact, &manifest_hash_drift)
+                .expect_err("manifest semantic SHA-256 drift should fail exact replay");
+        assert!(manifest_hash_error.contains("manifest_semantic_sha256"));
+
+        let mut legacy_artifact = artifact.clone();
+        legacy_artifact.options_dataset_normalized_rows_sha256 = None;
+        legacy_artifact.options_dataset_manifest_semantic_sha256 = None;
+        if let Some(provenance) = legacy_artifact.dataset_provenance.as_mut() {
+            provenance.normalized_rows_sha256 = None;
+            provenance.manifest_semantic_sha256 = None;
+        }
+        validate_saved_artifact_replay_provenance(&legacy_artifact, &row_hash_drift)
+            .expect("legacy artifacts without content-grade hashes should remain replayable");
 
         let mut contract_reference_drift = sample_replay_inputs_for_artifact(
             &artifact,

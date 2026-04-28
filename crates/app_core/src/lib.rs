@@ -216,8 +216,9 @@ pub use ml_signal::{
 };
 
 pub use options_data_store::{
-    dataset_manifest_path, load_imported_options_dataset_from_csv, read_options_dataset_manifest,
-    scan_options_dataset_manifests, write_options_dataset_manifest,
+    dataset_manifest_path, load_imported_options_dataset_from_csv,
+    options_dataset_manifest_semantic_sha256, read_options_dataset_manifest,
+    scan_options_dataset_manifests, sha256_file_hex, write_options_dataset_manifest,
     ImportedOptionsDatasetCsvBuildRequest,
 };
 pub use options_expression::{

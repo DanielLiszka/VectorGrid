@@ -95,6 +95,8 @@ export interface OptionsDatasetManifestSummary {
   rowCount: number;
   contractCount: number;
   aggregatePriceField: string;
+  normalizedRowsSha256?: string;
+  manifestSemanticSha256?: string;
 }
 
 export interface PolygonOptionsDatasetDownloadRequestSummary {
@@ -496,6 +498,8 @@ export interface RunOptionsExpressionSummary {
   artifactTs: string;
   parentArtifactId: string;
   optionsDatasetHash: string;
+  optionsDatasetNormalizedRowsSha256?: string;
+  optionsDatasetManifestSemanticSha256?: string;
   exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   objectiveConfig?: OptionsObjectiveConfigSummary;
   backendUsed: string;
@@ -589,6 +593,8 @@ export interface OptionsExpressionArtifactRecord {
   rootSymbol: string;
   optionsDatasetId: string;
   optionsDatasetHash: string;
+  optionsDatasetNormalizedRowsSha256?: string;
+  optionsDatasetManifestSemanticSha256?: string;
   datasetProvenance: OptionsExpressionDatasetProvenanceSummary | null;
   exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   backendUsed: string;
@@ -609,6 +615,8 @@ export interface OptionsExpressionDatasetProvenanceSummary {
   quoteResolution: string;
   aggregatePriceField: string;
   contractReferenceAsOfUtc: string;
+  normalizedRowsSha256?: string;
+  manifestSemanticSha256?: string;
   quoteQuality: OptionsExpressionDatasetQuoteQualitySummary | null;
 }
 
@@ -620,6 +628,10 @@ export interface OptionsExpressionContractQuoteQualitySummary {
   midRowCount: number;
   quoteAgeRowCount: number;
   staleQuoteRowCount: number;
+  zeroBidRowCount: number;
+  lockedBidAskRowCount: number;
+  crossedBidAskRowCount: number;
+  invalidBidAskRowCount: number;
   anyQuoteCoverageRate: number;
   bidAskCoverageRate: number;
   midCoverageRate: number;
@@ -627,6 +639,7 @@ export interface OptionsExpressionContractQuoteQualitySummary {
   meanSpreadBps: number | null;
   maxSpreadBps: number | null;
   maxQuoteAgeMs: number | null;
+  warnings: string[];
 }
 
 export interface OptionsExpressionDatasetQuoteQualitySummary {
@@ -641,6 +654,10 @@ export interface OptionsExpressionDatasetQuoteQualitySummary {
   quoteAgeRowCount: number;
   staleQuoteThresholdMs: number | null;
   staleQuoteRowCount: number;
+  zeroBidRowCount: number;
+  lockedBidAskRowCount: number;
+  crossedBidAskRowCount: number;
+  invalidBidAskRowCount: number;
   anyQuoteCoverageRate: number;
   bidAskCoverageRate: number;
   midCoverageRate: number;
@@ -650,6 +667,7 @@ export interface OptionsExpressionDatasetQuoteQualitySummary {
   maxSpreadBps: number | null;
   maxQuoteAgeMs: number | null;
   perContract: OptionsExpressionContractQuoteQualitySummary[];
+  warnings: string[];
 }
 
 export interface OptionsExpressionValidationTupleSelectionSummary {
@@ -723,6 +741,8 @@ export interface OptionsExpressionValidationResultSummary {
   rootSymbol: string;
   optionsDatasetId: string;
   optionsDatasetHash: string;
+  optionsDatasetNormalizedRowsSha256?: string;
+  optionsDatasetManifestSemanticSha256?: string;
   datasetPolicy: string;
   replacementDataset: boolean;
   validationPlan: OptionsExpressionValidationPlanSummary;
@@ -752,6 +772,8 @@ export interface AnalyzeOptionsExpressionValidationFeasibilitySummary {
   sourceArtifactHash: string;
   optionsDatasetId: string;
   optionsDatasetHash: string;
+  optionsDatasetNormalizedRowsSha256?: string;
+  optionsDatasetManifestSemanticSha256?: string;
   datasetPolicy: string;
   replacementDataset: boolean;
   validationPlan: OptionsExpressionValidationPlanSummary;
@@ -901,6 +923,8 @@ function normalizeOptionsDatasetManifest(
     rowCount: normalizeNumber(row.row_count),
     contractCount: normalizeNumber(row.contract_count),
     aggregatePriceField: normalizeText(row.aggregate_price_field),
+    normalizedRowsSha256: normalizeText(row.normalized_rows_sha256),
+    manifestSemanticSha256: normalizeText(row.manifest_semantic_sha256),
   };
 }
 
@@ -1066,6 +1090,10 @@ function normalizeContractQuoteQuality(
     midRowCount: normalizeNumber(row.mid_row_count),
     quoteAgeRowCount: normalizeNumber(row.quote_age_row_count),
     staleQuoteRowCount: normalizeNumber(row.stale_quote_row_count),
+    zeroBidRowCount: normalizeNumber(row.zero_bid_row_count),
+    lockedBidAskRowCount: normalizeNumber(row.locked_bid_ask_row_count),
+    crossedBidAskRowCount: normalizeNumber(row.crossed_bid_ask_row_count),
+    invalidBidAskRowCount: normalizeNumber(row.invalid_bid_ask_row_count),
     anyQuoteCoverageRate: normalizeNumber(row.any_quote_coverage_rate),
     bidAskCoverageRate: normalizeNumber(row.bid_ask_coverage_rate),
     midCoverageRate: normalizeNumber(row.mid_coverage_rate),
@@ -1073,6 +1101,7 @@ function normalizeContractQuoteQuality(
     meanSpreadBps: normalizeOptionalNumber(row.mean_spread_bps),
     maxSpreadBps: normalizeOptionalNumber(row.max_spread_bps),
     maxQuoteAgeMs: normalizeOptionalNumber(row.max_quote_age_ms),
+    warnings: normalizeStringList(row.warnings),
   };
 }
 
@@ -1098,6 +1127,10 @@ function normalizeDatasetQuoteQuality(
       row.stale_quote_threshold_ms,
     ),
     staleQuoteRowCount: normalizeNumber(row.stale_quote_row_count),
+    zeroBidRowCount: normalizeNumber(row.zero_bid_row_count),
+    lockedBidAskRowCount: normalizeNumber(row.locked_bid_ask_row_count),
+    crossedBidAskRowCount: normalizeNumber(row.crossed_bid_ask_row_count),
+    invalidBidAskRowCount: normalizeNumber(row.invalid_bid_ask_row_count),
     anyQuoteCoverageRate: normalizeNumber(row.any_quote_coverage_rate),
     bidAskCoverageRate: normalizeNumber(row.bid_ask_coverage_rate),
     midCoverageRate: normalizeNumber(row.mid_coverage_rate),
@@ -1109,6 +1142,7 @@ function normalizeDatasetQuoteQuality(
     perContract: perContract.map((entry) =>
       normalizeContractQuoteQuality(entry),
     ),
+    warnings: normalizeStringList(row.warnings),
   };
 }
 
@@ -1123,6 +1157,8 @@ function normalizeDatasetProvenance(
     quoteResolution: normalizeText(row.quote_resolution),
     aggregatePriceField: normalizeText(row.aggregate_price_field),
     contractReferenceAsOfUtc: normalizeText(row.contract_reference_as_of_utc),
+    normalizedRowsSha256: normalizeText(row.normalized_rows_sha256),
+    manifestSemanticSha256: normalizeText(row.manifest_semantic_sha256),
     quoteQuality: normalizeDatasetQuoteQuality(row.quote_quality),
   };
 }
@@ -1820,6 +1856,12 @@ function normalizeRunOptionsExpression(
     artifactTs: normalizeText(artifact.ts),
     parentArtifactId: normalizeText(artifact.parent_artifact_id),
     optionsDatasetHash: normalizeText(artifact.options_dataset_hash),
+    optionsDatasetNormalizedRowsSha256: normalizeText(
+      artifact.options_dataset_normalized_rows_sha256,
+    ),
+    optionsDatasetManifestSemanticSha256: normalizeText(
+      artifact.options_dataset_manifest_semantic_sha256,
+    ),
     exactnessSemantics: normalizeExactnessSemantics(
       row.exactness_semantics ??
         row.exactnessSemantics ??
@@ -2067,6 +2109,12 @@ function normalizeOptionsExpressionArtifact(
     rootSymbol: normalizeText(row.root_symbol),
     optionsDatasetId: normalizeText(row.options_dataset_id),
     optionsDatasetHash: normalizeText(row.options_dataset_hash),
+    optionsDatasetNormalizedRowsSha256: normalizeText(
+      row.options_dataset_normalized_rows_sha256,
+    ),
+    optionsDatasetManifestSemanticSha256: normalizeText(
+      row.options_dataset_manifest_semantic_sha256,
+    ),
     datasetProvenance: normalizeDatasetProvenance(row.dataset_provenance),
     exactnessSemantics: normalizeExactnessSemantics(
       row.exactness_semantics ?? row.exactnessSemantics,
@@ -2112,6 +2160,12 @@ function normalizeOptionsExpressionValidationResult(
     rootSymbol: normalizeText(row.root_symbol),
     optionsDatasetId: normalizeText(row.options_dataset_id),
     optionsDatasetHash: normalizeText(row.options_dataset_hash),
+    optionsDatasetNormalizedRowsSha256: normalizeText(
+      row.options_dataset_normalized_rows_sha256,
+    ),
+    optionsDatasetManifestSemanticSha256: normalizeText(
+      row.options_dataset_manifest_semantic_sha256,
+    ),
     datasetPolicy: normalizeText(row.dataset_policy),
     replacementDataset: Boolean(row.replacement_dataset),
     validationPlan: normalizeValidationPlan(row.validation_plan),
@@ -2167,6 +2221,12 @@ function normalizeValidationFeasibilityResponse(
     sourceArtifactHash: normalizeText(row.source_artifact_hash),
     optionsDatasetId: normalizeText(row.options_dataset_id),
     optionsDatasetHash: normalizeText(row.options_dataset_hash),
+    optionsDatasetNormalizedRowsSha256: normalizeText(
+      row.options_dataset_normalized_rows_sha256,
+    ),
+    optionsDatasetManifestSemanticSha256: normalizeText(
+      row.options_dataset_manifest_semantic_sha256,
+    ),
     datasetPolicy: normalizeText(row.dataset_policy),
     replacementDataset: Boolean(row.replacement_dataset),
     validationPlan: normalizeValidationPlan(row.validation_plan),

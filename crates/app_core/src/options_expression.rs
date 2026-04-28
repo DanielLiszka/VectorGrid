@@ -7251,6 +7251,8 @@ mod tests {
                 row_count: 16,
                 contract_count: 4,
                 aggregate_price_field: Some("close".to_string()),
+                normalized_rows_sha256: None,
+                manifest_semantic_sha256: None,
             },
             contracts: vec![
                 OptionsContractSeries {

@@ -5,7 +5,10 @@ use crate::options_types::{
 use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, StringRecord};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -297,6 +300,92 @@ fn has_any_quote_fields(row: &OptionsPriceRow) -> bool {
     row.bid.is_some() || row.ask.is_some() || row.mid.is_some()
 }
 
+fn digest_to_lower_hex(digest: impl AsRef<[u8]>) -> String {
+    let bytes = digest.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
+}
+
+pub fn sha256_file_hex(path: &Path) -> Result<String, String> {
+    let file = File::open(path)
+        .map_err(|e| format!("failed to open {} for SHA-256 hashing: {e}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("failed to read {} for SHA-256 hashing: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(digest_to_lower_hex(hasher.finalize()))
+}
+
+#[derive(Serialize)]
+struct OptionsDatasetManifestSemanticHashInput<'a> {
+    version: u32,
+    options_dataset_id: &'a str,
+    root_symbol: &'a str,
+    provider_name: &'a str,
+    provider_source_surface: &'a str,
+    provider_entitlement_profile: Option<&'a str>,
+    quote_resolution: &'a str,
+    price_semantics: OptionsPriceSemantics,
+    calendar_id: &'a str,
+    timezone: &'a str,
+    coverage_start: i64,
+    coverage_end: i64,
+    normalization_version: u32,
+    quote_semantics_version: u32,
+    corporate_action_mapping_version: u32,
+    contract_reference_source: &'a str,
+    contract_reference_as_of_utc: Option<&'a str>,
+    underlier_reference_source: &'a str,
+    row_count: usize,
+    contract_count: usize,
+    aggregate_price_field: Option<&'a str>,
+}
+
+pub fn options_dataset_manifest_semantic_sha256(
+    manifest: &OptionsDatasetManifestV1,
+) -> Result<String, String> {
+    let hash_input = OptionsDatasetManifestSemanticHashInput {
+        version: manifest.version,
+        options_dataset_id: manifest.options_dataset_id.as_str(),
+        root_symbol: manifest.root_symbol.as_str(),
+        provider_name: manifest.provider_name.as_str(),
+        provider_source_surface: manifest.provider_source_surface.as_str(),
+        provider_entitlement_profile: manifest.provider_entitlement_profile.as_deref(),
+        quote_resolution: manifest.quote_resolution.as_str(),
+        price_semantics: manifest.price_semantics,
+        calendar_id: manifest.calendar_id.as_str(),
+        timezone: manifest.timezone.as_str(),
+        coverage_start: manifest.coverage_start,
+        coverage_end: manifest.coverage_end,
+        normalization_version: manifest.normalization_version,
+        quote_semantics_version: manifest.quote_semantics_version,
+        corporate_action_mapping_version: manifest.corporate_action_mapping_version,
+        contract_reference_source: manifest.contract_reference_source.as_str(),
+        contract_reference_as_of_utc: manifest.contract_reference_as_of_utc.as_deref(),
+        underlier_reference_source: manifest.underlier_reference_source.as_str(),
+        row_count: manifest.row_count,
+        contract_count: manifest.contract_count,
+        aggregate_price_field: manifest.aggregate_price_field.as_deref(),
+    };
+    let bytes = serde_json::to_vec(&hash_input)
+        .map_err(|e| format!("failed to serialize semantic options dataset manifest: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(digest_to_lower_hex(hasher.finalize()))
+}
+
 fn ensure_series_metadata_matches(
     series: &OptionsContractSeries,
     row: &NormalizedCsvRow,
@@ -463,7 +552,8 @@ pub fn load_imported_options_dataset_from_csv(
         }
     }
 
-    let manifest = OptionsDatasetManifestV1 {
+    let normalized_rows_sha256 = sha256_file_hex(dataset_path)?;
+    let mut manifest = OptionsDatasetManifestV1 {
         version: OPTIONS_DATASET_MANIFEST_VERSION,
         options_dataset_id: req.options_dataset_id.clone(),
         root_symbol,
@@ -486,7 +576,10 @@ pub fn load_imported_options_dataset_from_csv(
         row_count,
         contract_count: contracts.len(),
         aggregate_price_field: req.aggregate_price_field.clone(),
+        normalized_rows_sha256: Some(normalized_rows_sha256),
+        manifest_semantic_sha256: None,
     };
+    manifest.manifest_semantic_sha256 = Some(options_dataset_manifest_semantic_sha256(&manifest)?);
     Ok(ImportedOptionsDataset {
         manifest,
         contracts,
@@ -659,6 +752,71 @@ mod tests {
         assert_eq!(dataset.manifest.row_count, 3);
         assert_eq!(dataset.manifest.contract_count, 2);
         assert_eq!(dataset.contracts[0].rows.len(), 2);
+    }
+
+    #[test]
+    fn load_imported_dataset_records_content_and_semantic_hashes() {
+        let temp = make_temp_dir("options_dataset_hashes");
+        let csv_path = temp.join("normalized.csv");
+        write_dataset(&csv_path);
+        let req = ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: "spy_hashes".to_string(),
+            dataset_path: csv_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "massive".to_string(),
+            provider_source_surface: "minute_aggregate".to_string(),
+            provider_entitlement_profile: None,
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: None,
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: Some("close".to_string()),
+        };
+
+        let dataset = load_imported_options_dataset_from_csv(&req).expect("dataset");
+        let row_hash = dataset
+            .manifest
+            .normalized_rows_sha256
+            .as_deref()
+            .expect("row hash");
+        let manifest_hash = dataset
+            .manifest
+            .manifest_semantic_sha256
+            .as_deref()
+            .expect("manifest hash");
+
+        assert_eq!(row_hash.len(), 64);
+        assert!(row_hash.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert_eq!(manifest_hash.len(), 64);
+        assert!(manifest_hash.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert_eq!(
+            row_hash,
+            sha256_file_hex(&csv_path).expect("direct file hash")
+        );
+
+        let mut path_changed = dataset.manifest.clone();
+        path_changed.dataset_path = "C:/other/root/rows.csv".to_string();
+        path_changed.normalized_rows_sha256 = Some("ignored-row-hash".to_string());
+        path_changed.manifest_semantic_sha256 = Some("ignored-manifest-hash".to_string());
+        assert_eq!(
+            manifest_hash,
+            options_dataset_manifest_semantic_sha256(&path_changed)
+                .expect("semantic hash excludes path and hash fields")
+        );
+
+        let mut semantic_changed = path_changed;
+        semantic_changed.row_count += 1;
+        assert_ne!(
+            manifest_hash,
+            options_dataset_manifest_semantic_sha256(&semantic_changed)
+                .expect("semantic hash changes with manifest content")
+        );
     }
 
     #[test]
