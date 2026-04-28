@@ -29,6 +29,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `docs/gpt55_pro_final_prompt_dossiers_2026-04-27.md` for ready-to-use GPT-5.5 Pro prompt dossiers with exact required and optional file packs for each hard-problem prompt
 - `docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md` for researched high-ROI prompt ideas beyond the active prompt pack, especially data lifecycle, native binary integrity, and prompt sequencing governance
 - `docs/verification_benchmark_release_authority.md` for the claim-level verification authority ledger, benchmark timing boundaries, baseline policy, release evidence hierarchy, and GPT-5.5 Pro recommendation promotion checklist
+- `docs/NUMERICAL_REPRODUCIBILITY.md` for NumericPolicyV1, OrderingPolicyV1, reproducibility tiers, semantic parity scope, benchmark-noise posture, and blocked CUDA/PTX authority work
 - `docs/artifact_replay_report_evidence_contract.md` for the current artifact/replay/report evidence contract, report mutation boundaries, replay classes, and output parity authority
 - `docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md` for the researched implementation plan covering native Tauri desktop plugins, IPC type generation, runtime validation, async cached reads, and low-regression advanced npm adoption
 - `docs/frontend_trading_technology_additions_implementation_plan_2026-04-27.md` for the follow-on frontend/npm technology plan focused on live trading backpressure, chart annotations, market-time correctness, and optional large-artifact analytics
@@ -1686,6 +1687,7 @@ For claim-level authority, benchmark boundaries, baseline policy, and release ev
 | workflow regression                   | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`                                                                                             |
 | CPU perf-sensitive backend change     | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`                                                                                             |
 | GPU/CUDA path                         | `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`                                                                                             |
+| GPU validation performance/residency  | `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate`                                                                                  |
 | GPU/CUDA ALMA contract rows           | `powershell -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`                                                                          |
 | GPU profiling                         | `powershell -File scripts/profile_gpu_backtest_ncu.ps1`, `powershell -File scripts/profile_gpu_backtest_nsys.ps1`                                            |
 | frontend request-builder benchmarking | `npm --prefix web run bench:request-builder`                                                                                                                 |
@@ -1704,6 +1706,8 @@ Specialized/manual gates:
   - lightweight execution and paper-broker safety gate; runs targeted Rust execution, paper-broker, risk-policy, live-stream state tests plus frontend execution tests and command contract check without benchmarks or live credentials
 - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
   - specialized ALMA contract-row gate, not the default PR perf authority
+- `scripts/run_gpu_validation_perf_gate.ps1`
+  - dedicated CUDA validation perf/residency gate; use `-ListCases` or `-PlanOnly` to inspect the covered validation workloads without running benchmarks
 
 Profiling:
 
@@ -1721,9 +1725,12 @@ Supplemental verification and baseline helpers:
 - `scripts/baselines/workflow_regression_baseline.json`
 - `scripts/baselines/cpu_perf_baseline.json`
 - `scripts/baselines/gpu_perf_baseline.json`
+- `scripts/baselines/gpu_validation_perf_baseline.json`
 - `scripts/baselines/gpu_alma_contract_rows/`
 
 Output parity remains separate artifact/report authority. The release-candidate gate currently runs web parity but skips output-parity sample baselines, so artifact/report shape changes still need `scripts/run_output_parity_check.mjs`.
+
+GPU validation perf remains opt-in during release rehearsal. Use `powershell -File scripts/run_release_candidate_gate.ps1 -Variant gpu-kernel -IncludeGpuValidationPerf` only when the release claim depends on validation CUDA route, residency, or CPU-tail behavior.
 
 Benchmark and faceoff helpers:
 

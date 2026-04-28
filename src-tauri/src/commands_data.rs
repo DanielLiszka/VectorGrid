@@ -24,6 +24,7 @@ pub fn load_price_data(
     state: tauri::State<AppState>,
     app: tauri::AppHandle,
 ) -> Result<LoadPriceDataResponse, String> {
+    crate::local_path_policy::ensure_csv_extension(Path::new(path.trim()))?;
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let cache_dir = crate::data_cache::app_data_cache_dir(&base);
     state.load_price_data(&path, &cache_dir)
@@ -1523,14 +1524,35 @@ pub fn pick_csv_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
     app.dialog()
         .file()
         .add_filter("CSV Files", &["csv"])
-        .add_filter("All Files", &["*"])
         .blocking_pick_file()
         .map(|path| {
             path.into_path()
-                .map(|path| path.to_string_lossy().to_string())
                 .map_err(|e| e.to_string())
+                .and_then(validate_picked_csv_path)
+                .map(|path| path.to_string_lossy().to_string())
         })
         .transpose()
+}
+
+fn validate_picked_csv_path(path: PathBuf) -> Result<PathBuf, String> {
+    let validated = crate::local_path_policy::canonical_existing_path(&path.to_string_lossy())?;
+    crate::local_path_policy::ensure_csv_extension(&validated.canonical)?;
+    Ok(validated.canonical)
+}
+
+fn normalize_save_csv_path(path: PathBuf) -> Result<PathBuf, String> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("csv") => Ok(path),
+        Some(_) => Err(format!(
+            "save path must use .csv extension: {}",
+            path.to_string_lossy()
+        )),
+        None => {
+            let mut with_ext = path;
+            with_ext.set_extension("csv");
+            Ok(with_ext)
+        }
+    }
 }
 
 #[tauri::command]
@@ -1540,11 +1562,7 @@ pub fn pick_save_csv(
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let mut builder = app
-        .dialog()
-        .file()
-        .add_filter("CSV Files", &["csv"])
-        .add_filter("All Files", &["*"]);
+    let mut builder = app.dialog().file().add_filter("CSV Files", &["csv"]);
     if let Some(name) = default_name {
         let name = name.trim();
         if !name.is_empty() {
@@ -1555,8 +1573,9 @@ pub fn pick_save_csv(
         .blocking_save_file()
         .map(|path| {
             path.into_path()
-                .map(|path| path.to_string_lossy().to_string())
                 .map_err(|e| e.to_string())
+                .and_then(normalize_save_csv_path)
+                .map(|path| path.to_string_lossy().to_string())
         })
         .transpose()
 }
@@ -1590,11 +1609,13 @@ mod tests {
     use super::load_gpu_speedups_csv;
     use super::market_data_dir_info_for_base;
     use super::normalize_polygon_live_bar;
+    use super::normalize_save_csv_path;
     use super::parse_csv_fields;
     use super::sample_csvs_from_root;
     use super::set_artifact_retention_settings_for_base;
     use super::set_market_data_dir_for_base;
     use super::should_force_runner_review_posture;
+    use super::validate_picked_csv_path;
     use crate::state::AppState;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -2012,6 +2033,39 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["a.csv", "b.csv"]);
         assert!(truncated);
+    }
+
+    #[test]
+    fn validate_picked_csv_path_accepts_existing_csv_and_rejects_other_extensions() {
+        let temp = make_temp_dir("commands_data_pick_csv");
+        let csv = temp.join("picked.CSV");
+        let txt = temp.join("picked.txt");
+        std::fs::write(&csv, "timestamp,close\n1,1\n").expect("write csv");
+        std::fs::write(&txt, "timestamp,close\n1,1\n").expect("write txt");
+
+        let validated = validate_picked_csv_path(csv.clone()).expect("csv accepted");
+        assert_eq!(validated, csv.canonicalize().expect("canonical csv"));
+
+        let err = validate_picked_csv_path(txt).expect_err("txt should fail");
+        assert!(err.contains(".csv"));
+    }
+
+    #[test]
+    fn normalize_save_csv_path_appends_missing_extension_and_rejects_unsupported_extension() {
+        let bare = PathBuf::from("C:/exports/vectorgrid_report");
+        assert_eq!(
+            normalize_save_csv_path(bare).expect("bare path gets csv"),
+            PathBuf::from("C:/exports/vectorgrid_report.csv")
+        );
+        assert_eq!(
+            normalize_save_csv_path(PathBuf::from("C:/exports/vectorgrid_report.CSV"))
+                .expect("existing csv kept"),
+            PathBuf::from("C:/exports/vectorgrid_report.CSV")
+        );
+
+        let err = normalize_save_csv_path(PathBuf::from("C:/exports/vectorgrid_report.xlsx"))
+            .expect_err("xlsx should fail");
+        assert!(err.contains(".csv"));
     }
 
     #[test]

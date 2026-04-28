@@ -62,7 +62,16 @@ interface PolygonDatasetMetaResponse {
 interface PolygonCacheInfoResponse {
   cache_dir?: unknown;
   has_api_key?: unknown;
+  credential_status?: unknown;
   datasets?: unknown;
+}
+
+interface PolygonCredentialStatusResponse {
+  has_api_key?: unknown;
+  state?: unknown;
+  storage_backend?: unknown;
+  degraded?: unknown;
+  message?: unknown;
 }
 
 interface PolygonDownloadAndLoadResponse {
@@ -173,9 +182,26 @@ export interface PolygonDatasetSummary {
   integrity: PolygonDatasetIntegritySummary | null;
 }
 
+export type PolygonCredentialStorageState =
+  | "missing"
+  | "keyring"
+  | "json_file_fallback"
+  | "env_fallback"
+  | "dotenv_fallback"
+  | "unavailable";
+
+export interface PolygonCredentialStatusSummary {
+  hasApiKey: boolean;
+  state: PolygonCredentialStorageState;
+  storageBackend: string;
+  degraded: boolean;
+  message: string;
+}
+
 export interface PolygonCacheInfoSummary {
   cacheDir: string;
   hasApiKey: boolean;
+  credentialStatus: PolygonCredentialStatusSummary;
   datasets: PolygonDatasetSummary[];
 }
 
@@ -344,6 +370,48 @@ function normalizePolygonDatasetMeta(
   };
 }
 
+function normalizePolygonCredentialState(
+  value: unknown,
+): PolygonCredentialStorageState {
+  const normalized = normalizeText(value).toLowerCase();
+  switch (normalized) {
+    case "keyring":
+    case "json_file_fallback":
+    case "env_fallback":
+    case "dotenv_fallback":
+    case "unavailable":
+      return normalized;
+    default:
+      return "missing";
+  }
+}
+
+function normalizePolygonCredentialStatus(
+  raw: unknown,
+  fallbackHasApiKey: boolean,
+): PolygonCredentialStatusSummary {
+  const row = parseOptionalBoundaryObject(
+    raw,
+  ) as PolygonCredentialStatusResponse | null;
+  if (!row) {
+    return {
+      hasApiKey: fallbackHasApiKey,
+      state: fallbackHasApiKey ? "keyring" : "missing",
+      storageBackend: fallbackHasApiKey ? "unknown" : "missing",
+      degraded: false,
+      message: "",
+    };
+  }
+  const state = normalizePolygonCredentialState(row.state);
+  return {
+    hasApiKey: Boolean(row.has_api_key),
+    state,
+    storageBackend: normalizeText(row.storage_backend) || state,
+    degraded: Boolean(row.degraded),
+    message: normalizeText(row.message),
+  };
+}
+
 function normalizePolygonCacheInfo(raw: unknown): PolygonCacheInfoSummary {
   const info = parseBoundaryObject(raw) as PolygonCacheInfoResponse;
   const rows = parseBoundaryArray(info.datasets);
@@ -352,9 +420,14 @@ function normalizePolygonCacheInfo(raw: unknown): PolygonCacheInfoSummary {
     const normalized = normalizePolygonDatasetMeta(row);
     if (normalized) datasets.push(normalized);
   }
+  const hasApiKey = Boolean(info.has_api_key);
   return {
     cacheDir: normalizeText(info.cache_dir),
-    hasApiKey: Boolean(info.has_api_key),
+    hasApiKey,
+    credentialStatus: normalizePolygonCredentialStatus(
+      info.credential_status,
+      hasApiKey,
+    ),
     datasets,
   };
 }

@@ -233,6 +233,7 @@ pub fn synthetic_request() -> OptionsExpressionRunRequest {
         options_dataset_id: "bench_spy".to_string(),
         structure_family: OptionsStructureFamily::LongSingle,
         backend_preference: OptionsExpressionBackendPreference::Auto,
+        objective_config: Default::default(),
         delay_minutes: vec![0, 1, 5],
         dte_buckets: vec![1, 3, 5],
         moneyness_buckets: vec![

@@ -2,6 +2,7 @@ param(
   [ValidateSet("cpu", "gpu-ma", "gpu-kernel")]
   [string]$Variant = "cpu",
   [switch]$IncludePerf,
+  [switch]$IncludeGpuValidationPerf,
   [switch]$SkipBrowserQa,
   [switch]$IncludeExpandedBrowserQa,
   [switch]$IncludeBaselineUi,
@@ -112,6 +113,7 @@ function Write-ReleaseSummary {
     status = $Status
     out_dir = $resolvedOutDir
     include_perf = [bool]$IncludePerf
+    include_gpu_validation_perf = [bool]$IncludeGpuValidationPerf
     skip_browser_qa = [bool]$SkipBrowserQa
     include_expanded_browser_qa = [bool]$IncludeExpandedBrowserQa
     include_baseline_ui = [bool]$IncludeBaselineUi
@@ -150,6 +152,7 @@ function Write-ReleaseSummary {
     "- Variant: $Variant",
     "- Output: $resolvedOutDir",
     "- Include perf: $([bool]$IncludePerf)",
+    "- Include GPU validation perf: $([bool]$IncludeGpuValidationPerf)",
     "- Skip browser QA: $([bool]$SkipBrowserQa)",
     "- Include expanded browser QA: $([bool]$IncludeExpandedBrowserQa)",
     "- Include baseline UI: $([bool]$IncludeBaselineUi)",
@@ -198,6 +201,10 @@ $summaryMdPath = Join-Path $resolvedOutDir "summary.md"
 $script:StepResults = @()
 
 try {
+  if ($IncludeGpuValidationPerf -and $Variant -ne "gpu-kernel") {
+    throw "-IncludeGpuValidationPerf requires -Variant gpu-kernel because the validation perf gate exercises cuda-backtest-kernel."
+  }
+
   $doctorArgs = @("-File", (Join-Path $repoRoot "scripts\\run_release_doctor.ps1"), "-Variant", $Variant, "-OutDir", $resolvedOutDir)
   if ($IncludeDesktopSmoke -and -not $SkipPackagedSmoke) {
     $doctorArgs += "-RequirePackagedSmoke"
@@ -269,6 +276,16 @@ try {
         if ($LASTEXITCODE -ne 0) {
           throw "GPU perf gate failed with exit code $LASTEXITCODE"
         }
+      }
+    }
+  }
+
+  if ($IncludeGpuValidationPerf) {
+    $gpuValidationArgs = @("-File", (Join-Path $repoRoot "scripts\\run_gpu_validation_perf_gate.ps1"), "-Mode", "candidate")
+    Invoke-ReleaseStep -Name "GPU validation perf gate" -CommandText ("powershell " + ($gpuValidationArgs -join " ")) -Action {
+      powershell @gpuValidationArgs
+      if ($LASTEXITCODE -ne 0) {
+        throw "GPU validation perf gate failed with exit code $LASTEXITCODE"
       }
     }
   }

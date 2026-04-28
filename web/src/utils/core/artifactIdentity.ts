@@ -97,6 +97,7 @@ function stripRunReqForFingerprint(runReq: unknown): Record<string, unknown> | n
   const record = out as Record<string, unknown>
   delete record.data_id
   delete record.dataId
+  delete record.reproducibility
   return record
 }
 
@@ -109,6 +110,7 @@ function stripValidationReqForFingerprint(validationReq: unknown): Record<string
   delete record.dataId
   delete record.candidates
   delete record.admission_provenance
+  delete record.reproducibility
   const cross = (record.cross_ticker && typeof record.cross_ticker === 'object')
     ? record.cross_ticker as Record<string, unknown>
     : null

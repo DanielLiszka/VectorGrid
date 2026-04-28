@@ -17,6 +17,7 @@ import {
   openMarketDataDir as openMarketDataDirAction,
   openPolygon as openPolygonAction,
   type PolygonCacheInfoSummary,
+  type PolygonCredentialStatusSummary,
   type PolygonDatasetSummary,
   repairPolygonDataset as repairPolygonDatasetAction,
   resetMarketDataDir as resetMarketDataDirAction,
@@ -26,6 +27,7 @@ import {
   validatePolygonDataset as validatePolygonDatasetAction,
 } from "../services/dataService";
 import { DATA_STARTUP_SNAPSHOT_KEY } from "../utils/core/storageKeys";
+import { redactKnownSecrets } from "../utils/redaction";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import { formatUtcDateFromUnixMs } from "../utils/uiFormat";
 import { resolveRuntimePinia } from "./runtimePinia";
@@ -78,6 +80,7 @@ interface DataState {
   polygonAdjusted: boolean;
   polygonCacheDir: string;
   polygonHasApiKey: boolean;
+  polygonCredentialStatus: PolygonCredentialStatusSummary;
   polygonDatasets: PolygonDatasetSummary[];
   polygonSelectedPath: string;
   polygonSelectedMeta: string;
@@ -501,18 +504,70 @@ function polygonDatasetMetaText(dataset: PolygonDatasetSummary): string {
   return parts.join(" · ");
 }
 
-function polygonCacheMetaText(info: PolygonCacheInfoSummary): string {
+function defaultPolygonCredentialStatus(
+  hasApiKey = false,
+): PolygonCredentialStatusSummary {
+  return {
+    hasApiKey,
+    state: hasApiKey ? "keyring" : "missing",
+    storageBackend: hasApiKey ? "unknown" : "missing",
+    degraded: false,
+    message: "",
+  };
+}
+
+function polygonCredentialStorageText(
+  status: PolygonCredentialStatusSummary | undefined,
+): string {
+  if (!status || !status.hasApiKey) return "";
+  switch (status.state) {
+    case "keyring":
+      return "Credential storage: system keyring";
+    case "json_file_fallback":
+      return "Credential storage: legacy JSON fallback";
+    case "env_fallback":
+      return "Credential source: environment variable";
+    case "dotenv_fallback":
+      return "Credential source: local .env fallback";
+    case "unavailable":
+      return "Credential storage unavailable";
+    case "missing":
+    default:
+      return "";
+  }
+}
+
+function polygonCacheMetaText(
+  info: Pick<PolygonCacheInfoSummary, "cacheDir" | "hasApiKey" | "datasets"> & {
+    credentialStatus?: PolygonCredentialStatusSummary;
+  },
+): string {
   const count = info.datasets.length;
+  const credentialStatus =
+    info.credentialStatus || defaultPolygonCredentialStatus(info.hasApiKey);
+  const storageText = polygonCredentialStorageText(credentialStatus);
   const parts = [
     info.hasApiKey ? "API key saved" : "API key missing",
     info.cacheDir ? `Cache: ${info.cacheDir}` : "",
     `${count} cached dataset${count === 1 ? "" : "s"}`,
+    storageText
+      ? credentialStatus.degraded
+        ? `${storageText} (degraded)`
+        : storageText
+      : "",
   ].filter((item) => item.length > 0);
   return parts.join(" · ") || POLYGON_CACHE_UNAVAILABLE_TEXT;
 }
 
 function normalizeDataSourceKind(value: unknown): DataSourceKind {
   return String(value || "").trim() === "polygon" ? "polygon" : "csv";
+}
+
+function redactDataStoreText(
+  state: Pick<DataState, "polygonApiKey">,
+  raw: unknown,
+): string {
+  return redactKnownSecrets(raw, [state.polygonApiKey]);
 }
 
 function normalizeStartupSnapshot(raw: unknown): DataStartupSnapshot | null {
@@ -640,6 +695,8 @@ function applyPolygonCacheInfo(
 ): void {
   state.polygonCacheDir = String(info.cacheDir || "").trim();
   state.polygonHasApiKey = !!info.hasApiKey;
+  state.polygonCredentialStatus =
+    info.credentialStatus || defaultPolygonCredentialStatus(info.hasApiKey);
   state.polygonDatasets = Array.isArray(info.datasets)
     ? [...info.datasets]
     : [];
@@ -656,6 +713,7 @@ function resetPolygonCacheRuntimeState(
   state.polygonCacheLoadedOnce = false;
   state.polygonCacheDir = String(nextCacheDir || "").trim();
   state.polygonHasApiKey = false;
+  state.polygonCredentialStatus = defaultPolygonCredentialStatus(false);
   state.polygonDatasets = [];
   state.polygonSelectedPath = String(preferredSelectedPath || "").trim();
   state.polygonSelectedMeta = POLYGON_SELECTED_PROMPT;
@@ -695,6 +753,7 @@ function upsertPolygonDatasetFromDownload(
   state.polygonCacheMeta = polygonCacheMetaText({
     cacheDir: state.polygonCacheDir,
     hasApiKey: state.polygonHasApiKey,
+    credentialStatus: state.polygonCredentialStatus,
     datasets: state.polygonDatasets,
   });
   selectPolygonDatasetPath(state, csvPath);
@@ -940,6 +999,7 @@ export const useDataStore = defineStore("data", {
     polygonAdjusted: true,
     polygonCacheDir: "",
     polygonHasApiKey: false,
+    polygonCredentialStatus: defaultPolygonCredentialStatus(false),
     polygonDatasets: [],
     polygonSelectedPath: "",
     polygonSelectedMeta: POLYGON_SELECTED_PROMPT,
@@ -1297,7 +1357,7 @@ export const useDataStore = defineStore("data", {
           });
         })
         .catch((error: unknown) => {
-          this.statusLine = String(error || "").trim() || "Data load failed.";
+          this.statusLine = redactDataStoreText(this, error) || "Data load failed.";
           markVueUpdate(this);
         })
         .finally(() => {
@@ -1320,7 +1380,8 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to refresh Polygon cache.";
+            redactDataStoreText(this, error) ||
+            "Failed to refresh Polygon cache.";
           markVueUpdate(this);
         });
     },
@@ -1344,7 +1405,8 @@ export const useDataStore = defineStore("data", {
         .catch((error: unknown) => {
           setControlsBusy(this, false);
           this.statusLine =
-            String(error || "").trim() || "Failed to refresh Polygon cache.";
+            redactDataStoreText(this, error) ||
+            "Failed to refresh Polygon cache.";
           markVueUpdate(this);
         });
     },
@@ -1370,7 +1432,8 @@ export const useDataStore = defineStore("data", {
         .catch((error: unknown) => {
           setControlsBusy(this, false);
           this.statusLine =
-            String(error || "").trim() || "Failed to save Polygon API key.";
+            redactDataStoreText(this, error) ||
+            "Failed to save Polygon API key.";
           markVueUpdate(this);
         });
     },
@@ -1391,7 +1454,8 @@ export const useDataStore = defineStore("data", {
         .catch((error: unknown) => {
           setControlsBusy(this, false);
           this.statusLine =
-            String(error || "").trim() || "Failed to clear Polygon API key.";
+            redactDataStoreText(this, error) ||
+            "Failed to clear Polygon API key.";
           markVueUpdate(this);
         });
     },
@@ -1423,7 +1487,7 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Polygon data load failed.";
+            redactDataStoreText(this, error) || "Polygon data load failed.";
           markVueUpdate(this);
         })
         .finally(() => {
@@ -1499,7 +1563,7 @@ export const useDataStore = defineStore("data", {
         .catch((error: unknown) => {
           setControlsBusy(this, false);
           this.statusLine =
-            String(error || "").trim() || "Polygon download failed.";
+            redactDataStoreText(this, error) || "Polygon download failed.";
           markVueUpdate(this);
         });
     },
@@ -1568,7 +1632,7 @@ export const useDataStore = defineStore("data", {
         .catch((error: unknown) => {
           setControlsBusy(this, false);
           this.statusLine =
-            String(error || "").trim() || "Polygon top-off failed.";
+            redactDataStoreText(this, error) || "Polygon top-off failed.";
           markVueUpdate(this);
         });
     },
@@ -1595,6 +1659,7 @@ export const useDataStore = defineStore("data", {
           this.polygonCacheMeta = polygonCacheMetaText({
             cacheDir: this.polygonCacheDir,
             hasApiKey: this.polygonHasApiKey,
+            credentialStatus: this.polygonCredentialStatus,
             datasets: this.polygonDatasets,
           });
           markVueUpdate(this);
@@ -1602,7 +1667,7 @@ export const useDataStore = defineStore("data", {
         .catch((error: unknown) => {
           setControlsBusy(this, false);
           this.statusLine =
-            String(error || "").trim() || "Polygon validation failed.";
+            redactDataStoreText(this, error) || "Polygon validation failed.";
           markVueUpdate(this);
         });
     },
@@ -1629,6 +1694,7 @@ export const useDataStore = defineStore("data", {
           this.polygonCacheMeta = polygonCacheMetaText({
             cacheDir: this.polygonCacheDir,
             hasApiKey: this.polygonHasApiKey,
+            credentialStatus: this.polygonCredentialStatus,
             datasets: this.polygonDatasets,
           });
           markVueUpdate(this);
@@ -1636,7 +1702,7 @@ export const useDataStore = defineStore("data", {
         .catch((error: unknown) => {
           setControlsBusy(this, false);
           this.statusLine =
-            String(error || "").trim() || "Polygon repair failed.";
+            redactDataStoreText(this, error) || "Polygon repair failed.";
           markVueUpdate(this);
         });
     },
@@ -1663,7 +1729,7 @@ export const useDataStore = defineStore("data", {
           });
         })
         .catch((error: unknown) => {
-          this.statusLine = String(error || "").trim() || "Data load failed.";
+          this.statusLine = redactDataStoreText(this, error) || "Data load failed.";
           markVueUpdate(this);
         })
         .finally(() => {
@@ -1675,7 +1741,7 @@ export const useDataStore = defineStore("data", {
     clearData(): void {
       const baseId = String(this.baseDataId || "").trim();
       void clearDataAction(baseId).catch((error: unknown) => {
-        this.statusLine = `Cleared UI state (backend clear warning: ${String(error || "").trim() || "clear failed"}).`;
+        this.statusLine = `Cleared UI state (backend clear warning: ${redactDataStoreText(this, error) || "clear failed"}).`;
         markVueUpdate(this);
       });
       applyEmptyDatasetState(this, "Cleared data.");
@@ -1718,7 +1784,8 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || `Resample to ${target} failed.`;
+            redactDataStoreText(this, error) ||
+            `Resample to ${target} failed.`;
           this.dataTimeframe = "";
           markVueUpdate(this);
         })
@@ -1739,7 +1806,7 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            `Market data browse failed: ${String(error || "")}`.trim();
+            `Market data browse failed: ${redactDataStoreText(this, error)}`.trim();
           markVueUpdate(this);
         });
     },
@@ -1783,7 +1850,7 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() ||
+            redactDataStoreText(this, error) ||
             "Failed to update market data folder.";
           markVueUpdate(this);
         });
@@ -1807,7 +1874,8 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to reset market data folder.";
+            redactDataStoreText(this, error) ||
+            "Failed to reset market data folder.";
           markVueUpdate(this);
         });
     },
@@ -1832,7 +1900,8 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            String(error || "").trim() || "Failed to open market data folder.";
+            redactDataStoreText(this, error) ||
+            "Failed to open market data folder.";
           markVueUpdate(this);
         });
     },
@@ -1852,7 +1921,7 @@ export const useDataStore = defineStore("data", {
           });
         })
         .catch((error: unknown) => {
-          this.statusLine = String(error || "").trim() || "Data load failed.";
+          this.statusLine = redactDataStoreText(this, error) || "Data load failed.";
           markVueUpdate(this);
         })
         .finally(() => {

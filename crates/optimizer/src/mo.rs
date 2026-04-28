@@ -8,6 +8,8 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
+// NumericPolicyV1: invalid multi-objective values are kept finite so Pareto
+// sorting remains total and reproducible without letting non-finite rows win.
 const INVALID_OBJECTIVE_VALUE: f64 = -f64::MAX;
 const INVALID_CONSTRAINT_VIOLATION: f64 = f64::MAX;
 
@@ -2547,6 +2549,30 @@ mod tests {
         };
         assert!(constrained_dominates(&a, &b));
         assert!(!constrained_dominates(&b, &a));
+    }
+
+    #[test]
+    fn numeric_policy_maps_non_finite_objectives_to_invalid_sentinel() {
+        assert_eq!(sanitize_objective(f64::NAN), INVALID_OBJECTIVE_VALUE);
+        assert_eq!(sanitize_objective(f64::INFINITY), INVALID_OBJECTIVE_VALUE);
+        assert_eq!(
+            sanitize_objective(f64::NEG_INFINITY),
+            INVALID_OBJECTIVE_VALUE
+        );
+        assert_eq!(sanitize_objective(1.25), 1.25);
+    }
+
+    #[test]
+    fn numeric_policy_maps_non_finite_constraints_to_invalid_violation() {
+        assert_eq!(overall_violation(&[0.0, -1.0, 2.5]), 2.5);
+        assert_eq!(
+            overall_violation(&[0.0, f64::NAN]),
+            INVALID_CONSTRAINT_VIOLATION
+        );
+        assert_eq!(
+            overall_violation(&[f64::INFINITY]),
+            INVALID_CONSTRAINT_VIOLATION
+        );
     }
 
     #[test]

@@ -137,6 +137,24 @@ describe('task-store lifecycle smoke', () => {
     expect(posture.counts.cancelled).toBe(1)
   })
 
+  it('redacts secret-looking values from failed task history and events', () => {
+    const failedId = beginTrackedCommand('polygon_download_1m_and_load')
+    failTrackedCommand(
+      failedId,
+      new Error('Polygon failed apiKey=poly_secret_123 Authorization: Bearer abcdefghijkl'),
+    )
+
+    const store = useTaskStore(pinia)
+    const serialized = JSON.stringify({
+      history: store.history,
+      events: store.events,
+      timeline: store.timeline,
+    })
+    expect(serialized).toContain('[redacted]')
+    expect(serialized).not.toContain('poly_secret_123')
+    expect(serialized).not.toContain('abcdefghijkl')
+  })
+
   it('keeps posture counts coherent across queued, cancelling, and terminal tasks', async () => {
     const queuedId = beginTrackedCommand('run_double_ma_optimization', { queued: true })
     const cancellingId = beginTrackedCommand('run_meta_selection')

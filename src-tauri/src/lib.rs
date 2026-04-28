@@ -7,8 +7,10 @@ pub mod desktop_tray;
 pub mod execution_mocks;
 pub mod execution_policy;
 pub mod execution_quantity;
+pub mod local_path_policy;
 pub mod ma_registry;
 pub mod polygon;
+pub mod redaction;
 pub mod release_readiness;
 pub mod settings;
 pub mod state;
@@ -244,6 +246,7 @@ pub fn run_tauri() {
             analyze_options_expression_feasibility,
             validate_options_expression_artifact,
             analyze_options_expression_validation_feasibility,
+            analyze_portfolio_feasibility,
             list_options_expression_artifacts,
             load_options_expression_artifact,
             save_options_csv,

@@ -26,6 +26,35 @@ pub enum OptimizationMode {
     Auto,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScoreRankKey {
+    pub valid: bool,
+    pub score: f64,
+    pub tie_index: usize,
+}
+
+pub fn normalize_rank_score(score: f64) -> f64 {
+    if score.is_finite() {
+        score
+    } else {
+        f64::NEG_INFINITY
+    }
+}
+
+// Better candidates sort first. Equal normalized scores preserve earlier input order.
+pub fn compare_score_rank_desc(
+    left_score: f64,
+    left_tie_index: usize,
+    right_score: f64,
+    right_tie_index: usize,
+) -> std::cmp::Ordering {
+    let left_score = normalize_rank_score(left_score);
+    let right_score = normalize_rank_score(right_score);
+    right_score
+        .total_cmp(&left_score)
+        .then_with(|| left_tie_index.cmp(&right_tie_index))
+}
+
 pub trait BacktestEngine {
     fn eval_batch(&self, combos: &[DoubleMaParams]) -> Vec<Metrics>;
 }
@@ -85,8 +114,12 @@ pub struct OptimizationHeatmap {
 
 #[cfg(test)]
 mod tests {
-    use super::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
+    use super::{
+        compare_score_rank_desc, normalize_rank_score, ObjectiveKind, OptimizationHeatmap,
+        OptimizationMode, OptimizationResult,
+    };
     use serde_json::{json, Value};
+    use std::cmp::Ordering;
     use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
     fn sample_params() -> DoubleMaParams {
@@ -127,6 +160,19 @@ mod tests {
         let decoded: OptimizationMode =
             serde_json::from_value(encoded).expect("deserialize optimization mode");
         assert_eq!(decoded, OptimizationMode::GpuVdps);
+    }
+
+    #[test]
+    fn rank_score_policy_clamps_non_finite_scores_and_preserves_input_ties() {
+        assert_eq!(normalize_rank_score(f64::NAN), f64::NEG_INFINITY);
+        assert_eq!(normalize_rank_score(f64::INFINITY), f64::NEG_INFINITY);
+        assert_eq!(normalize_rank_score(1.25), 1.25);
+        assert_eq!(compare_score_rank_desc(2.0, 9, 1.0, 0), Ordering::Less);
+        assert_eq!(compare_score_rank_desc(1.0, 0, 1.0, 9), Ordering::Less);
+        assert_eq!(
+            compare_score_rank_desc(f64::NAN, 0, 0.0, 9),
+            Ordering::Greater
+        );
     }
 
     #[test]

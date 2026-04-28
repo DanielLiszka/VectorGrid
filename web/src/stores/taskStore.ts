@@ -12,6 +12,7 @@ import {
   readStorageJson,
   writeStorageJson,
 } from "../utils/storage";
+import { redactKnownSecrets } from "../utils/redaction";
 
 export type TaskStatus =
   | "queued"
@@ -367,18 +368,35 @@ function hydrateStoreFromDisk(st: TaskState): void {
   if (!payload || (payload.version !== 1 && payload.version !== 2)) return;
 
   st.history = clampHistory(
-    Array.isArray(payload.history) ? payload.history : [],
+    (Array.isArray(payload.history) ? payload.history : []).map((task) => ({
+      ...task,
+      ...(task.message ? { message: redactKnownSecrets(task.message) } : {}),
+      ...(task.error ? { error: redactKnownSecrets(task.error) } : {}),
+    })),
   );
-  st.events = clampEvents(Array.isArray(payload.events) ? payload.events : []);
+  st.events = clampEvents(
+    (Array.isArray(payload.events) ? payload.events : []).map((event) => ({
+      ...event,
+      message: redactKnownSecrets(event.message),
+    })),
+  );
   st.timeline = clampTimeline(
-    Array.isArray(payload.timeline) ? payload.timeline : [],
+    (Array.isArray(payload.timeline) ? payload.timeline : []).map((event) => ({
+      ...event,
+      message: redactKnownSecrets(event.message),
+    })),
   );
   clearAllToastDismissTimers();
   st.toasts = clampToasts(
     Array.isArray((payload as Partial<PersistedTaskCenterV2>).toasts)
       ? (payload as PersistedTaskCenterV2).toasts
       : [],
-  ).filter((toast) => !toastIsExpired(toast));
+  )
+    .filter((toast) => !toastIsExpired(toast))
+    .map((toast) => ({
+      ...toast,
+      message: redactKnownSecrets(toast.message),
+    }));
   for (const toast of st.toasts) {
     scheduleToastAutoDismiss(toast);
   }
@@ -486,7 +504,7 @@ function pushTimeline(
     atUnixMs,
     source,
     phase,
-    message,
+    message: redactKnownSecrets(message),
     level,
     ...(taskId ? { taskId } : {}),
   };
@@ -509,7 +527,7 @@ function pushToast(
     id: `toast_${atUnixMs}_${nextToastSeq}`,
     atUnixMs,
     source,
-    message,
+    message: redactKnownSecrets(message),
     level,
   };
   st.toasts.unshift(toast);
@@ -544,7 +562,7 @@ function pushEvent(
     id: `event_${atUnixMs}_${nextEventSeq}`,
     atUnixMs,
     source,
-    message,
+    message: redactKnownSecrets(message),
     level,
   });
   if (st.events.length > MAX_EVENTS) {
@@ -874,7 +892,7 @@ export function failTrackedCommand(id: string, err: unknown): void {
   const st = taskStoreSingleton();
   const task = st.activeById[id];
   if (!task) return;
-  const errorText = String(
+  const errorText = redactKnownSecrets(
     err instanceof Error ? err.message : (err ?? "Unknown error"),
   ).trim();
   const cancelled = isLikelyCancelledMessage(errorText);
@@ -958,7 +976,7 @@ export function applyResearchCampaignProgress(
   const datasetTotal = Math.max(0, Number(payload.datasetTotal || 0));
   const stage = String(payload.stage || "").trim();
   const label = String(payload.label || "").trim();
-  const message = String(payload.message || "").trim();
+  const message = redactKnownSecrets(payload.message).trim();
   const optimized = Math.max(0, Number(payload.optimized || 0));
   const validated = Math.max(0, Number(payload.validated || 0));
   const skipped = Math.max(0, Number(payload.skipped || 0));
@@ -1024,7 +1042,7 @@ export function recordLiveExecutionRunnerEvent(
   const now = Date.now();
   const status = String(payload.status || "").trim();
   const symbol = String(payload.symbol || "").trim();
-  const message = String(payload.message || "").trim();
+  const message = redactKnownSecrets(payload.message).trim();
   const signature = `${symbol}|${status}|${message}`;
   if (
     signature === lastRunnerEventSignature &&
@@ -1052,7 +1070,7 @@ export function recordPolygonLiveStatusEvent(
   const status = String(payload.status || "").trim();
   const market = String(payload.market || "").trim();
   const symbol = String(payload.symbol || "").trim();
-  const message = String(payload.message || "").trim();
+  const message = redactKnownSecrets(payload.message).trim();
   const signature = `${market}|${symbol}|${status}|${message}`;
   if (
     signature === lastPolygonStatusSignature &&

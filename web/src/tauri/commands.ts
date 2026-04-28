@@ -108,6 +108,7 @@ export const TAURI_COMMANDS = [
   'analyze_options_expression_feasibility',
   'validate_options_expression_artifact',
   'analyze_options_expression_validation_feasibility',
+  'analyze_portfolio_feasibility',
   'list_options_expression_artifacts',
   'load_options_expression_artifact',
   'save_options_csv',

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { redactKnownSecrets } from '../utils/redaction'
 
 export type LegacyBootPhase = 'idle' | 'booting' | 'ready' | 'error'
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
@@ -119,8 +120,8 @@ export const useRuntimeStore = defineStore('runtime', {
       this.bootPhase = 'error'
       this.bootReadyAt = null
       this.bootStage = BOOT_STAGES.FRONTEND_RUNTIME_FAILED
-      this.bootError = String(err instanceof Error ? err.message : err ?? 'Unknown error')
-      const stack = err instanceof Error ? String(err.stack || '').trim() : ''
+      this.bootError = redactKnownSecrets(err instanceof Error ? err.message : err ?? 'Unknown error')
+      const stack = redactKnownSecrets(err instanceof Error ? String(err.stack || '').trim() : '')
       if (stack) {
         this.bootErrorDetail = stack
         return
@@ -132,11 +133,11 @@ export const useRuntimeStore = defineStore('runtime', {
           return String(err ?? '')
         }
       })()
-      this.bootErrorDetail = String(raw || '').trim() || null
+      this.bootErrorDetail = redactKnownSecrets(raw).trim() || null
     },
 
     pushDesktopLog(level: RuntimeLogLevel, message: string): void {
-      const text = String(message || '').trim()
+      const text = redactKnownSecrets(message).trim()
       if (!text) return
       this.desktopLogs.unshift({
         id: `runtime_log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -173,7 +174,7 @@ export const useRuntimeStore = defineStore('runtime', {
     ): void {
       this.desktopUpdaterStatus = status
       this.desktopUpdaterVersion = String(version || '').trim()
-      this.desktopUpdaterError = String(error || '').trim()
+      this.desktopUpdaterError = redactKnownSecrets(error).trim()
       this.desktopUpdaterCheckedAt = status === 'idle' || status === 'unknown' ? null : Date.now()
     },
   },

@@ -52,6 +52,7 @@ pub mod options_expression;
 pub(crate) mod options_expression_gpu;
 pub mod options_signal_manifest;
 pub mod options_types;
+pub mod portfolio_feasibility;
 pub(crate) mod prescan_predictive;
 pub mod progress;
 pub(crate) mod request_normalization;
@@ -254,6 +255,12 @@ pub use options_types::{
     OptionsSplitAssignmentMode, OptionsStaticFilterBundle, OptionsTupleSpec, SignalSide,
     OPTIONS_DATASET_MANIFEST_VERSION, OPTIONS_EXPRESSION_ARTIFACT_VERSION,
     OPTIONS_EXPRESSION_VALIDATION_ARTIFACT_VERSION, OPTIONS_SIGNAL_MANIFEST_VERSION,
+};
+pub use portfolio_feasibility::{
+    portfolio_feasibility_from_artifacts, PortfolioAdmissionEvidenceV1, PortfolioAssetClass,
+    PortfolioCandidateEvidenceV1, PortfolioEvidenceStatus, PortfolioFeasibilityRequestV1,
+    PortfolioFeasibilityResultV1, PortfolioMissingEvidenceV1, PortfolioRejectedCandidateV1,
+    PortfolioReplayEvidenceStatus, PortfolioSourceRole, PortfolioSummaryMetricsV1,
 };
 
 pub use sharpe_stats::{

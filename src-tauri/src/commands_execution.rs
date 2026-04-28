@@ -5593,6 +5593,10 @@ mod tests {
         req.source_run_config_fingerprint.clear();
         validate_execution_source_preconditions(&req, ExecutionBrokerTarget::AlpacaPaper)
             .expect("paper target should not require live validation fingerprint");
+        validate_execution_source_preconditions(&req, ExecutionBrokerTarget::LocalPaper)
+            .expect("local paper target should not require live validation fingerprint");
+        validate_execution_source_preconditions(&req, ExecutionBrokerTarget::DryRun)
+            .expect("dry-run target should not require live validation fingerprint");
     }
 
     #[test]

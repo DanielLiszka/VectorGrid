@@ -285,6 +285,43 @@ describe("validationRequestBuilder", () => {
     ).toBe(true);
   });
 
+  it("keeps scalar-union equal-score admission order stable by input index", () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-scalar-union-ties",
+        objective: "Sharpe",
+        ma_source: "close",
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["ema"],
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 10, slow_len: 40 },
+          metrics: { sharpe: 1.25, omega: 1.0, calmar: 0.8, max_dd: 0.20 },
+        },
+        {
+          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 12, slow_len: 48 },
+          metrics: { sharpe: 1.25, omega: 0.9, calmar: 0.7, max_dd: 0.22 },
+        },
+        {
+          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 8, slow_len: 30 },
+          metrics: { sharpe: Number.NaN, omega: 1.6, calmar: 1.4, max_dd: 0.10 },
+        },
+      ],
+      candidates: "2",
+      admissionPolicy: "scalar_union",
+    });
+
+    expect(req.candidates.map((row) => row.fast_len)).toEqual([10, 8]);
+    expect(req.admission_provenance.heads[0]).toMatchObject({
+      objective: "Sharpe",
+      candidate_count: 2,
+      note: null,
+    });
+  });
+
   it("uses pareto-frontier admission automatically for CompositeMo artifacts", () => {
     const req = buildValidationRequest({
       currentRunReq: {

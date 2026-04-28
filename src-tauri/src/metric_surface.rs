@@ -152,6 +152,16 @@ fn artifact_requested_full17(artifact: &Value) -> bool {
     )
 }
 
+fn artifact_requested_trade22(artifact: &Value) -> bool {
+    matches!(
+        artifact_requested_metric_contract(artifact).as_str(),
+        "trade_22" | "trade22" | "trade-22"
+    ) || artifact
+        .pointer("/run/req/include_trade_metrics")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn artifact_gpu_kernel_metrics_count(artifact: &Value) -> Option<usize> {
     artifact
         .pointer("/run/res/route_diagnostics")
@@ -190,6 +200,50 @@ fn artifact_runtime_trade_tail_exact(artifact: &Value) -> bool {
         .pointer("/run/res/metric_surface_trade_tail_exact")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn metrics_value_has_trade22_tail(metrics: &Value) -> bool {
+    [
+        "closed_trades",
+        "winning_trades",
+        "losing_trades",
+        "gross_profit",
+        "gross_loss",
+    ]
+    .iter()
+    .all(|field| metrics.get(*field).and_then(Value::as_f64).is_some())
+}
+
+fn artifact_contains_trade22_tail_metrics(artifact: &Value) -> bool {
+    if artifact
+        .pointer("/run/res/best_metrics")
+        .is_some_and(metrics_value_has_trade22_tail)
+    {
+        return true;
+    }
+
+    if artifact
+        .pointer("/run/res/top")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter()
+                .filter_map(Value::as_array)
+                .filter_map(|row| row.get(1))
+                .any(metrics_value_has_trade22_tail)
+        })
+    {
+        return true;
+    }
+
+    artifact
+        .pointer("/run/res/pareto")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter()
+                .filter_map(Value::as_object)
+                .filter_map(|row| row.get("metrics"))
+                .any(metrics_value_has_trade22_tail)
+        })
 }
 
 fn is_cpu_metric_route(artifact: &Value) -> bool {
@@ -237,6 +291,13 @@ fn strategy_kind_supports_exact_gpu_metric_surface(artifact: &Value) -> bool {
     )
 }
 
+fn strategy_kind_supports_requested_trade22_surface(artifact: &Value) -> bool {
+    matches!(
+        artifact_strategy_kind(artifact).as_str(),
+        "DoubleMa" | "Pit" | "Set" | "Mts" | "Orc" | "Marrt" | "Vfct"
+    )
+}
+
 fn artifact_has_exact_trade_tail_support(artifact: &Value) -> bool {
     if artifact_published_trade_tail_exact(artifact) || artifact_runtime_trade_tail_exact(artifact)
     {
@@ -245,9 +306,25 @@ fn artifact_has_exact_trade_tail_support(artifact: &Value) -> bool {
 
     let backend_route = artifact_backend_route(artifact);
     if is_exact_gpu_kernel_route(&backend_route) {
+        if artifact_strategy_kind(artifact) == "DynamicDoubleMa"
+            && matches!(
+                artifact_runtime_metric_surface_kind(artifact),
+                Some(OptimizationMetricSurfaceKind::Trade22)
+            )
+        {
+            return true;
+        }
+
         return artifact_gpu_kernel_metrics_count(artifact)
             .map(|metrics_count| metrics_count >= TRADE22_FIELDS.len())
             .unwrap_or(false);
+    }
+
+    if strategy_kind_supports_requested_trade22_surface(artifact)
+        && artifact_requested_trade22(artifact)
+        && artifact_contains_trade22_tail_metrics(artifact)
+    {
+        return true;
     }
 
     matches!(

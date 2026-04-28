@@ -454,6 +454,8 @@ function stableObjectiveSort(
   rows: ValidationAdmissionRow[],
   objective: ValidationObjectiveKind,
 ): ValidationAdmissionRow[] {
+  // OrderingPolicyV1: finite objective scores rank first, descending by score;
+  // exact score ties preserve the original artifact/input row order.
   return [...rows].sort((left, right) => {
     const leftScore = scoreMetricsForObjective(left.metrics, objective);
     const rightScore = scoreMetricsForObjective(right.metrics, objective);

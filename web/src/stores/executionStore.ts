@@ -49,6 +49,7 @@ import {
   type LiveExecutionLifecycleState,
   type LiveExecutionTarget,
 } from '../services/liveExecutionLifecycleMachine'
+import { redactKnownSecrets } from '../utils/redaction'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 function applyVueTextFieldUpdate(state: ExecutionState, field: string, value: string): boolean {
@@ -236,12 +237,7 @@ function runtimeHost(store: unknown): ExecutionStoreRuntimeHost {
 }
 
 function redactExecutionCredentialText(state: ExecutionState, raw: unknown): string {
-  let next = String(raw || '').trim()
-  for (const secret of [String(state.apiKey || '').trim(), String(state.apiSecret || '').trim()]) {
-    if (!secret) continue
-    next = next.split(secret).join('[redacted]')
-  }
-  return next
+  return redactKnownSecrets(raw, [state.apiKey, state.apiSecret])
 }
 
 function normalizedOrderRows(values: unknown): ExecutionOrderRow[] {

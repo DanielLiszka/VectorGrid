@@ -1,5 +1,7 @@
-use crate::{BacktestEngine, ObjectiveKind, OptimizationResult};
-use std::cmp::Ordering;
+use crate::{
+    compare_score_rank_desc, normalize_rank_score, BacktestEngine, ObjectiveKind,
+    OptimizationResult,
+};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
 
 fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
@@ -12,11 +14,7 @@ fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
         ObjectiveKind::Volatility => -metrics.volatility,
         ObjectiveKind::MaxDrawdown => -metrics.max_dd,
     };
-    if score.is_finite() {
-        score
-    } else {
-        f64::NEG_INFINITY
-    }
+    normalize_rank_score(score)
 }
 
 pub fn grid_search<E: BacktestEngine>(
@@ -40,7 +38,7 @@ pub fn grid_search<E: BacktestEngine>(
 
     for (i, m) in metrics.iter().enumerate().skip(1) {
         let s = score(m, objective);
-        if s > best_score {
+        if compare_score_rank_desc(s, i, best_score, best_idx).is_lt() {
             best_score = s;
             best_idx = i;
         }
@@ -57,7 +55,7 @@ pub fn grid_search<E: BacktestEngine>(
         idx.sort_by(|&a, &b| {
             let sa = score(&metrics[a], objective);
             let sb = score(&metrics[b], objective);
-            sb.partial_cmp(&sa).unwrap_or(Ordering::Equal)
+            compare_score_rank_desc(sa, a, sb, b)
         });
         idx.truncate(top_k.min(metrics.len()));
         idx.into_iter()
@@ -227,6 +225,8 @@ mod tests {
         let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 3, false)
             .expect("grid result");
 
+        assert_eq!(result.best_params.fast_len, 5);
+        assert_eq!(result.best_params.slow_len, 20);
         assert_eq!(
             result
                 .top
@@ -234,6 +234,57 @@ mod tests {
                 .map(|(params, _)| (params.fast_len, params.slow_len))
                 .collect::<Vec<_>>(),
             vec![(5, 20), (6, 24), (8, 30)]
+        );
+    }
+
+    #[test]
+    fn grid_search_top_k_equal_scores_preserve_input_order_under_cap() {
+        let combos = vec![params(5, 20), params(6, 24), params(8, 30), params(10, 40)];
+        let engine = StubEngine {
+            metrics: vec![
+                metrics_with_sharpe(1.0),
+                metrics_with_sharpe(1.0),
+                metrics_with_sharpe(1.0),
+                metrics_with_sharpe(0.5),
+            ],
+        };
+
+        let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 2, false)
+            .expect("grid result");
+
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(5, 20), (6, 24)]
+        );
+        assert_eq!(result.top_scores, Some(vec![1.0, 1.0]));
+    }
+
+    #[test]
+    fn grid_search_all_non_finite_scores_finalize_predictably() {
+        let combos = vec![params(5, 20), params(6, 24)];
+        let engine = StubEngine {
+            metrics: vec![
+                metrics_with_sharpe(f64::NAN),
+                metrics_with_sharpe(f64::INFINITY),
+            ],
+        };
+
+        let result = grid_search(&engine, &combos, ObjectiveKind::Sharpe, 512, 2, false)
+            .expect("grid result");
+
+        assert_eq!(result.best_params.fast_len, 5);
+        assert_eq!(result.best_score, Some(f64::NEG_INFINITY));
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| params.fast_len)
+                .collect::<Vec<_>>(),
+            vec![5, 6]
         );
     }
 

@@ -12,6 +12,7 @@ import {
   type MarketDataDirInfoSummary,
   type MarketDataDirOpenResult,
   type PolygonCacheInfoSummary,
+  type PolygonCredentialStatusSummary,
   type PolygonDatasetSummary,
   browseMarketDataDir,
   clearData,
@@ -79,6 +80,13 @@ vi.mock("../services/dataService", () => ({
   clearPolygonApiKey: vi.fn(async () => ({
     cacheDir: "C:/default/polygon-cache",
     hasApiKey: false,
+    credentialStatus: {
+      hasApiKey: false,
+      state: "missing",
+      storageBackend: "missing",
+      degraded: false,
+      message: "",
+    },
     datasets: [],
   })),
   clearData: vi.fn(async () => undefined),
@@ -118,6 +126,13 @@ vi.mock("../services/dataService", () => ({
   getPolygonCacheInfo: vi.fn(async () => ({
     cacheDir: "C:/default/polygon-cache",
     hasApiKey: true,
+    credentialStatus: {
+      hasApiKey: true,
+      state: "keyring",
+      storageBackend: "keyring",
+      degraded: false,
+      message: "",
+    },
     datasets: [
       {
         market: "stocks",
@@ -242,6 +257,13 @@ vi.mock("../services/dataService", () => ({
   setPolygonApiKey: vi.fn(async () => ({
     cacheDir: "C:/default/polygon-cache",
     hasApiKey: true,
+    credentialStatus: {
+      hasApiKey: true,
+      state: "keyring",
+      storageBackend: "keyring",
+      degraded: false,
+      message: "",
+    },
     datasets: [],
   })),
   validatePolygonDataset: vi.fn(async () => ({
@@ -339,9 +361,26 @@ const defaultPolygonDataset: PolygonDatasetSummary = {
   integrity: null,
 };
 
+const defaultPolygonCredentialStatus: PolygonCredentialStatusSummary = {
+  hasApiKey: true,
+  state: "keyring",
+  storageBackend: "keyring",
+  degraded: false,
+  message: "",
+};
+
+const missingPolygonCredentialStatus: PolygonCredentialStatusSummary = {
+  hasApiKey: false,
+  state: "missing",
+  storageBackend: "missing",
+  degraded: false,
+  message: "",
+};
+
 const defaultPolygonCacheInfo: PolygonCacheInfoSummary = {
   cacheDir: "C:/default/polygon-cache",
   hasApiKey: true,
+  credentialStatus: defaultPolygonCredentialStatus,
   datasets: [{ ...defaultPolygonDataset }],
 };
 
@@ -416,6 +455,7 @@ describe("data store actions", () => {
     clearPolygonApiKeyMock.mockResolvedValue({
       ...defaultPolygonCacheInfo,
       hasApiKey: false,
+      credentialStatus: missingPolygonCredentialStatus,
       datasets: [],
     });
     setMarketDataDirMock.mockResolvedValue(defaultMarketDataDirInfo);
@@ -630,8 +670,7 @@ describe("data store actions", () => {
     const store = useDataStore();
     getPolygonCacheInfoMock
       .mockResolvedValueOnce({
-        cacheDir: "C:/default/polygon-cache",
-        hasApiKey: true,
+        ...defaultPolygonCacheInfo,
         datasets: [
           defaultPolygonDataset,
           {
@@ -643,8 +682,7 @@ describe("data store actions", () => {
         ],
       })
       .mockResolvedValueOnce({
-        cacheDir: "C:/default/polygon-cache",
-        hasApiKey: true,
+        ...defaultPolygonCacheInfo,
         datasets: [defaultPolygonDataset],
       });
 
@@ -688,6 +726,20 @@ describe("data store actions", () => {
     expect(store.dataTimeframe).toBe("15m");
     expect(store.datasetContext).toContain("source=polygon");
     expect(store.baseSourceKind).toBe("polygon");
+  });
+
+  it("redacts typed Polygon API keys from surfaced action failures", async () => {
+    const store = useDataStore();
+    store.setInputField("polygonApiKey", "poly_secret_123");
+    setPolygonApiKeyMock.mockRejectedValueOnce(
+      new Error("provider rejected apiKey=poly_secret_123"),
+    );
+
+    store.savePolygonApiKey();
+    await flushAsync();
+
+    expect(store.statusLine).toContain("[redacted]");
+    expect(store.statusLine).not.toContain("poly_secret_123");
   });
 
   it("surfaces cache reuse and unchecked integrity for downloaded Polygon datasets", async () => {
@@ -923,8 +975,7 @@ describe("data store actions", () => {
       },
     });
     getPolygonCacheInfoMock.mockResolvedValueOnce({
-      cacheDir: "C:/default/polygon-cache",
-      hasApiKey: true,
+      ...defaultPolygonCacheInfo,
       datasets: [otherDataset, defaultPolygonDataset],
     });
 

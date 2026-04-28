@@ -18,6 +18,10 @@ use super::{
 
 const DATASET_META_SCHEMA_VERSION: u64 = 2;
 const CONFIG_FINGERPRINT_SCHEMA_VERSION: u64 = 1;
+const REPRODUCIBILITY_SCHEMA_VERSION: u64 = 1;
+const NUMERIC_POLICY_VERSION: u64 = 1;
+const ORDERING_POLICY_VERSION: u64 = 1;
+const TOLERANCE_PROFILE_VERSION: u64 = 1;
 const RESAMPLE_RULE_SESSION_RELATIVE_OHLCV: &str = "session_relative_ohlcv";
 const RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP: &str = "day_first_timestamp";
 const ARTIFACT_PATH_SUFFIX_LIMIT: u32 = 999;
@@ -1319,6 +1323,262 @@ fn extract_route_provenance_from_artifact(v: &Value) -> Option<RouteProvenanceSu
     })
 }
 
+fn clone_reproducibility_scalar(value: Option<&Value>) -> Option<Value> {
+    match value? {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(Value::String(trimmed.to_string()))
+            }
+        }
+        Value::Number(_) | Value::Bool(_) => Some(value?.clone()),
+        _ => None,
+    }
+}
+
+fn insert_reproducibility_scalar(
+    out: &mut serde_json::Map<String, Value>,
+    key: &str,
+    artifact: &Value,
+    pointers: &[&str],
+) {
+    for pointer in pointers {
+        if let Some(value) = clone_reproducibility_scalar(artifact.pointer(pointer)) {
+            out.insert(key.to_string(), value);
+            return;
+        }
+    }
+}
+
+fn seed_reproducibility_ledger(artifact: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    insert_reproducibility_scalar(
+        &mut out,
+        "root_seed",
+        artifact,
+        &["/run/req/seed", "/run/req/random_seed"],
+    );
+    insert_reproducibility_scalar(
+        &mut out,
+        "validation_seed",
+        artifact,
+        &["/validation/req/seed"],
+    );
+    insert_reproducibility_scalar(
+        &mut out,
+        "cscv_seed",
+        artifact,
+        &["/validation/req/cscv_seed", "/validation/req/cscv_pbo/seed"],
+    );
+    insert_reproducibility_scalar(
+        &mut out,
+        "monte_carlo_seed",
+        artifact,
+        &[
+            "/validation/req/monte_carlo_seed",
+            "/validation/req/monte_carlo/seed",
+        ],
+    );
+    insert_reproducibility_scalar(
+        &mut out,
+        "bootstrap_seed",
+        artifact,
+        &[
+            "/validation/req/bootstrap_seed",
+            "/validation/req/trade_bootstrap/seed",
+        ],
+    );
+    insert_reproducibility_scalar(
+        &mut out,
+        "perturb_seed",
+        artifact,
+        &[
+            "/validation/req/perturb_seed",
+            "/validation/req/perturb/seed",
+        ],
+    );
+    let status = if out.is_empty() {
+        "unavailable"
+    } else {
+        "partial"
+    };
+    out.insert("status".to_string(), Value::String(status.to_string()));
+    Value::Object(out)
+}
+
+fn split_reproducibility_ledger(artifact: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for (key, pointers) in [
+        (
+            "walk_forward",
+            &[
+                "/validation/req/walk_forward",
+                "/validation/req/walk_forward_plan",
+            ][..],
+        ),
+        (
+            "reopt_walk_forward",
+            &[
+                "/validation/req/reopt_walk_forward",
+                "/validation/req/reopt_walkforward",
+            ][..],
+        ),
+        ("cross_ticker", &["/validation/req/cross_ticker"][..]),
+        (
+            "cscv_pbo",
+            &["/validation/req/cscv_pbo", "/validation/req/cscv"][..],
+        ),
+        (
+            "monte_carlo",
+            &[
+                "/validation/req/monte_carlo",
+                "/validation/req/monte_carlo_config",
+            ][..],
+        ),
+        (
+            "trade_bootstrap",
+            &[
+                "/validation/req/trade_bootstrap",
+                "/validation/req/bootstrap",
+            ][..],
+        ),
+        ("perturb", &["/validation/req/perturb"][..]),
+        ("spa", &["/validation/req/spa"][..]),
+    ] {
+        let value = pointers
+            .iter()
+            .filter_map(|pointer| artifact.pointer(pointer))
+            .find(|value| !value.is_null())
+            .cloned()
+            .unwrap_or(Value::Null);
+        out.insert(key.to_string(), value);
+    }
+    Value::Object(out)
+}
+
+fn env_text(artifact: &Value, key: &str) -> String {
+    artifact
+        .pointer(&format!("/env/{key}"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn environment_reproducibility_ledger(artifact: &Value) -> Value {
+    serde_json::json!({
+        "status": "partial",
+        "app_name": env_text(artifact, "app_name"),
+        "app_version": env_text(artifact, "app_version"),
+        "os": env_text(artifact, "os"),
+        "arch": env_text(artifact, "arch"),
+        "features": {
+            "cuda": cfg!(feature = "cuda"),
+            "cuda_backtest_kernel": cfg!(feature = "cuda-backtest-kernel")
+        }
+    })
+}
+
+fn route_uses_cuda(route: Option<&RouteProvenanceSummary>, artifact: &Value) -> bool {
+    let mut haystack = String::new();
+    if let Some(route) = route {
+        haystack.push_str(&route.requested_route);
+        haystack.push(' ');
+        haystack.push_str(&route.resolved_route);
+        haystack.push(' ');
+        haystack.push_str(&route.realized_route);
+    }
+    haystack.push(' ');
+    haystack.push_str(&normalize_requested_route(
+        artifact.pointer("/run/req/backend"),
+    ));
+    haystack.push(' ');
+    haystack.push_str(
+        artifact
+            .pointer("/run/res/backend_route")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    haystack.contains("Gpu")
+}
+
+fn kernel_reproducibility_ledger(
+    route: Option<&RouteProvenanceSummary>,
+    artifact: &Value,
+) -> Value {
+    let cuda_build_enabled = cfg!(feature = "cuda") || cfg!(feature = "cuda-backtest-kernel");
+    let cuda_route = route_uses_cuda(route, artifact);
+    let status = if cuda_route {
+        "blocked_pending_build_release_file_review"
+    } else if cuda_build_enabled {
+        "not_applicable_cpu_route"
+    } else {
+        "not_applicable_cpu_only"
+    };
+    serde_json::json!({
+        "status": status,
+        "cuda_enabled": cuda_build_enabled,
+        "cuda_backtest_kernel_enabled": cfg!(feature = "cuda-backtest-kernel"),
+        "ptx_hash_status": "blocked_pending_build_release_file_review"
+    })
+}
+
+fn route_reproducibility_ledger(route: Option<&RouteProvenanceSummary>) -> Value {
+    match route {
+        Some(route) => serde_json::json!({
+            "requested_route": route.requested_route,
+            "resolved_route": route.resolved_route,
+            "realized_route": route.realized_route,
+            "route_changed": route.route_changed,
+            "fallback_reason": route.fallback_reason
+        }),
+        None => serde_json::json!({ "status": "unavailable" }),
+    }
+}
+
+fn build_reproducibility_ledger(artifact: &Value) -> Value {
+    let route = extract_route_provenance_from_artifact(artifact);
+    serde_json::json!({
+        "schema_version": REPRODUCIBILITY_SCHEMA_VERSION,
+        "numeric_policy_version": NUMERIC_POLICY_VERSION,
+        "ordering_policy_version": ORDERING_POLICY_VERSION,
+        "tolerance_profile_version": TOLERANCE_PROFILE_VERSION,
+        "status": "partial",
+        "tiers": {
+            "request_identity": "R0",
+            "candidate_order": "R1",
+            "numeric_metrics": "R2",
+            "stochastic_modules": "R3",
+            "runtime_telemetry": "R4"
+        },
+        "route": route_reproducibility_ledger(route.as_ref()),
+        "seeds": seed_reproducibility_ledger(artifact),
+        "splits": split_reproducibility_ledger(artifact),
+        "environment": environment_reproducibility_ledger(artifact),
+        "kernel": kernel_reproducibility_ledger(route.as_ref(), artifact)
+    })
+}
+
+fn ensure_reproducibility_ledger(
+    artifact: &mut Value,
+    changes: &mut Vec<String>,
+) -> Result<(), String> {
+    let needs_reproducibility = !artifact
+        .get("reproducibility")
+        .is_some_and(Value::is_object);
+    if needs_reproducibility {
+        let ledger = build_reproducibility_ledger(artifact);
+        let root = artifact
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        root.insert("reproducibility".to_string(), ledger);
+        push_unique_change(changes, "backfilled reproducibility ledger");
+    }
+    Ok(())
+}
+
 fn live_session_artifact_path<R: tauri::Runtime>(
     artifact: &Value,
     app: &tauri::AppHandle<R>,
@@ -1740,6 +2000,8 @@ fn normalize_run_artifact_value_pure(
             push_unique_change(&mut changes, "backfilled optimization_metric_surface");
         }
     }
+
+    ensure_reproducibility_ledger(&mut normalized, &mut changes)?;
 
     Ok(RunArtifactNormalizationResult {
         value: normalized,
@@ -4424,6 +4686,7 @@ pub(super) fn compute_config_fingerprint_from_artifact(artifact: &Value) -> Stri
     if let Value::Object(map) = &mut run_req {
         map.remove("data_id");
         map.remove("dataId");
+        map.remove("reproducibility");
     }
 
     let mut val_req = artifact
@@ -4435,6 +4698,7 @@ pub(super) fn compute_config_fingerprint_from_artifact(artifact: &Value) -> Stri
         map.remove("dataId");
         map.remove("candidates");
         map.remove("admission_provenance");
+        map.remove("reproducibility");
 
         if let Some(cross) = map.get_mut("cross_ticker").and_then(|v| v.as_object_mut()) {
             if let Some(ds) = cross.get_mut("datasets").and_then(|v| v.as_array_mut()) {
@@ -6319,6 +6583,63 @@ mod tests {
                 .pointer("/lineage/lineageRelation")
                 .and_then(|value| value.as_str()),
             Some("compare_baseline")
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/reproducibility/schema_version")
+                .and_then(Value::as_u64),
+            Some(super::REPRODUCIBILITY_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/reproducibility/ordering_policy_version")
+                .and_then(Value::as_u64),
+            Some(super::ORDERING_POLICY_VERSION)
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/reproducibility/route/realized_route")
+                .and_then(Value::as_str),
+            Some("CpuOnly")
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/reproducibility/kernel/status")
+                .and_then(Value::as_str),
+            Some("blocked_pending_build_release_file_review")
+        );
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_preserves_existing_reproducibility_ledger() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("preserve_reproducibility");
+        let mut artifact = minimal_run_artifact(&ts);
+        artifact.as_object_mut().expect("artifact root").insert(
+            "reproducibility".to_string(),
+            json!({
+                "schema_version": 1,
+                "status": "complete",
+                "custom": "kept"
+            }),
+        );
+
+        let saved = save_run_artifact_blocking(artifact, handle, None).expect("save artifact");
+        let raw = std::fs::read_to_string(&saved.path).expect("read saved artifact");
+        let saved_value: Value = serde_json::from_str(&raw).expect("parse saved artifact");
+
+        assert_eq!(
+            saved_value
+                .pointer("/reproducibility/status")
+                .and_then(Value::as_str),
+            Some("complete")
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/reproducibility/custom")
+                .and_then(Value::as_str),
+            Some("kept")
         );
     }
 

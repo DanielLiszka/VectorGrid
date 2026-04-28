@@ -45,6 +45,24 @@ describe('runtimeStore', () => {
     expect(store.desktopLogs).toEqual([])
   })
 
+  it('redacts secret-looking values from runtime errors and logs', () => {
+    const store = useRuntimeStore()
+    const error = new Error('boot failed apiSecret=alpaca_secret_123')
+    error.stack = 'Error: boot failed apiSecret=alpaca_secret_123'
+
+    store.markError(error)
+    store.pushDesktopLog('warn', 'Polygon status apiKey=poly_secret_123')
+
+    const serialized = JSON.stringify({
+      bootError: store.bootError,
+      bootErrorDetail: store.bootErrorDetail,
+      logs: store.desktopLogs,
+    })
+    expect(serialized).toContain('[redacted]')
+    expect(serialized).not.toContain('alpaca_secret_123')
+    expect(serialized).not.toContain('poly_secret_123')
+  })
+
   it('tracks desktop bridge readiness flags and ready-state timing', () => {
     const store = useRuntimeStore()
     const nowSpy = vi.spyOn(Date, 'now')

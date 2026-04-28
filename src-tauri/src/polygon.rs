@@ -1,3 +1,4 @@
+use crate::redaction::redact_sensitive_text_with_values;
 use chrono::{Duration, NaiveDate};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -58,7 +59,35 @@ pub struct PolygonCacheManifest {
 pub struct PolygonCacheInfo {
     pub cache_dir: String,
     pub has_api_key: bool,
+    pub credential_status: PolygonCredentialStorageStatus,
     pub datasets: Vec<PolygonDatasetMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolygonCredentialStorageState {
+    Missing,
+    Keyring,
+    JsonFileFallback,
+    EnvFallback,
+    DotenvFallback,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolygonCredentialStorageStatus {
+    pub has_api_key: bool,
+    pub state: PolygonCredentialStorageState,
+    pub storage_backend: String,
+    pub degraded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PolygonApiKeyWithStatus {
+    api_key: Option<String>,
+    status: PolygonCredentialStorageStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,7 +273,7 @@ fn keyring_service_name(app_identifier: &str) -> String {
     }
 }
 
-fn env_api_key_fallback() -> Option<String> {
+fn direct_env_api_key_fallback() -> Option<String> {
     for name in ["POLYGON_KEY", "POLYGON_API_KEY"] {
         if let Ok(raw) = std::env::var(name) {
             let key = raw.trim().to_string();
@@ -253,8 +282,7 @@ fn env_api_key_fallback() -> Option<String> {
             }
         }
     }
-    let cwd = std::env::current_dir().ok()?;
-    dotenv_api_key_fallback_from_dir(&cwd)
+    None
 }
 
 fn dotenv_api_key_fallback_from_dir(start_dir: &Path) -> Option<String> {
@@ -362,28 +390,110 @@ pub fn clear_api_key(app_identifier: &str, cache_dir: &Path) -> Result<(), Strin
 }
 
 pub fn read_api_key(app_identifier: &str, cache_dir: &Path) -> Result<Option<String>, String> {
+    Ok(read_api_key_with_status(app_identifier, cache_dir)?.api_key)
+}
+
+fn read_api_key_with_status(
+    app_identifier: &str,
+    cache_dir: &Path,
+) -> Result<PolygonApiKeyWithStatus, String> {
     let service = keyring_service_name(app_identifier);
-    if let Ok(entry) = keyring::Entry::new(&service, KEYRING_USERNAME) {
-        if let Ok(key) = entry.get_password() {
-            let k = key.trim().to_string();
-            if !k.is_empty() {
-                return Ok(Some(k));
+    let mut keyring_unavailable = false;
+    match keyring::Entry::new(&service, KEYRING_USERNAME) {
+        Ok(entry) => {
+            if let Ok(key) = entry.get_password() {
+                let k = key.trim().to_string();
+                if !k.is_empty() {
+                    return Ok(api_key_status(
+                        Some(k),
+                        PolygonCredentialStorageState::Keyring,
+                        "keyring",
+                        false,
+                        None,
+                    ));
+                }
             }
         }
+        Err(_) => keyring_unavailable = true,
     }
 
     let st = read_settings_file(cache_dir)?;
-    let Some(st) = st else {
-        return Ok(env_api_key_fallback());
-    };
-    let key = st.api_key.trim().to_string();
-    if key.is_empty() {
-        return Ok(env_api_key_fallback());
+    if let Some(st) = st {
+        let key = st.api_key.trim().to_string();
+        if !key.is_empty() {
+            maybe_migrate_settings_key_to_keyring(app_identifier, cache_dir, &key);
+            return Ok(api_key_status(
+                Some(key),
+                PolygonCredentialStorageState::JsonFileFallback,
+                "json_file_fallback",
+                true,
+                Some(
+                    "Polygon API key is stored in legacy JSON fallback; historical downloads remain allowed."
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
-    maybe_migrate_settings_key_to_keyring(app_identifier, cache_dir, &key);
+    if let Some(key) = direct_env_api_key_fallback() {
+        return Ok(api_key_status(
+            Some(key),
+            PolygonCredentialStorageState::EnvFallback,
+            "environment",
+            true,
+            Some("Polygon API key is sourced from a process environment fallback.".to_string()),
+        ));
+    }
+    let cwd = std::env::current_dir().ok();
+    if let Some(key) = cwd.as_deref().and_then(dotenv_api_key_fallback_from_dir) {
+        return Ok(api_key_status(
+            Some(key),
+            PolygonCredentialStorageState::DotenvFallback,
+            "dotenv",
+            true,
+            Some("Polygon API key is sourced from a .env fallback.".to_string()),
+        ));
+    }
 
-    Ok(Some(key))
+    if keyring_unavailable {
+        Ok(api_key_status(
+            None,
+            PolygonCredentialStorageState::Unavailable,
+            "unavailable",
+            true,
+            Some(
+                "Polygon keyring backend is unavailable and no fallback API key was found."
+                    .to_string(),
+            ),
+        ))
+    } else {
+        Ok(api_key_status(
+            None,
+            PolygonCredentialStorageState::Missing,
+            "missing",
+            false,
+            None,
+        ))
+    }
+}
+
+fn api_key_status(
+    api_key: Option<String>,
+    state: PolygonCredentialStorageState,
+    storage_backend: &str,
+    degraded: bool,
+    message: Option<String>,
+) -> PolygonApiKeyWithStatus {
+    PolygonApiKeyWithStatus {
+        status: PolygonCredentialStorageStatus {
+            has_api_key: api_key.is_some(),
+            state,
+            storage_backend: storage_backend.to_string(),
+            degraded,
+            message,
+        },
+        api_key,
+    }
 }
 
 fn load_manifest(cache_dir: &Path) -> Result<PolygonCacheManifest, String> {
@@ -415,11 +525,12 @@ fn save_manifest(cache_dir: &Path, m: &PolygonCacheManifest) -> Result<(), Strin
 }
 
 pub fn get_cache_info(app_identifier: &str, cache_dir: &Path) -> Result<PolygonCacheInfo, String> {
-    let api_key = read_api_key(app_identifier, cache_dir)?;
+    let api_key = read_api_key_with_status(app_identifier, cache_dir)?;
     let manifest = load_manifest(cache_dir)?;
     Ok(PolygonCacheInfo {
         cache_dir: cache_dir.to_string_lossy().to_string(),
-        has_api_key: api_key.is_some(),
+        has_api_key: api_key.status.has_api_key,
+        credential_status: api_key.status,
         datasets: manifest.datasets.values().cloned().collect(),
     })
 }
@@ -613,7 +724,7 @@ fn fetch_chunk(
         let resp = match resp {
             Ok(r) => r,
             Err(e) => {
-                last_err = Some(e.to_string());
+                last_err = Some(redact_sensitive_text_with_values(&e.to_string(), [api_key]));
                 if attempt < 6 {
                     std::thread::sleep(std::time::Duration::from_millis(
                         (1_000u64.saturating_mul(1u64 << attempt)).min(30_000),
@@ -629,13 +740,21 @@ fn fetch_chunk(
 
         let status = resp.status();
         if status.is_success() {
-            let parsed: AggResponse = resp.json().map_err(|e| e.to_string())?;
+            let parsed: AggResponse = resp
+                .json()
+                .map_err(|e| redact_sensitive_text_with_values(&e.to_string(), [api_key]))?;
             if let Some(err) = parsed.error {
-                return Err(format!("Polygon API error: {err}"));
+                return Err(format!(
+                    "Polygon API error: {}",
+                    redact_sensitive_text_with_values(&err, [api_key])
+                ));
             }
             let st = parsed.status.unwrap_or_default();
             if !st.is_empty() && st.to_ascii_uppercase() != "OK" {
-                return Err(format!("Polygon API status: {st}"));
+                return Err(format!(
+                    "Polygon API status: {}",
+                    redact_sensitive_text_with_values(&st, [api_key])
+                ));
             }
             return Ok(parsed.results.unwrap_or_default());
         }
@@ -647,7 +766,7 @@ fn fetch_chunk(
             .and_then(|s| s.trim().parse::<u64>().ok())
             .map(|secs| secs.saturating_mul(1000));
 
-        let body = resp.text().unwrap_or_default();
+        let body = redact_sensitive_text_with_values(&resp.text().unwrap_or_default(), [api_key]);
         let retriable = status.as_u16() == 429 || status.is_server_error();
         last_err = Some(format!("({status}) {body}"));
         if retriable && attempt < 6 {
@@ -1465,9 +1584,17 @@ badline\n",
         std::env::remove_var("POLYGON_API_KEY");
 
         let resolved = read_api_key(&app_identifier, &cache_dir).expect("read api key");
+        let with_status =
+            read_api_key_with_status(&app_identifier, &cache_dir).expect("read api key status");
 
         std::env::remove_var("POLYGON_KEY");
         assert_eq!(resolved.as_deref(), Some(env_key));
+        assert_eq!(with_status.api_key.as_deref(), Some(env_key));
+        assert_eq!(
+            with_status.status.state,
+            PolygonCredentialStorageState::EnvFallback
+        );
+        assert!(with_status.status.degraded);
     }
 
     #[test]
@@ -1770,6 +1897,13 @@ badline\n",
         let info = get_cache_info(&app_identifier, &cache_dir).expect("cache info");
 
         assert!(info.has_api_key);
+        assert!(info.credential_status.has_api_key);
+        assert_eq!(
+            info.credential_status.state,
+            PolygonCredentialStorageState::JsonFileFallback
+        );
+        assert_eq!(info.credential_status.storage_backend, "json_file_fallback");
+        assert!(info.credential_status.degraded);
         assert!(info.datasets.is_empty());
         assert_eq!(info.cache_dir, cache_dir.to_string_lossy().to_string());
     }

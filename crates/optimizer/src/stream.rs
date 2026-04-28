@@ -1,4 +1,4 @@
-use crate::{ObjectiveKind, OptimizationHeatmap, OptimizationResult};
+use crate::{normalize_rank_score, ObjectiveKind, OptimizationHeatmap, OptimizationResult};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
@@ -13,18 +13,22 @@ fn score(metrics: &Metrics, objective: ObjectiveKind) -> f64 {
         ObjectiveKind::Volatility => -metrics.volatility,
         ObjectiveKind::MaxDrawdown => -metrics.max_dd,
     };
-    if s.is_finite() {
-        s
-    } else {
-        f64::NEG_INFINITY
-    }
+    normalize_rank_score(s)
 }
 
 #[derive(Clone, Debug)]
 struct ScoredCombo {
     score: f64,
+    tie_index: usize,
     params: DoubleMaParams,
     metrics: Metrics,
+}
+
+impl ScoredCombo {
+    fn with_tie_offset(mut self, offset: usize) -> Self {
+        self.tie_index = self.tie_index.saturating_add(offset);
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -150,7 +154,7 @@ impl HeatmapAgg {
 
 impl PartialEq for ScoredCombo {
     fn eq(&self, other: &Self) -> bool {
-        self.score.to_bits() == other.score.to_bits()
+        self.score.to_bits() == other.score.to_bits() && self.tie_index == other.tie_index
     }
 }
 
@@ -164,7 +168,9 @@ impl PartialOrd for ScoredCombo {
 
 impl Ord for ScoredCombo {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.score.total_cmp(&other.score)
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| other.tie_index.cmp(&self.tie_index))
     }
 }
 
@@ -227,11 +233,7 @@ impl StreamAggregator {
         } else {
             score(metrics, self.objective)
         };
-        if score.is_finite() {
-            score
-        } else {
-            f64::NEG_INFINITY
-        }
+        normalize_rank_score(score)
     }
 
     pub fn with_heatmap(
@@ -250,6 +252,7 @@ impl StreamAggregator {
     }
 
     pub fn push(&mut self, params: DoubleMaParams, metrics: Metrics) {
+        let tie_index = self.num_combos;
         self.num_combos = self.num_combos.saturating_add(1);
         let s = self.score_value(&params, &metrics);
 
@@ -261,21 +264,17 @@ impl StreamAggregator {
             h.push(params.fast_len, params.slow_len, s);
         }
 
+        let candidate = ScoredCombo {
+            score: s,
+            tie_index,
+            params: params.clone(),
+            metrics: metrics.clone(),
+        };
         match self.best.as_ref() {
             None => {
-                self.best = Some(ScoredCombo {
-                    score: s,
-                    params: params.clone(),
-                    metrics: metrics.clone(),
-                });
+                self.best = Some(candidate.clone());
             }
-            Some(b) if s > b.score => {
-                self.best = Some(ScoredCombo {
-                    score: s,
-                    params: params.clone(),
-                    metrics: metrics.clone(),
-                });
-            }
+            Some(b) if candidate.cmp(b).is_gt() => self.best = Some(candidate.clone()),
             _ => {}
         }
 
@@ -283,18 +282,14 @@ impl StreamAggregator {
             return;
         }
 
-        let entry = ScoredCombo {
-            score: s,
-            params,
-            metrics,
-        };
+        let entry = candidate;
         if self.heap.len() < self.top_k {
             self.heap.push(Reverse(entry));
             return;
         }
 
         if let Some(min_top) = self.heap.peek() {
-            if entry.score > min_top.0.score {
+            if entry.cmp(&min_top.0).is_gt() {
                 let _ = self.heap.pop();
                 self.heap.push(Reverse(entry));
             }
@@ -349,22 +344,23 @@ impl StreamAggregator {
 
         match (self.best.take(), other.best) {
             (None, None) => {}
-            (None, Some(b)) => self.best = Some(b),
+            (None, Some(b)) => self.best = Some(b.with_tie_offset(self_had_combos)),
             (Some(a), None) => self.best = Some(a),
             (Some(a), Some(b)) => {
-                self.best = Some(if b.score > a.score { b } else { a });
+                let b = b.with_tie_offset(self_had_combos);
+                self.best = Some(if b.cmp(&a).is_gt() { b } else { a });
             }
         }
 
         if self.top_k > 0 {
             for rev in other.heap {
-                let entry = rev.0;
+                let entry = rev.0.with_tie_offset(self_had_combos);
                 if self.heap.len() < self.top_k {
                     self.heap.push(Reverse(entry));
                     continue;
                 }
                 if let Some(min_top) = self.heap.peek() {
-                    if entry.score > min_top.0.score {
+                    if entry.cmp(&min_top.0).is_gt() {
                         let _ = self.heap.pop();
                         self.heap.push(Reverse(entry));
                     }
@@ -416,7 +412,7 @@ impl StreamAggregator {
         let best = self.best?;
 
         let mut top: Vec<ScoredCombo> = self.heap.into_iter().map(|r| r.0).collect();
-        top.sort_by(|a, b| b.score.total_cmp(&a.score));
+        top.sort_by(|a, b| b.cmp(a));
         let top_scores = top.iter().map(|x| x.score).collect();
         let top = top.into_iter().map(|x| (x.params, x.metrics)).collect();
 
@@ -529,6 +525,90 @@ mod tests {
         assert_eq!(result.best_params.fast_len, 8);
         assert_eq!(result.best_score, Some(8.0));
         assert_eq!(result.top_scores, Some(vec![8.0, f64::NEG_INFINITY]));
+    }
+
+    #[test]
+    fn equal_score_best_preserves_first_seen() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100);
+        agg.push(params(5, 20), metrics_with_sharpe(1.0));
+        agg.push(params(6, 24), metrics_with_sharpe(1.0));
+        agg.push(params(8, 30), metrics_with_sharpe(1.0));
+
+        let result = agg.finalize().expect("result");
+        assert_eq!(result.best_params.fast_len, 5);
+        assert_eq!(result.best_params.slow_len, 20);
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(5, 20), (6, 24), (8, 30)]
+        );
+    }
+
+    #[test]
+    fn equal_score_topk_preserves_first_seen_under_cap() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100);
+        agg.push(params(5, 20), metrics_with_sharpe(1.0));
+        agg.push(params(6, 24), metrics_with_sharpe(1.0));
+        agg.push(params(8, 30), metrics_with_sharpe(1.0));
+        agg.push(params(10, 40), metrics_with_sharpe(0.5));
+
+        let result = agg.finalize().expect("result");
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(5, 20), (6, 24)]
+        );
+        assert_eq!(result.top_scores, Some(vec![1.0, 1.0]));
+    }
+
+    #[test]
+    fn merge_equal_scores_is_left_before_right() {
+        let mut left = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100);
+        left.push(params(5, 20), metrics_with_sharpe(1.0));
+        left.push(params(6, 24), metrics_with_sharpe(0.9));
+
+        let mut right = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100);
+        right.push(params(8, 30), metrics_with_sharpe(1.0));
+        right.push(params(10, 40), metrics_with_sharpe(0.9));
+
+        left.merge(right);
+        let result = left.finalize().expect("result");
+
+        assert_eq!(result.best_params.fast_len, 5);
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(5, 20), (8, 30), (6, 24)]
+        );
+    }
+
+    #[test]
+    fn all_non_finite_scores_still_finalize_predictably() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100);
+        agg.push(params(5, 20), metrics_with_sharpe(f64::NAN));
+        agg.push(params(6, 24), metrics_with_sharpe(f64::INFINITY));
+        agg.push(params(8, 30), metrics_with_sharpe(f64::NEG_INFINITY));
+
+        let result = agg.finalize().expect("result");
+        assert_eq!(result.best_params.fast_len, 5);
+        assert_eq!(result.best_score, Some(f64::NEG_INFINITY));
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| params.fast_len)
+                .collect::<Vec<_>>(),
+            vec![5, 6]
+        );
     }
 
     #[test]

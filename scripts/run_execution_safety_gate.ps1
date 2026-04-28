@@ -88,6 +88,10 @@ try {
       Invoke-Step "Frontend Tauri command contract check" {
         & npm.cmd --prefix web run check:commands
       }
+
+      Invoke-Step "Frontend Tauri command risk policy check" {
+        & npm.cmd --prefix web run check:tauri-command-risk-policy
+      }
     }
   }
 

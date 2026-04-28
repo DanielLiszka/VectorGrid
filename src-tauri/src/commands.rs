@@ -20,6 +20,8 @@ mod commands_optimize;
 mod commands_options_data;
 #[path = "commands_options_expression.rs"]
 mod commands_options_expression;
+#[path = "commands_portfolio.rs"]
+mod commands_portfolio;
 #[path = "commands_reports.rs"]
 mod commands_reports;
 #[path = "commands_reports_api.rs"]
@@ -141,6 +143,7 @@ pub use commands_options_expression::{
     OptionsExpressionArtifactSummary, RunOptionsExpressionResponse, SaveOptionsCsvRequest,
     SaveOptionsCsvResponse, ValidateOptionsExpressionArtifactResponse,
 };
+pub use commands_portfolio::analyze_portfolio_feasibility;
 pub use commands_reports::build_report_xlsx_bytes_headless;
 pub(crate) use commands_reports::{build_meta_report_xlsx_bytes, sanitize_filename_component};
 pub use commands_reports_api::{
@@ -184,4 +187,5 @@ pub use ta_app_core::{
     OptimizationModeResolved, OptionsDatasetManifestV1, OptionsExpressionArtifactV1,
     OptionsExpressionFeasibilityReport, OptionsExpressionRunRequest, OptionsExpressionRunResult,
     OptionsExpressionValidationRequest, OptionsExpressionValidationResult,
+    PortfolioFeasibilityRequestV1, PortfolioFeasibilityResultV1,
 };

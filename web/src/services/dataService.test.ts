@@ -389,6 +389,13 @@ describe("dataService market-data directory actions", () => {
       .mockResolvedValueOnce({
         cache_dir: "C:/polygon",
         has_api_key: true,
+        credential_status: {
+          has_api_key: true,
+          state: "json_file_fallback",
+          storage_backend: "json_file_fallback",
+          degraded: true,
+          message: "legacy file fallback",
+        },
         datasets: [
           {
             csv_path: "C:/polygon/AAPL_1m.csv",
@@ -438,6 +445,13 @@ describe("dataService market-data directory actions", () => {
       "polygon_get_cache_info",
     );
     expect(info.hasApiKey).toBe(true);
+    expect(info.credentialStatus).toEqual({
+      hasApiKey: true,
+      state: "json_file_fallback",
+      storageBackend: "json_file_fallback",
+      degraded: true,
+      message: "legacy file fallback",
+    });
     expect(saved.hasApiKey).toBe(true);
     expect(cleared.hasApiKey).toBe(false);
   });
@@ -468,6 +482,13 @@ describe("dataService market-data directory actions", () => {
     const info = await getPolygonCacheInfo();
 
     expect(info.hasApiKey).toBe(false);
+    expect(info.credentialStatus).toEqual({
+      hasApiKey: false,
+      state: "missing",
+      storageBackend: "missing",
+      degraded: false,
+      message: "",
+    });
     expect(info.datasets).toEqual([
       {
         market: "stocks",

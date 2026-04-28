@@ -14,7 +14,9 @@ param(
   [string]$BenchName = "",
   [string]$BenchFilter = "",
   [string]$CriterionEstimatesPath = "",
-  [string]$CriterionEstimatesGlob = ""
+  [string]$CriterionEstimatesGlob = "",
+  [switch]$ListCases,
+  [switch]$PlanOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,7 +65,7 @@ function Write-PassFailLine([string]$name, [bool]$pass, [string]$msg) {
 
 function Get-PerfProcesses() {
   @(Get-Process | Where-Object {
-      $_.ProcessName -match '^(cargo|criterion|nsys|ncu)$' `
+      $_.ProcessName -match '^(cargo|criterion|nsys|ncu|compute-sanitizer)$' `
         -or $_.ProcessName -like 'double_ma_validation_workflow*' `
         -or $_.ProcessName -like 'composite_validation_workflow*' `
         -or $_.ProcessName -like 'ta_double_ma_validation_cost*'
@@ -330,6 +332,52 @@ function Get-GpuValidationPerfCases {
   )
 }
 
+function New-GpuValidationPerfPlan {
+  param([Parameter(Mandatory = $true)]$Cases)
+
+  return [ordered]@{
+    schema_version = $SchemaVersion
+    case_registry_version = $CaseRegistryVersion
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    mode = $Mode
+    gate = "gpu_validation_perf"
+    criterion_enabled = -not [bool]$SkipCriterion
+    structured_probe_enabled = -not [bool]$SkipStructuredProbe
+    structured_probe = if (-not $SkipStructuredProbe) {
+      [ordered]@{
+        workflow_family = "conventional_double_ma_validation"
+        bars = $StructuredProbeBars
+        repeats = $StructuredProbeRepeats
+        csv_path = $StructuredProbeCsv
+        backend = "gpu-kernel"
+        validates_route = "GpuKernel"
+      }
+    } else {
+      $null
+    }
+    criterion_cases = $Cases
+    baseline_path = $BaselinePath
+    out_path = $OutPath
+    regression_pct = $RegressionPct
+    structured_regression_pct = $StructuredRegressionPct
+  }
+}
+
+function Write-GpuValidationPerfPlan {
+  param([Parameter(Mandatory = $true)]$Plan)
+
+  Write-Host "GPU validation perf gate plan:"
+  Write-Host "  mode=$($Plan.mode)"
+  Write-Host "  criterion_enabled=$($Plan.criterion_enabled)"
+  foreach ($case in $Plan.criterion_cases) {
+    Write-Host "  case=$($case.id) bench=$($case.bench_name) filter=$($case.bench_filter) expected_route=$($case.expected_backend_route)"
+  }
+  Write-Host "  structured_probe_enabled=$($Plan.structured_probe_enabled)"
+  if ($Plan.structured_probe_enabled) {
+    Write-Host "  structured_probe=DoubleMa ${StructuredProbeBars} bars, ${StructuredProbeRepeats} repeat(s), expected_route=GpuKernel"
+  }
+}
+
 function Invoke-GpuValidationBenchCase {
   param(
     [Parameter(Mandatory = $true)][string]$BenchExePath,
@@ -547,6 +595,17 @@ $criterionCases = @()
 if (-not $SkipCriterion) {
   $criterionCases = Get-GpuValidationPerfCases
 }
+
+if ($ListCases -or $PlanOnly) {
+  $plan = New-GpuValidationPerfPlan -Cases $criterionCases
+  Write-GpuValidationPerfPlan -Plan $plan
+  if ($PlanOnly) {
+    Write-JsonUtf8 -Path $OutPath -Value $plan
+    Write-Host "GPU validation perf plan written to $OutPath"
+  }
+  exit 0
+}
+
 $gpuIdentity = Get-GpuIdentity
 $structuredProbe = $null
 

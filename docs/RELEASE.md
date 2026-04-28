@@ -22,7 +22,8 @@ Current release-candidate caveats:
 
 - `scripts/run_release_candidate_gate.ps1` runs `npm --prefix web run parity`, then skips output-parity sample baselines.
 - It only runs packaged desktop smoke when `-IncludeDesktopSmoke` is set and `-SkipPackagedSmoke` is not set.
-- It invokes GPU perf under `-IncludePerf` for non-CPU variants, but that is not a dedicated GPU MA-sweep authority.
+- It invokes generic GPU perf under `-IncludePerf` for non-CPU variants, but that is not a dedicated GPU MA-sweep authority.
+- It invokes dedicated GPU validation perf only when `-IncludeGpuValidationPerf` is set on the `gpu-kernel` variant.
 - It references `scripts/run_live_execution_safety_harness.ps1`; review that exact script before treating the harness as release authority.
 
 ## Variant Evidence
@@ -31,7 +32,7 @@ Current release-candidate caveats:
 |---|---|---|
 | CPU-only | CPU build; release doctor; release candidate; provenance/manifest/hash. | Must not require CUDA Toolkit, NVCC, NVIDIA GPU, or driver. |
 | GPU MA-sweep | `--features cuda`; release doctor/candidate for `gpu-ma`; NVIDIA driver/runtime evidence. | Current release-candidate `-IncludePerf` uses the generic GPU perf gate. |
-| GPU kernel | `--features cuda-backtest-kernel`; `VECTORBT_USE_PREBUILT_PTX=1` for packaged kernel path; manifest PTX evidence; GPU perf. | `cuda-backtest-kernel` implies `cuda`; runtime NVIDIA driver is still required. |
+| GPU kernel | `--features cuda-backtest-kernel`; `VECTORBT_USE_PREBUILT_PTX=1` for packaged kernel path; manifest PTX evidence; GPU perf; GPU validation perf for validation/residency claims. | `cuda-backtest-kernel` implies `cuda`; runtime NVIDIA driver is still required. |
 | Options GPU scorer | Options promotion gate; CPU/GPU ranking parity; options tests. | Current manifest does not list `options_expression.prebuilt.ptx`; that is a future packaging-evidence gap. |
 | ML Signal native CPU | ML quality gate; native smoke; CatBoost DLL resource in manifest. | Manifest generation requires the CatBoost native DLL unless explicitly allowed missing for non-shipping diagnostics. |
 | Live execution enabled | Execution safety gate; no live credentials; safety harness only after exact script review. | Public live release requires manual recovery and emergency-halt posture. |

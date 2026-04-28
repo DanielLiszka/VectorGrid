@@ -94,4 +94,47 @@ describe('artifactIdentity', () => {
     expect(stableA).toBe(stableB)
     expect(changed).not.toBe(stableA)
   })
+
+  it('excludes reproducibility telemetry from semantic config identity', () => {
+    const runReq = {
+      strategy_kind: 'DoubleMa',
+      objective: 'Sharpe',
+      reproducibility: {
+        environment: {
+          generated_at_utc: '2026-04-28T12:00:00Z',
+          free_memory_bytes: 123,
+        },
+      },
+    }
+    const validationReq = {
+      seed: 7,
+      reproducibility: {
+        kernel: {
+          status: 'blocked_pending_build_release_file_review',
+        },
+      },
+    }
+
+    expect(computeConfigFingerprint(runReq, validationReq)).toBe(
+      computeConfigFingerprint(
+        {
+          ...runReq,
+          reproducibility: {
+            environment: {
+              generated_at_utc: '2026-04-28T12:30:00Z',
+              free_memory_bytes: 456,
+            },
+          },
+        },
+        {
+          ...validationReq,
+          reproducibility: {
+            kernel: {
+              status: 'unavailable',
+            },
+          },
+        },
+      ),
+    )
+  })
 })

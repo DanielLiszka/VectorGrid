@@ -46,7 +46,7 @@ CPU-only builds must keep working without a CUDA toolchain, NVIDIA driver, or NV
 | Frontend workflow behavior | `powershell -File scripts/run_frontend_e2e_gate.ps1` | Static QA checks, a11y, responsive/regression lanes as affected. | Backend perf gates. |
 | Artifact/report shape | `node scripts/run_output_parity_check.mjs` | Semantic parity checks when semantic claims change. | Release-candidate gate alone; `scripts/check_output_parity.mjs` alone for semantics. |
 | Release readiness | `powershell -File scripts/run_release_doctor.ps1 -Variant <variant>` | `readiness.json`. | Manifest/provenance alone. |
-| Full local release rehearsal | `powershell -File scripts/run_release_candidate_gate.ps1 -Variant <variant>` | Readiness, provenance, manifest, hashes, smoke where configured. | Disabled CI workflows. |
+| Full local release rehearsal | `powershell -File scripts/run_release_candidate_gate.ps1 -Variant <variant>` | Readiness, provenance, manifest, hashes, smoke where configured. Add `-IncludeGpuValidationPerf` to `gpu-kernel` rehearsals for GPU validation/residency release claims. | Disabled CI workflows. |
 
 ## Benchmark Timing Boundaries
 
@@ -88,7 +88,8 @@ Current release-candidate caveats:
 - `scripts/run_release_candidate_gate.ps1` runs `npm --prefix web run parity`.
 - It prints `[SKIP] Output parity sample baselines are local-only in the backend-preview public tree.`
 - It only runs packaged desktop smoke when `-IncludeDesktopSmoke` is set and `-SkipPackagedSmoke` is not set.
-- It invokes GPU perf under `-IncludePerf` for non-CPU variants, but that is not a dedicated GPU MA-sweep authority.
+- It invokes generic GPU perf under `-IncludePerf` for non-CPU variants, but that is not a dedicated GPU MA-sweep authority.
+- It invokes dedicated GPU validation perf only when `-IncludeGpuValidationPerf` is set on the `gpu-kernel` variant.
 - It references `scripts/run_live_execution_safety_harness.ps1`; review that exact script before making internal live-harness authority claims.
 
 ## Release Variant Evidence Matrix
@@ -97,7 +98,7 @@ Current release-candidate caveats:
 |---|---|---|
 | CPU-only | CPU build; release doctor; release candidate; provenance/manifest/hash. | Must not require CUDA Toolkit, NVCC, NVIDIA GPU, or driver. |
 | GPU MA-sweep | `--features cuda`; release doctor/candidate for `gpu-ma`; NVIDIA driver/runtime evidence. | Current RC `-IncludePerf` uses generic GPU perf gate; dedicated MA-sweep authority is a gap. |
-| GPU kernel | `--features cuda-backtest-kernel`; `VECTORBT_USE_PREBUILT_PTX=1` for packaged kernel path; manifest PTX evidence; GPU perf. | `cuda-backtest-kernel` implies `cuda`; runtime NVIDIA driver still required. |
+| GPU kernel | `--features cuda-backtest-kernel`; `VECTORBT_USE_PREBUILT_PTX=1` for packaged kernel path; manifest PTX evidence; GPU perf; GPU validation perf when validation/residency claims are made. | `cuda-backtest-kernel` implies `cuda`; runtime NVIDIA driver still required. |
 | Options GPU scorer | Options promotion gate; CPU/GPU ranking parity; options tests. | Current manifest does not list `options_expression.prebuilt.ptx`; adding that is a later packaging-evidence gap, not current fact. |
 | ML Signal native CPU | ML quality gate; native smoke; CatBoost DLL resource in manifest. | Manifest currently requires CatBoost native DLL unless explicitly allowed missing. |
 | Live execution enabled | Execution safety gate; no live credentials; safety harness only after exact script review. | Public live release requires manual recovery and emergency-halt posture. |

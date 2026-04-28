@@ -1,4 +1,5 @@
 use super::commands_reports;
+use crate::local_path_policy::{validate_shell_open_path, ShellOpenPurpose};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::Manager;
@@ -110,7 +111,7 @@ where
 
 #[tauri::command]
 pub async fn reveal_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let path = commands_reports::existing_path(path)?;
+    let path = validate_shell_open_path(&app, &path, ShellOpenPurpose::GenericReveal)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .reveal_item_in_dir(path)
@@ -119,7 +120,7 @@ pub async fn reveal_path(path: String, app: tauri::AppHandle) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn open_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let path = commands_reports::existing_path(path)?;
+    let path = validate_shell_open_path(&app, &path, ShellOpenPurpose::GenericOpen)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
