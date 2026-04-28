@@ -269,6 +269,92 @@ describe("meta-service campaign resume and retry", () => {
     });
   });
 
+  it("preserves source identity from a v2 saved summary when resuming", async () => {
+    const summaryPath = "C:/runs/incomplete_campaign_v2.json";
+    const summary = {
+      ...summaryFor("cancelled", [
+        {
+          csv_path: "C:/a.csv",
+          label: "AAPL",
+          timeframe: "1m",
+          is_holdout: false,
+          status: "failed",
+          error: "validation: cancelled",
+        },
+      ]),
+      version: 2,
+      resume_state: "resumable",
+      evidence_state: "partial",
+      request: {
+        ...summaryFor("cancelled", []).request,
+        datasets: [
+          {
+            csv_path: "C:/a.csv",
+            label: "AAPL",
+            timeframe: "1m",
+            source_size_bytes: 123,
+            source_mtime_utc_ms: 456,
+            source_content_fingerprint: "sha256:a",
+          },
+        ],
+      },
+    };
+    const { invokeCommandMock } = await setupHarness(summaryPath, summary);
+    const { batchResumeIncomplete } = await import("./metaService");
+
+    await batchResumeIncomplete();
+
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "run_research_campaign",
+    );
+    expect(call?.[1]).toMatchObject({
+      req: {
+        skip_existing: true,
+        datasets: [
+          {
+            csv_path: "C:/a.csv",
+            source_size_bytes: 123,
+            source_mtime_utc_ms: 456,
+            source_content_fingerprint: "sha256:a",
+          },
+        ],
+      },
+    });
+  });
+
+  it("blocks resume when the saved summary marks campaign evidence unsafe", async () => {
+    const summaryPath = "C:/runs/unsafe_campaign.json";
+    const summary = {
+      ...summaryFor("cancelled", [
+        {
+          csv_path: "C:/a.csv",
+          label: "AAPL",
+          timeframe: "1m",
+          is_holdout: false,
+          status: "failed",
+          error: "prepare: unreadable",
+        },
+      ]),
+      version: 2,
+      resume_state: "blocked_unsafe",
+      evidence_state: "unsafe",
+    };
+    const { invokeCommandMock, analysisStore } = await setupHarness(
+      summaryPath,
+      summary,
+    );
+    const { batchResumeIncomplete } = await import("./metaService");
+
+    await batchResumeIncomplete();
+
+    expect(
+      invokeCommandMock.mock.calls.some(
+        ([command]) => command === "run_research_campaign",
+      ),
+    ).toBe(false);
+    expect(analysisStore.statusLine).toContain("blocked from resume");
+  });
+
   it("retries from a saved summary path using the original dataset set plus skip_existing", async () => {
     const summaryPath = "C:/runs/failed_campaign.json";
     const summary = summaryFor("completed_with_failures", [

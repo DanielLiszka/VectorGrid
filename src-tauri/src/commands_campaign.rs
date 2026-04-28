@@ -16,6 +16,7 @@ use crate::data_cache::{self, LoadOutcome};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
@@ -196,13 +197,84 @@ pub struct ResearchCampaignItemDiagnostics {
     pub checkpoint_save_ms: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignEvidenceState {
+    None,
+    Partial,
+    Complete,
+    Stale,
+    Unsafe,
+    LegacyDegraded,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignResumeState {
+    Resumable,
+    RestartOnly,
+    Complete,
+    BlockedStale,
+    BlockedUnsafe,
+    LegacyDegraded,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResearchCampaignDatasetIdentitySummary {
+    pub csv_path: String,
+    pub label: String,
+    pub timeframe: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_timeframe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_timeframe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_mtime_utc_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_content_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResearchCampaignManifestV2 {
+    pub manifest_version: u32,
+    pub manifest_hash: String,
+    pub dataset_universe_hash: String,
+    pub optimization_template_hash: String,
+    pub validation_config_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_request_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage5_request_hash: Option<String>,
+    pub holdout_split_hash: String,
+    pub strategy_kind: String,
+    pub execution_mode: ResearchCampaignExecutionMode,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holdout_tag: Option<String>,
+    pub holdout_pct: u32,
+    pub preload_policy: ResearchCampaignPreloadPolicy,
+    pub strict_identity_required: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ResearchCampaignItemSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
     pub csv_path: String,
     pub label: String,
     pub timeframe: String,
     pub is_holdout: bool,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_identity: Option<ResearchCampaignDatasetIdentitySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_state: Option<CampaignEvidenceState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_state: Option<CampaignResumeState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reuse_decision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,6 +291,12 @@ pub struct ResearchCampaignSummary {
     pub kind: String,
     pub ts: String,
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<ResearchCampaignManifestV2>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_state: Option<CampaignEvidenceState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_state: Option<CampaignResumeState>,
     pub strategy_kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeframe: Option<String>,
@@ -250,6 +328,24 @@ pub struct RunResearchCampaignResponse {
     pub stage5: Option<RunMetaStage5Response>,
 }
 
+impl ResearchCampaignItemSummary {
+    fn with_campaign_metadata(
+        mut self,
+        item_id: Option<String>,
+        dataset_identity: Option<ResearchCampaignDatasetIdentitySummary>,
+        evidence_state: Option<CampaignEvidenceState>,
+        resume_state: Option<CampaignResumeState>,
+        reuse_decision: Option<String>,
+    ) -> Self {
+        self.item_id = item_id;
+        self.dataset_identity = dataset_identity;
+        self.evidence_state = evidence_state;
+        self.resume_state = resume_state;
+        self.reuse_decision = reuse_decision;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchCampaignProgressPayload {
@@ -277,6 +373,36 @@ enum CampaignOptimizationResult {
     Backend(BackendOptimizationResult),
     CompositeMo(CompositeMoResult),
     CompositeMoArtifact(Value),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CampaignArtifactMatchDecision {
+    Exact,
+    Mismatch,
+    Stale,
+    Unsafe,
+    LegacyDegraded,
+}
+
+impl CampaignArtifactMatchDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Mismatch => "mismatch",
+            Self::Stale => "stale",
+            Self::Unsafe => "unsafe",
+            Self::LegacyDegraded => "legacy_degraded",
+        }
+    }
+
+    fn blocks_reuse(self) -> bool {
+        matches!(self, Self::Stale | Self::Unsafe | Self::LegacyDegraded)
+    }
+}
+
+struct CampaignExistingArtifactMatch<'a> {
+    summary: &'a run_artifacts::RunArtifactSummary,
+    decision: CampaignArtifactMatchDecision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -581,6 +707,68 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => {
+            if *value {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()),
+        Value::Array(values) => {
+            let mut out = String::from("[");
+            for (idx, item) in values.iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                out.push_str(&canonical_json(item));
+            }
+            out.push(']');
+            out
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort_unstable();
+            let mut out = String::from("{");
+            for (idx, key) in keys.iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()));
+                out.push(':');
+                out.push_str(&canonical_json(map.get(*key).unwrap_or(&Value::Null)));
+            }
+            out.push('}');
+            out
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn sha256_text_hash(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    let digest = hasher.finalize();
+    format!("sha256:{}", sha256_hex(&digest))
+}
+
+fn sha256_json_hash(value: &Value) -> String {
+    sha256_text_hash(&canonical_json(value))
+}
+
 fn normalize_strategy_kind(raw: &str) -> String {
     match raw.trim() {
         "" => "DoubleMa".to_string(),
@@ -794,6 +982,50 @@ fn dataset_timeframe_hint(
         .unwrap_or_default()
 }
 
+fn value_string(meta: &Value, key: &str) -> Option<String> {
+    meta.get(key)
+        .and_then(Value::as_str)
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+}
+
+fn dataset_identity_summary(
+    prepared: &PreparedCampaignDataset,
+) -> ResearchCampaignDatasetIdentitySummary {
+    ResearchCampaignDatasetIdentitySummary {
+        csv_path: prepared.input.csv_path.clone(),
+        label: prepared.label.clone(),
+        timeframe: prepared.timeframe.clone(),
+        base_timeframe: value_string(&prepared.dataset_meta, "base_timeframe"),
+        derived_timeframe: value_string(&prepared.dataset_meta, "derived_timeframe"),
+        source_size_bytes: prepared
+            .dataset_meta
+            .get("source_size_bytes")
+            .and_then(Value::as_u64)
+            .or(prepared.input.source_size_bytes),
+        source_mtime_utc_ms: prepared
+            .dataset_meta
+            .get("source_mtime_utc_ms")
+            .and_then(Value::as_i64)
+            .or(prepared.input.source_mtime_utc_ms),
+        source_content_fingerprint: value_string(
+            &prepared.dataset_meta,
+            "source_content_fingerprint",
+        )
+        .or_else(|| prepared.input.source_content_fingerprint.clone()),
+    }
+}
+
+fn campaign_item_id(manifest_hash: &str, index: usize, csv_path: &str, timeframe: &str) -> String {
+    let hash = sha256_json_hash(&json!({
+        "manifest_hash": manifest_hash,
+        "index": index,
+        "csv_path": normalize_path_key(csv_path),
+        "timeframe": normalize_timeframe_label(timeframe),
+    }));
+    format!("campaign_item_{}", hash.trim_start_matches("sha256:"))
+}
+
 fn normalize_campaign_datasets(
     datasets: Vec<ResearchCampaignDatasetInput>,
 ) -> Result<Vec<ResearchCampaignDatasetInput>, String> {
@@ -834,11 +1066,16 @@ fn failed_item(
     error: impl Into<String>,
 ) -> ResearchCampaignItemSummary {
     ResearchCampaignItemSummary {
+        item_id: None,
         csv_path,
         label,
         timeframe,
         is_holdout,
         status: "failed".to_string(),
+        dataset_identity: None,
+        evidence_state: Some(CampaignEvidenceState::Partial),
+        resume_state: Some(CampaignResumeState::Resumable),
+        reuse_decision: None,
         artifact_path,
         report_xlsx_path: None,
         error: Some(format!("{stage}: {}", error.into())),
@@ -1956,6 +2193,324 @@ fn cscv_pbo_to_value(value: Option<&CscvPboConfig>) -> Value {
     }
 }
 
+fn validation_config_summary_value(cfg: &ResearchCampaignValidationConfig) -> Value {
+    json!({
+        "max_candidates": cfg.max_candidates,
+        "seed": cfg.seed,
+        "admission_policy": cfg.admission_policy,
+        "walk_forward": cfg.walk_forward,
+        "reopt_walk_forward": cfg.reopt_walk_forward,
+        "spa": cfg.spa,
+        "perturb": cfg.perturb,
+        "trade_bootstrap": cfg.trade_bootstrap,
+        "monte_carlo": cfg.monte_carlo,
+        "cross_ticker": cfg.cross_ticker,
+        "cscv_pbo": cscv_pbo_to_value(cfg.cscv_pbo.as_ref()),
+        "min_psr": cfg.min_psr,
+        "min_dsr": cfg.min_dsr,
+        "min_cscv_oos_rank_frac": cfg.min_cscv_oos_rank_frac,
+        "min_cscv_oos_metric": cfg.min_cscv_oos_metric,
+        "max_pbo": cfg.max_pbo,
+    })
+}
+
+fn optimization_template_manifest_value(req: &ResearchCampaignRequest) -> Value {
+    let mut template = req.optimization_template.clone();
+    if let Value::Object(map) = &mut template {
+        map.remove("data_id");
+        map.remove("dataId");
+    }
+    json!({
+        "strategy_kind": normalize_strategy_kind(&req.strategy_kind),
+        "optimization_template": template,
+    })
+}
+
+fn build_campaign_manifest(
+    req: &ResearchCampaignRequest,
+    strategy_kind: &str,
+    timeframe: Option<&str>,
+    tags: &[String],
+    holdout_tag: Option<&str>,
+    execution_mode: ResearchCampaignExecutionMode,
+) -> ResearchCampaignManifestV2 {
+    let dataset_paths: Vec<String> = req
+        .datasets
+        .iter()
+        .map(|entry| normalize_text(&entry.csv_path))
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    let primary_tag = tags.first().map(String::as_str).unwrap_or_default();
+    let (_train_paths, holdout_paths) =
+        split_holdout_paths(&dataset_paths, req.holdout_pct, primary_tag);
+    let dataset_rows: Vec<Value> = req
+        .datasets
+        .iter()
+        .enumerate()
+        .map(|(index, dataset)| {
+            let csv_path = normalize_text(&dataset.csv_path);
+            let timeframe = dataset_timeframe_hint(dataset, timeframe);
+            json!({
+                "index": index,
+                "csv_path": csv_path,
+                "csv_path_key": normalize_path_key(&csv_path),
+                "label": dataset.label,
+                "timeframe": timeframe,
+                "is_holdout": holdout_paths.contains(&csv_path),
+                "source_size_bytes": dataset.source_size_bytes,
+                "source_mtime_utc_ms": dataset.source_mtime_utc_ms,
+                "source_content_fingerprint": dataset.source_content_fingerprint,
+            })
+        })
+        .collect();
+    let strict_identity_required = req.datasets.iter().all(|dataset| {
+        dataset
+            .source_content_fingerprint
+            .as_deref()
+            .map(normalize_text)
+            .is_some_and(|value| !value.is_empty())
+            || (dataset.source_size_bytes.is_some() && dataset.source_mtime_utc_ms.is_some())
+    });
+    let dataset_universe_hash = sha256_json_hash(&json!({
+        "datasets": dataset_rows,
+        "timeframe_override": timeframe,
+    }));
+    let optimization_template_hash = sha256_json_hash(&optimization_template_manifest_value(req));
+    let validation_config_hash =
+        sha256_json_hash(&validation_config_summary_value(&req.validation_config));
+    let meta_request_hash = req
+        .meta_request
+        .as_ref()
+        .and_then(|value| serde_json::to_value(value).ok())
+        .map(|value| sha256_json_hash(&value));
+    let stage5_request_hash = req
+        .stage5_request
+        .as_ref()
+        .and_then(|value| serde_json::to_value(value).ok())
+        .map(|value| sha256_json_hash(&value));
+    let mut holdout_paths_vec: Vec<_> = holdout_paths.iter().cloned().collect();
+    holdout_paths_vec.sort();
+    let holdout_split_hash = sha256_json_hash(&json!({
+        "algorithm": "fnv1a32_xor_primary_tag_floor_pct",
+        "primary_tag": primary_tag,
+        "holdout_pct": req.holdout_pct.min(50),
+        "holdout_tag": holdout_tag,
+        "holdout_paths": holdout_paths_vec,
+    }));
+    let mut manifest = ResearchCampaignManifestV2 {
+        manifest_version: 2,
+        manifest_hash: String::new(),
+        dataset_universe_hash,
+        optimization_template_hash,
+        validation_config_hash,
+        meta_request_hash,
+        stage5_request_hash,
+        holdout_split_hash,
+        strategy_kind: normalize_strategy_kind(strategy_kind),
+        execution_mode,
+        tags: tags.to_vec(),
+        holdout_tag: holdout_tag.map(str::to_string),
+        holdout_pct: req.holdout_pct.min(50),
+        preload_policy: req.preload_policy,
+        strict_identity_required,
+    };
+    let manifest_value = json!({
+        "manifest_version": manifest.manifest_version,
+        "dataset_universe_hash": &manifest.dataset_universe_hash,
+        "optimization_template_hash": &manifest.optimization_template_hash,
+        "validation_config_hash": &manifest.validation_config_hash,
+        "meta_request_hash": &manifest.meta_request_hash,
+        "stage5_request_hash": &manifest.stage5_request_hash,
+        "holdout_split_hash": &manifest.holdout_split_hash,
+        "strategy_kind": &manifest.strategy_kind,
+        "execution_mode": manifest.execution_mode,
+        "tags": &manifest.tags,
+        "holdout_tag": &manifest.holdout_tag,
+        "holdout_pct": manifest.holdout_pct,
+        "preload_policy": manifest.preload_policy,
+        "strict_identity_required": manifest.strict_identity_required,
+    });
+    manifest.manifest_hash = sha256_json_hash(&manifest_value);
+    manifest
+}
+
+fn campaign_summary_evidence_state(
+    counts: &ResearchCampaignCounts,
+    items: &[ResearchCampaignItemSummary],
+) -> CampaignEvidenceState {
+    if items
+        .iter()
+        .any(|item| item.evidence_state == Some(CampaignEvidenceState::Unsafe))
+    {
+        return CampaignEvidenceState::Unsafe;
+    }
+    if items
+        .iter()
+        .any(|item| item.evidence_state == Some(CampaignEvidenceState::Stale))
+    {
+        return CampaignEvidenceState::Stale;
+    }
+    if counts.total > 0
+        && counts.failed == 0
+        && !counts.cancelled
+        && items.iter().all(|item| {
+            item.evidence_state == Some(CampaignEvidenceState::Complete)
+                || matches!(item.status.as_str(), "ok" | "optimized")
+        })
+    {
+        return CampaignEvidenceState::Complete;
+    }
+    if counts.optimized > 0 || counts.validated > 0 || counts.skipped > 0 || counts.failed > 0 {
+        CampaignEvidenceState::Partial
+    } else {
+        CampaignEvidenceState::None
+    }
+}
+
+fn campaign_summary_resume_state(
+    counts: &ResearchCampaignCounts,
+    items: &[ResearchCampaignItemSummary],
+) -> CampaignResumeState {
+    if items
+        .iter()
+        .any(|item| item.resume_state == Some(CampaignResumeState::BlockedUnsafe))
+    {
+        return CampaignResumeState::BlockedUnsafe;
+    }
+    if items
+        .iter()
+        .any(|item| item.resume_state == Some(CampaignResumeState::BlockedStale))
+    {
+        return CampaignResumeState::BlockedStale;
+    }
+    if items
+        .iter()
+        .any(|item| item.resume_state == Some(CampaignResumeState::RestartOnly))
+    {
+        return CampaignResumeState::RestartOnly;
+    }
+    if items
+        .iter()
+        .any(|item| item.resume_state == Some(CampaignResumeState::LegacyDegraded))
+    {
+        return CampaignResumeState::LegacyDegraded;
+    }
+    if counts.total > 0
+        && counts.failed == 0
+        && !counts.cancelled
+        && items
+            .iter()
+            .all(|item| item.resume_state == Some(CampaignResumeState::Complete))
+    {
+        return CampaignResumeState::Complete;
+    }
+    CampaignResumeState::Resumable
+}
+
+fn normalize_campaign_auto_meta_request(
+    mut meta_req: MetaSelectionRequest,
+    strategy_kind: &str,
+    timeframe: Option<&str>,
+    primary_tag: &str,
+    holdout_tag: Option<&str>,
+    has_holdout: bool,
+    warnings: &mut Vec<String>,
+) -> Result<MetaSelectionRequest, String> {
+    let normalized_strategy = normalize_strategy_kind(strategy_kind);
+    if normalize_strategy_kind(&meta_req.strategy_kind) != normalized_strategy {
+        push_unique_warning(
+            warnings,
+            format!(
+                "auto_meta strategy_kind was patched from '{}' to '{}' to match the campaign.",
+                meta_req.strategy_kind, normalized_strategy
+            ),
+        );
+        meta_req.strategy_kind = normalized_strategy;
+    }
+    let required_tag = meta_req
+        .required_tag
+        .as_deref()
+        .map(normalize_text)
+        .filter(|value| !value.is_empty());
+    if required_tag.as_deref() != Some(primary_tag) {
+        push_unique_warning(
+            warnings,
+            format!(
+                "auto_meta required_tag was patched to campaign primary tag '{}'.",
+                primary_tag
+            ),
+        );
+        meta_req.required_tag = Some(primary_tag.to_string());
+    }
+    if let Some(timeframe) = timeframe
+        .map(normalize_timeframe_label)
+        .filter(|value| !value.is_empty())
+    {
+        let meta_timeframe = meta_req
+            .timeframe
+            .as_deref()
+            .map(normalize_timeframe_label)
+            .filter(|value| !value.is_empty());
+        if meta_timeframe.as_deref() != Some(timeframe.as_str()) {
+            push_unique_warning(
+                warnings,
+                format!(
+                    "auto_meta timeframe was patched to campaign timeframe '{}'.",
+                    timeframe
+                ),
+            );
+            meta_req.timeframe = Some(timeframe);
+        }
+    }
+    if has_holdout {
+        let holdout_tag = holdout_tag
+            .map(normalize_text)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "auto_meta holdout evaluation was blocked because no holdout tag was available"
+                    .to_string()
+            })?;
+        if primary_tag.eq_ignore_ascii_case(&holdout_tag) {
+            return Err(
+                "auto_meta holdout evaluation was blocked because primary_tag and holdout_tag are identical"
+                    .to_string(),
+            );
+        }
+        let current_holdout_tag = meta_req
+            .holdout_tag
+            .as_deref()
+            .map(normalize_text)
+            .filter(|value| !value.is_empty());
+        if current_holdout_tag.as_deref() != Some(holdout_tag.as_str()) {
+            push_unique_warning(
+                warnings,
+                format!(
+                    "auto_meta holdout_tag was patched to campaign holdout tag '{}'.",
+                    holdout_tag
+                ),
+            );
+            meta_req.holdout_tag = Some(holdout_tag);
+        }
+        if !meta_req.eval_holdout {
+            push_unique_warning(
+                warnings,
+                "auto_meta eval_holdout was enabled because the campaign has a holdout split."
+                    .to_string(),
+            );
+            meta_req.eval_holdout = true;
+        }
+    } else if meta_req.eval_holdout {
+        push_unique_warning(
+            warnings,
+            "auto_meta eval_holdout was disabled because this campaign has no holdout split."
+                .to_string(),
+        );
+        meta_req.eval_holdout = false;
+        meta_req.holdout_tag = None;
+    }
+    Ok(meta_req)
+}
+
 fn build_request_summary_value(
     req: &ResearchCampaignRequest,
     resolved_tags: &[String],
@@ -1969,6 +2524,9 @@ fn build_request_summary_value(
                 "csv_path": dataset.csv_path,
                 "label": dataset.label,
                 "timeframe": dataset.timeframe,
+                "source_size_bytes": dataset.source_size_bytes,
+                "source_mtime_utc_ms": dataset.source_mtime_utc_ms,
+                "source_content_fingerprint": dataset.source_content_fingerprint,
             })
         }).collect::<Vec<_>>(),
         "timeframe_override": req.timeframe_override,
@@ -1979,24 +2537,7 @@ fn build_request_summary_value(
         "auto_meta": req.auto_meta,
         "auto_stage5": req.auto_stage5,
         "optimization_template": req.optimization_template,
-        "validation_config": {
-            "max_candidates": req.validation_config.max_candidates,
-            "seed": req.validation_config.seed,
-            "admission_policy": req.validation_config.admission_policy,
-            "walk_forward": req.validation_config.walk_forward,
-            "reopt_walk_forward": req.validation_config.reopt_walk_forward,
-            "spa": req.validation_config.spa,
-            "perturb": req.validation_config.perturb,
-            "trade_bootstrap": req.validation_config.trade_bootstrap,
-            "monte_carlo": req.validation_config.monte_carlo,
-            "cross_ticker": req.validation_config.cross_ticker,
-            "cscv_pbo": cscv_pbo_to_value(req.validation_config.cscv_pbo.as_ref()),
-            "min_psr": req.validation_config.min_psr,
-            "min_dsr": req.validation_config.min_dsr,
-            "min_cscv_oos_rank_frac": req.validation_config.min_cscv_oos_rank_frac,
-            "min_cscv_oos_metric": req.validation_config.min_cscv_oos_metric,
-            "max_pbo": req.validation_config.max_pbo,
-        },
+        "validation_config": validation_config_summary_value(&req.validation_config),
         "meta_request": req.meta_request,
         "stage5_request": req.stage5_request,
         "preload_policy": req.preload_policy,
@@ -2019,11 +2560,22 @@ fn build_campaign_summary(
     warnings: &[String],
     runtime_ms: u64,
 ) -> ResearchCampaignSummary {
+    let manifest = build_campaign_manifest(
+        req,
+        strategy_kind,
+        timeframe.as_deref(),
+        tags,
+        holdout_tag.as_deref(),
+        execution_mode,
+    );
     ResearchCampaignSummary {
-        version: 1,
+        version: 2,
         kind: "vectorgrid_campaign_summary".to_string(),
         ts: ts.to_string(),
         state: state.to_string(),
+        manifest: Some(manifest),
+        evidence_state: Some(campaign_summary_evidence_state(counts, items)),
+        resume_state: Some(campaign_summary_resume_state(counts, items)),
         strategy_kind: strategy_kind.to_string(),
         timeframe,
         tags: tags.to_vec(),
@@ -2094,13 +2646,13 @@ fn artifact_stub(run_req: &Value, validation_req: Option<&Value>) -> Value {
     })
 }
 
-fn run_artifact_matches_campaign(
+fn classify_run_artifact_for_campaign(
     row: &run_artifacts::RunArtifactSummary,
     strategy_kind: &str,
     config_fingerprint: &str,
     primary_tag: &str,
     prepared: &PreparedCampaignDataset,
-) -> bool {
+) -> CampaignArtifactMatchDecision {
     let dataset_tf = normalize_timeframe_label(&prepared.timeframe);
     let dataset_path = normalize_path_key(&prepared.input.csv_path);
     let strict_fp = prepared
@@ -2118,31 +2670,65 @@ fn run_artifact_matches_campaign(
         .get("source_mtime_utc_ms")
         .and_then(Value::as_i64);
     if normalize_strategy_kind(&row.strategy_kind) != normalize_strategy_kind(strategy_kind) {
-        return false;
+        return CampaignArtifactMatchDecision::Mismatch;
     }
     if row.config_fingerprint.trim() != config_fingerprint.trim() {
-        return false;
+        return CampaignArtifactMatchDecision::Mismatch;
     }
     if !row
         .tags
         .iter()
         .any(|tag| tag.eq_ignore_ascii_case(primary_tag))
     {
-        return false;
+        return CampaignArtifactMatchDecision::Mismatch;
     }
     if normalize_path_key(&row.csv_path) != dataset_path {
-        return false;
+        return CampaignArtifactMatchDecision::Mismatch;
     }
     if !dataset_tf.is_empty() && normalize_timeframe_label(&row.timeframe) != dataset_tf {
-        return false;
+        return CampaignArtifactMatchDecision::Mismatch;
     }
     if let Some(expected_fp) = strict_fp.as_deref() {
-        return row.source_content_fingerprint.as_deref() == Some(expected_fp);
+        return match row
+            .source_content_fingerprint
+            .as_deref()
+            .map(normalize_text)
+        {
+            Some(actual) if actual == expected_fp => CampaignArtifactMatchDecision::Exact,
+            Some(_) => CampaignArtifactMatchDecision::Stale,
+            None => CampaignArtifactMatchDecision::LegacyDegraded,
+        };
     }
-    if let (Some(size), Some(mtime)) = (row.source_size_bytes, row.source_mtime_utc_ms) {
-        return prepared_size == Some(size) && prepared_mtime == Some(mtime);
+    if let (Some(prepared_size), Some(prepared_mtime)) = (prepared_size, prepared_mtime) {
+        return match (row.source_size_bytes, row.source_mtime_utc_ms) {
+            (Some(size), Some(mtime)) if prepared_size == size && prepared_mtime == mtime => {
+                CampaignArtifactMatchDecision::Exact
+            }
+            (Some(_), Some(_)) => CampaignArtifactMatchDecision::Stale,
+            _ => CampaignArtifactMatchDecision::LegacyDegraded,
+        };
     }
-    true
+    CampaignArtifactMatchDecision::Unsafe
+}
+
+fn push_reuse_decision_warning(
+    warnings: &mut Vec<String>,
+    decision: CampaignArtifactMatchDecision,
+    row: &run_artifacts::RunArtifactSummary,
+    prepared: &PreparedCampaignDataset,
+) {
+    if !decision.blocks_reuse() {
+        return;
+    }
+    push_unique_warning(
+        warnings,
+        format!(
+            "campaign artifact reuse rejected {} for '{}' because dataset identity classified as {}",
+            row.path,
+            prepared.input.csv_path,
+            decision.as_str()
+        ),
+    );
 }
 
 fn existing_validation_match<'a>(
@@ -2151,17 +2737,25 @@ fn existing_validation_match<'a>(
     config_fingerprint: &str,
     primary_tag: &str,
     prepared: &PreparedCampaignDataset,
-) -> Option<&'a run_artifacts::RunArtifactSummary> {
-    existing.iter().find(|row| {
-        row.has_validation
-            && run_artifact_matches_campaign(
-                row,
-                strategy_kind,
-                config_fingerprint,
-                primary_tag,
-                prepared,
-            )
-    })
+    warnings: &mut Vec<String>,
+) -> Option<CampaignExistingArtifactMatch<'a>> {
+    for row in existing.iter().filter(|row| row.has_validation) {
+        let decision = classify_run_artifact_for_campaign(
+            row,
+            strategy_kind,
+            config_fingerprint,
+            primary_tag,
+            prepared,
+        );
+        if decision == CampaignArtifactMatchDecision::Exact {
+            return Some(CampaignExistingArtifactMatch {
+                summary: row,
+                decision,
+            });
+        }
+        push_reuse_decision_warning(warnings, decision, row, prepared);
+    }
+    None
 }
 
 fn existing_optimization_match<'a>(
@@ -2170,16 +2764,25 @@ fn existing_optimization_match<'a>(
     config_fingerprint: &str,
     primary_tag: &str,
     prepared: &PreparedCampaignDataset,
-) -> Option<&'a run_artifacts::RunArtifactSummary> {
-    existing.iter().find(|row| {
-        run_artifact_matches_campaign(
+    warnings: &mut Vec<String>,
+) -> Option<CampaignExistingArtifactMatch<'a>> {
+    for row in existing {
+        let decision = classify_run_artifact_for_campaign(
             row,
             strategy_kind,
             config_fingerprint,
             primary_tag,
             prepared,
-        )
-    })
+        );
+        if decision == CampaignArtifactMatchDecision::Exact {
+            return Some(CampaignExistingArtifactMatch {
+                summary: row,
+                decision,
+            });
+        }
+        push_reuse_decision_warning(warnings, decision, row, prepared);
+    }
+    None
 }
 
 fn record_checkpoint_save_ms(
@@ -2329,6 +2932,11 @@ fn run_research_campaign_blocking_with_mode(
         .map(normalize_text)
         .filter(|value| !value.is_empty())
         .or_else(|| (req.holdout_pct > 0).then_some("holdout".to_string()));
+    let timeframe_override = req
+        .timeframe_override
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .filter(|value| !value.is_empty());
 
     let dataset_paths: Vec<String> = req
         .datasets
@@ -2359,6 +2967,22 @@ fn run_research_campaign_blocking_with_mode(
                 .to_string(),
         );
     }
+    let initial_manifest = build_campaign_manifest(
+        &req,
+        &strategy_kind,
+        timeframe_override.as_deref(),
+        &tags,
+        holdout_tag.as_deref(),
+        execution_mode,
+    );
+    if !initial_manifest.strict_identity_required {
+        push_unique_warning(
+            &mut warnings,
+            "campaign summary manifest is missing strict source identity for at least one dataset; exact artifact reuse will fail closed unless the current prepared dataset and saved artifact both expose matching source identity."
+                .to_string(),
+        );
+    }
+    let manifest_hash = initial_manifest.manifest_hash.clone();
 
     let existing = if should_load_existing_artifacts(req.skip_existing, execution_mode) {
         run_artifacts::list_run_artifacts_blocking(app.clone()).unwrap_or_default()
@@ -2366,11 +2990,6 @@ fn run_research_campaign_blocking_with_mode(
         Vec::new()
     };
 
-    let timeframe_override = req
-        .timeframe_override
-        .as_deref()
-        .map(normalize_timeframe_label)
-        .filter(|value| !value.is_empty());
     let dataset_total = req.datasets.len();
     let using_preloaded_pack = preloaded_pack.is_some();
     if let Some(pack) = preloaded_pack.as_ref() {
@@ -2403,14 +3022,26 @@ fn run_research_campaign_blocking_with_mode(
     let mut items: Vec<ResearchCampaignItemSummary> = req
         .datasets
         .iter()
-        .map(|dataset| {
+        .enumerate()
+        .map(|(index, dataset)| {
             let csv_path = normalize_text(&dataset.csv_path);
+            let timeframe = dataset_timeframe_hint(dataset, timeframe_override.as_deref());
             ResearchCampaignItemSummary {
+                item_id: Some(campaign_item_id(
+                    &manifest_hash,
+                    index,
+                    &csv_path,
+                    &timeframe,
+                )),
                 is_holdout: holdout_paths.contains(&csv_path),
                 csv_path,
                 label: dataset_label_from_input(dataset),
-                timeframe: dataset_timeframe_hint(dataset, timeframe_override.as_deref()),
+                timeframe,
                 status: "pending".to_string(),
+                dataset_identity: None,
+                evidence_state: Some(CampaignEvidenceState::None),
+                resume_state: Some(CampaignResumeState::Resumable),
+                reuse_decision: None,
                 artifact_path: None,
                 report_xlsx_path: None,
                 error: None,
@@ -2457,6 +3088,17 @@ fn run_research_campaign_blocking_with_mode(
         let is_holdout = holdout_paths.contains(&dataset_csv_path);
         let fallback_label = dataset_label_from_input(&dataset);
         let fallback_timeframe = dataset_timeframe_hint(&dataset, timeframe_override.as_deref());
+        let item_id = items
+            .get(index)
+            .and_then(|item| item.item_id.clone())
+            .or_else(|| {
+                Some(campaign_item_id(
+                    &manifest_hash,
+                    index,
+                    &dataset_csv_path,
+                    &fallback_timeframe,
+                ))
+            });
         let (prepared_result, prepare_source, prepare_wait_ms) = match preloaded_pack.as_mut() {
             Some(pack) => {
                 let prepare_started = std::time::Instant::now();
@@ -2517,6 +3159,13 @@ fn run_research_campaign_blocking_with_mode(
                     None,
                     "prepare",
                     error,
+                )
+                .with_campaign_metadata(
+                    item_id.clone(),
+                    None,
+                    Some(CampaignEvidenceState::Partial),
+                    Some(CampaignResumeState::Resumable),
+                    None,
                 );
                 summary = build_campaign_summary(
                     &ts,
@@ -2571,6 +3220,7 @@ fn run_research_campaign_blocking_with_mode(
         }
 
         let label = prepared.label.clone();
+        let prepared_identity = Some(dataset_identity_summary(&prepared));
         emit_campaign_progress(
             &app,
             "prepare",
@@ -2613,14 +3263,20 @@ fn run_research_campaign_blocking_with_mode(
                 &run_only_fingerprint,
                 &primary_tag,
                 &prepared,
+                &mut warnings,
             ) else {
                 counts.skipped = counts.skipped.saturating_add(1);
                 items[index] = ResearchCampaignItemSummary {
+                    item_id: item_id.clone(),
                     csv_path: prepared.input.csv_path.clone(),
                     label,
                     timeframe: prepared.timeframe.clone(),
                     is_holdout,
                     status: "skipped".to_string(),
+                    dataset_identity: prepared_identity.clone(),
+                    evidence_state: Some(CampaignEvidenceState::None),
+                    resume_state: Some(CampaignResumeState::RestartOnly),
+                    reuse_decision: Some("no_exact_optimization_artifact".to_string()),
                     artifact_path: None,
                     report_xlsx_path: None,
                     error: Some(
@@ -2661,7 +3317,7 @@ fn run_research_campaign_blocking_with_mode(
                 )?;
                 continue;
             };
-            existing_optimize_path = Some(existing_run.path.clone());
+            existing_optimize_path = Some(existing_run.summary.path.clone());
             emit_campaign_progress(
                 &app,
                 "optimize",
@@ -2673,7 +3329,7 @@ fn run_research_campaign_blocking_with_mode(
                 &counts,
             );
             let artifact = match run_artifacts::load_run_artifact_blocking(
-                existing_run.path.clone(),
+                existing_run.summary.path.clone(),
                 app.clone(),
             ) {
                 Ok(value) => value,
@@ -2799,16 +3455,25 @@ fn run_research_campaign_blocking_with_mode(
                 &run_only_fingerprint,
                 &primary_tag,
                 &prepared,
+                &mut warnings,
             ) {
                 if execution_mode == ResearchCampaignExecutionMode::OptimizeOnly {
-                    existing_optimize_path = Some(existing_run.path.clone());
+                    existing_optimize_path = Some(existing_run.summary.path.clone());
                     counts.skipped = counts.skipped.saturating_add(1);
                     items[index] = ResearchCampaignItemSummary {
+                        item_id: item_id.clone(),
                         csv_path: prepared.input.csv_path.clone(),
                         label,
                         timeframe: prepared.timeframe.clone(),
                         is_holdout,
                         status: "skipped".to_string(),
+                        dataset_identity: prepared_identity.clone(),
+                        evidence_state: Some(CampaignEvidenceState::Complete),
+                        resume_state: Some(CampaignResumeState::Complete),
+                        reuse_decision: Some(format!(
+                            "{}_optimization_artifact",
+                            existing_run.decision.as_str()
+                        )),
                         artifact_path: existing_optimize_path.clone(),
                         report_xlsx_path: None,
                         error: None,
@@ -2957,7 +3622,7 @@ fn run_research_campaign_blocking_with_mode(
                     counts.optimized = counts.optimized.saturating_add(1);
                     optimize_result
                 } else {
-                    existing_optimize_path = Some(existing_run.path.clone());
+                    existing_optimize_path = Some(existing_run.summary.path.clone());
                     emit_campaign_progress(
                         &app,
                         "optimize",
@@ -2969,7 +3634,7 @@ fn run_research_campaign_blocking_with_mode(
                         &counts,
                     );
                     let artifact = match run_artifacts::load_run_artifact_blocking(
-                        existing_run.path.clone(),
+                        existing_run.summary.path.clone(),
                         app.clone(),
                     ) {
                         Ok(value) => value,
@@ -3316,7 +3981,8 @@ fn run_research_campaign_blocking_with_mode(
             CampaignOptimizationResult::CompositeMoArtifact(res) => res.clone(),
         };
 
-        let mut artifact_path = if let Some(path) = existing_optimize_path {
+        let reused_optimization_artifact = existing_optimize_path.is_some();
+        let mut artifact_path = if let Some(path) = existing_optimize_path.clone() {
             path
         } else {
             let optimize_artifact = build_run_artifact_value(
@@ -3377,11 +4043,16 @@ fn run_research_campaign_blocking_with_mode(
 
         if execution_mode == ResearchCampaignExecutionMode::OptimizeOnly {
             items[index] = ResearchCampaignItemSummary {
+                item_id: item_id.clone(),
                 csv_path: prepared.input.csv_path.clone(),
                 label,
                 timeframe: prepared.timeframe.clone(),
                 is_holdout,
                 status: "optimized".to_string(),
+                dataset_identity: prepared_identity.clone(),
+                evidence_state: Some(CampaignEvidenceState::Complete),
+                resume_state: Some(CampaignResumeState::Complete),
+                reuse_decision: None,
                 artifact_path: Some(artifact_path),
                 report_xlsx_path: None,
                 error: None,
@@ -3470,27 +4141,35 @@ fn run_research_campaign_blocking_with_mode(
         let validation_fingerprint = run_artifacts::compute_config_fingerprint_from_artifact(
             &artifact_stub(&run_req_value, Some(&validation_req_value)),
         );
-        if let Some(existing_validation) = req
-            .skip_existing
-            .then(|| {
-                existing_validation_match(
-                    &existing,
-                    &strategy_kind,
-                    &validation_fingerprint,
-                    &primary_tag,
-                    &prepared,
-                )
-            })
-            .flatten()
-        {
+        let existing_validation = if req.skip_existing {
+            existing_validation_match(
+                &existing,
+                &strategy_kind,
+                &validation_fingerprint,
+                &primary_tag,
+                &prepared,
+                &mut warnings,
+            )
+        } else {
+            None
+        };
+        if let Some(existing_validation) = existing_validation {
             counts.skipped = counts.skipped.saturating_add(1);
             items[index] = ResearchCampaignItemSummary {
+                item_id: item_id.clone(),
                 csv_path: prepared.input.csv_path.clone(),
                 label,
                 timeframe: prepared.timeframe.clone(),
                 is_holdout,
                 status: "skipped".to_string(),
-                artifact_path: Some(existing_validation.path.clone()),
+                dataset_identity: prepared_identity.clone(),
+                evidence_state: Some(CampaignEvidenceState::Complete),
+                resume_state: Some(CampaignResumeState::Complete),
+                reuse_decision: Some(format!(
+                    "{}_validation_artifact",
+                    existing_validation.decision.as_str()
+                )),
+                artifact_path: Some(existing_validation.summary.path.clone()),
                 report_xlsx_path: None,
                 error: None,
                 diagnostics: Some(build_item_diagnostics(
@@ -3850,11 +4529,17 @@ fn run_research_campaign_blocking_with_mode(
                 }
             };
         items[index] = ResearchCampaignItemSummary {
+            item_id: item_id.clone(),
             csv_path: prepared.input.csv_path.clone(),
             label,
             timeframe: prepared.timeframe.clone(),
             is_holdout,
             status: "ok".to_string(),
+            dataset_identity: prepared_identity.clone(),
+            evidence_state: Some(CampaignEvidenceState::Complete),
+            resume_state: Some(CampaignResumeState::Complete),
+            reuse_decision: reused_optimization_artifact
+                .then(|| "exact_optimization_artifact_for_validation".to_string()),
             artifact_path: Some(artifact_path),
             report_xlsx_path: None,
             error: None,
@@ -3903,44 +4588,63 @@ fn run_research_campaign_blocking_with_mode(
         }
     } else if !counts.cancelled && req.auto_meta {
         if let Some(meta_req) = req.meta_request.clone() {
-            emit_campaign_progress(
-                &app,
-                "meta",
-                counts.total,
-                counts.total,
+            match normalize_campaign_auto_meta_request(
+                meta_req,
                 &strategy_kind,
-                "running meta selection",
-                Some(&summary_json_path),
-                &counts,
-            );
-            match run_meta_selection_blocking(meta_req, app.clone(), cancel.clone()) {
-                Ok(response) => {
-                    if req.auto_stage5 {
-                        if let Some(mut stage5_req) = req.stage5_request.clone() {
-                            if stage5_req.source_meta_path.is_none() {
-                                stage5_req.source_meta_path = Some(response.meta_json_path.clone());
-                            }
-                            emit_campaign_progress(
-                                &app,
-                                "stage5",
-                                counts.total,
-                                counts.total,
-                                &strategy_kind,
-                                "running stage5",
-                                Some(&summary_json_path),
-                                &counts,
-                            );
-                            match run_meta_stage4_experimental_blocking(stage5_req, app.clone()) {
-                                Ok(stage5) => {
-                                    stage5_response = Some(stage5);
+                timeframe_override.as_deref(),
+                &primary_tag,
+                holdout_tag.as_deref(),
+                !holdout_paths.is_empty(),
+                &mut warnings,
+            ) {
+                Ok(meta_req) => {
+                    emit_campaign_progress(
+                        &app,
+                        "meta",
+                        counts.total,
+                        counts.total,
+                        &strategy_kind,
+                        "running meta selection",
+                        Some(&summary_json_path),
+                        &counts,
+                    );
+                    match run_meta_selection_blocking(meta_req, app.clone(), cancel.clone()) {
+                        Ok(response) => {
+                            if req.auto_stage5 {
+                                if let Some(mut stage5_req) = req.stage5_request.clone() {
+                                    if stage5_req.source_meta_path.is_none() {
+                                        stage5_req.source_meta_path =
+                                            Some(response.meta_json_path.clone());
+                                    }
+                                    emit_campaign_progress(
+                                        &app,
+                                        "stage5",
+                                        counts.total,
+                                        counts.total,
+                                        &strategy_kind,
+                                        "running stage5",
+                                        Some(&summary_json_path),
+                                        &counts,
+                                    );
+                                    match run_meta_stage4_experimental_blocking(
+                                        stage5_req,
+                                        app.clone(),
+                                    ) {
+                                        Ok(stage5) => {
+                                            stage5_response = Some(stage5);
+                                        }
+                                        Err(error) => {
+                                            warnings.push(format!("stage5: {error}"));
+                                        }
+                                    }
                                 }
-                                Err(error) => {
-                                    warnings.push(format!("stage5: {error}"));
-                                }
                             }
+                            meta_response = Some(response);
+                        }
+                        Err(error) => {
+                            warnings.push(format!("meta: {error}"));
                         }
                     }
-                    meta_response = Some(response);
                 }
                 Err(error) => {
                     warnings.push(format!("meta: {error}"));
@@ -4085,18 +4789,21 @@ pub async fn run_research_campaign(
 mod tests {
     use super::{
         build_composite_candidate_value, build_doublema_vram_prefetch_config,
-        build_item_diagnostics, can_reuse_optimization_artifact_for_validation,
-        candidate_selection_from_optimization, candidate_values_from_optimization,
+        build_item_diagnostics, build_request_summary_value,
+        can_reuse_optimization_artifact_for_validation, candidate_selection_from_optimization,
+        candidate_values_from_optimization, classify_run_artifact_for_campaign,
         existing_optimization_match, existing_validation_match, is_double_like_kind,
         normalize_backend_value, normalize_campaign_datasets, optimization_family_for_kind,
         optimization_result_from_artifact_value, push_unique_warning, record_prefetch_feedback,
         requested_gpu_device_id, resolve_campaign_strategy_kind,
         save_campaign_summary_checkpoint_blocking, should_load_existing_artifacts, Backend,
-        CampaignDoubleMaVramPrefetchConfig, CampaignOptimizationFamily, CampaignOptimizationResult,
-        CampaignPrefetchDiagnostics, DatasetPreloadJob, DatasetPrepareSource, DoubleMaRequest,
+        CampaignArtifactMatchDecision, CampaignDoubleMaVramPrefetchConfig, CampaignEvidenceState,
+        CampaignOptimizationFamily, CampaignOptimizationResult, CampaignPrefetchDiagnostics,
+        CampaignResumeState, DatasetPreloadJob, DatasetPrepareSource, DoubleMaRequest,
         PreparedCampaignDataset, ResearchCampaignCounts, ResearchCampaignDatasetInput,
         ResearchCampaignExecutionMode, ResearchCampaignItemDiagnostics,
-        ResearchCampaignItemSummary, ResearchCampaignSummary, ResearchCampaignValidationConfig,
+        ResearchCampaignItemSummary, ResearchCampaignPreloadPolicy, ResearchCampaignRequest,
+        ResearchCampaignSummary, ResearchCampaignValidationConfig,
     };
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
@@ -4821,15 +5528,76 @@ mod tests {
     }
 
     #[test]
+    fn request_summary_preserves_dataset_source_identity() {
+        let req = ResearchCampaignRequest {
+            strategy_kind: "DoubleMa".to_string(),
+            datasets: vec![ResearchCampaignDatasetInput {
+                csv_path: "C:/data/AAPL.csv".to_string(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("1m".to_string()),
+                source_size_bytes: Some(123),
+                source_mtime_utc_ms: Some(456),
+                source_content_fingerprint: Some("sha256:aapl".to_string()),
+            }],
+            timeframe_override: Some("1m".to_string()),
+            tags: vec!["campaign-main".to_string()],
+            holdout_pct: 0,
+            holdout_tag: None,
+            skip_existing: false,
+            auto_meta: false,
+            auto_stage5: false,
+            execution_mode: ResearchCampaignExecutionMode::Full,
+            optimization_template: json!({"strategy_kind": "DoubleMa", "data_id": "data-1"}),
+            validation_config: ResearchCampaignValidationConfig::default(),
+            meta_request: None,
+            stage5_request: None,
+            preload_policy: ResearchCampaignPreloadPolicy::HostOnly,
+        };
+
+        let summary = build_request_summary_value(
+            &req,
+            &["campaign-main".to_string()],
+            ResearchCampaignExecutionMode::Full,
+        );
+
+        assert_eq!(
+            summary
+                .pointer("/datasets/0/source_size_bytes")
+                .and_then(Value::as_u64),
+            Some(123)
+        );
+        assert_eq!(
+            summary
+                .pointer("/datasets/0/source_mtime_utc_ms")
+                .and_then(Value::as_i64),
+            Some(456)
+        );
+        assert_eq!(
+            summary
+                .pointer("/datasets/0/source_content_fingerprint")
+                .and_then(Value::as_str),
+            Some("sha256:aapl")
+        );
+    }
+
+    #[test]
     fn existing_optimization_match_uses_prepared_dataset_identity() {
         let prepared = prepared_dataset_for_matching();
         let existing = vec![run_artifact_summary("C:/runs/opt.json", false)];
+        let mut warnings = Vec::new();
 
-        let matched =
-            existing_optimization_match(&existing, "DoubleMa", "cfg-1", "campaign-main", &prepared)
-                .expect("should match using prepared dataset identity");
+        let matched = existing_optimization_match(
+            &existing,
+            "DoubleMa",
+            "cfg-1",
+            "campaign-main",
+            &prepared,
+            &mut warnings,
+        )
+        .expect("should match using prepared dataset identity");
 
-        assert_eq!(matched.path, "C:/runs/opt.json");
+        assert_eq!(matched.summary.path, "C:/runs/opt.json");
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -4839,13 +5607,100 @@ mod tests {
             run_artifact_summary("C:/runs/opt_only.json", false),
             run_artifact_summary("C:/runs/validated.json", true),
         ];
+        let mut warnings = Vec::new();
 
-        let matched =
-            existing_validation_match(&existing, "DoubleMa", "cfg-1", "campaign-main", &prepared)
-                .expect("expected validation match");
+        let matched = existing_validation_match(
+            &existing,
+            "DoubleMa",
+            "cfg-1",
+            "campaign-main",
+            &prepared,
+            &mut warnings,
+        )
+        .expect("expected validation match");
 
-        assert_eq!(matched.path, "C:/runs/validated.json");
-        assert!(matched.has_validation);
+        assert_eq!(matched.summary.path, "C:/runs/validated.json");
+        assert!(matched.summary.has_validation);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn artifact_match_classifier_fails_closed_without_exact_source_identity() {
+        let prepared = prepared_dataset_for_matching();
+        let exact = run_artifact_summary("C:/runs/exact.json", true);
+        assert_eq!(
+            classify_run_artifact_for_campaign(
+                &exact,
+                "DoubleMa",
+                "cfg-1",
+                "campaign-main",
+                &prepared,
+            ),
+            CampaignArtifactMatchDecision::Exact
+        );
+
+        let mut stale = exact.clone();
+        stale.source_content_fingerprint = Some("sha256:other".to_string());
+        assert_eq!(
+            classify_run_artifact_for_campaign(
+                &stale,
+                "DoubleMa",
+                "cfg-1",
+                "campaign-main",
+                &prepared,
+            ),
+            CampaignArtifactMatchDecision::Stale
+        );
+
+        let mut legacy = exact.clone();
+        legacy.source_content_fingerprint = None;
+        legacy.source_size_bytes = None;
+        legacy.source_mtime_utc_ms = None;
+        assert_eq!(
+            classify_run_artifact_for_campaign(
+                &legacy,
+                "DoubleMa",
+                "cfg-1",
+                "campaign-main",
+                &prepared,
+            ),
+            CampaignArtifactMatchDecision::LegacyDegraded
+        );
+
+        let unsafe_prepared = PreparedCampaignDataset {
+            input: ResearchCampaignDatasetInput {
+                csv_path: "C:/data/AAPL.csv".to_string(),
+                label: Some("AAPL".to_string()),
+                timeframe: Some("15m".to_string()),
+                source_size_bytes: None,
+                source_mtime_utc_ms: None,
+                source_content_fingerprint: None,
+            },
+            candles: vector_ta::utilities::data_loader::Candles::new(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            dataset_meta: json!({
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m"
+            }),
+            timeframe: "15m".to_string(),
+            label: "AAPL".to_string(),
+        };
+        assert_eq!(
+            classify_run_artifact_for_campaign(
+                &exact,
+                "DoubleMa",
+                "cfg-1",
+                "campaign-main",
+                &unsafe_prepared,
+            ),
+            CampaignArtifactMatchDecision::Unsafe
+        );
     }
 
     #[test]
@@ -4853,11 +5708,16 @@ mod tests {
         let app = build_mock_app();
         let summary_path = make_temp_dir("campaign_summary_checkpoint").join("summary.json");
         let mut items = vec![ResearchCampaignItemSummary {
+            item_id: Some("item-1".to_string()),
             csv_path: "C:/data/AAPL.csv".to_string(),
             label: "AAPL".to_string(),
             timeframe: "15m".to_string(),
             is_holdout: false,
             status: "ok".to_string(),
+            dataset_identity: None,
+            evidence_state: Some(CampaignEvidenceState::Complete),
+            resume_state: Some(CampaignResumeState::Complete),
+            reuse_decision: None,
             artifact_path: Some("C:/runs/validated.json".to_string()),
             report_xlsx_path: None,
             error: None,
@@ -4879,10 +5739,13 @@ mod tests {
             }),
         }];
         let mut summary = ResearchCampaignSummary {
-            version: 1,
+            version: 2,
             kind: "vectorgrid_campaign_summary".to_string(),
             ts: "2026-04-15T00:00:00Z".to_string(),
             state: "running".to_string(),
+            manifest: None,
+            evidence_state: Some(CampaignEvidenceState::Complete),
+            resume_state: Some(CampaignResumeState::Complete),
             strategy_kind: "DoubleMa".to_string(),
             timeframe: Some("15m".to_string()),
             tags: vec!["campaign-main".to_string()],

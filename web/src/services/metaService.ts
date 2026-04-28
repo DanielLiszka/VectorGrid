@@ -2086,8 +2086,26 @@ function batchSummaryRequest(
   return asRecord(summary.request);
 }
 
+function batchSummaryResumeState(summary: Record<string, unknown>): string {
+  return normalizeText(summary.resume_state).toLowerCase();
+}
+
+function batchSummaryResumeBlockedReason(
+  summary: Record<string, unknown>,
+): string {
+  const resumeState = batchSummaryResumeState(summary);
+  if (resumeState === "blocked_unsafe") {
+    return "Current summary is blocked from resume because its campaign evidence is unsafe. Restart the campaign instead.";
+  }
+  if (resumeState === "blocked_stale") {
+    return "Current summary is blocked from resume because its campaign evidence is stale. Restart the campaign instead.";
+  }
+  return "";
+}
+
 function batchCanResumeIncomplete(summary: Record<string, unknown>): boolean {
   if (!batchSummaryRequest(summary)) return false;
+  if (batchSummaryResumeBlockedReason(summary)) return false;
   const state = normalizeText(summary.state).toLowerCase();
   if (state === "running" || state === "cancelled" || state === "failed")
     return true;
@@ -2785,20 +2803,41 @@ export async function runBatch(
       offCampaignProgress = null;
     }
 
+    const requestDatasetsByPath = new Map<string, Record<string, unknown>>();
+    if (Array.isArray(req?.datasets)) {
+      for (const raw of req.datasets as unknown[]) {
+        const row = asRecord(raw);
+        const path = normalizePath(row?.csv_path);
+        if (row && path) requestDatasetsByPath.set(path, row);
+      }
+    }
+
     const datasets = normalizedSelected
       .map((path) => {
         const entry = byPath.get(path);
+        const requestDataset = requestDatasetsByPath.get(path);
         return {
           csv_path: path,
           label:
-            normalizeText(entry?.label || fileBasename(path) || path) || null,
-          timeframe: normalizeText(entry?.timeframe) || null,
-          source_size_bytes: normalizeMaybeInteger(entry?.source_size_bytes),
+            normalizeText(
+              requestDataset?.label ??
+                entry?.label ??
+                fileBasename(path) ??
+                path,
+            ) || null,
+          timeframe:
+            normalizeText(requestDataset?.timeframe ?? entry?.timeframe) ||
+            null,
+          source_size_bytes: normalizeMaybeInteger(
+            entry?.source_size_bytes ?? requestDataset?.source_size_bytes,
+          ),
           source_mtime_utc_ms: normalizeMaybeInteger(
-            entry?.source_mtime_utc_ms,
+            entry?.source_mtime_utc_ms ?? requestDataset?.source_mtime_utc_ms,
           ),
           source_content_fingerprint:
-            normalizeText(entry?.source_content_fingerprint) || null,
+            normalizeText(entry?.source_content_fingerprint) ||
+            normalizeText(requestDataset?.source_content_fingerprint) ||
+            null,
         };
       })
       .filter((entry) => normalizePath(entry.csv_path).length > 0);
@@ -3042,6 +3081,11 @@ export async function batchResumeIncomplete(): Promise<void> {
       setStatusLine(
         "Current summary does not contain a resumable campaign request.",
       );
+      return;
+    }
+    const blockedReason = batchSummaryResumeBlockedReason(summary);
+    if (blockedReason) {
+      setStatusLine(blockedReason);
       return;
     }
 
