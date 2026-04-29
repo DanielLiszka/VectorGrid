@@ -17,6 +17,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 Set-StrictMode -Version Latest
 
 function Get-JsonPropertyOrDefault {
@@ -737,6 +738,8 @@ function Flush-FaceoffSummary {
   Write-MarkdownSummary -Path $markdownPath -Summary $summary
 }
 
+$benchmarkLock = Enter-BenchmarkLock -Context "vectorbt vs VectorGrid faceoff"
+try {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
@@ -846,3 +849,6 @@ Flush-FaceoffSummary
 
 Write-Host "Faceoff summary written to $summaryPath"
 Write-Host "Markdown summary written to $markdownPath"
+} finally {
+  Exit-BenchmarkLock -Handle $benchmarkLock
+}

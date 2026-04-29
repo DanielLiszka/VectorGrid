@@ -23,6 +23,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Resolve-RepoRoot {
   return (Split-Path -Parent $PSScriptRoot)
@@ -189,22 +190,29 @@ if ($ListDatasets) {
 Write-Section "Phase 0.5 Command"
 Write-Host ("cargo " + ($cargoArgs -join " "))
 
-Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Phase 0.5 run"
-
-Push-Location $repoRoot
-$previousRustcWrapper = $env:RUSTC_WRAPPER
-$env:RUSTC_WRAPPER = ""
+$benchmarkLock = Enter-BenchmarkLock -Context "options Phase 0.5 run"
+$phase05ExitCode = 0
 try {
-  & cargo @cargoArgs
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-  }
-} finally {
-  $env:RUSTC_WRAPPER = $previousRustcWrapper
-  Pop-Location
-}
+  Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Phase 0.5 run"
 
-Wait-NoOptionsPerfProcesses -TimeoutSeconds 300 -Context "after options Phase 0.5 run"
+  Push-Location $repoRoot
+  $previousRustcWrapper = $env:RUSTC_WRAPPER
+  $env:RUSTC_WRAPPER = ""
+  try {
+    & cargo @cargoArgs
+    $phase05ExitCode = $LASTEXITCODE
+  } finally {
+    $env:RUSTC_WRAPPER = $previousRustcWrapper
+    Pop-Location
+  }
+
+  Wait-NoOptionsPerfProcesses -TimeoutSeconds 300 -Context "after options Phase 0.5 run"
+} finally {
+  Exit-BenchmarkLock -Handle $benchmarkLock
+}
+if ($phase05ExitCode -ne 0) {
+  exit $phase05ExitCode
+}
 
 if ($ListDatasets) {
   return

@@ -3,6 +3,8 @@ param(
   [string]$Mode = "candidate",
   [string]$BaselinePath = "scripts/baselines/gpu_validation_perf_baseline.json",
   [string]$OutPath = "output/benchmarks/gpu_validation_perf_summary.json",
+  [ValidateSet("release-authority", "validation-heavy")]
+  [string]$WorkloadProfile = "release-authority",
   [double]$RegressionPct = 15.0,
   [double]$StructuredRegressionPct = 20.0,
   [switch]$SkipCriterion,
@@ -15,14 +17,61 @@ param(
   [string]$BenchFilter = "",
   [string]$CriterionEstimatesPath = "",
   [string]$CriterionEstimatesGlob = "",
+  [switch]$Quick,
   [switch]$ListCases,
   [switch]$PlanOnly
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 $SchemaVersion = 1
 $CaseRegistryVersion = 1
+$DefaultBaselinePath = "scripts/baselines/gpu_validation_perf_baseline.json"
+$DefaultOutPath = "output/benchmarks/gpu_validation_perf_summary.json"
+$OutPathWasDefault = $OutPath -eq $DefaultOutPath
+$script:CompletedPerfProcessStartTicksById = @{}
+$WorkloadProfileSlug = $WorkloadProfile.Replace("-", "_")
+$StructuredProbeOutPath = "output/benchmarks/gpu_validation_${WorkloadProfileSlug}_perf_structured_probe.json"
+
+if ($Quick) {
+  $hasCustomCase = -not [string]::IsNullOrWhiteSpace($BenchFilter) `
+    -or -not [string]::IsNullOrWhiteSpace($CriterionEstimatesPath) `
+    -or -not [string]::IsNullOrWhiteSpace($CriterionEstimatesGlob) `
+    -or -not [string]::IsNullOrWhiteSpace($BenchName)
+  if ([string]::IsNullOrWhiteSpace($CaseId) -and -not $hasCustomCase) {
+    $CaseId = "double_ma_gpu_validation_sparse"
+  }
+  $SkipStructuredProbe = $true
+}
+
+if ($WorkloadProfile -eq "validation-heavy") {
+  if ($BaselinePath -eq $DefaultBaselinePath) {
+    $BaselinePath = "scripts/baselines/gpu_validation_heavy_perf_baseline.json"
+  }
+}
+
+if ($OutPathWasDefault) {
+  if ($PlanOnly) {
+    if ($Quick -and $WorkloadProfile -eq "validation-heavy") {
+      $OutPath = "output/benchmarks/gpu_validation_heavy_quick_perf_plan.json"
+    } elseif ($Quick) {
+      $OutPath = "output/benchmarks/gpu_validation_quick_perf_plan.json"
+    } elseif ($WorkloadProfile -eq "validation-heavy") {
+      $OutPath = "output/benchmarks/gpu_validation_heavy_perf_plan.json"
+    } else {
+      $OutPath = "output/benchmarks/gpu_validation_perf_plan.json"
+    }
+  } elseif ($Quick) {
+    if ($WorkloadProfile -eq "validation-heavy") {
+      $OutPath = "output/benchmarks/gpu_validation_heavy_quick_perf_summary.json"
+    } else {
+      $OutPath = "output/benchmarks/gpu_validation_quick_perf_summary.json"
+    }
+  } elseif ($WorkloadProfile -eq "validation-heavy") {
+    $OutPath = "output/benchmarks/gpu_validation_heavy_perf_summary.json"
+  }
+}
 
 function Write-JsonUtf8 {
   param(
@@ -63,13 +112,142 @@ function Write-PassFailLine([string]$name, [bool]$pass, [string]$msg) {
   }
 }
 
+function Get-ProcessStartTicks {
+  param([Parameter(Mandatory = $true)]$Process)
+
+  try {
+    return [int64]$Process.StartTime.ToUniversalTime().Ticks
+  } catch {
+    return $null
+  }
+}
+
+function Get-CimProcessStartTicks {
+  param($CreationDate)
+
+  if ($null -eq $CreationDate) {
+    return $null
+  }
+
+  try {
+    return [int64]([System.Management.ManagementDateTimeConverter]::ToDateTime($CreationDate).ToUniversalTime().Ticks)
+  } catch {
+    return $null
+  }
+}
+
+function Get-ProcessCommandLine {
+  param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+  try {
+    return "$((Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop).CommandLine)"
+  } catch {
+    return ""
+  }
+}
+
+function Test-BenchmarkCommandLine {
+  param([string]$CommandLine)
+
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+    return $false
+  }
+  if ($CommandLine -match '(^|[ \t])--no-run([ \t]|$)') {
+    return $false
+  }
+  return $CommandLine -match '(^|[ \t])bench([ \t]|$)' `
+    -or $CommandLine -match '(^|[ \t])--bench([ \t]|$)' `
+    -or $CommandLine -match 'criterion'
+}
+
+function Test-KnownCompletedPerfProcess {
+  param(
+    [Parameter(Mandatory = $true)][int]$ProcessId,
+    $StartTicks
+  )
+
+  $key = "$ProcessId"
+  if (-not $script:CompletedPerfProcessStartTicksById.ContainsKey($key)) {
+    return $false
+  }
+  if ($null -eq $StartTicks) {
+    return $false
+  }
+  return [int64]$script:CompletedPerfProcessStartTicksById[$key] -eq [int64]$StartTicks
+}
+
+function Register-CompletedPerfProcess {
+  param($Process)
+
+  if ($null -eq $Process) {
+    return
+  }
+
+  try {
+    if ($Process.HasExited) {
+      $startTicks = Get-ProcessStartTicks -Process $Process
+      if ($null -ne $startTicks) {
+        $script:CompletedPerfProcessStartTicksById["$($Process.Id)"] = $startTicks
+      }
+    }
+  } catch {
+  } finally {
+    try {
+      $Process.Dispose()
+    } catch {
+    }
+  }
+}
+
 function Get-PerfProcesses() {
-  @(Get-Process | Where-Object {
-      $_.ProcessName -match '^(cargo|criterion|nsys|ncu|compute-sanitizer)$' `
-        -or $_.ProcessName -like 'double_ma_validation_workflow*' `
-        -or $_.ProcessName -like 'composite_validation_workflow*' `
-        -or $_.ProcessName -like 'ta_double_ma_validation_cost*'
-    } | Select-Object ProcessName, Id, CPU, StartTime)
+  $byId = [ordered]@{}
+
+  foreach ($proc in @(Get-Process | Where-Object {
+        $_.ProcessName -match '^(cargo|rustup|criterion|nsys|ncu|compute-sanitizer)$' `
+          -or $_.ProcessName -like 'double_ma_validation_workflow*' `
+          -or $_.ProcessName -like 'composite_validation_workflow*' `
+          -or $_.ProcessName -like 'ta_double_ma_validation_cost*'
+      })) {
+    $commandLine = Get-ProcessCommandLine -ProcessId $proc.Id
+    if ($proc.ProcessName -match '^(cargo|rustup)$' -and -not (Test-BenchmarkCommandLine -CommandLine $commandLine)) {
+      continue
+    }
+    $startTicks = Get-ProcessStartTicks -Process $proc
+    if (-not (Test-KnownCompletedPerfProcess -ProcessId $proc.Id -StartTicks $startTicks)) {
+      $byId["$($proc.Id)"] = [pscustomobject]@{
+        ProcessName = $proc.ProcessName
+        Id = $proc.Id
+        CPU = $proc.CPU
+        StartTime = $proc.StartTime
+        CommandLine = $commandLine
+      }
+    }
+  }
+
+  foreach ($proc in @(Get-CimInstance Win32_Process | Where-Object {
+        $name = "$($_.Name)"
+        $commandLine = "$($_.CommandLine)"
+        $isShell = $name -match '^(pwsh|powershell|cmd|conhost|WindowsTerminal)\.exe$'
+        -not $isShell -and (Test-BenchmarkCommandLine -CommandLine $commandLine)
+      })) {
+    $startTicks = Get-CimProcessStartTicks -CreationDate $proc.CreationDate
+    if (-not (Test-KnownCompletedPerfProcess -ProcessId $proc.ProcessId -StartTicks $startTicks)) {
+      $processName = [System.IO.Path]::GetFileNameWithoutExtension($proc.Name)
+      $startTime = $null
+      if ($null -ne $startTicks) {
+        $startTime = ([DateTime]::new($startTicks, [DateTimeKind]::Utc)).ToLocalTime()
+      }
+      $byId["$($proc.ProcessId)"] = [pscustomobject]@{
+        ProcessName = $processName
+        Id = $proc.ProcessId
+        CPU = $null
+        StartTime = $startTime
+        CommandLine = "$($proc.CommandLine)"
+      }
+    }
+  }
+
+  @($byId.Values)
 }
 
 function Wait-NoPerfProcesses(
@@ -85,7 +263,15 @@ function Wait-NoPerfProcesses(
     }
     if ((Get-Date) -ge $deadline) {
       $summary = ($procs | ForEach-Object {
-          "{0}#{1}" -f $_.ProcessName, $_.Id
+          $commandLine = "$($_.CommandLine)"
+          if ($commandLine.Length -gt 180) {
+            $commandLine = $commandLine.Substring(0, 180) + "..."
+          }
+          if ([string]::IsNullOrWhiteSpace($commandLine)) {
+            "{0}#{1}" -f $_.ProcessName, $_.Id
+          } else {
+            "{0}#{1} [{2}]" -f $_.ProcessName, $_.Id, $commandLine
+          }
         }) -join ", "
       if ([string]::IsNullOrWhiteSpace($Context)) {
         throw "Timed out waiting for benchmark/profiler processes to drain: $summary"
@@ -102,6 +288,7 @@ function Invoke-CargoCommandAndEcho(
 ) {
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
+  $proc = $null
   try {
     $proc = Start-Process -FilePath "cargo" `
       -ArgumentList $ArgumentList `
@@ -120,10 +307,14 @@ function Invoke-CargoCommandAndEcho(
     foreach ($line in $output) {
       Write-Host $line
     }
-    if ($proc.ExitCode -ne 0) {
-      throw "${FailureContext} (cargo exit code $($proc.ExitCode))"
+    $exitCode = $proc.ExitCode
+    Register-CompletedPerfProcess -Process $proc
+    $proc = $null
+    if ($exitCode -ne 0) {
+      throw "${FailureContext} (cargo exit code $exitCode)"
     }
   } finally {
+    Register-CompletedPerfProcess -Process $proc
     Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
   }
 }
@@ -135,6 +326,7 @@ function Invoke-ProcessAndEcho(
 ) {
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
+  $proc = $null
   try {
     $proc = Start-Process -FilePath $FilePath `
       -ArgumentList $ArgumentList `
@@ -153,11 +345,15 @@ function Invoke-ProcessAndEcho(
     foreach ($line in $output) {
       Write-Host $line
     }
-    if ($proc.ExitCode -ne 0) {
-      throw "${FailureContext} ($FilePath exit code $($proc.ExitCode))"
+    $exitCode = $proc.ExitCode
+    Register-CompletedPerfProcess -Process $proc
+    $proc = $null
+    if ($exitCode -ne 0) {
+      throw "${FailureContext} ($FilePath exit code $exitCode)"
     }
     return $output
   } finally {
+    Register-CompletedPerfProcess -Process $proc
     Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
   }
 }
@@ -254,10 +450,17 @@ function Convert-CriterionEstimateToCaseSummary {
     timing_boundary = "Criterion"
     timing_boundary_note = "Criterion bench profile estimate for a deterministic GPU validation workflow case."
     build_profile = "bench"
+    workload_profile = $WorkloadProfile
+    workload_class = $CaseSpec.workload_class
+    evidence_role = $CaseSpec.evidence_role
     bench_name = $CaseSpec.bench_name
     bench_filter = $CaseSpec.bench_filter
     estimates_json = $estimatesPath
     expected_backend_route = $CaseSpec.expected_backend_route
+    bars = $CaseSpec.bars
+    candidate_count = $CaseSpec.candidate_count
+    validation_modules_gpu_native = $CaseSpec.validation_modules_gpu_native
+    validation_modules_cpu_tail = $CaseSpec.validation_modules_cpu_tail
     mean_ms = [math]::Round(([double]$criterion.mean.point_estimate) / 1000000.0, 6)
     mean_ci_lower_ms = [math]::Round(([double]$criterion.mean.confidence_interval.lower_bound) / 1000000.0, 6)
     mean_ci_upper_ms = [math]::Round(([double]$criterion.mean.confidence_interval.upper_bound) / 1000000.0, 6)
@@ -299,12 +502,18 @@ function Get-GpuValidationPerfCases {
         estimates_path = $CriterionEstimatesPath
         estimates_glob = $CriterionEstimatesGlob
         expected_backend_route = "GpuKernel"
+        workload_class = "custom"
+        evidence_role = "custom GPU validation gate case"
+        bars = $null
+        candidate_count = $null
+        validation_modules_gpu_native = @()
+        validation_modules_cpu_tail = @()
       }
     )
   }
 
   $criterionRoot = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) "target/criterion"))
-  return @(
+  $releaseAuthorityCases = @(
     [ordered]@{
       id = "double_ma_gpu_validation_sparse"
       bench_name = "double_ma_validation_workflow"
@@ -312,6 +521,12 @@ function Get-GpuValidationPerfCases {
       estimates_path = ""
       estimates_glob = Join-Path $criterionRoot "*double_ma_validate_gpu_kernel_sparse_finalists_100k_8candidates*wf_reopt_cscv_spa*new*estimates.json"
       expected_backend_route = "GpuKernel"
+      workload_class = "validation-heavy"
+      evidence_role = "Double-MA sparse-finalist GPU validation route and module timing"
+      bars = 100000
+      candidate_count = 8
+      validation_modules_gpu_native = @("in_sample", "walk_forward", "reopt_walk_forward", "cscv_pbo", "spa")
+      validation_modules_cpu_tail = @("perturb", "trade_bootstrap")
     },
     [ordered]@{
       id = "composite_gpu_validation_asr_wf_cscv"
@@ -320,6 +535,12 @@ function Get-GpuValidationPerfCases {
       estimates_path = ""
       estimates_glob = Join-Path $criterionRoot "*composite_validate_gpu_kernel_asr_100k_64candidates*wf_cscv*new*estimates.json"
       expected_backend_route = "GpuKernel"
+      workload_class = "route-authority"
+      evidence_role = "ASR composite GPU validation route and walk-forward/CSCV timing"
+      bars = 100000
+      candidate_count = 64
+      validation_modules_gpu_native = @("in_sample", "walk_forward", "cscv_pbo")
+      validation_modules_cpu_tail = @()
     },
     [ordered]@{
       id = "composite_gpu_validation_vcet_wf_reopt_cscv_spa"
@@ -328,8 +549,47 @@ function Get-GpuValidationPerfCases {
       estimates_path = ""
       estimates_glob = Join-Path $criterionRoot "*composite_validate_gpu_kernel_vcet_100000_64candidates*wf_reopt_cscv_spa*new*estimates.json"
       expected_backend_route = "GpuKernel"
+      workload_class = "validation-heavy"
+      evidence_role = "VCET composite GPU validation heavy module timing"
+      bars = 100000
+      candidate_count = 64
+      validation_modules_gpu_native = @("in_sample", "walk_forward", "reopt_walk_forward", "cscv_pbo", "spa")
+      validation_modules_cpu_tail = @()
     }
   )
+
+  $cases = $releaseAuthorityCases
+  if ($WorkloadProfile -eq "validation-heavy") {
+    $cases = @(
+      $releaseAuthorityCases[0],
+      $releaseAuthorityCases[2],
+      [ordered]@{
+        id = "composite_gpu_validation_cdmc_wf_reopt_cscv_spa"
+        bench_name = "composite_validation_workflow"
+        bench_filter = "composite_validate/gpu_kernel/cdmc/100000/32candidates/wf_reopt_cscv_spa"
+        estimates_path = ""
+        estimates_glob = Join-Path $criterionRoot "*composite_validate_gpu_kernel_cdmc_100000_32candidates*wf_reopt_cscv_spa*new*estimates.json"
+        expected_backend_route = "GpuKernel"
+        workload_class = "validation-heavy"
+        evidence_role = "CDMC composite GPU validation heavy module timing"
+        bars = 100000
+        candidate_count = 32
+        validation_modules_gpu_native = @("in_sample", "walk_forward", "reopt_walk_forward", "cscv_pbo", "spa")
+        validation_modules_cpu_tail = @()
+      }
+    )
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($CaseId)) {
+    $selected = @($cases | Where-Object { $_.id -eq $CaseId })
+    if ($selected.Count -eq 0) {
+      $available = ($cases | ForEach-Object { $_.id }) -join ", "
+      throw "Unknown GPU validation case '$CaseId' for workload profile '$WorkloadProfile'. Available cases: $available"
+    }
+    return $selected
+  }
+
+  return $cases
 }
 
 function New-GpuValidationPerfPlan {
@@ -341,11 +601,14 @@ function New-GpuValidationPerfPlan {
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     mode = $Mode
     gate = "gpu_validation_perf"
+    workload_profile = $WorkloadProfile
+    quick_mode = [bool]$Quick
     criterion_enabled = -not [bool]$SkipCriterion
     structured_probe_enabled = -not [bool]$SkipStructuredProbe
     structured_probe = if (-not $SkipStructuredProbe) {
       [ordered]@{
         workflow_family = "conventional_double_ma_validation"
+        out_path = $StructuredProbeOutPath
         bars = $StructuredProbeBars
         repeats = $StructuredProbeRepeats
         csv_path = $StructuredProbeCsv
@@ -368,9 +631,13 @@ function Write-GpuValidationPerfPlan {
 
   Write-Host "GPU validation perf gate plan:"
   Write-Host "  mode=$($Plan.mode)"
+  Write-Host "  workload_profile=$($Plan.workload_profile)"
+  Write-Host "  quick_mode=$($Plan.quick_mode)"
   Write-Host "  criterion_enabled=$($Plan.criterion_enabled)"
   foreach ($case in $Plan.criterion_cases) {
-    Write-Host "  case=$($case.id) bench=$($case.bench_name) filter=$($case.bench_filter) expected_route=$($case.expected_backend_route)"
+    $modules = if ($case.validation_modules_gpu_native.Count -gt 0) { $case.validation_modules_gpu_native -join "+" } else { "unspecified" }
+    $cpuTails = if ($case.validation_modules_cpu_tail.Count -gt 0) { $case.validation_modules_cpu_tail -join "+" } else { "none" }
+    Write-Host "  case=$($case.id) bench=$($case.bench_name) filter=$($case.bench_filter) expected_route=$($case.expected_backend_route) gpu_native=$modules cpu_tail=$cpuTails"
   }
   Write-Host "  structured_probe_enabled=$($Plan.structured_probe_enabled)"
   if ($Plan.structured_probe_enabled) {
@@ -609,33 +876,37 @@ if ($ListCases -or $PlanOnly) {
 $gpuIdentity = Get-GpuIdentity
 $structuredProbe = $null
 
-Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU validation perf gate start"
+$benchmarkLock = Enter-BenchmarkLock -Context "GPU validation perf gate"
 try {
-  if (-not $SkipCriterion) {
-    $benchNames = @($criterionCases | ForEach-Object { $_.bench_name } | Sort-Object -Unique)
-    $benchExecutables = @{}
-    foreach ($benchNameItem in $benchNames) {
-      Invoke-CargoCommandAndEcho -ArgumentList @(
-        "bench",
-        "-p", "ta_app_core",
-        "--bench", "$benchNameItem",
-        "--features", "cuda,cuda-backtest-kernel",
-        "--no-run"
-      ) -FailureContext "Failed to build GPU validation benchmark executable '$benchNameItem'"
-      $benchExecutables[$benchNameItem] = (Find-LatestBenchExecutable -benchName $benchNameItem).FullName
+  Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU validation perf gate start"
+  try {
+    if (-not $SkipCriterion) {
+      $benchNames = @($criterionCases | ForEach-Object { $_.bench_name } | Sort-Object -Unique)
+      $benchExecutables = @{}
+      foreach ($benchNameItem in $benchNames) {
+        Invoke-CargoCommandAndEcho -ArgumentList @(
+          "bench",
+          "-p", "ta_app_core",
+          "--bench", "$benchNameItem",
+          "--features", "cuda,cuda-backtest-kernel",
+          "--no-run"
+        ) -FailureContext "Failed to build GPU validation benchmark executable '$benchNameItem'"
+        $benchExecutables[$benchNameItem] = (Find-LatestBenchExecutable -benchName $benchNameItem).FullName
+      }
+
+      foreach ($case in $criterionCases) {
+        Invoke-GpuValidationBenchCase -BenchExePath $benchExecutables[$case.bench_name] -CaseSpec $case
+      }
     }
 
-    foreach ($case in $criterionCases) {
-      Invoke-GpuValidationBenchCase -BenchExePath $benchExecutables[$case.bench_name] -CaseSpec $case
+    if (-not $SkipStructuredProbe) {
+      $structuredProbe = Invoke-StructuredDoubleMaValidationProbe -OutJson $StructuredProbeOutPath
     }
-  }
-
-  if (-not $SkipStructuredProbe) {
-    $probePath = "output/benchmarks/gpu_validation_perf_structured_probe.json"
-    $structuredProbe = Invoke-StructuredDoubleMaValidationProbe -OutJson $probePath
+  } finally {
+    Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "after GPU validation perf gate work"
   }
 } finally {
-  Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "after GPU validation perf gate work"
+  Exit-BenchmarkLock -Handle $benchmarkLock
 }
 
 $criterionCaseSummaries = @()
@@ -648,11 +919,16 @@ $summary = [ordered]@{
   case_registry_version = $CaseRegistryVersion
   generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
   mode = $Mode
+  workload_profile = $WorkloadProfile
+  quick_mode = [bool]$Quick
+  baseline_path = $BaselinePath
+  out_path = $OutPath
   environment = Get-EnvironmentFingerprint
   gpu = $gpuIdentity.raw
   gpu_info = $gpuIdentity
   criterion = if ($criterionCaseSummaries.Count -gt 0) { $criterionCaseSummaries[0] } else { $null }
   criterion_cases = $criterionCaseSummaries
+  structured_probe_path = if ($null -ne $structuredProbe) { $StructuredProbeOutPath } else { $null }
   structured_probe = $structuredProbe
 }
 
@@ -690,6 +966,9 @@ if (!(Test-Path $BaselinePath)) {
 $baseline = Read-JsonFile -Path $BaselinePath
 Assert-CompatibilityEqual -Name "gpu_validation.schema_version" -Candidate $summary.schema_version -Baseline $baseline.schema_version
 Assert-CompatibilityEqual -Name "gpu_validation.case_registry_version" -Candidate $summary.case_registry_version -Baseline $baseline.case_registry_version
+if ($baseline.PSObject.Properties.Name -contains "workload_profile") {
+  Assert-CompatibilityEqual -Name "gpu_validation.workload_profile" -Candidate $summary.workload_profile -Baseline $baseline.workload_profile
+}
 
 if (
   $summary.gpu_info.PSObject.Properties.Name -contains "name" -and

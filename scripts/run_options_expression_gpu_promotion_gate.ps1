@@ -26,6 +26,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Resolve-RepoRoot {
   return (Split-Path -Parent $PSScriptRoot)
@@ -204,19 +205,26 @@ if ($InspectTop) {
 }
 
 Write-Host ("Options GPU promotion gate mode: {0}" -f $Mode)
-Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options GPU promotion gate start"
-
-Push-Location $repoRoot
+$benchmarkLock = Enter-BenchmarkLock -Context "options GPU promotion gate"
+$promotionExitCode = 0
 try {
-  & powershell @phase05Args
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-  }
-} finally {
-  Pop-Location
-}
+  Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options GPU promotion gate start"
 
-Wait-NoOptionsPerfProcesses -TimeoutSeconds 300 -Context "after options GPU promotion phase completion"
+  Push-Location $repoRoot
+  try {
+    & powershell @phase05Args
+    $promotionExitCode = $LASTEXITCODE
+  } finally {
+    Pop-Location
+  }
+
+  Wait-NoOptionsPerfProcesses -TimeoutSeconds 300 -Context "after options GPU promotion phase completion"
+} finally {
+  Exit-BenchmarkLock -Handle $benchmarkLock
+}
+if ($promotionExitCode -ne 0) {
+  exit $promotionExitCode
+}
 
 $summaryJson = Get-ChildItem $runOutRoot -Recurse -Filter "phase05_summary.json" -File |
   Sort-Object LastWriteTime -Descending |

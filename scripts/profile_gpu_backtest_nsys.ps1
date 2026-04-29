@@ -42,6 +42,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 if (-not ("NsysShortPath" -as [type])) {
   Add-Type @"
@@ -144,6 +145,8 @@ if ($nsysInstallRoot -match "Nsight Systems 20(25|26)" -and -not $isElevated) {
   Write-Warning "Local Nsight Systems 2025.x/2026.x on this machine has failed unelevated with 'Access is denied' while opening the create-agent memory-mapped file. If capture startup times out or no report is produced, rerun from an elevated shell or repair/reinstall Nsight Systems."
 }
 
+$benchmarkLock = Enter-BenchmarkLock -Context "GPU Nsight Systems profile"
+try {
 if ($Target -eq "runner") {
   Write-Host "Building profile runner executable..."
   cargo build -p ta_app_core --release --bin profile_gpu_dynamic_runner --features cuda,cuda-backtest-kernel
@@ -503,3 +506,6 @@ Write-JsonUtf8 -Path $provenancePath -Value $provenance
 
 Write-Host "Nsight Systems report written to $reportPath"
 Write-Host "Nsight Systems provenance written to $provenancePath"
+} finally {
+  Exit-BenchmarkLock -Handle $benchmarkLock
+}

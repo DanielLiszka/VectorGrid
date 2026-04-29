@@ -24,6 +24,8 @@ Current release-candidate caveats:
 - It only runs packaged desktop smoke when `-IncludeDesktopSmoke` is set and `-SkipPackagedSmoke` is not set.
 - It invokes generic GPU perf under `-IncludePerf` for non-CPU variants, but that is not a dedicated GPU MA-sweep authority.
 - It invokes dedicated GPU validation perf only when `-IncludeGpuValidationPerf` is set on the `gpu-kernel` variant.
+- GPU validation release rehearsal uses the GPU validation gate's default `release-authority` workload profile; `validation-heavy` is a separate CUDA development profile, not the default release profile.
+- Benchmark-running release steps inherit the repo-local benchmark mutex from `scripts/benchmark_lock.ps1`; this serializes repo-local gates but does not replace checking unrelated external benchmark/profiler processes.
 - It references `scripts/run_live_execution_safety_harness.ps1`; review that exact script before treating the harness as release authority.
 
 ## Variant Evidence

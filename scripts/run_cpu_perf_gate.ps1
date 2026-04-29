@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 $SchemaVersion = 1
 $CaseRegistryVersion = 1
@@ -117,43 +118,55 @@ $criterionCases = @(
   }
 )
 
-$workflowMode = "candidate"
-if (($Mode -eq "baseline") -and (!(Test-Path $WorkflowBaselinePath))) {
-  $workflowMode = "baseline"
-}
-Write-Host "Running workflow regression gate ($workflowMode)..."
-powershell -File "scripts/run_workflow_gate.ps1" `
-  -Mode $workflowMode `
-  -BaselinePath $WorkflowBaselinePath `
-  -OutPath $WorkflowSummaryPath `
-  -BuildProfile $WorkflowBuildProfile
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
-}
-if (!(Test-Path $WorkflowSummaryPath)) {
-  throw "Missing requested workflow summary: $WorkflowSummaryPath"
-}
-
-foreach ($case in $criterionCases) {
-  Write-Host "Running criterion benchmark ($($case.bench_filter))..."
-  $benchCmd = @(
-    "bench", "-p", "ta_app_core", "--bench", "double_ma_opt", "--", $case.bench_filter
-  )
-  cargo @benchCmd
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+$benchmarkLock = Enter-BenchmarkLock -Context "CPU perf gate"
+$perfGateExitCode = 0
+try {
+  $workflowMode = "candidate"
+  if (($Mode -eq "baseline") -and (!(Test-Path $WorkflowBaselinePath))) {
+    $workflowMode = "baseline"
   }
-}
-
-if ($CheckDynamicStrategyCpuRatio) {
-  Write-Host "Running dynamic strategy CPU benchmark ($DynamicBenchFilter)..."
-  $dynBenchCmd = @(
-    "bench", "-p", "ta_app_core", "--bench", "dynamic_strategy_cpu", "--", $DynamicBenchFilter
-  )
-  cargo @dynBenchCmd
+  Write-Host "Running workflow regression gate ($workflowMode)..."
+  powershell -File "scripts/run_workflow_gate.ps1" `
+    -Mode $workflowMode `
+    -BaselinePath $WorkflowBaselinePath `
+    -OutPath $WorkflowSummaryPath `
+    -BuildProfile $WorkflowBuildProfile
   if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+    $perfGateExitCode = $LASTEXITCODE
   }
+  if ($perfGateExitCode -eq 0 -and !(Test-Path $WorkflowSummaryPath)) {
+    throw "Missing requested workflow summary: $WorkflowSummaryPath"
+  }
+
+  if ($perfGateExitCode -eq 0) {
+    foreach ($case in $criterionCases) {
+      Write-Host "Running criterion benchmark ($($case.bench_filter))..."
+      $benchCmd = @(
+        "bench", "-p", "ta_app_core", "--bench", "double_ma_opt", "--", $case.bench_filter
+      )
+      cargo @benchCmd
+      if ($LASTEXITCODE -ne 0) {
+        $perfGateExitCode = $LASTEXITCODE
+        break
+      }
+    }
+  }
+
+  if ($perfGateExitCode -eq 0 -and $CheckDynamicStrategyCpuRatio) {
+    Write-Host "Running dynamic strategy CPU benchmark ($DynamicBenchFilter)..."
+    $dynBenchCmd = @(
+      "bench", "-p", "ta_app_core", "--bench", "dynamic_strategy_cpu", "--", $DynamicBenchFilter
+    )
+    cargo @dynBenchCmd
+    if ($LASTEXITCODE -ne 0) {
+      $perfGateExitCode = $LASTEXITCODE
+    }
+  }
+} finally {
+  Exit-BenchmarkLock -Handle $benchmarkLock
+}
+if ($perfGateExitCode -ne 0) {
+  exit $perfGateExitCode
 }
 
 $criterionCaseSummaries = @()

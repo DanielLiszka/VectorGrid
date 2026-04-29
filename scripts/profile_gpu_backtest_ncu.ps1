@@ -39,6 +39,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Write-JsonUtf8 {
   param(
@@ -79,6 +80,8 @@ if (!(Test-Path $ncuExe)) {
   throw "Nsight Compute CLI not found (expected ncu.bat or ncu.exe)."
 }
 
+$benchmarkLock = Enter-BenchmarkLock -Context "GPU Nsight Compute profile"
+try {
 if ($Target -eq "runner") {
   Write-Host "Building profile runner executable..."
   cargo build -p ta_app_core --release --bin profile_gpu_dynamic_runner --features cuda,cuda-backtest-kernel
@@ -258,3 +261,6 @@ if ($exitCode -ne 0) {
 
 Write-Host "Nsight report written to $reportPath"
 Write-Host "Nsight Compute provenance written to $provenancePath"
+} finally {
+  Exit-BenchmarkLock -Handle $benchmarkLock
+}

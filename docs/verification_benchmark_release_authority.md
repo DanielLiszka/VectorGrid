@@ -71,6 +71,14 @@ A performance claim is valid only when the benchmark timing boundary includes th
 6. Baseline refresh is reviewed like a source-code change.
 7. Never run multiple benchmarks or profiling sessions at the same time.
 
+`scripts/benchmark_lock.ps1` provides the repo-local benchmark mutex used by the primary benchmark-running gates. It is a guardrail, not a replacement for checking outside benchmark/profiler processes; gates that also scan processes should keep those checks.
+
+In this working tree, `scripts/baselines/` is git-ignored. Baselines generated there are local-machine evidence by default; promoting one to shared authority requires an explicit reviewed change, for example a force-add or an ignore-policy adjustment.
+
+GPU validation perf has two workload profiles. The default `release-authority` profile preserves the current release evidence case registry and baseline contract. The `validation-heavy` profile is for focused CUDA validation-mode development and uses separate default baseline/output paths so validation-heavy experiments do not contaminate release-authority evidence.
+
+GPU validation `-Quick` is a smoke lane, not a full-profile replacement. It compares selected cases against the relevant profile baseline, skips the structured probe, and uses separate default quick summary paths so quick runs do not overwrite full candidate evidence. `-PlanOnly` uses separate default plan paths for the same artifact-hygiene reason.
+
 ## Release Evidence Hierarchy
 
 | Release question | Primary authority | Notes |

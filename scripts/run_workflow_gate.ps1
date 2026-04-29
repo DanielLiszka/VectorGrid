@@ -14,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Write-JsonUtf8 {
   param(
@@ -74,9 +75,16 @@ if ($Mode -eq "candidate") {
 }
 
 Write-Host "Running workflow gate ($Mode, build_profile=$BuildProfile)..."
-cargo @cmd
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
+$benchmarkLock = Enter-BenchmarkLock -Context "workflow regression gate"
+$workflowExitCode = 0
+try {
+  cargo @cmd
+  $workflowExitCode = $LASTEXITCODE
+} finally {
+  Exit-BenchmarkLock -Handle $benchmarkLock
+}
+if ($workflowExitCode -ne 0) {
+  exit $workflowExitCode
 }
 
 if (!(Test-Path $OutPath)) {

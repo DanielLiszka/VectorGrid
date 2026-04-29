@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 $SchemaVersion = 1
 $CaseRegistryVersion = 1
@@ -325,23 +326,28 @@ function Invoke-GpuFollowupBenchFilter {
 $cases = Get-GpuFollowupPerfCases
 $gpuIdentity = Get-GpuIdentity
 
-Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU follow-up perf gate start"
+$benchmarkLock = Enter-BenchmarkLock -Context "GPU follow-up perf gate"
 try {
-  Invoke-CargoCommandAndEcho -ArgumentList @(
-    "bench",
-    "-p", "ta_app_core",
-    "--bench", "double_ma_followup_workflow",
-    "--features", "cuda,cuda-backtest-kernel",
-    "--no-run"
-  ) -FailureContext "Failed to build GPU follow-up benchmark executable"
+  Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU follow-up perf gate start"
+  try {
+    Invoke-CargoCommandAndEcho -ArgumentList @(
+      "bench",
+      "-p", "ta_app_core",
+      "--bench", "double_ma_followup_workflow",
+      "--features", "cuda,cuda-backtest-kernel",
+      "--no-run"
+    ) -FailureContext "Failed to build GPU follow-up benchmark executable"
 
-  $benchExe = Find-LatestBenchExecutable -benchName "double_ma_followup_workflow"
-  $filters = @($cases | ForEach-Object { $_.bench_filter } | Sort-Object -Unique)
-  foreach ($filter in $filters) {
-    Invoke-GpuFollowupBenchFilter -BenchExePath $benchExe.FullName -Filter $filter
+    $benchExe = Find-LatestBenchExecutable -benchName "double_ma_followup_workflow"
+    $filters = @($cases | ForEach-Object { $_.bench_filter } | Sort-Object -Unique)
+    foreach ($filter in $filters) {
+      Invoke-GpuFollowupBenchFilter -BenchExePath $benchExe.FullName -Filter $filter
+    }
+  } finally {
+    Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "after GPU follow-up perf gate work"
   }
 } finally {
-  Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "after GPU follow-up perf gate work"
+  Exit-BenchmarkLock -Handle $benchmarkLock
 }
 
 $caseSummaries = @()

@@ -14,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 $blocked = @(
     "profile_gpu_dynamic_runner",
@@ -22,52 +23,57 @@ $blocked = @(
     "cupti_sass_probe"
 )
 
-$active = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $blocked -contains $_.ProcessName }
-
-if ($active) {
-    $names = ($active | Select-Object -ExpandProperty ProcessName | Sort-Object -Unique) -join ", "
-    throw "Refusing to start CUPTI probe while these processes are active: $names"
-}
-
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$artifactDir = Join-Path $repoRoot $OutputDir
-New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-
-$args = @(
-    "run",
-    "-p",
-    "ta_app_core",
-    "--features",
-    "cuda,cuda-backtest-kernel",
-    "--bin",
-    "cupti_sass_probe",
-    "--",
-    "--mode",
-    $Mode,
-    "--workload",
-    $Workload,
-    "--metric-contract",
-    $MetricContract,
-    "--shortlist-slice-mode",
-    $ShortlistSliceMode,
-    "--kernel-filter",
-    $KernelFilter,
-    "--metric",
-    $Metric,
-    "--device-id",
-    "$DeviceId",
-    "--output-dir",
-    $artifactDir
-)
-
-$logPath = Join-Path $artifactDir "run_cupti_sass_probe_last_command.txt"
-($args -join " ") | Set-Content -Path $logPath
-
-Push-Location $repoRoot
+$benchmarkLock = Enter-BenchmarkLock -Context "CUPTI SASS probe"
 try {
-    cargo @args
-}
-finally {
-    Pop-Location
+    $active = Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $blocked -contains $_.ProcessName }
+
+    if ($active) {
+        $names = ($active | Select-Object -ExpandProperty ProcessName | Sort-Object -Unique) -join ", "
+        throw "Refusing to start CUPTI probe while these processes are active: $names"
+    }
+
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $artifactDir = Join-Path $repoRoot $OutputDir
+    New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
+    $args = @(
+        "run",
+        "-p",
+        "ta_app_core",
+        "--features",
+        "cuda,cuda-backtest-kernel",
+        "--bin",
+        "cupti_sass_probe",
+        "--",
+        "--mode",
+        $Mode,
+        "--workload",
+        $Workload,
+        "--metric-contract",
+        $MetricContract,
+        "--shortlist-slice-mode",
+        $ShortlistSliceMode,
+        "--kernel-filter",
+        $KernelFilter,
+        "--metric",
+        $Metric,
+        "--device-id",
+        "$DeviceId",
+        "--output-dir",
+        $artifactDir
+    )
+
+    $logPath = Join-Path $artifactDir "run_cupti_sass_probe_last_command.txt"
+    ($args -join " ") | Set-Content -Path $logPath
+
+    Push-Location $repoRoot
+    try {
+        cargo @args
+    }
+    finally {
+        Pop-Location
+    }
+} finally {
+    Exit-BenchmarkLock -Handle $benchmarkLock
 }

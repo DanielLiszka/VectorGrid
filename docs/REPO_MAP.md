@@ -1687,7 +1687,7 @@ For claim-level authority, benchmark boundaries, baseline policy, and release ev
 | workflow regression                   | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate`                                                                                             |
 | CPU perf-sensitive backend change     | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`                                                                                             |
 | GPU/CUDA path                         | `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`                                                                                             |
-| GPU validation performance/residency  | `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate`                                                                                  |
+| GPU validation performance/residency  | `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate`; use `-WorkloadProfile validation-heavy` only for validation-heavy CUDA evidence |
 | GPU/CUDA ALMA contract rows           | `powershell -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`                                                                          |
 | GPU profiling                         | `powershell -File scripts/profile_gpu_backtest_ncu.ps1`, `powershell -File scripts/profile_gpu_backtest_nsys.ps1`                                            |
 | frontend request-builder benchmarking | `npm --prefix web run bench:request-builder`                                                                                                                 |
@@ -1708,6 +1708,12 @@ Specialized/manual gates:
   - specialized ALMA contract-row gate, not the default PR perf authority
 - `scripts/run_gpu_validation_perf_gate.ps1`
   - dedicated CUDA validation perf/residency gate; use `-ListCases` or `-PlanOnly` to inspect the covered validation workloads without running benchmarks
+  - default `-WorkloadProfile release-authority` preserves the existing release evidence case set
+  - `-WorkloadProfile validation-heavy` selects the heavier validation-mode case set with a separate default baseline/output path
+  - structured probe JSON is profile-specific: `output/benchmarks/gpu_validation_release_authority_perf_structured_probe.json` or `output/benchmarks/gpu_validation_validation_heavy_perf_structured_probe.json`
+  - `-CaseId <case-id>` can focus the built-in case registry before launching benchmark work
+  - `-Quick` is a partial smoke lane: it selects the sparse Double-MA validation case when no case is provided, skips the structured probe, and writes to a separate default quick summary path so full-profile evidence is not overwritten
+  - `-PlanOnly` writes to a separate default plan path so dry-run inspection does not overwrite candidate summaries
 
 Profiling:
 
@@ -1731,6 +1737,12 @@ Supplemental verification and baseline helpers:
 Output parity remains separate artifact/report authority. The release-candidate gate currently runs web parity but skips output-parity sample baselines, so artifact/report shape changes still need `scripts/run_output_parity_check.mjs`.
 
 GPU validation perf remains opt-in during release rehearsal. Use `powershell -File scripts/run_release_candidate_gate.ps1 -Variant gpu-kernel -IncludeGpuValidationPerf` only when the release claim depends on validation CUDA route, residency, or CPU-tail behavior.
+
+When another GPU-heavy process is active, restrict validation-gate work to `-ListCases` or `-PlanOnly`; full candidate/baseline modes build and run CUDA validation benchmarks.
+
+Primary benchmark-running gates use `scripts/benchmark_lock.ps1` to serialize repo-local benchmark execution with a named Windows mutex. Nested child gates inherit the lock through environment variables so wrapper gates do not deadlock their own children.
+
+`scripts/baselines/` is ignored in this working tree. Treat generated baseline files there as machine-local evidence unless a specific baseline is intentionally force-added or the ignore policy is changed in the same reviewed change.
 
 Benchmark and faceoff helpers:
 

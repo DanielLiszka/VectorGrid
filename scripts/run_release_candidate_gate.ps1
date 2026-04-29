@@ -281,7 +281,11 @@ try {
   }
 
   if ($IncludeGpuValidationPerf) {
-    $gpuValidationArgs = @("-File", (Join-Path $repoRoot "scripts\\run_gpu_validation_perf_gate.ps1"), "-Mode", "candidate")
+    $gpuValidationArgs = @(
+      "-File", (Join-Path $repoRoot "scripts\\run_gpu_validation_perf_gate.ps1"),
+      "-Mode", "candidate",
+      "-WorkloadProfile", "release-authority"
+    )
     Invoke-ReleaseStep -Name "GPU validation perf gate" -CommandText ("powershell " + ($gpuValidationArgs -join " ")) -Action {
       powershell @gpuValidationArgs
       if ($LASTEXITCODE -ne 0) {

@@ -25,6 +25,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Resolve-RepoRoot {
   return (Split-Path -Parent $PSScriptRoot)
@@ -206,11 +207,13 @@ $fallbackUsed = $false
 $captureModeApplied = $CaptureMode
 $requestedNsysArgs = $null
 
-Push-Location $repoRoot
+$benchmarkLock = Enter-BenchmarkLock -Context "options Nsight Systems profile"
 try {
-  if (-not (Test-IsAdministrator)) {
-    Write-Warning "Nsight Systems may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
-  }
+  Push-Location $repoRoot
+  try {
+    if (-not (Test-IsAdministrator)) {
+      Write-Warning "Nsight Systems may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
+    }
 
   Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Nsight Systems profile"
 
@@ -370,13 +373,16 @@ try {
   Write-Host "Summary Markdown written to $summaryMarkdown"
   Write-Host "Provenance written to $provenancePath"
 
-  if ($exitCode -ne 0) {
-    Write-Warning "Nsight Systems produced a report, but the profiled process exited with code $exitCode. Inspect the summary and report before trusting parity."
+    if ($exitCode -ne 0) {
+      Write-Warning "Nsight Systems produced a report, but the profiled process exited with code $exitCode. Inspect the summary and report before trusting parity."
+    }
+  } finally {
+    $env:RUSTC_WRAPPER = $previousRustcWrapper
+    $env:PATH = $previousPath
+    [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $previousNvtx, "Process")
+    [System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", $previousRegisterOnly, "Process")
+    Pop-Location
   }
 } finally {
-  $env:RUSTC_WRAPPER = $previousRustcWrapper
-  $env:PATH = $previousPath
-  [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $previousNvtx, "Process")
-  [System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", $previousRegisterOnly, "Process")
-  Pop-Location
+  Exit-BenchmarkLock -Handle $benchmarkLock
 }

@@ -26,6 +26,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Resolve-RepoRoot {
   return (Split-Path -Parent $PSScriptRoot)
@@ -198,120 +199,125 @@ $previousPath = $env:PATH
 $reportPath = "$resolvedOutputPrefix.ncu-rep"
 $requestedNcuArgs = $null
 
-Push-Location $repoRoot
+$benchmarkLock = Enter-BenchmarkLock -Context "options Nsight Compute profile"
 try {
-  if (-not (Test-IsAdministrator)) {
-    Write-Warning "Nsight Compute may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
-  }
+  Push-Location $repoRoot
+  try {
+    if (-not (Test-IsAdministrator)) {
+      Write-Warning "Nsight Compute may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
+    }
 
-  Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Nsight Compute profile"
+    Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Nsight Compute profile"
 
-  $env:RUSTC_WRAPPER = ""
-  Write-Host "Building ta_options_expression_feasibility with CUDA + NVTX profiling..."
-  & cargo build -p ta_desktop_demo_app --release --bin ta_options_expression_feasibility --features "cuda,cuda-backtest-kernel,nvtx-profiling"
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-  }
+    $env:RUSTC_WRAPPER = ""
+    Write-Host "Building ta_options_expression_feasibility with CUDA + NVTX profiling..."
+    & cargo build -p ta_desktop_demo_app --release --bin ta_options_expression_feasibility --features "cuda,cuda-backtest-kernel,nvtx-profiling"
+    if ($LASTEXITCODE -ne 0) {
+      exit $LASTEXITCODE
+    }
 
-  $binaryPath = Join-Path $repoRoot "target\release\ta_options_expression_feasibility.exe"
-  if (!(Test-Path $binaryPath)) {
-    throw "Could not find built executable: $binaryPath"
-  }
+    $binaryPath = Join-Path $repoRoot "target\release\ta_options_expression_feasibility.exe"
+    if (!(Test-Path $binaryPath)) {
+      throw "Could not find built executable: $binaryPath"
+    }
 
-  $runtimeDllPaths = Get-CargoRuntimeDllPaths -RepoRoot $repoRoot
-  if ($runtimeDllPaths.Count -gt 0) {
-    $env:PATH = (($runtimeDllPaths -join ";") + ";" + $previousPath)
-  }
+    $runtimeDllPaths = Get-CargoRuntimeDllPaths -RepoRoot $repoRoot
+    if ($runtimeDllPaths.Count -gt 0) {
+      $env:PATH = (($runtimeDllPaths -join ";") + ";" + $previousPath)
+    }
 
-  $binaryArgs = @(
-    "--app-local-data-dir", $resolvedAppLocalDataDir,
-    "--artifact", $resolvedArtifactPath,
-    "--backend-preference", $BackendPreference,
-    "--split-assignment-mode", $SplitAssignmentMode,
-    "--top-k", [string][Math]::Max(1, $TopK),
-    "--sealed-finalist-count", [string][Math]::Max(1, [Math]::Min($SealedFinalistCount, [Math]::Max(1, $TopK))),
-    "--warm-repeats", [string][Math]::Max(0, $WarmRepeats),
-    "--benchmark-iterations", [string][Math]::Max(1, $BenchmarkIterations),
-    "--out-json", $summaryJson,
-    "--out-markdown", $summaryMarkdown
-  )
+    $binaryArgs = @(
+      "--app-local-data-dir", $resolvedAppLocalDataDir,
+      "--artifact", $resolvedArtifactPath,
+      "--backend-preference", $BackendPreference,
+      "--split-assignment-mode", $SplitAssignmentMode,
+      "--top-k", [string][Math]::Max(1, $TopK),
+      "--sealed-finalist-count", [string][Math]::Max(1, [Math]::Min($SealedFinalistCount, [Math]::Max(1, $TopK))),
+      "--warm-repeats", [string][Math]::Max(0, $WarmRepeats),
+      "--benchmark-iterations", [string][Math]::Max(1, $BenchmarkIterations),
+      "--out-json", $summaryJson,
+      "--out-markdown", $summaryMarkdown
+    )
 
-  if ($DatasetId) {
-    $binaryArgs += @("--dataset-id", $DatasetId)
-  }
-  if ($ImportCsv) {
-    $binaryArgs += @("--import-csv", (Join-IfRelative -Path $ImportCsv -Root $repoRoot))
-  }
-  if ($ImportRootSymbol) {
-    $binaryArgs += @("--import-root-symbol", $ImportRootSymbol)
-  }
-  if ($RequestArgs -and $RequestArgs.Count -gt 0) {
-    $binaryArgs += $RequestArgs
-  }
-  if ($PrewarmGpuRuntime) {
-    $binaryArgs += "--prewarm-gpu-runtime"
-  }
-  if ($RunFull) {
-    $binaryArgs += "--run-full"
-  }
-  if ($InspectTop) {
-    $binaryArgs += "--inspect-top"
-  }
+    if ($DatasetId) {
+      $binaryArgs += @("--dataset-id", $DatasetId)
+    }
+    if ($ImportCsv) {
+      $binaryArgs += @("--import-csv", (Join-IfRelative -Path $ImportCsv -Root $repoRoot))
+    }
+    if ($ImportRootSymbol) {
+      $binaryArgs += @("--import-root-symbol", $ImportRootSymbol)
+    }
+    if ($RequestArgs -and $RequestArgs.Count -gt 0) {
+      $binaryArgs += $RequestArgs
+    }
+    if ($PrewarmGpuRuntime) {
+      $binaryArgs += "--prewarm-gpu-runtime"
+    }
+    if ($RunFull) {
+      $binaryArgs += "--run-full"
+    }
+    if ($InspectTop) {
+      $binaryArgs += "--inspect-top"
+    }
 
-  $requestedNcuArgs = @(
-    "--target-processes", $TargetProcesses,
-    "--set", "full",
-    "--kernel-name-base", "demangled"
-  )
-  if ($UseKernelNameFilter -and ![string]::IsNullOrWhiteSpace($KernelName)) {
-    $requestedNcuArgs += @("--kernel-name", $KernelName)
-  }
-  $requestedNcuArgs += @(
-    "--launch-count", "$LaunchCount",
-    "--force-overwrite",
-    "--export", $resolvedOutputPrefix,
-    $binaryPath
-  ) + $binaryArgs
+    $requestedNcuArgs = @(
+      "--target-processes", $TargetProcesses,
+      "--set", "full",
+      "--kernel-name-base", "demangled"
+    )
+    if ($UseKernelNameFilter -and ![string]::IsNullOrWhiteSpace($KernelName)) {
+      $requestedNcuArgs += @("--kernel-name", $KernelName)
+    }
+    $requestedNcuArgs += @(
+      "--launch-count", "$LaunchCount",
+      "--force-overwrite",
+      "--export", $resolvedOutputPrefix,
+      $binaryPath
+    ) + $binaryArgs
 
-  & $ncuExe @requestedNcuArgs
-  $exitCode = $LASTEXITCODE
-  $reportExists = Test-Path $reportPath
+    & $ncuExe @requestedNcuArgs
+    $exitCode = $LASTEXITCODE
+    $reportExists = Test-Path $reportPath
 
-  $provenancePath = "$resolvedOutputPrefix.provenance.json"
-  $provenance = [ordered]@{
-    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-    profiler = "nsight_compute"
-    profiler_exe = $ncuExe
-    report_path = $reportPath
-    report_exists = $reportExists
-    requested_output_prefix = $resolvedOutputPrefix
-    kernel_name = $KernelName
-    use_kernel_name_filter = $UseKernelNameFilter
-    launch_count = $LaunchCount
-    target_processes = $TargetProcesses
-    profiler_exit_code = $exitCode
-    binary_path = $binaryPath
-    binary_args = $binaryArgs
-    requested_command_args = $requestedNcuArgs
-    summary_json = $summaryJson
-    summary_markdown = $summaryMarkdown
-  }
-  Write-JsonUtf8 -Path $provenancePath -Value $provenance
+    $provenancePath = "$resolvedOutputPrefix.provenance.json"
+    $provenance = [ordered]@{
+      generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+      profiler = "nsight_compute"
+      profiler_exe = $ncuExe
+      report_path = $reportPath
+      report_exists = $reportExists
+      requested_output_prefix = $resolvedOutputPrefix
+      kernel_name = $KernelName
+      use_kernel_name_filter = $UseKernelNameFilter
+      launch_count = $LaunchCount
+      target_processes = $TargetProcesses
+      profiler_exit_code = $exitCode
+      binary_path = $binaryPath
+      binary_args = $binaryArgs
+      requested_command_args = $requestedNcuArgs
+      summary_json = $summaryJson
+      summary_markdown = $summaryMarkdown
+    }
+    Write-JsonUtf8 -Path $provenancePath -Value $provenance
 
-  if (!$reportExists) {
-    throw "Nsight Compute did not produce a report at '$reportPath'."
-  }
+    if (!$reportExists) {
+      throw "Nsight Compute did not produce a report at '$reportPath'."
+    }
 
-  Write-Host "Nsight Compute report written to $reportPath"
-  Write-Host "Summary JSON written to $summaryJson"
-  Write-Host "Summary Markdown written to $summaryMarkdown"
-  Write-Host "Provenance written to $provenancePath"
+    Write-Host "Nsight Compute report written to $reportPath"
+    Write-Host "Summary JSON written to $summaryJson"
+    Write-Host "Summary Markdown written to $summaryMarkdown"
+    Write-Host "Provenance written to $provenancePath"
 
-  if ($exitCode -ne 0) {
-    Write-Warning "Nsight Compute produced a report but exited with code $exitCode."
+    if ($exitCode -ne 0) {
+      Write-Warning "Nsight Compute produced a report but exited with code $exitCode."
+    }
+  } finally {
+    $env:RUSTC_WRAPPER = $previousRustcWrapper
+    $env:PATH = $previousPath
+    Pop-Location
   }
 } finally {
-  $env:RUSTC_WRAPPER = $previousRustcWrapper
-  $env:PATH = $previousPath
-  Pop-Location
+  Exit-BenchmarkLock -Handle $benchmarkLock
 }

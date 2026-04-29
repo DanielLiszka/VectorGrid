@@ -13,6 +13,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 $SchemaVersion = 1
 $CaseRegistryVersion = 1
@@ -386,33 +387,38 @@ $offDynRun = $null
 $onDynRun = $null
 $gpuIdentity = Get-GpuIdentity
 
-Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU perf gate start"
+$benchmarkLock = Enter-BenchmarkLock -Context "GPU perf gate"
 try {
-  Invoke-CargoCommandAndEcho -ArgumentList @(
-    "bench",
-    "-p", "ta_app_core",
-    "--bench", "double_ma_opt",
-    "--features", "cuda,cuda-backtest-kernel",
-    "--no-run"
-  ) -FailureContext "Failed to build GPU kernel benchmark executable"
-
-  $benchExe = Find-LatestBenchExecutable -benchName "double_ma_opt"
-  foreach ($case in $criterionCases) {
-    Invoke-GpuKernelBenchCase -BenchExePath $benchExe.FullName -CaseSpec $case
-  }
-
-  if ($CheckDynamicStrategyRatio) {
+  Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU perf gate start"
+  try {
     Invoke-CargoCommandAndEcho -ArgumentList @(
-      "build",
-      "-q",
+      "bench",
       "-p", "ta_app_core",
-      "--bin", "profile_gpu_dynamic_runner",
-      "--release",
-      "--features", "cuda,cuda-backtest-kernel"
-    ) -FailureContext "Failed to build profile_gpu_dynamic_runner"
-    $runnerExe = Join-Path (Resolve-Path "target/release").Path "profile_gpu_dynamic_runner.exe"
-    $offDynRun = Invoke-DynamicStrategyProfileRun -RunnerExePath $runnerExe -DynamicStrategyEnabled $false -Iterations 5
-    $onDynRun = Invoke-DynamicStrategyProfileRun -RunnerExePath $runnerExe -DynamicStrategyEnabled $true -Iterations 5
+      "--bench", "double_ma_opt",
+      "--features", "cuda,cuda-backtest-kernel",
+      "--no-run"
+    ) -FailureContext "Failed to build GPU kernel benchmark executable"
+
+    $benchExe = Find-LatestBenchExecutable -benchName "double_ma_opt"
+    foreach ($case in $criterionCases) {
+      Invoke-GpuKernelBenchCase -BenchExePath $benchExe.FullName -CaseSpec $case
+    }
+
+    if ($CheckDynamicStrategyRatio) {
+      Invoke-CargoCommandAndEcho -ArgumentList @(
+        "build",
+        "-q",
+        "-p", "ta_app_core",
+        "--bin", "profile_gpu_dynamic_runner",
+        "--release",
+        "--features", "cuda,cuda-backtest-kernel"
+      ) -FailureContext "Failed to build profile_gpu_dynamic_runner"
+      $runnerExe = Join-Path (Resolve-Path "target/release").Path "profile_gpu_dynamic_runner.exe"
+      $offDynRun = Invoke-DynamicStrategyProfileRun -RunnerExePath $runnerExe -DynamicStrategyEnabled $false -Iterations 5
+      $onDynRun = Invoke-DynamicStrategyProfileRun -RunnerExePath $runnerExe -DynamicStrategyEnabled $true -Iterations 5
+    }
+  } finally {
+    Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "after GPU perf gate work"
   }
 } finally {
   if ([string]::IsNullOrWhiteSpace($prevDynamicFlag)) {
@@ -420,6 +426,7 @@ try {
   } else {
     $env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL = $prevDynamicFlag
   }
+  Exit-BenchmarkLock -Handle $benchmarkLock
 }
 
 $criterionCaseSummaries = @()

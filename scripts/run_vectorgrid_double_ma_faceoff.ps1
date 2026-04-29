@@ -10,6 +10,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Write-JsonUtf8 {
     param(
@@ -152,7 +153,12 @@ $cargoArgs = @(
     "--warm-up-time", "$WarmUpTimeSec"
 )
 
-$null = Invoke-LoggedProcess -Exe "cargo" -CmdArgs $cargoArgs -OutputPath $RawOutputPath
+$benchmarkLock = Enter-BenchmarkLock -Context "VectorGrid Double-MA faceoff"
+try {
+    $null = Invoke-LoggedProcess -Exe "cargo" -CmdArgs $cargoArgs -OutputPath $RawOutputPath
+} finally {
+    Exit-BenchmarkLock -Handle $benchmarkLock
+}
 $estimatePath = Resolve-CriterionEstimatePathFromBenchmarkId -Id $BenchmarkId
 $criterion = Read-JsonFile -Path $estimatePath
 $meta = Parse-BenchmarkMetadata -Id $BenchmarkId

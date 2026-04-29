@@ -23,6 +23,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "benchmark_lock.ps1")
 
 function Resolve-RepoRoot {
   return (Split-Path -Parent $PSScriptRoot)
@@ -190,11 +191,13 @@ Write-Host "Using Compute Sanitizer CLI: $sanitizerExe"
 $previousRustcWrapper = $env:RUSTC_WRAPPER
 $previousPath = $env:PATH
 
-Push-Location $repoRoot
+$benchmarkLock = Enter-BenchmarkLock -Context "options Compute Sanitizer run"
 try {
-  if (-not (Test-IsAdministrator)) {
-    Write-Warning "Compute Sanitizer may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
-  }
+  Push-Location $repoRoot
+  try {
+    if (-not (Test-IsAdministrator)) {
+      Write-Warning "Compute Sanitizer may fail to attach from a non-elevated PowerShell session. Rerun as Administrator if profiling reports are missing or attach permissions fail."
+    }
 
   Wait-NoOptionsPerfProcesses -TimeoutSeconds 120 -Context "before options Compute Sanitizer run"
 
@@ -272,11 +275,14 @@ try {
   Write-Host "Summary Markdown written to $summaryMarkdown"
   Write-Host "Provenance written to $provenancePath"
 
-  if ($exitCode -ne 0) {
-    throw "Compute Sanitizer exited with code $exitCode."
+    if ($exitCode -ne 0) {
+      throw "Compute Sanitizer exited with code $exitCode."
+    }
+  } finally {
+    $env:RUSTC_WRAPPER = $previousRustcWrapper
+    $env:PATH = $previousPath
+    Pop-Location
   }
 } finally {
-  $env:RUSTC_WRAPPER = $previousRustcWrapper
-  $env:PATH = $previousPath
-  Pop-Location
+  Exit-BenchmarkLock -Handle $benchmarkLock
 }
