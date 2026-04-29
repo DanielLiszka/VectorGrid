@@ -38,6 +38,8 @@ data/*.csv
 /docs/*
 !/docs/REPO_MAP.md
 !/docs/RELEASE.md
+!/docs/PUBLIC_RELEASE.md
+!/docs/WINDOWS_INSTALL.md
 !/docs/frontend_end_to_end_qa_automation_plan.md
 !/docs/frontend_premium_desktop_ui_ux_implementation_plan_2026-04-26.md
 !/docs/frontend_workflow_evidence_decision_authority.md

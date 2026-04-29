@@ -20,6 +20,8 @@ Do not treat this as the full implementation spec. Use it together with:
 - `README.md` for product framing and benchmark posture
 - `docs/ARCHITECTURE_NOTES.md` for backend/runtime notes
 - `docs/RELEASE.md` for build/release/PTX packaging notes
+- `docs/PUBLIC_RELEASE.md` for the signed Windows desktop public-release gate, staged artifact evidence, signing hook, updater prerequisites, and clean-machine checklist
+- `docs/WINDOWS_INSTALL.md` for end-user Windows install notes
 - `web/README.md` for frontend runtime notes
 - `docs/archive/README.md` for retired planning/review/tracker material
 - `docs/options_research/options_expression_optimizer_viable_plan_2026-04-02.md` for the current shipped-slice options-expression tracker, current checklist, and repo-fit implementation status

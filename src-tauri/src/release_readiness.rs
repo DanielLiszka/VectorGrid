@@ -1,5 +1,6 @@
 use crate::{polygon, settings};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -83,6 +84,10 @@ pub struct ReleaseResourceReadiness {
     pub polygon_cache_dir: String,
     pub polygon_settings_fallback_file_exists: bool,
     pub catboost_bundle_resource_exists: bool,
+    pub windows_bundle_catboost_resource_configured: bool,
+    pub windows_bundle_nsis_target_configured: bool,
+    pub windows_bundle_webview_install_mode: String,
+    pub windows_bundle_installer_icon_exists: bool,
     pub double_crossover_prebuilt_ptx_exists: bool,
     pub options_expression_prebuilt_ptx_exists: bool,
     pub release_binary_exists: bool,
@@ -102,6 +107,8 @@ pub struct ReleaseToolingReadiness {
     pub cargo_tauri_available: bool,
     pub tauri_driver_available: bool,
     pub edge_driver_available: bool,
+    pub signtool_available: bool,
+    pub makensis_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +117,10 @@ pub struct ReleaseToolingReadiness {
     pub tauri_driver_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_driver_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signtool_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub makensis_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,9 +189,42 @@ pub fn collect_release_readiness(
                 .to_string(),
         );
     }
+    if !resources.windows_bundle_catboost_resource_configured {
+        errors.push(
+            "Windows Tauri bundle config must include CatBoost native DLL as native/catboostmodel.dll."
+                .to_string(),
+        );
+    }
+    if !resources.windows_bundle_nsis_target_configured {
+        errors.push(
+            "Windows Tauri bundle config must include the nsis target for setup .exe releases."
+                .to_string(),
+        );
+    }
+    if resources
+        .windows_bundle_webview_install_mode
+        .trim()
+        .is_empty()
+    {
+        errors.push(
+            "Windows Tauri bundle config must explicitly declare bundle.windows.webviewInstallMode."
+                .to_string(),
+        );
+    }
+    if !resources.windows_bundle_installer_icon_exists {
+        errors.push(
+            "Windows Tauri bundle config references no existing NSIS installer icon.".to_string(),
+        );
+    }
     if variant.requires_kernel() && !resources.double_crossover_prebuilt_ptx_exists {
         errors.push(
             "GPU-kernel variant requires crates/app_core/src/kernels/double_crossover.prebuilt.ptx."
+                .to_string(),
+        );
+    }
+    if variant.requires_kernel() && !resources.options_expression_prebuilt_ptx_exists {
+        errors.push(
+            "GPU-kernel variant requires crates/app_core/src/kernels/options_expression.prebuilt.ptx."
                 .to_string(),
         );
     }
@@ -193,6 +237,18 @@ pub fn collect_release_readiness(
     }
     if !tooling.cargo_tauri_available {
         errors.push("cargo tauri is unavailable; packaged release builds cannot run.".to_string());
+    }
+    if !tooling.signtool_available {
+        warnings.push(
+            "signtool.exe is not available on PATH; public Authenticode signing will need a configured custom signing hook or Windows SDK SignTool."
+                .to_string(),
+        );
+    }
+    if !tooling.makensis_available {
+        notes.push(
+            "makensis.exe is not available on PATH; the public release gate will still verify whether cargo tauri can produce the configured NSIS bundle."
+                .to_string(),
+        );
     }
     if options.require_packaged_smoke && !tooling.tauri_driver_available {
         errors.push("tauri-driver is unavailable; packaged smoke cannot run.".to_string());
@@ -318,6 +374,7 @@ fn resource_readiness(
     polygon_cache_dir: &Path,
 ) -> ReleaseResourceReadiness {
     let src_tauri = repo_root.join("src-tauri");
+    let windows_bundle = windows_bundle_readiness(&src_tauri);
     let release_paths = resolve_release_build_paths(repo_root);
     ReleaseResourceReadiness {
         src_tauri_config_exists: src_tauri.join("tauri.conf.json").is_file(),
@@ -334,6 +391,10 @@ fn resource_readiness(
             .join("native")
             .join("catboostmodel.dll")
             .is_file(),
+        windows_bundle_catboost_resource_configured: windows_bundle.catboost_resource_configured,
+        windows_bundle_nsis_target_configured: windows_bundle.nsis_target_configured,
+        windows_bundle_webview_install_mode: windows_bundle.webview_install_mode,
+        windows_bundle_installer_icon_exists: windows_bundle.installer_icon_exists,
         double_crossover_prebuilt_ptx_exists: repo_root
             .join("crates")
             .join("app_core")
@@ -358,6 +419,95 @@ fn resource_readiness(
             .map(|path| path.to_string_lossy().to_string()),
         release_bundle_artifact_count: release_paths.release_bundle_artifact_count,
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct WindowsBundleReadiness {
+    catboost_resource_configured: bool,
+    nsis_target_configured: bool,
+    webview_install_mode: String,
+    installer_icon_exists: bool,
+}
+
+fn windows_bundle_readiness(src_tauri: &Path) -> WindowsBundleReadiness {
+    let config_path = src_tauri.join("tauri.windows.conf.json");
+    let Ok(raw) = std::fs::read_to_string(&config_path) else {
+        return WindowsBundleReadiness::default();
+    };
+    let Ok(config) = serde_json::from_str::<Value>(&raw) else {
+        return WindowsBundleReadiness::default();
+    };
+    let Some(bundle) = config.get("bundle") else {
+        return WindowsBundleReadiness::default();
+    };
+    let resources = bundle.get("resources");
+    let catboost_path = src_tauri
+        .join("resources")
+        .join("native")
+        .join("catboostmodel.dll");
+    let catboost_resource_configured = resources
+        .is_some_and(|value| bundle_resources_include_catboost(src_tauri, value, &catboost_path));
+    let nsis_target_configured = bundle.get("targets").is_some_and(|targets| {
+        targets
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("nsis")))
+            || targets.as_str() == Some("nsis")
+    });
+    let webview_install_mode = bundle
+        .pointer("/windows/webviewInstallMode/type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let installer_icon_exists = bundle
+        .pointer("/windows/nsis/installerIcon")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| src_tauri.join(value).is_file())
+        .unwrap_or(false);
+
+    WindowsBundleReadiness {
+        catboost_resource_configured,
+        nsis_target_configured,
+        webview_install_mode,
+        installer_icon_exists,
+    }
+}
+
+fn bundle_resources_include_catboost(
+    src_tauri: &Path,
+    resources: &Value,
+    catboost_path: &Path,
+) -> bool {
+    if let Some(map) = resources.as_object() {
+        return map.iter().any(|(source, target)| {
+            resolve_config_relative(src_tauri, source) == catboost_path
+                && target.as_str().is_some_and(|value| {
+                    normalize_resource_path(value) == "native/catboostmodel.dll"
+                })
+        });
+    }
+    if let Some(items) = resources.as_array() {
+        return items.iter().any(|item| {
+            item.as_str()
+                .is_some_and(|source| resolve_config_relative(src_tauri, source) == catboost_path)
+        });
+    }
+    false
+}
+
+fn resolve_config_relative(config_dir: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        config_dir.join(path)
+    }
+}
+
+fn normalize_resource_path(value: &str) -> String {
+    value.trim().replace('\\', "/")
 }
 
 #[derive(Debug, Clone, Default)]
@@ -417,6 +567,8 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
     let cargo_path = find_command_path("cargo", None);
     let npm_path = find_command_path("npm", None);
     let tauri_driver_path = find_command_path("tauri-driver", None);
+    let signtool_path = find_command_path("signtool", None);
+    let makensis_path = find_command_path("makensis", None);
     let edge_driver_path = find_command_path(
         "msedgedriver",
         Some(&[
@@ -431,10 +583,14 @@ fn tooling_readiness(repo_root: &Path) -> ReleaseToolingReadiness {
         cargo_tauri_available: cargo_tauri_available(),
         tauri_driver_available: tauri_driver_path.is_some(),
         edge_driver_available: edge_driver_path.is_some(),
+        signtool_available: signtool_path.is_some(),
+        makensis_available: makensis_path.is_some(),
         cargo_path: cargo_path.map(|path| path.to_string_lossy().to_string()),
         npm_path: npm_path.map(|path| path.to_string_lossy().to_string()),
         tauri_driver_path: tauri_driver_path.map(|path| path.to_string_lossy().to_string()),
         edge_driver_path: edge_driver_path.map(|path| path.to_string_lossy().to_string()),
+        signtool_path: signtool_path.map(|path| path.to_string_lossy().to_string()),
+        makensis_path: makensis_path.map(|path| path.to_string_lossy().to_string()),
     }
 }
 
@@ -597,6 +753,13 @@ mod tests {
         assert!(report.resources.src_tauri_config_exists);
         assert!(report.resources.root_tauri_config_exists);
         assert!(report.resources.catboost_bundle_resource_exists);
+        assert!(report.resources.windows_bundle_catboost_resource_configured);
+        assert!(report.resources.windows_bundle_nsis_target_configured);
+        assert_eq!(
+            report.resources.windows_bundle_webview_install_mode,
+            "downloadBootstrapper"
+        );
+        assert!(report.resources.windows_bundle_installer_icon_exists);
         assert!(report.resources.double_crossover_prebuilt_ptx_exists);
         assert_eq!(
             report.resources.release_binary_exists,

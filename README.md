@@ -13,6 +13,8 @@ This repository is currently published as a **backend/CLI preview**.
 - Do not treat `web/`, `npm run dev`, `npm run build`, `cargo run -p ta_desktop_demo_app`, or Tauri packaging as the public quick-start path for this release.
 - No financial, trading, broker, paper-trading, or live-execution workflow in this repo should be treated as production advice or a production trading system.
 
+Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases.
+
 ## Stored Benchmark Snapshots
 
 These figures are saved faceoff artifacts, not current perf-gate outputs. The VectorGrid timings for the two active warm app-path rows below were refreshed on `2026-04-16`; the VectorBT timings remain the last stored runs for those same scenarios and keep their original artifact dates.
@@ -194,7 +196,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run_execution_safety_gate.ps1
 
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 
-For public contribution, support, security-reporting, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, and `LICENSE`.
+For public contribution, support, security-reporting, privacy, disclaimer, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, `PRIVACY.md`, `DISCLAIMER.md`, and `LICENSE`.
 
 ## Reproduce The Benchmark
 

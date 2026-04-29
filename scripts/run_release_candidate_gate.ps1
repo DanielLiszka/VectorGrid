@@ -10,7 +10,8 @@ param(
   [string]$OutDir = "",
   [switch]$SkipPackagedSmoke,
   [switch]$SkipWorkspaceTests,
-  [switch]$IncludeLiveSafetyHarness
+  [switch]$IncludeLiveSafetyHarness,
+  [string]$PostBuildSignScript = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,6 +53,19 @@ function Resolve-ReleaseBinaryPath {
   $candidates = @(
     (Join-Path $repoRoot "src-tauri\\target\\release\\ta_desktop_demo_app.exe"),
     (Join-Path $repoRoot "target\\release\\ta_desktop_demo_app.exe")
+  )
+  foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) {
+      return (Resolve-Path $candidate).Path
+    }
+  }
+  return $null
+}
+
+function Resolve-ReleaseBundleRoot {
+  $candidates = @(
+    (Join-Path $repoRoot "src-tauri\\target\\release\\bundle"),
+    (Join-Path $repoRoot "target\\release\\bundle")
   )
   foreach ($candidate in $candidates) {
     if (Test-Path $candidate) {
@@ -121,6 +135,7 @@ function Write-ReleaseSummary {
     include_live_safety_harness = [bool]$IncludeLiveSafetyHarness
     skip_packaged_smoke = [bool]$SkipPackagedSmoke
     skip_workspace_tests = [bool]$SkipWorkspaceTests
+    post_build_sign_script = if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) { $null } else { [System.IO.Path]::GetFullPath($PostBuildSignScript) }
     error = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
     artifacts = [ordered]@{
       readiness = (Join-Path $resolvedOutDir "readiness.json")
@@ -159,7 +174,8 @@ function Write-ReleaseSummary {
     "- Include desktop smoke: $([bool]$IncludeDesktopSmoke)",
     "- Include live safety harness: $([bool]$IncludeLiveSafetyHarness)",
     "- Skip packaged smoke: $([bool]$SkipPackagedSmoke)",
-    "- Skip workspace tests: $([bool]$SkipWorkspaceTests)"
+    "- Skip workspace tests: $([bool]$SkipWorkspaceTests)",
+    "- Post-build signing hook: $(if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) { 'none' } else { [System.IO.Path]::GetFullPath($PostBuildSignScript) })"
   )
   if ($null -ne $manifest -and -not [string]::IsNullOrWhiteSpace([string]$manifest.artifact_source_kind)) {
     $lines += "- Release artifact source: $([string]$manifest.artifact_source_kind)"
@@ -295,9 +311,9 @@ try {
   }
 
   $buildCommand = switch ($Variant) {
-    "cpu" { "Push-Location src-tauri; cargo tauri build; Pop-Location" }
-    "gpu-ma" { "Push-Location src-tauri; cargo tauri build --features cuda; Pop-Location" }
-    "gpu-kernel" { "Push-Location src-tauri; VECTORBT_USE_PREBUILT_PTX=1 cargo tauri build --features cuda-backtest-kernel; Pop-Location" }
+    "cpu" { "Push-Location src-tauri; cargo tauri build --ci --bundles nsis; Pop-Location" }
+    "gpu-ma" { "Push-Location src-tauri; cargo tauri build --ci --bundles nsis --features cuda; Pop-Location" }
+    "gpu-kernel" { "Push-Location src-tauri; VECTORBT_USE_PREBUILT_PTX=1 cargo tauri build --ci --bundles nsis --features cuda-backtest-kernel; Pop-Location" }
   }
   Invoke-ReleaseStep -Name "Tauri release build" -CommandText $buildCommand -Action {
     $prevPrebuilt = $env:VECTORBT_USE_PREBUILT_PTX
@@ -307,11 +323,11 @@ try {
       $pushedLocation = $true
       if ($Variant -eq "gpu-kernel") {
         $env:VECTORBT_USE_PREBUILT_PTX = "1"
-        & cargo tauri build --features cuda-backtest-kernel
+        & cargo tauri build --ci --bundles nsis --features cuda-backtest-kernel
       } elseif ($Variant -eq "gpu-ma") {
-        & cargo tauri build --features cuda
+        & cargo tauri build --ci --bundles nsis --features cuda
       } else {
-        & cargo tauri build
+        & cargo tauri build --ci --bundles nsis
       }
       if ($LASTEXITCODE -ne 0) {
         throw "tauri build failed with exit code $LASTEXITCODE"
@@ -331,6 +347,35 @@ try {
   $releaseBinaryPath = Resolve-ReleaseBinaryPath
   if ($null -eq $releaseBinaryPath) {
     throw "tauri build completed but no release executable was found under src-tauri\\target\\release or target\\release."
+  }
+  $releaseBundleRoot = Resolve-ReleaseBundleRoot
+
+  $effectivePostBuildSignScript = if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) {
+    [string]$env:VECTORGRID_POST_BUILD_SIGN_SCRIPT
+  } else {
+    $PostBuildSignScript
+  }
+  if (-not [string]::IsNullOrWhiteSpace($effectivePostBuildSignScript)) {
+    $resolvedSignScript = [System.IO.Path]::GetFullPath($effectivePostBuildSignScript)
+    if (-not (Test-Path -LiteralPath $resolvedSignScript -PathType Leaf)) {
+      throw "Post-build signing script does not exist: $resolvedSignScript"
+    }
+    $signArgs = @(
+      "-ExecutionPolicy", "Bypass",
+      "-File", $resolvedSignScript,
+      "-Variant", $Variant,
+      "-OutDir", $resolvedOutDir,
+      "-ReleaseBinaryPath", $releaseBinaryPath
+    )
+    if ($null -ne $releaseBundleRoot) {
+      $signArgs += @("-BundleRoot", $releaseBundleRoot)
+    }
+    Invoke-ReleaseStep -Name "Post-build signing hook" -CommandText ("powershell " + ($signArgs -join " ")) -Action {
+      powershell @signArgs
+      if ($LASTEXITCODE -ne 0) {
+        throw "post-build signing hook failed with exit code $LASTEXITCODE"
+      }
+    }
   }
 
   $provenanceArgs = @(

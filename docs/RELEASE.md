@@ -28,6 +28,42 @@ Current release-candidate caveats:
 - Benchmark-running release steps inherit the repo-local benchmark mutex from `scripts/benchmark_lock.ps1`; this serializes repo-local gates but does not replace checking unrelated external benchmark/profiler processes.
 - It references `scripts/run_live_execution_safety_harness.ps1`; review that exact script before treating the harness as release authority.
 
+## Public Windows Release Gate
+
+Use `scripts/run_public_release_gate.ps1` for publishable Windows desktop releases. It wraps the release-candidate gate and then enforces public-release evidence:
+
+- clean git worktree, unless explicitly rehearsing with `-AllowDirtyWorktree`;
+- staged bundle artifacts, not only the raw `target/release/ta_desktop_demo_app.exe`;
+- passing packaged desktop smoke;
+- installer artifacts listed in `manifest.json`;
+- valid Authenticode signatures unless explicitly rehearsing with `-AllowUnsignedBeta`.
+
+Default CPU command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_public_release_gate.ps1 -Variant cpu
+```
+
+Unsigned/dirty runs are for local rehearsal only and must not be published as public releases. See `docs/PUBLIC_RELEASE.md` for the full public release runbook.
+
+Release environments can sign artifacts between build and manifest capture with either:
+
+- `-PostBuildSignScript <path>` on `scripts/run_public_release_gate.ps1` or `scripts/run_release_candidate_gate.ps1`;
+- `VECTORGRID_POST_BUILD_SIGN_SCRIPT=<path>` in the release environment.
+
+The signing hook receives `-Variant`, `-OutDir`, `-ReleaseBinaryPath`, and `-BundleRoot` when available. It must sign all publishable installer artifacts before `generate_release_manifest.ps1` records hashes and Authenticode status.
+
+## Windows Bundle Configuration
+
+The Windows platform config is intentionally explicit:
+
+- `src-tauri/tauri.windows.conf.json` and root `tauri.windows.conf.json` must remain mirrored.
+- The configured public bundle target is `nsis`, producing a setup `.exe`.
+- `resources/native/catboostmodel.dll` is bundled as `native/catboostmodel.dll` so packaged ML/native workflows can resolve it from Tauri's resource directory.
+- WebView2 install behavior is declared explicitly with `downloadBootstrapper`; offline WebView2 distribution is a future release-profile decision because it materially increases installer size.
+
+`node scripts/check_tauri_config_sync.mjs` validates the mirror, resource source paths, NSIS target, WebView2 install mode, and installer icon path.
+
 ## Variant Evidence
 
 | Variant/surface | Required evidence | Notes |

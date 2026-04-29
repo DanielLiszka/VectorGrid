@@ -49,8 +49,49 @@ function Resolve-ExistingPath {
 function Get-ArtifactCandidates {
   param([Parameter(Mandatory = $true)][string]$Root)
   Get-ChildItem -Path $Root -Recurse -File | Where-Object {
-    @(".msi", ".exe") -contains $_.Extension.ToLowerInvariant()
+    @(".msi", ".exe", ".zip", ".sig") -contains $_.Extension.ToLowerInvariant()
   } | Sort-Object FullName
+}
+
+function ConvertTo-SafeNamePart {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  $part = ($Value.ToLowerInvariant() -replace "[^a-z0-9]+", "-").Trim("-")
+  if ([string]::IsNullOrWhiteSpace($part)) {
+    return "artifact"
+  }
+  return $part
+}
+
+function Get-CodeSignatureInfo {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+  if (@(".exe", ".msi") -notcontains $ext) {
+    return [ordered]@{
+      checked = $false
+      status = "not_applicable"
+      signer_subject = $null
+      thumbprint = $null
+    }
+  }
+
+  try {
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    return [ordered]@{
+      checked = $true
+      status = [string]$signature.Status
+      signer_subject = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { $null }
+      thumbprint = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Thumbprint } else { $null }
+    }
+  } catch {
+    return [ordered]@{
+      checked = $true
+      status = "SignatureCheckFailed"
+      signer_subject = $null
+      thumbprint = $null
+      error = $_.Exception.Message
+    }
+  }
 }
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
@@ -82,12 +123,6 @@ if ($null -ne $resolvedBundleRoot) {
   $bundleArtifacts = @(Get-ArtifactCandidates -Root $resolvedBundleRoot)
 }
 
-$duplicateExt = $bundleArtifacts | Group-Object { $_.Extension.ToLowerInvariant() } | Where-Object { $_.Count -gt 1 }
-if ($duplicateExt.Count -gt 0) {
-  $exts = ($duplicateExt | ForEach-Object { $_.Name }) -join ", "
-  throw "Ambiguous bundle output: multiple artifacts share the same extension ($exts)."
-}
-
 $artifactsDir = Join-Path $resolvedOutDir "artifacts"
 New-Item -ItemType Directory -Force -Path $artifactsDir | Out-Null
 
@@ -95,10 +130,12 @@ $stagedArtifacts = @()
 $hashLines = @()
 if ($bundleArtifacts.Count -gt 0) {
   foreach ($artifact in $bundleArtifacts) {
-    $normalizedName = "vectorgrid-$resolvedVersion-windows-x64-$Variant$($artifact.Extension.ToLowerInvariant())"
+    $sourceNamePart = ConvertTo-SafeNamePart -Value $artifact.BaseName
+    $normalizedName = "vectorgrid-$resolvedVersion-windows-x64-$Variant-$sourceNamePart$($artifact.Extension.ToLowerInvariant())"
     $stagedPath = Join-Path $artifactsDir $normalizedName
     Copy-Item -LiteralPath $artifact.FullName -Destination $stagedPath -Force
     $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $stagedPath
+    $signature = Get-CodeSignatureInfo -Path $stagedPath
     $relativePath = "artifacts/$normalizedName"
     $hashLines += "$($hash.Hash.ToLowerInvariant()) *$relativePath"
     $stagedArtifacts += [ordered]@{
@@ -109,6 +146,7 @@ if ($bundleArtifacts.Count -gt 0) {
       extension = $artifact.Extension.ToLowerInvariant()
       size_bytes = [int64](Get-Item -LiteralPath $stagedPath).Length
       sha256 = $hash.Hash.ToLowerInvariant()
+      code_signature = $signature
     }
   }
 } else {
@@ -116,6 +154,7 @@ if ($bundleArtifacts.Count -gt 0) {
   $stagedPath = Join-Path $artifactsDir $normalizedName
   Copy-Item -LiteralPath $resolvedReleaseBinary -Destination $stagedPath -Force
   $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $stagedPath
+  $signature = Get-CodeSignatureInfo -Path $stagedPath
   $relativePath = "artifacts/$normalizedName"
   $hashLines += "$($hash.Hash.ToLowerInvariant()) *$relativePath"
   $stagedArtifacts += [ordered]@{
@@ -126,6 +165,7 @@ if ($bundleArtifacts.Count -gt 0) {
     extension = ".exe"
     size_bytes = [int64](Get-Item -LiteralPath $stagedPath).Length
     sha256 = $hash.Hash.ToLowerInvariant()
+    code_signature = $signature
   }
 }
 
@@ -134,10 +174,21 @@ Set-Content -Path $hashPath -Encoding UTF8 -Value $hashLines
 
 $catboostPath = Join-Path $repoRoot "src-tauri\\resources\\native\\catboostmodel.dll"
 $kernelPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\double_crossover.prebuilt.ptx"
+$optionsPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\options_expression.prebuilt.ptx"
 $catboostExists = Test-Path -LiteralPath $catboostPath -PathType Leaf
 if (-not $AllowMissingCatboostNative -and -not $catboostExists) {
   throw "Required packaged CatBoost native library is missing: $catboostPath. Use -AllowMissingCatboostNative only for non-shipping diagnostic manifests."
 }
+
+$signedArtifacts = @($stagedArtifacts | Where-Object {
+  $null -ne $_.code_signature -and [bool]$_.code_signature.checked -and [string]$_.code_signature.status -eq "Valid"
+})
+$signatureCheckedArtifacts = @($stagedArtifacts | Where-Object {
+  $null -ne $_.code_signature -and [bool]$_.code_signature.checked
+})
+$unsignedOrInvalidArtifacts = @($signatureCheckedArtifacts | Where-Object {
+  [string]$_.code_signature.status -ne "Valid"
+})
 
 $manifest = [ordered]@{
   schema_version = 1
@@ -157,6 +208,13 @@ $manifest = [ordered]@{
     catboost_bundle_resource_exists = $catboostExists
     double_crossover_prebuilt_ptx_path = $kernelPtxPath
     double_crossover_prebuilt_ptx_exists = Test-Path $kernelPtxPath
+    options_expression_prebuilt_ptx_path = $optionsPtxPath
+    options_expression_prebuilt_ptx_exists = Test-Path $optionsPtxPath
+  }
+  signing = [ordered]@{
+    checked_artifact_count = $signatureCheckedArtifacts.Count
+    valid_signed_artifact_count = $signedArtifacts.Count
+    unsigned_or_invalid_artifact_count = $unsignedOrInvalidArtifacts.Count
   }
   staged_artifacts = $stagedArtifacts
 }

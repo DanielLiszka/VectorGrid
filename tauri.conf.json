@@ -31,5 +31,12 @@
         "visible": false
       }
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": false,
+      "endpoints": [],
+      "pubkey": ""
+    }
   }
 }

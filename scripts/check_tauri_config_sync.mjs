@@ -52,6 +52,13 @@ function comparableShape(config) {
       },
       windows: Array.isArray(config.app?.windows) ? config.app.windows.map(stableWindowShape) : [],
     },
+    plugins: {
+      updater: {
+        active: config.plugins?.updater?.active ?? null,
+        endpoints: config.plugins?.updater?.endpoints ?? [],
+        pubkey: config.plugins?.updater?.pubkey ?? null,
+      },
+    },
   }
 }
 
@@ -75,6 +82,29 @@ function normalizeBundleResources(configPath, resources) {
   return resources
 }
 
+function normalizeBundleTargets(targets) {
+  if (!targets) return null
+  if (Array.isArray(targets)) return targets.map(String).sort()
+  if (typeof targets === 'string') return [targets]
+  return targets
+}
+
+function normalizeWindowsBundle(configPath, windowsConfig) {
+  if (!windowsConfig || typeof windowsConfig !== 'object') return null
+  const configDir = path.dirname(configPath)
+  const nsis = windowsConfig.nsis && typeof windowsConfig.nsis === 'object' ? windowsConfig.nsis : {}
+  return stableValue({
+    webviewInstallMode: windowsConfig.webviewInstallMode ?? null,
+    nsis: {
+      displayLanguageSelector: nsis.displayLanguageSelector ?? null,
+      installerIcon:
+        typeof nsis.installerIcon === 'string'
+          ? path.resolve(configDir, nsis.installerIcon)
+          : null,
+    },
+  })
+}
+
 function validateResourceSourcesExist(label, resources, failures) {
   if (!Array.isArray(resources)) return
   for (const entry of resources) {
@@ -85,6 +115,46 @@ function validateResourceSourcesExist(label, resources, failures) {
       failures.push(`${label} references missing bundle resource source: ${source}`)
     }
   }
+}
+
+function validatePathExists(label, filePath, failures) {
+  if (typeof filePath !== 'string' || filePath.length === 0) return
+  if (!fs.existsSync(filePath)) {
+    failures.push(`${label} references missing file: ${filePath}`)
+  }
+}
+
+function validateWindowsReleaseBundleConfig(label, shape, failures) {
+  const resources = Array.isArray(shape.bundle.resources) ? shape.bundle.resources : []
+  const expectedCatboostSource = path.resolve(ROOT, 'src-tauri', 'resources', 'native', 'catboostmodel.dll')
+  const hasCatboostResource = resources.some(
+    (entry) =>
+      entry?.source === expectedCatboostSource &&
+      String(entry?.target || '').replaceAll('\\', '/') === 'native/catboostmodel.dll',
+  )
+  if (!hasCatboostResource) {
+    failures.push(
+      `${label} must bundle src-tauri/resources/native/catboostmodel.dll as native/catboostmodel.dll.`,
+    )
+  }
+
+  const targets = Array.isArray(shape.bundle.targets) ? shape.bundle.targets : []
+  if (!targets.includes('nsis')) {
+    failures.push(`${label} must include the nsis bundle target for public Windows setup .exe releases.`)
+  }
+
+  const installModeType = shape.bundle.windows?.webviewInstallMode?.type ?? null
+  if (installModeType !== 'downloadBootstrapper') {
+    failures.push(
+      `${label} must declare bundle.windows.webviewInstallMode.type so WebView2 installer behavior is explicit.`,
+    )
+  }
+
+  validatePathExists(
+    `${label} NSIS installer icon`,
+    shape.bundle.windows?.nsis?.installerIcon ?? '',
+    failures,
+  )
 }
 
 function readOptionalJson(filePath) {
@@ -124,18 +194,28 @@ if (Boolean(canonicalWindows) !== Boolean(mirrorWindows)) {
   const canonicalWindowsShape = {
     schema: canonicalWindows.$schema ?? null,
     bundle: {
+      targets: normalizeBundleTargets(canonicalWindows.bundle?.targets ?? null),
       resources: normalizeBundleResources(
         CANONICAL_WINDOWS_PATH,
         canonicalWindows.bundle?.resources ?? null,
+      ),
+      windows: normalizeWindowsBundle(
+        CANONICAL_WINDOWS_PATH,
+        canonicalWindows.bundle?.windows ?? null,
       ),
     },
   }
   const mirrorWindowsShape = {
     schema: mirrorWindows.$schema ?? null,
     bundle: {
+      targets: normalizeBundleTargets(mirrorWindows.bundle?.targets ?? null),
       resources: normalizeBundleResources(
         MIRROR_WINDOWS_PATH,
         mirrorWindows.bundle?.resources ?? null,
+      ),
+      windows: normalizeWindowsBundle(
+        MIRROR_WINDOWS_PATH,
+        mirrorWindows.bundle?.windows ?? null,
       ),
     },
   }
@@ -154,6 +234,8 @@ if (Boolean(canonicalWindows) !== Boolean(mirrorWindows)) {
     mirrorWindowsShape.bundle.resources,
     failures,
   )
+  validateWindowsReleaseBundleConfig('Canonical Windows Tauri config', canonicalWindowsShape, failures)
+  validateWindowsReleaseBundleConfig('Root mirror Windows Tauri config', mirrorWindowsShape, failures)
 }
 
 if (failures.length > 0) {
