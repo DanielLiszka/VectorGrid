@@ -830,6 +830,19 @@ describe("optimizeService", () => {
       saveCall?.[1] as { artifact?: Record<string, unknown> } | undefined
     )?.artifact;
     expect(savedArtifact?.kind).toBe("vectorgrid_run_artifact");
+    expect(savedArtifact?.stage_completions).toEqual([
+      expect.objectContaining({
+        schema_version: 1,
+        stage: "optimization",
+        verdict: "search_complete_requires_validation",
+      }),
+    ]);
+    expect(
+      useWorkflowArtifactsStore(pinia).currentRun?.stageCompletions[0],
+    ).toMatchObject({
+      stage: "optimization",
+      verdict: "search_complete_requires_validation",
+    });
     expect(analysis.topRows).toBeGreaterThan(0);
     expect(String(analysis.bestTitle || "")).toContain("vs");
     expect(runValidationActionMock).toHaveBeenCalled();

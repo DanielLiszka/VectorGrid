@@ -12,6 +12,10 @@ import {
   applyShellStateForRunRequest,
   isMlSignalStrategyKind,
 } from "../utils/core/workflowRunRestore";
+import {
+  normalizeStageCompletions,
+  type StageCompletionPacketV1,
+} from "../utils/core/stageCompletion";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import {
   applyWorkflowArtifactsPayload,
@@ -165,8 +169,8 @@ function applyMlSignalScoreCacheRequestFields(
     scoreSource === "native"
       ? Boolean(
           req?.allow_non_walkforward_score_scope ??
-            req?.allowNonWalkforwardScoreScope ??
-            false,
+          req?.allowNonWalkforwardScoreScope ??
+          false,
         )
       : false;
 }
@@ -366,6 +370,8 @@ interface RunArtifactSummaryResponse {
   ml_native_backend_used?: unknown;
   ml_native_prediction_batch_size?: unknown;
   ml_native_fallback_reason?: unknown;
+  stage_completions?: unknown;
+  stageCompletions?: unknown;
 }
 
 export interface HistorySavedRunSummary {
@@ -392,6 +398,7 @@ export interface HistorySavedRunSummary {
   mlScoreNote?: string;
   mlNativeBackendUsed?: string;
   mlNativeFallbackReason?: string;
+  stageCompletions?: StageCompletionPacketV1[];
   tags: string[];
 }
 
@@ -424,6 +431,7 @@ export interface HistorySavedRunDetail {
   routeProvenance?: RouteProvenanceSummary | null;
   lineage?: ArtifactLineageSummary | null;
   optimizationMetricSurface?: Record<string, unknown> | null;
+  stageCompletions?: StageCompletionPacketV1[];
   runReq?: Record<string, unknown> | null;
   runRes?: Record<string, unknown> | null;
   metricSurfaceSummary?: string;
@@ -1628,6 +1636,10 @@ function seedMlSignalArtifactContextFromDetail(
         dataset_meta: detail.datasetMeta,
         route_provenance: detail.routeProvenance,
         lineage: detail.lineage,
+        stage_completions: normalizeStageCompletions(
+          detail.stageCompletions ??
+            (detail as unknown as Record<string, unknown>).stage_completions,
+        ),
         ml_signal: {
           stage: mlSignalStage,
           bundle_id:
@@ -1848,7 +1860,9 @@ export async function saveSavedRunTags(
   });
 }
 
-function normalizeRunArtifactSummary(row: RunArtifactSummaryResponse): HistorySavedRunSummary | null {
+function normalizeRunArtifactSummary(
+  row: RunArtifactSummaryResponse,
+): HistorySavedRunSummary | null {
   const path = normalizeText(row.path);
   if (!path) return null;
 
@@ -1888,10 +1902,15 @@ function normalizeRunArtifactSummary(row: RunArtifactSummaryResponse): HistorySa
     baseTimeframe: normalizeText(row.base_timeframe),
     derivedTimeframe: normalizeText(row.derived_timeframe),
     resampleApplied:
-      row.resample_applied == null ? null : parseBooleanLike(row.resample_applied),
+      row.resample_applied == null
+        ? null
+        : parseBooleanLike(row.resample_applied),
     sourceContentFingerprint: normalizeText(row.source_content_fingerprint),
     routeProvenance: parseRouteProvenance(row.route_provenance),
     lineage: parseArtifactLineage(row.lineage),
+    stageCompletions: normalizeStageCompletions(
+      row.stage_completions ?? row.stageCompletions,
+    ),
     ...(mlScoreSpace ? { mlScoreSpace } : {}),
     ...(mlScoreScope ? { mlScoreScope } : {}),
     ...(buildMlScoreContractSummary(
@@ -2152,11 +2171,15 @@ function defaultRepairTargetPath(path: string): string {
   return `${parts.join("")}${suffix}.repaired.json`;
 }
 
-function normalizeRunArtifactRepairResponse(raw: unknown): HistoryRunArtifactRepairSummary {
-  const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const summary = row.summary && typeof row.summary === "object"
-    ? normalizeRunArtifactSummary(row.summary as RunArtifactSummaryResponse)
-    : null;
+function normalizeRunArtifactRepairResponse(
+  raw: unknown,
+): HistoryRunArtifactRepairSummary {
+  const row =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const summary =
+    row.summary && typeof row.summary === "object"
+      ? normalizeRunArtifactSummary(row.summary as RunArtifactSummaryResponse)
+      : null;
   return {
     sourcePath: normalizePath(String(row.sourcePath ?? row.source_path ?? "")),
     resultPath: normalizePath(String(row.resultPath ?? row.result_path ?? "")),
@@ -2293,6 +2316,10 @@ export async function loadSavedRunDetail(
       detail.optimizationMetricSurface ??
         (detail as unknown as Record<string, unknown>)
           .optimization_metric_surface,
+    ),
+    stageCompletions: normalizeStageCompletions(
+      detail.stageCompletions ??
+        (detail as unknown as Record<string, unknown>).stage_completions,
     ),
     runReq: asRecord(detail.runReq),
     runRes: asRecord(detail.runRes),

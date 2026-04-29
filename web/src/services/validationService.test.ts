@@ -2661,6 +2661,30 @@ describe("validationService", () => {
     expect(workflowStore.currentRun?.reportXlsxPath).toBe(
       "runs/vectorgrid_report_validation_test.xlsx",
     );
+    const saveRunCall = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "save_run_artifact",
+    );
+    const savedArtifact = (
+      saveRunCall?.[1] as { artifact?: Record<string, unknown> } | undefined
+    )?.artifact;
+    expect(savedArtifact?.stage_completions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stage: "optimization" }),
+        expect.objectContaining({
+          stage: "validation",
+          report_xlsx_path: "runs/vectorgrid_report_validation_test.xlsx",
+        }),
+      ]),
+    );
+    expect(workflowStore.currentRun?.stageCompletions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stage: "optimization" }),
+        expect.objectContaining({
+          stage: "validation",
+          reportXlsxPath: "runs/vectorgrid_report_validation_test.xlsx",
+        }),
+      ]),
+    );
 
     const validationState = (pinia.state.value as Record<string, unknown>)
       .validation as Record<string, unknown>;

@@ -6,6 +6,11 @@ const webRoot = process.cwd()
 const repoRoot = path.resolve(webRoot, '..')
 
 const cargoBin = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
+const cargoEnv = { ...process.env }
+
+if (process.platform === 'win32') {
+  cargoEnv.CARGO_BUILD_JOBS = '1'
+}
 
 const result = spawnSync(
   cargoBin,
@@ -19,6 +24,7 @@ const result = spawnSync(
   ],
   {
     cwd: repoRoot,
+    env: cargoEnv,
     stdio: 'inherit',
   },
 )

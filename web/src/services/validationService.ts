@@ -11,6 +11,14 @@ import {
 import { useWorkflowStore } from "../stores/workflowStore";
 import { computeConfigFingerprint } from "../utils/core/artifactIdentity";
 import { buildDatasetMetaForArtifact } from "../utils/core/datasetMeta";
+import {
+  buildValidationStageCompletion,
+  normalizeStageCompletions,
+  serializeStageCompletionsForArtifact,
+  updateStageCompletionReportPath,
+  upsertStageCompletion,
+  type StageCompletionPacketV1,
+} from "../utils/core/stageCompletion";
 import { openPathWithRevealFallback } from "../utils/openPath";
 import { formatUiCount, formatUtcDateFromUnixMs } from "../utils/uiFormat";
 import {
@@ -276,14 +284,10 @@ function buildLegacyTradeBootstrapMonteCarloSummary(
   const prefix = hasStationary ? "stationary legacy" : "iid legacy";
   const prob = hasStationary ? stationaryProb : iidProb;
   const pnlP05 = Number(
-    hasStationary
-      ? tradeBootstrap.stationary_pnl_p05
-      : tradeBootstrap.pnl_p05,
+    hasStationary ? tradeBootstrap.stationary_pnl_p05 : tradeBootstrap.pnl_p05,
   );
   const pnlP50 = Number(
-    hasStationary
-      ? tradeBootstrap.stationary_pnl_p50
-      : tradeBootstrap.pnl_p50,
+    hasStationary ? tradeBootstrap.stationary_pnl_p50 : tradeBootstrap.pnl_p50,
   );
   const maxDdP95 = Number(
     hasStationary
@@ -348,7 +352,8 @@ function buildMonteCarloValidationSummary(
     const pnlP50 = Number(stats.pnl_p50 ?? Number.NaN);
     const maxDdP95 = Number(stats.max_dd_p95 ?? Number.NaN);
     const passed = asRecord(monteCarlo.advisory)?.passed;
-    const verdict = typeof passed === "boolean" ? (passed ? "pass" : "fail") : "";
+    const verdict =
+      typeof passed === "boolean" ? (passed ? "pass" : "fail") : "";
     return {
       summary:
         `${mode} • sims=${simulations} • trades=${tradeCount}` +
@@ -446,8 +451,10 @@ interface WorkflowRunArtifactSnapshot {
   reportXlsxPath: string;
   csvPath: string;
   datasetMeta: Record<string, unknown> | null;
+  routeProvenance: Record<string, unknown> | null;
   mlSignal: Record<string, unknown> | null;
   optimizationMetricSurface: Record<string, unknown> | null;
+  stageCompletions: StageCompletionPacketV1[];
   tags: string[];
   req: unknown;
   res: unknown;
@@ -483,6 +490,7 @@ interface PersistValidationArtifactResult {
   datasetMeta: Record<string, unknown> | null;
   mlSignal: Record<string, unknown> | null;
   optimizationMetricSurface: Record<string, unknown> | null;
+  stageCompletions: StageCompletionPacketV1[];
   tags: string[];
   persistenceWarning: string;
 }
@@ -709,9 +717,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function extractTopRowsFromRunResult(
-  runRes: unknown,
-): Array<{
+function extractTopRowsFromRunResult(runRes: unknown): Array<{
   params?: unknown;
   metrics?: unknown;
   mo?: unknown;
@@ -837,6 +843,12 @@ function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null 
         : row.dataset_meta && typeof row.dataset_meta === "object"
           ? (row.dataset_meta as Record<string, unknown>)
           : null,
+    routeProvenance:
+      row.routeProvenance && typeof row.routeProvenance === "object"
+        ? (row.routeProvenance as Record<string, unknown>)
+        : row.route_provenance && typeof row.route_provenance === "object"
+          ? (row.route_provenance as Record<string, unknown>)
+          : null,
     mlSignal:
       row.mlSignal && typeof row.mlSignal === "object"
         ? (row.mlSignal as Record<string, unknown>)
@@ -851,6 +863,9 @@ function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null 
             typeof row.optimization_metric_surface === "object"
           ? (row.optimization_metric_surface as Record<string, unknown>)
           : null,
+    stageCompletions: normalizeStageCompletions(
+      row.stageCompletions ?? row.stage_completions,
+    ),
     tags: normalizeStringList(row.tags),
     req: row.req ?? null,
     res: row.res ?? null,
@@ -1534,9 +1549,9 @@ function buildValidationMetaText(
       ? "preserved_finalists"
       : crossModeRaw === "full_stack"
         ? "full_stack"
-      : crossModeRaw === "lightweight"
-        ? "lightweight"
-        : "";
+        : crossModeRaw === "lightweight"
+          ? "lightweight"
+          : "";
   const crossSuffix =
     crossDatasets > 0
       ? ` • cross=${crossDatasets}${crossMode ? ` (${crossMode})` : ""}`
@@ -2692,6 +2707,25 @@ async function persistValidationArtifact(
   const optimizationMetricSurface =
     currentRun?.optimizationMetricSurface ?? null;
   const configFingerprint = computeConfigFingerprint(runReq, validationReq);
+  const validationStageCompletion = buildValidationStageCompletion({
+    ts,
+    completedAt: new Date().toISOString(),
+    artifactKind: "vectorgrid_run_artifact",
+    artifactPath: currentRun?.artifactPath,
+    reportXlsxPath,
+    csvPath,
+    configFingerprint,
+    datasetMeta,
+    routeProvenance: currentRun?.routeProvenance,
+    req: runReq,
+    res: runRes,
+    validationReq,
+    validationRes,
+  });
+  let stageCompletions = upsertStageCompletion(
+    currentRun?.stageCompletions ?? [],
+    validationStageCompletion,
+  );
 
   return measureValidationReportPerf(
     "validationService.persistValidationArtifactMs",
@@ -2708,6 +2742,8 @@ async function persistValidationArtifact(
         dataset_meta: datasetMeta,
         ml_signal: mlSignal,
         optimization_metric_surface: optimizationMetricSurface,
+        stage_completions:
+          serializeStageCompletionsForArtifact(stageCompletions),
         tags,
       };
       let path = normalizeText(currentRun?.artifactPath);
@@ -2729,6 +2765,11 @@ async function persistValidationArtifact(
           ? `Validation artifact persistence failed: ${detail}`
           : "Validation artifact persistence failed.";
       }
+      if (path) {
+        stageCompletions = stageCompletions.map((packet) =>
+          packet.artifactPath ? packet : { ...packet, artifactPath: path },
+        );
+      }
 
       return {
         path,
@@ -2738,6 +2779,7 @@ async function persistValidationArtifact(
         datasetMeta,
         mlSignal,
         optimizationMetricSurface,
+        stageCompletions,
         tags,
         persistenceWarning,
       };
@@ -2772,6 +2814,9 @@ function applyVueValidationArtifacts(
         dataset_meta: persisted.datasetMeta,
         ml_signal: persisted.mlSignal,
         optimization_metric_surface: persisted.optimizationMetricSurface,
+        stage_completions: serializeStageCompletionsForArtifact(
+          persisted.stageCompletions,
+        ),
         tags: persisted.tags,
         req: runReq,
         res: runRes,
@@ -3673,6 +3718,10 @@ function buildPersistedValidationArtifactFromCurrentRun(
     datasetMeta: currentRun.datasetMeta,
     mlSignal: currentRun.mlSignal,
     optimizationMetricSurface: currentRun.optimizationMetricSurface,
+    stageCompletions: updateStageCompletionReportPath(
+      currentRun.stageCompletions,
+      reportXlsxPath,
+    ),
     tags: currentRun.tags,
     persistenceWarning: "",
   };

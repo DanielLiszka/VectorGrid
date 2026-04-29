@@ -8,13 +8,18 @@ import { useWorkflowStore } from "../stores/workflowStore";
 import { computeConfigFingerprint } from "../utils/core/artifactIdentity";
 import { buildDatasetMetaForArtifact } from "../utils/core/datasetMeta";
 import { buildRouteProvenanceFromRun } from "../utils/core/runArtifactReview";
+import {
+  buildOptimizationStageCompletion,
+  serializeStageCompletionsForArtifact,
+  type StageCompletionPacketV1,
+} from "../utils/core/stageCompletion";
 import type { MaParamsAndSweeps } from "./optimizeRequestBuilder";
 import { resolveRecommendedOptimizationDefaults } from "./recommendedOptimizationDefaults";
 import type { GpuStatus as GeneratedGpuStatus } from "../tauri/generatedBindings";
 
-let optimizeRequestBuilderPromise:
-  | Promise<typeof import("./optimizeRequestBuilder")>
-  | null = null;
+let optimizeRequestBuilderPromise: Promise<
+  typeof import("./optimizeRequestBuilder")
+> | null = null;
 
 function loadOptimizeRequestBuilder(): Promise<
   typeof import("./optimizeRequestBuilder")
@@ -1046,7 +1051,9 @@ function resolveDynamicStrategyRuntimeBackend(
   const preview = asRecord(
     response.preview,
   ) as RawDynamicDoubleMaStrategyIrPreview | null;
-  const resolvedBackend = normalizeText(preview?.resolved_backend).toLowerCase();
+  const resolvedBackend = normalizeText(
+    preview?.resolved_backend,
+  ).toLowerCase();
   if (resolvedBackend === "cpu") return "CpuOnly";
   return normalizeText(requestedBackend);
 }
@@ -1265,8 +1272,7 @@ export async function presetKernel(): Promise<void> {
   try {
     const summary = await refreshGpuStatus();
     applyGpuSummaryToOptimizeStore(summary);
-  } catch {
-      }
+  } catch {}
 }
 
 export async function refreshGpuStatus(): Promise<GpuStatusSummary> {
@@ -1478,8 +1484,7 @@ export async function runGpuParityCheck(): Promise<void> {
     try {
       const summary = await refreshGpuStatus();
       applyGpuSummaryToOptimizeStore(summary);
-    } catch {
-          }
+    } catch {}
   } finally {
     markOptimizeIdle();
   }
@@ -2325,7 +2330,9 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
       extraShortlistObjectives: readStoreTextInputValue(
         "extraShortlistObjectives",
       ),
-      shortlistConfidenceMode: readStoreTextInputValue("shortlistConfidenceMode"),
+      shortlistConfidenceMode: readStoreTextInputValue(
+        "shortlistConfidenceMode",
+      ),
       shortlistUnionMode: readStoreTextInputValue("shortlistUnionMode"),
       topK: readStoreTextInputValue("topK"),
       includeAll: readStoreTextInputValue("includeAll"),
@@ -2446,9 +2453,7 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
       rocbMapFastToChannelPeriod: readStoreCheckboxValue(
         "rocbMapFastToChannelPeriod",
       ),
-      rocbMapSlowToAtrPeriod: readStoreCheckboxValue(
-        "rocbMapSlowToAtrPeriod",
-      ),
+      rocbMapSlowToAtrPeriod: readStoreCheckboxValue("rocbMapSlowToAtrPeriod"),
       rocbChannelPeriod: readStoreTextInputValue("rocbChannelPeriod"),
       rocbAtrPeriod: readStoreTextInputValue("rocbAtrPeriod"),
       rocbAtrStopMult: readStoreTextInputValue("rocbAtrStopMult"),
@@ -2724,6 +2729,7 @@ function buildRunArtifactPayload(
   res: unknown,
   ts: string,
   context: RunArtifactContext,
+  stageCompletions: StageCompletionPacketV1[] = [],
 ): Record<string, unknown> {
   const artifact: Record<string, unknown> = {
     version: 1,
@@ -2735,6 +2741,7 @@ function buildRunArtifactPayload(
     run: { req, res },
     validation: null,
     report_xlsx_path: "",
+    stage_completions: serializeStageCompletionsForArtifact(stageCompletions),
     data: { csv_path: context.csvPath },
     dataset_meta: context.datasetMeta,
     tags: [],
@@ -2762,8 +2769,15 @@ async function persistRunArtifact(
   res: unknown,
   ts: string,
   context: RunArtifactContext,
+  stageCompletions: StageCompletionPacketV1[],
 ): Promise<PersistRunArtifactResult> {
-  const artifact = buildRunArtifactPayload(req, res, ts, context);
+  const artifact = buildRunArtifactPayload(
+    req,
+    res,
+    ts,
+    context,
+    stageCompletions,
+  );
   try {
     const saved = (await invokeCommand("save_run_artifact", {
       artifact,
@@ -2789,6 +2803,7 @@ function applyVueRunArtifacts(
   res: unknown,
   context: RunArtifactContext,
   persisted: PersistRunArtifactResult,
+  stageCompletions: StageCompletionPacketV1[],
 ): void {
   applyWorkflowArtifactsPayload(
     {
@@ -2801,6 +2816,8 @@ function applyVueRunArtifacts(
         config_fingerprint_version: 1,
         dataset_meta: context.datasetMeta,
         route_provenance: buildRouteProvenanceFromRun(req, res),
+        stage_completions:
+          serializeStageCompletionsForArtifact(stageCompletions),
         tags: [],
         req,
         res,
@@ -2940,18 +2957,45 @@ export async function runOptimization(
     );
 
     const artifactStartedAt = nowMs();
+    const optimizationCompletedAt = new Date().toISOString();
+    const optimizationStageCompletion = buildOptimizationStageCompletion({
+      ts: runTs,
+      completedAt: optimizationCompletedAt,
+      durationMs: timings.commandMs,
+      artifactKind: "vectorgrid_run_artifact",
+      reportXlsxPath: "",
+      csvPath: artifactContext.csvPath,
+      configFingerprint: artifactContext.configFingerprint,
+      datasetMeta: artifactContext.datasetMeta,
+      routeProvenance: buildRouteProvenanceFromRun(req, res),
+      req,
+      res,
+    });
     const persisted = await persistRunArtifact(
       req,
       res,
       runTs,
       artifactContext,
+      [optimizationStageCompletion],
     );
     timings.artifactMs = elapsedMs(artifactStartedAt);
     if (!persisted.saved) {
       progressNotes.push(persisted.warning);
     }
 
-    applyVueRunArtifacts(runTs, req, res, artifactContext, persisted);
+    const vueStageCompletions = [
+      persisted.saved
+        ? { ...optimizationStageCompletion, artifactPath: persisted.path }
+        : optimizationStageCompletion,
+    ];
+    applyVueRunArtifacts(
+      runTs,
+      req,
+      res,
+      artifactContext,
+      persisted,
+      vueStageCompletions,
+    );
 
     const analysisStartedAt = nowMs();
     refreshAnalysisFromWorkflowRun();
@@ -2983,8 +3027,7 @@ export async function runOptimization(
       const summary = await refreshGpuStatus();
       timings.gpuRefreshMs = elapsedMs(gpuRefreshStartedAt);
       applyGpuSummaryToOptimizeStore(summary);
-    } catch {
-          }
+    } catch {}
 
     timings.totalMs = elapsedMs(runStartedAt);
     progressMeta = buildRunPhaseSummary(strategyKind, timings);

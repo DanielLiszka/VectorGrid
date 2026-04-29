@@ -763,6 +763,8 @@ pub struct WorkflowArtifactRunPayload {
     pub ml_signal: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimization_metric_surface: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stage_completions: Vec<Value>,
     pub tags: Vec<String>,
     pub req: Value,
     pub res: Value,
@@ -822,6 +824,8 @@ pub struct RunArtifactDetailResponse {
     pub ml_signal: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimization_metric_surface: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stage_completions: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_req: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1850,6 +1854,12 @@ fn normalize_run_artifact_value_pure(
             &["optimizationMetricSurface"],
             &mut changes,
         )?;
+        promote_alias_key(
+            root,
+            "stage_completions",
+            &["stageCompletions"],
+            &mut changes,
+        )?;
     }
 
     with_object_at_pointer_mut(&mut normalized, "/data", "artifact.data", |row| {
@@ -1999,6 +2009,18 @@ fn normalize_run_artifact_value_pure(
             root.insert("optimization_metric_surface".to_string(), metric_surface);
             push_unique_change(&mut changes, "backfilled optimization_metric_surface");
         }
+    }
+
+    let stage_completions = Value::Array(stage_completions_for_run_artifact(
+        artifact_path,
+        &normalized,
+    ));
+    if normalized.pointer("/stage_completions") != Some(&stage_completions) {
+        let root = normalized
+            .as_object_mut()
+            .ok_or_else(|| "run artifact root must be an object".to_string())?;
+        root.insert("stage_completions".to_string(), stage_completions);
+        push_unique_change(&mut changes, "backfilled stage_completions");
     }
 
     ensure_reproducibility_ledger(&mut normalized, &mut changes)?;
@@ -3044,6 +3066,420 @@ fn normalize_u32_value(value: Option<&Value>) -> Option<u32> {
     }
 }
 
+fn stage_completion_existing_entries(artifact: &Value) -> Vec<Value> {
+    artifact
+        .get("stage_completions")
+        .or_else(|| artifact.get("stageCompletions"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.is_object())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn insert_stage_completion_string(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: impl Into<String>,
+) {
+    let value = value.into();
+    let value = value.trim();
+    if !value.is_empty() {
+        map.insert(key.to_string(), Value::String(value.to_string()));
+    }
+}
+
+fn insert_stage_completion_bool(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<bool>,
+) {
+    if let Some(value) = value {
+        map.insert(key.to_string(), Value::Bool(value));
+    }
+}
+
+fn insert_stage_completion_u64(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<u64>,
+) {
+    if let Some(value) = value {
+        map.insert(
+            key.to_string(),
+            Value::Number(serde_json::Number::from(value)),
+        );
+    }
+}
+
+fn insert_stage_completion_f64(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<f64>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    if !value.is_finite() {
+        return;
+    }
+    if let Some(number) = serde_json::Number::from_f64(value) {
+        map.insert(key.to_string(), Value::Number(number));
+    }
+}
+
+fn stage_completion_string_list(value: Option<&Value>) -> Vec<Value> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| Value::String(entry.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn stage_completion_route(route: Option<&RouteProvenanceSummary>) -> String {
+    let Some(route) = route else {
+        return String::new();
+    };
+    if !route.realized_route.trim().is_empty() {
+        route.realized_route.trim().to_string()
+    } else if !route.resolved_route.trim().is_empty() {
+        route.resolved_route.trim().to_string()
+    } else {
+        route.requested_route.trim().to_string()
+    }
+}
+
+fn stage_completion_backend_used(res: &Value, route: Option<&RouteProvenanceSummary>) -> String {
+    non_empty_string(res.get("backend_used"))
+        .or_else(|| non_empty_string(res.get("backendUsed")))
+        .or_else(|| non_empty_string(res.get("backend")))
+        .unwrap_or_else(|| stage_completion_route(route))
+}
+
+fn stage_completion_backend_route(res: &Value, route: Option<&RouteProvenanceSummary>) -> String {
+    non_empty_string(res.get("backend_route"))
+        .or_else(|| non_empty_string(res.get("backendRoute")))
+        .unwrap_or_else(|| stage_completion_route(route))
+}
+
+fn stage_completion_run_verdict(validation_res: &Value) -> Option<&Value> {
+    validation_res
+        .get("run_verdict")
+        .or_else(|| validation_res.get("runVerdict"))
+}
+
+fn stage_completion_verdict(validation_res: &Value) -> &'static str {
+    let Some(run_verdict) = stage_completion_run_verdict(validation_res) else {
+        return "review";
+    };
+    let warnings = stage_completion_string_list(
+        run_verdict
+            .get("warning_flags")
+            .or_else(|| run_verdict.get("warningFlags")),
+    );
+    let blockers = stage_completion_string_list(
+        run_verdict
+            .get("fail_reasons")
+            .or_else(|| run_verdict.get("failReasons")),
+    );
+    let approved = run_verdict.get("approved").and_then(Value::as_bool);
+    let passed = run_verdict.get("passed").and_then(Value::as_bool);
+    if approved == Some(true) {
+        if warnings.is_empty() {
+            "approved"
+        } else {
+            "approved_with_warnings"
+        }
+    } else if passed == Some(false) || !blockers.is_empty() {
+        "rejected"
+    } else if passed == Some(true) {
+        if warnings.is_empty() {
+            "passed"
+        } else {
+            "approved_with_warnings"
+        }
+    } else {
+        "review"
+    }
+}
+
+fn run_artifact_stage_completion_common(
+    artifact_path: &Path,
+    artifact: &Value,
+    stage: &str,
+    verdict: &str,
+) -> serde_json::Map<String, Value> {
+    let mut packet = serde_json::Map::new();
+    let resolved_ts = resolved_run_artifact_ts(artifact_path, artifact);
+    let kind = normalize_text_value(artifact.get("kind"));
+    let (report_xlsx_path, report_xlsx_exists) =
+        normalize_report_xlsx_fields(artifact.get("report_xlsx_path"));
+    let (config_fingerprint, _) = normalized_config_fingerprint_fields(artifact);
+    packet.insert(
+        "schema_version".to_string(),
+        Value::Number(serde_json::Number::from(1u64)),
+    );
+    packet.insert("stage".to_string(), Value::String(stage.to_string()));
+    packet.insert("status".to_string(), Value::String("success".to_string()));
+    packet.insert("verdict".to_string(), Value::String(verdict.to_string()));
+    insert_stage_completion_string(&mut packet, "completed_at", resolved_ts);
+    insert_stage_completion_string(&mut packet, "artifact_kind", kind);
+    insert_stage_completion_string(
+        &mut packet,
+        "artifact_path",
+        artifact_path.to_string_lossy().to_string(),
+    );
+    insert_stage_completion_string(&mut packet, "report_xlsx_path", report_xlsx_path);
+    insert_stage_completion_string(
+        &mut packet,
+        "csv_path",
+        resolve_run_artifact_csv_path(artifact),
+    );
+    insert_stage_completion_string(
+        &mut packet,
+        "strategy_kind",
+        resolve_run_artifact_strategy_kind(artifact),
+    );
+    insert_stage_completion_string(
+        &mut packet,
+        "timeframe",
+        resolve_run_artifact_timeframe(artifact),
+    );
+    insert_stage_completion_string(&mut packet, "config_fingerprint", config_fingerprint);
+    if let Some(exists) = report_xlsx_exists {
+        let summary = packet
+            .entry("summary".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(summary) = summary.as_object_mut() {
+            insert_stage_completion_bool(summary, "reportXlsxExists", Some(exists));
+        }
+    }
+    packet.insert("backfilled".to_string(), Value::Bool(true));
+    packet
+}
+
+fn build_optimization_stage_completion(artifact_path: &Path, artifact: &Value) -> Option<Value> {
+    let run_res = artifact.pointer("/run/res")?;
+    let route = extract_route_provenance_from_artifact(artifact);
+    let mut packet = run_artifact_stage_completion_common(
+        artifact_path,
+        artifact,
+        "optimization",
+        "search_complete_requires_validation",
+    );
+    insert_stage_completion_string(
+        &mut packet,
+        "backend_used",
+        stage_completion_backend_used(run_res, route.as_ref()),
+    );
+    insert_stage_completion_string(
+        &mut packet,
+        "route",
+        stage_completion_backend_route(run_res, route.as_ref()),
+    );
+    let ranked_candidates = run_res
+        .get("top")
+        .and_then(Value::as_array)
+        .map(|items| items.len() as u64)
+        .or_else(|| {
+            run_res
+                .get("candidates")
+                .and_then(Value::as_array)
+                .map(|items| items.len() as u64)
+        });
+    let summary = packet
+        .entry("summary".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(summary) = summary.as_object_mut() {
+        insert_stage_completion_u64(summary, "rankedCandidates", ranked_candidates);
+    }
+    packet.insert(
+        "next_actions".to_string(),
+        Value::Array(vec![Value::String(
+            "Run validation on the selected candidate.".to_string(),
+        )]),
+    );
+    Some(Value::Object(packet))
+}
+
+fn build_validation_stage_completion(artifact_path: &Path, artifact: &Value) -> Option<Value> {
+    let validation_res = artifact.pointer("/validation/res")?;
+    let route = extract_route_provenance_from_artifact(artifact);
+    let mut packet = run_artifact_stage_completion_common(
+        artifact_path,
+        artifact,
+        "validation",
+        stage_completion_verdict(validation_res),
+    );
+    insert_stage_completion_string(
+        &mut packet,
+        "backend_used",
+        stage_completion_backend_used(validation_res, route.as_ref()),
+    );
+    insert_stage_completion_string(
+        &mut packet,
+        "route",
+        stage_completion_backend_route(validation_res, route.as_ref()),
+    );
+    if let Some(run_verdict) = stage_completion_run_verdict(validation_res) {
+        insert_stage_completion_string(
+            &mut packet,
+            "recommendation",
+            normalize_text_value(
+                run_verdict
+                    .get("final_recommendation")
+                    .or_else(|| run_verdict.get("finalRecommendation")),
+            ),
+        );
+        let warnings = stage_completion_string_list(
+            run_verdict
+                .get("warning_flags")
+                .or_else(|| run_verdict.get("warningFlags")),
+        );
+        let blockers = stage_completion_string_list(
+            run_verdict
+                .get("fail_reasons")
+                .or_else(|| run_verdict.get("failReasons")),
+        );
+        if !warnings.is_empty() {
+            packet.insert("warnings".to_string(), Value::Array(warnings));
+        }
+        if !blockers.is_empty() {
+            packet.insert("blockers".to_string(), Value::Array(blockers));
+        }
+        let summary = packet
+            .entry("summary".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(summary) = summary.as_object_mut() {
+            insert_stage_completion_u64(
+                summary,
+                "candidatesTested",
+                run_verdict
+                    .get("candidates_tested")
+                    .or_else(|| run_verdict.get("candidatesTested"))
+                    .and_then(Value::as_u64),
+            );
+            insert_stage_completion_u64(
+                summary,
+                "candidatesSurvivedHardGates",
+                run_verdict
+                    .get("candidates_survived_hard_gates")
+                    .or_else(|| run_verdict.get("candidatesSurvivedHardGates"))
+                    .and_then(Value::as_u64),
+            );
+            insert_stage_completion_u64(
+                summary,
+                "approvedCandidateCount",
+                run_verdict
+                    .get("approved_candidate_count")
+                    .or_else(|| run_verdict.get("approvedCandidateCount"))
+                    .and_then(Value::as_u64),
+            );
+            insert_stage_completion_u64(
+                summary,
+                "firstApprovedRank",
+                run_verdict
+                    .get("first_approved_rank")
+                    .or_else(|| run_verdict.get("firstApprovedRank"))
+                    .and_then(Value::as_u64),
+            );
+            insert_stage_completion_f64(
+                summary,
+                "pbo",
+                run_verdict.get("pbo").and_then(Value::as_f64),
+            );
+        }
+    }
+    Some(Value::Object(packet))
+}
+
+fn build_ml_signal_stage_completion(artifact_path: &Path, artifact: &Value) -> Option<Value> {
+    let ml_signal = artifact.pointer("/ml_signal")?;
+    let substage = non_empty_string(ml_signal.get("stage"))?;
+    let mut packet =
+        run_artifact_stage_completion_common(artifact_path, artifact, "ml_signal", "inspect_only");
+    insert_stage_completion_string(&mut packet, "substage", substage);
+    insert_stage_completion_string(
+        &mut packet,
+        "backend_used",
+        non_empty_string(ml_signal.get("native_backend_used"))
+            .or_else(|| {
+                ml_signal
+                    .pointer("/score_cache_provenance/native_backend_used")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .map(str::to_string)
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or_default(),
+    );
+    insert_stage_completion_string(
+        &mut packet,
+        "route",
+        non_empty_string(ml_signal.get("score_space")).unwrap_or_default(),
+    );
+    let summary = packet
+        .entry("summary".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(summary) = summary.as_object_mut() {
+        insert_stage_completion_string(
+            summary,
+            "bundleId",
+            non_empty_string(ml_signal.get("bundle_id")).unwrap_or_default(),
+        );
+        insert_stage_completion_u64(
+            summary,
+            "rowCount",
+            ml_signal.get("row_count").and_then(Value::as_u64),
+        );
+        insert_stage_completion_u64(
+            summary,
+            "featureCount",
+            ml_signal.get("feature_count").and_then(Value::as_u64),
+        );
+        insert_stage_completion_string(
+            summary,
+            "scoreSpace",
+            non_empty_string(ml_signal.get("score_space")).unwrap_or_default(),
+        );
+        insert_stage_completion_string(
+            summary,
+            "scoreScope",
+            non_empty_string(ml_signal.get("score_scope")).unwrap_or_default(),
+        );
+    }
+    Some(Value::Object(packet))
+}
+
+fn stage_completions_for_run_artifact(artifact_path: &Path, artifact: &Value) -> Vec<Value> {
+    let existing = stage_completion_existing_entries(artifact);
+    if !existing.is_empty() {
+        return existing;
+    }
+    let mut packets = Vec::new();
+    if let Some(packet) = build_optimization_stage_completion(artifact_path, artifact) {
+        packets.push(packet);
+    }
+    if let Some(packet) = build_validation_stage_completion(artifact_path, artifact) {
+        packets.push(packet);
+    }
+    if let Some(packet) = build_ml_signal_stage_completion(artifact_path, artifact) {
+        packets.push(packet);
+    }
+    packets
+}
+
 fn ml_signal_text_value(artifact: &Value, field: &str) -> String {
     normalize_text_value(artifact.pointer(&format!("/ml_signal/{field}")))
 }
@@ -3563,6 +3999,7 @@ fn build_workflow_artifacts_hydration_payload(
         lineage: extract_artifact_lineage_from_artifact(artifact),
         ml_signal: artifact.pointer("/ml_signal").cloned(),
         optimization_metric_surface: artifact.pointer("/optimization_metric_surface").cloned(),
+        stage_completions: stage_completions_for_run_artifact(Path::new(artifact_path), artifact),
         tags: normalized_tags(artifact),
         req: run_req,
         res: run_res,
@@ -3632,6 +4069,7 @@ fn build_run_artifact_detail_response(
         lineage: extract_artifact_lineage_from_artifact(artifact),
         ml_signal: ml_signal.clone(),
         optimization_metric_surface,
+        stage_completions: stage_completions_for_run_artifact(Path::new(artifact_path), artifact),
         run_req: run_req.clone(),
         run_res: run_res.clone(),
         validation_req: validation_req.clone(),
@@ -6611,6 +7049,115 @@ mod tests {
     }
 
     #[test]
+    fn save_run_artifact_blocking_backfills_stage_completions() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("stage_completion_backfill");
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": ts,
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m"
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": {
+                    "backend_used": "Gpu",
+                    "top": [{ "rank": 1 }, { "rank": 2 }]
+                }
+            },
+            "validation": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": {
+                    "run_verdict": {
+                        "approved": true,
+                        "passed": true,
+                        "approved_candidate_count": 1,
+                        "warning_flags": ["pbo_elevated"],
+                        "final_recommendation": "review_before_live"
+                    }
+                }
+            }
+        });
+
+        let saved = save_run_artifact_blocking(artifact, handle, None).expect("save artifact");
+        let raw = std::fs::read_to_string(&saved.path).expect("read saved artifact");
+        let saved_value: Value = serde_json::from_str(&raw).expect("parse saved artifact");
+        let packets = saved_value
+            .get("stage_completions")
+            .and_then(Value::as_array)
+            .expect("stage completions");
+
+        assert_eq!(packets.len(), 2);
+        assert_eq!(
+            packets[0].get("stage").and_then(Value::as_str),
+            Some("optimization")
+        );
+        assert_eq!(
+            packets[0]
+                .pointer("/summary/rankedCandidates")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            packets[1].get("stage").and_then(Value::as_str),
+            Some("validation")
+        );
+        assert_eq!(
+            packets[1].get("verdict").and_then(Value::as_str),
+            Some("approved_with_warnings")
+        );
+        assert_eq!(
+            packets[1].get("recommendation").and_then(Value::as_str),
+            Some("review_before_live")
+        );
+        assert_eq!(
+            packets[1]
+                .get("warnings")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(Value::as_str),
+            Some("pbo_elevated")
+        );
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_backfills_ml_signal_stage_completion() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("ml_signal_stage_completion");
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": ts,
+            "run": {
+                "req": { "strategy_kind": "MlSignal" },
+                "res": { "matched_rows": 10 }
+            },
+            "ml_signal": {
+                "stage": "score_cache",
+                "bundle_id": "bundle-a",
+                "native_backend_used": "native_cpu"
+            }
+        });
+
+        let saved = save_run_artifact_blocking(artifact, handle, None).expect("save artifact");
+        let raw = std::fs::read_to_string(&saved.path).expect("read saved artifact");
+        let saved_value: Value = serde_json::from_str(&raw).expect("parse saved artifact");
+        let packets = saved_value
+            .get("stage_completions")
+            .and_then(Value::as_array)
+            .expect("stage completions");
+
+        assert!(packets.iter().any(|packet| {
+            packet.get("stage").and_then(Value::as_str) == Some("ml_signal")
+                && packet.get("substage").and_then(Value::as_str) == Some("score_cache")
+                && packet.get("verdict").and_then(Value::as_str) == Some("inspect_only")
+        }));
+    }
+
+    #[test]
     fn save_run_artifact_blocking_preserves_existing_reproducibility_ledger() {
         let app = build_mock_app();
         let handle = app.handle().clone();
@@ -7268,6 +7815,37 @@ mod tests {
             .config_fingerprint
             .trim()
             .is_empty());
+    }
+
+    #[test]
+    fn load_latest_run_artifact_hydration_includes_stage_completion_packets() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save run");
+
+        let response = load_latest_run_artifact_hydration_blocking(handle)
+            .expect("latest hydration")
+            .expect("response should exist");
+
+        assert_eq!(response.hydration.current_run.stage_completions.len(), 2);
+        assert_eq!(
+            response.hydration.current_run.stage_completions[0]
+                .get("stage")
+                .and_then(Value::as_str),
+            Some("optimization")
+        );
+        assert_eq!(
+            response.hydration.current_run.stage_completions[1]
+                .get("stage")
+                .and_then(Value::as_str),
+            Some("validation")
+        );
     }
 
     #[test]

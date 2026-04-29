@@ -9,6 +9,11 @@ import {
   parseArtifactLineage,
   parseRouteProvenance,
 } from "../utils/core/runArtifactReview";
+import {
+  ensureDerivedStageCompletions,
+  normalizeStageCompletions,
+  type StageCompletionPacketV1,
+} from "../utils/core/stageCompletion";
 
 export interface WorkflowRunArtifact {
   ts: string;
@@ -23,6 +28,7 @@ export interface WorkflowRunArtifact {
   lineage?: ArtifactLineageSummary | null;
   mlSignal: WorkflowMlSignalArtifact | null;
   optimizationMetricSurface: Record<string, unknown> | null;
+  stageCompletions: StageCompletionPacketV1[];
   tags: string[];
   req: unknown;
   res: unknown;
@@ -151,6 +157,7 @@ function workflowRunSignature(run: WorkflowRunArtifact | null): string {
     lineage: run.lineage,
     mlSignal: run.mlSignal,
     optimizationMetricSurface: run.optimizationMetricSurface,
+    stageCompletions: run.stageCompletions,
     tags: run.tags,
     req: run.req,
     res: run.res,
@@ -684,9 +691,7 @@ function normalizeMlSignalArtifact(
     ),
     deployability: markRawUnknown(deployability),
     deployabilityState: normalizeText(
-      row.deployability_state ??
-        row.deployabilityState ??
-        deployability?.state,
+      row.deployability_state ?? row.deployabilityState ?? deployability?.state,
     ),
     evidencePolicySummary: markRawUnknown(evidencePolicySummary),
     policy: markRawUnknown(policy),
@@ -767,6 +772,8 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     mlSignal?: unknown;
     optimization_metric_surface?: unknown;
     optimizationMetricSurface?: unknown;
+    stage_completions?: unknown;
+    stageCompletions?: unknown;
     tags?: unknown;
     req?: unknown;
     res?: unknown;
@@ -806,6 +813,9 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     lineage: parseArtifactLineage(row.lineage),
     mlSignal: normalizeMlSignalArtifact(row.ml_signal ?? row.mlSignal),
     optimizationMetricSurface: markRawUnknown(optimizationMetricSurface),
+    stageCompletions: markRaw(
+      normalizeStageCompletions(row.stage_completions ?? row.stageCompletions),
+    ),
     tags: markRaw(normalizeTags(row.tags)),
     req: markRawUnknown(row.req ?? null),
     res: markRawUnknown(row.res ?? null),
@@ -968,7 +978,30 @@ export function applyWorkflowArtifactsPayload(
     };
   }
   const row = payload as WorkflowArtifactsPayload;
-  const run = normalizeRunArtifact(row.currentRun);
+  let run = normalizeRunArtifact(row.currentRun);
   const validation = normalizeValidationArtifact(row.currentValidation);
+  if (run) {
+    run = markRaw({
+      ...run,
+      stageCompletions: markRaw(
+        ensureDerivedStageCompletions(run.stageCompletions, {
+          ts: run.ts,
+          completedAt: run.ts,
+          artifactKind: "vectorgrid_run_artifact",
+          artifactPath: run.artifactPath,
+          reportXlsxPath: run.reportXlsxPath,
+          csvPath: run.csvPath,
+          configFingerprint: run.configFingerprint,
+          datasetMeta: run.datasetMeta,
+          routeProvenance: run.routeProvenance,
+          mlSignal: run.mlSignal,
+          req: run.req,
+          res: run.res,
+          validationReq: validation?.req,
+          validationRes: validation?.res,
+        }),
+      ),
+    });
+  }
   return applyNormalizedArtifacts(run, validation, source, targetStore);
 }

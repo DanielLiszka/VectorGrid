@@ -91,11 +91,18 @@ describe("workflowArtifactsStore", () => {
 
     expect(next).toMatchObject({
       applied: true,
-      runChanged: false,
+      runChanged: true,
       validationChanged: true,
       sourceChanged: false,
     });
     expect(store.currentValidation?.req).toMatchObject({ candidates: 16 });
+    expect(
+      store.currentRun?.stageCompletions.map((entry) => entry.stage),
+    ).toEqual(["optimization", "validation"]);
+    expect(store.currentRun?.stageCompletions[1]).toMatchObject({
+      stage: "validation",
+      backfilled: true,
+    });
     expect(readLatestWorkflowRunIdentitySnapshot()).toEqual({
       ts: "2026-04-01T12:00:00Z",
       artifactPath: "C:/runs/run.json",
@@ -176,6 +183,58 @@ describe("workflowArtifactsStore", () => {
         bundleId: "bundle-a",
         scoreCachePath: "C:/runs/cache.json",
       },
+    });
+  });
+
+  it("normalizes explicit stage completion packets and uses them in run signatures", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+    const payload = {
+      currentRun: {
+        ts: "2026-04-01T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        stage_completions: [
+          {
+            schema_version: 1,
+            stage: "optimization",
+            status: "success",
+            verdict: "search_complete_requires_validation",
+            completed_at: "2026-04-01T12:01:00Z",
+            backend_used: "Gpu",
+          },
+        ],
+        req: { strategy_kind: "DoubleMa" },
+        res: { top: [] },
+      },
+      currentValidation: null,
+    };
+
+    applyWorkflowArtifactsPayload(payload, "vue");
+    const firstCompletion = payload.currentRun.stage_completions[0]!;
+    const next = applyWorkflowArtifactsPayload(
+      {
+        currentRun: {
+          ...payload.currentRun,
+          stage_completions: [
+            {
+              ...firstCompletion,
+              backend_used: "Cpu",
+            },
+          ],
+        },
+        currentValidation: null,
+      },
+      "vue",
+    );
+
+    expect(store.currentRun?.stageCompletions[0]).toMatchObject({
+      stage: "optimization",
+      backendUsed: "Cpu",
+      completedAt: "2026-04-01T12:01:00Z",
+    });
+    expect(next).toMatchObject({
+      applied: true,
+      runChanged: true,
+      validationChanged: false,
     });
   });
 
@@ -390,6 +449,7 @@ describe("workflowArtifactsStore", () => {
       datasetMeta: null,
       mlSignal: null,
       optimizationMetricSurface: null,
+      stageCompletions: [],
       tags: [],
       req: null,
       res: null,
