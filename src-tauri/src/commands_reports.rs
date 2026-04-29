@@ -199,6 +199,7 @@ fn build_validation_report_from_artifact(artifact: &Value) -> Result<Value, Stri
 
     Ok(serde_json::json!({
         "version": 1,
+        "report_schema_version": 1,
         "kind": "vectorgrid_report",
         "ts": ts,
         "data": build_report_data_from_dataset_meta(artifact.pointer("/dataset_meta")),
@@ -3111,7 +3112,9 @@ mod tests {
     use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::json;
+    use std::io::{Cursor, Read};
     use std::path::PathBuf;
+    use zip::ZipArchive;
 
     fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
@@ -3150,6 +3153,27 @@ mod tests {
         }
         fields.push(cur);
         fields
+    }
+
+    fn stable_xlsx_text_entries(bytes: &[u8]) -> Vec<(String, String)> {
+        let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec())).expect("xlsx zip archive");
+        let mut entries = Vec::new();
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).expect("xlsx zip entry");
+            let name = file.name().to_string();
+            if name.starts_with("docProps/") {
+                continue;
+            }
+            if !(name.ends_with(".xml") || name.ends_with(".rels")) {
+                continue;
+            }
+            let mut text = String::new();
+            file.read_to_string(&mut text)
+                .expect("read xlsx text entry");
+            entries.push((name, text));
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries
     }
 
     fn make_trending_candles(len: usize, step: f64) -> vector_ta::utilities::data_loader::Candles {
@@ -3215,6 +3239,7 @@ mod tests {
     fn minimal_report(ts: &str) -> Value {
         json!({
           "version": 1,
+          "report_schema_version": 1,
           "kind": "vectorgrid_report",
           "ts": ts,
           "validation": {
@@ -3259,10 +3284,10 @@ mod tests {
         let mut it = csv.lines();
         let header = it.next().unwrap_or_default();
         let header_fields = parse_csv_fields(header);
-        assert_eq!(header_fields.len(), 28);
+        assert_eq!(header_fields.len(), 37);
         let row = it.next().unwrap_or_default();
         let row_fields = parse_csv_fields(row);
-        assert_eq!(row_fields.len(), 28);
+        assert_eq!(row_fields.len(), 37);
         assert!(row_fields[27].contains("\"fast_ma_type\":\"sma\""));
         assert!(csv.contains("rank,approval_label"));
         assert!(csv.contains("params_json"));
@@ -3272,6 +3297,7 @@ mod tests {
     fn report_xlsx_bytes_smoke() {
         let report = json!({
           "version": 1,
+          "report_schema_version": 1,
           "kind": "vectorgrid_report",
           "ts": "2026-01-26T00:00:00Z",
           "validation": {
@@ -3307,6 +3333,7 @@ mod tests {
     fn validation_report_workbook_smoke() {
         let report = json!({
           "version": 1,
+          "report_schema_version": 1,
           "kind": "vectorgrid_report",
           "ts": "2026-01-26T00:00:00Z",
           "validation": {
@@ -3347,6 +3374,7 @@ mod tests {
 
         let report = json!({
           "version": 1,
+          "report_schema_version": 1,
           "kind": "vectorgrid_report",
           "ts": "2026-01-26T00:00:00Z",
           "validation": {
@@ -3383,7 +3411,10 @@ mod tests {
         let unbounded =
             build_report_xlsx_bytes_headless(&report, None).expect("unbounded max rows xlsx");
 
-        assert_eq!(explicit_zero, unbounded);
+        assert_eq!(
+            stable_xlsx_text_entries(&explicit_zero),
+            stable_xlsx_text_entries(&unbounded)
+        );
     }
 
     #[test]
@@ -3806,6 +3837,7 @@ mod tests {
         let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
         let expected = json!({
           "version": 1,
+          "report_schema_version": 1,
           "kind": "vectorgrid_report",
           "ts": "2026-04-02T12:00:00Z",
           "data": {

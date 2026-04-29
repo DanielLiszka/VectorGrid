@@ -228,6 +228,9 @@ const executionOrderColumns = computed<ExecutionOrderColumn[]>(() => [
   { label: 'Filled', alignLeft: false },
   { label: 'Avg Px', alignLeft: false },
   { label: 'Order ID', alignLeft: true },
+  { label: 'Trigger', alignLeft: true },
+  { label: 'Bracket', alignLeft: true },
+  { label: 'Parent / Group', alignLeft: true },
 ])
 function orderStatusClass(status: string): string {
   const normalized = String(status || '').trim().toLowerCase()
@@ -249,6 +252,9 @@ const executionOrderTableRows = computed<ExecutionOrderTableRow[]>(() =>
       { text: row.cells[4] || '—', className: 'mono', title: row.cells[4] || '' },
       { text: row.cells[5] || '—', className: 'mono', title: row.cells[5] || '' },
       { text: row.cells[6] || '—', className: 'left mono', title: row.cells[6] || '' },
+      { text: row.cells[7] || '—', className: 'left mono', title: row.cells[7] || '' },
+      { text: row.cells[8] || '—', className: 'left', title: row.cells[8] || '' },
+      { text: row.cells[9] || '—', className: 'left mono', title: row.cells[9] || '' },
     ],
   })),
 )
@@ -1533,7 +1539,7 @@ watch(
             >
               <table class="execOrdersTableVue">
                 <caption class="srOnly">
-                  Broker order activity for the current execution symbol, including side, status, filled quantity, average price, and order identifiers.
+                  Broker order activity for the current execution symbol, including side, status, filled quantity, average price, bracket linkage, and order identifiers.
                 </caption>
                 <thead>
                   <tr v-for="headerGroup in orderHeaderGroups" :key="headerGroup.id">
@@ -1549,7 +1555,7 @@ watch(
                 </thead>
                 <tbody>
                   <tr v-if="orderTableTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                    <td colspan="7" :style="{ height: `${orderTableTopSpacerPx}px` }"></td>
+                    <td colspan="10" :style="{ height: `${orderTableTopSpacerPx}px` }"></td>
                   </tr>
                   <tr v-for="virtualRow in virtualOrderRows" :key="virtualRow.row.id">
                     <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
@@ -1562,7 +1568,7 @@ watch(
                     </template>
                   </tr>
                   <tr v-if="orderTableBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                    <td colspan="7" :style="{ height: `${orderTableBottomSpacerPx}px` }"></td>
+                    <td colspan="10" :style="{ height: `${orderTableBottomSpacerPx}px` }"></td>
                   </tr>
                 </tbody>
               </table>

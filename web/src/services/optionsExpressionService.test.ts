@@ -1276,6 +1276,18 @@ describe("optionsExpressionService", () => {
     expect(validation.result.acceptanceSummary.verdict).toBe("accepted");
     expect(validation.result.laneSummaries[0]?.lane).toBe("sealed");
     expect(validation.result.tupleResults[0]?.sourceTupleIndex).toBe(2);
+    expect(validation.result.stageCompletions[0]).toMatchObject({
+      stage: "options_expression_validation",
+      verdict: "approved",
+      strategyKind: "OptionsExpression",
+      artifactPath: "C:/runs/vectorgrid_options_validation_1.json",
+      summary: {
+        acceptedTupleCount: 1,
+        supportDeficientTupleCount: 1,
+        rootSymbol: "SPY",
+      },
+      backfilled: true,
+    });
     expect(invokeCommandMock).toHaveBeenNthCalledWith(
       1,
       "analyze_options_expression_validation_feasibility",

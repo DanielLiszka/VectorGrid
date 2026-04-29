@@ -454,9 +454,8 @@ Current candidate-detail/local-stability coverage matrix:
   - `CompositeCpu` supports both candidate detail and local stability on its own analysis path
   - `Asr` supports both candidate detail and local stability on the composite-family analysis path
   - `Vemr` supports both candidate detail and local stability on the composite-family analysis path
-  - `Vcc` currently supports local stability, but candidate detail remains intentionally unimplemented
-  - `Rocb` currently supports local stability, but candidate detail remains intentionally unimplemented
-  - `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` currently keep both candidate detail and local stability explicit as “not implemented yet” on the composite-family analysis path
+  - `Vcc` and `Rocb` support both candidate detail and local stability on the composite-family analysis path
+  - `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` support both candidate detail and local stability on the composite-family analysis path
 - `MlSignal` does not participate in optimizer candidate-detail/local-stability views; loading an `MlSignal` artifact should leave analysis views in the explicit non-optimizer state
 
 Truth anchors for this coverage:
@@ -1197,6 +1196,7 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
   - `Cdmc` keeps the mixed validation route where current measured policy is more GPU-favorable than `Carm`, while still using CPU-reference signal prep for exact CPU-series validation metrics
   - current `composite_validation_workflow` evidence on the shared 50k/8 `wf_reopt_cscv_spa` surface still measures `Carm` materially cheaper than `Cdmc`, so route policy and runtime cost ranking are not the same thing
   - Cluster B parity is now mostly about composite `cross_ticker` scope, narrower aux analytics versus the `DoubleMa` baseline, and measured mixed-route policy truth, not about missing core validation modules
+- Validation result route provenance now includes `requested_backend`, `backend_used`, `backend_route`, `backend_fallback_reason`, and `validation_residency_tier`; Double-MA GPU validation can also include `execution_profile.cpu_tail_wall_ms` and GPU materialization counters.
 
 #### CompositeCpu / CompositeMo truth anchors
 
@@ -1639,14 +1639,14 @@ Important current-state notes:
 - broker integration is Alpaca over REST
 - `dry_run=true` requires no broker credentials; non-dry-run requires Alpaca credentials
 - Alpaca commands can now resolve credentials from secure backend storage when typed request credentials are omitted
-- local paper execution persists app-local broker state and reports a clear unsupported warning when stop-loss/take-profit inputs would require bracket child-order simulation
+- local paper execution persists app-local broker state and simulates bracket parent/child order groups when both stop-loss and take-profit are present; protective child orders are all-or-none, use a documented stop-loss-first same-bar tie break, cancel the sibling on fill, and remain local-paper only
 - execution risk-policy settings persist in app settings; request-level risk overrides can tighten but not loosen saved max-notional, shorting, or bracket requirements
 - Alpaca submissions persist credential-free intent records, use stable `client_order_id` lookup before submit, and append post-submit broker reconciliation events to live-session evidence
 - execution strategy support is code-backed by `StrategyExecutionAdapter` in `src-tauri/src/commands_execution.rs`; currently supported live execution adapters are `DoubleMa` and `CompositeCpu`, surfaced through `get_execution_strategy_support_matrix`
 - deterministic execution test harness primitives live in `src-tauri/src/execution_mocks.rs` for broker fills/partials/rejects/timeouts/cancel failures and feed duplicate/out-of-order/close/error events
 - the runner emits `live_execution_runner_event` status messages as bars are processed
 - runner cancellation remains intentionally silent on the event bus; the shipped runner event vocabulary is `started`, `stopped`, `triggered`, `queued_latest`, `signal_processed`, `order_submitted`, and `error`
-- execution targets the delta between desired and current position; bracket orders are only attached when both stop-loss and take-profit are present
+- execution targets the delta between desired and current position; bracket orders are only attached when both stop-loss and take-profit are present, and local paper snapshots expose parent/group/leg/trigger fields for inspection
 - the live runner depends on an active Polygon live stream, and runner start now enforces that the active stream symbol matches the requested execution symbol on both the frontend and Rust command boundary
 - feed interruption now disarms the live runner and finalizes active session evidence instead of leaving automation armed implicitly
 - only one active live execution runner slot exists at a time

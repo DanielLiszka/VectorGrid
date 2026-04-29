@@ -1889,6 +1889,18 @@ function buildCandidateDetailInvocation(
     resolveRunMaParams(runReq, "slow", slowMaType);
   const followupCacheKey =
     text(runRes.followup_cache_key ?? runRes.followupCacheKey) || null;
+  const compositeFamilyConfigs = {
+    asr: runReq.asr ?? params.asr ?? null,
+    vcc: runReq.vcc ?? params.vcc ?? null,
+    vemr: runReq.vemr ?? params.vemr ?? null,
+    rocb: runReq.rocb ?? params.rocb ?? null,
+    vcet: runReq.vcet ?? params.vcet ?? null,
+    mkcs: runReq.mkcs ?? params.mkcs ?? null,
+    kqsr: runReq.kqsr ?? params.kqsr ?? null,
+    carm: runReq.carm ?? params.carm ?? null,
+    kvdf: runReq.kvdf ?? params.kvdf ?? null,
+    cdmc: runReq.cdmc ?? params.cdmc ?? null,
+  };
 
   const base: Record<string, unknown> = {
     data_id: dataId,
@@ -1951,8 +1963,7 @@ function buildCandidateDetailInvocation(
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
-      asr: runReq.asr || null,
-      vemr: runReq.vemr || null,
+      ...compositeFamilyConfigs,
       signal_mode: runReq.signal_mode || runReq.signalMode || "hard_gate",
     },
   };
@@ -2013,6 +2024,18 @@ function buildLocalStabilityInvocation(
     runReq.strategy_kind ?? runReq.strategyKind,
   );
   const params = asRecord(paramsRaw);
+  const compositeFamilyConfigs = {
+    asr: runReq.asr ?? params.asr ?? null,
+    vcc: runReq.vcc ?? params.vcc ?? null,
+    vemr: runReq.vemr ?? params.vemr ?? null,
+    rocb: runReq.rocb ?? params.rocb ?? null,
+    vcet: runReq.vcet ?? params.vcet ?? null,
+    mkcs: runReq.mkcs ?? params.mkcs ?? null,
+    kqsr: runReq.kqsr ?? params.kqsr ?? null,
+    carm: runReq.carm ?? params.carm ?? null,
+    kvdf: runReq.kvdf ?? params.kvdf ?? null,
+    cdmc: runReq.cdmc ?? params.cdmc ?? null,
+  };
   if (kind === "CompositeMo") {
     return {
       command: "compute_composite_cpu_local_stability",
@@ -2041,8 +2064,7 @@ function buildLocalStabilityInvocation(
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
-      asr: runReq.asr || null,
-      vemr: runReq.vemr || null,
+      ...compositeFamilyConfigs,
       signal_mode: runReq.signal_mode || runReq.signalMode || "hard_gate",
     },
   };

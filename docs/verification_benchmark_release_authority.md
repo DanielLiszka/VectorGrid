@@ -70,8 +70,9 @@ A performance claim is valid only when the benchmark timing boundary includes th
 5. Near-threshold or noisy results require serialized rerun before any baseline update.
 6. Baseline refresh is reviewed like a source-code change.
 7. Never run multiple benchmarks or profiling sessions at the same time.
+8. Candidate output paths must not point at the active baseline path.
 
-`scripts/benchmark_lock.ps1` provides the repo-local benchmark mutex used by the primary benchmark-running gates. It is a guardrail, not a replacement for checking outside benchmark/profiler processes; gates that also scan processes should keep those checks.
+`scripts/benchmark_lock.ps1` provides the repo-local benchmark mutex used by the primary benchmark-running gates. It is a guardrail, not a replacement for checking outside benchmark/profiler processes; gates that also scan processes should keep those checks. If a prior process crashes while holding the mutex, the next gate may recover the abandoned lock and will print a warning.
 
 In this working tree, `scripts/baselines/` is git-ignored. Baselines generated there are local-machine evidence by default; promoting one to shared authority requires an explicit reviewed change, for example a force-add or an ignore-policy adjustment.
 

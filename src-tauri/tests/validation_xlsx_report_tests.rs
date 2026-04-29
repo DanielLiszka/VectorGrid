@@ -868,8 +868,11 @@ fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
       "ts": "2026-03-13T00:00:00Z",
       "run": { "req": { "strategy_kind": "DoubleMa" } },
       "validation": {
+        "acceleration_status": "GPU validation completed.",
         "res": {
           "data_id": "gpu_route_note",
+          "requested_backend": "GpuHybridKernel",
+          "validation_residency_tier": "gpu_resident",
           "backend_used": "Gpu",
           "backend_route": "GpuHybridKernel->GpuKernel",
           "backend_fallback_reason": "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.",
@@ -896,11 +899,14 @@ fn workbook_surfaces_route_note_and_skipped_modules_on_dashboard() {
 
     let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
     let xml = all_xml(&bytes);
+    assert!(xml.contains("Acceleration Status"));
+    assert!(xml.contains("GPU validation completed."));
+    assert!(xml.contains("Requested Backend"));
+    assert!(xml.contains("GpuHybridKernel"));
+    assert!(xml.contains("Residency"));
+    assert!(xml.contains("gpu_resident"));
     assert!(xml.contains("Route Fallback"));
-    assert!(xml.contains("Route Note"));
-    assert!(xml.contains(
-        "GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel."
-    ));
+    assert!(xml.contains("Expected Route Notes"));
     assert!(xml.contains("Execution Notes"));
     assert!(xml.contains("cscv_skipped_not_enough_bars"));
     assert!(xml.contains("spa_skipped_not_enough_slices"));

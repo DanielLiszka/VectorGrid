@@ -1,5 +1,6 @@
 use crate::broker_paper::{
-    self, PaperBrokerMarketOrder, PaperBrokerOrder, PaperBrokerPosition, PaperOrderSide,
+    self, PaperBracketTieBreak, PaperBrokerBracketAdvanceBar, PaperBrokerBracketSpec,
+    PaperBrokerMarketOrder, PaperBrokerOrder, PaperBrokerPosition, PaperOrderSide,
 };
 use crate::execution_policy::{
     evaluate_execution_policy, ExecutionPolicyDecision, ExecutionPolicyInput, ExecutionPolicyLimits,
@@ -215,8 +216,41 @@ pub struct PreviewExecutionPolicyDecisionResponse {
     pub opening_new_position: bool,
     pub policy: ExecutionRiskPolicySettings,
     pub decision: ExecutionPolicyDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bracket_preview: Option<ExecutionBracketPreview>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutionBracketPreviewLeg {
+    pub leg: String,
+    pub side: String,
+    pub order_type: String,
+    pub qty: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_price: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_price: Option<f64>,
+    pub status: String,
+    pub trigger: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutionBracketPreview {
+    pub symbol: String,
+    pub source: String,
+    pub preview_only: bool,
+    pub entry_side: String,
+    pub entry_price: f64,
+    pub qty: f64,
+    pub current_position_qty: f64,
+    pub target_position_qty: f64,
+    pub delta_qty: f64,
+    pub time_in_force: String,
+    pub tie_break: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legs: Vec<ExecutionBracketPreviewLeg>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -233,6 +267,14 @@ pub struct LiveOrderSnapshot {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bracket_group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bracket_leg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tie_break: Option<String>,
     pub symbol: String,
     pub side: String,
     pub status: String,
@@ -394,6 +436,8 @@ pub struct ExecuteStrategySignalResponse {
     pub last_close: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub broker_reconciliation_events: Vec<BrokerReconciliationEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bracket_preview: Option<ExecutionBracketPreview>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -1238,16 +1282,6 @@ fn should_attach_opening_bracket(current_position_qty: f64, target_position_qty:
     current_position_qty.abs() < 1e-6 && target_position_qty.abs() > 1e-6
 }
 
-fn local_paper_bracket_child_orders_required_but_unsupported(
-    policy: &ExecutionRiskPolicySettings,
-    opening_new_position: bool,
-) -> bool {
-    opening_new_position
-        && policy
-            .require_bracket
-            .is_some_and(|require_bracket| require_bracket)
-}
-
 fn validate_live_runner_stream_preconditions(
     stream: Option<&crate::state::LiveCandleStreamInfo>,
     requested_symbol: &str,
@@ -1973,6 +2007,10 @@ fn normalize_order_snapshot(v: &serde_json::Value) -> Option<LiveOrderSnapshot> 
     Some(LiveOrderSnapshot {
         id,
         client_order_id: json_field_as_string(v, "client_order_id"),
+        parent_order_id: json_field_as_string(v, "parent_order_id"),
+        bracket_group_id: json_field_as_string(v, "bracket_group_id"),
+        bracket_leg: json_field_as_string(v, "bracket_leg"),
+        tie_break: json_field_as_string(v, "tie_break"),
         symbol,
         side,
         status,
@@ -2501,6 +2539,193 @@ fn alpaca_order_payload(
     Ok((payload, warnings))
 }
 
+fn local_paper_bracket_spec_for_order(
+    delta_qty: f64,
+    cfg: &ta_strategies::double_ma::StrategyConfig,
+    last_close: f64,
+) -> Result<(Option<PaperBrokerBracketSpec>, Vec<String>), String> {
+    let mut warnings = Vec::new();
+    let stop = cfg.stop_loss_pct();
+    let take = cfg.take_profit_pct();
+    let (Some(stop_pct), Some(take_pct)) = (stop, take) else {
+        if stop.is_some() || take.is_some() {
+            warnings.push(
+                "Local paper bracket was skipped: both stop_loss_pct and take_profit_pct are required."
+                    .to_string(),
+            );
+        }
+        return Ok((None, warnings));
+    };
+    if !last_close.is_finite() || last_close <= 0.0 {
+        return Err("Local paper bracket requires a finite positive entry price.".to_string());
+    }
+    let entry_dir = if delta_qty >= 0.0 { 1 } else { -1 };
+    let (stop_price, take_profit_limit_price) = if entry_dir > 0 {
+        (
+            (last_close * (1.0 - stop_pct)).max(0.01),
+            (last_close * (1.0 + take_pct)).max(0.01),
+        )
+    } else {
+        (
+            (last_close * (1.0 + stop_pct)).max(0.01),
+            (last_close * (1.0 - take_pct)).max(0.01),
+        )
+    };
+    warnings.push(
+        "Local paper attached bracket child orders; if stop-loss and take-profit are both touched in one bar, the simulator fills stop-loss first."
+            .to_string(),
+    );
+    Ok((
+        Some(PaperBrokerBracketSpec {
+            stop_price,
+            take_profit_limit_price,
+            time_in_force: "gtc".to_string(),
+            tie_break: PaperBracketTieBreak::StopLossFirst,
+        }),
+        warnings,
+    ))
+}
+
+fn local_paper_bracket_preview_for_order(
+    symbol: &str,
+    current_position_qty: f64,
+    target_position_qty: f64,
+    delta_qty: f64,
+    cfg: &ta_strategies::double_ma::StrategyConfig,
+    last_close: f64,
+) -> Result<(Option<ExecutionBracketPreview>, Vec<String>), String> {
+    if !should_attach_opening_bracket(current_position_qty, target_position_qty)
+        || delta_qty_is_hold(delta_qty)
+    {
+        return Ok((None, Vec::new()));
+    }
+    let (bracket, warnings) = local_paper_bracket_spec_for_order(delta_qty, cfg, last_close)?;
+    let Some(bracket) = bracket else {
+        return Ok((None, warnings));
+    };
+    let entry_side = paper_order_side_for_delta(delta_qty);
+    let child_side = match entry_side {
+        PaperOrderSide::Buy => PaperOrderSide::Sell,
+        PaperOrderSide::Sell => PaperOrderSide::Buy,
+    };
+    let qty = delta_qty.abs();
+    let tie_break = bracket.tie_break.as_str().to_string();
+    Ok((
+        Some(ExecutionBracketPreview {
+            symbol: canonical_symbol_key(symbol),
+            source: "local_paper_preview".to_string(),
+            preview_only: true,
+            entry_side: entry_side.as_str().to_string(),
+            entry_price: last_close,
+            qty,
+            current_position_qty,
+            target_position_qty,
+            delta_qty,
+            time_in_force: bracket.time_in_force.trim().to_ascii_lowercase(),
+            tie_break: tie_break.clone(),
+            legs: vec![
+                ExecutionBracketPreviewLeg {
+                    leg: "stop_loss".to_string(),
+                    side: child_side.as_str().to_string(),
+                    order_type: "stop".to_string(),
+                    qty,
+                    limit_price: None,
+                    stop_price: Some(bracket.stop_price),
+                    status: "preview_only".to_string(),
+                    trigger: format!("stop {:.6}", bracket.stop_price),
+                },
+                ExecutionBracketPreviewLeg {
+                    leg: "take_profit".to_string(),
+                    side: child_side.as_str().to_string(),
+                    order_type: "limit".to_string(),
+                    qty,
+                    limit_price: Some(bracket.take_profit_limit_price),
+                    stop_price: None,
+                    status: "preview_only".to_string(),
+                    trigger: format!("limit {:.6}", bracket.take_profit_limit_price),
+                },
+            ],
+        }),
+        warnings,
+    ))
+}
+
+fn local_paper_bracket_advance_warnings(
+    app_local_data_dir: &Path,
+    symbol: &str,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<Vec<String>, String> {
+    let Some(idx) = candles.close.len().checked_sub(1) else {
+        return Ok(Vec::new());
+    };
+    let Some((&open, &high, &low, &close, &at_unix_ms)) = candles
+        .open
+        .get(idx)
+        .zip(candles.high.get(idx))
+        .zip(candles.low.get(idx))
+        .zip(candles.close.get(idx))
+        .zip(candles.timestamp.get(idx))
+        .map(|((((open, high), low), close), ts)| (open, high, low, close, ts))
+    else {
+        return Ok(Vec::new());
+    };
+    let advanced = broker_paper::advance_brackets_for_bar(
+        app_local_data_dir,
+        PaperBrokerBracketAdvanceBar {
+            symbol: symbol.to_string(),
+            open,
+            high,
+            low,
+            close,
+            at_unix_ms,
+        },
+    )?;
+    let mut warnings = Vec::new();
+    for event in advanced.tie_break_events {
+        warnings.push(format!("Local paper bracket tie-break applied: {event}."));
+    }
+    if !advanced.filled_orders.is_empty() {
+        let ids = advanced
+            .filled_orders
+            .iter()
+            .map(|order| order.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!(
+            "Local paper bracket filled {} child order(s): {ids}.",
+            advanced.filled_orders.len()
+        ));
+    }
+    if !advanced.cancelled_orders.is_empty() {
+        let ids = advanced
+            .cancelled_orders
+            .iter()
+            .map(|order| order.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!(
+            "Local paper bracket cancelled {} sibling order(s): {ids}.",
+            advanced.cancelled_orders.len()
+        ));
+    }
+    Ok(warnings)
+}
+
+fn local_paper_open_orders_for_symbol(
+    app_local_data_dir: &Path,
+    symbol: &str,
+) -> Result<Vec<LiveOrderSnapshot>, String> {
+    let doc = broker_paper::load_or_default(app_local_data_dir, now_unix_ms())?;
+    Ok(doc
+        .orders
+        .iter()
+        .filter(|order| {
+            symbol_matches(&order.symbol, symbol) && is_broker_open_order_status(&order.status)
+        })
+        .map(paper_order_snapshot)
+        .collect())
+}
+
 fn paper_order_side_for_delta(delta_qty: f64) -> PaperOrderSide {
     if delta_qty > 0.0 {
         PaperOrderSide::Buy
@@ -2519,6 +2744,12 @@ fn paper_order_snapshot(order: &PaperBrokerOrder) -> LiveOrderSnapshot {
     LiveOrderSnapshot {
         id: order.id.clone(),
         client_order_id: order.client_order_id.clone(),
+        parent_order_id: order.parent_order_id.clone(),
+        bracket_group_id: order.bracket_group_id.clone(),
+        bracket_leg: order.bracket_leg.map(paper_bracket_leg_label),
+        tie_break: order
+            .tie_break
+            .map(|tie_break| tie_break.as_str().to_string()),
         symbol: order.symbol.clone(),
         side: order.side.as_str().to_string(),
         status: order.status.clone(),
@@ -2526,13 +2757,24 @@ fn paper_order_snapshot(order: &PaperBrokerOrder) -> LiveOrderSnapshot {
         qty: Some(order.qty),
         filled_qty: Some(order.filled_qty),
         filled_avg_price: Some(order.avg_fill_price),
-        limit_price: None,
-        stop_price: None,
+        limit_price: order.limit_price,
+        stop_price: order.stop_price,
         submitted_at: paper_order_timestamp(order.submitted_at_unix_ms),
-        filled_at: paper_order_timestamp(order.filled_at_unix_ms),
-        updated_at: paper_order_timestamp(order.filled_at_unix_ms),
-        canceled_at: None,
+        filled_at: (order.filled_at_unix_ms > 0)
+            .then(|| paper_order_timestamp(order.filled_at_unix_ms))
+            .flatten(),
+        updated_at: paper_order_timestamp(order.updated_at_unix_ms.max(order.filled_at_unix_ms)),
+        canceled_at: order.canceled_at_unix_ms.and_then(paper_order_timestamp),
     }
+}
+
+fn paper_bracket_leg_label(leg: broker_paper::PaperBracketLeg) -> String {
+    match leg {
+        broker_paper::PaperBracketLeg::Parent => "parent",
+        broker_paper::PaperBracketLeg::StopLoss => "stop_loss",
+        broker_paper::PaperBracketLeg::TakeProfit => "take_profit",
+    }
+    .to_string()
 }
 
 fn paper_position_snapshot(position: &PaperBrokerPosition) -> LivePositionSnapshot {
@@ -3120,6 +3362,19 @@ fn preview_execution_policy_decision_blocking(
         limits: execution_policy_limits_from_settings(&effective_policy),
     });
     warnings.extend(policy_decision.warnings.clone());
+    let mut bracket_preview = None;
+    if matches!(execution_target, ExecutionBrokerTarget::LocalPaper) && policy_decision.allowed {
+        let (preview, preview_warnings) = local_paper_bracket_preview_for_order(
+            &symbol,
+            current_position_qty,
+            target_position_qty,
+            delta_qty,
+            &decision.cfg,
+            decision.last_close,
+        )?;
+        bracket_preview = preview;
+        warnings.extend(preview_warnings);
+    }
 
     Ok(PreviewExecutionPolicyDecisionResponse {
         symbol,
@@ -3134,6 +3389,7 @@ fn preview_execution_policy_decision_blocking(
         opening_new_position: opening_new,
         policy: effective_policy,
         decision: policy_decision,
+        bracket_preview,
         warnings,
     })
 }
@@ -3163,8 +3419,14 @@ fn execute_strategy_signal_blocking(
         let base = app_local_data_dir.as_deref().ok_or_else(|| {
             "app local data directory is required for local paper execution".to_string()
         })?;
+        warnings.extend(local_paper_bracket_advance_warnings(
+            base,
+            &symbol,
+            candles.as_ref(),
+        )?);
         let doc = broker_paper::load_or_default(base, now_unix_ms())?;
         current_position_qty = doc.positions.get(&symbol).map(|p| p.qty).unwrap_or(0.0);
+        open_orders = local_paper_open_orders_for_symbol(base, &symbol)?;
     } else if execution_target.is_alpaca() {
         if req.alpaca_api_key.trim().is_empty() || req.alpaca_api_secret.trim().is_empty() {
             return Err(
@@ -3193,6 +3455,13 @@ fn execute_strategy_signal_blocking(
         }
     }
 
+    let projected_delta_qty = target_position_qty - current_position_qty;
+    if matches!(execution_target, ExecutionBrokerTarget::LocalPaper)
+        && delta_qty_is_hold(projected_delta_qty)
+    {
+        open_orders.clear();
+    }
+
     match guard_open_orders_before_fresh_delta(
         &symbol,
         current_position_qty,
@@ -3219,6 +3488,7 @@ fn execute_strategy_signal_blocking(
                 last_bar_ts: decision.last_bar_ts,
                 last_close: Some(decision.last_close),
                 broker_reconciliation_events: Vec::new(),
+                bracket_preview: None,
                 warnings: {
                     warnings.push(format!(
                         "Projected broker position after the open-order queue is {projected_position_qty:.6}."
@@ -3229,7 +3499,7 @@ fn execute_strategy_signal_blocking(
         }
     }
 
-    let delta_qty = target_position_qty - current_position_qty;
+    let delta_qty = projected_delta_qty;
     if delta_qty_is_hold(delta_qty) {
         return Ok(ExecuteStrategySignalResponse {
             symbol,
@@ -3245,6 +3515,7 @@ fn execute_strategy_signal_blocking(
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
             broker_reconciliation_events: Vec::new(),
+            bracket_preview: None,
             warnings,
         });
     }
@@ -3282,6 +3553,7 @@ fn execute_strategy_signal_blocking(
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
             broker_reconciliation_events: Vec::new(),
+            bracket_preview: None,
             warnings,
         });
     }
@@ -3302,6 +3574,7 @@ fn execute_strategy_signal_blocking(
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
             broker_reconciliation_events: Vec::new(),
+            bracket_preview: None,
             warnings,
         });
     }
@@ -3314,37 +3587,13 @@ fn execute_strategy_signal_blocking(
             "app local data directory is required for local paper execution".to_string()
         })?;
         let side = paper_order_side_for_delta(delta_qty);
-        if local_paper_bracket_child_orders_required_but_unsupported(&effective_policy, opening_new)
-        {
-            warnings.push(
-                "Local paper cannot satisfy require_bracket=true because bracket child orders are not simulated."
-                    .to_string(),
-            );
-            return Ok(ExecuteStrategySignalResponse {
-                symbol,
-                mode: req.mode,
-                desired_position: decision.desired_position,
-                current_position_qty,
-                target_position_qty,
-                delta_qty,
-                order_submitted: false,
-                order_id: None,
-                client_order_id: None,
-                action: "policy_blocked:local_paper_bracket_unsupported".to_string(),
-                last_bar_ts: decision.last_bar_ts,
-                last_close: Some(decision.last_close),
-                broker_reconciliation_events: Vec::new(),
-                warnings,
-            });
-        }
-        if opening_new
-            && (decision.cfg.stop_loss_pct().is_some() || decision.cfg.take_profit_pct().is_some())
-        {
-            warnings.push(
-                "Local paper broker does not simulate bracket child orders yet; stop-loss/take-profit settings were not attached."
-                    .to_string(),
-            );
-        }
+        let (bracket, bracket_warnings) = if opening_new {
+            local_paper_bracket_spec_for_order(delta_qty, &decision.cfg, decision.last_close)?
+        } else {
+            (None, Vec::new())
+        };
+        warnings.extend(bracket_warnings);
+        let order_at_unix_ms = decision.last_bar_ts.unwrap_or_else(now_unix_ms);
         let execution = broker_paper::submit_market_order(
             base,
             PaperBrokerMarketOrder {
@@ -3352,12 +3601,20 @@ fn execute_strategy_signal_blocking(
                 side,
                 qty: delta_qty.abs(),
                 price: decision.last_close,
-                at_unix_ms: now_unix_ms(),
+                at_unix_ms: order_at_unix_ms,
                 fee_bps: 0.0,
                 slippage_bps: 0.0,
                 client_order_id: None,
+                bracket,
             },
         )?;
+        if !execution.child_orders.is_empty() {
+            warnings.push(format!(
+                "Local paper created {} bracket child order(s) for parent {}.",
+                execution.child_orders.len(),
+                execution.order.id
+            ));
+        }
         warnings.push(
             "Local paper fill used the latest strategy close as the simulated market price."
                 .to_string(),
@@ -3376,6 +3633,7 @@ fn execute_strategy_signal_blocking(
             last_bar_ts: decision.last_bar_ts,
             last_close: Some(decision.last_close),
             broker_reconciliation_events: Vec::new(),
+            bracket_preview: None,
             warnings,
         });
     }
@@ -3616,6 +3874,7 @@ fn execute_strategy_signal_blocking(
         last_bar_ts: decision.last_bar_ts,
         last_close: Some(decision.last_close),
         broker_reconciliation_events,
+        bracket_preview: None,
         warnings,
     })
 }
@@ -4197,13 +4456,21 @@ pub async fn cancel_local_paper_open_orders(
     let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(
         move || -> Result<CancelLiveExecutionOpenOrdersResponse, String> {
-            let _ = broker_paper::load_or_default(&app_local_data_dir, now_unix_ms())?;
+            let result = broker_paper::cancel_open_orders_for_symbol(
+                &app_local_data_dir,
+                &symbol,
+                now_unix_ms(),
+            )?;
             Ok(CancelLiveExecutionOpenOrdersResponse {
                 mode: LiveExecutionMode::Paper,
                 symbol,
-                open_order_count_before: 0,
-                cancelled_count: 0,
-                cancelled_order_ids: Vec::new(),
+                open_order_count_before: result.open_order_count_before,
+                cancelled_count: result.cancelled_orders.len(),
+                cancelled_order_ids: result
+                    .cancelled_orders
+                    .into_iter()
+                    .map(|order| order.id)
+                    .collect(),
             })
         },
     )
@@ -4221,13 +4488,18 @@ pub async fn flatten_local_paper_position(
     let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(
         move || -> Result<FlattenLiveExecutionPositionResponse, String> {
+            let cancel_result = broker_paper::cancel_open_orders_for_symbol(
+                &app_local_data_dir,
+                &symbol,
+                now_unix_ms(),
+            )?;
             let doc = broker_paper::load_or_default(&app_local_data_dir, now_unix_ms())?;
             let Some(position) = doc.positions.get(&symbol).cloned() else {
                 return Ok(FlattenLiveExecutionPositionResponse {
                     mode: LiveExecutionMode::Paper,
                     symbol,
                     position_found: false,
-                    open_order_count_before: 0,
+                    open_order_count_before: cancel_result.open_order_count_before,
                     order_submitted: false,
                     order_id: None,
                     action: "flat".to_string(),
@@ -4251,13 +4523,14 @@ pub async fn flatten_local_paper_position(
                     fee_bps: 0.0,
                     slippage_bps: 0.0,
                     client_order_id: None,
+                    bracket: None,
                 },
             )?;
             Ok(FlattenLiveExecutionPositionResponse {
                 mode: LiveExecutionMode::Paper,
                 symbol,
                 position_found: true,
-                open_order_count_before: 0,
+                open_order_count_before: cancel_result.open_order_count_before,
                 order_submitted: true,
                 order_id: Some(execution.order.id),
                 action: side.as_str().to_string(),
@@ -4894,6 +5167,10 @@ mod tests {
         let mut order = LiveOrderSnapshot {
             id: "ord_1".to_string(),
             client_order_id: Some("vg-1".to_string()),
+            parent_order_id: None,
+            bracket_group_id: None,
+            bracket_leg: None,
+            tie_break: None,
             symbol: "AAPL".to_string(),
             side: "buy".to_string(),
             status: "new".to_string(),
@@ -4940,6 +5217,10 @@ mod tests {
         let mut order = LiveOrderSnapshot {
             id: "ord_1".to_string(),
             client_order_id: Some("vg-1".to_string()),
+            parent_order_id: None,
+            bracket_group_id: None,
+            bracket_leg: None,
+            tie_break: None,
             symbol: "AAPL".to_string(),
             side: "buy".to_string(),
             status: "partially_filled".to_string(),
@@ -5030,6 +5311,10 @@ mod tests {
         let open_orders = vec![LiveOrderSnapshot {
             id: "ord_1".to_string(),
             client_order_id: None,
+            parent_order_id: None,
+            bracket_group_id: None,
+            bracket_leg: None,
+            tie_break: None,
             symbol: "AAPL".to_string(),
             side: "buy".to_string(),
             status: "new".to_string(),
@@ -5062,6 +5347,10 @@ mod tests {
         let open_orders = vec![LiveOrderSnapshot {
             id: "ord_1".to_string(),
             client_order_id: None,
+            parent_order_id: None,
+            bracket_group_id: None,
+            bracket_leg: None,
+            tie_break: None,
             symbol: "AAPL".to_string(),
             side: "sell".to_string(),
             status: "new".to_string(),
@@ -5088,6 +5377,10 @@ mod tests {
         let open_orders = vec![LiveOrderSnapshot {
             id: "ord_1".to_string(),
             client_order_id: None,
+            parent_order_id: None,
+            bracket_group_id: None,
+            bracket_leg: None,
+            tie_break: None,
             symbol: "AAPL".to_string(),
             side: "buy".to_string(),
             status: "new".to_string(),
@@ -5308,6 +5601,7 @@ mod tests {
             last_bar_ts: None,
             last_close: Some(123.0),
             broker_reconciliation_events: Vec::new(),
+            bracket_preview: None,
             warnings: Vec::new(),
         };
 
@@ -5994,25 +6288,82 @@ mod tests {
     }
 
     #[test]
-    fn local_paper_blocks_when_required_bracket_needs_child_orders() {
-        let required = ExecutionRiskPolicySettings {
-            require_bracket: Some(true),
-            ..ExecutionRiskPolicySettings::default()
+    fn local_paper_bracket_spec_requires_both_bounds_and_documents_tie_break() {
+        let mut cfg = StrategyConfig {
+            stop_loss_pct: Some(0.05),
+            ..Default::default()
         };
-        let optional = ExecutionRiskPolicySettings {
-            require_bracket: Some(false),
-            ..ExecutionRiskPolicySettings::default()
+        let (missing, missing_warnings) =
+            local_paper_bracket_spec_for_order(1.0, &cfg, 100.0).expect("partial bracket");
+        assert!(missing.is_none());
+        assert!(missing_warnings[0].contains("both stop_loss_pct and take_profit_pct"));
+
+        cfg.take_profit_pct = Some(0.10);
+        let (bracket, warnings) =
+            local_paper_bracket_spec_for_order(1.0, &cfg, 100.0).expect("full bracket");
+        let bracket = bracket.expect("bracket");
+        assert!((bracket.stop_price - 95.0).abs() < 1e-9);
+        assert!((bracket.take_profit_limit_price - 110.0).abs() < 1e-9);
+        assert_eq!(bracket.tie_break, PaperBracketTieBreak::StopLossFirst);
+        assert!(warnings[0].contains("stop-loss first"));
+    }
+
+    #[test]
+    fn local_paper_bracket_preview_builds_non_mutating_child_legs_for_long_and_short() {
+        let cfg = StrategyConfig {
+            stop_loss_pct: Some(0.05),
+            take_profit_pct: Some(0.10),
+            ..Default::default()
         };
 
-        assert!(local_paper_bracket_child_orders_required_but_unsupported(
-            &required, true
-        ));
-        assert!(!local_paper_bracket_child_orders_required_but_unsupported(
-            &required, false
-        ));
-        assert!(!local_paper_bracket_child_orders_required_but_unsupported(
-            &optional, true
-        ));
+        let (long_preview, long_warnings) =
+            local_paper_bracket_preview_for_order(" aapl ", 0.0, 2.0, 2.0, &cfg, 100.0)
+                .expect("long preview");
+        let long_preview = long_preview.expect("long bracket preview");
+        assert!(long_preview.preview_only);
+        assert_eq!(long_preview.symbol, "AAPL");
+        assert_eq!(long_preview.entry_side, "buy");
+        assert_eq!(long_preview.legs.len(), 2);
+        assert_eq!(long_preview.legs[0].leg, "stop_loss");
+        assert_eq!(long_preview.legs[0].side, "sell");
+        assert_eq!(long_preview.legs[0].stop_price, Some(95.0));
+        assert_eq!(long_preview.legs[1].leg, "take_profit");
+        assert!((long_preview.legs[1].limit_price.expect("take price") - 110.0).abs() < 1e-9);
+        assert!(long_warnings[0].contains("stop-loss first"));
+
+        let (short_preview, _) =
+            local_paper_bracket_preview_for_order("MSFT", 0.0, -3.0, -3.0, &cfg, 100.0)
+                .expect("short preview");
+        let short_preview = short_preview.expect("short bracket preview");
+        assert_eq!(short_preview.entry_side, "sell");
+        assert_eq!(short_preview.legs[0].side, "buy");
+        assert_eq!(short_preview.legs[0].stop_price, Some(105.0));
+        assert!((short_preview.legs[1].limit_price.expect("take price") - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn local_paper_bracket_preview_skips_missing_bounds_and_non_opening_deltas() {
+        let cfg = StrategyConfig {
+            stop_loss_pct: Some(0.05),
+            take_profit_pct: None,
+            ..Default::default()
+        };
+        let (missing_preview, warnings) =
+            local_paper_bracket_preview_for_order("AAPL", 0.0, 2.0, 2.0, &cfg, 100.0)
+                .expect("missing bound preview");
+        assert!(missing_preview.is_none());
+        assert!(warnings[0].contains("both stop_loss_pct and take_profit_pct"));
+
+        let cfg = StrategyConfig {
+            stop_loss_pct: Some(0.05),
+            take_profit_pct: Some(0.10),
+            ..Default::default()
+        };
+        let (closed_preview, closed_warnings) =
+            local_paper_bracket_preview_for_order("AAPL", 2.0, 3.0, 1.0, &cfg, 100.0)
+                .expect("non-opening preview");
+        assert!(closed_preview.is_none());
+        assert!(closed_warnings.is_empty());
     }
 
     fn test_live_stream_info(
@@ -6276,9 +6627,11 @@ mod tests {
 
     #[test]
     fn alpaca_order_payload_attaches_bracket_only_when_both_risk_bounds_exist() {
-        let mut cfg = StrategyConfig::default();
-        cfg.stop_loss_pct = Some(0.05);
-        cfg.take_profit_pct = Some(0.10);
+        let mut cfg = StrategyConfig {
+            stop_loss_pct: Some(0.05),
+            take_profit_pct: Some(0.10),
+            ..Default::default()
+        };
 
         let (payload, warnings) =
             alpaca_order_payload("AAPL", 2.0, &cfg, 100.0).expect("bracket payload");
@@ -6335,9 +6688,11 @@ mod tests {
 
     #[test]
     fn alpaca_order_payload_rejects_bracket_prices_that_round_to_inversion() {
-        let mut cfg = StrategyConfig::default();
-        cfg.stop_loss_pct = Some(0.00001);
-        cfg.take_profit_pct = Some(0.00001);
+        let cfg = StrategyConfig {
+            stop_loss_pct: Some(0.00001),
+            take_profit_pct: Some(0.00001),
+            ..Default::default()
+        };
 
         let err = alpaca_order_payload("AAPL", 2.0, &cfg, 100.00)
             .expect_err("rounded buy bracket should invert to equal prices");
@@ -6350,9 +6705,11 @@ mod tests {
 
     #[test]
     fn alpaca_order_payload_uses_four_decimals_below_one_dollar() {
-        let mut cfg = StrategyConfig::default();
-        cfg.stop_loss_pct = Some(0.05);
-        cfg.take_profit_pct = Some(0.10);
+        let cfg = StrategyConfig {
+            stop_loss_pct: Some(0.05),
+            take_profit_pct: Some(0.10),
+            ..Default::default()
+        };
 
         let (payload, warnings) =
             alpaca_order_payload("PENNY", 2.0, &cfg, 0.50).expect("below-dollar bracket payload");

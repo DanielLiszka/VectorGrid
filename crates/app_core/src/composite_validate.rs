@@ -291,6 +291,24 @@ fn validation_backend_label(backend: &Backend) -> &'static str {
     }
 }
 
+fn validation_residency_tier(
+    backend_used: &BackendUsed,
+    backend_route: Option<&str>,
+) -> &'static str {
+    let route = backend_route.unwrap_or_default();
+    match backend_used {
+        BackendUsed::Gpu if route.contains("GpuHybridKernel") && !route.contains("->CpuOnly") => {
+            "gpu_hybrid_kernel"
+        }
+        BackendUsed::Gpu if route.contains("GpuKernel") && !route.contains("->CpuOnly") => {
+            "gpu_kernel"
+        }
+        BackendUsed::Gpu => "gpu",
+        BackendUsed::Cpu if route.contains("->CpuOnly") => "cpu_fallback",
+        BackendUsed::Cpu => "cpu",
+    }
+}
+
 fn resolve_validation_backend_runtime(
     backend: &Backend,
     gpu_activated: bool,
@@ -9703,6 +9721,8 @@ impl ValidationPostCandidate for CompositeValidationCandidateResult {
 pub struct CompositeValidationResult {
     pub data_id: String,
     pub runtime_ms: u64,
+    pub requested_backend: String,
+    pub validation_residency_tier: String,
     pub backend_used: BackendUsed,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_route: Option<String>,
@@ -12897,9 +12917,14 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let (backend_used, backend_route, backend_fallback_reason) =
         resolve_validation_backend_runtime(&req.backend, false, None);
+    let requested_backend = validation_backend_label(&req.backend).to_string();
+    let validation_residency_tier =
+        validation_residency_tier(&backend_used, backend_route.as_deref()).to_string();
     Ok(CompositeValidationResult {
         data_id: req.data_id,
         runtime_ms,
+        requested_backend,
+        validation_residency_tier,
         backend_used,
         backend_route,
         backend_fallback_reason,
@@ -13848,6 +13873,8 @@ mod tests {
             .expect("validation run");
 
         assert_eq!(res.candidates.len(), 1);
+        assert_eq!(res.requested_backend, "CpuOnly");
+        assert_eq!(res.validation_residency_tier, "cpu");
         let c = &res.candidates[0];
         assert!(c.in_sample.sharpe.is_finite());
         assert!(c.walk_forward.as_ref().unwrap().windows > 0);

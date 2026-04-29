@@ -1764,7 +1764,7 @@ describe("analysis service", () => {
     expect(String(store.topFilterMeta || "")).toContain("MlSignal");
   });
 
-  it("surfaces composite-family candidate detail gaps explicitly instead of implying support", async () => {
+  it("forwards composite-family configs for advanced candidate detail and local stability", async () => {
     seedWorkflowRun({
       req: {
         strategy_kind: "Vcet",
@@ -1805,19 +1805,63 @@ describe("analysis service", () => {
 
     invokeCommandMock.mockImplementation(async (command: unknown) => {
       if (command === "compute_composite_cpu_drilldown") {
-        throw new Error("VCET candidate detail is not implemented yet.");
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
       }
+      if (command === "compute_composite_cpu_local_stability") {
+        return {
+          base: {
+            fast_len: 8,
+            slow_len: 34,
+            fast_ma_type: "vidya",
+            slow_ma_type: "vidya",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") return [] as never;
       return undefined as never;
     });
 
     await selectTopRow(0);
 
-    expect(String(store.drillStatus || "")).toContain(
-      "VCET candidate detail is not implemented yet.",
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_composite_cpu_drilldown",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          vcet: {
+            vidya_short_period: 8,
+            vidya_long_period: 34,
+            ce_period: 34,
+            ce_mult: 2.8,
+          },
+        }),
+      }),
     );
-    expect(String(store.statusLine || "")).toContain(
-      "VCET candidate detail is not implemented yet.",
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_composite_cpu_local_stability",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          vcet: {
+            vidya_short_period: 8,
+            vidya_long_period: 34,
+            ce_period: 34,
+            ce_mult: 2.8,
+          },
+        }),
+      }),
     );
+    expect(String(store.drillStatus || "")).not.toContain("not implemented");
   });
 
   it("publishes a model-backed Pareto scatter for the Vue canvas host", () => {

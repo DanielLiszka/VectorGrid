@@ -3,8 +3,11 @@ export type StageCompletionStage =
   | "validation"
   | "meta"
   | "stage5_ml_confidence"
+  | "policy_evaluation"
   | "ml_signal"
-  | "options_expression";
+  | "options_expression"
+  | "options_expression_validation"
+  | "campaign";
 
 export type StageCompletionStatus =
   | "success"
@@ -73,8 +76,11 @@ const STAGES: ReadonlySet<string> = new Set([
   "validation",
   "meta",
   "stage5_ml_confidence",
+  "policy_evaluation",
   "ml_signal",
   "options_expression",
+  "options_expression_validation",
+  "campaign",
 ]);
 
 const STATUSES: ReadonlySet<string> = new Set([
@@ -298,6 +304,41 @@ function validationVerdict(res: unknown): StageCompletionVerdict {
   return warnings.length > 0 ? "review" : "review";
 }
 
+function genericVerdictFromText(value: unknown): StageCompletionVerdict | null {
+  const normalized = text(value).toLowerCase();
+  if (!normalized) return null;
+  if (
+    normalized.includes("reject") ||
+    normalized.includes("fail") ||
+    normalized.includes("blocked") ||
+    normalized.includes("non_promotable")
+  ) {
+    return "rejected";
+  }
+  if (normalized.includes("warning") || normalized.includes("review")) {
+    return "approved_with_warnings";
+  }
+  if (normalized.includes("approved") || normalized.includes("accepted")) {
+    return "approved";
+  }
+  if (normalized.includes("pass") || normalized.includes("valid")) {
+    return "passed";
+  }
+  return null;
+}
+
+function statusFromCancelledOrFailed(value: unknown): StageCompletionStatus {
+  const row = asRecord(value);
+  if (optionalBoolean(row?.cancelled ?? row?.canceled) === true) return "cancelled";
+  const failed = nonNegativeInt(row?.failed ?? row?.failed_count ?? row?.failedCount);
+  if (failed != null && failed > 0) return "failed";
+  return "success";
+}
+
+function resultRecord(context: StageCompletionBuildContext): Record<string, unknown> | null {
+  return asRecord(context.res);
+}
+
 function packetKey(
   packet: Pick<StageCompletionPacketV1, "stage" | "substage">,
 ): string {
@@ -516,6 +557,257 @@ export function buildMlSignalStageCompletion(
     }
   }
   if (summary) packet.summary = summary;
+  if (context.backfilled) packet.backfilled = true;
+  return packet;
+}
+
+export function buildMetaStageCompletion(
+  context: StageCompletionBuildContext,
+): StageCompletionPacketV1 {
+  const res = resultRecord(context);
+  const summary = compactRecord({
+    groups: arrayLen(res?.groups) ?? nonNegativeInt(res?.groups),
+    selectedGroups: nonNegativeInt(res?.groups_selected ?? res?.groupsSelected),
+    candidates: nonNegativeInt(res?.candidate_count ?? res?.candidateCount),
+    sourceArtifacts: nonNegativeInt(
+      res?.source_artifact_count ?? res?.sourceArtifactCount,
+    ),
+  });
+  const packet: StageCompletionPacketV1 = {
+    schemaVersion: 1,
+    stage: "meta",
+    status: statusFromCancelledOrFailed(res),
+    verdict: genericVerdictFromText(res?.verdict ?? res?.status) ?? "inspect_only",
+    completedAt: firstText(context.completedAt, context.ts, res?.ts),
+    artifactKind: firstText(context.artifactKind, "vectorgrid_meta_selection"),
+    artifactPath: firstText(context.artifactPath, res?.meta_json_path, res?.artifact_path),
+  };
+  const optionalStrings: Array<[keyof StageCompletionPacketV1, unknown]> = [
+    ["reportXlsxPath", context.reportXlsxPath ?? res?.report_xlsx_path],
+    ["strategyKind", res?.strategy_kind ?? res?.strategyKind],
+    ["timeframe", res?.timeframe],
+    ["configFingerprint", context.configFingerprint ?? res?.config_fingerprint],
+    ["recommendation", res?.recommendation],
+  ];
+  for (const [key, raw] of optionalStrings) {
+    const next = text(raw);
+    if (next) (packet as unknown as Record<string, unknown>)[key] = next;
+  }
+  if (summary) packet.summary = summary;
+  if (context.backfilled) packet.backfilled = true;
+  return packet;
+}
+
+export function buildStage5MlConfidenceStageCompletion(
+  context: StageCompletionBuildContext,
+): StageCompletionPacketV1 {
+  const res = resultRecord(context);
+  const summary = compactRecord({
+    groupsSelected: nonNegativeInt(res?.groups_selected ?? res?.groupsSelected),
+    groupsScored: nonNegativeInt(res?.groups_scored ?? res?.groupsScored),
+    groupsConsidered: nonNegativeInt(
+      res?.groups_considered ?? res?.groupsConsidered,
+    ),
+    minMlConfidence: finiteNumber(
+      res?.min_ml_confidence ?? res?.minMlConfidence,
+    ),
+    topK: nonNegativeInt(res?.top_k ?? res?.topK),
+    modelHealthy: optionalBoolean(res?.model_healthy ?? res?.modelHealthy),
+  });
+  const modelHealthy = optionalBoolean(res?.model_healthy ?? res?.modelHealthy);
+  const packet: StageCompletionPacketV1 = {
+    schemaVersion: 1,
+    stage: "stage5_ml_confidence",
+    status: modelHealthy === false ? "blocked" : statusFromCancelledOrFailed(res),
+    verdict: modelHealthy === false
+      ? "rejected"
+      : genericVerdictFromText(res?.verdict ?? res?.recommendation) ?? "inspect_only",
+    completedAt: firstText(context.completedAt, context.ts, res?.ts),
+    artifactKind: firstText(
+      context.artifactKind,
+      "vectorgrid_meta_stage5_ml_confidence",
+    ),
+    artifactPath: firstText(
+      context.artifactPath,
+      res?.stage5_json_path,
+      res?.stage4_json_path,
+      res?.artifact_path,
+    ),
+  };
+  const optionalStrings: Array<[keyof StageCompletionPacketV1, unknown]> = [
+    ["strategyKind", res?.strategy_kind ?? res?.strategyKind],
+    ["timeframe", res?.timeframe],
+    ["configFingerprint", context.configFingerprint ?? res?.config_fingerprint],
+    ["recommendation", res?.recommendation],
+  ];
+  for (const [key, raw] of optionalStrings) {
+    const next = text(raw);
+    if (next) (packet as unknown as Record<string, unknown>)[key] = next;
+  }
+  if (summary) packet.summary = summary;
+  if (modelHealthy === false) packet.blockers = ["model_health"];
+  if (context.backfilled) packet.backfilled = true;
+  return packet;
+}
+
+export function buildPolicyEvaluationStageCompletion(
+  context: StageCompletionBuildContext,
+): StageCompletionPacketV1 {
+  const res = resultRecord(context);
+  const stage5Blended = asRecord(res?.stage5_blended ?? res?.stage5Blended);
+  const summary = compactRecord({
+    artifactsEvaluated: nonNegativeInt(
+      res?.artifacts_evaluated ?? res?.artifactsEvaluated,
+    ),
+    artifactsConsidered: nonNegativeInt(
+      res?.artifacts_considered ?? res?.artifactsConsidered,
+    ),
+    bestPolicy: firstText(res?.best_policy, res?.bestPolicy),
+    stage5PrecisionAtK: finiteNumber(
+      stage5Blended?.precision_at_k ?? stage5Blended?.precisionAtK,
+    ),
+    stage5VsMetaPrecisionDelta: finiteNumber(
+      res?.stage5_vs_meta_precision_delta ?? res?.stage5VsMetaPrecisionDelta,
+    ),
+  });
+  const packet: StageCompletionPacketV1 = {
+    schemaVersion: 1,
+    stage: "policy_evaluation",
+    status: statusFromCancelledOrFailed(res),
+    verdict: genericVerdictFromText(res?.verdict ?? res?.status) ?? "inspect_only",
+    completedAt: firstText(context.completedAt, context.ts, res?.ts),
+    artifactKind: firstText(
+      context.artifactKind,
+      "vectorgrid_ml_confidence_policy_evaluation",
+    ),
+    artifactPath: firstText(context.artifactPath, res?.eval_json_path, res?.artifact_path),
+  };
+  const optionalStrings: Array<[keyof StageCompletionPacketV1, unknown]> = [
+    ["strategyKind", res?.strategy_kind ?? res?.strategyKind],
+    ["timeframe", res?.timeframe],
+    ["configFingerprint", context.configFingerprint ?? res?.config_fingerprint],
+    ["recommendation", res?.best_policy ?? res?.bestPolicy],
+  ];
+  for (const [key, raw] of optionalStrings) {
+    const next = text(raw);
+    if (next) (packet as unknown as Record<string, unknown>)[key] = next;
+  }
+  if (summary) packet.summary = summary;
+  if (context.backfilled) packet.backfilled = true;
+  return packet;
+}
+
+export function buildOptionsExpressionValidationStageCompletion(
+  context: StageCompletionBuildContext,
+): StageCompletionPacketV1 {
+  const res = resultRecord(context);
+  const acceptance = asRecord(res?.acceptance_summary ?? res?.acceptanceSummary);
+  const accepted = nonNegativeInt(
+    acceptance?.accepted_tuple_count ?? acceptance?.acceptedTupleCount,
+  );
+  const supportDeficient = nonNegativeInt(
+    acceptance?.support_deficient_tuple_count ??
+      acceptance?.supportDeficientTupleCount,
+  );
+  const notes = stringList(acceptance?.notes);
+  const verdict =
+    genericVerdictFromText(acceptance?.verdict) ??
+    (accepted != null && accepted > 0
+      ? supportDeficient != null && supportDeficient > 0
+        ? "approved_with_warnings"
+        : "approved"
+      : "review");
+  const summary = compactRecord({
+    selectedTupleCount: nonNegativeInt(
+      acceptance?.selected_tuple_count ?? acceptance?.selectedTupleCount,
+    ),
+    validatedTupleCount: nonNegativeInt(
+      acceptance?.validated_tuple_count ?? acceptance?.validatedTupleCount,
+    ),
+    acceptedTupleCount: accepted,
+    supportDeficientTupleCount: supportDeficient,
+    stressFragileTupleCount: nonNegativeInt(
+      acceptance?.stress_fragile_tuple_count ??
+        acceptance?.stressFragileTupleCount,
+    ),
+    rootSymbol: firstText(res?.root_symbol, res?.rootSymbol),
+    optionsDatasetId: firstText(
+      res?.options_dataset_id,
+      res?.optionsDatasetId,
+    ),
+  });
+  const packet: StageCompletionPacketV1 = {
+    schemaVersion: 1,
+    stage: "options_expression_validation",
+    status: statusFromCancelledOrFailed(res),
+    verdict,
+    completedAt: firstText(context.completedAt, context.ts, res?.ts),
+    artifactKind: firstText(
+      context.artifactKind,
+      "vectorgrid_options_expression_validation",
+    ),
+    artifactPath: firstText(
+      context.artifactPath,
+      res?.validation_artifact_path,
+      res?.artifact_path,
+    ),
+    strategyKind: "OptionsExpression",
+  };
+  const optionalStrings: Array<[keyof StageCompletionPacketV1, unknown]> = [
+    ["timeframe", res?.timeframe],
+    ["configFingerprint", context.configFingerprint ?? res?.source_artifact_hash],
+    ["recommendation", acceptance?.verdict],
+  ];
+  for (const [key, raw] of optionalStrings) {
+    const next = text(raw);
+    if (next) (packet as unknown as Record<string, unknown>)[key] = next;
+  }
+  if (summary) packet.summary = summary;
+  if (notes.length) packet.caveats = notes;
+  if (supportDeficient != null && supportDeficient > 0) {
+    packet.warnings = [`${supportDeficient} support-deficient tuple${supportDeficient === 1 ? "" : "s"}.`];
+  }
+  if (context.backfilled) packet.backfilled = true;
+  return packet;
+}
+
+export function buildCampaignStageCompletion(
+  context: StageCompletionBuildContext,
+): StageCompletionPacketV1 {
+  const res = resultRecord(context);
+  const counts = asRecord(res?.counts);
+  const failed = nonNegativeInt(res?.failed ?? res?.failed_count ?? res?.failedCount ?? counts?.failed) ?? 0;
+  const skipped = nonNegativeInt(res?.skipped ?? res?.skipped_count ?? res?.skippedCount ?? counts?.skipped) ?? 0;
+  const cancelled = optionalBoolean(res?.cancelled ?? res?.canceled ?? counts?.cancelled) === true;
+  const summary = compactRecord({
+    validated: nonNegativeInt(res?.validated ?? res?.validated_count ?? res?.validatedCount ?? counts?.validated),
+    total: nonNegativeInt(res?.total ?? res?.dataset_count ?? res?.datasetCount ?? counts?.total),
+    failed,
+    skipped,
+    autoMeta: optionalBoolean(res?.auto_meta ?? res?.autoMeta),
+    autoStage5: optionalBoolean(res?.auto_stage5 ?? res?.autoStage5),
+  });
+  const packet: StageCompletionPacketV1 = {
+    schemaVersion: 1,
+    stage: "campaign",
+    status: cancelled ? "cancelled" : failed > 0 ? "failed" : "success",
+    verdict: cancelled || failed > 0 || skipped > 0 ? "review" : "passed",
+    completedAt: firstText(context.completedAt, context.ts, res?.ts),
+    artifactKind: firstText(context.artifactKind, "vectorgrid_campaign_summary"),
+    artifactPath: firstText(context.artifactPath, res?.summary_path, res?.artifact_path),
+  };
+  const optionalStrings: Array<[keyof StageCompletionPacketV1, unknown]> = [
+    ["strategyKind", res?.strategy_kind ?? res?.strategyKind],
+    ["timeframe", res?.timeframe],
+    ["recommendation", res?.recommendation],
+  ];
+  for (const [key, raw] of optionalStrings) {
+    const next = text(raw);
+    if (next) (packet as unknown as Record<string, unknown>)[key] = next;
+  }
+  if (summary) packet.summary = summary;
+  const blockers = stringList(res?.fail_reasons ?? res?.failReasons);
+  if (blockers.length) packet.blockers = blockers;
   if (context.backfilled) packet.backfilled = true;
   return packet;
 }

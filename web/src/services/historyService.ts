@@ -434,6 +434,8 @@ export interface HistorySavedRunDetail {
   stageCompletions?: StageCompletionPacketV1[];
   runReq?: Record<string, unknown> | null;
   runRes?: Record<string, unknown> | null;
+  validationReq?: Record<string, unknown> | null;
+  validationRes?: Record<string, unknown> | null;
   metricSurfaceSummary?: string;
   metricSurfaceDetail?: string;
   validationAdmissionSummary?: string;
@@ -2323,6 +2325,8 @@ export async function loadSavedRunDetail(
     ),
     runReq: asRecord(detail.runReq),
     runRes: asRecord(detail.runRes),
+    validationReq,
+    validationRes: asRecord(detail.validationRes),
     ...(metricSurface.summary
       ? { metricSurfaceSummary: metricSurface.summary }
       : {}),

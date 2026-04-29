@@ -20,20 +20,29 @@ The plans are intentionally separate from the existing roadmap files. Existing d
 7. [Monte Carlo Reporting And Export Hardening](07_monte_carlo_reporting_export_hardening.md)
 8. [Frontend QA Automation Expansion](08_frontend_qa_automation_expansion.md)
 
+## Detailed Sub-Implementation Plans
+
+These docs refine the remaining work from the first eight plans into smaller implementation tracks. Each track has its own audit findings, external research references, additive boundary, checklist, and validation plan.
+
+9. [Local Paper Bracket Preview And Broker Observation Foundation](09_local_paper_bracket_preview_and_observation_foundation.md)
+10. [Portfolio Feasibility Exports And Construction Research Gate](10_portfolio_feasibility_exports_and_construction_research_gate.md)
+11. [Stage Completion Backend Backfill And Report Schema Versioning](11_stage_completion_backend_backfill_and_report_schema_versioning.md)
+12. [Frontend QA Fixture Matrix, CI Artifacts, And Desktop Smoke Expansion](12_frontend_qa_fixture_matrix_ci_artifacts_desktop_smoke.md)
+13. [Options Finalist Stress And Monte Carlo Diagnostics](13_options_finalist_stress_and_monte_carlo_diagnostics.md)
+14. [GPU Validation Non-Benchmark Productization](14_gpu_validation_nonbenchmark_productization.md)
+
 ## Research Pass Assessment
 
 Date: 2026-04-29
 
-The current plans are scoped and actionable, but they are not all fully implementation-ready. They are strong enough to start discovery and first slices, but the high-risk plans need one additional design pass before coding:
+The original plans are scoped and actionable, but they are not all equally implementation-ready. The detailed sub-implementation plans above define the next safe slices:
 
-- Portfolio Feasibility Workspace: implementation-ready for a read-only UI slice.
-- Advanced Strategy Drilldown And Local Stability Parity: implementation-ready only one family at a time after a family inventory.
-- Local Paper Brackets And Broker Watcher: not implementation-ready until the bracket state machine and broker watcher contract are written in more detail.
-- GPU Validation Route Productization: not implementation-ready for route changes until the capability matrix and profiling protocol are completed.
-- Stage Completion Reporting Expansion: implementation-ready for optional metadata/backfill slices.
-- Options Finalist Acceptance Dashboard: implementation-ready for display-only view-model work, not for ranking or gate changes.
-- Monte Carlo Reporting And Export Hardening: implementation-ready for compatibility/reporting, not for options-specific Monte Carlo.
-- Frontend QA Automation Expansion: implementation-ready for selector and fixture work.
+- Portfolio exports: implementation-ready only for compact research exports and readiness diagnostics, not weights or orders.
+- Broker preview: implementation-ready for non-mutating local paper bracket previews; long-lived live broker watchers remain deferred.
+- Stage completion backfill: implementation-ready for merge/backfill and optional schema metadata with tolerant legacy handling.
+- Frontend QA: implementation-ready for fixture ownership, dashboard artifacts, and non-default desktop smoke expansion.
+- Options MC: implementation-ready for contract and frontend diagnostic scaffolding only; options-local MC engine requires a separate bounded algorithm slice.
+- GPU validation: implementation-ready for docs and disabled-CI metadata only while CUDA benchmark work is deferred.
 
 The research notes are captured in [External Research Notes](external_research_notes_2026-04-29.md).
 
@@ -64,3 +73,5 @@ For CUDA validation/performance changes when a GPU is available:
 
 - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
 - `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate`
+
+Current GPU note: CUDA benchmark/profiling work is intentionally deferred while a separate GPU-intensive task may be running. Non-CUDA code, docs, frontend QA, CPU tests, and non-benchmark inventory checks can proceed.

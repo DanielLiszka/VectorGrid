@@ -253,6 +253,18 @@ const commands = computed<PaletteCommand[]>(() => {
       },
     },
     {
+      id: 'go_workspace_portfolio',
+      group: 'navigation',
+      name: 'Go to Portfolio',
+      desc: 'Switch to portfolio feasibility research.',
+      keys: [],
+      keywords: ['navigate', 'portfolio', 'feasibility', 'allocation', 'replay'],
+      enabled: true,
+      run: () => {
+        setWorkspaceIfNeeded('portfolio')
+      },
+    },
+    {
       id: 'go_workspace_live',
       group: 'navigation',
       name: 'Go to Live',
@@ -393,6 +405,7 @@ function commandQaAction(commandId: string): string {
     go_workspace_aggregate: 'goWorkspaceAggregate',
     go_workspace_library: 'goWorkspaceLibrary',
     go_workspace_live: 'goWorkspaceLive',
+    go_workspace_portfolio: 'goWorkspacePortfolio',
     go_workspace_pro: 'goWorkspaceDiagnostics',
     go_workspace_settings: 'goWorkspaceSettings',
     open_latest_meta_report: 'openLatestMetaReport',

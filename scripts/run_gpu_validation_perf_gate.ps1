@@ -34,6 +34,15 @@ $script:CompletedPerfProcessStartTicksById = @{}
 $WorkloadProfileSlug = $WorkloadProfile.Replace("-", "_")
 $StructuredProbeOutPath = "output/benchmarks/gpu_validation_${WorkloadProfileSlug}_perf_structured_probe.json"
 
+function Get-ComparablePath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if ([System.IO.Path]::IsPathRooted($Path)) {
+    return [System.IO.Path]::GetFullPath($Path)
+  }
+  return [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
+}
+
 if ($Quick) {
   $hasCustomCase = -not [string]::IsNullOrWhiteSpace($BenchFilter) `
     -or -not [string]::IsNullOrWhiteSpace($CriterionEstimatesPath) `
@@ -71,6 +80,11 @@ if ($OutPathWasDefault) {
   } elseif ($WorkloadProfile -eq "validation-heavy") {
     $OutPath = "output/benchmarks/gpu_validation_heavy_perf_summary.json"
   }
+}
+
+$WritesCandidateOutput = $Mode -eq "candidate" -and ((-not [bool]$ListCases) -or [bool]$PlanOnly)
+if ($WritesCandidateOutput -and (Get-ComparablePath -Path $BaselinePath) -eq (Get-ComparablePath -Path $OutPath)) {
+  throw "Candidate mode cannot use the same file for -BaselinePath and -OutPath: $OutPath"
 }
 
 function Write-JsonUtf8 {

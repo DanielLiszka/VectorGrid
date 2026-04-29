@@ -19,11 +19,13 @@ describe('workbenchNavigationModel', () => {
       'Research',
       'Library',
       'Runs',
+      'Portfolio',
       'Live',
       'Settings',
       'Diagnostics',
     ])
     expect(state.workspaceItems.find((item) => item.id === 'aggregate')?.actionId).toBe('shell.workspace.aggregate')
+    expect(state.workspaceItems.find((item) => item.id === 'portfolio')?.actionId).toBe('shell.workspace.portfolio')
     expect(state.workspaceItems.find((item) => item.id === 'pro')?.actionId).toBe('shell.workspace.diagnostics')
     expect(state.stageItems.map((item) => item.label)).toEqual([
       '1 Data Source',
@@ -50,6 +52,7 @@ describe('workbenchNavigationModel', () => {
 
   it('uses premium labels while preserving internal workspace ids', () => {
     expect(workbenchWorkspaceLabel('aggregate')).toBe('Runs')
+    expect(workbenchWorkspaceLabel('portfolio')).toBe('Portfolio')
     expect(workbenchWorkspaceLabel('pro')).toBe('Diagnostics')
     expect(workbenchWorkspaceLabel('unknown')).toBe('Research')
   })
@@ -90,6 +93,21 @@ describe('workbenchNavigationModel', () => {
     ])
     expect(state.stageItems.map((item) => item.id)).not.toContain('settings')
     expect(state.stageItems.map((item) => item.id)).not.toContain('history')
+  })
+
+  it('routes portfolio as a dedicated workspace without local setup/result tabs', () => {
+    const state = buildWorkbenchNavigationState({
+      workspace: 'portfolio',
+      workflowStep: 'validate',
+      controlsTab: 'opt',
+      resultsTab: 'validate',
+    })
+
+    expect(state.activeWorkspaceId).toBe('portfolio')
+    expect(state.workspaceItems.find((item) => item.id === 'portfolio')?.selected).toBe(true)
+    expect(state.controlsItems).toEqual([])
+    expect(state.resultsItems).toEqual([])
+    expect(state.selectedShellTabId).toBe('workspace_tab_portfolio')
   })
 
   it('hides conventional result chrome for ML Signal workflow steps', () => {

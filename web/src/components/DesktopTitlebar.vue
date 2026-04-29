@@ -55,6 +55,7 @@ const workspaceLabel = computed(() => {
   const normalizedWorkspace = normalizeWorkspaceTab(workspace.value)
   if (normalizedWorkspace === 'library') return 'Library'
   if (normalizedWorkspace === 'aggregate') return 'Aggregate'
+  if (normalizedWorkspace === 'portfolio') return 'Portfolio'
   if (normalizedWorkspace === 'pro') return 'Diagnostics'
   if (normalizedWorkspace === 'live') return 'Live'
   if (normalizedWorkspace === 'settings') return 'Settings'

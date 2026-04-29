@@ -30,6 +30,7 @@
     "analyze:bundle": "vue-tsc -b && vite build --mode analyze",
     "check:bundle-budget": "node ./scripts/check-bundle-budget.mjs",
     "perf:ui:budget": "node ./scripts/check-ui-perf-budget.mjs",
+    "qa:dashboard": "node ./scripts/write-frontend-qa-dashboard.mjs",
     "perf:ui:budget:capture": "npm run baseline:ui && npm run perf:ui:budget",
     "bench:request-builder": "vitest run src/services/optimizeRequestBuilder.bench.test.ts",
     "bench:request-builder:compare": "node ./scripts/compare-request-builder-bench.mjs",

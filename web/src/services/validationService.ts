@@ -434,6 +434,7 @@ interface SaveReportXlsxResponse {
 
 interface ReportPayload {
   version: number;
+  report_schema_version: number;
   kind: string;
   ts: string;
   data: {
@@ -441,7 +442,11 @@ interface ReportPayload {
     ctx: Record<string, unknown>;
   };
   run: { req: unknown; res: unknown };
-  validation: { req: unknown; res: unknown } | null;
+  validation: {
+    req: unknown;
+    res: unknown;
+    acceleration_status?: string;
+  } | null;
   optimization_metric_surface?: Record<string, unknown> | null;
 }
 
@@ -1045,8 +1050,16 @@ function buildReportPayload(input: {
   validationRes: unknown;
 }): ReportPayload {
   const ts = normalizeText(input.ts) || new Date().toISOString();
+  const accelerationStatus =
+    input.validationRes != null
+      ? buildValidationAccelerationStatus(
+          input.validationRes,
+          input.validationReq,
+        )
+      : "";
   const payload: ReportPayload = {
     version: 1,
+    report_schema_version: 1,
     kind: "vectorgrid_report",
     ts,
     data: buildReportDataFromDatasetMeta(input.datasetMeta ?? null),
@@ -1056,7 +1069,11 @@ function buildReportPayload(input: {
     },
     validation:
       input.validationRes != null
-        ? { req: input.validationReq ?? null, res: input.validationRes }
+        ? {
+            req: input.validationReq ?? null,
+            res: input.validationRes,
+            acceleration_status: accelerationStatus,
+          }
         : null,
   };
   if (input.optimizationMetricSurface) {
@@ -1949,6 +1966,59 @@ function buildActualValidationCategorySummary(
   ]);
 }
 
+function buildValidationAccelerationStatus(
+  result: unknown,
+  validationReq?: unknown,
+): string {
+  const row = asRecord(result);
+  const backendUsed = normalizeText(row?.backend_used);
+  const backendUsedLower = backendUsed.toLowerCase();
+  const backendRoute = normalizeText(row?.backend_route);
+  const backendRouteLower = backendRoute.toLowerCase();
+  const backendFallbackReason = normalizeText(row?.backend_fallback_reason);
+  const requestedBackend =
+    normalizeText(row?.requested_backend) ||
+    normalizeText(asRecord(asRecord(validationReq)?.backend)?.backend);
+  const validationContext = asRecord(
+    asRecord(validationReq)?.validation_context,
+  );
+  const strategyKind = normalizeStrategyKindRaw(
+    validationContext?.strategy_kind,
+  );
+  const categorySummary = buildActualValidationCategorySummary(
+    asRecord(validationReq),
+    row,
+    strategyKind,
+  );
+  const executionProfile = asRecord(row?.execution_profile);
+  const cpuTailWallMs = Number(
+    executionProfile?.cpu_tail_wall_ms ?? Number.NaN,
+  );
+  const hasCpuTail =
+    categorySummary.includes("GPU main + CPU tail") ||
+    (Number.isFinite(cpuTailWallMs) && cpuTailWallMs > 0);
+
+  if (backendUsedLower === "gpu" && !backendRouteLower.includes("->cpuonly")) {
+    return hasCpuTail
+      ? "GPU validation completed with CPU follow-up checks."
+      : "GPU validation completed.";
+  }
+
+  if (
+    backendRouteLower.includes("->cpuonly") ||
+    (backendUsedLower === "cpu" &&
+      requestedBackend &&
+      requestedBackend.toLowerCase() !== "cpuonly")
+  ) {
+    return backendFallbackReason
+      ? `GPU validation unavailable: ${backendFallbackReason}`
+      : "CPU validation used because GPU validation was unavailable.";
+  }
+
+  if (backendUsedLower === "cpu") return "CPU validation completed.";
+  return "Validation acceleration status unavailable.";
+}
+
 function compositeValidationRouteDetailNote(strategyKind: string): string {
   switch (strategyKind) {
     case "CompositeCpu":
@@ -2007,6 +2077,7 @@ function buildValidationExecutionSummary(
   result: unknown,
   validationReq?: unknown,
 ): {
+  accelerationStatus: string;
   routeSummary: string;
   routeDetailSummary: string;
   categorySummary: string;
@@ -2030,8 +2101,13 @@ function buildValidationExecutionSummary(
   const backendUsed = normalizeText(row?.backend_used) || "unknown";
   const backendRoute = normalizeText(row?.backend_route) || "-";
   const backendFallbackReason = normalizeText(row?.backend_fallback_reason);
-  const requestedBackend = normalizeText(
-    asRecord(asRecord(validationReq)?.backend)?.backend,
+  const requestedBackend =
+    normalizeText(row?.requested_backend) ||
+    normalizeText(asRecord(asRecord(validationReq)?.backend)?.backend);
+  const validationResidencyTier = normalizeText(row?.validation_residency_tier);
+  const executionProfile = asRecord(row?.execution_profile);
+  const cpuTailWallMs = Number(
+    executionProfile?.cpu_tail_wall_ms ?? Number.NaN,
   );
   const compositeMoCpuPreferred =
     strategyKind === "CompositeMo" &&
@@ -2096,7 +2172,15 @@ function buildValidationExecutionSummary(
   const routeSummaryBase = routeNoteSummary
     ? `${backendUsed} • ${backendRoute} • ${routeModeLabel}: ${routeNoteSummary}`
     : `${backendUsed} • ${backendRoute}`;
-  const routeDetailSummary = routeNoteSummary || "none";
+  const routeDetailParts = [
+    routeNoteSummary || "none",
+    requestedBackend ? `requested_backend=${requestedBackend}` : "",
+    validationResidencyTier ? `residency=${validationResidencyTier}` : "",
+    Number.isFinite(cpuTailWallMs)
+      ? `cpu_tail=${Math.max(0, Math.floor(cpuTailWallMs))}ms`
+      : "",
+  ].filter((entry) => entry.length > 0);
+  const routeDetailSummary = routeDetailParts.join(" • ");
   const auxCpuSummary =
     actualAuxCpuTails.length > 0 ? actualAuxCpuTails.join(" + ") : "none";
   const routeSummary =
@@ -2111,6 +2195,10 @@ function buildValidationExecutionSummary(
     req,
     row,
     strategyKind,
+  );
+  const accelerationStatus = buildValidationAccelerationStatus(
+    result,
+    validationReq,
   );
 
   const bootstrapSummary = buildBootstrapSummary(
@@ -2198,6 +2286,7 @@ function buildValidationExecutionSummary(
     "none";
 
   return {
+    accelerationStatus,
     routeSummary,
     routeDetailSummary,
     categorySummary,
@@ -2856,6 +2945,7 @@ export async function runValidation(
     patchValidationStoreState({
       statusLine: message,
       validationHint: message,
+      validationAccelerationStatus: "Validation not run.",
       validationRouteSummary: "-",
       validationRouteDetailSummary: "-",
       validationCategorySummary: "-",
@@ -2876,6 +2966,7 @@ export async function runValidation(
     patchValidationStoreState({
       statusLine: message,
       validationHint: message,
+      validationAccelerationStatus: "Validation not run.",
       validationRouteSummary: "-",
       validationRouteDetailSummary: "-",
       validationCategorySummary: "-",
@@ -2892,6 +2983,7 @@ export async function runValidation(
     patchValidationStoreState({
       statusLine: message,
       validationHint: message,
+      validationAccelerationStatus: "Validation not run.",
       validationRouteSummary: "-",
       validationRouteDetailSummary: "-",
       validationCategorySummary: "-",
@@ -2959,6 +3051,7 @@ export async function runValidation(
     validateDisabled: true,
     statusLine: "Running validation…",
     validationHint: "Running validation…",
+    validationAccelerationStatus: "Validation running…",
     validationRouteSummary: "-",
     validationRouteDetailSummary: "-",
     validationCategorySummary: "-",
@@ -3131,6 +3224,7 @@ export async function runValidation(
     );
     patchValidationStoreState({
       validationHint: buildValidationHintText(validationRes),
+      validationAccelerationStatus: executionSummary.accelerationStatus,
       validationMeta,
       validationRouteSummary: executionSummary.routeSummary,
       validationRouteDetailSummary: executionSummary.routeDetailSummary,
@@ -3170,6 +3264,7 @@ export async function runValidation(
     patchValidationStoreState({
       statusLine: message,
       validationHint: message,
+      validationAccelerationStatus: "Validation failed.",
       validationRouteSummary: "-",
       validationRouteDetailSummary: "-",
       validationCategorySummary: "-",

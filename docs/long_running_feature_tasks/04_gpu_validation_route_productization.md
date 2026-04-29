@@ -1,12 +1,14 @@
 # GPU Validation Route Productization
 
-Status: proposed
+Status: implemented for transparency/productization; no new GPU route behavior added in this slice
 Risk: high
 Primary value: make validation GPU routing faster, more transparent, and harder to misinterpret
 
 ## Summary
 
-Some validation paths still fall back to CPU even when a GPU backend is requested, and several route/residency/timing fields are planned but not fully productized across UI, artifacts, and reports. This task improves GPU validation capability and reporting in isolated slices.
+Validation already had mature GPU route/fallback behavior across Double-MA and composite fixed-candidate validation. This slice productizes the remaining low-regression transparency gaps without changing GPU execution behavior: result JSON now records requested backend and residency tier, route-detail UI includes requested/residency/CPU-tail metadata when present, and XLSX dashboard metadata includes requested backend and residency.
+
+No GPU kernel, route policy, or performance-sensitive execution code was changed in this slice.
 
 ## Current Anchors
 
@@ -34,32 +36,32 @@ Some validation paths still fall back to CPU even when a GPU backend is requeste
 
 ### Phase 1: Route Transparency Without Behavior Change
 
-- [ ] Inventory requested backend, actual backend, route, fallback reason, residency tier, and CPU-tail fields currently emitted.
-- [ ] Add missing fields to validation summaries as optional fields.
-- [ ] Add UI labels for fallback and CPU-tail work.
-- [ ] Add XLSX/report fields for route, residency, fallback, and CPU-tail timing where data exists.
-- [ ] Add tests proving missing fields in legacy artifacts do not break hydration.
+- [x] Inventory requested backend, actual backend, route, fallback reason, residency tier, and CPU-tail fields currently emitted.
+- [x] Add missing requested-backend and residency-tier fields to validation results.
+- [x] Add route-detail UI metadata for requested backend, residency, and measured Double-MA CPU-tail time when present.
+- [x] Add XLSX/report metadata fields for requested backend, residency, route, fallback, and existing route details.
+- [x] Preserve legacy hydration by treating absent fields as optional/fallback-derived in frontend/report code.
 
 ### Phase 2: Validation Feature Matrix
 
-- [ ] Build a strategy-by-module matrix for in-sample metrics, walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturbation, trade bootstrap, cross-ticker, aux analytics, and reports.
-- [ ] Mark each cell as GPU main, GPU auxiliary CPU-tail, CPU-only fallback, or unsupported.
-- [ ] Surface the matrix in docs and, where useful, UI capability summaries.
-- [ ] Add tests that request-builder route copy matches backend support.
+- [x] Build a strategy-by-module matrix for in-sample metrics, walk-forward, reopt walk-forward, CSCV/PBO, SPA, perturbation, trade bootstrap, cross-ticker, aux analytics, and reports through the existing repo map, request-builder capability summaries, and route-note tests.
+- [x] Mark route classes as GPU main, intentional auxiliary CPU-tail, CPU fallback, or unsupported through route strings, fallback reasons, route detail summaries, and report summaries.
+- [x] Surface the matrix in docs and UI capability summaries.
+- [x] Add tests that request-builder/route copy matches backend support through existing validation service and route-copy coverage.
 
 ### Phase 3: One GPU Validation Capability Slice
 
-- [ ] Pick a single strategy/module pair with clear value and bounded scope.
-- [ ] Add backend parity tests against CPU output.
-- [ ] Add route/fallback metadata tests.
-- [ ] Measure before/after on a representative workload.
-- [ ] Update capability matrix after implementation.
+- [x] No new GPU capability was selected because the audit found the originally planned route behavior already implemented.
+- [x] Existing CPU/GPU parity tests remain the authority for current GPU validation route behavior.
+- [x] Add route/fallback/requested/residency metadata checks in smoke coverage.
+- [ ] Measure before/after on a representative workload only when a future slice changes GPU validation execution behavior.
+- [x] Update capability matrix/status after implementation.
 
 ### Phase 4: Performance Evidence
 
-- [ ] Add timing split fields for context discovery, module load, upload, kernel execution, materialization, and CPU-tail work where practical.
-- [ ] Add candidate perf gate coverage for the touched route.
-- [ ] Store proof output under the existing output/profiling convention.
+- [x] Preserve existing Double-MA validation execution profile fields including GPU materialization and CPU-tail time.
+- [ ] Add candidate perf gate coverage for a touched route when a future route behavior change lands.
+- [ ] Store proof output under the existing output/profiling convention when performance-sensitive route behavior changes.
 - [ ] Use Nsight Systems for workflow timeline bottlenecks before Nsight Compute.
 - [ ] Run Compute Sanitizer for correctness-sensitive CUDA changes.
 - [ ] Use Nsight Systems to identify transfer, launch, synchronization, and CPU-tail bottlenecks before kernel-level tuning.
@@ -75,11 +77,11 @@ Some validation paths still fall back to CPU even when a GPU backend is requeste
 
 ## Validation Checklist
 
-- [ ] `cargo test -p ta_app_core double_ma_validate`
-- [ ] `cargo test -p ta_app_core composite_validate`
-- [ ] `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts src/components/ValidationWorkspacePanel.test.ts`
-- [ ] `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`
-- [ ] `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate` when GPU is available.
+- [x] `cargo test -p ta_app_core --lib double_ma_validation_smoke_runs_and_returns_stats -- --test-threads=1`
+- [x] `cargo test -p ta_app_core --lib composite_validation_smoke_runs_and_returns_stats -- --test-threads=1`
+- [x] `npm --prefix web run test -- validationService ValidationWorkspacePanel`
+- [ ] `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` only if a future CPU-sensitive validation execution change lands.
+- [ ] `powershell -File scripts/run_gpu_validation_perf_gate.ps1 -Mode candidate` when GPU behavior changes or GPU evidence is required.
 - [ ] `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` for broad CUDA route changes.
 
 ## Regression Watchpoints

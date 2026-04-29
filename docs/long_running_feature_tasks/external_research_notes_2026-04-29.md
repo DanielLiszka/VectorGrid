@@ -47,6 +47,15 @@ Implication for this repo:
 - The UI must expose unsupported or approximated semantics instead of implying broker parity.
 - Broker watcher work should normalize independent order records plus nested legs.
 
+Alpaca also documents WebSocket `trade_updates` as the streaming channel for order updates.
+
+Source: https://docs.alpaca.markets/docs/websocket-streaming
+
+Implication for this repo:
+
+- A future live watcher should be designed around a separate cancellable runtime with stale-state diagnostics.
+- The current safe slice should remain preview/observation-only and avoid long-lived broker automation.
+
 ### Tauri Command/Event Boundary
 
 Tauri documents commands for frontend-to-Rust calls and events/channels for Rust-to-frontend communication. Tauri's event system is not designed for low-latency or high-throughput use; channels are the streaming-oriented option.
@@ -99,12 +108,60 @@ GitHub Actions supports matrix jobs for job variations and workflow artifacts fo
 Sources:
 
 - https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations
-- https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
+- https://docs.github.com/en/actions/tutorials/store-and-share-data
 
 Implication for this repo:
 
 - Browser QA, desktop smoke, CPU perf, and GPU perf evidence should be artifact-producing jobs when moved into CI.
 - Matrix dimensions should be explicit: surface, fixture family, backend mode, and optional desktop/GPU availability.
+
+### Playwright Visual Evidence
+
+Playwright Test supports screenshot comparisons with `expect(page).toHaveScreenshot()` and text/binary snapshots with `toMatchSnapshot`.
+
+Source: https://playwright.dev/docs/test-snapshots
+
+Implication for this repo:
+
+- Visual baselines can remain an explicit QA lane rather than default PR evidence.
+- Dynamic data should stay masked or mocked so visual checks do not become flaky.
+
+### Tauri Desktop QA
+
+Tauri documents WebdriverIO as a supported desktop app testing path using `tauri-driver` and a WDIO config.
+
+Source: https://tauri.app/develop/tests/webdriver/example/webdriverio/
+
+Implication for this repo:
+
+- Existing WDIO smoke work is aligned with Tauri's documented testing path.
+- Desktop smoke expansion should stay optional and structured around native shell confidence, not dense app workflow coverage.
+
+### CI/CD Telemetry Metadata
+
+OpenTelemetry defines CI/CD resource attributes such as pipeline run id, pipeline run URL, repository URL, and VCS reference.
+
+Source: https://opentelemetry.io/docs/specs/semconv/resource/cicd/
+
+Implication for this repo:
+
+- Local QA dashboards can use CI-like metadata keys even before workflows are reactivated.
+- Future artifact dashboards should record run identity, repo/ref identity, matrix row, and artifact paths consistently.
+
+### Options Stress And Monte Carlo
+
+OCC's options disclosure document states that options involve risk and are not suitable for all investors. OCC's margin methodology describes a Monte Carlo-based risk assessment system and a stress component for especially large or correlated market movements.
+
+Sources:
+
+- https://www.theocc.com/company-information/documents-and-archives/options-disclosure-document
+- https://www.theocc.com/risk-management/margin-methodology
+
+Implication for this repo:
+
+- Options Monte Carlo and deterministic stress should be labeled as different evidence families.
+- Any options-specific MC should be advisory until tied to explicit sealed/holdout outcome sources and decision rules.
+- Generic closed-trade Monte Carlo should not be reused blindly for options premium-normalized outcomes.
 
 ## Plan Maturity Ratings
 
@@ -118,4 +175,3 @@ Implication for this repo:
 | Options Finalist Acceptance Dashboard | Medium | View-model schema and legacy artifact cases |
 | Monte Carlo Reporting And Export Hardening | Medium-high | Export schema and legacy field matrix |
 | Frontend QA Automation Expansion | High | Selector naming registry and fixture ownership map |
-

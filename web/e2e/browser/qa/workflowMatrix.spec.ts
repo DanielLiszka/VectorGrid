@@ -29,6 +29,11 @@ defineWorkflow({
     await action('shell.workspace.aggregate').click()
     await expect(page.locator('#results_panel_meta')).toBeVisible()
 
+    await action('shell.workspace.portfolio').click()
+    await expect(page.locator('#portfolioShellGrid')).toBeVisible()
+    await expect(action('portfolio.refreshSources')).toBeVisible()
+    await expect(action('portfolio.runFeasibility')).toBeVisible()
+
     await action('shell.workspace.diagnostics').click()
     await expect(page.locator('#results_panel_debug')).toBeVisible()
 

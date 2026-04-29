@@ -1,12 +1,19 @@
 # Options Finalist Acceptance Dashboard
 
-Status: proposed
+Status: implemented for in-panel finalist dashboard
 Risk: moderate
 Primary value: make options-expression validation decisions easier to compare and defend
 
 ## Summary
 
 The current options expression workflow has strong optimization, feasibility, validation, provenance, and artifact surfaces. The remaining opportunity is a clearer finalist-comparison and acceptance dashboard inside the existing options host, not a new separate options product.
+
+Implemented slice:
+
+- Added a display-only finalist dashboard view model derived from existing options validation artifact fields.
+- Surfaced finalist comparison rows and compact gate badges inside `OptionsExpressionPanel`.
+- Added normalization tests for missing/null metrics and partial legacy evidence.
+- Preserved optimizer ranking, backend validation behavior, and artifact schema compatibility.
 
 ## Current Anchors
 
@@ -27,40 +34,40 @@ The current options expression workflow has strong optimization, feasibility, va
 
 ### Phase 1: Dashboard View Model
 
-- [ ] Define finalist comparison rows from existing result/artifact fields.
-- [ ] Include ranking metrics, holdout metrics, harsher-lane metrics, feasibility status, validation status, and provenance flags.
-- [ ] Add normalization for missing legacy fields.
-- [ ] Add unit tests for row construction.
+- [x] Define finalist comparison rows from existing result/artifact fields.
+- [x] Include ranking metrics, holdout metrics, harsher-lane metrics, feasibility status, validation status, and provenance flags.
+- [x] Add normalization for missing legacy fields.
+- [x] Add unit tests for row construction.
 
 ### Phase 2: Acceptance Gates
 
-- [ ] Define display-only gate rows for data coverage, feasibility, validation replay, holdout robustness, quote realism, and provenance.
-- [ ] Keep gates advisory unless existing backend verdicts already provide hard blockers.
-- [ ] Show disagreement across realism lanes where data exists.
-- [ ] Avoid creating a hidden new pass/fail decision engine in the frontend.
+- [x] Define display-only gate rows for data coverage, feasibility, validation replay, holdout robustness, quote realism, and provenance.
+- [x] Keep gates advisory unless existing backend verdicts already provide hard blockers.
+- [x] Show disagreement across realism lanes where data exists.
+- [x] Avoid creating a hidden new pass/fail decision engine in the frontend.
 
 ### Phase 3: UI Integration
 
-- [ ] Add dashboard section to the current options panel or History options follow-up panel.
-- [ ] Add finalist compare table with stable sorting and column visibility.
-- [ ] Add compact gate badges and evidence details.
-- [ ] Add empty, partial, and legacy artifact states.
-- [ ] Ensure large result sets use existing table/virtualization helpers where appropriate.
+- [x] Add dashboard section to the current options panel or History options follow-up panel.
+- [x] Add finalist compare table with stable sorting and column visibility.
+- [x] Add compact gate badges and evidence details.
+- [x] Add empty, partial, and legacy artifact states.
+- [x] Ensure large result sets remain compact and readable.
 
 ### Phase 4: Exports And Artifacts
 
 - [ ] Add optional report/export fields only after UI rows are stable.
-- [ ] Preserve existing options artifact schema compatibility.
-- [ ] Include dashboard evidence in exported summaries without changing backend ranking.
-- [ ] Add report tests if XLSX/CSV output changes.
+- [x] Preserve existing options artifact schema compatibility.
+- [x] Keep dashboard evidence UI-derived without changing backend ranking.
+- [x] No XLSX/CSV output changes were made in this slice.
 
 ## Validation Checklist
 
-- [ ] `npm --prefix web run test -- src/services/optionsExpressionService.test.ts src/stores/optionsExpressionStore.test.ts src/components/OptionsExpressionPanel.test.ts`
-- [ ] Add focused tests for dashboard row/gate view model.
-- [ ] Run options frontend QA if changed.
-- [ ] If backend artifact fields are added, run targeted Rust tests for options expression commands/core.
-- [ ] For CUDA/options planner changes, run the options GPU promotion gate.
+- [x] `npm --prefix web run test -- optionsFinalistDashboardModel optionsExpressionService optionsExpressionStore OptionsExpressionPanel`
+- [x] Add focused tests for dashboard row/gate view model.
+- [x] Run options frontend component tests for changed panel layout.
+- [x] No backend artifact fields were added.
+- [x] No CUDA/options planner changes were made.
 
 ## Regression Watchpoints
 
@@ -74,4 +81,3 @@ The current options expression workflow has strong optimization, feasibility, va
 - Users can compare retained finalists and understand acceptance evidence in one place.
 - The dashboard is explainable from existing fields.
 - Tests prove legacy artifacts and partial evidence render safely.
-

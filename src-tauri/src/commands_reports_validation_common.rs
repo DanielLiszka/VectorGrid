@@ -168,6 +168,15 @@ pub(super) struct ExportCandidateRow {
     pub bootstrap_stationary_mean_block_len: Option<usize>,
     pub bootstrap_stationary_pnl_p05: Option<f64>,
     pub bootstrap_stationary_dd_p95: Option<f64>,
+    pub monte_carlo_mode: String,
+    pub monte_carlo_prob_pnl_positive: Option<f64>,
+    pub monte_carlo_pnl_p05: Option<f64>,
+    pub monte_carlo_pnl_p50: Option<f64>,
+    pub monte_carlo_max_dd_p95: Option<f64>,
+    pub monte_carlo_stationary_mean_block_len: Option<usize>,
+    pub monte_carlo_stationary_pnl_p05: Option<f64>,
+    pub monte_carlo_stationary_max_dd_p95: Option<f64>,
+    pub monte_carlo_sample_count: Option<usize>,
     pub perturb_pnl_worst: Option<f64>,
     pub perturb_pnl_mean: Option<f64>,
     pub perturb_positive_frac: Option<f64>,
@@ -206,6 +215,9 @@ pub(super) struct ValidationExportModel {
     pub data_id: String,
     pub strategy_kind: String,
     pub runtime_ms: Option<u64>,
+    pub requested_backend: String,
+    pub validation_acceleration_status: String,
+    pub validation_residency_tier: String,
     pub backend_used: String,
     pub backend_route: String,
     pub backend_fallback_reason: String,
@@ -363,6 +375,38 @@ fn bootstrap_stationary_block_len(cand: &Value) -> Option<usize> {
         ],
     )
     .map(|v| v as usize)
+}
+
+fn monte_carlo_sample_count(cand: &Value) -> Option<usize> {
+    first_opt_u64(
+        cand,
+        &[
+            "/monte_carlo/simulations",
+            "/monte_carlo/sample_count",
+            "/monte_carlo/modes/trade_iid/simulations",
+            "/monte_carlo/modes/trade_iid/sample_count",
+            "/trade_bootstrap/simulations",
+            "/trade_bootstrap/sample_count",
+        ],
+    )
+    .map(|v| v as usize)
+}
+
+fn monte_carlo_mode_label(
+    iid_prob: Option<f64>,
+    iid_p05: Option<f64>,
+    iid_dd95: Option<f64>,
+    stat_block: Option<usize>,
+    stat_p05: Option<f64>,
+    stat_dd95: Option<f64>,
+) -> String {
+    if stat_block.is_some() || stat_p05.is_some() || stat_dd95.is_some() {
+        "compare_iid_stationary".to_string()
+    } else if iid_prob.is_some() || iid_p05.is_some() || iid_dd95.is_some() {
+        "iid_only".to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn derive_friction_flag(pass_frac: Option<f64>, max_rank_drift: Option<usize>) -> String {
@@ -1945,6 +1989,40 @@ fn split_actual_route_reason(
     }
 }
 
+fn build_validation_acceleration_status(
+    backend_used: &str,
+    backend_route: &str,
+    requested_backend: &str,
+    backend_fallback_reason: &str,
+    has_cpu_followup: bool,
+) -> String {
+    let used = backend_used.trim().to_ascii_lowercase();
+    let route = backend_route.trim();
+    let route_lower = route.to_ascii_lowercase();
+    let requested = requested_backend.trim().to_ascii_lowercase();
+    let fallback_reason = backend_fallback_reason.trim();
+
+    if used == "gpu" && !route_lower.contains("->cpuonly") {
+        if has_cpu_followup {
+            "GPU validation completed with CPU follow-up checks.".to_string()
+        } else {
+            "GPU validation completed.".to_string()
+        }
+    } else if route_lower.contains("->cpuonly")
+        || (used == "cpu" && !requested.is_empty() && requested != "cpuonly")
+    {
+        if fallback_reason.is_empty() {
+            "CPU validation used because GPU validation was unavailable.".to_string()
+        } else {
+            format!("GPU validation unavailable: {fallback_reason}")
+        }
+    } else if used == "cpu" {
+        "CPU validation completed.".to_string()
+    } else {
+        "Validation acceleration status unavailable.".to_string()
+    }
+}
+
 fn enabled_execution_category_modules(validation_req: &Value) -> Vec<&'static str> {
     let mut modules = vec!["base reruns", "hard gates"];
     if validation_req
@@ -2694,6 +2772,15 @@ fn build_rows(validation_res: &Value) -> Result<(Vec<ExportCandidateRow>, bool),
                 "/trade_bootstrap/stationary_max_dd_p95",
                 "max_dd_p95",
             );
+            let monte_carlo_mode = monte_carlo_mode_label(
+                bootstrap_prob_pnl_positive,
+                bootstrap_pnl_p05,
+                bootstrap_dd_p95,
+                bootstrap_stationary_mean_block_len,
+                bootstrap_stationary_pnl_p05,
+                bootstrap_stationary_dd_p95,
+            );
+            let monte_carlo_sample_count = monte_carlo_sample_count(cand);
             let regime_bucket_rows = parse_regime_bucket_rows(cand);
             let regime_stable_bucket_count =
                 opt_u64(cand, "/regime_slice_robustness/stable_bucket_count").map(|v| v as usize);
@@ -2782,6 +2869,15 @@ fn build_rows(validation_res: &Value) -> Result<(Vec<ExportCandidateRow>, bool),
                 bootstrap_stationary_mean_block_len,
                 bootstrap_stationary_pnl_p05,
                 bootstrap_stationary_dd_p95,
+                monte_carlo_mode,
+                monte_carlo_prob_pnl_positive: bootstrap_prob_pnl_positive,
+                monte_carlo_pnl_p05: bootstrap_pnl_p05,
+                monte_carlo_pnl_p50: bootstrap_pnl_p50,
+                monte_carlo_max_dd_p95: bootstrap_dd_p95,
+                monte_carlo_stationary_mean_block_len: bootstrap_stationary_mean_block_len,
+                monte_carlo_stationary_pnl_p05: bootstrap_stationary_pnl_p05,
+                monte_carlo_stationary_max_dd_p95: bootstrap_stationary_dd_p95,
+                monte_carlo_sample_count,
                 perturb_pnl_worst: opt_f64(cand, "/perturb/pnl_worst"),
                 perturb_pnl_mean: opt_f64(cand, "/perturb/pnl_mean"),
                 perturb_positive_frac: opt_f64(cand, "/perturb/pnl_positive_frac"),
@@ -2924,16 +3020,16 @@ pub(super) fn build_model_from_report(
     let mut model =
         build_model_from_validation_res_with_context(validation_res, max_rows, ts, strategy_kind)?;
     apply_plateau_analysis(&mut model, report);
+    let (actual_fallback_summary, actual_route_note_summary) =
+        split_actual_route_reason(&model.backend_route, &model.backend_fallback_reason);
+    model.actual_fallback_summary = actual_fallback_summary;
+    model.actual_route_note_summary = actual_route_note_summary;
     if let Some(validation_req) = report.pointer("/validation/req") {
-        let (actual_fallback_summary, actual_route_note_summary) =
-            split_actual_route_reason(&model.backend_route, &model.backend_fallback_reason);
         model.min_psr = opt_f64(validation_req, "/min_psr");
         model.min_dsr = opt_f64(validation_req, "/min_dsr");
         model.min_cscv_oos_rank_frac = opt_f64(validation_req, "/min_cscv_oos_rank_frac");
         model.min_cscv_oos_metric = opt_f64(validation_req, "/min_cscv_oos_metric");
         model.max_pbo = opt_f64(validation_req, "/max_pbo");
-        model.actual_fallback_summary = actual_fallback_summary;
-        model.actual_route_note_summary = actual_route_note_summary;
         model.actual_disabled_module_summary =
             summary_or_dash(describe_disabled_modules(validation_req), " + ");
         model.actual_cross_omitted_summary = summary_or_dash(
@@ -2953,6 +3049,22 @@ pub(super) fn build_model_from_report(
         {
             model.actual_aux_tail_summary = aux_cpu.join(" + ");
         }
+        let report_status = normalize_text(
+            report
+                .pointer("/validation/acceleration_status")
+                .and_then(Value::as_str),
+        );
+        model.validation_acceleration_status = if report_status.is_empty() {
+            build_validation_acceleration_status(
+                &model.backend_used,
+                &model.backend_route,
+                &model.requested_backend,
+                &model.backend_fallback_reason,
+                model.actual_aux_tail_summary != "-",
+            )
+        } else {
+            report_status
+        };
         model.actual_skipped_module_summary = summarize_actual_skipped_modules(&model);
         let expected = build_expected_execution_summary(&model.strategy_kind, Some(validation_req));
         model.expected_route_summary = expected.route_summary;
@@ -3012,18 +3124,40 @@ fn build_model_from_validation_res_with_context(
         .cloned()
         .collect();
     let shortlist_rows = shortlist_rows(&rows, visible_cap);
+    let requested_backend = normalize_text(
+        validation_res
+            .get("requested_backend")
+            .and_then(Value::as_str),
+    );
+    let backend_used = normalize_text(validation_res.get("backend_used").and_then(Value::as_str));
+    let backend_route = normalize_text(validation_res.get("backend_route").and_then(Value::as_str));
+    let backend_fallback_reason = normalize_text(
+        validation_res
+            .get("backend_fallback_reason")
+            .and_then(Value::as_str),
+    );
+    let validation_acceleration_status = build_validation_acceleration_status(
+        &backend_used,
+        &backend_route,
+        &requested_backend,
+        &backend_fallback_reason,
+        false,
+    );
     let mut model = ValidationExportModel {
         ts,
         data_id,
         strategy_kind,
         runtime_ms: validation_res.get("runtime_ms").and_then(Value::as_u64),
-        backend_used: normalize_text(validation_res.get("backend_used").and_then(Value::as_str)),
-        backend_route: normalize_text(validation_res.get("backend_route").and_then(Value::as_str)),
-        backend_fallback_reason: normalize_text(
+        requested_backend,
+        validation_acceleration_status,
+        validation_residency_tier: normalize_text(
             validation_res
-                .get("backend_fallback_reason")
+                .get("validation_residency_tier")
                 .and_then(Value::as_str),
         ),
+        backend_used,
+        backend_route,
+        backend_fallback_reason,
         actual_fallback_summary: "-".to_string(),
         actual_route_note_summary: "-".to_string(),
         actual_aux_tail_summary: "-".to_string(),
@@ -3407,6 +3541,15 @@ mod tests {
         assert_eq!(row.bootstrap_stationary_mean_block_len, Some(8));
         assert_eq!(row.bootstrap_stationary_pnl_p05, Some(-0.2));
         assert_eq!(row.bootstrap_stationary_dd_p95, Some(0.41));
+        assert_eq!(row.monte_carlo_mode, "compare_iid_stationary");
+        assert_eq!(row.monte_carlo_prob_pnl_positive, Some(0.77));
+        assert_eq!(row.monte_carlo_pnl_p05, Some(-0.11));
+        assert_eq!(row.monte_carlo_pnl_p50, Some(0.22));
+        assert_eq!(row.monte_carlo_max_dd_p95, Some(0.33));
+        assert_eq!(row.monte_carlo_stationary_mean_block_len, Some(8));
+        assert_eq!(row.monte_carlo_stationary_pnl_p05, Some(-0.2));
+        assert_eq!(row.monte_carlo_stationary_max_dd_p95, Some(0.41));
+        assert_eq!(row.monte_carlo_sample_count, Some(500));
     }
 
     #[test]

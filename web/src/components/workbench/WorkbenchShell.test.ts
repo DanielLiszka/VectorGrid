@@ -65,6 +65,13 @@ describe('WorkbenchShell', () => {
     expect(document.querySelector('#results_panel_meta')).not.toBeNull()
     expect(document.body.textContent || '').toContain('Runs')
 
+    await wrapper.get('[data-qa-action="shell.workspace.portfolio"]').trigger('click')
+    await flushUi()
+    expect(workflowStore.workspace).toBe('portfolio')
+    expect(document.querySelector('#workspaceBar [data-workspace="portfolio"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('#portfolioShellGrid')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('Portfolio')
+
     await wrapper.get('[data-qa-action="shell.workspace.workflow"]').trigger('click')
     await flushUi()
     expect(workflowStore.workspace).toBe('workflow')

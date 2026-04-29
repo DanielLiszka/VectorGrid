@@ -320,6 +320,9 @@ describe("validationService", () => {
     expect(String(validationState.validationMeta || "")).toContain(
       "fallback=GPU validation runtime not implemented yet; using CPU validation.",
     );
+    expect(String(validationState.validationAccelerationStatus || "")).toBe(
+      "GPU validation unavailable: GPU validation runtime not implemented yet; using CPU validation.",
+    );
     expect(String(validationState.validationRouteSummary || "")).toContain(
       "Cpu • GpuKernel->CpuOnly • fallback: GPU validation runtime not implemented yet; using CPU validation.",
     );
@@ -514,6 +517,9 @@ describe("validationService", () => {
     });
     const validationState = (pinia.state.value as Record<string, unknown>)
       .validation as Record<string, unknown>;
+    expect(String(validationState.validationAccelerationStatus || "")).toBe(
+      "GPU validation completed with CPU follow-up checks.",
+    );
     expect(String(validationState.validationMonteCarloSummary || "")).toContain(
       "stationary",
     );
@@ -2156,6 +2162,9 @@ describe("validationService", () => {
     );
     expect(String(validationState.validationHint || "")).toContain(
       "route note: GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.",
+    );
+    expect(String(validationState.validationAccelerationStatus || "")).toBe(
+      "GPU validation completed.",
     );
     expect(String(validationState.validationRouteSummary || "")).toContain(
       "Gpu • GpuHybridKernel->GpuKernel • route note: GpuHybridKernel disabled by VECTORBT_ENABLE_GPU_HYBRID_KERNEL=0; using GpuKernel.",

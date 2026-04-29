@@ -178,6 +178,15 @@ describe('CommandPaletteOverlay', () => {
     expect(settingsStore.uiMode).toBe('advanced')
     expect(workflowStore.workspace).toBe('aggregate')
 
+    paletteStore.openPalette()
+    paletteStore.setQuery('go portfolio')
+    await nextTick()
+    firstRow = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="option"]')
+    expect(firstRow?.textContent).toContain('Go to Portfolio')
+    firstRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(workflowStore.workspace).toBe('portfolio')
+
     wrapper.unmount()
   })
 

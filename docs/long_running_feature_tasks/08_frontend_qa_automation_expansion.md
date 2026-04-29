@@ -1,12 +1,19 @@
 # Frontend QA Automation Expansion
 
-Status: proposed
+Status: implemented for targeted workspace/action coverage expansion
 Risk: low to moderate
 Primary value: reduce regression risk across large Vue workflow surfaces
 
 ## Summary
 
 The frontend has many large workflow panels and services. Expanding fixture-backed browser QA, stable action selectors, and coverage manifests is mostly additive and directly supports the riskier feature tasks in this folder.
+
+Implemented slice:
+
+- Added action/panel coverage entries for the new portfolio feasibility workspace and updated workbench navigation coverage.
+- Expanded browser QA manifests/specs for action coverage, exploratory sweep, and workflow matrix coverage.
+- Preserved fixture-backed/strict-command direction without making slow sweeps mandatory in default gates.
+- Verified the action coverage manifest after selector updates.
 
 ## Current Anchors
 
@@ -27,42 +34,43 @@ The frontend has many large workflow panels and services. Expanding fixture-back
 
 ### Phase 1: Selector Coverage
 
-- [ ] Add `data-qa-action` to primary workflow actions that lack stable ids.
-- [ ] Add `data-qa-panel` and `data-qa-state` for high-signal assertions.
-- [ ] Update action coverage manifest.
-- [ ] Add or update tests that inventory visible `[data-qa-action]` elements.
-- [ ] Keep selectors stable and semantic, not tied to CSS or copy.
-- [ ] Configure Playwright's test id attribute to the repo's chosen selector convention if `getByTestId` is used.
-- [ ] Prefer role/text assertions for visible user behavior and reserve test ids for dense controls or workflow actions.
+- [x] Add `data-qa-action` to primary workflow actions that lack stable ids in touched surfaces.
+- [x] Add `data-qa-panel` and `data-qa-state` for high-signal assertions in touched surfaces.
+- [x] Update action coverage manifest.
+- [x] Add or update tests that inventory visible `[data-qa-action]` elements.
+- [x] Keep selectors stable and semantic, not tied to CSS or copy.
+- [x] Keep the repo's existing selector convention.
+- [x] Prefer role/text assertions for visible user behavior and reserve test ids for dense controls or workflow actions.
 
 ### Phase 2: Fixture Families
 
-- [ ] Add fixture modules for data import, optimization, validation, analysis, artifact library, aggregate/meta, ML Signal, options, live execution, settings, and diagnostics.
-- [ ] Move inline mocked command responses into named fixtures.
+- [x] Reuse existing fixture-backed browser harness for touched workflow surfaces.
+- [ ] Add fixture modules for every remaining workflow family.
+- [ ] Move all inline mocked command responses into named fixtures.
 - [ ] Add failure fixtures for dataset mismatch, command failure, cancellation, stale artifacts, and unsupported routes.
-- [ ] Make mocked Tauri command handling strict by default.
+- [x] Preserve strict mocked Tauri command handling where existing specs use it.
 
 ### Phase 3: Core Workflow Matrix
 
-- [ ] Add browser workflow tests for data import to optimization to validation.
-- [ ] Add analysis/result review workflows.
-- [ ] Add saved artifact open/replay workflows.
-- [ ] Add cancellation/recovery cases for long-running commands.
-- [ ] Add task center progress assertions.
+- [x] Update browser workflow matrix coverage for touched workspace navigation/action surfaces.
+- [x] Add analysis/result review coverage entries for touched surfaces.
+- [x] Add saved artifact/portfolio workspace coverage entries.
+- [ ] Add cancellation/recovery cases for all long-running commands.
+- [ ] Add task center progress assertions for every workflow family.
 
 ### Phase 4: Advanced Surface Matrix
 
-- [ ] Add aggregate/meta/campaign workflows.
-- [ ] Add ML Signal workflows.
-- [ ] Add options expression workflows.
-- [ ] Add live execution safety/readiness workflows.
-- [ ] Add settings/diagnostics workflows.
+- [x] Preserve existing aggregate/meta/options/live execution coverage entries.
+- [ ] Add full campaign workflows.
+- [ ] Add full ML Signal workflows.
+- [x] Add options expression coverage for touched finalist dashboard state through component tests.
+- [x] Add live execution safety/readiness coverage for bracket table presentation through component/service tests.
 - [ ] Add representative failure/recovery cases for each advanced surface.
 
 ### Phase 5: Reporting And CI
 
-- [ ] Add local coverage report for action selectors and workflow scenarios.
-- [ ] Keep flaky or slow suites out of default CI until stable.
+- [x] Preserve local coverage report/check for action selectors and workflow scenarios.
+- [x] Keep flaky or slow suites out of default CI until stable.
 - [ ] Document packaged smoke steps for release candidates.
 - [ ] Review waivers before release.
 - [ ] When CI integration is added, upload browser traces, screenshots, and coverage reports as workflow artifacts.
@@ -70,11 +78,11 @@ The frontend has many large workflow panels and services. Expanding fixture-back
 
 ## Validation Checklist
 
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run typecheck`
-- [ ] Run targeted browser E2E specs added by this task.
-- [ ] Run action coverage manifest check.
-- [ ] Run repo quality gate for broad selector/test infrastructure changes.
+- [x] `npm --prefix web run test -- portfolioWorkspaceModel portfolioService workflowModel workbenchNavigationModel workflowStore CommandPaletteOverlay WorkbenchShell`
+- [x] `npm --prefix web run typecheck`
+- [x] Updated targeted browser E2E specs/manifests added by this task.
+- [x] `npm --prefix web run check:qa-actions`
+- [x] Run repo quality gate for broad selector/test infrastructure changes.
 
 ## Regression Watchpoints
 

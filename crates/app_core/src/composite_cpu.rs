@@ -5094,6 +5094,103 @@ fn build_local_stability_periods(base_period: u16, radius: u16, step: u16) -> Ve
     periods
 }
 
+fn validate_analysis_base_periods(
+    params: &DoubleMaParamsResolved,
+    n: usize,
+) -> Result<(u16, u16), String> {
+    let fast_ma = params.fast_ma_type.trim();
+    let slow_ma = params.slow_ma_type.trim();
+    validate_ma_kind(fast_ma)?;
+    validate_ma_kind(slow_ma)?;
+
+    let fast_len = params.fast_len;
+    let slow_len = params.slow_len;
+    if fast_len == 0 || slow_len == 0 {
+        return Err("periods must be > 0".to_string());
+    }
+    if fast_len >= slow_len {
+        return Err("invalid params: fast_len must be < slow_len".to_string());
+    }
+    if fast_len as usize > n || slow_len as usize > n {
+        return Err(format!(
+            "period exceeds series length: fast_len={fast_len} slow_len={slow_len} n={n}"
+        ));
+    }
+    Ok((fast_len, slow_len))
+}
+
+fn build_analysis_drilldown_result(
+    candles: &vector_ta::utilities::data_loader::Candles,
+    close: &[f64],
+    desired: &[i32],
+    start_t: usize,
+    strategy: &StrategyConfig,
+    bins: Option<usize>,
+) -> CompositeCpuDrilldownResult {
+    let lr = compute_log_returns_f64(close);
+    let bins = bins.unwrap_or(1024).clamp(1, 8192);
+    let curves = eval_asr_curves_from_desired(candles, &lr, desired, start_t, strategy, bins);
+    CompositeCpuDrilldownResult {
+        curves,
+        composite_indicator_bars: Vec::new(),
+    }
+}
+
+fn local_stability_summary_for_points(
+    points: &[LocalStabilityPoint],
+    base_fast: u16,
+    base_slow: u16,
+) -> Result<LocalStabilitySummary, String> {
+    if points.is_empty() {
+        return Err("empty neighborhood".to_string());
+    }
+    let base = points
+        .iter()
+        .find(|p| p.fast_len == base_fast && p.slow_len == base_slow)
+        .map(|p| p.score)
+        .ok_or_else(|| "base neighborhood point missing".to_string())?;
+    let mut scores: Vec<f64> = points.iter().map(|p| p.score).collect();
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let min = *scores.first().unwrap_or(&0.0);
+    let max = *scores.last().unwrap_or(&0.0);
+    let median = scores[scores.len() / 2];
+    Ok(LocalStabilitySummary {
+        base,
+        min,
+        median,
+        max,
+    })
+}
+
+fn finish_custom_local_stability(
+    req: CompositeCpuLocalStabilityRequest,
+    radius: u16,
+    step: u16,
+    start_t: usize,
+    points: Vec<LocalStabilityPoint>,
+) -> Result<LocalStabilityResult, String> {
+    let objective = req.objective;
+    let base_fast = req.params.fast_len;
+    let base_slow = req.params.slow_len;
+    let summary = local_stability_summary_for_points(&points, base_fast, base_slow)?;
+    Ok(LocalStabilityResult {
+        base: DoubleMaParamsResolved {
+            fast_len: base_fast,
+            slow_len: base_slow,
+            fast_ma_type: req.params.fast_ma_type,
+            slow_ma_type: req.params.slow_ma_type,
+            fast_ma_params: req.fast_ma_params,
+            slow_ma_params: req.slow_ma_params,
+        },
+        objective,
+        radius,
+        step,
+        start_t,
+        points,
+        summary,
+    })
+}
+
 fn run_asr_local_stability(
     req: CompositeCpuLocalStabilityRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -5953,6 +6050,1129 @@ fn run_rocb_local_stability(
             max,
         },
     })
+}
+
+fn run_vcc_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let vcc_cfg = req.vcc.clone().unwrap_or_default();
+    validate_vcc_params(&vcc_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
+    };
+
+    let periods = resolve_vcc_periods(&vcc_cfg, fast_len, slow_len);
+    let fast_signals = compute_vcc_fast_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        &vcc_cfg,
+        periods.squeeze,
+        periods.momentum,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let trend_signals = compute_vcc_trend_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        periods.trend,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let max_period = usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1);
+    let start_t = compute_vcc_start_t(
+        fv_close,
+        fv_ma,
+        fast_signals.first_valid,
+        trend_signals.first_valid,
+        max_period,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let desired = build_vcc_desired_positions(
+        close,
+        &fast_signals,
+        &trend_signals,
+        start_t,
+        &strategy,
+        &vcc_cfg,
+    );
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_rocb_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let rocb_cfg = req.rocb.clone().unwrap_or_default();
+    validate_rocb_params(&rocb_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        PreparedCudaIndicatorInputs::from_candles(candles, "close").ok()
+    };
+
+    let periods = resolve_rocb_periods(&rocb_cfg, fast_len, slow_len);
+    let breakout = compute_rocb_breakout_signals(
+        candles,
+        "close",
+        &req.backend,
+        periods.channel,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let risk = compute_rocb_risk_signals(
+        candles,
+        "close",
+        &req.backend,
+        periods.atr,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let start_t = compute_rocb_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        breakout.first_valid,
+        risk.first_valid,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let mut desired = Vec::with_capacity(n);
+    build_rocb_desired_positions_into(
+        &mut desired,
+        close,
+        &breakout,
+        &risk,
+        start_t,
+        &strategy,
+        &rocb_cfg,
+    );
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_vcet_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let vcet_cfg = req.vcet.clone().unwrap_or_default();
+    validate_vcet_params(&vcet_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
+    };
+
+    let periods = resolve_vcet_periods(&vcet_cfg, fast_len, slow_len);
+    let vidya = compute_vcet_vidya_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        periods,
+        vcet_cfg.vidya_alpha,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let ce = compute_vcet_chandelier_signals(
+        candles,
+        &req.backend,
+        periods.ce,
+        vcet_cfg.ce_mult,
+        vcet_cfg.ce_use_close,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let start_t = compute_vcet_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        vidya.first_valid,
+        ce.first_valid,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let desired = build_vcet_desired_positions(close, &vidya, &ce, start_t, &strategy, &vcet_cfg);
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_mkcs_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let mkcs_cfg = req.mkcs.clone().unwrap_or_default();
+    validate_mkcs_params(&mkcs_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        PreparedCudaIndicatorInputs::from_candles(candles, "close").ok()
+    };
+
+    let periods = resolve_mkcs_periods(&mkcs_cfg, fast_len, slow_len);
+    let compression = compute_mkcs_compression_signals(
+        candles,
+        "close",
+        &req.backend,
+        periods.stddev,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let breakout = compute_mkcs_breakout_signals(
+        candles,
+        "close",
+        &req.backend,
+        periods.breakout,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let start_t = compute_mkcs_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        compression.first_valid,
+        breakout.first_valid,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let desired = build_mkcs_desired_positions(
+        close,
+        &compression,
+        &breakout,
+        start_t,
+        &strategy,
+        &mkcs_cfg,
+    );
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_kqsr_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kqsr_cfg = req.kqsr.clone().unwrap_or_default();
+    validate_kqsr_params(&kqsr_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
+    };
+
+    let periods = resolve_kqsr_periods(&kqsr_cfg, fast_len, slow_len);
+    let signals = compute_kqsr_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        periods,
+        &kqsr_cfg,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let start_t = compute_kqsr_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let desired = build_kqsr_desired_positions(close, &signals, start_t, &strategy, &kqsr_cfg);
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_carm_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let carm_cfg = req.carm.clone().unwrap_or_default();
+    validate_carm_params(&carm_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
+    };
+
+    let periods = resolve_carm_periods(&carm_cfg, fast_len, slow_len);
+    let signals = compute_carm_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        periods,
+        &carm_cfg,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let start_t = compute_carm_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let desired = build_carm_desired_positions(close, &signals, start_t, &strategy, &carm_cfg);
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_kvdf_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kvdf_cfg = req.kvdf.clone().unwrap_or_default();
+    validate_kvdf_params(&kvdf_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_ohlcv(candles, &req.ma_source)
+    };
+
+    let periods = resolve_kvdf_periods(&kvdf_cfg, fast_len, slow_len);
+    let signals = compute_kvdf_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        periods,
+        &kvdf_cfg,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let start_t = compute_kvdf_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let desired = build_kvdf_desired_positions(close, &signals, start_t, &strategy, &kvdf_cfg);
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_cdmc_drilldown(
+    req: CompositeCpuDrilldownRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<CompositeCpuDrilldownResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (fast_len, slow_len) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let cdmc_cfg = req.cdmc.clone().unwrap_or_default();
+    validate_cdmc_params(&cdmc_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_slice(candles, &req.ma_source)
+    };
+
+    let periods = resolve_cdmc_periods(&cdmc_cfg, fast_len, slow_len);
+    let signals = compute_cdmc_signals(
+        candles,
+        &req.ma_source,
+        &req.backend,
+        periods,
+        &cdmc_cfg,
+        #[cfg(feature = "cuda")]
+        prepared_cuda_inputs.as_ref(),
+    )?;
+    let start_t = compute_cdmc_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let desired = build_cdmc_desired_positions(close, &signals, start_t, &strategy, &cdmc_cfg);
+    Ok(build_analysis_drilldown_result(
+        candles, close, &desired, start_t, &strategy, req.bins,
+    ))
+}
+
+fn run_vcet_local_stability(
+    req: CompositeCpuLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (base_fast, base_slow) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let vcet_cfg = req.vcet.clone().unwrap_or_default();
+    validate_vcet_params(&vcet_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
+    };
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
+    let mut vidya_cache: HashMap<(u16, u16), crate::vcet::VcetVidyaSignals> = HashMap::new();
+    let mut ce_cache: HashMap<u16, crate::vcet::VcetChandelierSignals> = HashMap::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_vcet_periods(&vcet_cfg, fast_len, slow_len);
+            let vidya_key = (periods.vidya_short, periods.vidya_long);
+            if !vidya_cache.contains_key(&vidya_key) {
+                let built = compute_vcet_vidya_signals(
+                    candles,
+                    &req.ma_source,
+                    &req.backend,
+                    periods,
+                    vcet_cfg.vidya_alpha,
+                    #[cfg(feature = "cuda")]
+                    prepared_cuda_inputs.as_ref(),
+                )?;
+                vidya_cache.insert(vidya_key, built);
+            }
+            if !ce_cache.contains_key(&periods.ce) {
+                let built = compute_vcet_chandelier_signals(
+                    candles,
+                    &req.backend,
+                    periods.ce,
+                    vcet_cfg.ce_mult,
+                    vcet_cfg.ce_use_close,
+                    #[cfg(feature = "cuda")]
+                    prepared_cuda_inputs.as_ref(),
+                )?;
+                ce_cache.insert(periods.ce, built);
+            }
+        }
+    }
+    let first_valid_vidya = vidya_cache
+        .values()
+        .map(|row| row.first_valid)
+        .max()
+        .unwrap_or(fv_close);
+    let first_valid_ce = ce_cache
+        .values()
+        .map(|row| row.first_valid)
+        .max()
+        .unwrap_or(fv_close);
+    let start_t = compute_vcet_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        first_valid_vidya,
+        first_valid_ce,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+    let mut points = Vec::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_vcet_periods(&vcet_cfg, fast_len, slow_len);
+            let vidya = vidya_cache
+                .get(&(periods.vidya_short, periods.vidya_long))
+                .ok_or_else(|| "VCET vidya cache miss".to_string())?;
+            let ce = ce_cache
+                .get(&periods.ce)
+                .ok_or_else(|| "VCET chandelier cache miss".to_string())?;
+            let desired =
+                build_vcet_desired_positions(close, vidya, ce, start_t, &strategy, &vcet_cfg);
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                score: objective_score(&metrics, objective),
+                metrics,
+            });
+        }
+    }
+    finish_custom_local_stability(req, radius, step, start_t, points)
+}
+
+fn run_mkcs_local_stability(
+    req: CompositeCpuLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (base_fast, base_slow) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let mkcs_cfg = req.mkcs.clone().unwrap_or_default();
+    validate_mkcs_params(&mkcs_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        PreparedCudaIndicatorInputs::from_candles(candles, "close").ok()
+    };
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
+    let mut compression_cache: HashMap<u16, crate::mkcs::MkcsCompressionSignals> = HashMap::new();
+    let mut breakout_cache: HashMap<u16, crate::mkcs::MkcsBreakoutSignals> = HashMap::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_mkcs_periods(&mkcs_cfg, fast_len, slow_len);
+            if !compression_cache.contains_key(&periods.stddev) {
+                let built = compute_mkcs_compression_signals(
+                    candles,
+                    "close",
+                    &req.backend,
+                    periods.stddev,
+                    #[cfg(feature = "cuda")]
+                    prepared_cuda_inputs.as_ref(),
+                )?;
+                compression_cache.insert(periods.stddev, built);
+            }
+            if !breakout_cache.contains_key(&periods.breakout) {
+                let built = compute_mkcs_breakout_signals(
+                    candles,
+                    "close",
+                    &req.backend,
+                    periods.breakout,
+                    #[cfg(feature = "cuda")]
+                    prepared_cuda_inputs.as_ref(),
+                )?;
+                breakout_cache.insert(periods.breakout, built);
+            }
+        }
+    }
+    let first_valid_compression = compression_cache
+        .values()
+        .map(|row| row.first_valid)
+        .max()
+        .unwrap_or(fv_close);
+    let first_valid_breakout = breakout_cache
+        .values()
+        .map(|row| row.first_valid)
+        .max()
+        .unwrap_or(fv_close);
+    let start_t = compute_mkcs_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        first_valid_compression,
+        first_valid_breakout,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+    let mut points = Vec::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_mkcs_periods(&mkcs_cfg, fast_len, slow_len);
+            let compression = compression_cache
+                .get(&periods.stddev)
+                .ok_or_else(|| "MKCS compression cache miss".to_string())?;
+            let breakout = breakout_cache
+                .get(&periods.breakout)
+                .ok_or_else(|| "MKCS breakout cache miss".to_string())?;
+            let desired = build_mkcs_desired_positions(
+                close,
+                compression,
+                breakout,
+                start_t,
+                &strategy,
+                &mkcs_cfg,
+            );
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                score: objective_score(&metrics, objective),
+                metrics,
+            });
+        }
+    }
+    finish_custom_local_stability(req, radius, step, start_t, points)
+}
+
+fn run_kqsr_local_stability(
+    req: CompositeCpuLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (base_fast, base_slow) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kqsr_cfg = req.kqsr.clone().unwrap_or_default();
+    validate_kqsr_params(&kqsr_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
+    };
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
+    let mut first_valid_signals = None::<usize>;
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_kqsr_periods(&kqsr_cfg, fast_len, slow_len);
+            let signals = compute_kqsr_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &kqsr_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            first_valid_signals = Some(
+                first_valid_signals
+                    .unwrap_or(signals.first_valid)
+                    .max(signals.first_valid),
+            );
+        }
+    }
+    let start_t = compute_kqsr_start_t(
+        fv_close,
+        first_valid_signals.ok_or_else(|| "empty neighborhood".to_string())?,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+    let mut points = Vec::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_kqsr_periods(&kqsr_cfg, fast_len, slow_len);
+            let signals = compute_kqsr_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &kqsr_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            let desired =
+                build_kqsr_desired_positions(close, &signals, start_t, &strategy, &kqsr_cfg);
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                score: objective_score(&metrics, objective),
+                metrics,
+            });
+        }
+    }
+    finish_custom_local_stability(req, radius, step, start_t, points)
+}
+
+fn run_carm_local_stability(
+    req: CompositeCpuLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (base_fast, base_slow) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let carm_cfg = req.carm.clone().unwrap_or_default();
+    validate_carm_params(&carm_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_hlc(candles, &req.ma_source)
+    };
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
+    let mut first_valid_signals = None::<usize>;
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_carm_periods(&carm_cfg, fast_len, slow_len);
+            let signals = compute_carm_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &carm_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            first_valid_signals = Some(
+                first_valid_signals
+                    .unwrap_or(signals.first_valid)
+                    .max(signals.first_valid),
+            );
+        }
+    }
+    let start_t = compute_carm_start_t(
+        fv_close,
+        first_valid_signals.ok_or_else(|| "empty neighborhood".to_string())?,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+    let mut points = Vec::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_carm_periods(&carm_cfg, fast_len, slow_len);
+            let signals = compute_carm_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &carm_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            let desired =
+                build_carm_desired_positions(close, &signals, start_t, &strategy, &carm_cfg);
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                score: objective_score(&metrics, objective),
+                metrics,
+            });
+        }
+    }
+    finish_custom_local_stability(req, radius, step, start_t, points)
+}
+
+fn run_kvdf_local_stability(
+    req: CompositeCpuLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (base_fast, base_slow) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kvdf_cfg = req.kvdf.clone().unwrap_or_default();
+    validate_kvdf_params(&kvdf_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_ohlcv(candles, &req.ma_source)
+    };
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
+    let mut first_valid_signals = None::<usize>;
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_kvdf_periods(&kvdf_cfg, fast_len, slow_len);
+            let signals = compute_kvdf_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &kvdf_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            first_valid_signals = Some(
+                first_valid_signals
+                    .unwrap_or(signals.first_valid)
+                    .max(signals.first_valid),
+            );
+        }
+    }
+    let start_t = compute_kvdf_start_t(
+        fv_close,
+        first_valid_signals.ok_or_else(|| "empty neighborhood".to_string())?,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+    let mut points = Vec::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_kvdf_periods(&kvdf_cfg, fast_len, slow_len);
+            let signals = compute_kvdf_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &kvdf_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            let desired =
+                build_kvdf_desired_positions(close, &signals, start_t, &strategy, &kvdf_cfg);
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                score: objective_score(&metrics, objective),
+                metrics,
+            });
+        }
+    }
+    finish_custom_local_stability(req, radius, step, start_t, points)
+}
+
+fn run_cdmc_local_stability(
+    req: CompositeCpuLocalStabilityRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<LocalStabilityResult, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    let (base_fast, base_slow) = validate_analysis_base_periods(&req.params, n)?;
+    validate_strategy_cfg_for_optimization(&req.strategy)?;
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let cdmc_cfg = req.cdmc.clone().unwrap_or_default();
+    validate_cdmc_params(&cdmc_cfg)?;
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    if close.len() != ma_prices.len() {
+        return Err("ma source length mismatch".to_string());
+    }
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+
+    #[cfg(feature = "cuda")]
+    let prepared_cuda_inputs = if matches!(req.backend, Backend::CpuOnly) {
+        None
+    } else {
+        prepared_cuda_inputs_for_source_slice(candles, &req.ma_source)
+    };
+
+    let radius = req.radius.unwrap_or(1).min(32);
+    let step = req.step.unwrap_or(1).max(1);
+    let fast_periods = build_local_stability_periods(base_fast, radius, step);
+    let slow_periods = build_local_stability_periods(base_slow, radius, step);
+    let mut first_valid_signals = None::<usize>;
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_cdmc_periods(&cdmc_cfg, fast_len, slow_len);
+            let signals = compute_cdmc_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &cdmc_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            first_valid_signals = Some(
+                first_valid_signals
+                    .unwrap_or(signals.first_valid)
+                    .max(signals.first_valid),
+            );
+        }
+    }
+    let start_t = compute_cdmc_start_t(
+        fv_close,
+        first_valid_signals.ok_or_else(|| "empty neighborhood".to_string())?,
+        strategy.trade_on_next_bar,
+    );
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let objective = req.objective;
+    let mut points = Vec::new();
+    for &fast_len in &fast_periods {
+        for &slow_len in &slow_periods {
+            if fast_len >= slow_len {
+                continue;
+            }
+            let periods = resolve_cdmc_periods(&cdmc_cfg, fast_len, slow_len);
+            let signals = compute_cdmc_signals(
+                candles,
+                &req.ma_source,
+                &req.backend,
+                periods,
+                &cdmc_cfg,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
+            let desired =
+                build_cdmc_desired_positions(close, &signals, start_t, &strategy, &cdmc_cfg);
+            let metrics = eval_asr_metrics_from_desired(candles, &lr, &desired, start_t, &strategy);
+            points.push(LocalStabilityPoint {
+                fast_len,
+                slow_len,
+                score: objective_score(&metrics, objective),
+                metrics,
+            });
+        }
+    }
+    finish_custom_local_stability(req, radius, step, start_t, points)
 }
 
 fn run_rocb_optimization(
@@ -11631,31 +12851,31 @@ pub fn compute_composite_cpu_drilldown_blocking_with_candles(
         return run_vemr_drilldown(req, candles);
     }
     if req.vcc.is_some() {
-        return Err("VCC candidate detail is not implemented yet.".to_string());
+        return run_vcc_drilldown(req, candles);
     }
     if req.asr.is_some() {
         return run_asr_drilldown(req, candles);
     }
     if req.rocb.is_some() {
-        return Err("ROCB candidate detail is not implemented yet.".to_string());
+        return run_rocb_drilldown(req, candles);
     }
     if req.vcet.is_some() {
-        return Err("VCET candidate detail is not implemented yet.".to_string());
+        return run_vcet_drilldown(req, candles);
     }
     if req.mkcs.is_some() {
-        return Err("MKCS candidate detail is not implemented yet.".to_string());
+        return run_mkcs_drilldown(req, candles);
     }
     if req.kqsr.is_some() {
-        return Err("KQSR candidate detail is not implemented yet.".to_string());
+        return run_kqsr_drilldown(req, candles);
     }
     if req.carm.is_some() {
-        return Err("CARM candidate detail is not implemented yet.".to_string());
+        return run_carm_drilldown(req, candles);
     }
     if req.kvdf.is_some() {
-        return Err("KVDF candidate detail is not implemented yet.".to_string());
+        return run_kvdf_drilldown(req, candles);
     }
     if req.cdmc.is_some() {
-        return Err("CDMC candidate detail is not implemented yet.".to_string());
+        return run_cdmc_drilldown(req, candles);
     }
 
     let n = candles.close.len();
@@ -11919,22 +13139,22 @@ pub fn compute_composite_cpu_local_stability_blocking_with_candles(
         return run_rocb_local_stability(req, candles);
     }
     if req.vcet.is_some() {
-        return Err("VCET local stability is not implemented yet.".to_string());
+        return run_vcet_local_stability(req, candles);
     }
     if req.mkcs.is_some() {
-        return Err("MKCS local stability is not implemented yet.".to_string());
+        return run_mkcs_local_stability(req, candles);
     }
     if req.kqsr.is_some() {
-        return Err("KQSR local stability is not implemented yet.".to_string());
+        return run_kqsr_local_stability(req, candles);
     }
     if req.carm.is_some() {
-        return Err("CARM local stability is not implemented yet.".to_string());
+        return run_carm_local_stability(req, candles);
     }
     if req.kvdf.is_some() {
-        return Err("KVDF local stability is not implemented yet.".to_string());
+        return run_kvdf_local_stability(req, candles);
     }
     if req.cdmc.is_some() {
-        return Err("CDMC local stability is not implemented yet.".to_string());
+        return run_cdmc_local_stability(req, candles);
     }
 
     let n = candles.close.len();
@@ -12687,34 +13907,32 @@ fn optimize_composite_cpu_tiled(
                                 }
                             }
                             dynamic_metrics
+                        } else if compute_sharpe {
+                            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+                                &lr,
+                                ott_prices,
+                                fast_row,
+                                slow_row,
+                                halftrend_trend,
+                                macz_hist,
+                                ott_line,
+                                start_t,
+                                strategy,
+                                signal_mode,
+                            )
                         } else {
-                            if compute_sharpe {
-                                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
-                                    &lr,
-                                    ott_prices,
-                                    fast_row,
-                                    slow_row,
-                                    halftrend_trend,
-                                    macz_hist,
-                                    ott_line,
-                                    start_t,
-                                    strategy,
-                                    signal_mode,
-                                )
-                            } else {
-                                ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
-                                    &lr,
-                                    ott_prices,
-                                    fast_row,
-                                    slow_row,
-                                    halftrend_trend,
-                                    macz_hist,
-                                    ott_line,
-                                    start_t,
-                                    strategy,
-                                    signal_mode,
-                                )
-                            }
+                            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_fast_with_mode(
+                                &lr,
+                                ott_prices,
+                                fast_row,
+                                slow_row,
+                                halftrend_trend,
+                                macz_hist,
+                                ott_line,
+                                start_t,
+                                strategy,
+                                signal_mode,
+                            )
                         };
                         local.push(
                             DoubleMaParams {
@@ -13265,6 +14483,100 @@ mod tests {
             include_trade_metrics: false,
             metric_contract: None,
         }
+    }
+
+    fn make_base_drilldown_req() -> CompositeCpuDrilldownRequest {
+        CompositeCpuDrilldownRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "test".to_string(),
+            params: DoubleMaParamsResolved {
+                fast_len: 8,
+                slow_len: 24,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+            },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            bins: Some(256),
+        }
+    }
+
+    fn make_base_local_stability_req() -> CompositeCpuLocalStabilityRequest {
+        CompositeCpuLocalStabilityRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "test".to_string(),
+            params: DoubleMaParamsResolved {
+                fast_len: 8,
+                slow_len: 24,
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+            },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            radius: Some(1),
+            step: Some(1),
+        }
+    }
+
+    fn assert_drilldown_result_has_curves(result: &CompositeCpuDrilldownResult) {
+        assert!(result.curves.equity.bins > 0);
+        assert_eq!(
+            result.curves.equity.minmax.len(),
+            result.curves.equity.bins.saturating_mul(2)
+        );
+    }
+
+    fn assert_local_stability_result_has_points(result: &LocalStabilityResult) {
+        assert!(!result.points.is_empty());
+        assert!(result.summary.base.is_finite());
+        assert!(result.summary.min.is_finite());
+        assert!(result.summary.median.is_finite());
+        assert!(result.summary.max.is_finite());
     }
 
     fn make_trending_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
@@ -16610,6 +17922,160 @@ mod tests {
             .expect("rocb local stability run");
         assert!(!res.points.is_empty());
         assert!(res.summary.base.is_finite());
+    }
+
+    #[test]
+    fn vcc_drilldown_smoke_runs() {
+        let candles = make_trending_candles(5000);
+        let mut req = make_base_drilldown_req();
+        req.vcc = Some(VccStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("vcc drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn rocb_drilldown_smoke_runs() {
+        let candles = make_trending_candles(5000);
+        let mut req = make_base_drilldown_req();
+        req.rocb = Some(RocbStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("rocb drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn vcet_drilldown_smoke_runs() {
+        let candles = make_trending_candles(5000);
+        let mut req = make_base_drilldown_req();
+        req.vcet = Some(VcetStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("vcet drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn vcet_local_stability_smoke_runs() {
+        let candles = make_trending_candles(5000);
+        let mut req = make_base_local_stability_req();
+        req.vcet = Some(VcetStrategyParams::default());
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("vcet local stability run");
+        assert_local_stability_result_has_points(&res);
+    }
+
+    #[test]
+    fn mkcs_drilldown_smoke_runs() {
+        let candles = make_trending_candles(5000);
+        let mut req = make_base_drilldown_req();
+        req.mkcs = Some(MkcsStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("mkcs drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn mkcs_local_stability_smoke_runs() {
+        let candles = make_trending_candles(5000);
+        let mut req = make_base_local_stability_req();
+        req.mkcs = Some(MkcsStrategyParams::default());
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("mkcs local stability run");
+        assert_local_stability_result_has_points(&res);
+    }
+
+    #[test]
+    fn kqsr_drilldown_smoke_runs() {
+        let candles = make_kqsr_oscillating_candles(600);
+        let mut req = make_base_drilldown_req();
+        req.kqsr = Some(KqsrStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("kqsr drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn kqsr_local_stability_smoke_runs() {
+        let candles = make_kqsr_oscillating_candles(600);
+        let mut req = make_base_local_stability_req();
+        req.kqsr = Some(KqsrStrategyParams::default());
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("kqsr local stability run");
+        assert_local_stability_result_has_points(&res);
+    }
+
+    #[test]
+    fn carm_drilldown_smoke_runs() {
+        let candles = make_carm_momentum_candles(640);
+        let mut req = make_base_drilldown_req();
+        req.carm = Some(CarmStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("carm drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn carm_local_stability_smoke_runs() {
+        let candles = make_carm_momentum_candles(640);
+        let mut req = make_base_local_stability_req();
+        req.carm = Some(CarmStrategyParams::default());
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("carm local stability run");
+        assert_local_stability_result_has_points(&res);
+    }
+
+    #[test]
+    fn kvdf_drilldown_smoke_runs() {
+        let candles = make_kvdf_flow_candles(640);
+        let mut req = make_base_drilldown_req();
+        req.kvdf = Some(KvdfStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("kvdf drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn kvdf_local_stability_smoke_runs() {
+        let candles = make_kvdf_flow_candles(640);
+        let mut req = make_base_local_stability_req();
+        req.kvdf = Some(KvdfStrategyParams::default());
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("kvdf local stability run");
+        assert_local_stability_result_has_points(&res);
+    }
+
+    #[test]
+    fn cdmc_drilldown_smoke_runs() {
+        let candles = make_cdmc_cycle_candles(640);
+        let mut req = make_base_drilldown_req();
+        req.cdmc = Some(CdmcStrategyParams::default());
+
+        let res = compute_composite_cpu_drilldown_blocking_with_candles(req, &candles)
+            .expect("cdmc drilldown run");
+        assert_drilldown_result_has_curves(&res);
+    }
+
+    #[test]
+    fn cdmc_local_stability_smoke_runs() {
+        let candles = make_cdmc_cycle_candles(640);
+        let mut req = make_base_local_stability_req();
+        req.cdmc = Some(CdmcStrategyParams::default());
+
+        let res = compute_composite_cpu_local_stability_blocking_with_candles(req, &candles)
+            .expect("cdmc local stability run");
+        assert_local_stability_result_has_points(&res);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

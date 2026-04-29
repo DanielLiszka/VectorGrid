@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, type Component } from 'vue'
 import {
+  BriefcaseBusiness,
   CircleAlert,
   CircleCheckBig,
   CircleDot,
@@ -22,6 +23,7 @@ const iconMap: Record<string, Component> = {
   chart: CircleDot,
   library: FolderOpenDot,
   runs: CircleCheckBig,
+  portfolio: BriefcaseBusiness,
   live: Play,
   settings: Settings2,
   diagnostics: CircleAlert,

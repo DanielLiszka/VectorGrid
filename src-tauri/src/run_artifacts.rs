@@ -3081,6 +3081,25 @@ fn stage_completion_existing_entries(artifact: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn stage_completion_key(packet: &Value) -> Option<(String, String)> {
+    let object = packet.as_object()?;
+    let stage = object
+        .get("stage")
+        .or_else(|| object.get("stage_id"))
+        .or_else(|| object.get("stageId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let substage = object
+        .get("substage")
+        .or_else(|| object.get("substage_id"))
+        .or_else(|| object.get("substageId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    Some((stage.to_string(), substage.to_string()))
+}
+
 fn insert_stage_completion_string(
     map: &mut serde_json::Map<String, Value>,
     key: &str,
@@ -3463,19 +3482,34 @@ fn build_ml_signal_stage_completion(artifact_path: &Path, artifact: &Value) -> O
 }
 
 fn stage_completions_for_run_artifact(artifact_path: &Path, artifact: &Value) -> Vec<Value> {
-    let existing = stage_completion_existing_entries(artifact);
-    if !existing.is_empty() {
-        return existing;
-    }
-    let mut packets = Vec::new();
+    let mut packets = stage_completion_existing_entries(artifact);
+    let mut existing_keys = packets
+        .iter()
+        .filter_map(stage_completion_key)
+        .collect::<HashSet<_>>();
     if let Some(packet) = build_optimization_stage_completion(artifact_path, artifact) {
-        packets.push(packet);
+        if stage_completion_key(&packet)
+            .map(|key| existing_keys.insert(key))
+            .unwrap_or(true)
+        {
+            packets.push(packet);
+        }
     }
     if let Some(packet) = build_validation_stage_completion(artifact_path, artifact) {
-        packets.push(packet);
+        if stage_completion_key(&packet)
+            .map(|key| existing_keys.insert(key))
+            .unwrap_or(true)
+        {
+            packets.push(packet);
+        }
     }
     if let Some(packet) = build_ml_signal_stage_completion(artifact_path, artifact) {
-        packets.push(packet);
+        if stage_completion_key(&packet)
+            .map(|key| existing_keys.insert(key))
+            .unwrap_or(true)
+        {
+            packets.push(packet);
+        }
     }
     packets
 }
@@ -7121,6 +7155,72 @@ mod tests {
                 .and_then(Value::as_str),
             Some("pbo_elevated")
         );
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_merges_partial_stage_completions_without_dropping_unknowns() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("stage_completion_merge");
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": ts,
+            "stage_completions": [
+                {
+                    "schema_version": 1,
+                    "stage": "optimization",
+                    "status": "success",
+                    "verdict": "custom_existing",
+                    "custom_field": "preserve"
+                },
+                {
+                    "schema_version": 99,
+                    "stage": "future_stage",
+                    "substage": "future_substage",
+                    "custom_field": "keep_unknown"
+                }
+            ],
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": {
+                    "backend_used": "Cpu",
+                    "top": [{ "rank": 1 }]
+                }
+            },
+            "validation": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": {
+                    "run_verdict": {
+                        "approved": true,
+                        "passed": true,
+                        "final_recommendation": "approve"
+                    }
+                }
+            }
+        });
+
+        let saved = save_run_artifact_blocking(artifact, handle, None).expect("save artifact");
+        let raw = std::fs::read_to_string(&saved.path).expect("read saved artifact");
+        let saved_value: Value = serde_json::from_str(&raw).expect("parse saved artifact");
+        let packets = saved_value
+            .get("stage_completions")
+            .and_then(Value::as_array)
+            .expect("stage completions");
+
+        assert_eq!(packets.len(), 3);
+        assert!(packets.iter().any(|packet| {
+            packet.get("stage").and_then(Value::as_str) == Some("optimization")
+                && packet.get("verdict").and_then(Value::as_str) == Some("custom_existing")
+                && packet.get("custom_field").and_then(Value::as_str) == Some("preserve")
+        }));
+        assert!(packets.iter().any(|packet| {
+            packet.get("stage").and_then(Value::as_str) == Some("future_stage")
+                && packet.get("custom_field").and_then(Value::as_str) == Some("keep_unknown")
+        }));
+        assert!(packets.iter().any(|packet| {
+            packet.get("stage").and_then(Value::as_str) == Some("validation")
+                && packet.get("backfilled").and_then(Value::as_bool) == Some(true)
+        }));
     }
 
     #[test]

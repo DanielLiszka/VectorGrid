@@ -380,6 +380,7 @@ fn extract_candidate_drafts(
                     "candidates",
                     "finalists",
                     "shortlist",
+                    "top",
                     "results",
                     "rows",
                     "validation_results",
@@ -1011,6 +1012,40 @@ mod tests {
         let serialized = serde_json::to_value(&result).expect("serialize result");
         assert!(serialized.get("target_weights").is_none());
         assert!(serialized.get("allocation_frontier").is_none());
+    }
+
+    #[test]
+    fn optimization_top_rows_are_admitted_from_run_artifacts() {
+        let result = portfolio_feasibility_from_artifacts(PortfolioFeasibilityRequestV1 {
+            source_artifacts: vec![json!({
+                "artifact_kind": "validation_artifact_bundle",
+                "config_fingerprint": "cfg-123",
+                "run_res": {
+                    "top": [{
+                        "candidate_id": "top-row-1",
+                        "strategy_kind": "double_ma",
+                        "symbol": "SPY",
+                        "timeframe": "5m",
+                        "validation_passed": true,
+                        "metrics": {"sharpe": 1.7, "trades": 18}
+                    }]
+                }
+            })],
+            require_approved_validation: true,
+            ..test_request()
+        });
+
+        assert_eq!(result.source_artifacts_seen, 1);
+        assert_eq!(result.eligible_candidates.len(), 1);
+        assert_eq!(result.eligible_candidates[0].candidate_id, "top-row-1");
+        assert_eq!(
+            result.eligible_candidates[0].source_role,
+            PortfolioSourceRole::ValidationArtifact
+        );
+        assert_eq!(
+            result.eligible_candidates[0].symbol_root.as_deref(),
+            Some("SPY")
+        );
     }
 
     #[test]

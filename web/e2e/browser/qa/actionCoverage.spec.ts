@@ -93,6 +93,8 @@ test('visible QA actions are represented in the action coverage manifest @workfl
   await collect()
   await page.locator('[data-qa-action="shell.workspace.aggregate"]').click()
   await collect()
+  await page.locator('[data-qa-action="shell.workspace.portfolio"]').click()
+  await collect()
   await page.locator('[data-qa-action="shell.workspace.diagnostics"]').click()
   await collect()
   await page.locator('[data-qa-action="shell.workspace.live"]').click()

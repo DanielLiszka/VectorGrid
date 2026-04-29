@@ -10,6 +10,7 @@ function Enter-BenchmarkLock {
     return [pscustomobject]@{
       acquired = $false
       inherited = $true
+      abandoned = $false
       mutex = $null
       previous_held = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_HELD
       previous_owner_pid = $env:TA_DESKTOP_DEMO_BENCHMARK_LOCK_OWNER_PID
@@ -19,9 +20,16 @@ function Enter-BenchmarkLock {
 
   $mutex = [System.Threading.Mutex]::new($false, $MutexName)
   $acquired = $false
+  $abandoned = $false
   try {
     Write-Host "Waiting for benchmark lock ($Context)..."
-    $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))
+    try {
+      $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))
+    } catch [System.Threading.AbandonedMutexException] {
+      $acquired = $true
+      $abandoned = $true
+      Write-Host "[WARN] Benchmark lock was abandoned by a prior process; continuing with recovered lock ($Context)."
+    }
     if (-not $acquired) {
       throw "Timed out waiting for benchmark lock after ${TimeoutSeconds}s ($Context). Another benchmark/profiler gate may still be running."
     }
@@ -37,6 +45,7 @@ function Enter-BenchmarkLock {
     return [pscustomobject]@{
       acquired = $true
       inherited = $false
+      abandoned = $abandoned
       mutex = $mutex
       previous_held = $previousHeld
       previous_owner_pid = $previousOwnerPid

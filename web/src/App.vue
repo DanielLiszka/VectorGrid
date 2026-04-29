@@ -24,6 +24,7 @@ const MlSignalShellPanel = defineAsyncComponent(() => import('./components/MlSig
 const GuidedWorkspacePanel = defineAsyncComponent(() => import('./components/GuidedWorkspacePanel.vue'))
 const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
 const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/ParetoWorkspacePanel.vue'))
+const PortfolioFeasibilityWorkspacePanel = defineAsyncComponent(() => import('./components/PortfolioFeasibilityWorkspacePanel.vue'))
 const SettingsWorkspacePanel = defineAsyncComponent(() => import('./components/SettingsWorkspacePanel.vue'))
 const TaskCenterOverlay = defineAsyncComponent(() => import('./components/TaskCenterOverlay.vue'))
 const TopWorkspacePanel = defineAsyncComponent(() => import('./components/TopWorkspacePanel.vue'))
@@ -40,6 +41,7 @@ const { uiMode } = storeToRefs(settingsStore)
 const guidedModeActive = computed(() => uiMode.value === 'guided')
 const settingsWorkspaceActive = computed(() => !guidedModeActive.value && String(workspace.value || '').trim() === 'settings')
 const liveWorkspaceActive = computed(() => !guidedModeActive.value && String(workspace.value || '').trim() === 'live')
+const portfolioWorkspaceActive = computed(() => !guidedModeActive.value && String(workspace.value || '').trim() === 'portfolio')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
@@ -74,13 +76,14 @@ const heatmapPanelActive = computed(() => !guidedModeActive.value && activeResul
 const metaPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'meta' && (!mlSignalModeActive.value || currentWorkspace.value !== 'workflow'))
 const debugPanelActive = computed(() => !guidedModeActive.value && activeResultsTab.value === 'debug')
 
-type LazyPanelKey = 'data' | 'live' | 'optimize' | 'overview'
+type LazyPanelKey = 'data' | 'live' | 'optimize' | 'overview' | 'portfolio'
 
 const mountedPanels = reactive<Record<LazyPanelKey, boolean>>({
   data: false,
   live: false,
   optimize: false,
   overview: false,
+  portfolio: false,
 })
 
 function mountWhenActive(panel: LazyPanelKey, source: () => boolean): void {
@@ -97,6 +100,7 @@ mountWhenActive('data', () => dataPanelActive.value)
 mountWhenActive('live', () => liveWorkspaceActive.value)
 mountWhenActive('optimize', () => optimizePanelActive.value)
 mountWhenActive('overview', () => overviewPanelActive.value)
+mountWhenActive('portfolio', () => portfolioWorkspaceActive.value)
 </script>
 
 <template>
@@ -118,6 +122,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <MlSignalShellPanel v-if="mlSignalPanelActive" />
   <OverviewWorkspacePanel v-if="mountedPanels.overview" />
   <ParetoWorkspacePanel v-if="paretoPanelActive" />
+  <PortfolioFeasibilityWorkspacePanel v-if="mountedPanels.portfolio" />
   <OptimizeWorkspacePanel v-if="mountedPanels.optimize && !mlSignalModeActive" />
   <ActionStatusBar v-if="!guidedModeActive" />
   <SettingsWorkspacePanel v-if="settingsWorkspaceActive" />

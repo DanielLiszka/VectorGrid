@@ -72,7 +72,7 @@ export const WORKFLOW_SUBTITLES = {
   settings: 'Advanced tools, meta selection, and debug output.',
 } as const
 
-export const WORKSPACE_TABS = ['workflow', 'library', 'aggregate', 'pro', 'live', 'settings'] as const
+export const WORKSPACE_TABS = ['workflow', 'library', 'aggregate', 'portfolio', 'pro', 'live', 'settings'] as const
 export type WorkspaceTab = (typeof WORKSPACE_TABS)[number]
 export const WORKSPACE_TAB_SET: ReadonlySet<string> = new Set(WORKSPACE_TABS)
 
@@ -160,6 +160,7 @@ export const WORKSPACE_SUBTITLES = {
   workflow: 'Research pipeline for data, optimization, validation, analysis, and finalization.',
   library: 'Browse, compare, and rerun saved optimization artifacts.',
   aggregate: 'Combine many runs into robust shortlist recommendations.',
+  portfolio: 'Research portfolio admission evidence, replay gaps, and provenance for candidate shortlists.',
   pro: 'Diagnostics and advanced debug output.',
   live: 'Narrow live broker surface: single symbol, Alpaca broker, Polygon stocks feed, and one active runner/stream.',
   settings: 'Application preferences and storage configuration.',

@@ -9,6 +9,10 @@ fn csv_escape(v: &str) -> String {
     }
 }
 
+fn csv_optional<T: ToString>(value: Option<T>) -> String {
+    value.map(|x| x.to_string()).unwrap_or_default()
+}
+
 pub(crate) fn build_validation_shortlist_csv_blocking(
     validation_res: Value,
 ) -> Result<String, String> {
@@ -31,11 +35,11 @@ pub(super) fn build_validation_shortlist_csv_text(
 
     let mut lines: Vec<String> = Vec::with_capacity(rows.len().saturating_add(1));
 
-    lines.push("rank,approval_label,approval_reason,hard_gate_passed,legacy_shortlisted,profile_kind,params_summary,robust_score,psr,dsr,track_record_bars,min_track_record_length_bars,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,wf_sharpe_median,wf_dd_worst,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_metric_p50,cross_score,cross_pareto,bootstrap_prob_pnl_positive,perturb_pnl_mean,warning_flags,fail_reasons,params_json".to_string());
+    lines.push("rank,approval_label,approval_reason,hard_gate_passed,legacy_shortlisted,profile_kind,params_summary,robust_score,psr,dsr,track_record_bars,min_track_record_length_bars,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,wf_sharpe_median,wf_dd_worst,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_metric_p50,cross_score,cross_pareto,bootstrap_prob_pnl_positive,perturb_pnl_mean,warning_flags,fail_reasons,params_json,monte_carlo_mode,monte_carlo_prob_pnl_positive,monte_carlo_pnl_p05,monte_carlo_pnl_p50,monte_carlo_max_dd_p95,monte_carlo_stationary_mean_block_len,monte_carlo_stationary_pnl_p05,monte_carlo_stationary_max_dd_p95,monte_carlo_sample_count".to_string());
 
     for row in rows {
         lines.push(format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             row.rank,
             csv_escape(&row.approval_label),
             csv_escape(&row.approval_reason),
@@ -46,50 +50,35 @@ pub(super) fn build_validation_shortlist_csv_text(
             csv_escape(&row.profile_kind),
             csv_escape(&row.params_summary),
             row.robust_score,
-            row.psr
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.dsr
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.track_record_bars
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.min_track_record_length_bars
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
+            csv_optional(row.psr),
+            csv_optional(row.dsr),
+            csv_optional(row.track_record_bars),
+            csv_optional(row.min_track_record_length_bars),
             row.pnl,
             row.sharpe,
             row.max_dd,
             row.trades,
-            row.wf_sharpe_median
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.wf_dd_worst
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.cscv_selected_frac
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.cscv_oos_rank_frac_p50
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.cscv_oos_metric_p50
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.cross_score
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
+            csv_optional(row.wf_sharpe_median),
+            csv_optional(row.wf_dd_worst),
+            csv_optional(row.cscv_selected_frac),
+            csv_optional(row.cscv_oos_rank_frac_p50),
+            csv_optional(row.cscv_oos_metric_p50),
+            csv_optional(row.cross_score),
             if row.cross_pareto { 1 } else { 0 },
-            row.bootstrap_prob_pnl_positive
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
-            row.perturb_pnl_mean
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "".to_string()),
+            csv_optional(row.bootstrap_prob_pnl_positive),
+            csv_optional(row.perturb_pnl_mean),
             csv_escape(&row.warning_flags),
             csv_escape(&row.fail_reasons),
             csv_escape(&row.params_json),
+            csv_escape(&row.monte_carlo_mode),
+            csv_optional(row.monte_carlo_prob_pnl_positive),
+            csv_optional(row.monte_carlo_pnl_p05),
+            csv_optional(row.monte_carlo_pnl_p50),
+            csv_optional(row.monte_carlo_max_dd_p95),
+            csv_optional(row.monte_carlo_stationary_mean_block_len),
+            csv_optional(row.monte_carlo_stationary_pnl_p05),
+            csv_optional(row.monte_carlo_stationary_max_dd_p95),
+            csv_optional(row.monte_carlo_sample_count),
         ));
     }
 
@@ -188,9 +177,9 @@ mod tests {
         let row_a = &records[1];
         let row_b = &records[2];
 
-        assert_eq!(header_fields.len(), 28);
-        assert_eq!(row_a.len(), 28);
-        assert_eq!(row_b.len(), 28);
+        assert_eq!(header_fields.len(), 37);
+        assert_eq!(row_a.len(), 37);
+        assert_eq!(row_b.len(), 37);
         assert_eq!(row_a[1], "review");
         assert_eq!(row_a[2], "review\nneeds-check");
         assert_eq!(row_a[25], "review\nneeds-check");
@@ -255,6 +244,15 @@ mod tests {
                 "warning_flags",
                 "fail_reasons",
                 "params_json",
+                "monte_carlo_mode",
+                "monte_carlo_prob_pnl_positive",
+                "monte_carlo_pnl_p05",
+                "monte_carlo_pnl_p50",
+                "monte_carlo_max_dd_p95",
+                "monte_carlo_stationary_mean_block_len",
+                "monte_carlo_stationary_pnl_p05",
+                "monte_carlo_stationary_max_dd_p95",
+                "monte_carlo_sample_count",
             ]
         );
     }
@@ -332,6 +330,15 @@ mod tests {
                 "".to_string(),
                 "{\"fast_len\":10,\"fast_ma_type\":\"sma\",\"slow_len\":40,\"slow_ma_type\":\"ema\"}"
                     .to_string(),
+                "iid_only".to_string(),
+                "0.88".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
             ]
         );
     }
@@ -378,6 +385,16 @@ mod tests {
 
         assert_eq!(records[0][23], "bootstrap_prob_pnl_positive");
         assert_eq!(records[1][23], "0.77");
+        assert_eq!(records[0][28], "monte_carlo_mode");
+        assert_eq!(records[1][28], "iid_only");
+        assert_eq!(records[0][29], "monte_carlo_prob_pnl_positive");
+        assert_eq!(records[1][29], "0.77");
+        assert_eq!(records[0][31], "monte_carlo_pnl_p50");
+        assert_eq!(records[1][31], "0.22");
+        assert_eq!(records[0][32], "monte_carlo_max_dd_p95");
+        assert_eq!(records[1][32], "0.33");
+        assert_eq!(records[0][36], "monte_carlo_sample_count");
+        assert_eq!(records[1][36], "500");
     }
 
     #[test]

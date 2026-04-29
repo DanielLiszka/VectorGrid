@@ -59,8 +59,18 @@ const COL_RANK_DRIFT: u16 = 47;
 const COL_WARNINGS: u16 = 48;
 const COL_FAIL_REASONS: u16 = 49;
 const COL_PARAMS_JSON: u16 = 50;
+const COL_MC_MODE: u16 = 51;
+const COL_MC_PROB: u16 = 52;
+const COL_MC_P05: u16 = 53;
+const COL_MC_P50: u16 = 54;
+const COL_MC_DD95: u16 = 55;
+const COL_MC_STAT_BLOCK: u16 = 56;
+const COL_MC_STAT_P05: u16 = 57;
+const COL_MC_STAT_DD95: u16 = 58;
+const COL_MC_SAMPLES: u16 = 59;
+const COL_CANDIDATE_LAST: u16 = COL_MC_SAMPLES;
 
-const CANDIDATE_HEADERS: [&str; 51] = [
+const CANDIDATE_HEADERS: [&str; 60] = [
     "Rank",
     "Approval",
     "HardGate",
@@ -112,6 +122,15 @@ const CANDIDATE_HEADERS: [&str; 51] = [
     "Warnings",
     "Fail Reasons",
     "Params JSON",
+    "MC Mode",
+    "MC Prob+",
+    "MC P05",
+    "MC P50",
+    "MC DD95",
+    "MC Stat Block",
+    "MC Stat P05",
+    "MC Stat DD95",
+    "MC Samples",
 ];
 
 fn write_optional_number(
@@ -477,6 +496,15 @@ fn set_candidate_sheet_layout(sheet: &mut Worksheet) {
     let _ = sheet.set_column_width(COL_WARNINGS, 28);
     let _ = sheet.set_column_width(COL_FAIL_REASONS, 30);
     let _ = sheet.set_column_width(COL_PARAMS_JSON, 44);
+    let _ = sheet.set_column_width(COL_MC_MODE, 18);
+    let _ = sheet.set_column_width(COL_MC_PROB, 12);
+    let _ = sheet.set_column_width(COL_MC_P05, 12);
+    let _ = sheet.set_column_width(COL_MC_P50, 12);
+    let _ = sheet.set_column_width(COL_MC_DD95, 12);
+    let _ = sheet.set_column_width(COL_MC_STAT_BLOCK, 13);
+    let _ = sheet.set_column_width(COL_MC_STAT_P05, 13);
+    let _ = sheet.set_column_width(COL_MC_STAT_DD95, 13);
+    let _ = sheet.set_column_width(COL_MC_SAMPLES, 12);
 }
 
 fn write_candidate_headers(sheet: &mut Worksheet, header_fmt: &Format) -> Result<(), String> {
@@ -727,6 +755,47 @@ fn write_candidate_rows(
         sheet
             .write_string_with_format(r, COL_PARAMS_JSON, &row.params_json, mono_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
+        sheet
+            .write_string_with_format(r, COL_MC_MODE, &row.monte_carlo_mode, text_fmt)
+            .map_err(|e: XlsxError| e.to_string())?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_MC_PROB,
+            row.monte_carlo_prob_pnl_positive,
+            pct_fmt,
+        )?;
+        write_optional_number(sheet, r, COL_MC_P05, row.monte_carlo_pnl_p05, num_fmt)?;
+        write_optional_number(sheet, r, COL_MC_P50, row.monte_carlo_pnl_p50, num_fmt)?;
+        write_optional_number(sheet, r, COL_MC_DD95, row.monte_carlo_max_dd_p95, num_fmt)?;
+        write_optional_usize(
+            sheet,
+            r,
+            COL_MC_STAT_BLOCK,
+            row.monte_carlo_stationary_mean_block_len,
+            int_fmt,
+        )?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_MC_STAT_P05,
+            row.monte_carlo_stationary_pnl_p05,
+            num_fmt,
+        )?;
+        write_optional_number(
+            sheet,
+            r,
+            COL_MC_STAT_DD95,
+            row.monte_carlo_stationary_max_dd_p95,
+            num_fmt,
+        )?;
+        write_optional_usize(
+            sheet,
+            r,
+            COL_MC_SAMPLES,
+            row.monte_carlo_sample_count,
+            int_fmt,
+        )?;
     }
     Ok(())
 }
@@ -747,7 +816,7 @@ fn apply_candidate_sheet_analysis_formatting(
         0,
         0,
         row_max,
-        COL_PARAMS_JSON,
+        COL_CANDIDATE_LAST,
         table_name,
         &CANDIDATE_HEADERS,
         TableStyle::Medium2,
@@ -860,11 +929,11 @@ fn write_candidate_sheet(
     apply_candidate_sheet_analysis_formatting(sheet, rows.len(), candidate_table_name(name))?;
     if !title_note.is_empty() {
         sheet
-            .write_string_with_format(0, COL_PARAMS_JSON + 1, title_note, text_fmt)
+            .write_string_with_format(0, COL_CANDIDATE_LAST + 1, title_note, text_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
     }
     if name == "Audit Data" {
-        let audit_col = COL_PARAMS_JSON + 1;
+        let audit_col = COL_CANDIDATE_LAST + 1;
         sheet
             .write_string_with_format(2, audit_col, "Regime Slice Audit", header_fmt)
             .map_err(|e: XlsxError| e.to_string())?;
@@ -3894,6 +3963,14 @@ fn build_dashboard(
         ("Strategy", model.strategy_kind.as_str()),
         ("Dataset", model.data_id.as_str()),
         ("Runtime", runtime_text.as_str()),
+        (
+            "Acceleration Status",
+            if model.validation_acceleration_status.is_empty() {
+                "Validation acceleration status unavailable."
+            } else {
+                model.validation_acceleration_status.as_str()
+            },
+        ),
         ("Recommendation", recommendation),
         (
             "Backend",
@@ -3901,6 +3978,22 @@ fn build_dashboard(
                 "unknown"
             } else {
                 model.backend_used.as_str()
+            },
+        ),
+        (
+            "Requested Backend",
+            if model.requested_backend.is_empty() {
+                "-"
+            } else {
+                model.requested_backend.as_str()
+            },
+        ),
+        (
+            "Residency",
+            if model.validation_residency_tier.is_empty() {
+                "-"
+            } else {
+                model.validation_residency_tier.as_str()
             },
         ),
         (
@@ -5657,6 +5750,9 @@ mod tests {
         let xml = all_xml(&bytes);
         assert!(xml.contains("iid-only closed-trade bootstrap"));
         assert!(xml.contains("IID only"));
+        assert!(xml.contains("MC Prob+"));
+        assert!(xml.contains("iid_only"));
+        assert!(xml.contains("MC Samples"));
     }
 
     #[test]

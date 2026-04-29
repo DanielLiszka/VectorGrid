@@ -1,12 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { EXEC_KEYS_STORAGE_KEY } from '../utils/core/storageKeys'
-import { invokeCommand } from '../tauri/invoke'
-import { listenEvent } from '../tauri/events'
-import { readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { EXEC_KEYS_STORAGE_KEY } from "../utils/core/storageKeys";
+import { invokeCommand } from "../tauri/invoke";
+import { listenEvent } from "../tauri/events";
+import { readLatestWorkflowRunSnapshot } from "../stores/workflowArtifactsStore";
 import {
   buildExecutionStrategyFromRunContext,
   resolveExecutionTopRowSnapshot,
-} from './analysisService'
+} from "./analysisService";
 import {
   canonicalSymbol,
   cancelOpenOrders,
@@ -34,921 +34,1039 @@ import {
   storeExecutionCredentialsSecurely,
   subscribeExecutionRuntimeEvents,
   testConnection,
-} from './executionService'
+} from "./executionService";
 
-vi.mock('../tauri/invoke', () => ({
+vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => ({})),
-}))
+}));
 
-vi.mock('../tauri/events', () => ({
-  listenEvent: vi.fn(async (_event: string, _handler: (payload: unknown) => void) => () => {}),
-}))
+vi.mock("../tauri/events", () => ({
+  listenEvent: vi.fn(
+    async (_event: string, _handler: (payload: unknown) => void) => () => {},
+  ),
+}));
 
-vi.mock('../stores/workflowArtifactsStore', () => ({
+vi.mock("../stores/workflowArtifactsStore", () => ({
   readLatestWorkflowRunSnapshot: vi.fn(() => ({
-    artifactPath: 'C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json',
-    configFingerprint: 'cfg1-fnv1a64-demo',
+    artifactPath: "C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json",
+    configFingerprint: "cfg1-fnv1a64-demo",
     routeProvenance: {
-      requestedRoute: 'GpuOnly',
-      resolvedRoute: 'CpuOnly',
-      realizedRoute: 'CpuOnly',
+      requestedRoute: "GpuOnly",
+      resolvedRoute: "CpuOnly",
+      realizedRoute: "CpuOnly",
       routeChanged: true,
-      fallbackReason: 'gpu unavailable',
+      fallbackReason: "gpu unavailable",
     },
-    req: { strategy_kind: 'DoubleMa', data_id: 'data_1' },
-    res: { best_params: { fast_len: 5, slow_len: 20, fast_ma_type: 'sma', slow_ma_type: 'alma' } },
+    req: { strategy_kind: "DoubleMa", data_id: "data_1" },
+    res: {
+      best_params: {
+        fast_len: 5,
+        slow_len: 20,
+        fast_ma_type: "sma",
+        slow_ma_type: "alma",
+      },
+    },
   })),
-}))
+}));
 
-vi.mock('./analysisService', () => ({
+vi.mock("./analysisService", () => ({
   resolveExecutionTopRowSnapshot: vi.fn(() => ({
-    params: { fast_len: 5, slow_len: 20, fast_ma_type: 'sma', slow_ma_type: 'alma' },
+    params: {
+      fast_len: 5,
+      slow_len: 20,
+      fast_ma_type: "sma",
+      slow_ma_type: "alma",
+    },
     metrics: { sharpe: 1.2 },
-    source: 'selected',
+    source: "selected",
   })),
   buildExecutionStrategyFromRunContext: vi.fn(() => ({
-    strategyKind: 'DoubleMa',
+    strategyKind: "DoubleMa",
     strategy: {
-      kind: 'double_ma',
-      req: { data_id: 'data_1', params: { fast_len: 5, slow_len: 20, fast_ma_type: 'sma', slow_ma_type: 'alma' } },
+      kind: "double_ma",
+      req: {
+        data_id: "data_1",
+        params: {
+          fast_len: 5,
+          slow_len: 20,
+          fast_ma_type: "sma",
+          slow_ma_type: "alma",
+        },
+      },
     },
   })),
-}))
+}));
 
-vi.mock('./optimizeService', () => ({
+vi.mock("./optimizeService", () => ({
   buildOptimizationRequestFromVueStores: vi.fn(async () => ({
-    strategy_kind: 'DoubleMa',
-    data_id: 'data_1',
-    fast_ma_types: ['sma'],
-    slow_ma_types: ['alma'],
+    strategy_kind: "DoubleMa",
+    data_id: "data_1",
+    fast_ma_types: ["sma"],
+    slow_ma_types: ["alma"],
     fast_range: [5, 5, 1],
     slow_range: [20, 20, 1],
     strategy: {},
   })),
-}))
+}));
 
-const invokeCommandMock = vi.mocked(invokeCommand)
-const listenEventMock = vi.mocked(listenEvent)
-const readLatestWorkflowRunSnapshotMock = vi.mocked(readLatestWorkflowRunSnapshot)
-const resolveExecutionTopRowSnapshotMock = vi.mocked(resolveExecutionTopRowSnapshot)
-const buildExecutionStrategyFromRunContextMock = vi.mocked(buildExecutionStrategyFromRunContext)
+const invokeCommandMock = vi.mocked(invokeCommand);
+const listenEventMock = vi.mocked(listenEvent);
+const readLatestWorkflowRunSnapshotMock = vi.mocked(
+  readLatestWorkflowRunSnapshot,
+);
+const resolveExecutionTopRowSnapshotMock = vi.mocked(
+  resolveExecutionTopRowSnapshot,
+);
+const buildExecutionStrategyFromRunContextMock = vi.mocked(
+  buildExecutionStrategyFromRunContext,
+);
 
 function baseOptions() {
   return {
-    mode: 'paper',
-    symbol: 'AAPL',
-    qty: '1',
-    paramSource: 'selected',
-    riskStopLossPct: '',
-    riskTakeProfitPct: '',
-    riskMaxOrderNotional: '',
-    riskMaxPositionNotional: '',
+    mode: "paper",
+    symbol: "AAPL",
+    qty: "1",
+    paramSource: "selected",
+    riskStopLossPct: "",
+    riskTakeProfitPct: "",
+    riskMaxOrderNotional: "",
+    riskMaxPositionNotional: "",
     riskAllowShort: true,
     riskRequireBracket: false,
-    manualFastLen: '',
-    manualSlowLen: '',
+    manualFastLen: "",
+    manualSlowLen: "",
     dryRun: true,
     rememberKeys: true,
-    apiKey: 'key_1',
-    apiSecret: 'secret_1',
+    apiKey: "key_1",
+    apiSecret: "secret_1",
     liveUseDelayed: true,
-  }
+  };
 }
 
-describe('executionService', () => {
+describe("executionService", () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    vi.stubGlobal('localStorage', {
+    vi.clearAllMocks();
+    vi.stubGlobal("localStorage", {
       getItem: vi.fn(() => null),
       setItem: vi.fn(),
       removeItem: vi.fn(),
-    })
-  })
+    });
+  });
 
-  it('reads persisted execution keys', () => {
-    const getItem = vi.fn(() => JSON.stringify({ api_key: 'abc', api_secret: 'xyz' }))
-    vi.stubGlobal('localStorage', {
+  it("reads persisted execution keys", () => {
+    const getItem = vi.fn(() =>
+      JSON.stringify({ api_key: "abc", api_secret: "xyz" }),
+    );
+    vi.stubGlobal("localStorage", {
       getItem,
       setItem: vi.fn(),
       removeItem: vi.fn(),
-    })
+    });
 
-    const keys = loadPersistedExecutionKeys()
-    expect(getItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
-    expect(keys).toEqual({ apiKey: 'abc', apiSecret: 'xyz' })
-  })
+    const keys = loadPersistedExecutionKeys();
+    expect(getItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY);
+    expect(keys).toEqual({ apiKey: "abc", apiSecret: "xyz" });
+  });
 
-  it('falls back to empty persisted execution keys when storage payload is malformed', () => {
-    const getItem = vi.fn(() => '{not-json')
-    vi.stubGlobal('localStorage', {
+  it("falls back to empty persisted execution keys when storage payload is malformed", () => {
+    const getItem = vi.fn(() => "{not-json");
+    vi.stubGlobal("localStorage", {
       getItem,
       setItem: vi.fn(),
       removeItem: vi.fn(),
-    })
+    });
 
-    const keys = loadPersistedExecutionKeys()
+    const keys = loadPersistedExecutionKeys();
 
-    expect(getItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
-    expect(keys).toEqual({ apiKey: '', apiSecret: '' })
-  })
+    expect(getItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY);
+    expect(keys).toEqual({ apiKey: "", apiSecret: "" });
+  });
 
-  it('canonicalizes symbols without stripping meaningful punctuation', () => {
-    expect(canonicalSymbol(' brk.b ')).toBe('BRK.B')
-    expect(canonicalSymbol(' spy/iv ')).toBe('SPY/IV')
-  })
+  it("canonicalizes symbols without stripping meaningful punctuation", () => {
+    expect(canonicalSymbol(" brk.b ")).toBe("BRK.B");
+    expect(canonicalSymbol(" spy/iv ")).toBe("SPY/IV");
+  });
 
-  it('clears secure and legacy execution credentials and returns reset summary', async () => {
-    const removeItem = vi.fn()
-    vi.stubGlobal('localStorage', {
+  it("clears secure and legacy execution credentials and returns reset summary", async () => {
+    const removeItem = vi.fn();
+    vi.stubGlobal("localStorage", {
       getItem: vi.fn(() => null),
       setItem: vi.fn(),
       removeItem,
-    })
+    });
 
-    const result = await clearKeys()
-    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_clear_api_credentials')
-    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
-    expect(result.statusLine).toContain('Cleared execution API keys')
-    expect(result.outputPreview).toBe('-')
-    expect(result.liveActive).toBeUndefined()
-    expect(result.runnerActive).toBeUndefined()
-    expect(result.liveStatusHint).toBeUndefined()
-    expect(result.runnerStatusHint).toBeUndefined()
-  })
+    const result = await clearKeys();
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "alpaca_clear_api_credentials",
+    );
+    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY);
+    expect(result.statusLine).toContain("Cleared execution API keys");
+    expect(result.outputPreview).toBe("-");
+    expect(result.liveActive).toBeUndefined();
+    expect(result.runnerActive).toBeUndefined();
+    expect(result.liveStatusHint).toBeUndefined();
+    expect(result.runnerStatusHint).toBeUndefined();
+  });
 
-  it('surfaces secure clear failures while still clearing legacy local storage', async () => {
-    const removeItem = vi.fn()
-    vi.stubGlobal('localStorage', {
+  it("surfaces secure clear failures while still clearing legacy local storage", async () => {
+    const removeItem = vi.fn();
+    vi.stubGlobal("localStorage", {
       getItem: vi.fn(() => null),
       setItem: vi.fn(),
       removeItem,
-    })
-    invokeCommandMock.mockRejectedValueOnce(new Error('Keyring clear failed'))
+    });
+    invokeCommandMock.mockRejectedValueOnce(new Error("Keyring clear failed"));
 
-    await expect(clearKeys()).rejects.toThrow('Keyring clear failed')
+    await expect(clearKeys()).rejects.toThrow("Keyring clear failed");
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_clear_api_credentials')
-    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "alpaca_clear_api_credentials",
+    );
+    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY);
+  });
 
-  it('reads secure credential storage status without secret readback', async () => {
+  it("reads secure credential storage status without secret readback", async () => {
     invokeCommandMock.mockResolvedValue({
       remember_available: true,
       has_api_key: true,
       has_api_secret: true,
       has_credentials: true,
-      state: 'stored',
-      storage_backend: 'keyring',
-    })
+      state: "stored",
+      storage_backend: "keyring",
+    });
 
-    const status = await getStoredExecutionCredentialStatus()
+    const status = await getStoredExecutionCredentialStatus();
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_get_credential_status')
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "alpaca_get_credential_status",
+    );
     expect(status).toEqual({
       rememberAvailable: true,
       hasApiKey: true,
       hasApiSecret: true,
       hasCredentials: true,
-      state: 'stored',
-      storageBackend: 'keyring',
-      message: '',
-    })
-  })
+      state: "stored",
+      storageBackend: "keyring",
+      message: "",
+    });
+  });
 
-  it('keeps execution IPC boundary parsing tolerant for malformed, partial, and extra-field payloads', async () => {
+  it("keeps execution IPC boundary parsing tolerant for malformed, partial, and extra-field payloads", async () => {
     invokeCommandMock
-      .mockResolvedValueOnce('not an object')
-      .mockResolvedValueOnce({ policy: { max_order_notional: '250', ignored_extra: true } })
-      .mockResolvedValueOnce({ notRows: true })
+      .mockResolvedValueOnce("not an object")
+      .mockResolvedValueOnce({
+        policy: { max_order_notional: "250", ignored_extra: true },
+      })
+      .mockResolvedValueOnce({ notRows: true });
 
     await expect(getStoredExecutionCredentialStatus()).resolves.toEqual({
       rememberAvailable: false,
       hasApiKey: false,
       hasApiSecret: false,
       hasCredentials: false,
-      state: 'missing',
-      storageBackend: '',
-      message: '',
-    })
+      state: "missing",
+      storageBackend: "",
+      message: "",
+    });
     await expect(loadExecutionRiskPolicy()).resolves.toEqual({
       max_order_notional: 250,
       max_position_notional: null,
       allow_short: null,
       require_bracket: null,
-    })
-    await expect(listSavedLiveSessions()).resolves.toEqual([])
-  })
+    });
+    await expect(listSavedLiveSessions()).resolves.toEqual([]);
+  });
 
-  it('stores execution credentials through the secure backend command path', async () => {
+  it("stores execution credentials through the secure backend command path", async () => {
     invokeCommandMock.mockResolvedValue({
       remember_available: true,
       has_api_key: true,
       has_api_secret: true,
       has_credentials: true,
-      state: 'stored',
-      storage_backend: 'keyring',
-    })
+      state: "stored",
+      storage_backend: "keyring",
+    });
 
-    const status = await storeExecutionCredentialsSecurely('key_1', 'secret_1')
+    const status = await storeExecutionCredentialsSecurely("key_1", "secret_1");
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_set_api_credentials', {
-      req: { api_key: 'key_1', api_secret: 'secret_1' },
-    })
-    expect(status.state).toBe('stored')
-    expect(status.hasCredentials).toBe(true)
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "alpaca_set_api_credentials",
+      {
+        req: { api_key: "key_1", api_secret: "secret_1" },
+      },
+    );
+    expect(status.state).toBe("stored");
+    expect(status.hasCredentials).toBe(true);
+  });
 
-  it('clears secure execution credentials through the backend command path', async () => {
+  it("clears secure execution credentials through the backend command path", async () => {
     invokeCommandMock.mockResolvedValue({
       remember_available: true,
       has_api_key: false,
       has_api_secret: false,
       has_credentials: false,
-      state: 'missing',
-      storage_backend: 'keyring',
-    })
+      state: "missing",
+      storage_backend: "keyring",
+    });
 
-    const status = await clearStoredExecutionCredentialsSecurely()
+    const status = await clearStoredExecutionCredentialsSecurely();
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_clear_api_credentials')
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "alpaca_clear_api_credentials",
+    );
     expect(status).toEqual({
       rememberAvailable: true,
       hasApiKey: false,
       hasApiSecret: false,
       hasCredentials: false,
-      state: 'missing',
-      storageBackend: 'keyring',
-      message: '',
-    })
-  })
+      state: "missing",
+      storageBackend: "keyring",
+      message: "",
+    });
+  });
 
-  it('migrates legacy stored execution keys into secure storage and clears the legacy payload after success', async () => {
-    const removeItem = vi.fn()
-    vi.stubGlobal('localStorage', {
-      getItem: vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' })),
+  it("migrates legacy stored execution keys into secure storage and clears the legacy payload after success", async () => {
+    const removeItem = vi.fn();
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn(() =>
+        JSON.stringify({ api_key: "legacy_key", api_secret: "legacy_secret" }),
+      ),
       setItem: vi.fn(),
       removeItem,
-    })
+    });
     invokeCommandMock.mockResolvedValue({
       remember_available: true,
       has_api_key: true,
       has_api_secret: true,
       has_credentials: true,
-      state: 'stored',
-      storage_backend: 'keyring',
-    })
+      state: "stored",
+      storage_backend: "keyring",
+    });
 
-    const status = await migrateLegacyStoredExecutionKeysToSecureStorage()
+    const status = await migrateLegacyStoredExecutionKeysToSecureStorage();
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_set_api_credentials', {
-      req: { api_key: 'legacy_key', api_secret: 'legacy_secret' },
-    })
-    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY)
-    expect(status.state).toBe('stored')
-    expect(status.hasCredentials).toBe(true)
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "alpaca_set_api_credentials",
+      {
+        req: { api_key: "legacy_key", api_secret: "legacy_secret" },
+      },
+    );
+    expect(removeItem).toHaveBeenCalledWith(EXEC_KEYS_STORAGE_KEY);
+    expect(status.state).toBe("stored");
+    expect(status.hasCredentials).toBe(true);
+  });
 
-  it('keeps the legacy payload when secure migration fails', async () => {
-    const removeItem = vi.fn()
-    vi.stubGlobal('localStorage', {
-      getItem: vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' })),
+  it("keeps the legacy payload when secure migration fails", async () => {
+    const removeItem = vi.fn();
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn(() =>
+        JSON.stringify({ api_key: "legacy_key", api_secret: "legacy_secret" }),
+      ),
       setItem: vi.fn(),
       removeItem,
-    })
-    invokeCommandMock.mockRejectedValue(new Error('Secure storage unavailable'))
+    });
+    invokeCommandMock.mockRejectedValue(
+      new Error("Secure storage unavailable"),
+    );
 
-    await expect(migrateLegacyStoredExecutionKeysToSecureStorage()).rejects.toThrow(
-      'Secure storage unavailable',
-    )
+    await expect(
+      migrateLegacyStoredExecutionKeysToSecureStorage(),
+    ).rejects.toThrow("Secure storage unavailable");
 
-    expect(removeItem).not.toHaveBeenCalled()
-  })
+    expect(removeItem).not.toHaveBeenCalled();
+  });
 
-  it('tests connection through direct tauri command path', async () => {
+  it("tests connection through direct tauri command path", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'test_alpaca_connection') {
-        return { account_number: 'ABC123', status: 'ACTIVE', fetched_at_unix_ms: 1_744_297_700_000 }
+      if (command === "test_alpaca_connection") {
+        return {
+          account_number: "ABC123",
+          status: "ACTIVE",
+          fetched_at_unix_ms: 1_744_297_700_000,
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await testConnection(baseOptions())
-    expect(invokeCommandMock).toHaveBeenCalledWith('test_alpaca_connection', {
+    const result = await testConnection(baseOptions());
+    expect(invokeCommandMock).toHaveBeenCalledWith("test_alpaca_connection", {
       req: {
-        mode: 'paper',
-        alpaca_api_key: 'key_1',
-        alpaca_api_secret: 'secret_1',
+        mode: "paper",
+        alpaca_api_key: "key_1",
+        alpaca_api_secret: "secret_1",
       },
-    })
-    expect(result.statusHint).toContain('connection OK')
-    expect(result.accountMeta).toContain('Account review: paper')
+    });
+    expect(result.statusHint).toContain("connection OK");
+    expect(result.accountMeta).toContain("Account review: paper");
     expect(result.accountReview).toEqual(
       expect.objectContaining({
-        state: 'broker_confirmed',
-        sourceCommand: 'test_alpaca_connection',
-        accountNumber: 'ABC123',
+        state: "broker_confirmed",
+        sourceCommand: "test_alpaca_connection",
+        accountNumber: "ABC123",
       }),
-    )
+    );
     expect(result.outputPreviewMeta).toEqual(
       expect.objectContaining({
-        sourceCommand: 'test_alpaca_connection',
-        scopeLabel: 'paper account verification',
+        sourceCommand: "test_alpaca_connection",
+        scopeLabel: "paper account verification",
         generatedAtUnixMs: 1_744_297_700_000,
       }),
-    )
-    expect(result.outputPreview).toContain('ABC123')
-  })
+    );
+    expect(result.outputPreview).toContain("ABC123");
+  });
 
-  it('omits Alpaca typed override fields when broker actions rely on stored secure credentials', async () => {
+  it("omits Alpaca typed override fields when broker actions rely on stored secure credentials", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'test_alpaca_connection') {
-        return { account_number: 'ABC123', status: 'ACTIVE' }
+      if (command === "test_alpaca_connection") {
+        return { account_number: "ABC123", status: "ACTIVE" };
       }
-      return {}
-    })
-    const getItem = vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' }))
-    vi.stubGlobal('localStorage', {
+      return {};
+    });
+    const getItem = vi.fn(() =>
+      JSON.stringify({ api_key: "legacy_key", api_secret: "legacy_secret" }),
+    );
+    vi.stubGlobal("localStorage", {
       getItem,
       setItem: vi.fn(),
       removeItem: vi.fn(),
-    })
+    });
 
     await testConnection({
       ...baseOptions(),
-      apiKey: '',
-      apiSecret: '',
-    })
+      apiKey: "",
+      apiSecret: "",
+    });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('test_alpaca_connection', {
+    expect(invokeCommandMock).toHaveBeenCalledWith("test_alpaca_connection", {
       req: {
-        mode: 'paper',
+        mode: "paper",
       },
-    })
-    expect(getItem).not.toHaveBeenCalled()
-  })
+    });
+    expect(getItem).not.toHaveBeenCalled();
+  });
 
-  it('persists remembered typed execution credentials to secure storage only after a successful broker action', async () => {
+  it("persists remembered typed execution credentials to secure storage only after a successful broker action", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'test_alpaca_connection') {
-        return { account_number: 'ABC123', status: 'ACTIVE' }
+      if (command === "test_alpaca_connection") {
+        return { account_number: "ABC123", status: "ACTIVE" };
       }
-      if (command === 'alpaca_set_api_credentials') {
+      if (command === "alpaca_set_api_credentials") {
         return {
           remember_available: true,
           has_api_key: true,
           has_api_secret: true,
           has_credentials: true,
-          state: 'stored',
-          storage_backend: 'keyring',
-        }
+          state: "stored",
+          storage_backend: "keyring",
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await testConnection({
       ...baseOptions(),
       rememberKeys: true,
-    })
+    });
 
     expect(invokeCommandMock.mock.calls).toEqual(
       expect.arrayContaining([
         [
-          'test_alpaca_connection',
+          "test_alpaca_connection",
           {
             req: {
-              mode: 'paper',
-              alpaca_api_key: 'key_1',
-              alpaca_api_secret: 'secret_1',
+              mode: "paper",
+              alpaca_api_key: "key_1",
+              alpaca_api_secret: "secret_1",
             },
           },
         ],
         [
-          'alpaca_set_api_credentials',
+          "alpaca_set_api_credentials",
           {
             req: {
-              api_key: 'key_1',
-              api_secret: 'secret_1',
+              api_key: "key_1",
+              api_secret: "secret_1",
             },
           },
         ],
       ]),
-    )
-  })
+    );
+  });
 
-  it('uses the live Alpaca mode when testing a live broker connection', async () => {
+  it("uses the live Alpaca mode when testing a live broker connection", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'test_alpaca_connection') {
-        return { account_id: 'acct_live', status: 'ACTIVE' }
+      if (command === "test_alpaca_connection") {
+        return { account_id: "acct_live", status: "ACTIVE" };
       }
-      return {}
-    })
+      return {};
+    });
 
     await testConnection({
       ...baseOptions(),
-      mode: 'live',
-    })
+      mode: "live",
+    });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('test_alpaca_connection', {
+    expect(invokeCommandMock).toHaveBeenCalledWith("test_alpaca_connection", {
       req: {
-        mode: 'live',
-        alpaca_api_key: 'key_1',
-        alpaca_api_secret: 'secret_1',
+        mode: "live",
+        alpaca_api_key: "key_1",
+        alpaca_api_secret: "secret_1",
       },
-    })
-  })
+    });
+  });
 
-  it('cancels open orders and refreshes broker review for the current symbol', async () => {
+  it("cancels open orders and refreshes broker review for the current symbol", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'cancel_live_execution_open_orders') {
+      if (command === "cancel_live_execution_open_orders") {
         return {
-          mode: 'paper',
-          symbol: 'AAPL',
+          mode: "paper",
+          symbol: "AAPL",
           open_order_count_before: 2,
           cancelled_count: 2,
-          cancelled_order_ids: ['ord_1', 'ord_2'],
-        }
+          cancelled_order_ids: ["ord_1", "ord_2"],
+        };
       }
-      if (command === 'get_live_execution_snapshot') {
+      if (command === "get_live_execution_snapshot") {
         return {
-          symbol: 'AAPL',
-          account_number: 'ABC123',
-          account_status: 'ACTIVE',
+          symbol: "AAPL",
+          account_number: "ABC123",
+          account_status: "ACTIVE",
           fetched_at_unix_ms: 1_900_000_000_000,
           position: null,
           orders: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await cancelOpenOrders({
       ...baseOptions(),
       dryRun: false,
-    })
+    });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('cancel_live_execution_open_orders', {
-      req: {
-        mode: 'paper',
-        symbol: 'AAPL',
-        alpaca_api_key: 'key_1',
-        alpaca_api_secret: 'secret_1',
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "cancel_live_execution_open_orders",
+      {
+        req: {
+          mode: "paper",
+          symbol: "AAPL",
+          alpaca_api_key: "key_1",
+          alpaca_api_secret: "secret_1",
+        },
       },
-    })
-    expect(invokeCommandMock).toHaveBeenCalledWith('get_live_execution_snapshot', {
-      req: {
-        mode: 'paper',
-        symbol: 'AAPL',
-        limit: 200,
-        include_account: true,
-        include_orders: true,
-        include_position: true,
-        alpaca_api_key: 'key_1',
-        alpaca_api_secret: 'secret_1',
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "get_live_execution_snapshot",
+      {
+        req: {
+          mode: "paper",
+          symbol: "AAPL",
+          limit: 200,
+          include_account: true,
+          include_orders: true,
+          include_position: true,
+          alpaca_api_key: "key_1",
+          alpaca_api_secret: "secret_1",
+        },
       },
-    })
-    expect(result.statusLine).toContain('Cancelled 2 open broker orders for AAPL.')
-    expect(result.reviewMeta).toContain('symbol-scoped AAPL')
-    expect(result.accountReview).toEqual(expect.objectContaining({ accountNumber: 'ABC123' }))
-  })
+    );
+    expect(result.statusLine).toContain(
+      "Cancelled 2 open broker orders for AAPL.",
+    );
+    expect(result.reviewMeta).toContain("symbol-scoped AAPL");
+    expect(result.accountReview).toEqual(
+      expect.objectContaining({ accountNumber: "ABC123" }),
+    );
+  });
 
-  it('flattens the current position and refreshes broker review', async () => {
+  it("flattens the current position and refreshes broker review", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'flatten_live_execution_position') {
+      if (command === "flatten_live_execution_position") {
         return {
-          mode: 'paper',
-          symbol: 'AAPL',
+          mode: "paper",
+          symbol: "AAPL",
           position_found: true,
           open_order_count_before: 0,
           order_submitted: true,
-          order_id: 'ord_flatten',
-          action: 'sell',
+          order_id: "ord_flatten",
+          action: "sell",
           qty: 1,
-        }
+        };
       }
-      if (command === 'get_live_execution_snapshot') {
+      if (command === "get_live_execution_snapshot") {
         return {
-          symbol: 'AAPL',
-          account_number: 'ABC123',
-          account_status: 'ACTIVE',
+          symbol: "AAPL",
+          account_number: "ABC123",
+          account_status: "ACTIVE",
           fetched_at_unix_ms: 1_900_000_000_000,
           position: null,
           orders: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await flattenPosition({
       ...baseOptions(),
       dryRun: false,
-    })
+    });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('flatten_live_execution_position', {
-      req: {
-        mode: 'paper',
-        symbol: 'AAPL',
-        alpaca_api_key: 'key_1',
-        alpaca_api_secret: 'secret_1',
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "flatten_live_execution_position",
+      {
+        req: {
+          mode: "paper",
+          symbol: "AAPL",
+          alpaca_api_key: "key_1",
+          alpaca_api_secret: "secret_1",
+        },
       },
-    })
-    expect(result.statusLine).toContain('Submitted SELL flatten order (id=ord_flatten) for AAPL.')
-    expect(result.statusHint).toContain('Broker review refreshed.')
-  })
+    );
+    expect(result.statusLine).toContain(
+      "Submitted SELL flatten order (id=ord_flatten) for AAPL.",
+    );
+    expect(result.statusHint).toContain("Broker review refreshed.");
+  });
 
-  it('keeps successful flatten submission visible when broker review refresh fails afterward', async () => {
+  it("keeps successful flatten submission visible when broker review refresh fails afterward", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'flatten_live_execution_position') {
+      if (command === "flatten_live_execution_position") {
         return {
-          mode: 'paper',
-          symbol: 'AAPL',
+          mode: "paper",
+          symbol: "AAPL",
           position_found: true,
           open_order_count_before: 0,
           order_submitted: true,
-          order_id: 'ord_flatten',
-          action: 'sell',
+          order_id: "ord_flatten",
+          action: "sell",
           qty: 1,
-        }
+        };
       }
-      if (command === 'get_live_execution_snapshot') {
-        throw new Error('snapshot timeout')
+      if (command === "get_live_execution_snapshot") {
+        throw new Error("snapshot timeout");
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await flattenPosition({
       ...baseOptions(),
       dryRun: false,
-    })
+    });
 
-    expect(result.statusLine).toContain('Submitted SELL flatten order (id=ord_flatten) for AAPL.')
-    expect(result.statusLine).toContain('Broker review refresh failed.')
-    expect(result.statusHint).toContain('Broker-side flatten handling still succeeded.')
-    expect(result.statusHint).toContain('Refresh orders manually now.')
-    expect(result.brokerReviewRefreshRequired).toBe(true)
-    expect(result.prependOrderRows?.[0]?.cells?.[2]).toBe('submitted*')
-  })
+    expect(result.statusLine).toContain(
+      "Submitted SELL flatten order (id=ord_flatten) for AAPL.",
+    );
+    expect(result.statusLine).toContain("Broker review refresh failed.");
+    expect(result.statusHint).toContain(
+      "Broker-side flatten handling still succeeded.",
+    );
+    expect(result.statusHint).toContain("Refresh orders manually now.");
+    expect(result.brokerReviewRefreshRequired).toBe(true);
+    expect(result.prependOrderRows?.[0]?.cells?.[2]).toBe("submitted*");
+  });
 
-  it('emergency halt disarms local live automation and requires manual review', async () => {
+  it("emergency halt disarms local live automation and requires manual review", async () => {
     invokeCommandMock.mockResolvedValue({
       runner_stopped: true,
       live_stopped: true,
-      live_symbol: 'AAPL',
+      live_symbol: "AAPL",
       requires_manual_review: true,
-      status_message: 'Emergency halt applied. Live feed and auto-runner stopped. Refresh orders before re-arming.',
-    })
+      status_message:
+        "Emergency halt applied. Live feed and auto-runner stopped. Refresh orders before re-arming.",
+    });
 
-    const result = await emergencyHalt()
+    const result = await emergencyHalt();
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('emergency_halt_live_execution')
-    expect(result.statusLine).toContain('Emergency halt applied.')
-    expect(result.liveStatusHint).toContain('Live candles stopped for AAPL.')
-    expect(result.runnerStatusHint).toBe('Auto-runner stopped.')
-    expect(result.recoveryReviewRequired).toBe(true)
-    expect(result.liveActive).toBe(false)
-    expect(result.runnerActive).toBe(false)
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "emergency_halt_live_execution",
+    );
+    expect(result.statusLine).toContain("Emergency halt applied.");
+    expect(result.liveStatusHint).toContain("Live candles stopped for AAPL.");
+    expect(result.runnerStatusHint).toBe("Auto-runner stopped.");
+    expect(result.recoveryReviewRequired).toBe(true);
+    expect(result.liveActive).toBe(false);
+    expect(result.runnerActive).toBe(false);
+  });
 
-  it('uses the live Alpaca mode when refreshing a live broker snapshot', async () => {
+  it("uses the live Alpaca mode when refreshing a live broker snapshot", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'get_live_execution_snapshot') {
+      if (command === "get_live_execution_snapshot") {
         return {
-          symbol: 'AAPL',
+          symbol: "AAPL",
           position: null,
           orders: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await refreshOrders({
       ...baseOptions(),
-      mode: 'live',
-    })
+      mode: "live",
+    });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('get_live_execution_snapshot', {
-      req: expect.objectContaining({
-        mode: 'live',
-        symbol: 'AAPL',
-      }),
-    })
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "get_live_execution_snapshot",
+      {
+        req: expect.objectContaining({
+          mode: "live",
+          symbol: "AAPL",
+        }),
+      },
+    );
+  });
 
-  it('refreshes orders with the lean broker snapshot flags', async () => {
+  it("refreshes orders with the lean broker snapshot flags", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'get_live_execution_snapshot') {
+      if (command === "get_live_execution_snapshot") {
         return {
-          symbol: 'AAPL',
+          symbol: "AAPL",
           position: null,
           orders: [],
           fetched_at_unix_ms: 1_744_297_700_000,
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await refreshOrders(baseOptions())
+    const result = await refreshOrders(baseOptions());
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('get_live_execution_snapshot', {
-      req: expect.objectContaining({
-        mode: 'paper',
-        symbol: 'AAPL',
-        include_account: true,
-        include_orders: true,
-        include_position: true,
-      }),
-    })
-    expect(result.statusLine).toContain('recent orders for AAPL')
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "get_live_execution_snapshot",
+      {
+        req: expect.objectContaining({
+          mode: "paper",
+          symbol: "AAPL",
+          include_account: true,
+          include_orders: true,
+          include_position: true,
+        }),
+      },
+    );
+    expect(result.statusLine).toContain("recent orders for AAPL");
+  });
 
-  it('refreshes orders without reading legacy local storage when no typed override is provided', async () => {
-    const getItem = vi.fn(() => JSON.stringify({ api_key: 'legacy_key', api_secret: 'legacy_secret' }))
-    vi.stubGlobal('localStorage', {
+  it("refreshes orders without reading legacy local storage when no typed override is provided", async () => {
+    const getItem = vi.fn(() =>
+      JSON.stringify({ api_key: "legacy_key", api_secret: "legacy_secret" }),
+    );
+    vi.stubGlobal("localStorage", {
       getItem,
       setItem: vi.fn(),
       removeItem: vi.fn(),
-    })
+    });
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'get_live_execution_snapshot') {
+      if (command === "get_live_execution_snapshot") {
         return {
-          symbol: 'AAPL',
+          symbol: "AAPL",
           position: null,
           orders: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await refreshOrders({
       ...baseOptions(),
-      apiKey: '',
-      apiSecret: '',
-    })
+      apiKey: "",
+      apiSecret: "",
+    });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('get_live_execution_snapshot', {
-      req: expect.objectContaining({
-        mode: 'paper',
-        symbol: 'AAPL',
-      }),
-    })
-    const request = invokeCommandMock.mock.calls[0]?.[1] as { req: Record<string, unknown> } | undefined
-    expect(request?.req).not.toHaveProperty('alpaca_api_key')
-    expect(request?.req).not.toHaveProperty('alpaca_api_secret')
-    expect(getItem).not.toHaveBeenCalled()
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "get_live_execution_snapshot",
+      {
+        req: expect.objectContaining({
+          mode: "paper",
+          symbol: "AAPL",
+        }),
+      },
+    );
+    const request = invokeCommandMock.mock.calls[0]?.[1] as
+      | { req: Record<string, unknown> }
+      | undefined;
+    expect(request?.req).not.toHaveProperty("alpaca_api_key");
+    expect(request?.req).not.toHaveProperty("alpaca_api_secret");
+    expect(getItem).not.toHaveBeenCalled();
+  });
 
-  it('rejects broker order review without an explicit symbol', async () => {
+  it("rejects broker order review without an explicit symbol", async () => {
     await expect(
       refreshOrders({
         ...baseOptions(),
-        symbol: '',
+        symbol: "",
       }),
-    ).rejects.toThrow('Execution symbol is required')
-  })
+    ).rejects.toThrow("Execution symbol is required");
+  });
 
-  it('resets the local paper broker and returns the reset snapshot review', async () => {
+  it("resets the local paper broker and returns the reset snapshot review", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'reset_local_paper_broker') {
+      if (command === "reset_local_paper_broker") {
         return {
           snapshot: {
-            symbol: '',
-            account_number: 'local-paper',
-            account_status: 'simulated',
-            cash: '100000.00',
-            buying_power: '100000.00',
-            portfolio_value: '100000.00',
+            symbol: "",
+            account_number: "local-paper",
+            account_status: "simulated",
+            cash: "100000.00",
+            buying_power: "100000.00",
+            portfolio_value: "100000.00",
             orders: [],
             fetched_at_unix_ms: 1_744_297_700_000,
           },
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await resetLocalPaperBroker({
       ...baseOptions(),
-      executionTarget: 'local_paper',
-    })
+      executionTarget: "local_paper",
+    });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('reset_local_paper_broker')
-    expect(result.statusLine).toBe('Local paper broker reset.')
-    expect(result.accountReview).toEqual(expect.objectContaining({
-      accountNumber: 'local-paper',
-      status: 'simulated',
-    }))
-    expect(result.orderCount).toBe(0)
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith("reset_local_paper_broker");
+    expect(result.statusLine).toBe("Local paper broker reset.");
+    expect(result.accountReview).toEqual(
+      expect.objectContaining({
+        accountNumber: "local-paper",
+        status: "simulated",
+      }),
+    );
+    expect(result.orderCount).toBe(0);
+  });
 
-  it('maps broker refresh into confirmed flat review state and chart metadata', async () => {
-    const freshNow = Date.now()
+  it("maps broker refresh into confirmed flat review state and chart metadata", async () => {
+    const freshNow = Date.now();
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'get_live_execution_snapshot') {
+      if (command === "get_live_execution_snapshot") {
         return {
-          symbol: 'AAPL',
-          account_number: 'ABC123',
-          account_status: 'ACTIVE',
-          currency: 'USD',
+          symbol: "AAPL",
+          account_number: "ABC123",
+          account_status: "ACTIVE",
+          currency: "USD",
           fetched_at_unix_ms: freshNow,
           position: null,
           orders: [
             {
-              id: 'ord_123',
-              side: 'buy',
-              status: 'filled',
-              qty: '1',
-              filled_qty: '1',
-              filled_avg_price: '182.4',
-              submitted_at: '2026-04-10T14:55:00Z',
+              id: "ord_123",
+              side: "buy",
+              status: "filled",
+              qty: "1",
+              filled_qty: "1",
+              filled_avg_price: "182.4",
+              order_type: "stop",
+              stop_price: "178.5",
+              bracket_leg: "stop_loss",
+              tie_break: "stop_loss_first",
+              parent_order_id: "parent_123",
+              submitted_at: "2026-04-10T14:55:00Z",
             },
           ],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await refreshOrders(baseOptions())
+    const result = await refreshOrders(baseOptions());
 
-    expect(result.positionMeta).toBe('Position: flat')
-    expect(result.orderCount).toBe(1)
-    expect(result.orderRows?.[0]?.cells?.[1]).toBe('buy')
-    expect(result.chartMeta).toBe('Execution chart loaded for AAPL with 1 broker-confirmed order marker.')
-    expect(result.reviewMeta).toContain('Broker review: paper symbol-scoped AAPL')
-    expect(result.reviewMeta).toContain('0 open orders')
+    expect(result.positionMeta).toBe("Position: flat");
+    expect(result.orderCount).toBe(1);
+    expect(result.orderRows?.[0]?.cells?.[1]).toBe("buy");
+    expect(result.orderRows?.[0]?.cells?.[7]).toBe("stop 178.5");
+    expect(result.orderRows?.[0]?.cells?.[8]).toBe(
+      "stop_loss · stop_loss_first",
+    );
+    expect(result.orderRows?.[0]?.cells?.[9]).toBe("parent_123");
+    expect(result.chartMeta).toBe(
+      "Execution chart loaded for AAPL with 1 broker-confirmed order marker.",
+    );
+    expect(result.reviewMeta).toContain(
+      "Broker review: paper symbol-scoped AAPL",
+    );
+    expect(result.reviewMeta).toContain("0 open orders");
     expect(result.accountReview).toEqual(
       expect.objectContaining({
-        state: 'broker_confirmed',
-        accountNumber: 'ABC123',
-        status: 'ACTIVE',
+        state: "broker_confirmed",
+        accountNumber: "ABC123",
+        status: "ACTIVE",
       }),
-    )
+    );
     expect(result.brokerReview).toEqual(
       expect.objectContaining({
-        symbol: 'AAPL',
-        sourceCommand: 'get_live_execution_snapshot',
+        symbol: "AAPL",
+        sourceCommand: "get_live_execution_snapshot",
         fetchedAtUnixMs: freshNow,
       }),
-    )
+    );
     expect(result.outputPreviewMeta).toEqual(
       expect.objectContaining({
-        sourceCommand: 'get_live_execution_snapshot',
-        scopeLabel: 'symbol-scoped AAPL',
+        sourceCommand: "get_live_execution_snapshot",
+        scopeLabel: "symbol-scoped AAPL",
       }),
-    )
-    expect(result.outputPreview).toContain('"ord_123"')
-  })
+    );
+    expect(result.outputPreview).toContain('"ord_123"');
+  });
 
-  it('parses rich live stream status metadata during status refresh', async () => {
+  it("parses rich live stream status metadata during status refresh", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'live_execution_runner_status') {
-        return { active: false }
+      if (command === "live_execution_runner_status") {
+        return { active: false };
       }
-      if (command === 'polygon_live_candle_stream_status') {
+      if (command === "polygon_live_candle_stream_status") {
         return {
           active: true,
           stream: {
-            symbol: ' brk.b ',
+            symbol: " brk.b ",
             delayed: true,
-            market: 'stocks',
-            status: 'started',
-            last_message: 'started live candle stream task',
+            market: "stocks",
+            status: "started",
+            last_message: "started live candle stream task",
             last_status_at_unix_ms: 1_700_000_000_000,
             last_accepted_bar_open_unix_ms: 1_700_000_060_000,
             last_accepted_bar_close_unix_ms: 1_700_000_119_999,
             last_accepted_bar_received_at_unix_ms: 1_700_000_120_500,
           },
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await refreshStatuses()
+    const result = await refreshStatuses();
 
-    expect(result.liveActive).toBe(true)
-    expect(result.liveSymbol).toBe('BRK.B')
-    expect(result.liveDelayed).toBe(true)
-    expect(result.liveLifecycleState).toBe('started')
-    expect(result.liveStatusHint).toContain('BRK.B')
-    expect(result.liveStatusHint).toContain('[delayed]')
-    expect(result.liveStatusHint).toContain('last bar received=2023-11-14 22:15:20')
-  })
+    expect(result.liveActive).toBe(true);
+    expect(result.liveSymbol).toBe("BRK.B");
+    expect(result.liveDelayed).toBe(true);
+    expect(result.liveLifecycleState).toBe("started");
+    expect(result.liveStatusHint).toContain("BRK.B");
+    expect(result.liveStatusHint).toContain("[delayed]");
+    expect(result.liveStatusHint).toContain(
+      "last bar received=2023-11-14 22:15:20",
+    );
+  });
 
-  it('keeps Polygon live-status parsing aligned with the current backend event vocabulary', () => {
+  it("keeps Polygon live-status parsing aligned with the current backend event vocabulary", () => {
     expect(
       parsePolygonLiveStatusEvent({
-        status: 'connecting',
-        symbol: ' brk.b ',
+        status: "connecting",
+        symbol: " brk.b ",
         delayed: true,
-        message: 'connecting to delayed websocket',
+        message: "connecting to delayed websocket",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'connecting',
-        symbol: 'BRK.B',
+        status: "connecting",
+        symbol: "BRK.B",
         active: true,
         delayed: true,
       }),
-    )
+    );
 
     expect(
       parsePolygonLiveStatusEvent({
-        status: 'subscribed',
-        symbol: ' brk.b ',
+        status: "subscribed",
+        symbol: " brk.b ",
         delayed: false,
-        message: 'subscribed to minute aggregates',
+        message: "subscribed to minute aggregates",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'subscribed',
-        symbol: 'BRK.B',
+        status: "subscribed",
+        symbol: "BRK.B",
         active: true,
         delayed: false,
       }),
-    )
+    );
 
     expect(
       parsePolygonLiveStatusEvent({
-        status: 'closed',
-        symbol: ' brk.b ',
+        status: "closed",
+        symbol: " brk.b ",
         delayed: true,
-        message: 'stream ended',
+        message: "stream ended",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'closed',
-        symbol: 'BRK.B',
+        status: "closed",
+        symbol: "BRK.B",
         active: false,
         delayed: true,
       }),
-    )
+    );
 
     expect(
       parsePolygonLiveStatusEvent({
-        status: 'error',
-        symbol: ' brk.b ',
+        status: "error",
+        symbol: " brk.b ",
         delayed: true,
-        message: 'stream read failed: websocket reset',
+        message: "stream read failed: websocket reset",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'error',
-        symbol: 'BRK.B',
+        status: "error",
+        symbol: "BRK.B",
         active: false,
         delayed: true,
-        message: 'Live feed for BRK.B [delayed] disconnected while reading market data. Check Polygon connectivity, then refresh broker review before re-arming automation.',
+        message:
+          "Live feed for BRK.B [delayed] disconnected while reading market data. Check Polygon connectivity, then refresh broker review before re-arming automation.",
       }),
-    )
+    );
 
-    expect(parsePolygonLiveStatusEvent({ status: 'stopped', symbol: ' msft ' }).active).toBe(false)
-  })
+    expect(
+      parsePolygonLiveStatusEvent({ status: "stopped", symbol: " msft " })
+        .active,
+    ).toBe(false);
+  });
 
-  it('includes runner counters and mode details in the combined status refresh summary', async () => {
+  it("includes runner counters and mode details in the combined status refresh summary", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'live_execution_runner_status') {
+      if (command === "live_execution_runner_status") {
         return {
           active: true,
           inflight: true,
           run_count: 4,
           skip_count: 1,
           error_count: 2,
-          last_action: 'buy',
-          last_order_id: 'ord_987',
+          last_action: "buy",
+          last_order_id: "ord_987",
           last_completed_at_unix_ms: 1_700_000_123_000,
-          last_error: 'runner execution failed: failed to submit Alpaca order: timeout',
+          last_error:
+            "runner execution failed: failed to submit Alpaca order: timeout",
           config: {
-            symbol: ' brk.b ',
-            mode: 'live',
+            symbol: " brk.b ",
+            mode: "live",
             dry_run: false,
           },
-        }
+        };
       }
-      if (command === 'polygon_live_candle_stream_status') {
+      if (command === "polygon_live_candle_stream_status") {
         return {
           active: true,
-          stream: { symbol: ' brk.b ', delayed: false, market: 'stocks' },
-        }
+          stream: { symbol: " brk.b ", delayed: false, market: "stocks" },
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await refreshStatuses()
+    const result = await refreshStatuses();
 
-    expect(result.runnerActive).toBe(true)
-    expect(result.runnerStatusHint).toContain('BRK.B, live, broker')
-    expect(result.runnerStatusHint).toContain('runs=4')
-    expect(result.runnerStatusHint).toContain('skips=1')
-    expect(result.runnerStatusHint).toContain('errs=2')
-    expect(result.runnerStatusHint).toContain('[in-flight]')
-    expect(result.runnerStatusHint).toContain('last action=buy')
-    expect(result.runnerStatusHint).toContain('order=ord_987')
-    expect(result.runnerStatusHint).toContain('completed=2023-11-14 22:15:23')
-    expect(result.runnerStatusHint).toContain('Last failure: Execution failed. Broker order submission failed.')
-    expect(result.liveActive).toBe(true)
-    expect(result.liveSymbol).toBe('BRK.B')
-    expect(result.liveDelayed).toBe(false)
-  })
+    expect(result.runnerActive).toBe(true);
+    expect(result.runnerStatusHint).toContain("BRK.B, live, broker");
+    expect(result.runnerStatusHint).toContain("runs=4");
+    expect(result.runnerStatusHint).toContain("skips=1");
+    expect(result.runnerStatusHint).toContain("errs=2");
+    expect(result.runnerStatusHint).toContain("[in-flight]");
+    expect(result.runnerStatusHint).toContain("last action=buy");
+    expect(result.runnerStatusHint).toContain("order=ord_987");
+    expect(result.runnerStatusHint).toContain("completed=2023-11-14 22:15:23");
+    expect(result.runnerStatusHint).toContain(
+      "Last failure: Execution failed. Broker order submission failed.",
+    );
+    expect(result.liveActive).toBe(true);
+    expect(result.liveSymbol).toBe("BRK.B");
+    expect(result.liveDelayed).toBe(false);
+  });
 
-  it('falls back to the latest triggered time when the runner has not completed a cycle yet', async () => {
+  it("falls back to the latest triggered time when the runner has not completed a cycle yet", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'live_execution_runner_status') {
+      if (command === "live_execution_runner_status") {
         return {
           active: true,
           inflight: false,
@@ -957,76 +1075,85 @@ describe('executionService', () => {
           error_count: 0,
           last_triggered_at_unix_ms: 1_700_000_180_000,
           config: {
-            symbol: 'AAPL',
-            mode: 'paper',
+            symbol: "AAPL",
+            mode: "paper",
             dry_run: true,
           },
-        }
+        };
       }
-      if (command === 'polygon_live_candle_stream_status') {
+      if (command === "polygon_live_candle_stream_status") {
         return {
           active: true,
-          stream: { symbol: 'AAPL', delayed: true, market: 'stocks', status: 'started' },
-        }
+          stream: {
+            symbol: "AAPL",
+            delayed: true,
+            market: "stocks",
+            status: "started",
+          },
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await refreshStatuses()
+    const result = await refreshStatuses();
 
-    expect(result.runnerStatusHint).toContain('triggered=2023-11-14 22:16:20')
-    expect(result.runnerStatusHint).not.toContain('completed=')
-  })
+    expect(result.runnerStatusHint).toContain("triggered=2023-11-14 22:16:20");
+    expect(result.runnerStatusHint).not.toContain("completed=");
+  });
 
-  it('degrades status refresh hints gracefully when live or runner status commands fail', async () => {
+  it("degrades status refresh hints gracefully when live or runner status commands fail", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'live_execution_runner_status') {
-        throw new Error('runner status unavailable')
+      if (command === "live_execution_runner_status") {
+        throw new Error("runner status unavailable");
       }
-      if (command === 'polygon_live_candle_stream_status') {
-        throw new Error('live status unavailable')
+      if (command === "polygon_live_candle_stream_status") {
+        throw new Error("live status unavailable");
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await refreshStatuses()
+    const result = await refreshStatuses();
 
-    expect(result.statusLine).toBe('Execution status refreshed with warnings.')
-    expect(result.statusHint).toContain('Auto-runner status refresh unavailable.')
-    expect(result.statusHint).toContain('Live-feed status refresh unavailable.')
-    expect(result.runnerStatusHint).toBe('Auto-runner status unavailable.')
-    expect(result.runnerActive).toBeUndefined()
-    expect(result.liveStatusHint).toBe('Live status unavailable.')
-    expect(result.liveActive).toBeUndefined()
-    expect(result.liveSymbol).toBeUndefined()
-    expect(result.liveDelayed).toBeUndefined()
-  })
+    expect(result.statusLine).toBe("Execution status refreshed with warnings.");
+    expect(result.statusHint).toContain(
+      "Auto-runner status refresh unavailable.",
+    );
+    expect(result.statusHint).toContain(
+      "Live-feed status refresh unavailable.",
+    );
+    expect(result.runnerStatusHint).toBe("Auto-runner status unavailable.");
+    expect(result.runnerActive).toBeUndefined();
+    expect(result.liveStatusHint).toBe("Live status unavailable.");
+    expect(result.liveActive).toBeUndefined();
+    expect(result.liveSymbol).toBeUndefined();
+    expect(result.liveDelayed).toBeUndefined();
+  });
 
-  it('rejects auto-runner start when live candles are active for another symbol', async () => {
+  it("rejects auto-runner start when live candles are active for another symbol", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'polygon_live_candle_stream_status') {
+      if (command === "polygon_live_candle_stream_status") {
         return {
           active: true,
-          stream: { symbol: 'TSLA', delayed: true, market: 'stocks' },
-        }
+          stream: { symbol: "TSLA", delayed: true, market: "stocks" },
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await expect(startRunner(baseOptions())).rejects.toThrow(
-      'Live candles are active for TSLA, not AAPL.',
-    )
-  })
+      "Live candles are active for TSLA, not AAPL.",
+    );
+  });
 
-  it('starts the auto-runner through the direct tauri command path and reflects the returned status summary', async () => {
+  it("starts the auto-runner through the direct tauri command path and reflects the returned status summary", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'polygon_live_candle_stream_status') {
+      if (command === "polygon_live_candle_stream_status") {
         return {
           active: true,
-          stream: { symbol: 'AAPL', delayed: true, market: 'stocks' },
-        }
+          stream: { symbol: "AAPL", delayed: true, market: "stocks" },
+        };
       }
-      if (command === 'start_live_execution_runner') {
+      if (command === "start_live_execution_runner") {
         return {
           active: true,
           inflight: false,
@@ -1034,148 +1161,170 @@ describe('executionService', () => {
           skip_count: 0,
           error_count: 0,
           config: {
-            symbol: 'AAPL',
-            mode: 'paper',
+            symbol: "AAPL",
+            mode: "paper",
             dry_run: true,
           },
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    const result = await startRunner(baseOptions())
+    const result = await startRunner(baseOptions());
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('start_live_execution_runner', {
-      req: expect.objectContaining({
-        symbol: 'AAPL',
-        qty: 1,
-        mode: 'paper',
-        dry_run: true,
-      }),
-    })
-    expect(result.statusLine).toBe('Auto-runner started for AAPL.')
-    expect(result.runnerStatusHint).toContain('Auto-runner: on (AAPL, paper, dry-run)')
-    expect(result.runnerActive).toBe(true)
-    expect(result.liveSymbol).toBe('AAPL')
-    expect(result.liveDelayed).toBe(true)
-  })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "start_live_execution_runner",
+      {
+        req: expect.objectContaining({
+          symbol: "AAPL",
+          qty: 1,
+          mode: "paper",
+          dry_run: true,
+        }),
+      },
+    );
+    expect(result.statusLine).toBe("Auto-runner started for AAPL.");
+    expect(result.runnerStatusHint).toContain(
+      "Auto-runner: on (AAPL, paper, dry-run)",
+    );
+    expect(result.runnerActive).toBe(true);
+    expect(result.liveSymbol).toBe("AAPL");
+    expect(result.liveDelayed).toBe(true);
+  });
 
-  it('treats queued runner events as active and preserves error events as state-neutral', () => {
+  it("treats queued runner events as active and preserves error events as state-neutral", () => {
     expect(
       parseRunnerEvent({
-        status: 'queued_latest',
-        symbol: ' aapl ',
-        message: 'runner queued latest live bar while prior run was still in flight',
+        status: "queued_latest",
+        symbol: " aapl ",
+        message:
+          "runner queued latest live bar while prior run was still in flight",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'queued_latest',
-        symbol: 'AAPL',
+        status: "queued_latest",
+        symbol: "AAPL",
         active: true,
       }),
-    )
+    );
 
     expect(
       parseRunnerEvent({
-        status: 'error',
-        symbol: ' aapl ',
-        message: 'runner execution failed: failed to submit Alpaca order: network timeout',
+        status: "error",
+        symbol: " aapl ",
+        message:
+          "runner execution failed: failed to submit Alpaca order: network timeout",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'error',
-        symbol: 'AAPL',
+        status: "error",
+        symbol: "AAPL",
         active: null,
-        message: 'Auto-runner for AAPL execution failed. Broker order submission failed. Confirm credentials, buying power, and broker availability, then retry.',
+        message:
+          "Auto-runner for AAPL execution failed. Broker order submission failed. Confirm credentials, buying power, and broker availability, then retry.",
       }),
-    )
-  })
+    );
+  });
 
-  it('normalizes broker-facing operator errors into action-oriented wording', () => {
-    expect(normalizeExecutionOperatorError('failed to fetch Alpaca orders: timeout')).toBe(
-      'Broker order review failed. Check Alpaca connectivity, then refresh again.',
-    )
-    expect(normalizeExecutionOperatorError('failed to submit Alpaca order: timeout')).toBe(
-      'Broker order submission failed. Confirm credentials, buying power, and broker availability, then retry.',
-    )
-  })
+  it("normalizes broker-facing operator errors into action-oriented wording", () => {
+    expect(
+      normalizeExecutionOperatorError("failed to fetch Alpaca orders: timeout"),
+    ).toBe(
+      "Broker order review failed. Check Alpaca connectivity, then refresh again.",
+    );
+    expect(
+      normalizeExecutionOperatorError("failed to submit Alpaca order: timeout"),
+    ).toBe(
+      "Broker order submission failed. Confirm credentials, buying power, and broker availability, then retry.",
+    );
+  });
 
-  it('executes runOnce via direct command path and returns optimistic order feedback without auto-refresh', async () => {
+  it("executes runOnce via direct command path and returns optimistic order feedback without auto-refresh", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'execute_strategy_signal_once') {
+      if (command === "execute_strategy_signal_once") {
         return {
-          action: 'buy',
+          action: "buy",
           order_submitted: true,
-          order_id: 'ord_123',
+          order_id: "ord_123",
           delta_qty: 1,
           warnings: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await runOnce({
       ...baseOptions(),
       dryRun: false,
-    })
+    });
 
-    expect(readLatestWorkflowRunSnapshotMock).toHaveBeenCalled()
-    expect(resolveExecutionTopRowSnapshotMock).toHaveBeenCalledWith('selected')
-    expect(buildExecutionStrategyFromRunContextMock).toHaveBeenCalled()
-    expect(invokeCommandMock).toHaveBeenCalledWith('execute_strategy_signal_once', expect.any(Object))
-    expect(invokeCommandMock).toHaveBeenCalledWith('alpaca_set_api_credentials', {
-      req: {
-        api_key: 'key_1',
-        api_secret: 'secret_1',
+    expect(readLatestWorkflowRunSnapshotMock).toHaveBeenCalled();
+    expect(resolveExecutionTopRowSnapshotMock).toHaveBeenCalledWith("selected");
+    expect(buildExecutionStrategyFromRunContextMock).toHaveBeenCalled();
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "execute_strategy_signal_once",
+      expect.any(Object),
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "alpaca_set_api_credentials",
+      {
+        req: {
+          api_key: "key_1",
+          api_secret: "secret_1",
+        },
       },
-    })
-    expect(result.statusLine).toContain('Submitted BUY order')
-    expect(result.prependOrderRows?.[0]?.cells?.[1]).toBe('buy')
-    expect(result.brokerReviewRefreshRequired).toBe(true)
-  })
+    );
+    expect(result.statusLine).toContain("Submitted BUY order");
+    expect(result.prependOrderRows?.[0]?.cells?.[1]).toBe("buy");
+    expect(result.brokerReviewRefreshRequired).toBe(true);
+  });
 
-  it('rounds execution quantities at decimal 1e-4 boundaries before invoking the backend', async () => {
+  it("rounds execution quantities at decimal 1e-4 boundaries before invoking the backend", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'execute_strategy_signal_once') {
+      if (command === "execute_strategy_signal_once") {
         return {
-          action: 'hold',
+          action: "hold",
           order_submitted: false,
           warnings: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await runOnce({
       ...baseOptions(),
-      qty: '0.00015',
-    })
+      qty: "0.00015",
+    });
 
-    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
-    expect((call?.[1] as { req?: { qty?: number } })?.req?.qty).toBe(0.0002)
-  })
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "execute_strategy_signal_once",
+    );
+    expect((call?.[1] as { req?: { qty?: number } })?.req?.qty).toBe(0.0002);
+  });
 
-  it('passes execution risk policy fields through runOnce request payloads', async () => {
+  it("passes execution risk policy fields through runOnce request payloads", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'execute_strategy_signal_once') {
+      if (command === "execute_strategy_signal_once") {
         return {
-          action: 'hold',
+          action: "hold",
           order_submitted: false,
           warnings: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await runOnce({
       ...baseOptions(),
-      riskMaxOrderNotional: '500',
-      riskMaxPositionNotional: '1000.50',
+      riskMaxOrderNotional: "500",
+      riskMaxPositionNotional: "1000.50",
       riskAllowShort: false,
       riskRequireBracket: true,
-    })
+    });
 
-    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "execute_strategy_signal_once",
+    );
     expect(call?.[1]).toEqual({
       req: expect.objectContaining({
         risk: expect.objectContaining({
@@ -1185,268 +1334,365 @@ describe('executionService', () => {
           require_bracket: true,
         }),
       }),
-    })
-  })
+    });
+  });
 
-  it('loads, saves, and previews execution risk policy through backend commands', async () => {
+  it("loads, saves, and previews execution risk policy through backend commands", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'get_execution_risk_policy') {
-        return { policy: { max_order_notional: 250, allow_short: false } }
+      if (command === "get_execution_risk_policy") {
+        return { policy: { max_order_notional: 250, allow_short: false } };
       }
-      if (command === 'set_execution_risk_policy') {
-        return { policy: { max_order_notional: 500, require_bracket: true } }
+      if (command === "set_execution_risk_policy") {
+        return { policy: { max_order_notional: 500, require_bracket: true } };
       }
-      if (command === 'preview_execution_policy_decision') {
+      if (command === "preview_execution_policy_decision") {
         return {
-          symbol: 'AAPL',
+          symbol: "AAPL",
           decision: {
             allowed: false,
-            code: 'max_order_notional_exceeded',
-            message: 'Order notional exceeds policy cap.',
+            code: "max_order_notional_exceeded",
+            message: "Order notional exceeds policy cap.",
           },
-          warnings: ['Policy preview does not fetch Alpaca position.'],
-        }
+          warnings: ["Policy preview does not fetch Alpaca position."],
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await expect(loadExecutionRiskPolicy()).resolves.toEqual({
       max_order_notional: 250,
       max_position_notional: null,
       allow_short: false,
       require_bracket: null,
-    })
-    await expect(saveExecutionRiskPolicy({ max_order_notional: 500, require_bracket: true })).resolves.toEqual({
+    });
+    await expect(
+      saveExecutionRiskPolicy({
+        max_order_notional: 500,
+        require_bracket: true,
+      }),
+    ).resolves.toEqual({
       max_order_notional: 500,
       max_position_notional: null,
       allow_short: null,
       require_bracket: true,
-    })
-    const preview = await previewExecutionRiskPolicy(baseOptions())
+    });
+    const preview = await previewExecutionRiskPolicy(baseOptions());
 
-    expect(preview.statusLine).toBe('Execution policy preview blocked: max_order_notional_exceeded.')
-    expect(preview.statusHint).toContain('Order notional exceeds policy cap.')
-    expect(invokeCommandMock).toHaveBeenCalledWith('preview_execution_policy_decision', {
-      req: expect.objectContaining({ symbol: 'AAPL' }),
-    })
-  })
+    expect(preview.statusLine).toBe(
+      "Execution policy preview blocked: max_order_notional_exceeded.",
+    );
+    expect(preview.statusHint).toContain("Order notional exceeds policy cap.");
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "preview_execution_policy_decision",
+      {
+        req: expect.objectContaining({ symbol: "AAPL" }),
+      },
+    );
+  });
 
-  it('loads the backend execution strategy support matrix', async () => {
+  it("summarizes local paper bracket preview legs without broker-confirmed order rows", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      symbol: "AAPL",
+      decision: {
+        allowed: true,
+        code: "allowed",
+        message: "Execution policy allowed the current signal.",
+      },
+      bracket_preview: {
+        source: "local_paper_preview",
+        preview_only: true,
+        entry_side: "buy",
+        entry_price: 100,
+        qty: 2,
+        time_in_force: "gtc",
+        tie_break: "stop_loss_first",
+        legs: [
+          {
+            leg: "stop_loss",
+            side: "sell",
+            order_type: "stop",
+            qty: 2,
+            stop_price: 95,
+            trigger: "stop 95.000000",
+            status: "preview_only",
+          },
+          {
+            leg: "take_profit",
+            side: "sell",
+            order_type: "limit",
+            qty: 2,
+            limit_price: 110,
+            trigger: "limit 110.000000",
+            status: "preview_only",
+          },
+        ],
+      },
+      warnings: [],
+    });
+
+    const preview = await previewExecutionRiskPolicy({
+      ...baseOptions(),
+      executionTarget: "local_paper",
+      qty: "2",
+      riskStopLossPct: "5",
+      riskTakeProfitPct: "10",
+    });
+
+    expect(preview.statusLine).toBe("Execution policy preview allowed.");
+    expect(preview.statusHint).toContain("Local paper bracket preview only");
+    expect(preview.statusHint).toContain("stop loss: sell stop 95.000000");
+    expect(preview.statusHint).toContain("take profit: sell limit 110.000000");
+    expect(preview.orderRows).toBeUndefined();
+  });
+
+  it("loads the backend execution strategy support matrix", async () => {
     invokeCommandMock.mockResolvedValueOnce([
       {
-        strategy_kind: 'DoubleMa',
+        strategy_kind: "DoubleMa",
         supported: true,
-        adapter: 'double_ma_execution_adapter',
-        support_level: 'signal_and_delta',
-        notes: 'ok',
+        adapter: "double_ma_execution_adapter",
+        support_level: "signal_and_delta",
+        notes: "ok",
       },
-      { strategy_kind: '', supported: true },
-    ])
+      { strategy_kind: "", supported: true },
+    ]);
 
-    const rows = await loadExecutionStrategySupportMatrix()
+    const rows = await loadExecutionStrategySupportMatrix();
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('get_execution_strategy_support_matrix')
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "get_execution_strategy_support_matrix",
+    );
     expect(rows).toEqual([
       {
-        strategyKind: 'DoubleMa',
+        strategyKind: "DoubleMa",
         supported: true,
-        adapter: 'double_ma_execution_adapter',
-        supportLevel: 'signal_and_delta',
-        notes: 'ok',
+        adapter: "double_ma_execution_adapter",
+        supportLevel: "signal_and_delta",
+        notes: "ok",
       },
-    ])
-  })
+    ]);
+  });
 
-  it('keeps submitted runOnce success visible when secure credential persistence fails afterward', async () => {
+  it("keeps submitted runOnce success visible when secure credential persistence fails afterward", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'execute_strategy_signal_once') {
+      if (command === "execute_strategy_signal_once") {
         return {
-          action: 'buy',
+          action: "buy",
           order_submitted: true,
-          order_id: 'ord_123',
+          order_id: "ord_123",
           delta_qty: 1,
           warnings: [],
-        }
+        };
       }
-      if (command === 'alpaca_set_api_credentials') {
-        throw new Error('keyring write failed for key_1 / secret_1')
+      if (command === "alpaca_set_api_credentials") {
+        throw new Error("keyring write failed for key_1 / secret_1");
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await runOnce({
       ...baseOptions(),
       dryRun: false,
-    })
+    });
 
-    expect(result.statusLine).toContain('Submitted BUY order')
-    expect(result.statusLine).toContain('Secure credential storage did not update.')
-    expect(result.statusHint).toContain('Signal execution still completed and a broker order may already have been submitted.')
-    expect(result.statusHint).toContain('[redacted]')
-    expect(result.statusHint).not.toContain('key_1')
-    expect(result.statusHint).not.toContain('secret_1')
-    expect(result.brokerReviewRefreshRequired).toBe(true)
-  })
+    expect(result.statusLine).toContain("Submitted BUY order");
+    expect(result.statusLine).toContain(
+      "Secure credential storage did not update.",
+    );
+    expect(result.statusHint).toContain(
+      "Signal execution still completed and a broker order may already have been submitted.",
+    );
+    expect(result.statusHint).toContain("[redacted]");
+    expect(result.statusHint).not.toContain("key_1");
+    expect(result.statusHint).not.toContain("secret_1");
+    expect(result.brokerReviewRefreshRequired).toBe(true);
+  });
 
-  it('passes source-run provenance through runOnce request payloads', async () => {
+  it("passes source-run provenance through runOnce request payloads", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'execute_strategy_signal_once') {
+      if (command === "execute_strategy_signal_once") {
         return {
-          action: 'hold',
+          action: "hold",
           order_submitted: false,
           warnings: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
-    await runOnce(baseOptions())
+    await runOnce(baseOptions());
 
-    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "execute_strategy_signal_once",
+    );
     expect(call?.[1]).toEqual({
       req: expect.objectContaining({
-        param_source: 'selected',
-        source_run_artifact_path: 'C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json',
-        source_run_config_fingerprint: 'cfg1-fnv1a64-demo',
+        param_source: "selected",
+        source_run_artifact_path:
+          "C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json",
+        source_run_config_fingerprint: "cfg1-fnv1a64-demo",
         source_run_route_provenance: expect.objectContaining({
-          requestedRoute: 'GpuOnly',
-          resolvedRoute: 'CpuOnly',
-          realizedRoute: 'CpuOnly',
+          requestedRoute: "GpuOnly",
+          resolvedRoute: "CpuOnly",
+          realizedRoute: "CpuOnly",
         }),
       }),
-    })
-  })
+    });
+  });
 
-  it('omits Alpaca typed override fields when runOnce relies on stored secure credentials', async () => {
+  it("omits Alpaca typed override fields when runOnce relies on stored secure credentials", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'execute_strategy_signal_once') {
+      if (command === "execute_strategy_signal_once") {
         return {
-          action: 'hold',
+          action: "hold",
           order_submitted: false,
           warnings: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await runOnce({
       ...baseOptions(),
       dryRun: false,
-      apiKey: '',
-      apiSecret: '',
-    })
+      apiKey: "",
+      apiSecret: "",
+    });
 
-    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'execute_strategy_signal_once')
-    expect(call).toBeTruthy()
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "execute_strategy_signal_once",
+    );
+    expect(call).toBeTruthy();
     expect(call?.[1]).toEqual({
       req: expect.not.objectContaining({
         alpaca_api_key: expect.anything(),
         alpaca_api_secret: expect.anything(),
       }),
-    })
-  })
+    });
+  });
 
-  it('executes runOnce with manual parameter source without reading a top-row snapshot', async () => {
+  it("executes runOnce with manual parameter source without reading a top-row snapshot", async () => {
     readLatestWorkflowRunSnapshotMock.mockReturnValue({
       req: null,
       res: {
-        best_params: { fast_len: 5, slow_len: 20, fast_ma_type: 'sma', slow_ma_type: 'alma' },
-      },
-    } as never)
-    buildExecutionStrategyFromRunContextMock.mockImplementation((params, runReq) => ({
-      strategyKind: 'DoubleMa',
-      strategy: {
-        kind: 'double_ma',
-        req: {
-          data_id: String((runReq as Record<string, unknown> | null)?.data_id ?? 'data_1'),
-          params,
+        best_params: {
+          fast_len: 5,
+          slow_len: 20,
+          fast_ma_type: "sma",
+          slow_ma_type: "alma",
         },
       },
-    }))
+    } as never);
+    buildExecutionStrategyFromRunContextMock.mockImplementation(
+      (params, runReq) => ({
+        strategyKind: "DoubleMa",
+        strategy: {
+          kind: "double_ma",
+          req: {
+            data_id: String(
+              (runReq as Record<string, unknown> | null)?.data_id ?? "data_1",
+            ),
+            params,
+          },
+        },
+      }),
+    );
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'execute_strategy_signal_once') {
+      if (command === "execute_strategy_signal_once") {
         return {
-          action: 'hold',
+          action: "hold",
           order_submitted: false,
           warnings: [],
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await runOnce({
       ...baseOptions(),
-      paramSource: 'manual',
-      manualFastLen: '9',
-      manualSlowLen: '34',
-    })
+      paramSource: "manual",
+      manualFastLen: "9",
+      manualSlowLen: "34",
+    });
 
-    expect(resolveExecutionTopRowSnapshotMock).not.toHaveBeenCalled()
+    expect(resolveExecutionTopRowSnapshotMock).not.toHaveBeenCalled();
     expect(buildExecutionStrategyFromRunContextMock).toHaveBeenCalledWith(
       expect.objectContaining({
         fast_len: 9,
         slow_len: 34,
-        fast_ma_type: 'sma',
-        slow_ma_type: 'alma',
+        fast_ma_type: "sma",
+        slow_ma_type: "alma",
       }),
       expect.objectContaining({
-        data_id: 'data_1',
+        data_id: "data_1",
       }),
-    )
-    expect(invokeCommandMock).toHaveBeenCalledWith('execute_strategy_signal_once', {
-      req: expect.objectContaining({
-        symbol: 'AAPL',
-        dry_run: true,
-        strategy: expect.objectContaining({
-          req: expect.objectContaining({
-            params: expect.objectContaining({
-              fast_len: 9,
-              slow_len: 34,
-              fast_ma_type: 'sma',
-              slow_ma_type: 'alma',
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "execute_strategy_signal_once",
+      {
+        req: expect.objectContaining({
+          symbol: "AAPL",
+          dry_run: true,
+          strategy: expect.objectContaining({
+            req: expect.objectContaining({
+              params: expect.objectContaining({
+                fast_len: 9,
+                slow_len: 34,
+                fast_ma_type: "sma",
+                slow_ma_type: "alma",
+              }),
             }),
           }),
         }),
-      }),
-    })
-    expect(result.statusLine).toContain('Signal processed: action=hold.')
-  })
-
-  it('starts the auto-runner from the best parameter source when requested', async () => {
-    readLatestWorkflowRunSnapshotMock.mockReturnValue({
-      req: { strategy_kind: 'DoubleMa', data_id: 'data_1' },
-      res: {
-        best_params: { fast_len: 8, slow_len: 21, fast_ma_type: 'ema', slow_ma_type: 'sma' },
       },
-    } as never)
+    );
+    expect(result.statusLine).toContain("Signal processed: action=hold.");
+  });
+
+  it("starts the auto-runner from the best parameter source when requested", async () => {
+    readLatestWorkflowRunSnapshotMock.mockReturnValue({
+      req: { strategy_kind: "DoubleMa", data_id: "data_1" },
+      res: {
+        best_params: {
+          fast_len: 8,
+          slow_len: 21,
+          fast_ma_type: "ema",
+          slow_ma_type: "sma",
+        },
+      },
+    } as never);
     resolveExecutionTopRowSnapshotMock.mockReturnValue({
       params: {
         fast_len: 8,
         slow_len: 21,
-        fast_ma_type: 'ema',
-        slow_ma_type: 'sma',
+        fast_ma_type: "ema",
+        slow_ma_type: "sma",
       },
       metrics: { sharpe: 1.8 },
-      source: 'best',
-    })
-    buildExecutionStrategyFromRunContextMock.mockImplementation((params, runReq) => ({
-      strategyKind: 'DoubleMa',
-      strategy: {
-        kind: 'double_ma',
-        req: {
-          data_id: String((runReq as Record<string, unknown> | null)?.data_id ?? 'data_1'),
-          params,
+      source: "best",
+    });
+    buildExecutionStrategyFromRunContextMock.mockImplementation(
+      (params, runReq) => ({
+        strategyKind: "DoubleMa",
+        strategy: {
+          kind: "double_ma",
+          req: {
+            data_id: String(
+              (runReq as Record<string, unknown> | null)?.data_id ?? "data_1",
+            ),
+            params,
+          },
         },
-      },
-    }))
+      }),
+    );
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'polygon_live_candle_stream_status') {
+      if (command === "polygon_live_candle_stream_status") {
         return {
           active: true,
-          stream: { symbol: 'AAPL', delayed: true, market: 'stocks' },
-        }
+          stream: { symbol: "AAPL", delayed: true, market: "stocks" },
+        };
       }
-      if (command === 'start_live_execution_runner') {
+      if (command === "start_live_execution_runner") {
         return {
           active: true,
           run_count: 0,
@@ -1454,156 +1700,171 @@ describe('executionService', () => {
           error_count: 0,
           inflight: false,
           config: {
-            symbol: 'AAPL',
-            mode: 'paper',
+            symbol: "AAPL",
+            mode: "paper",
             dry_run: true,
           },
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     const result = await startRunner({
       ...baseOptions(),
-      paramSource: 'best',
-    })
+      paramSource: "best",
+    });
 
-    expect(resolveExecutionTopRowSnapshotMock).toHaveBeenCalledWith('best')
+    expect(resolveExecutionTopRowSnapshotMock).toHaveBeenCalledWith("best");
     expect(buildExecutionStrategyFromRunContextMock).toHaveBeenCalledWith(
       expect.objectContaining({
         fast_len: 8,
         slow_len: 21,
-        fast_ma_type: 'ema',
-        slow_ma_type: 'sma',
+        fast_ma_type: "ema",
+        slow_ma_type: "sma",
       }),
       expect.objectContaining({
-        data_id: 'data_1',
+        data_id: "data_1",
       }),
-    )
-    expect(invokeCommandMock).toHaveBeenCalledWith('start_live_execution_runner', {
-      req: expect.objectContaining({
-        symbol: 'AAPL',
-        dry_run: true,
-        strategy: expect.objectContaining({
-          req: expect.objectContaining({
-            params: expect.objectContaining({
-              fast_len: 8,
-              slow_len: 21,
-              fast_ma_type: 'ema',
-              slow_ma_type: 'sma',
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "start_live_execution_runner",
+      {
+        req: expect.objectContaining({
+          symbol: "AAPL",
+          dry_run: true,
+          strategy: expect.objectContaining({
+            req: expect.objectContaining({
+              params: expect.objectContaining({
+                fast_len: 8,
+                slow_len: 21,
+                fast_ma_type: "ema",
+                slow_ma_type: "sma",
+              }),
             }),
           }),
         }),
-      }),
-    })
-    expect(result.statusLine).toContain('Auto-runner started for AAPL.')
-    expect(result.runnerActive).toBe(true)
-  })
+      },
+    );
+    expect(result.statusLine).toContain("Auto-runner started for AAPL.");
+    expect(result.runnerActive).toBe(true);
+  });
 
-  it('lists saved live session artifacts via the new tauri command surface', async () => {
+  it("lists saved live session artifacts via the new tauri command surface", async () => {
     invokeCommandMock.mockResolvedValueOnce([
       {
-        ts: '2026-04-12T16:10:00Z',
-        path: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
-        sessionId: 'live-session-1',
-        mode: 'paper',
-        symbol: 'AAPL',
-        strategyKind: 'DoubleMa',
-        dataId: 'data_1',
+        ts: "2026-04-12T16:10:00Z",
+        path: "C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json",
+        sessionId: "live-session-1",
+        mode: "paper",
+        symbol: "AAPL",
+        strategyKind: "DoubleMa",
+        dataId: "data_1",
         dryRun: false,
-        paramSource: 'best',
-        sessionState: 'completed',
+        paramSource: "best",
+        sessionState: "completed",
         createdAtUnixMs: 1_700_000_000_000,
         finalizedAtUnixMs: 1_700_000_000_500,
         eventCount: 3,
         brokerSnapshotCount: 1,
       },
-    ])
+    ]);
 
     await expect(listSavedLiveSessions()).resolves.toEqual([
       expect.objectContaining({
-        path: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
-        symbol: 'AAPL',
-        sessionState: 'completed',
+        path: "C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json",
+        symbol: "AAPL",
+        sessionState: "completed",
         eventCount: 3,
       }),
-    ])
-    expect(invokeCommandMock).toHaveBeenCalledWith('list_live_session_artifacts')
-  })
+    ]);
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "list_live_session_artifacts",
+    );
+  });
 
-  it('loads saved live session detail as read-only review data', async () => {
+  it("loads saved live session detail as read-only review data", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      ts: '2026-04-12T16:10:00Z',
-      artifactPath: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
-      sessionId: 'live-session-1',
-      sessionState: 'completed',
-      mode: 'paper',
-      symbol: 'AAPL',
+      ts: "2026-04-12T16:10:00Z",
+      artifactPath: "C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json",
+      sessionId: "live-session-1",
+      sessionState: "completed",
+      mode: "paper",
+      symbol: "AAPL",
       qty: 1,
       dryRun: false,
-      strategyKind: 'DoubleMa',
-      dataId: 'data_1',
-      paramSource: 'best',
+      strategyKind: "DoubleMa",
+      dataId: "data_1",
+      paramSource: "best",
       createdAtUnixMs: 1_700_000_000_000,
       finalizedAtUnixMs: 1_700_000_000_500,
-      sourceRunArtifactPath: 'C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json',
-      sourceRunConfigFingerprint: 'cfg1-fnv1a64-demo',
+      sourceRunArtifactPath: "C:/runs/vectorgrid_run_2026-04-12T12-00-00Z.json",
+      sourceRunConfigFingerprint: "cfg1-fnv1a64-demo",
       sourceRunRouteProvenance: {
-        requestedRoute: 'GpuOnly',
-        resolvedRoute: 'CpuOnly',
-        realizedRoute: 'CpuOnly',
+        requestedRoute: "GpuOnly",
+        resolvedRoute: "CpuOnly",
+        realizedRoute: "CpuOnly",
         routeChanged: true,
-        fallbackReason: 'gpu unavailable',
+        fallbackReason: "gpu unavailable",
       },
       eventCount: 2,
       brokerSnapshotCount: 1,
       events: [
         {
-          provenance: 'local_control',
-          status: 'execute_strategy_signal_once',
-          message: 'manual execution requested for AAPL',
-          symbol: 'AAPL',
+          provenance: "local_control",
+          status: "execute_strategy_signal_once",
+          message: "manual execution requested for AAPL",
+          symbol: "AAPL",
           atUnixMs: 1_700_000_000_000,
         },
       ],
       brokerSnapshots: [
         {
-          sourceCommand: 'get_live_execution_snapshot',
-          mode: 'paper',
-          symbol: 'AAPL',
+          sourceCommand: "get_live_execution_snapshot",
+          mode: "paper",
+          symbol: "AAPL",
           atUnixMs: 1_700_000_000_100,
-          accountStatus: 'ACTIVE',
-          positionState: 'flat',
+          accountStatus: "ACTIVE",
+          positionState: "flat",
           openOrderCount: 0,
           orderCount: 0,
         },
       ],
-    })
+    });
 
     await expect(
-      loadSavedLiveSessionDetail('C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json'),
+      loadSavedLiveSessionDetail(
+        "C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json",
+      ),
     ).resolves.toEqual(
       expect.objectContaining({
-        artifactPath: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
-        sourceRunRouteSummary: expect.stringContaining('requested=GpuOnly'),
-        events: [expect.objectContaining({ provenance: 'local_control' })],
-        brokerSnapshots: [expect.objectContaining({ sourceCommand: 'get_live_execution_snapshot' })],
+        artifactPath:
+          "C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json",
+        sourceRunRouteSummary: expect.stringContaining("requested=GpuOnly"),
+        events: [expect.objectContaining({ provenance: "local_control" })],
+        brokerSnapshots: [
+          expect.objectContaining({
+            sourceCommand: "get_live_execution_snapshot",
+          }),
+        ],
       }),
-    )
-    expect(invokeCommandMock).toHaveBeenCalledWith('load_live_session_artifact_detail', {
-      path: 'C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json',
-    })
-  })
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "load_live_session_artifact_detail",
+      {
+        path: "C:/runs/vectorgrid_live_session_2026-04-12T16-10-00Z.json",
+      },
+    );
+  });
 
-  it('omits Alpaca typed override fields when auto-runner start relies on stored secure credentials', async () => {
+  it("omits Alpaca typed override fields when auto-runner start relies on stored secure credentials", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'polygon_live_candle_stream_status') {
+      if (command === "polygon_live_candle_stream_status") {
         return {
           active: true,
-          stream: { symbol: 'AAPL', delayed: true, market: 'stocks' },
-        }
+          stream: { symbol: "AAPL", delayed: true, market: "stocks" },
+        };
       }
-      if (command === 'start_live_execution_runner') {
+      if (command === "start_live_execution_runner") {
         return {
           active: true,
           run_count: 0,
@@ -1611,178 +1872,197 @@ describe('executionService', () => {
           error_count: 0,
           inflight: false,
           config: {
-            symbol: 'AAPL',
-            mode: 'paper',
+            symbol: "AAPL",
+            mode: "paper",
             dry_run: false,
           },
-        }
+        };
       }
-      return {}
-    })
+      return {};
+    });
 
     await startRunner({
       ...baseOptions(),
       dryRun: false,
-      apiKey: '',
-      apiSecret: '',
-    })
+      apiKey: "",
+      apiSecret: "",
+    });
 
-    const call = invokeCommandMock.mock.calls.find(([command]) => command === 'start_live_execution_runner')
-    expect(call).toBeTruthy()
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "start_live_execution_runner",
+    );
+    expect(call).toBeTruthy();
     expect(call?.[1]).toEqual({
       req: expect.not.objectContaining({
         alpaca_api_key: expect.anything(),
         alpaca_api_secret: expect.anything(),
       }),
-    })
-  })
+    });
+  });
 
-  it('parses runtime events and subscribes both execution channels', async () => {
+  it("parses runtime events and subscribes both execution channels", async () => {
     const handlers = new Map<
       string,
       (payload: unknown, meta: { event: string; id?: number }) => void
-    >()
-    const offPolygon = vi.fn()
-    const offRunner = vi.fn()
-    listenEventMock.mockImplementation(async (
-      event: string,
-      handler: (payload: unknown, meta: { event: string; id?: number }) => void,
-    ) => {
-      handlers.set(event, handler)
-      return event === 'polygon_live_status' ? offPolygon : offRunner
-    })
+    >();
+    const offPolygon = vi.fn();
+    const offRunner = vi.fn();
+    listenEventMock.mockImplementation(
+      async (
+        event: string,
+        handler: (
+          payload: unknown,
+          meta: { event: string; id?: number },
+        ) => void,
+      ) => {
+        handlers.set(event, handler);
+        return event === "polygon_live_status" ? offPolygon : offRunner;
+      },
+    );
 
-    const onPolygonLiveStatus = vi.fn()
-    const onRunnerEvent = vi.fn()
+    const onPolygonLiveStatus = vi.fn();
+    const onRunnerEvent = vi.fn();
     const teardown = await subscribeExecutionRuntimeEvents({
       onPolygonLiveStatus,
       onRunnerEvent,
-    })
+    });
 
-    expect(listenEventMock).toHaveBeenCalledTimes(2)
-    handlers.get('polygon_live_status')?.({
-      status: 'started',
-      symbol: ' brk.b ',
-      delayed: true,
-      message: 'live started',
-    }, { event: 'polygon_live_status' })
-    handlers.get('live_execution_runner_event')?.({
-      status: 'order_submitted',
-      symbol: ' aapl ',
-      message: 'runner submitted buy order',
-      execution: {
-        order_submitted: true,
-        action: 'buy',
-        order_id: 'ord_123',
-        delta_qty: 1,
+    expect(listenEventMock).toHaveBeenCalledTimes(2);
+    handlers.get("polygon_live_status")?.(
+      {
+        status: "started",
+        symbol: " brk.b ",
+        delayed: true,
+        message: "live started",
       },
-    }, { event: 'live_execution_runner_event' })
+      { event: "polygon_live_status" },
+    );
+    handlers.get("live_execution_runner_event")?.(
+      {
+        status: "order_submitted",
+        symbol: " aapl ",
+        message: "runner submitted buy order",
+        execution: {
+          order_submitted: true,
+          action: "buy",
+          order_id: "ord_123",
+          delta_qty: 1,
+        },
+      },
+      { event: "live_execution_runner_event" },
+    );
 
     expect(onPolygonLiveStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         active: true,
-        symbol: 'BRK.B',
+        symbol: "BRK.B",
         delayed: true,
       }),
-    )
+    );
     expect(onRunnerEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        status: 'order_submitted',
-        symbol: 'AAPL',
+        status: "order_submitted",
+        symbol: "AAPL",
         active: true,
       }),
-    )
+    );
 
-    teardown()
-    expect(offPolygon).toHaveBeenCalledTimes(1)
-    expect(offRunner).toHaveBeenCalledTimes(1)
-    expect(parsePolygonLiveStatusEvent({ status: 'stopped', symbol: ' msft ' }).active).toBe(false)
-    expect(parseRunnerEvent({ status: 'cancelled', symbol: ' msft ' }).active).toBe(false)
-  })
+    teardown();
+    expect(offPolygon).toHaveBeenCalledTimes(1);
+    expect(offRunner).toHaveBeenCalledTimes(1);
+    expect(
+      parsePolygonLiveStatusEvent({ status: "stopped", symbol: " msft " })
+        .active,
+    ).toBe(false);
+    expect(
+      parseRunnerEvent({ status: "cancelled", symbol: " msft " }).active,
+    ).toBe(false);
+  });
 
-  it('keeps runner lifecycle parsing aligned with the current backend event vocabulary', () => {
+  it("keeps runner lifecycle parsing aligned with the current backend event vocabulary", () => {
     expect(
       parseRunnerEvent({
-        status: 'started',
-        symbol: ' aapl ',
-        message: 'auto-runner started for AAPL (DoubleMa, dry-run, qty=1)',
+        status: "started",
+        symbol: " aapl ",
+        message: "auto-runner started for AAPL (DoubleMa, dry-run, qty=1)",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'started',
-        symbol: 'AAPL',
+        status: "started",
+        symbol: "AAPL",
         active: true,
       }),
-    )
+    );
 
     expect(
       parseRunnerEvent({
-        status: 'triggered',
-        symbol: ' aapl ',
-        message: 'runner triggered on new live bar',
+        status: "triggered",
+        symbol: " aapl ",
+        message: "runner triggered on new live bar",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'triggered',
-        symbol: 'AAPL',
+        status: "triggered",
+        symbol: "AAPL",
         active: true,
       }),
-    )
+    );
 
     expect(
       parseRunnerEvent({
-        status: 'queued_latest',
-        symbol: ' aapl ',
-        message: 'runner queued latest live bar while prior run was still in flight',
+        status: "queued_latest",
+        symbol: " aapl ",
+        message:
+          "runner queued latest live bar while prior run was still in flight",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'queued_latest',
-        symbol: 'AAPL',
+        status: "queued_latest",
+        symbol: "AAPL",
         active: true,
       }),
-    )
+    );
 
     expect(
       parseRunnerEvent({
-        status: 'signal_processed',
-        symbol: ' aapl ',
-        message: 'runner processed signal action=hold',
+        status: "signal_processed",
+        symbol: " aapl ",
+        message: "runner processed signal action=hold",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'signal_processed',
-        symbol: 'AAPL',
+        status: "signal_processed",
+        symbol: "AAPL",
         active: true,
       }),
-    )
+    );
 
     expect(
       parseRunnerEvent({
-        status: 'error',
-        symbol: ' aapl ',
-        message: 'runner execution failed: boom',
+        status: "error",
+        symbol: " aapl ",
+        message: "runner execution failed: boom",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'error',
-        symbol: 'AAPL',
+        status: "error",
+        symbol: "AAPL",
         active: null,
       }),
-    )
+    );
 
     expect(
       parseRunnerEvent({
-        status: 'stopped',
-        symbol: ' aapl ',
-        message: 'auto-runner stopped',
+        status: "stopped",
+        symbol: " aapl ",
+        message: "auto-runner stopped",
       }),
     ).toEqual(
       expect.objectContaining({
-        status: 'stopped',
-        symbol: 'AAPL',
+        status: "stopped",
+        symbol: "AAPL",
         active: false,
       }),
-    )
-  })
-})
+    );
+  });
+});

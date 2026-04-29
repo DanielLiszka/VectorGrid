@@ -3,6 +3,11 @@ import {
   parseBoundaryArray,
   parseBoundaryObject,
 } from "./serviceBoundarySchemas";
+import {
+  buildOptionsExpressionValidationStageCompletion,
+  normalizeStageCompletions,
+  type StageCompletionPacketV1,
+} from "../utils/core/stageCompletion";
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
@@ -755,6 +760,7 @@ export interface OptionsExpressionValidationResultSummary {
   laneSummaries: OptionsExpressionValidationLaneSummary[];
   acceptanceSummary: OptionsExpressionValidationAcceptanceSummary;
   tupleResults: OptionsExpressionValidationTupleResultSummary[];
+  stageCompletions: StageCompletionPacketV1[];
 }
 
 export interface ValidateOptionsExpressionArtifactSummary {
@@ -2141,6 +2147,22 @@ function normalizeOptionsExpressionValidationResult(
     string,
     unknown
   >;
+  const stageCompletions = normalizeStageCompletions(row.stage_completions);
+  const hasOptionsValidationPacket = stageCompletions.some(
+    (packet) => packet.stage === "options_expression_validation",
+  );
+  if (!hasOptionsValidationPacket) {
+    stageCompletions.push(
+      buildOptionsExpressionValidationStageCompletion({
+        ts: row.ts,
+        artifactKind: row.kind || "vectorgrid_options_expression_validation",
+        artifactPath: row.validation_artifact_path,
+        configFingerprint: row.source_artifact_hash,
+        res: row,
+        backfilled: true,
+      }),
+    );
+  }
   const laneSummaries = Array.isArray(row.lane_summaries)
     ? row.lane_summaries
     : [];
@@ -2184,6 +2206,7 @@ function normalizeOptionsExpressionValidationResult(
     tupleResults: tupleResults.map((entry) =>
       normalizeValidationTupleResult(entry),
     ),
+    stageCompletions,
   };
 }
 

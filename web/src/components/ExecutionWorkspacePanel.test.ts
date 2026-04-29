@@ -306,6 +306,9 @@ describe('ExecutionWorkspacePanel', () => {
           '10',
           '182.40',
           'order-1',
+          'stop 178.5',
+          'stop_loss · stop_loss_first',
+          'parent-1',
         ],
       },
     ]
@@ -319,8 +322,11 @@ describe('ExecutionWorkspacePanel', () => {
 
     const tableText = document.querySelector('.execOrdersTableVue')?.textContent || ''
     expect(tableText).toContain('Time (UTC)')
+    expect(tableText).toContain('Trigger')
+    expect(tableText).toContain('Bracket')
     expect(tableText).toContain('BUY')
     expect(tableText).toContain('order-1')
+    expect(tableText).toContain('stop_loss')
   })
 
   it('renders confirmed review metadata and raw broker output together', async () => {

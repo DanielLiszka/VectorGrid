@@ -43,6 +43,7 @@ describe('workflowModel', () => {
       'workflow',
       'library',
       'aggregate',
+      'portfolio',
       'pro',
       'live',
       'settings',
@@ -59,6 +60,7 @@ describe('workflowModel', () => {
     expect(normalizeWorkflowStep('settings')).toBe('')
     expect(normalizeWorkflowStep('validate')).toBe('validate')
     expect(normalizeWorkspaceTab('LIVE')).toBe('live')
+    expect(normalizeWorkspaceTab('portfolio')).toBe('portfolio')
     expect(normalizeWorkspaceTab('execution')).toBe('')
     expect(normalizeControlsTab('strategy')).toBe('strategy')
     expect(normalizeControlsTab('chart')).toBe('')

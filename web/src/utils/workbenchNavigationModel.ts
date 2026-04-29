@@ -97,6 +97,13 @@ const WORKBENCH_WORKSPACES: Array<{
     icon: 'runs',
   },
   {
+    id: 'portfolio',
+    label: 'Portfolio',
+    shortLabel: 'Portfolio',
+    description: 'Feasibility evidence, replay gaps, and provenance checks.',
+    icon: 'portfolio',
+  },
+  {
     id: 'live',
     label: 'Live',
     shortLabel: 'Live',

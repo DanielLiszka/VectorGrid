@@ -1,49 +1,64 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
-import { ListTodo } from 'lucide-vue-next'
-import { TASK_CENTER_PANEL_ID, openTaskCenter as requestTaskCenterOpen, useTaskCenterVisibility } from '../../composables/useTaskCenterVisibility'
-import { useTaskLifecycleSummary } from '../../composables/useTaskLifecycleSummary'
-import { useUiReadiness } from '../../composables/useUiReadiness'
-import { useAnalysisStore } from '../../stores/analysisStore'
-import { useDataStore } from '../../stores/dataStore'
-import { useHistoryStore } from '../../stores/historyStore'
-import { useOptimizeStore } from '../../stores/optimizeStore'
-import { useSettingsStore } from '../../stores/settingsStore'
-import { useValidationStore } from '../../stores/validationStore'
-import { useWorkflowStore } from '../../stores/workflowStore'
-import { tauriRuntimeAvailable } from '../../tauri/invoke'
+import { computed, nextTick, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
+import { ListTodo } from "lucide-vue-next";
+import {
+  TASK_CENTER_PANEL_ID,
+  openTaskCenter as requestTaskCenterOpen,
+  useTaskCenterVisibility,
+} from "../../composables/useTaskCenterVisibility";
+import { useTaskLifecycleSummary } from "../../composables/useTaskLifecycleSummary";
+import { useUiReadiness } from "../../composables/useUiReadiness";
+import { useAnalysisStore } from "../../stores/analysisStore";
+import { useDataStore } from "../../stores/dataStore";
+import { useHistoryStore } from "../../stores/historyStore";
+import { useOptimizeStore } from "../../stores/optimizeStore";
+import { useSettingsStore } from "../../stores/settingsStore";
+import { useValidationStore } from "../../stores/validationStore";
+import { useWorkflowStore } from "../../stores/workflowStore";
+import { tauriRuntimeAvailable } from "../../tauri/invoke";
 import {
   loadExecutionStrategySupportMatrix,
   type ExecutionStrategySupportRow,
-} from '../../services/executionService'
-import { previewValidationContextCompatibilityFromStores } from '../../services/validationService'
-import { resolveWorkbenchInspectorState, type WorkbenchInspectorMode } from '../../utils/inspectorModel'
-import { resolveWorkbenchPrimaryAction } from '../../utils/workbenchActionModel'
+} from "../../services/executionService";
+import { previewValidationContextCompatibilityFromStores } from "../../services/validationService";
+import {
+  resolveWorkbenchInspectorState,
+  type WorkbenchInspectorMode,
+} from "../../utils/inspectorModel";
+import { resolveWorkbenchPrimaryAction } from "../../utils/workbenchActionModel";
 import {
   buildWorkbenchNavigationState,
   workbenchWorkspaceLabel,
   type WorkbenchLocalTabItem,
   type WorkbenchNavigationItem,
-} from '../../utils/workbenchNavigationModel'
-import WorkbenchActionBar from './WorkbenchActionBar.vue'
-import WorkbenchInspector from './WorkbenchInspector.vue'
-import WorkbenchRail from './WorkbenchRail.vue'
-import ResearchCockpit from './ResearchCockpit.vue'
+} from "../../utils/workbenchNavigationModel";
+import WorkbenchActionBar from "./WorkbenchActionBar.vue";
+import WorkbenchInspector from "./WorkbenchInspector.vue";
+import WorkbenchRail from "./WorkbenchRail.vue";
+import ResearchCockpit from "./ResearchCockpit.vue";
 
-type TabKeyItem = { id: string }
+type TabKeyItem = { id: string };
 
-const workflowStore = useWorkflowStore()
-const settingsStore = useSettingsStore()
-const dataStore = useDataStore()
-const optimizeStore = useOptimizeStore()
-const analysisStore = useAnalysisStore()
-const validationStore = useValidationStore()
-const historyStore = useHistoryStore()
+const workflowStore = useWorkflowStore();
+const settingsStore = useSettingsStore();
+const dataStore = useDataStore();
+const optimizeStore = useOptimizeStore();
+const analysisStore = useAnalysisStore();
+const validationStore = useValidationStore();
+const historyStore = useHistoryStore();
 
-const { controlsTab, mode, resultsTab, workspace, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
-const { controlsCollapsed, uiMode } = storeToRefs(settingsStore)
-const { dataId, dataLen, dataTimeframe, datasetLabel, datasetRange } = storeToRefs(dataStore)
+const {
+  controlsTab,
+  mode,
+  resultsTab,
+  workspace,
+  workflowStep,
+  workflowSubtitle,
+} = storeToRefs(workflowStore);
+const { controlsCollapsed, uiMode } = storeToRefs(settingsStore);
+const { dataId, dataLen, dataTimeframe, datasetLabel, datasetRange } =
+  storeToRefs(dataStore);
 const {
   backend,
   canCancel,
@@ -58,8 +73,9 @@ const {
   runReadinessHint,
   strategyKind,
   validateDisabled,
-} = storeToRefs(optimizeStore)
-const { bestMeta, selectedTopSummary, selectedTopTitle } = storeToRefs(analysisStore)
+} = storeToRefs(optimizeStore);
+const { bestMeta, selectedTopSummary, selectedTopTitle } =
+  storeToRefs(analysisStore);
 const {
   crossMeta,
   cscvSlices,
@@ -69,10 +85,11 @@ const {
   tableRowCount,
   updatedAtUnixMs: validationUpdatedAtUnixMs,
   validationHint,
+  validationAccelerationStatus,
   validationMeta,
   validationOutputPreview,
   validationWarningSummary,
-} = storeToRefs(validationStore)
+} = storeToRefs(validationStore);
 const {
   canApplyHistory,
   canApplySavedRun,
@@ -90,26 +107,50 @@ const {
   sessionRunCount,
   sessionSelectedLabel,
   statusLine: historyStatusLine,
-} = storeToRefs(historyStore)
-const { activeTaskCount, centerStatusLabel, taskHeadline } = useTaskLifecycleSummary()
-const taskCenterOpen = useTaskCenterVisibility()
-const { datasetReady, hasOptimizationResults, validationStage } = useUiReadiness()
+} = storeToRefs(historyStore);
+const { activeTaskCount, centerStatusLabel, taskHeadline } =
+  useTaskLifecycleSummary();
+const taskCenterOpen = useTaskCenterVisibility();
+const { datasetReady, hasOptimizationResults, validationStage } =
+  useUiReadiness();
 
-const inspectorCollapsed = ref(false)
-const requestedInspectorMode = ref<WorkbenchInspectorMode | ''>('')
+const inspectorCollapsed = ref(false);
+const requestedInspectorMode = ref<WorkbenchInspectorMode | "">("");
 
 const uiModeItems = [
-  { id: 'guided', label: 'Guided', actionId: 'shell.uiMode.guided', tabId: 'ui_mode_tab_guided' },
-  { id: 'advanced', label: 'Advanced', actionId: 'shell.uiMode.advanced', tabId: 'ui_mode_tab_advanced' },
-] as const
+  {
+    id: "guided",
+    label: "Guided",
+    actionId: "shell.uiMode.guided",
+    tabId: "ui_mode_tab_guided",
+  },
+  {
+    id: "advanced",
+    label: "Advanced",
+    actionId: "shell.uiMode.advanced",
+    tabId: "ui_mode_tab_advanced",
+  },
+] as const;
 
 const modeItems = [
-  { id: 'conventional', label: 'Conventional', actionId: 'shell.mode.conventional', tabId: 'mode_tab_conventional' },
-  { id: 'ml-signal', label: 'ML Signal', actionId: 'shell.mode.mlSignal', tabId: 'mode_tab_ml-signal' },
-] as const
+  {
+    id: "conventional",
+    label: "Conventional",
+    actionId: "shell.mode.conventional",
+    tabId: "mode_tab_conventional",
+  },
+  {
+    id: "ml-signal",
+    label: "ML Signal",
+    actionId: "shell.mode.mlSignal",
+    tabId: "mode_tab_ml-signal",
+  },
+] as const;
 
-const currentUiMode = computed(() => (String(uiMode.value || '').trim() === 'guided' ? 'guided' : 'advanced'))
-const guidedModeActive = computed(() => currentUiMode.value === 'guided')
+const currentUiMode = computed(() =>
+  String(uiMode.value || "").trim() === "guided" ? "guided" : "advanced",
+);
+const guidedModeActive = computed(() => currentUiMode.value === "guided");
 const navState = computed(() =>
   buildWorkbenchNavigationState({
     workspace: workspace.value,
@@ -118,80 +159,113 @@ const navState = computed(() =>
     controlsTab: controlsTab.value,
     resultsTab: resultsTab.value,
   }),
-)
-const currentWorkspace = computed(() => navState.value.activeWorkspaceId)
-const currentWorkflowStep = computed(() => navState.value.activeWorkflowStep)
-const currentMode = computed(() => navState.value.mode)
-const currentWorkspaceLabel = computed(() => workbenchWorkspaceLabel(currentWorkspace.value))
+);
+const currentWorkspace = computed(() => navState.value.activeWorkspaceId);
+const currentWorkflowStep = computed(() => navState.value.activeWorkflowStep);
+const currentMode = computed(() => navState.value.mode);
+const currentWorkspaceLabel = computed(() =>
+  workbenchWorkspaceLabel(currentWorkspace.value),
+);
 const shellSubtitle = computed(() => {
-  if (guidedModeActive.value) return 'Guided path: optimize, validate, then prepare paper/live trading.'
-  return String(workflowSubtitle.value || '').trim() || 'Ready.'
-})
+  if (guidedModeActive.value)
+    return "Guided path: optimize, validate, then prepare paper/live trading.";
+  return String(workflowSubtitle.value || "").trim() || "Ready.";
+});
 const standardWorkspaceActive = computed(
-  () => !guidedModeActive.value && currentWorkspace.value !== 'settings' && currentWorkspace.value !== 'live',
-)
-const liveWorkspaceActive = computed(() => !guidedModeActive.value && currentWorkspace.value === 'live')
-const settingsWorkspaceActive = computed(() => !guidedModeActive.value && currentWorkspace.value === 'settings')
-const liveSupportRows = ref<ExecutionStrategySupportRow[]>([])
-const liveSupportMatrixStatus = ref('Support matrix uses desktop backend data when Tauri is available.')
-const liveSupportMatrixLoaded = ref(false)
+  () =>
+    !guidedModeActive.value &&
+    currentWorkspace.value !== "settings" &&
+    currentWorkspace.value !== "live" &&
+    currentWorkspace.value !== "portfolio",
+);
+const liveWorkspaceActive = computed(
+  () => !guidedModeActive.value && currentWorkspace.value === "live",
+);
+const portfolioWorkspaceActive = computed(
+  () => !guidedModeActive.value && currentWorkspace.value === "portfolio",
+);
+const settingsWorkspaceActive = computed(
+  () => !guidedModeActive.value && currentWorkspace.value === "settings",
+);
+const liveSupportRows = ref<ExecutionStrategySupportRow[]>([]);
+const liveSupportMatrixStatus = ref(
+  "Support matrix uses desktop backend data when Tauri is available.",
+);
+const liveSupportMatrixLoaded = ref(false);
 const liveSupportStrategiesLabel = computed(() => {
   const supported = liveSupportRows.value
     .filter((row) => row.supported)
     .map((row) => row.strategyKind)
-    .filter((value) => value.length > 0)
-  return supported.length ? supported.join(' · ') : 'DoubleMa · CompositeCpu'
-})
+    .filter((value) => value.length > 0);
+  return supported.length ? supported.join(" · ") : "DoubleMa · CompositeCpu";
+});
 const liveSupportAdaptersLabel = computed(() => {
   const adapters = liveSupportRows.value
     .filter((row) => row.supported)
     .map((row) => row.adapter || row.supportLevel)
-    .filter((value) => value.length > 0)
-  return adapters.length ? adapters.join(' · ') : 'Backend support matrix'
-})
+    .filter((value) => value.length > 0);
+  return adapters.length ? adapters.join(" · ") : "Backend support matrix";
+});
 async function refreshLiveSupportMatrix(): Promise<void> {
-  if (liveSupportMatrixLoaded.value || !tauriRuntimeAvailable()) return
+  if (liveSupportMatrixLoaded.value || !tauriRuntimeAvailable()) return;
   try {
-    const rows = await loadExecutionStrategySupportMatrix()
-    liveSupportRows.value = rows
+    const rows = await loadExecutionStrategySupportMatrix();
+    liveSupportRows.value = rows;
     liveSupportMatrixStatus.value = rows.length
       ? `${rows.filter((row) => row.supported).length} supported strategy adapters reported by backend.`
-      : 'Backend returned an empty live strategy support matrix.'
+      : "Backend returned an empty live strategy support matrix.";
   } catch (error) {
-    liveSupportMatrixStatus.value = `Live support matrix unavailable: ${String(error || '')}`.trim()
+    liveSupportMatrixStatus.value =
+      `Live support matrix unavailable: ${String(error || "")}`.trim();
   } finally {
-    liveSupportMatrixLoaded.value = true
+    liveSupportMatrixLoaded.value = true;
   }
 }
-const visibleControlsItems = computed(() => navState.value.controlsItems)
-const visibleResultsItems = computed(() => navState.value.resultsItems)
+const visibleControlsItems = computed(() => navState.value.controlsItems);
+const visibleResultsItems = computed(() => navState.value.resultsItems);
 const controlsColumnVisible = computed(
-  () => standardWorkspaceActive.value && visibleControlsItems.value.length > 0 && !controlsCollapsed.value,
-)
-const resultsColumnVisible = computed(() => standardWorkspaceActive.value && visibleResultsItems.value.length > 0)
-const controlsTabsVisible = computed(() => controlsColumnVisible.value && visibleControlsItems.value.length > 1)
-const resultsTabsVisible = computed(() => resultsColumnVisible.value && visibleResultsItems.value.length > 1)
-const researchCockpitVisible = computed(() => standardWorkspaceActive.value && currentWorkspace.value === 'workflow')
+  () =>
+    standardWorkspaceActive.value &&
+    visibleControlsItems.value.length > 0 &&
+    !controlsCollapsed.value,
+);
+const resultsColumnVisible = computed(
+  () => standardWorkspaceActive.value && visibleResultsItems.value.length > 0,
+);
+const controlsTabsVisible = computed(
+  () => controlsColumnVisible.value && visibleControlsItems.value.length > 1,
+);
+const resultsTabsVisible = computed(
+  () => resultsColumnVisible.value && visibleResultsItems.value.length > 1,
+);
+const researchCockpitVisible = computed(
+  () => standardWorkspaceActive.value && currentWorkspace.value === "workflow",
+);
 const workbenchGridClass = computed(() => ({
   singleColumn: !controlsColumnVisible.value || !resultsColumnVisible.value,
-}))
+}));
 const selectedShellLabelledBy = computed(() =>
-  guidedModeActive.value ? 'ui_mode_tab_guided' : navState.value.selectedShellTabId,
-)
+  guidedModeActive.value
+    ? "ui_mode_tab_guided"
+    : navState.value.selectedShellTabId,
+);
 const dataContextLabel = computed(() => {
-  const label = String(datasetLabel.value || '').trim()
-  const timeframe = String(dataTimeframe.value || '').trim()
-  const rows = String(dataLen.value || '').trim()
-  const range = String(datasetRange.value || '').trim()
-  if (!label) return 'No dataset'
-  return [label, timeframe, rows ? `${rows} rows` : '', range].filter(Boolean).join(' · ')
-})
+  const label = String(datasetLabel.value || "").trim();
+  const timeframe = String(dataTimeframe.value || "").trim();
+  const rows = String(dataLen.value || "").trim();
+  const range = String(datasetRange.value || "").trim();
+  if (!label) return "No dataset";
+  return [label, timeframe, rows ? `${rows} rows` : "", range]
+    .filter(Boolean)
+    .join(" · ");
+});
 const primaryActionPreview = computed(() =>
   resolveWorkbenchPrimaryAction({
     canCancel: canCancel.value,
     mode: currentMode.value,
     workflowStep: currentWorkflowStep.value,
-    dataLoaded: datasetReady.value || String(dataId.value || '').trim().length > 0,
+    dataLoaded:
+      datasetReady.value || String(dataId.value || "").trim().length > 0,
     hasOptimizationResults: hasOptimizationResults.value,
     runDisabled: runDisabled.value,
     validateDisabled: validateDisabled.value,
@@ -202,30 +276,30 @@ const primaryActionPreview = computed(() =>
     mlSignalScoreInputPath: mlSignalScoreInputPath.value,
     mlSignalScoreCachePath: mlSignalScoreCachePath.value,
   }),
-)
+);
 const validationCompatibilityPreview = computed(() => {
-  void dataStore.updatedAtUnixMs
-  void validationUpdatedAtUnixMs.value
-  return previewValidationContextCompatibilityFromStores()
-})
+  void dataStore.updatedAtUnixMs;
+  void validationUpdatedAtUnixMs.value;
+  return previewValidationContextCompatibilityFromStores();
+});
 const validationGatesLabel = computed(() => {
-  const parts: string[] = []
-  if (minPsr.value) parts.push(`PSR>=${minPsr.value}`)
-  if (minDsr.value) parts.push(`DSR>=${minDsr.value}`)
-  if (cscvSlices.value) parts.push(`CSCV=${cscvSlices.value}`)
-  return parts.join(' · ') || '—'
-})
+  const parts: string[] = [];
+  if (minPsr.value) parts.push(`PSR>=${minPsr.value}`);
+  if (minDsr.value) parts.push(`DSR>=${minDsr.value}`);
+  if (cscvSlices.value) parts.push(`CSCV=${cscvSlices.value}`);
+  return parts.join(" · ") || "—";
+});
 const strategyContextLabel = computed(() => {
-  const strategy = String(strategyKind.value || '').trim()
-  const objectiveLabel = String(objective.value || '').trim()
-  return [strategy, objectiveLabel].filter(Boolean).join(' · ')
-})
+  const strategy = String(strategyKind.value || "").trim();
+  const objectiveLabel = String(objective.value || "").trim();
+  return [strategy, objectiveLabel].filter(Boolean).join(" · ");
+});
 const backendContextLabel = computed(() => {
-  const backendLabel = String(backend.value || '').trim()
-  const gpu = String(gpuStatus.value || '').trim()
-  const pairs = String(pairsPreview.value || '').trim()
-  return [backendLabel, gpu, pairs].filter(Boolean).join(' · ')
-})
+  const backendLabel = String(backend.value || "").trim();
+  const gpu = String(gpuStatus.value || "").trim();
+  const pairs = String(pairsPreview.value || "").trim();
+  return [backendLabel, gpu, pairs].filter(Boolean).join(" · ");
+});
 const inspectorState = computed(() =>
   resolveWorkbenchInspectorState({
     workspace: currentWorkspace.value,
@@ -236,18 +310,34 @@ const inspectorState = computed(() =>
     strategyLabel: strategyContextLabel.value,
     backendLabel: backendContextLabel.value,
     selectedCandidateTitle: selectedTopTitle.value,
-    selectedCandidateSummary: String(selectedTopSummary.value || bestMeta.value || '').trim(),
-    status: String(progressMeta.value || runReadinessHint.value || centerStatusLabel.value || '').trim(),
+    selectedCandidateSummary: String(
+      selectedTopSummary.value || bestMeta.value || "",
+    ).trim(),
+    status: String(
+      progressMeta.value ||
+        runReadinessHint.value ||
+        centerStatusLabel.value ||
+        "",
+    ).trim(),
     validationStage: validationStage.value,
-    validationSummary: String(validationMeta.value || validationWarningSummary.value || '').trim(),
+    validationSummary: String(
+      validationAccelerationStatus.value ||
+        validationMeta.value ||
+        validationWarningSummary.value ||
+        "",
+    ).trim(),
     validationOutputPreview: validationOutputPreview.value,
     validationCrossSummary: crossMeta.value,
     validationTableRows: tableRowCount.value,
     validationGatesLabel: validationGatesLabel.value,
-    validationCompatibilitySummary: validationCompatibilityPreview.value.summary,
+    validationCompatibilitySummary:
+      validationCompatibilityPreview.value.summary,
     validationCompatibilityDetail: validationCompatibilityPreview.value.detail,
     validationStatus: validationStatusLine.value,
-    historySummary: currentWorkspace.value === 'library' ? 'Session and saved run library' : 'Session and saved runs',
+    historySummary:
+      currentWorkspace.value === "library"
+        ? "Session and saved run library"
+        : "Session and saved runs",
     historySessionSummary: `${sessionRunCount.value} runs · ${sessionSelectedLabel.value}`,
     historySavedSummary: `${savedRunCount.value} saved · ${savedSelectedLabel.value}`,
     historyCompareSummary: `${compareRunCount.value} choices · ${savedRunsMeta.value}`,
@@ -262,149 +352,168 @@ const inspectorState = computed(() =>
     historyCanOpenRunsDir: canOpenRunsDir.value,
     activeTaskCount: activeTaskCount.value,
     taskSummary: taskHeadline.value,
-    diagnosticsSummary: `${navState.value.selectionAnnouncement} ${backendContextLabel.value}`.trim(),
+    diagnosticsSummary:
+      `${navState.value.selectionAnnouncement} ${backendContextLabel.value}`.trim(),
   }),
-)
+);
 
 watch(
-  [() => currentWorkspace.value, () => currentWorkflowStep.value, () => navState.value.activeResultsTab],
+  [
+    () => currentWorkspace.value,
+    () => currentWorkflowStep.value,
+    () => navState.value.activeResultsTab,
+  ],
   () => {
-    requestedInspectorMode.value = ''
+    requestedInspectorMode.value = "";
   },
-)
+);
 
 watch(
   () => liveWorkspaceActive.value,
   (active) => {
-    if (active) void refreshLiveSupportMatrix()
+    if (active) void refreshLiveSupportMatrix();
   },
   { immediate: true },
-)
+);
 
 watch(
   [visibleControlsItems, visibleResultsItems],
   () => {
-    const controlsKeys = visibleControlsItems.value.map((item) => item.id)
-    const resultsKeys = visibleResultsItems.value.map((item) => item.id)
-    const activeControls = navState.value.activeControlsTab
-    const activeResults = navState.value.activeResultsTab
-    if (controlsKeys.length > 0 && (!activeControls || !controlsKeys.includes(activeControls))) {
-      const nextControls = controlsKeys[0]
-      if (nextControls) workflowStore.selectControlsTab(nextControls, { persist: false })
+    const controlsKeys = visibleControlsItems.value.map((item) => item.id);
+    const resultsKeys = visibleResultsItems.value.map((item) => item.id);
+    const activeControls = navState.value.activeControlsTab;
+    const activeResults = navState.value.activeResultsTab;
+    if (
+      controlsKeys.length > 0 &&
+      (!activeControls || !controlsKeys.includes(activeControls))
+    ) {
+      const nextControls = controlsKeys[0];
+      if (nextControls)
+        workflowStore.selectControlsTab(nextControls, { persist: false });
     }
-    if (resultsKeys.length > 0 && (!activeResults || !resultsKeys.includes(activeResults))) {
-      const nextResults = resultsKeys[0]
-      if (nextResults) workflowStore.selectResultsTab(nextResults, { persist: false })
+    if (
+      resultsKeys.length > 0 &&
+      (!activeResults || !resultsKeys.includes(activeResults))
+    ) {
+      const nextResults = resultsKeys[0];
+      if (nextResults)
+        workflowStore.selectResultsTab(nextResults, { persist: false });
     }
   },
   { immediate: true },
-)
+);
 
 function selectWorkspace(id: string): void {
-  workflowStore.selectWorkspace(id)
+  workflowStore.selectWorkspace(id);
 }
 
 function selectUiMode(id: string): void {
-  settingsStore.setUiMode(id === 'guided' ? 'guided' : 'advanced')
+  settingsStore.setUiMode(id === "guided" ? "guided" : "advanced");
 }
 
 function selectMode(id: string): void {
-  workflowStore.selectMode(id)
+  workflowStore.selectMode(id);
 }
 
 function selectWorkflowStep(id: string): void {
-  workflowStore.selectWorkflowStep(id)
+  workflowStore.selectWorkflowStep(id);
 }
 
 function selectControlsTab(id: string): void {
-  workflowStore.selectControlsTab(id)
+  workflowStore.selectControlsTab(id);
 }
 
 function selectResultsTab(id: string): void {
-  workflowStore.selectResultsTab(id)
+  workflowStore.selectResultsTab(id);
 }
 
 function openTaskCenter(): void {
-  requestTaskCenterOpen(taskCenterOpen)
+  requestTaskCenterOpen(taskCenterOpen);
 }
 
 function toggleInspector(): void {
-  inspectorCollapsed.value = !inspectorCollapsed.value
+  inspectorCollapsed.value = !inspectorCollapsed.value;
 }
 
 function selectInspectorMode(mode: WorkbenchInspectorMode): void {
-  requestedInspectorMode.value = mode
+  requestedInspectorMode.value = mode;
 }
 
 function runInspectorAction(actionId: string): void {
-  if (actionId === 'history.applySession') {
-    historyStore.applySession()
-    return
+  if (actionId === "history.applySession") {
+    historyStore.applySession();
+    return;
   }
-  if (actionId === 'history.refreshSaved') {
-    historyStore.refreshSavedRuns()
-    return
+  if (actionId === "history.refreshSaved") {
+    historyStore.refreshSavedRuns();
+    return;
   }
-  if (actionId === 'history.loadSaved') {
-    historyStore.loadSavedRun(savedSelectedValue.value)
-    return
+  if (actionId === "history.loadSaved") {
+    historyStore.loadSavedRun(savedSelectedValue.value);
+    return;
   }
-  if (actionId === 'history.applySaved') {
-    historyStore.applySavedRun(savedSelectedValue.value)
-    return
+  if (actionId === "history.applySaved") {
+    historyStore.applySavedRun(savedSelectedValue.value);
+    return;
   }
-  if (actionId === 'history.clearSession') {
-    historyStore.clearSession()
-    return
+  if (actionId === "history.clearSession") {
+    historyStore.clearSession();
+    return;
   }
-  if (actionId === 'history.openRunsDir') {
-    historyStore.openRunsDir()
-    return
+  if (actionId === "history.openRunsDir") {
+    historyStore.openRunsDir();
+    return;
   }
-  if (actionId === 'validation.open') {
-    workflowStore.selectWorkflowStep('validate')
-    return
+  if (actionId === "validation.open") {
+    workflowStore.selectWorkflowStep("validate");
+    return;
   }
-  if (actionId === 'tasks.open') {
-    openTaskCenter()
-    return
+  if (actionId === "tasks.open") {
+    openTaskCenter();
+    return;
   }
-  if (actionId === 'selection.openData') {
-    workflowStore.selectWorkflowStep('data')
-    return
+  if (actionId === "selection.openData") {
+    workflowStore.selectWorkflowStep("data");
+    return;
   }
-  if (actionId === 'selection.openOptimize') {
-    workflowStore.selectWorkflowStep('optimize')
-    workflowStore.selectControlsTab('opt')
-    return
+  if (actionId === "selection.openOptimize") {
+    workflowStore.selectWorkflowStep("optimize");
+    workflowStore.selectControlsTab("opt");
+    return;
   }
-  if (actionId === 'selection.openAnalyze') {
-    workflowStore.selectWorkflowStep('analyze')
+  if (actionId === "selection.openAnalyze") {
+    workflowStore.selectWorkflowStep("analyze");
   }
 }
 
 function controlTabId(id: string): string {
-  return `controls_tab_${id}`
+  return `controls_tab_${id}`;
 }
 
 function resultTabId(id: string): string {
-  return `results_tab_${id}`
+  return `results_tab_${id}`;
 }
 
 function isControlPanelVisible(id: string): boolean {
-  return visibleControlsItems.value.some((item) => item.id === id) && navState.value.activeControlsTab === id
+  return (
+    visibleControlsItems.value.some((item) => item.id === id) &&
+    navState.value.activeControlsTab === id
+  );
 }
 
 function isResultsPanelVisible(id: string): boolean {
-  return visibleResultsItems.value.some((item) => item.id === id) && navState.value.activeResultsTab === id
+  return (
+    visibleResultsItems.value.some((item) => item.id === id) &&
+    navState.value.activeResultsTab === id
+  );
 }
 
 function panelLabel(items: WorkbenchLocalTabItem[], id: string): string {
-  return items.find((item) => item.id === id)?.label || id
+  return items.find((item) => item.id === id)?.label || id;
 }
 
 function focusSelector(selector: string): void {
-  nextTick(() => document.querySelector<HTMLElement>(selector)?.focus())
+  nextTick(() => document.querySelector<HTMLElement>(selector)?.focus());
 }
 
 function moveTabFocus(
@@ -414,39 +523,93 @@ function moveTabFocus(
   selectTab: (id: string) => void,
   selectorForId: (id: string) => string,
 ): void {
-  const key = event.key
-  if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(key)) return
-  event.preventDefault()
-  const currentIndex = Math.max(0, items.findIndex((item) => item.id === currentId))
-  let nextIndex = currentIndex
-  if (key === 'ArrowRight' || key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length
-  else if (key === 'ArrowLeft' || key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length
-  else if (key === 'Home') nextIndex = 0
-  else if (key === 'End') nextIndex = items.length - 1
-  const nextItem = items[nextIndex]
-  if (!nextItem) return
-  selectTab(nextItem.id)
-  focusSelector(selectorForId(nextItem.id))
+  const key = event.key;
+  if (
+    ![
+      "ArrowRight",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowUp",
+      "Home",
+      "End",
+    ].includes(key)
+  )
+    return;
+  event.preventDefault();
+  const currentIndex = Math.max(
+    0,
+    items.findIndex((item) => item.id === currentId),
+  );
+  let nextIndex = currentIndex;
+  if (key === "ArrowRight" || key === "ArrowDown")
+    nextIndex = (currentIndex + 1) % items.length;
+  else if (key === "ArrowLeft" || key === "ArrowUp")
+    nextIndex = (currentIndex - 1 + items.length) % items.length;
+  else if (key === "Home") nextIndex = 0;
+  else if (key === "End") nextIndex = items.length - 1;
+  const nextItem = items[nextIndex];
+  if (!nextItem) return;
+  selectTab(nextItem.id);
+  focusSelector(selectorForId(nextItem.id));
 }
 
 function onUiModeKeydown(event: KeyboardEvent, id: string): void {
-  moveTabFocus(event, uiModeItems, id, selectUiMode, (nextId) => `#uiModeBar [data-ui-mode="${nextId}"]`)
+  moveTabFocus(
+    event,
+    uiModeItems,
+    id,
+    selectUiMode,
+    (nextId) => `#uiModeBar [data-ui-mode="${nextId}"]`,
+  );
 }
 
 function onModeKeydown(event: KeyboardEvent, id: string): void {
-  moveTabFocus(event, modeItems, id, selectMode, (nextId) => `#modeBar [data-mode="${nextId}"]`)
+  moveTabFocus(
+    event,
+    modeItems,
+    id,
+    selectMode,
+    (nextId) => `#modeBar [data-mode="${nextId}"]`,
+  );
 }
 
-function onStageKeydown(event: KeyboardEvent, item: WorkbenchNavigationItem): void {
-  moveTabFocus(event, navState.value.stageItems, item.id, selectWorkflowStep, (nextId) => `#workflowStepBar [data-workflow-step="${nextId}"]`)
+function onStageKeydown(
+  event: KeyboardEvent,
+  item: WorkbenchNavigationItem,
+): void {
+  moveTabFocus(
+    event,
+    navState.value.stageItems,
+    item.id,
+    selectWorkflowStep,
+    (nextId) => `#workflowStepBar [data-workflow-step="${nextId}"]`,
+  );
 }
 
-function onControlsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): void {
-  moveTabFocus(event, visibleControlsItems.value, item.id, selectControlsTab, (nextId) => `#controlsTabBar [data-tab="${nextId}"]`)
+function onControlsKeydown(
+  event: KeyboardEvent,
+  item: WorkbenchLocalTabItem,
+): void {
+  moveTabFocus(
+    event,
+    visibleControlsItems.value,
+    item.id,
+    selectControlsTab,
+    (nextId) => `#controlsTabBar [data-tab="${nextId}"]`,
+  );
 }
 
-function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): void {
-  moveTabFocus(event, visibleResultsItems.value, item.id, selectResultsTab, (nextId) => `#resultsTabBar [data-tab="${nextId}"]`)
+function onResultsKeydown(
+  event: KeyboardEvent,
+  item: WorkbenchLocalTabItem,
+): void {
+  moveTabFocus(
+    event,
+    visibleResultsItems.value,
+    item.id,
+    selectResultsTab,
+    (nextId) => `#resultsTabBar [data-tab="${nextId}"]`,
+  );
 }
 </script>
 
@@ -456,27 +619,43 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
     :class="{ guided: guidedModeActive, inspectorCollapsed }"
     data-qa-shell="workbench"
   >
-    <WorkbenchRail v-if="!guidedModeActive" :items="navState.workspaceItems" @select="selectWorkspace" />
+    <WorkbenchRail
+      v-if="!guidedModeActive"
+      :items="navState.workspaceItems"
+      @select="selectWorkspace"
+    />
 
     <div class="workbenchContent">
-      <header class="workbenchHeader" role="banner" aria-label="Workspace shell header">
+      <header
+        class="workbenchHeader"
+        role="banner"
+        aria-label="Workspace shell header"
+      >
         <div class="titleRow">
           <div class="titleCopy">
             <span class="eyebrow">VectorGrid</span>
-            <h1>{{ guidedModeActive ? 'Guided' : currentWorkspaceLabel }}</h1>
+            <h1>{{ guidedModeActive ? "Guided" : currentWorkspaceLabel }}</h1>
             <p>{{ shellSubtitle }}</p>
           </div>
           <div class="headerContext" aria-label="Current workbench context">
             <span class="contextChip mono">{{ navState.modeLabel }}</span>
             <span class="contextChip mono">{{ dataContextLabel }}</span>
-            <span class="contextChip mono" :class="{ blocked: primaryActionPreview.disabled }">
+            <span
+              class="contextChip mono"
+              :class="{ blocked: primaryActionPreview.disabled }"
+            >
               {{ primaryActionPreview.label }}
             </span>
           </div>
         </div>
 
         <div class="toolbarRow">
-          <div id="uiModeBar" class="segmentedBar" role="tablist" aria-label="UI mode">
+          <div
+            id="uiModeBar"
+            class="segmentedBar"
+            role="tablist"
+            aria-label="UI mode"
+          >
             <button
               v-for="item in uiModeItems"
               :id="item.tabId"
@@ -496,7 +675,13 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
             </button>
           </div>
 
-          <div v-if="!guidedModeActive" id="modeBar" class="segmentedBar" role="tablist" aria-label="Workflow mode">
+          <div
+            v-if="!guidedModeActive"
+            id="modeBar"
+            class="segmentedBar"
+            role="tablist"
+            aria-label="Workflow mode"
+          >
             <button
               v-for="item in modeItems"
               :id="item.tabId"
@@ -566,11 +751,24 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
         class="workbenchMain"
         :aria-labelledby="selectedShellLabelledBy"
       >
-        <div id="shellSelectionStatus" class="srOnly" role="status" aria-live="polite">
-          {{ guidedModeActive ? 'Workspace Guided Mode.' : navState.selectionAnnouncement }}
+        <div
+          id="shellSelectionStatus"
+          class="srOnly"
+          role="status"
+          aria-live="polite"
+        >
+          {{
+            guidedModeActive
+              ? "Workspace Guided Mode."
+              : navState.selectionAnnouncement
+          }}
         </div>
 
-        <section v-show="guidedModeActive" id="guidedShellGrid" aria-label="Guided workspace shell">
+        <section
+          v-show="guidedModeActive"
+          id="guidedShellGrid"
+          aria-label="Guided workspace shell"
+        >
           <div id="guidedVueShellMount"></div>
         </section>
 
@@ -582,7 +780,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
           :class="workbenchGridClass"
           aria-label="Workbench panels"
         >
-          <section v-show="controlsColumnVisible" class="workbenchLane setupLane" aria-label="Setup pane">
+          <section
+            v-show="controlsColumnVisible"
+            class="workbenchLane setupLane"
+            aria-label="Setup pane"
+          >
             <div
               v-if="controlsTabsVisible"
               id="controlsTabBar"
@@ -615,8 +817,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="data"
               :role="controlsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="controlsTabsVisible ? controlTabId('data') : undefined"
-              :aria-label="controlsTabsVisible ? undefined : panelLabel(visibleControlsItems, 'data')"
+              :aria-labelledby="
+                controlsTabsVisible ? controlTabId('data') : undefined
+              "
+              :aria-label="
+                controlsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleControlsItems, 'data')
+              "
               :aria-hidden="!isControlPanelVisible('data')"
               v-show="isControlPanelVisible('data')"
             >
@@ -627,8 +835,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="opt"
               :role="controlsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="controlsTabsVisible ? controlTabId('opt') : undefined"
-              :aria-label="controlsTabsVisible ? undefined : panelLabel(visibleControlsItems, 'opt')"
+              :aria-labelledby="
+                controlsTabsVisible ? controlTabId('opt') : undefined
+              "
+              :aria-label="
+                controlsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleControlsItems, 'opt')
+              "
               :aria-hidden="!isControlPanelVisible('opt')"
               v-show="isControlPanelVisible('opt')"
             >
@@ -639,8 +853,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="strategy"
               :role="controlsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="controlsTabsVisible ? controlTabId('strategy') : undefined"
-              :aria-label="controlsTabsVisible ? undefined : panelLabel(visibleControlsItems, 'strategy')"
+              :aria-labelledby="
+                controlsTabsVisible ? controlTabId('strategy') : undefined
+              "
+              :aria-label="
+                controlsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleControlsItems, 'strategy')
+              "
               :aria-hidden="!isControlPanelVisible('strategy')"
               v-show="isControlPanelVisible('strategy')"
             >
@@ -651,8 +871,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="advanced"
               :role="controlsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="controlsTabsVisible ? controlTabId('advanced') : undefined"
-              :aria-label="controlsTabsVisible ? undefined : panelLabel(visibleControlsItems, 'advanced')"
+              :aria-labelledby="
+                controlsTabsVisible ? controlTabId('advanced') : undefined
+              "
+              :aria-label="
+                controlsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleControlsItems, 'advanced')
+              "
               :aria-hidden="!isControlPanelVisible('advanced')"
               v-show="isControlPanelVisible('advanced')"
             >
@@ -660,7 +886,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
             </div>
           </section>
 
-          <section v-show="resultsColumnVisible" class="workbenchLane resultsLane" aria-label="Results pane">
+          <section
+            v-show="resultsColumnVisible"
+            class="workbenchLane resultsLane"
+            aria-label="Results pane"
+          >
             <div
               v-if="resultsTabsVisible"
               id="resultsTabBar"
@@ -693,8 +923,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="overview"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('overview') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'overview')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('overview') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'overview')
+              "
               :aria-hidden="!isResultsPanelVisible('overview')"
               v-show="isResultsPanelVisible('overview')"
             >
@@ -705,8 +941,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="top"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('top') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'top')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('top') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'top')
+              "
               :aria-hidden="!isResultsPanelVisible('top')"
               v-show="isResultsPanelVisible('top')"
             >
@@ -717,8 +959,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="pareto"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('pareto') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'pareto')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('pareto') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'pareto')
+              "
               :aria-hidden="!isResultsPanelVisible('pareto')"
               v-show="isResultsPanelVisible('pareto')"
             >
@@ -729,8 +977,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="validate"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('validate') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'validate')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('validate') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'validate')
+              "
               :aria-hidden="!isResultsPanelVisible('validate')"
               v-show="isResultsPanelVisible('validate')"
             >
@@ -741,8 +995,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="drill"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('drill') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'drill')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('drill') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'drill')
+              "
               :aria-hidden="!isResultsPanelVisible('drill')"
               v-show="isResultsPanelVisible('drill')"
             >
@@ -753,8 +1013,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="heatmap"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('heatmap') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'heatmap')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('heatmap') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'heatmap')
+              "
               :aria-hidden="!isResultsPanelVisible('heatmap')"
               v-show="isResultsPanelVisible('heatmap')"
             >
@@ -765,8 +1031,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="history"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('history') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'history')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('history') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'history')
+              "
               :aria-hidden="!isResultsPanelVisible('history')"
               v-show="isResultsPanelVisible('history')"
             >
@@ -777,8 +1049,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="meta"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('meta') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'meta')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('meta') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'meta')
+              "
               :aria-hidden="!isResultsPanelVisible('meta')"
               v-show="isResultsPanelVisible('meta')"
             >
@@ -789,8 +1067,14 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               class="panelHost"
               data-vue-panel="debug"
               :role="resultsTabsVisible ? 'tabpanel' : 'region'"
-              :aria-labelledby="resultsTabsVisible ? resultTabId('debug') : undefined"
-              :aria-label="resultsTabsVisible ? undefined : panelLabel(visibleResultsItems, 'debug')"
+              :aria-labelledby="
+                resultsTabsVisible ? resultTabId('debug') : undefined
+              "
+              :aria-label="
+                resultsTabsVisible
+                  ? undefined
+                  : panelLabel(visibleResultsItems, 'debug')
+              "
               :aria-hidden="!isResultsPanelVisible('debug')"
               v-show="isResultsPanelVisible('debug')"
             >
@@ -799,8 +1083,15 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
           </section>
         </section>
 
-        <section v-show="liveWorkspaceActive" id="liveShellGrid" aria-label="Live workspace shell">
-          <section class="liveSupportPane" aria-label="Current live support envelope">
+        <section
+          v-show="liveWorkspaceActive"
+          id="liveShellGrid"
+          aria-label="Live workspace shell"
+        >
+          <section
+            class="liveSupportPane"
+            aria-label="Current live support envelope"
+          >
             <div>
               <span class="eyebrow">Current live support envelope</span>
               <h2>Live Operations</h2>
@@ -808,11 +1099,15 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
             <div class="liveSupportGrid">
               <article>
                 <span>Strategies</span>
-                <strong class="mono" :title="liveSupportMatrixStatus">{{ liveSupportStrategiesLabel }}</strong>
+                <strong class="mono" :title="liveSupportMatrixStatus">{{
+                  liveSupportStrategiesLabel
+                }}</strong>
               </article>
               <article>
                 <span>Adapters</span>
-                <strong class="mono" :title="liveSupportMatrixStatus">{{ liveSupportAdaptersLabel }}</strong>
+                <strong class="mono" :title="liveSupportMatrixStatus">{{
+                  liveSupportAdaptersLabel
+                }}</strong>
               </article>
               <article>
                 <span>Broker</span>
@@ -824,13 +1119,23 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
               </article>
               <article>
                 <span>Limits</span>
-                <strong class="mono">One symbol · one runner · one stream</strong>
+                <strong class="mono"
+                  >One symbol · one runner · one stream</strong
+                >
               </article>
             </div>
           </section>
           <div id="executionShellPane">
             <div id="executionVueShellMount"></div>
           </div>
+        </section>
+
+        <section
+          v-show="portfolioWorkspaceActive"
+          id="portfolioShellGrid"
+          aria-label="Portfolio research workspace shell"
+        >
+          <div id="portfolioVueShellMount"></div>
         </section>
 
         <section v-show="settingsWorkspaceActive" id="settingsShellGrid">
@@ -906,7 +1211,8 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
   min-width: 0;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   background: color-mix(in oklab, var(--header-bg) 92%, var(--surface-shell));
-  box-shadow: 0 8px 18px color-mix(in srgb, rgb(var(--shadow-overflow-rgb) / 0.12) 72%, transparent);
+  box-shadow: 0 8px 18px
+    color-mix(in srgb, rgb(var(--shadow-overflow-rgb) / 0.12) 72%, transparent);
   padding: 0.58rem 0.75rem 0.52rem;
   display: grid;
   gap: 0.42rem;
@@ -980,7 +1286,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
 
 .contextChip.blocked {
   color: var(--warning-ink);
-  background: color-mix(in oklab, var(--surface-warning) 58%, var(--surface-working));
+  background: color-mix(
+    in oklab,
+    var(--surface-warning) 58%,
+    var(--surface-working)
+  );
 }
 
 .toolbarRow {
@@ -1043,7 +1353,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
 .stageButton.active {
   color: var(--text);
   border-color: color-mix(in oklab, var(--panel-focus-edge) 76%, var(--accent));
-  background: color-mix(in oklab, var(--selection-fill) 86%, var(--surface-working));
+  background: color-mix(
+    in oklab,
+    var(--selection-fill) 86%,
+    var(--surface-working)
+  );
   box-shadow: inset 0 -2px 0 var(--selection-rail);
 }
 
@@ -1068,7 +1382,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
 .taskLauncher.open {
   color: var(--text);
   border-color: color-mix(in oklab, var(--panel-focus-edge) 72%, var(--border));
-  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-working));
+  background: color-mix(
+    in oklab,
+    var(--selection-fill) 84%,
+    var(--surface-working)
+  );
 }
 
 .workbenchMain {
@@ -1128,7 +1446,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
   top: 0;
   z-index: 5;
   margin: -0.08rem -0.08rem 0.04rem;
-  background: color-mix(in oklab, var(--surface-sticky) 94%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-sticky) 94%,
+    var(--panel-footer)
+  );
 }
 
 .panelHost {
@@ -1138,6 +1460,7 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
 
 #guidedShellGrid,
 #settingsShellGrid,
+#portfolioShellGrid,
 #liveShellGrid {
   flex: 1 1 auto;
   min-width: 0;
@@ -1160,7 +1483,11 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
   padding: 0.78rem 0.84rem;
   display: grid;
   gap: 0.55rem;
-  background: color-mix(in oklab, var(--surface-working) 94%, var(--surface-shell));
+  background: color-mix(
+    in oklab,
+    var(--surface-working) 94%,
+    var(--surface-shell)
+  );
 }
 
 .liveSupportPane h2 {
@@ -1310,6 +1637,7 @@ function onResultsKeydown(event: KeyboardEvent, item: WorkbenchLocalTabItem): vo
   .workbenchPaneGrid,
   #guidedShellGrid,
   #settingsShellGrid,
+  #portfolioShellGrid,
   #liveShellGrid {
     margin: 0.5rem;
     padding: 0.5rem;

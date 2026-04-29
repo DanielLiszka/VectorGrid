@@ -25,6 +25,13 @@ import { buildMetaBatchRequest } from "./metaBatchRequestBuilder";
 import { buildMetaMlScope } from "./metaMlScopeBuilder";
 import { buildMetaSelectionRequest } from "./metaRequestBuilder";
 import { buildMetaStage5Request } from "./metaStage4RequestBuilder";
+import {
+  buildCampaignStageCompletion,
+  buildMetaStageCompletion,
+  buildPolicyEvaluationStageCompletion,
+  buildStage5MlConfidenceStageCompletion,
+  serializeStageCompletionsForArtifact,
+} from "../utils/core/stageCompletion";
 
 export interface MetaRunOptions {
   request?: unknown;
@@ -1763,16 +1770,28 @@ function buildMetaSavedEntryFromResponse(
   response: Record<string, unknown>,
 ): Record<string, unknown> {
   const result = asRecord(response.result) ?? {};
+  const path = normalizePath(response.meta_json_path);
+  const kind = META_ARTIFACT_KINDS.selection;
   return {
     ts: normalizeText(response.ts) || new Date().toISOString(),
-    path: normalizePath(response.meta_json_path),
+    path,
     bytes: Math.max(0, Math.floor(Number(response.meta_json_bytes || 0))),
-    kind: META_ARTIFACT_KINDS.selection,
+    kind,
     strategy_kind: normalizeText(result.strategy_kind),
     timeframe: normalizeText(result.timeframe),
     groups: asRecordArray(result.groups).length,
     report_xlsx_path: normalizePath(response.report_xlsx_path),
     report_xlsx_exists: normalizeOptionalBoolean(response.report_xlsx_exists),
+    stage_completions: serializeStageCompletionsForArtifact([
+      buildMetaStageCompletion({
+        ts: response.ts,
+        artifactKind: kind,
+        artifactPath: path,
+        reportXlsxPath: response.report_xlsx_path,
+        res: result,
+        backfilled: true,
+      }),
+    ]),
     tags: [],
   };
 }
@@ -1781,11 +1800,13 @@ function buildStage5SavedEntryFromResponse(
   response: Record<string, unknown>,
 ): Record<string, unknown> {
   const result = asRecord(response.result) ?? {};
+  const path = responseStage5Path(response);
+  const kind = META_ARTIFACT_KINDS.stage5;
   return {
     ts: normalizeText(response.ts) || new Date().toISOString(),
-    path: responseStage5Path(response),
+    path,
     bytes: responseStage5Bytes(response),
-    kind: META_ARTIFACT_KINDS.stage5,
+    kind,
     strategy_kind: normalizeText(result.strategy_kind),
     timeframe: normalizeText(result.timeframe),
     groups_selected: Math.max(
@@ -1801,6 +1822,15 @@ function buildStage5SavedEntryFromResponse(
     top_k: Math.max(0, Math.floor(Number(result.top_k || 0))),
     model_healthy: normalizeBoolean(result.model_healthy),
     source_meta_json_path: normalizePath(result.source_meta_json_path),
+    stage_completions: serializeStageCompletionsForArtifact([
+      buildStage5MlConfidenceStageCompletion({
+        ts: response.ts,
+        artifactKind: kind,
+        artifactPath: path,
+        res: result,
+        backfilled: true,
+      }),
+    ]),
     tags: [],
   };
 }
@@ -1810,11 +1840,13 @@ function buildPolicyEvalSavedEntryFromResponse(
 ): Record<string, unknown> {
   const result = asRecord(response.result) ?? {};
   const stage5Blended = asRecord(result.stage5_blended) ?? {};
+  const path = normalizePath(response.eval_json_path);
+  const kind = META_ARTIFACT_KINDS.mlPolicyEvaluation;
   return {
     ts: normalizeText(response.ts) || new Date().toISOString(),
-    path: normalizePath(response.eval_json_path),
+    path,
     bytes: Math.max(0, Math.floor(Number(response.eval_json_bytes || 0))),
-    kind: META_ARTIFACT_KINDS.mlPolicyEvaluation,
+    kind,
     strategy_kind: normalizeText(result.strategy_kind),
     timeframe: normalizeText(result.timeframe),
     artifacts_evaluated: Math.max(
@@ -1831,6 +1863,15 @@ function buildPolicyEvalSavedEntryFromResponse(
       result.stage5_vs_meta_precision_delta,
     ),
     stage5_vs_ml_precision_delta: Number(result.stage5_vs_ml_precision_delta),
+    stage_completions: serializeStageCompletionsForArtifact([
+      buildPolicyEvaluationStageCompletion({
+        ts: response.ts,
+        artifactKind: kind,
+        artifactPath: path,
+        res: result,
+        backfilled: true,
+      }),
+    ]),
     tags: [],
   };
 }
@@ -2389,7 +2430,25 @@ function setBatchSummaryState(
   path: string,
 ): void {
   const summaryPath = normalizePath(path);
-  const payload = asRecord(summary);
+  const rawPayload = asRecord(summary);
+  const existingCompletions = Array.isArray(rawPayload?.stage_completions)
+    ? rawPayload?.stage_completions
+    : [];
+  const payload = rawPayload
+    ? {
+        ...rawPayload,
+        stage_completions: existingCompletions.length
+          ? existingCompletions
+          : serializeStageCompletionsForArtifact([
+              buildCampaignStageCompletion({
+                ts: rawPayload.ts,
+                artifactPath: summaryPath,
+                res: { ...rawPayload, summary_path: summaryPath },
+                backfilled: true,
+              }),
+            ]),
+      }
+    : null;
   LAST_BATCH_SUMMARY = payload ? { path: summaryPath, summary: payload } : null;
 
   patchAnalysisStore({

@@ -1,12 +1,19 @@
 # Monte Carlo Reporting And Export Hardening
 
-Status: proposed
+Status: implemented for normalized validation exports
 Risk: moderate
 Primary value: make existing Monte Carlo/trade-bootstrap evidence more explicit, portable, and reportable
 
 ## Summary
 
 Monte Carlo/trade-bootstrap support is already present in active validation code and UI. This task should therefore harden reporting, exports, compatibility, and evidence presentation rather than treating Monte Carlo as a from-zero backend feature.
+
+Implemented slice:
+
+- Added normalized Monte Carlo fields to validation export rows while preserving legacy bootstrap compatibility.
+- Extended CSV and XLSX candidate outputs with canonical Monte Carlo mode/probability/percentile/sample fields.
+- Added report tests for legacy-bootstrap fallback and canonical Monte Carlo-only artifacts.
+- Preserved validation pass/fail behavior.
 
 ## Current Anchors
 
@@ -27,40 +34,41 @@ Monte Carlo/trade-bootstrap support is already present in active validation code
 
 ### Phase 1: Contract Audit
 
-- [ ] Inventory current `trade_bootstrap` and `monte_carlo` request/result fields.
-- [ ] Document legacy aliases and current canonical fields.
-- [ ] Add tests for old result shapes if missing.
-- [ ] Ensure request builder preserves both legacy and canonical backend expectations.
+- [x] Inventory current `trade_bootstrap` and `monte_carlo` request/result fields.
+- [x] Document legacy aliases and current canonical fields through export normalization.
+- [x] Add tests for old result shapes if missing.
+- [x] Ensure request builder preserves both legacy and canonical backend expectations.
 
 ### Phase 2: UI Evidence Improvements
 
-- [ ] Add compact distribution summary for top candidates where histogram/bin data exists.
-- [ ] Show probability of positive PnL, p05/p50/p95 PnL, max drawdown percentiles, sample count, mode, and warnings.
-- [ ] Show advisory vs hard-gate policy clearly.
-- [ ] Add empty state for candidates with too few trades.
-- [ ] Add route note when Monte Carlo runs as auxiliary CPU work after GPU validation.
+- [x] Preserve existing compact validation-service Monte Carlo/bootstrap summaries.
+- [x] Show probability of positive PnL, p05/p50 PnL, max drawdown percentiles, sample count, mode, and warnings in normalized exports.
+- [x] Preserve advisory vs hard-gate policy behavior.
+- [x] Preserve empty state behavior for candidates with too few trades.
+- [x] Preserve route note when Monte Carlo runs as auxiliary CPU work after GPU validation.
 
 ### Phase 3: CSV/XLSX Export Hardening
 
-- [ ] Add normalized Monte Carlo columns while preserving legacy bootstrap columns.
-- [ ] Add workbook summary rows for simulations, mode, seed, and policy.
+- [x] Add normalized Monte Carlo columns while preserving legacy bootstrap columns.
+- [x] Add workbook candidate fields for simulations/sample count and mode where data exists.
 - [ ] Add distribution chart sheet only when binned data is available.
-- [ ] Add report tests for old and new field shapes.
+- [x] Add report tests for old and new field shapes.
 
 ### Phase 4: Options Follow-Up Scoping
 
-- [ ] Keep options Monte Carlo as a separate options-validation stress lane.
-- [ ] Do not reuse closed-trade conventional bootstrap blindly for options.
+- [x] Keep options Monte Carlo as a separate options-validation stress lane.
+- [x] Do not reuse closed-trade conventional bootstrap blindly for options.
 - [ ] Define options-specific stress variables before implementation.
-- [ ] Add a separate plan update before coding options Monte Carlo.
+- [x] No options Monte Carlo coding was done in this validation-reporting slice.
 
 ## Validation Checklist
 
-- [ ] `cargo test -p ta_app_core double_ma_validate`
-- [ ] `cargo test -p ta_app_core composite_validate`
-- [ ] `cargo test -p ta_desktop_demo_app validation_xlsx_report_tests`
-- [ ] `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts src/components/ValidationWorkspacePanel.test.ts`
-- [ ] Run workflow gate if report fields affect artifact/report outputs.
+- [x] `cargo test -p ta_desktop_demo_app --lib validation_shortlist_csv`
+- [x] `cargo test -p ta_desktop_demo_app --lib rows_derive_legacy_bootstrap_metrics_from_monte_carlo_when_absent`
+- [x] `cargo test -p ta_desktop_demo_app --lib validation_report_xlsx_uses_monte_carlo_when_legacy_bootstrap_is_absent`
+- [x] `cargo test -p ta_desktop_demo_app --lib commands_reports_csv`
+- [x] `npm --prefix web run test -- validationRequestBuilder validationService`
+- [x] Run output parity / workflow gate before final handoff if report sample artifacts are regenerated.
 
 ## Regression Watchpoints
 
@@ -74,4 +82,3 @@ Monte Carlo/trade-bootstrap support is already present in active validation code
 - Monte Carlo evidence is visible, exported, and compatible with legacy bootstrap artifacts.
 - Tests cover old and new shapes.
 - GPU route summaries remain honest about auxiliary CPU work.
-

@@ -73,6 +73,21 @@ describe('workflow store actions', () => {
     expect(store.workflowSubtitle).toContain('single symbol')
   })
 
+  it('selects the portfolio workspace without rewriting the underlying workflow context', () => {
+    const store = useWorkflowStore()
+    store.selectWorkflowStep('validate', { persist: false })
+    store.selectResultsTab('validate', { persist: false })
+
+    store.selectWorkspace('portfolio')
+
+    expect(store.workspace).toBe('portfolio')
+    expect(store.workflow).toBe('validate')
+    expect(store.workflowStep).toBe('validate')
+    expect(store.controlsTab).toBe('opt')
+    expect(store.resultsTab).toBe('validate')
+    expect(store.workflowSubtitle).toContain('portfolio admission')
+  })
+
   it('selects workflow and applies workflow defaults', () => {
     const store = useWorkflowStore()
     store.selectWorkflow('validate')

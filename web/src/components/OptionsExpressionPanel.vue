@@ -37,6 +37,10 @@ import {
   optionsProviderDownloadIcon,
   optionsTupleDetailIcon,
 } from "../utils/appSvgAssets";
+import {
+  buildOptionsFinalistDashboard,
+  formatOptionsFinalistNumber,
+} from "../utils/optionsFinalistDashboardModel";
 
 const props = defineProps<{
   parentArtifactPath: string;
@@ -198,7 +202,9 @@ function formatSplitAssignmentMode(value: string | null | undefined): string {
   }
 }
 
-function formatValidationDatasetPolicy(value: string | null | undefined): string {
+function formatValidationDatasetPolicy(
+  value: string | null | undefined,
+): string {
   switch (normalizeText(value)) {
     case "allow_same_root_replacement":
       return "Same-root replacement";
@@ -283,6 +289,10 @@ const VALIDATION_MONOTONICITY_EPSILON = 1e-9;
 const SELECTED_TUPLE_SCOPE_LABEL = "Selected tuple only";
 const RETAINED_SCOPE_LABEL = "Within retained top_k only";
 const SEALED_SCOPE_LABEL = "Within sealed finalists only";
+
+const optionsFinalistDashboard = computed(() =>
+  buildOptionsFinalistDashboard(latestValidation.value),
+);
 
 type ValidationTone = "pass" | "pending" | "mixed";
 type ValidationMonotonicityState =
@@ -3912,8 +3922,7 @@ function focusTupleIndex(index: number): void {
           <h3 class="panelPaneTitle" style="margin: 0">Options Expression</h3>
           <div class="panelSectionLead">
             Express a saved validated directional artifact through a constrained
-            Polygon.io options search without mutating the main workflow
-            state.
+            Polygon.io options search without mutating the main workflow state.
           </div>
           <div class="panelMuted" style="margin-top: 6px">
             This is an options follow-up surface. Conventional stock
@@ -4621,9 +4630,7 @@ function focusTupleIndex(index: number): void {
         <div v-if="selectedArtifactSummary" class="panelMuted mono">
           {{ selectedArtifactBackendRoute.label }} ·
           {{ selectedArtifactRealismLane.label }} ·
-          {{
-            selectedArtifactSummary.requestFillModel || "aggregate_research"
-          }}
+          {{ selectedArtifactSummary.requestFillModel || "aggregate_research" }}
           · validation
           {{ selectedArtifactValidation?.label ?? "Search only" }} · sel
           {{
@@ -5177,8 +5184,8 @@ function focusTupleIndex(index: number): void {
           <div>
             <h3>Validate</h3>
             <p>
-              Subsequent validation replays selected tuples from a saved
-              options artifact against explicit Polygon.io dataset provenance.
+              Subsequent validation replays selected tuples from a saved options
+              artifact against explicit Polygon.io dataset provenance.
             </p>
           </div>
         </div>
@@ -5289,7 +5296,10 @@ function focusTupleIndex(index: number): void {
                 <span>Sealed finalists</span>
               </label>
               <label class="bucketToggle">
-                <input v-model="validationIncludeRobustLeader" type="checkbox" />
+                <input
+                  v-model="validationIncludeRobustLeader"
+                  type="checkbox"
+                />
                 <span>Robust leader</span>
               </label>
               <label class="bucketToggle">
@@ -5317,7 +5327,9 @@ function focusTupleIndex(index: number): void {
             type="button"
             data-qa-action="options.validation.preview"
             :disabled="
-              validationFeasibilityBusy || !activeArtifactPath || !validationFormValid
+              validationFeasibilityBusy ||
+              !activeArtifactPath ||
+              !validationFormValid
             "
             @click="store.previewValidationFeasibility()"
           >
@@ -5330,7 +5342,9 @@ function focusTupleIndex(index: number): void {
           <button
             type="button"
             data-qa-action="options.validation.run"
-            :disabled="validationBusy || !activeArtifactPath || !validationFormValid"
+            :disabled="
+              validationBusy || !activeArtifactPath || !validationFormValid
+            "
             @click="store.validateActiveArtifact()"
           >
             {{ validationBusy ? "Validating…" : "Validate artifact" }}
@@ -5372,7 +5386,10 @@ function focusTupleIndex(index: number): void {
             }}
           </template>
         </div>
-        <div v-if="latestValidationFeasibility?.notes.length" class="panelMuted">
+        <div
+          v-if="latestValidationFeasibility?.notes.length"
+          class="panelMuted"
+        >
           {{ latestValidationFeasibility.notes.join(" ") }}
         </div>
 
@@ -5381,8 +5398,7 @@ function focusTupleIndex(index: number): void {
             class="gateBadge"
             :class="{
               isPass: validationAcceptance.verdict === 'accepted',
-              isPending:
-                validationAcceptance.verdict === 'support_deficient',
+              isPending: validationAcceptance.verdict === 'support_deficient',
               isMixed:
                 validationAcceptance.verdict === 'warning' ||
                 validationAcceptance.verdict === 'rejected',
@@ -5506,8 +5522,8 @@ function focusTupleIndex(index: number): void {
             <span class="panelMetricKey">Quote warnings</span>
             <span class="panelMetricValue mono panelNumeric">
               {{
-                latestValidation.result.datasetProvenance.quoteQuality
-                  .warnings.length
+                latestValidation.result.datasetProvenance.quoteQuality.warnings
+                  .length
               }}
             </span>
           </div>
@@ -5565,13 +5581,110 @@ function focusTupleIndex(index: number): void {
                   {{ formatOptionalDecimal(row.worstExpectancyPerPremium, 3) }}
                 </td>
                 <td class="mono">
-                  {{
-                    formatOptionalDecimal(row.medianExpectancyPerPremium, 3)
-                  }}
+                  {{ formatOptionalDecimal(row.medianExpectancyPerPremium, 3) }}
                 </td>
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <div
+          v-if="optionsFinalistDashboard"
+          class="optionsFinalistDashboard"
+          data-qa-panel="options.finalistDashboard"
+        >
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Finalist acceptance</div>
+              <div class="panelSectionLead">
+                {{ optionsFinalistDashboard.acceptedTupleCount }} /
+                {{ optionsFinalistDashboard.validatedTupleCount }} accepted ·
+                {{ optionsFinalistDashboard.verdict }}
+              </div>
+            </div>
+          </div>
+          <div class="gateBadgeRow finalistGateGrid">
+            <span
+              v-for="gate in optionsFinalistDashboard.gates"
+              :key="gate.key"
+              class="gateBadge finalistGate"
+              :class="{
+                isPass: gate.tone === 'pass',
+                isPending: gate.tone === 'pending',
+                isMixed: gate.tone === 'mixed',
+              }"
+              :title="gate.detail"
+            >
+              {{ gate.label }} · {{ gate.status }}
+            </span>
+          </div>
+          <div v-if="optionsFinalistDashboard.rows.length" class="tableWrap">
+            <table class="resultTable">
+              <thead>
+                <tr>
+                  <th>Tuple</th>
+                  <th>Verdict</th>
+                  <th>Support</th>
+                  <th>Robust</th>
+                  <th>Search EV</th>
+                  <th>Holdout EV</th>
+                  <th>Stress EV</th>
+                  <th>Harsher EV</th>
+                  <th>Extreme EV</th>
+                  <th>Strongest stress</th>
+                  <th>Trades</th>
+                  <th>Drift</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in optionsFinalistDashboard.rows" :key="row.key">
+                  <td class="mono">{{ row.tupleLabel }}</td>
+                  <td>
+                    <span
+                      class="gateBadge miniBadge"
+                      :class="{
+                        isPass: row.tone === 'pass',
+                        isPending: row.tone === 'pending',
+                        isMixed: row.tone === 'mixed',
+                      }"
+                    >
+                      {{ row.verdict }}
+                    </span>
+                  </td>
+                  <td class="mono">{{ row.support }}</td>
+                  <td class="mono">
+                    {{ formatOptionsFinalistNumber(row.validatedRobustScore) }}
+                  </td>
+                  <td class="mono">
+                    {{ formatOptionsFinalistNumber(row.searchEv) }}
+                  </td>
+                  <td class="mono">
+                    {{ formatOptionsFinalistNumber(row.holdoutEv) }}
+                  </td>
+                  <td class="mono">
+                    {{ formatOptionsFinalistNumber(row.stressEv) }}
+                  </td>
+                  <td class="mono">
+                    {{ formatOptionsFinalistNumber(row.harsherStressEv) }}
+                  </td>
+                  <td class="mono">
+                    {{ formatOptionsFinalistNumber(row.extremeStressEv) }}
+                  </td>
+                  <td class="mono">
+                    {{ row.strongestStressLabel }} ·
+                    {{ formatOptionsFinalistNumber(row.strongestStressEv) }}
+                  </td>
+                  <td class="mono">
+                    {{ formatOptionsFinalistNumber(row.validTrades, 0) }}
+                  </td>
+                  <td class="mono">{{ row.drift || "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else class="panelMuted">
+            No tuple-level validation rows were included in this artifact.
+          </div>
         </div>
       </section>
 
@@ -6863,9 +6976,7 @@ function focusTupleIndex(index: number): void {
                           <br />
                           <span class="inspectionReason">
                             und
-                            {{
-                              formatOptionalDecimal(row.pathUnderlierLow, 2)
-                            }}
+                            {{ formatOptionalDecimal(row.pathUnderlierLow, 2) }}
                             ->
                             {{
                               formatOptionalDecimal(row.pathUnderlierHigh, 2)
@@ -7410,6 +7521,26 @@ function focusTupleIndex(index: number): void {
 .gateBadge.isMixed {
   border-color: color-mix(in srgb, var(--warning, #f0b429) 45%, var(--border));
   color: color-mix(in srgb, var(--warning, #f0b429) 85%, white);
+}
+
+.optionsFinalistDashboard {
+  display: grid;
+  gap: 0.65rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+
+.finalistGateGrid {
+  align-items: flex-start;
+}
+
+.finalistGate {
+  max-width: 100%;
+}
+
+.miniBadge {
+  padding: 0.18rem 0.4rem;
+  font-size: 0.7rem;
 }
 
 .coverageSection {

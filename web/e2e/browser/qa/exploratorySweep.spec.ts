@@ -25,6 +25,11 @@ defineWorkflow({
     await page.keyboard.press('Enter')
     await expect(page.locator('#liveShellGrid')).toBeVisible()
 
+    await action('shell.commandPalette.open').click()
+    await page.getByLabel('Command search').fill('portfolio')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('#portfolioShellGrid')).toBeVisible()
+
     await action('shell.workspace.workflow').click()
     await expect(page.locator('#workflowStepBar')).toBeVisible()
 
@@ -40,7 +45,7 @@ defineWorkflow({
       await expect(action(`shell.resultsTab.${tab}`)).toHaveAttribute('aria-selected', 'true')
     }
 
-    for (const workspace of ['library', 'aggregate', 'diagnostics', 'live', 'settings', 'workflow']) {
+    for (const workspace of ['library', 'aggregate', 'portfolio', 'diagnostics', 'live', 'settings', 'workflow']) {
       await action(`shell.workspace.${workspace}`).click()
       await expect(action(`shell.workspace.${workspace}`)).toHaveAttribute('aria-selected', 'true')
       await expectNoStuckBusyState(page)

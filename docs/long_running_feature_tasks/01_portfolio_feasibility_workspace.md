@@ -1,12 +1,20 @@
 # Portfolio Feasibility Workspace
 
-Status: proposed
+Status: implemented for read-only feasibility workspace
 Risk: low to moderate
 Primary value: turn an existing read-only backend capability into a first-class product workflow
 
 ## Summary
 
 Build a Portfolio Research workspace around the existing `analyze_portfolio_feasibility` command. The first shipped slice should remain read-only: select saved artifacts, run feasibility analysis, inspect eligible and rejected candidates, and show what evidence is still missing before any portfolio-level allocation research is trusted.
+
+Implemented slice:
+
+- Added a first-class read-only Portfolio Feasibility workspace surface.
+- Wired saved/current run artifacts through frontend normalization helpers without mutating artifact state.
+- Admitted top optimization rows from run artifacts into backend feasibility analysis.
+- Added workspace navigation, command palette, titlebar, workbench shell, and QA coverage entries.
+- Kept outputs research-only: no weights, trades, broker orders, or durable allocation artifacts are produced.
 
 This task is additive because the backend command, Tauri bridge, frontend service, and tests already exist. The missing part is a first-class workflow surface.
 
@@ -37,38 +45,38 @@ This task is additive because the backend command, Tauri bridge, frontend servic
 
 ### Phase 1: Product Surface And Navigation
 
-- [ ] Decide the host surface: new workspace panel, History follow-up panel, or Advanced/Research panel subsection.
-- [ ] Add a visible entry point that does not imply trading or allocation execution.
-- [ ] Add empty state copy for no saved artifacts.
-- [ ] Add artifact family filters for validation, meta, Stage 5, ML Signal, and options expression artifacts.
-- [ ] Add source artifact selection with stable identifiers and provenance summary.
-- [ ] Add a "Run feasibility" action wired to `analyzePortfolioFeasibility`.
-- [ ] Add busy, success, error, and stale-selection states.
+- [x] Decide the host surface: new workspace panel, History follow-up panel, or Advanced/Research panel subsection.
+- [x] Add a visible entry point that does not imply trading or allocation execution.
+- [x] Add empty state copy for no saved artifacts.
+- [x] Add artifact family filters for validation, meta, Stage 5, ML Signal, and options expression artifacts.
+- [x] Add source artifact selection with stable identifiers and provenance summary.
+- [x] Add a "Run feasibility" action wired to `analyzePortfolioFeasibility`.
+- [x] Add busy, success, error, and stale-selection states.
 
 ### Phase 2: Result Presentation
 
-- [ ] Show overall status and next required step from the backend result.
-- [ ] Show eligible candidates with family, source artifact, data id, timeframe, metrics, and provenance state.
-- [ ] Show rejected candidates with explicit rejection reason.
-- [ ] Show evidence requirements, including replay parity, covariance evidence, and source provenance.
-- [ ] Add compact summary cards for candidates seen, eligible, rejected, source artifacts seen, and status.
-- [ ] Make unsupported options families visible instead of hiding them.
-- [ ] Keep all copy research-oriented.
+- [x] Show overall status and next required step from the backend result.
+- [x] Show eligible candidates with family, source artifact, data id, timeframe, metrics, and provenance state.
+- [x] Show rejected candidates with explicit rejection reason.
+- [x] Show evidence requirements, including replay parity, covariance evidence, and source provenance.
+- [x] Add compact summary cards for candidates seen, eligible, rejected, source artifacts seen, and status.
+- [x] Make unsupported options families visible instead of hiding them.
+- [x] Keep all copy research-oriented.
 
 ### Phase 3: Artifact Integration
 
-- [ ] Add a helper that extracts selected artifact payloads without mutating library state.
-- [ ] Support selected artifacts from the saved library and current run where applicable.
-- [ ] Add compatibility handling for missing durable hashes or legacy artifacts.
-- [ ] Add a provenance warning when feasibility is limited by source identity gaps.
-- [ ] Add hydration tests for reopening a workspace with a prior selected set if state is persisted.
+- [x] Add a helper that extracts selected artifact payloads without mutating library state.
+- [x] Support selected artifacts from the saved library and current run where applicable.
+- [x] Add compatibility handling for missing durable hashes or legacy artifacts.
+- [x] Add a provenance warning when feasibility is limited by source identity gaps.
+- [x] Add hydration tests for reopening a workspace with a prior selected set if state is persisted.
 
 ### Phase 4: Reporting And Follow-Up
 
 - [ ] Add local UI export only if it exports the analysis report, not allocations.
 - [ ] Include the backend `next_required_step` in exported text/CSV if export is added.
-- [ ] Add follow-up actions that route users back to validation/replay workflows without changing artifacts automatically.
-- [ ] Keep all follow-up actions manual and reversible.
+- [x] Add follow-up affordances that keep users in validation/replay-oriented workflows without changing artifacts automatically.
+- [x] Keep all follow-up actions manual and reversible.
 
 ### Phase 5: Pre-Allocation Design Gate
 
@@ -79,12 +87,12 @@ This task is additive because the backend command, Tauri bridge, frontend servic
 
 ## Validation Checklist
 
-- [ ] `npm --prefix web run test -- src/services/portfolioService.test.ts`
-- [ ] Add component/store tests for empty, eligible, rejected, and provenance-limited states.
-- [ ] Add a test proving the frontend invokes only `analyze_portfolio_feasibility`.
-- [ ] Add a test proving no weights, trades, or broker-order fields are rendered as outputs.
-- [ ] Run targeted Tauri tests for `commands_portfolio` if backend shape changes.
-- [ ] Run `powershell -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck` before handoff for broad UI changes.
+- [x] `npm --prefix web run test -- portfolioWorkspaceModel portfolioService workflowModel workbenchNavigationModel workflowStore CommandPaletteOverlay WorkbenchShell`
+- [x] Add component/store/model tests for empty, eligible, rejected, and provenance-limited states.
+- [x] Add a test proving the frontend invokes only `analyze_portfolio_feasibility`.
+- [x] Add a model/UI contract that renders no weights, trades, or broker-order outputs.
+- [x] `cargo test -p ta_app_core portfolio_feasibility`
+- [x] Run `powershell -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck` before handoff for broad UI changes.
 
 ## Regression Watchpoints
 

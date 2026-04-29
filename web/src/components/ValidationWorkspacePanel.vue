@@ -1,117 +1,140 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
-import { type Cell, type Header } from '@tanstack/vue-table'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
+import { storeToRefs } from "pinia";
+import { type Cell, type Header } from "@tanstack/vue-table";
 import {
   useHeadlessMatrixTable,
   type MatrixColumnMeta,
-} from '../composables/useHeadlessMatrixTable'
+} from "../composables/useHeadlessMatrixTable";
 import {
   usePersistedMatrixColumnState,
   type MatrixColumnViewPreset,
-} from '../composables/usePersistedMatrixColumnState'
-import { usePersistedTableDensity } from '../composables/usePersistedTableDensity'
-import { useShellMount } from '../composables/useShellMount'
-import { useUiReadiness } from '../composables/useUiReadiness'
-import { useVirtualTableRows } from '../composables/useVirtualTableRows'
-import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
-import ContextHelpTip from './ContextHelpTip.vue'
-import AppDataTableShell from './ui/AppDataTableShell.vue'
-import AppMetricCell from './ui/AppMetricCell.vue'
-import AppTableDensityControl from './ui/AppTableDensityControl.vue'
-import AppTableViewPresetControl from './ui/AppTableViewPresetControl.vue'
-import type { TableViewPresetOption } from './ui/tableViewPresets'
-import { useValidationStore } from '../stores/validationStore'
-import { useWorkflowStore } from '../stores/workflowStore'
+} from "../composables/usePersistedMatrixColumnState";
+import { usePersistedTableDensity } from "../composables/usePersistedTableDensity";
+import { useShellMount } from "../composables/useShellMount";
+import { useUiReadiness } from "../composables/useUiReadiness";
+import { useVirtualTableRows } from "../composables/useVirtualTableRows";
+import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
+import ContextHelpTip from "./ContextHelpTip.vue";
+import AppDataTableShell from "./ui/AppDataTableShell.vue";
+import AppMetricCell from "./ui/AppMetricCell.vue";
+import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
+import AppTableViewPresetControl from "./ui/AppTableViewPresetControl.vue";
+import type { TableViewPresetOption } from "./ui/tableViewPresets";
+import { useValidationStore } from "../stores/validationStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 import {
   previewValidationAdmissionComparisonFromStores,
   previewValidationExecutionSummaryFromStores,
-} from '../services/validationService'
+} from "../services/validationService";
 import {
   VALIDATION_RESULTS_TABLE_DENSITY_KEY,
   VALIDATION_RESULTS_TABLE_STATE_KEY,
-} from '../utils/core/storageKeys'
-import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+} from "../utils/core/storageKeys";
+import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import {
   buildMetricColumnVisualRanges,
   resolveMetricCellVisual,
   type MetricCellVisual,
-} from '../visualizations/metricCellVisualModel'
+} from "../visualizations/metricCellVisualModel";
 
 interface ValidationColumn {
-  key?: string
-  label: string
-  alignLeft: boolean
+  key?: string;
+  label: string;
+  alignLeft: boolean;
 }
 
 interface ValidationCell {
-  text: string
-  className: string
-  title: string
+  text: string;
+  className: string;
+  title: string;
 }
 
 interface ValidationRow {
-  cells: ValidationCell[]
+  cells: ValidationCell[];
 }
 
 interface ValidationRowDetailItem {
-  key: string
-  label: string
-  text: string
-  title: string
-  className: string
+  key: string;
+  label: string;
+  text: string;
+  title: string;
+  className: string;
 }
 
 interface CrossDatasetItem {
-  path: string
-  label: string
-  meta: string
-  checked: boolean
-  disabled: boolean
+  path: string;
+  label: string;
+  meta: string;
+  checked: boolean;
+  disabled: boolean;
 }
 
-type ValidationViewPresetId = 'default' | 'gates' | 'risk'
+type ValidationViewPresetId = "default" | "gates" | "risk";
 
 const VALIDATION_VIEW_PRESETS: readonly TableViewPresetOption[] = [
-  { id: 'default', label: 'Default', summary: 'Original validation table order.' },
-  { id: 'gates', label: 'Gates', summary: 'Prioritize admission gates and Pareto signals.' },
-  { id: 'risk', label: 'Risk', summary: 'Prioritize robust score, probabilities, and risk metrics.' },
-]
+  {
+    id: "default",
+    label: "Default",
+    summary: "Original validation table order.",
+  },
+  {
+    id: "gates",
+    label: "Gates",
+    summary: "Prioritize admission gates and Pareto signals.",
+  },
+  {
+    id: "risk",
+    label: "Risk",
+    summary: "Prioritize robust score, probabilities, and risk metrics.",
+  },
+];
 
-const VALIDATION_VIEW_PRESET_KEYS: Record<ValidationViewPresetId, readonly string[]> = {
+const VALIDATION_VIEW_PRESET_KEYS: Record<
+  ValidationViewPresetId,
+  readonly string[]
+> = {
   default: [],
   gates: [
-    'rank',
-    'gate',
-    'robust_pareto',
-    'cross',
-    'cross_pareto',
-    'psr',
-    'dsr',
-    'cscv_rank',
-    'fast',
-    'slow',
+    "rank",
+    "gate",
+    "robust_pareto",
+    "cross",
+    "cross_pareto",
+    "psr",
+    "dsr",
+    "cscv_rank",
+    "fast",
+    "slow",
   ],
   risk: [
-    'rank',
-    'robust',
-    'psr',
-    'dsr',
-    'sharpe',
-    'max_dd',
-    'pnl',
-    'trades',
-    'gate',
-    'fast',
-    'slow',
+    "rank",
+    "robust",
+    "psr",
+    "dsr",
+    "sharpe",
+    "max_dd",
+    "pnl",
+    "trades",
+    "gate",
+    "fast",
+    "slow",
   ],
-}
+};
 
-const validationStore = useValidationStore()
-const workflowStore = useWorkflowStore()
-const { validationStage } = useUiReadiness()
+const validationStore = useValidationStore();
+const workflowStore = useWorkflowStore();
+const { validationStage } = useUiReadiness();
 const {
   validationHint,
+  validationAccelerationStatus,
   validationMeta,
   validationRouteSummary,
   validationRouteDetailSummary,
@@ -185,61 +208,69 @@ const {
   statusLine,
   validateDisabled,
   updatedAtUnixMs,
-} = storeToRefs(validationStore)
-const { resultsTab } = storeToRefs(workflowStore)
-const expectedExecutionSummary = computed(() => previewValidationExecutionSummaryFromStores())
+} = storeToRefs(validationStore);
+const { resultsTab } = storeToRefs(workflowStore);
+const expectedExecutionSummary = computed(() =>
+  previewValidationExecutionSummaryFromStores(),
+);
 const expectedAdmissionComparison = computed(() =>
   previewValidationAdmissionComparisonFromStores(),
-)
+);
 
-const { mountReady } = useShellMount('#validationVueShellMount', {
+const { mountReady } = useShellMount("#validationVueShellMount", {
   paneSelector: '[data-vue-panel="validate"]',
-  paneDatasetKey: 'vueValidation',
-})
+  paneDatasetKey: "vueValidation",
+});
 
-const candidatesDraft = ref('32')
-const admissionPolicyDraft = ref('legacy_topk')
-const seedDraft = ref('1')
-const minPsrDraft = ref('')
-const minDsrDraft = ref('')
-const minCscvRankDraft = ref('')
-const minCscvMetricDraft = ref('')
-const maxPboDraft = ref('')
-const spaSlicesDraft = ref('16')
-const spaBootstrapSamplesDraft = ref('500')
-const spaBlockLengthDraft = ref('4')
-const reoptWfWindowDraft = ref('20000')
-const reoptWfStepDraft = ref('5000')
-const reoptWfTopNDraft = ref('8')
-const cscvDraft = ref('')
-const autoRunDraft = ref(true)
-const autoExportXlsxDraft = ref(false)
-const autoRevealReportDraft = ref(false)
-const autoExportTopNDraft = ref('20')
-const wfEnableDraft = ref(false)
-const wfWindowDraft = ref('20000')
-const wfStepDraft = ref('20000')
-const perturbEnableDraft = ref(false)
-const perturbItersDraft = ref('8')
-const perturbMinDraft = ref('0.015')
-const perturbMaxDraft = ref('0.06')
-const mcEnableDraft = ref(false)
-const mcSimsDraft = ref('500')
-const mcBlockLenDraft = ref('')
-const mcModeDraft = ref('compare')
-const cscvEnableDraft = ref(false)
-const spaEnableDraft = ref(false)
-const reoptWfEnableDraft = ref(false)
-const crossEnableDraft = ref(false)
-const crossMaxDraft = ref('6')
-const crossModeDraft = ref('auto')
-const crossSearchDraft = ref('')
-const selectedValidationRowIndex = ref(0)
+const candidatesDraft = ref("32");
+const admissionPolicyDraft = ref("legacy_topk");
+const seedDraft = ref("1");
+const minPsrDraft = ref("");
+const minDsrDraft = ref("");
+const minCscvRankDraft = ref("");
+const minCscvMetricDraft = ref("");
+const maxPboDraft = ref("");
+const spaSlicesDraft = ref("16");
+const spaBootstrapSamplesDraft = ref("500");
+const spaBlockLengthDraft = ref("4");
+const reoptWfWindowDraft = ref("20000");
+const reoptWfStepDraft = ref("5000");
+const reoptWfTopNDraft = ref("8");
+const cscvDraft = ref("");
+const autoRunDraft = ref(true);
+const autoExportXlsxDraft = ref(false);
+const autoRevealReportDraft = ref(false);
+const autoExportTopNDraft = ref("20");
+const wfEnableDraft = ref(false);
+const wfWindowDraft = ref("20000");
+const wfStepDraft = ref("20000");
+const perturbEnableDraft = ref(false);
+const perturbItersDraft = ref("8");
+const perturbMinDraft = ref("0.015");
+const perturbMaxDraft = ref("0.06");
+const mcEnableDraft = ref(false);
+const mcSimsDraft = ref("500");
+const mcBlockLenDraft = ref("");
+const mcModeDraft = ref("compare");
+const cscvEnableDraft = ref(false);
+const spaEnableDraft = ref(false);
+const reoptWfEnableDraft = ref(false);
+const crossEnableDraft = ref(false);
+const crossMaxDraft = ref("6");
+const crossModeDraft = ref("auto");
+const crossSearchDraft = ref("");
+const selectedValidationRowIndex = ref(0);
 
-const visible = computed(() => String(resultsTab.value || '').trim() === 'validate')
-const showValidationResults = computed(() => validationStage.value === 'ready')
-const renderedColumns = computed<ValidationColumn[]>(() => validationColumns.value as ValidationColumn[])
-const renderedRows = computed<ValidationRow[]>(() => validationRows.value as ValidationRow[])
+const visible = computed(
+  () => String(resultsTab.value || "").trim() === "validate",
+);
+const showValidationResults = computed(() => validationStage.value === "ready");
+const renderedColumns = computed<ValidationColumn[]>(
+  () => validationColumns.value as ValidationColumn[],
+);
+const renderedRows = computed<ValidationRow[]>(
+  () => validationRows.value as ValidationRow[],
+);
 const {
   columnOptions,
   columnVisibility,
@@ -258,202 +289,235 @@ const {
   resizeColumnWidth,
   clearColumnWidth,
   columnWidthStyle,
-} = usePersistedMatrixColumnState(renderedColumns, VALIDATION_RESULTS_TABLE_STATE_KEY)
-const { tableDensity } = usePersistedTableDensity(VALIDATION_RESULTS_TABLE_DENSITY_KEY)
+} = usePersistedMatrixColumnState(
+  renderedColumns,
+  VALIDATION_RESULTS_TABLE_STATE_KEY,
+);
+const { tableDensity } = usePersistedTableDensity(
+  VALIDATION_RESULTS_TABLE_DENSITY_KEY,
+);
 const {
   headerGroups,
   rowModelRows,
   visibleLeafColumns,
   getHeaderSortState,
   toggleSortColumn,
-} = useHeadlessMatrixTable(
-  orderedColumns,
-  renderedRows,
-  {
-    columnVisibility,
-    columnWidths,
-    enableClientSorting: true,
-  },
-)
+} = useHeadlessMatrixTable(orderedColumns, renderedRows, {
+  columnVisibility,
+  columnWidths,
+  enableClientSorting: true,
+});
 const validationMetricVisualRanges = computed(() =>
   buildMetricColumnVisualRanges(orderedColumns.value, renderedRows.value),
-)
-const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
-const renderedMonteCarloHistogram = computed(() =>
-  (Array.isArray(validationMonteCarloHistogram.value)
-    ? validationMonteCarloHistogram.value
-    : []) as Array<{ label: string; count: number; pct: number }>,
-)
+);
+const renderedCrossDatasets = computed<CrossDatasetItem[]>(
+  () => crossDatasets.value as CrossDatasetItem[],
+);
+const renderedMonteCarloHistogram = computed(
+  () =>
+    (Array.isArray(validationMonteCarloHistogram.value)
+      ? validationMonteCarloHistogram.value
+      : []) as Array<{ label: string; count: number; pct: number }>,
+);
 const monteCarloHistogramMaxCount = computed(() =>
   renderedMonteCarloHistogram.value.reduce(
     (max, bar) => Math.max(max, Number(bar.count || 0)),
     0,
   ),
-)
+);
 const {
   scrollElementRef: tableScrollElementRef,
   virtualRows,
   topSpacerPx: virtualTopSpacerPx,
   bottomSpacerPx: virtualBottomSpacerPx,
   scrollToTop,
-} = useVirtualTableRows(rowModelRows)
+} = useVirtualTableRows(rowModelRows);
 
-const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
 
 const validationStageLabel = computed(() => {
-  if (validationStage.value === 'no_data') return 'Awaiting dataset'
-  if (validationStage.value === 'data_loaded_no_run') return 'Awaiting shortlist'
-  return showValidationResults.value ? 'Results ready' : 'Ready to run'
-})
+  if (validationStage.value === "no_data") return "Awaiting dataset";
+  if (validationStage.value === "data_loaded_no_run")
+    return "Awaiting shortlist";
+  return showValidationResults.value ? "Results ready" : "Ready to run";
+});
 
 const validationSummaryChips = computed(() => {
-  const routeSummary = String(
-    (showValidationResults.value ? validationRouteSummary.value : expectedExecutionSummary.value.routeSummary) || '',
-  ).trim()
-  const crossSummary = Number(crossTotalCount.value || 0) > 0
-    ? `Cross ${crossSelectedCount.value}/${crossTotalCount.value}`
-    : String((showValidationResults.value ? validationCrossSummary.value : expectedExecutionSummary.value.crossSummary) || '').trim()
+  const accelerationStatus = String(
+    showValidationResults.value ? validationAccelerationStatus.value : "",
+  ).trim();
+  const crossSummary =
+    Number(crossTotalCount.value || 0) > 0
+      ? `Cross ${crossSelectedCount.value}/${crossTotalCount.value}`
+      : String(
+          (showValidationResults.value
+            ? validationCrossSummary.value
+            : expectedExecutionSummary.value.crossSummary) || "",
+        ).trim();
   return [
     validationStageLabel.value,
     `${tableRowCount.value} rows`,
-    routeSummary ? `Route ${routeSummary}` : '',
-    crossSummary || '',
-  ].filter((chip) => String(chip || '').trim().length > 0)
-})
+    accelerationStatus,
+    crossSummary || "",
+  ].filter((chip) => String(chip || "").trim().length > 0);
+});
 const columnVisibilitySummary = computed(
   () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
-)
+);
 const validationTableShellSummary = computed(
   () => `${tableRowCount.value} rows · ${columnVisibilitySummary.value}`,
-)
+);
 const columnVisibilityHint = computed(() => {
   if (hiddenColumnCount.value > 0) {
-    return `${hiddenColumnCount.value} hidden columns. Restore defaults to recover the full validation review table.`
+    return `${hiddenColumnCount.value} hidden columns. Restore defaults to recover the full validation review table.`;
   }
-  return 'Hide secondary result columns when you want a tighter validation review pass.'
-})
-const selectedValidationRow = computed(() => rowModelRows.value[selectedValidationRowIndex.value]?.original ?? null)
+  return "Hide secondary result columns when you want a tighter validation review pass.";
+});
+const selectedValidationRow = computed(
+  () => rowModelRows.value[selectedValidationRowIndex.value]?.original ?? null,
+);
 const selectedValidationRowLabel = computed(() => {
-  const total = renderedRows.value.length
-  if (!total || !selectedValidationRow.value) return 'No row selected'
-  return `Row ${selectedValidationRowIndex.value + 1} of ${total}`
-})
+  const total = renderedRows.value.length;
+  if (!total || !selectedValidationRow.value) return "No row selected";
+  return `Row ${selectedValidationRowIndex.value + 1} of ${total}`;
+});
 const validationColumnDetailByKey = computed(() => {
-  const out = new Map<string, { label: string; sourceColumnIndex: number }>()
+  const out = new Map<string, { label: string; sourceColumnIndex: number }>();
   orderedColumns.value.forEach((column, displayIndex) => {
-    const typedColumn = column as ValidationColumn & { sourceColumnIndex?: number }
-    const sourceColumnIndex = Number.isFinite(Number(typedColumn.sourceColumnIndex))
+    const typedColumn = column as ValidationColumn & {
+      sourceColumnIndex?: number;
+    };
+    const sourceColumnIndex = Number.isFinite(
+      Number(typedColumn.sourceColumnIndex),
+    )
       ? Number(typedColumn.sourceColumnIndex)
-      : displayIndex
-    const key = String(typedColumn.key || `col_${sourceColumnIndex}`).trim()
-    if (!key) return
+      : displayIndex;
+    const key = String(typedColumn.key || `col_${sourceColumnIndex}`).trim();
+    if (!key) return;
     out.set(key, {
       label: String(typedColumn.label || key).trim() || key,
       sourceColumnIndex,
-    })
-  })
-  return out
-})
+    });
+  });
+  return out;
+});
 const selectedValidationRowDetails = computed<ValidationRowDetailItem[]>(() => {
-  const row = selectedValidationRow.value
-  if (!row) return []
+  const row = selectedValidationRow.value;
+  if (!row) return [];
   return orderedVisibleColumnKeys.value
     .map((key) => {
-      const column = validationColumnDetailByKey.value.get(key)
-      if (!column) return null
-      const cell = row.cells[column.sourceColumnIndex]
-      if (!cell) return null
+      const column = validationColumnDetailByKey.value.get(key);
+      if (!column) return null;
+      const cell = row.cells[column.sourceColumnIndex];
+      if (!cell) return null;
       return {
         key,
         label: column.label,
-        text: String(cell.text || '').trim() || '—',
-        title: String(cell.title || '').trim(),
-        className: String(cell.className || '').trim(),
-      }
+        text: String(cell.text || "").trim() || "—",
+        title: String(cell.title || "").trim(),
+        className: String(cell.className || "").trim(),
+      };
     })
-    .filter((item): item is ValidationRowDetailItem => item !== null)
-})
+    .filter((item): item is ValidationRowDetailItem => item !== null);
+});
 
-function validationViewPresetFor(presetId: ValidationViewPresetId): MatrixColumnViewPreset {
-  if (presetId === 'default') {
+function validationViewPresetFor(
+  presetId: ValidationViewPresetId,
+): MatrixColumnViewPreset {
+  if (presetId === "default") {
     return {
       visibleColumnKeys: allColumnKeys.value,
       columnOrderKeys: allColumnKeys.value,
-    }
+    };
   }
-  const orderedKeys = VALIDATION_VIEW_PRESET_KEYS[presetId].filter((key) => allColumnKeys.value.includes(key))
-  const fallbackKeys = allColumnKeys.value.filter((key) => !orderedKeys.includes(key))
+  const orderedKeys = VALIDATION_VIEW_PRESET_KEYS[presetId].filter((key) =>
+    allColumnKeys.value.includes(key),
+  );
+  const fallbackKeys = allColumnKeys.value.filter(
+    (key) => !orderedKeys.includes(key),
+  );
   return {
     visibleColumnKeys: orderedKeys.length ? orderedKeys : allColumnKeys.value,
     columnOrderKeys: [...orderedKeys, ...fallbackKeys],
-  }
+  };
 }
 
 const activeValidationViewPresetId = computed<ValidationViewPresetId>(() => {
-  const visibleKey = orderedVisibleColumnKeys.value.join('|')
-  if (visibleKey === validationViewPresetFor('gates').visibleColumnKeys?.join('|')) return 'gates'
-  if (visibleKey === validationViewPresetFor('risk').visibleColumnKeys?.join('|')) return 'risk'
-  return 'default'
-})
+  const visibleKey = orderedVisibleColumnKeys.value.join("|");
+  if (
+    visibleKey === validationViewPresetFor("gates").visibleColumnKeys?.join("|")
+  )
+    return "gates";
+  if (
+    visibleKey === validationViewPresetFor("risk").visibleColumnKeys?.join("|")
+  )
+    return "risk";
+  return "default";
+});
 
 function applyValidationViewPreset(presetId: string): void {
-  if (presetId !== 'default' && presetId !== 'gates' && presetId !== 'risk') return
-  applyColumnViewPreset(validationViewPresetFor(presetId))
+  if (presetId !== "default" && presetId !== "gates" && presetId !== "risk")
+    return;
+  applyColumnViewPreset(validationViewPresetFor(presetId));
 }
 
 watch(
   renderedRows,
   (rows) => {
     if (!rows.length) {
-      selectedValidationRowIndex.value = 0
-      return
+      selectedValidationRowIndex.value = 0;
+      return;
     }
-    if (selectedValidationRowIndex.value < rowModelRows.value.length) return
-    selectedValidationRowIndex.value = Math.max(0, rowModelRows.value.length - 1)
+    if (selectedValidationRowIndex.value < rowModelRows.value.length) return;
+    selectedValidationRowIndex.value = Math.max(
+      0,
+      rowModelRows.value.length - 1,
+    );
   },
   { immediate: true },
-)
+);
 
 watch(
-  () => [
-    String(candidates.value || '32'),
-    String(admissionPolicy.value || 'legacy_topk'),
-    String(seed.value || '1'),
-    String(minPsr.value || ''),
-    String(minDsr.value || ''),
-    String(minCscvRank.value || ''),
-    String(minCscvMetric.value || ''),
-    String(maxPbo.value || ''),
-    String(spaSlices.value || '16').trim() || '16',
-    String(spaBootstrapSamples.value || '500').trim() || '500',
-    String(spaBlockLength.value || '4').trim() || '4',
-    String(reoptWfWindow.value || '20000').trim() || '20000',
-    String(reoptWfStep.value || '5000').trim() || '5000',
-    String(reoptWfTopN.value || '8').trim() || '8',
-    String(cscvSlices.value || ''),
-    Boolean(autoRun.value),
-    Boolean(autoExportXlsx.value),
-    Boolean(autoRevealReport.value),
-    String(autoExportTopN.value || '20').trim() || '20',
-    Boolean(wfEnable.value),
-    String(wfWindow.value || '20000').trim() || '20000',
-    String(wfStep.value || '20000').trim() || '20000',
-    Boolean(perturbEnable.value),
-    String(perturbIters.value || '8').trim() || '8',
-    String(perturbMin.value || '0.015').trim() || '0.015',
-    String(perturbMax.value || '0.06').trim() || '0.06',
-    Boolean(mcEnable.value),
-    String(mcSims.value || '500').trim() || '500',
-    String(mcBlockLen.value || '').trim(),
-    String(mcMode.value || 'compare').trim() || 'compare',
-    Boolean(cscvEnable.value),
-    Boolean(spaEnable.value),
-    Boolean(reoptWfEnable.value),
-    Boolean(crossEnable.value),
-    String(crossMax.value || '6').trim() || '6',
-    String(crossMode.value || 'auto').trim() || 'auto',
-    String(crossSearch.value || '').trim(),
-  ] as const,
+  () =>
+    [
+      String(candidates.value || "32"),
+      String(admissionPolicy.value || "legacy_topk"),
+      String(seed.value || "1"),
+      String(minPsr.value || ""),
+      String(minDsr.value || ""),
+      String(minCscvRank.value || ""),
+      String(minCscvMetric.value || ""),
+      String(maxPbo.value || ""),
+      String(spaSlices.value || "16").trim() || "16",
+      String(spaBootstrapSamples.value || "500").trim() || "500",
+      String(spaBlockLength.value || "4").trim() || "4",
+      String(reoptWfWindow.value || "20000").trim() || "20000",
+      String(reoptWfStep.value || "5000").trim() || "5000",
+      String(reoptWfTopN.value || "8").trim() || "8",
+      String(cscvSlices.value || ""),
+      Boolean(autoRun.value),
+      Boolean(autoExportXlsx.value),
+      Boolean(autoRevealReport.value),
+      String(autoExportTopN.value || "20").trim() || "20",
+      Boolean(wfEnable.value),
+      String(wfWindow.value || "20000").trim() || "20000",
+      String(wfStep.value || "20000").trim() || "20000",
+      Boolean(perturbEnable.value),
+      String(perturbIters.value || "8").trim() || "8",
+      String(perturbMin.value || "0.015").trim() || "0.015",
+      String(perturbMax.value || "0.06").trim() || "0.06",
+      Boolean(mcEnable.value),
+      String(mcSims.value || "500").trim() || "500",
+      String(mcBlockLen.value || "").trim(),
+      String(mcMode.value || "compare").trim() || "compare",
+      Boolean(cscvEnable.value),
+      Boolean(spaEnable.value),
+      Boolean(reoptWfEnable.value),
+      Boolean(crossEnable.value),
+      String(crossMax.value || "6").trim() || "6",
+      String(crossMode.value || "auto").trim() || "auto",
+      String(crossSearch.value || "").trim(),
+    ] as const,
   ([
     nextCandidates,
     nextAdmissionPolicy,
@@ -493,275 +557,346 @@ watch(
     nextCrossMode,
     nextCrossSearch,
   ]) => {
-    if (candidatesDraft.value !== nextCandidates) candidatesDraft.value = nextCandidates
-    if (admissionPolicyDraft.value !== nextAdmissionPolicy) admissionPolicyDraft.value = nextAdmissionPolicy
-    if (seedDraft.value !== nextSeed) seedDraft.value = nextSeed
-    if (minPsrDraft.value !== nextMinPsr) minPsrDraft.value = nextMinPsr
-    if (minDsrDraft.value !== nextMinDsr) minDsrDraft.value = nextMinDsr
-    if (minCscvRankDraft.value !== nextMinCscvRank) minCscvRankDraft.value = nextMinCscvRank
-    if (minCscvMetricDraft.value !== nextMinCscvMetric) minCscvMetricDraft.value = nextMinCscvMetric
-    if (maxPboDraft.value !== nextMaxPbo) maxPboDraft.value = nextMaxPbo
-    if (spaSlicesDraft.value !== nextSpaSlices) spaSlicesDraft.value = nextSpaSlices
-    if (spaBootstrapSamplesDraft.value !== nextSpaBootstrapSamples) spaBootstrapSamplesDraft.value = nextSpaBootstrapSamples
-    if (spaBlockLengthDraft.value !== nextSpaBlockLength) spaBlockLengthDraft.value = nextSpaBlockLength
-    if (reoptWfWindowDraft.value !== nextReoptWfWindow) reoptWfWindowDraft.value = nextReoptWfWindow
-    if (reoptWfStepDraft.value !== nextReoptWfStep) reoptWfStepDraft.value = nextReoptWfStep
-    if (reoptWfTopNDraft.value !== nextReoptWfTopN) reoptWfTopNDraft.value = nextReoptWfTopN
-    if (cscvDraft.value !== nextCscv) cscvDraft.value = nextCscv
-    if (autoRunDraft.value !== nextAutoRun) autoRunDraft.value = nextAutoRun
-    if (autoExportXlsxDraft.value !== nextAutoExportXlsx) autoExportXlsxDraft.value = nextAutoExportXlsx
-    if (autoRevealReportDraft.value !== nextAutoRevealReport) autoRevealReportDraft.value = nextAutoRevealReport
-    if (autoExportTopNDraft.value !== nextAutoExportTopN) autoExportTopNDraft.value = nextAutoExportTopN
-    if (wfEnableDraft.value !== nextWfEnable) wfEnableDraft.value = nextWfEnable
-    if (wfWindowDraft.value !== nextWfWindow) wfWindowDraft.value = nextWfWindow
-    if (wfStepDraft.value !== nextWfStep) wfStepDraft.value = nextWfStep
-    if (perturbEnableDraft.value !== nextPerturbEnable) perturbEnableDraft.value = nextPerturbEnable
-    if (perturbItersDraft.value !== nextPerturbIters) perturbItersDraft.value = nextPerturbIters
-    if (perturbMinDraft.value !== nextPerturbMin) perturbMinDraft.value = nextPerturbMin
-    if (perturbMaxDraft.value !== nextPerturbMax) perturbMaxDraft.value = nextPerturbMax
-    if (mcEnableDraft.value !== nextMcEnable) mcEnableDraft.value = nextMcEnable
-    if (mcSimsDraft.value !== nextMcSims) mcSimsDraft.value = nextMcSims
-    if (mcBlockLenDraft.value !== nextMcBlockLen) mcBlockLenDraft.value = nextMcBlockLen
-    if (mcModeDraft.value !== nextMcMode) mcModeDraft.value = nextMcMode
-    if (cscvEnableDraft.value !== nextCscvEnable) cscvEnableDraft.value = nextCscvEnable
-    if (spaEnableDraft.value !== nextSpaEnable) spaEnableDraft.value = nextSpaEnable
-    if (reoptWfEnableDraft.value !== nextReoptWfEnable) reoptWfEnableDraft.value = nextReoptWfEnable
-    if (crossEnableDraft.value !== nextCrossEnable) crossEnableDraft.value = nextCrossEnable
-    if (crossMaxDraft.value !== nextCrossMax) crossMaxDraft.value = nextCrossMax
-    if (crossModeDraft.value !== nextCrossMode) crossModeDraft.value = nextCrossMode
-    if (crossSearchDraft.value !== nextCrossSearch) crossSearchDraft.value = nextCrossSearch
+    if (candidatesDraft.value !== nextCandidates)
+      candidatesDraft.value = nextCandidates;
+    if (admissionPolicyDraft.value !== nextAdmissionPolicy)
+      admissionPolicyDraft.value = nextAdmissionPolicy;
+    if (seedDraft.value !== nextSeed) seedDraft.value = nextSeed;
+    if (minPsrDraft.value !== nextMinPsr) minPsrDraft.value = nextMinPsr;
+    if (minDsrDraft.value !== nextMinDsr) minDsrDraft.value = nextMinDsr;
+    if (minCscvRankDraft.value !== nextMinCscvRank)
+      minCscvRankDraft.value = nextMinCscvRank;
+    if (minCscvMetricDraft.value !== nextMinCscvMetric)
+      minCscvMetricDraft.value = nextMinCscvMetric;
+    if (maxPboDraft.value !== nextMaxPbo) maxPboDraft.value = nextMaxPbo;
+    if (spaSlicesDraft.value !== nextSpaSlices)
+      spaSlicesDraft.value = nextSpaSlices;
+    if (spaBootstrapSamplesDraft.value !== nextSpaBootstrapSamples)
+      spaBootstrapSamplesDraft.value = nextSpaBootstrapSamples;
+    if (spaBlockLengthDraft.value !== nextSpaBlockLength)
+      spaBlockLengthDraft.value = nextSpaBlockLength;
+    if (reoptWfWindowDraft.value !== nextReoptWfWindow)
+      reoptWfWindowDraft.value = nextReoptWfWindow;
+    if (reoptWfStepDraft.value !== nextReoptWfStep)
+      reoptWfStepDraft.value = nextReoptWfStep;
+    if (reoptWfTopNDraft.value !== nextReoptWfTopN)
+      reoptWfTopNDraft.value = nextReoptWfTopN;
+    if (cscvDraft.value !== nextCscv) cscvDraft.value = nextCscv;
+    if (autoRunDraft.value !== nextAutoRun) autoRunDraft.value = nextAutoRun;
+    if (autoExportXlsxDraft.value !== nextAutoExportXlsx)
+      autoExportXlsxDraft.value = nextAutoExportXlsx;
+    if (autoRevealReportDraft.value !== nextAutoRevealReport)
+      autoRevealReportDraft.value = nextAutoRevealReport;
+    if (autoExportTopNDraft.value !== nextAutoExportTopN)
+      autoExportTopNDraft.value = nextAutoExportTopN;
+    if (wfEnableDraft.value !== nextWfEnable)
+      wfEnableDraft.value = nextWfEnable;
+    if (wfWindowDraft.value !== nextWfWindow)
+      wfWindowDraft.value = nextWfWindow;
+    if (wfStepDraft.value !== nextWfStep) wfStepDraft.value = nextWfStep;
+    if (perturbEnableDraft.value !== nextPerturbEnable)
+      perturbEnableDraft.value = nextPerturbEnable;
+    if (perturbItersDraft.value !== nextPerturbIters)
+      perturbItersDraft.value = nextPerturbIters;
+    if (perturbMinDraft.value !== nextPerturbMin)
+      perturbMinDraft.value = nextPerturbMin;
+    if (perturbMaxDraft.value !== nextPerturbMax)
+      perturbMaxDraft.value = nextPerturbMax;
+    if (mcEnableDraft.value !== nextMcEnable)
+      mcEnableDraft.value = nextMcEnable;
+    if (mcSimsDraft.value !== nextMcSims) mcSimsDraft.value = nextMcSims;
+    if (mcBlockLenDraft.value !== nextMcBlockLen)
+      mcBlockLenDraft.value = nextMcBlockLen;
+    if (mcModeDraft.value !== nextMcMode) mcModeDraft.value = nextMcMode;
+    if (cscvEnableDraft.value !== nextCscvEnable)
+      cscvEnableDraft.value = nextCscvEnable;
+    if (spaEnableDraft.value !== nextSpaEnable)
+      spaEnableDraft.value = nextSpaEnable;
+    if (reoptWfEnableDraft.value !== nextReoptWfEnable)
+      reoptWfEnableDraft.value = nextReoptWfEnable;
+    if (crossEnableDraft.value !== nextCrossEnable)
+      crossEnableDraft.value = nextCrossEnable;
+    if (crossMaxDraft.value !== nextCrossMax)
+      crossMaxDraft.value = nextCrossMax;
+    if (crossModeDraft.value !== nextCrossMode)
+      crossModeDraft.value = nextCrossMode;
+    if (crossSearchDraft.value !== nextCrossSearch)
+      crossSearchDraft.value = nextCrossSearch;
   },
   { immediate: true },
-)
+);
 
 function setInputValue(id: string, nextValue: string): void {
-  validationStore.setInputField(id, nextValue)
+  validationStore.setInputField(id, nextValue);
 }
 
-const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
+const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } =
+  useQueuedInputWriter(setInputValue);
 
 function setCheckedValue(id: string, nextValue: boolean): void {
-  validationStore.setCheckboxField(id, nextValue)
+  validationStore.setCheckboxField(id, nextValue);
 }
 
 function runValidationAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.runValidation()
+  flushQueuedInputValuesNow();
+  validationStore.runValidation();
 }
 
 function exportShortlistCsvAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.exportShortlistCsv()
+  flushQueuedInputValuesNow();
+  validationStore.exportShortlistCsv();
 }
 
 function exportValidationJsonAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.exportValidationJson()
+  flushQueuedInputValuesNow();
+  validationStore.exportValidationJson();
 }
 
 function exportReportJsonAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.exportReportJson()
+  flushQueuedInputValuesNow();
+  validationStore.exportReportJson();
 }
 
 function exportReportXlsxAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.exportReportXlsx()
+  flushQueuedInputValuesNow();
+  validationStore.exportReportXlsx();
 }
 
 function openReportsDirAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.openReportsDir()
+  flushQueuedInputValuesNow();
+  validationStore.openReportsDir();
 }
 
 function crossRefreshAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.crossRefresh()
+  flushQueuedInputValuesNow();
+  validationStore.crossRefresh();
 }
 
 function crossSelectAllAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.crossSelectAll()
+  flushQueuedInputValuesNow();
+  validationStore.crossSelectAll();
 }
 
 function crossSelectNoneAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.crossSelectNone()
+  flushQueuedInputValuesNow();
+  validationStore.crossSelectNone();
 }
 
 function crossSelectMatchAction(): void {
-  flushQueuedInputValuesNow()
-  validationStore.crossSelectMatch()
+  flushQueuedInputValuesNow();
+  validationStore.crossSelectMatch();
 }
 
-function toggleCrossDatasetByPath(pathValue: string, nextChecked: boolean): void {
-  const path = String(pathValue || '').trim()
-  if (!path) return
-  validationStore.toggleCrossDataset(path, nextChecked)
+function toggleCrossDatasetByPath(
+  pathValue: string,
+  nextChecked: boolean,
+): void {
+  const path = String(pathValue || "").trim();
+  if (!path) return;
+  validationStore.toggleCrossDataset(path, nextChecked);
 }
 
 function crossDatasetInputId(index: number): string {
-  return `validation_cross_dataset_${index}`
+  return `validation_cross_dataset_${index}`;
 }
 
 function crossDatasetDescriptionId(index: number): string {
-  return `validation_cross_dataset_meta_${index}`
+  return `validation_cross_dataset_meta_${index}`;
 }
 
 function headerMeta(header: Header<ValidationRow, unknown>): MatrixColumnMeta {
-  return header.column.columnDef.meta as MatrixColumnMeta
+  return header.column.columnDef.meta as MatrixColumnMeta;
 }
 
-function validationCellPayload(cell: Cell<ValidationRow, unknown>): ValidationCell {
-  return cell.getValue() as ValidationCell
+function validationCellPayload(
+  cell: Cell<ValidationRow, unknown>,
+): ValidationCell {
+  return cell.getValue() as ValidationCell;
 }
 
-const resizingValidationColumnKey = ref('')
-let validationResizeStartX = 0
-let validationResizeStartWidth = 0
+const resizingValidationColumnKey = ref("");
+let validationResizeStartX = 0;
+let validationResizeStartWidth = 0;
 
 function validationHeaderSortState(header: Header<ValidationRow, unknown>) {
-  return getHeaderSortState(headerMeta(header).columnKey)
+  return getHeaderSortState(headerMeta(header).columnKey);
 }
 
-function validationHeaderStyle(header: Header<ValidationRow, unknown>): Record<string, string> {
-  return columnWidthStyle(headerMeta(header).columnKey)
+function validationHeaderStyle(
+  header: Header<ValidationRow, unknown>,
+): Record<string, string> {
+  return columnWidthStyle(headerMeta(header).columnKey);
 }
 
-function validationCellStyle(cell: Cell<ValidationRow, unknown>): Record<string, string> {
-  const meta = cell.column.columnDef.meta as MatrixColumnMeta
-  return columnWidthStyle(meta.columnKey)
+function validationCellStyle(
+  cell: Cell<ValidationRow, unknown>,
+): Record<string, string> {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta;
+  return columnWidthStyle(meta.columnKey);
 }
 
-function validationCellVisual(cell: Cell<ValidationRow, unknown>): MetricCellVisual | null {
-  const meta = cell.column.columnDef.meta as MatrixColumnMeta
-  return resolveMetricCellVisual(meta.columnKey, validationCellPayload(cell), validationMetricVisualRanges.value)
+function validationCellVisual(
+  cell: Cell<ValidationRow, unknown>,
+): MetricCellVisual | null {
+  const meta = cell.column.columnDef.meta as MatrixColumnMeta;
+  return resolveMetricCellVisual(
+    meta.columnKey,
+    validationCellPayload(cell),
+    validationMetricVisualRanges.value,
+  );
 }
 
 function clickValidationHeader(header: Header<ValidationRow, unknown>): void {
-  const columnKey = headerMeta(header).columnKey
-  if (!columnKey) return
-  toggleSortColumn(columnKey)
+  const columnKey = headerMeta(header).columnKey;
+  if (!columnKey) return;
+  toggleSortColumn(columnKey);
 }
 
 function finishValidationColumnResize(): void {
-  resizingValidationColumnKey.value = ''
-  window.removeEventListener('pointermove', onValidationColumnResizeMove)
-  window.removeEventListener('pointerup', finishValidationColumnResize)
-  window.removeEventListener('pointercancel', finishValidationColumnResize)
+  resizingValidationColumnKey.value = "";
+  window.removeEventListener("pointermove", onValidationColumnResizeMove);
+  window.removeEventListener("pointerup", finishValidationColumnResize);
+  window.removeEventListener("pointercancel", finishValidationColumnResize);
 }
 
 function onValidationColumnResizeMove(event: PointerEvent): void {
-  const columnKey = resizingValidationColumnKey.value
-  if (!columnKey) return
-  setColumnWidth(columnKey, validationResizeStartWidth + event.clientX - validationResizeStartX)
+  const columnKey = resizingValidationColumnKey.value;
+  if (!columnKey) return;
+  setColumnWidth(
+    columnKey,
+    validationResizeStartWidth + event.clientX - validationResizeStartX,
+  );
 }
 
-function startValidationColumnResize(event: PointerEvent, header: Header<ValidationRow, unknown>): void {
-  const columnKey = headerMeta(header).columnKey
-  if (!columnKey) return
-  event.preventDefault()
-  event.stopPropagation()
-  resizingValidationColumnKey.value = columnKey
-  validationResizeStartX = event.clientX
+function startValidationColumnResize(
+  event: PointerEvent,
+  header: Header<ValidationRow, unknown>,
+): void {
+  const columnKey = headerMeta(header).columnKey;
+  if (!columnKey) return;
+  event.preventDefault();
+  event.stopPropagation();
+  resizingValidationColumnKey.value = columnKey;
+  validationResizeStartX = event.clientX;
   validationResizeStartWidth =
     columnWidths.value[columnKey] ??
     (event.currentTarget instanceof HTMLElement
-      ? event.currentTarget.closest('th')?.getBoundingClientRect().width
+      ? event.currentTarget.closest("th")?.getBoundingClientRect().width
       : 128) ??
-    128
-  window.addEventListener('pointermove', onValidationColumnResizeMove)
-  window.addEventListener('pointerup', finishValidationColumnResize)
-  window.addEventListener('pointercancel', finishValidationColumnResize)
+    128;
+  window.addEventListener("pointermove", onValidationColumnResizeMove);
+  window.addEventListener("pointerup", finishValidationColumnResize);
+  window.addEventListener("pointercancel", finishValidationColumnResize);
 }
 
-function onValidationColumnResizeKeydown(event: KeyboardEvent, header: Header<ValidationRow, unknown>): void {
-  const columnKey = headerMeta(header).columnKey
-  if (!columnKey) return
-  if (event.key === 'ArrowLeft') {
-    event.preventDefault()
-    resizeColumnWidth(columnKey, event.shiftKey ? -48 : -16)
-    return
+function onValidationColumnResizeKeydown(
+  event: KeyboardEvent,
+  header: Header<ValidationRow, unknown>,
+): void {
+  const columnKey = headerMeta(header).columnKey;
+  if (!columnKey) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    resizeColumnWidth(columnKey, event.shiftKey ? -48 : -16);
+    return;
   }
-  if (event.key === 'ArrowRight') {
-    event.preventDefault()
-    resizeColumnWidth(columnKey, event.shiftKey ? 48 : 16)
-    return
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    resizeColumnWidth(columnKey, event.shiftKey ? 48 : 16);
+    return;
   }
-  if (event.key === 'Delete' || event.key === 'Backspace') {
-    event.preventDefault()
-    clearColumnWidth(columnKey)
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    clearColumnWidth(columnKey);
   }
 }
 
 function selectValidationRow(index: number): void {
-  if (index < 0 || index >= rowModelRows.value.length) return
-  selectedValidationRowIndex.value = index
+  if (index < 0 || index >= rowModelRows.value.length) return;
+  selectedValidationRowIndex.value = index;
 }
 
 function isSelectedValidationRow(index: number): boolean {
-  return selectedValidationRowIndex.value === index
+  return selectedValidationRowIndex.value === index;
 }
 
 function onValidationRowKeydown(event: KeyboardEvent, index: number): void {
-  if (event.key !== 'Enter' && event.key !== ' ') return
-  event.preventDefault()
-  selectValidationRow(index)
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  selectValidationRow(index);
 }
 
 function validationColumnToggleId(columnKey: string): string {
-  return `validationColumnToggle_${String(columnKey || '').replace(/[^a-zA-Z0-9_-]+/g, '_')}`
+  return `validationColumnToggle_${String(columnKey || "").replace(/[^a-zA-Z0-9_-]+/g, "_")}`;
 }
 
 onMounted(async () => {
-  await nextTick()
-  scrollToTop()
-})
+  await nextTick();
+  scrollToTop();
+});
 
 onBeforeUnmount(() => {
-  finishValidationColumnResize()
-  flushQueuedInputValuesNow()
-})
+  finishValidationColumnResize();
+  flushQueuedInputValuesNow();
+});
 </script>
 
 <template>
   <Teleport v-if="mountReady" to="#validationVueShellMount">
-    <section class="validationPanelVueRoot validationVueShellMountHost" v-show="visible">
+    <section
+      class="validationPanelVueRoot validationVueShellMountHost"
+      v-show="visible"
+    >
       <header class="head">
         <div class="panelHeadCopy">
           <div class="panelEyebrow">Robustness</div>
           <h2 class="panelTitle">Validation</h2>
           <div class="panelSubtitle">
-            Pressure-test shortlisted candidates with walk-forward, bootstrap, CSCV, and cross-dataset checks before export.
+            Pressure-test shortlisted candidates with walk-forward, bootstrap,
+            CSCV, and cross-dataset checks before export.
           </div>
         </div>
-        <div class="panelMeta mono panelNumeric">{{ tableRowCount }} rows · {{ stamp }}</div>
+        <div class="panelMeta mono panelNumeric">
+          {{ tableRowCount }} rows · {{ stamp }}
+        </div>
       </header>
 
       <div class="panelSummaryChips" aria-label="Validation summary">
-        <div v-for="chip in validationSummaryChips" :key="chip" class="panelSummaryChip">{{ chip }}</div>
+        <div
+          v-for="chip in validationSummaryChips"
+          :key="chip"
+          class="panelSummaryChip"
+        >
+          {{ chip }}
+        </div>
       </div>
 
       <section v-if="validationStage !== 'ready'" class="emptyState">
         <div class="emptyTitle">
           {{
-            validationStage === 'no_data'
-              ? 'Load data before running validation.'
-              : validationStage === 'data_loaded_no_run'
-                ? 'Run an optimization before validation.'
-                : 'Validation is ready to run.'
+            validationStage === "no_data"
+              ? "Load data before running validation."
+              : validationStage === "data_loaded_no_run"
+                ? "Run an optimization before validation."
+                : "Validation is ready to run."
           }}
         </div>
         <div class="emptyBody">
           {{
-            validationStage === 'no_data'
-              ? 'Validation works on shortlisted optimization candidates, so the first step is loading a dataset.'
-              : validationStage === 'data_loaded_no_run'
-                ? 'Your dataset is ready. Generate candidates with an optimization run, then return here to execute robustness checks.'
-                : 'Optimization results are available. Run validation to populate robustness tables, reports, and exports.'
+            validationStage === "no_data"
+              ? "Validation works on shortlisted optimization candidates, so the first step is loading a dataset."
+              : validationStage === "data_loaded_no_run"
+                ? "Your dataset is ready. Generate candidates with an optimization run, then return here to execute robustness checks."
+                : "Optimization results are available. Run validation to populate robustness tables, reports, and exports."
           }}
         </div>
-        <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+        <div
+          class="panelStatus mono panelNumeric"
+          role="status"
+          aria-live="polite"
+        >
+          {{ statusLine }}
+        </div>
       </section>
 
       <section class="pane panelProminentPane">
@@ -770,7 +905,8 @@ onBeforeUnmount(() => {
             <div class="panelEyebrow">Run Setup</div>
             <h3 class="panelPaneTitle">Validation run</h3>
             <div class="panelSectionLead">
-              Choose shortlist size, guardrails, and export behavior for the next robustness pass.
+              Choose shortlist size, guardrails, and export behavior for the
+              next robustness pass.
             </div>
           </div>
           <ContextHelpTip
@@ -780,7 +916,10 @@ onBeforeUnmount(() => {
             aria-label="Validation actions help"
           />
         </div>
-        <div class="panelAdvisory">{{ validationHint }}</div>
+        <div class="panelAdvisory">
+          <div>{{ validationAccelerationStatus }}</div>
+          <div>{{ validationHint }}</div>
+        </div>
         <div class="gridFive">
           <div>
             <label for="vueValCandidates">Candidates</label>
@@ -790,7 +929,12 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="candidatesDraft"
-              @input="candidatesDraft = String(($event.target as HTMLInputElement).value || '32'); queueInputValue('valCandidates', candidatesDraft)"
+              @input="
+                candidatesDraft = String(
+                  ($event.target as HTMLInputElement).value || '32',
+                );
+                queueInputValue('valCandidates', candidatesDraft);
+              "
               @change="commitInputValue('valCandidates', candidatesDraft)"
             />
           </div>
@@ -799,7 +943,12 @@ onBeforeUnmount(() => {
             <select
               id="vueValAdmissionPolicy"
               :value="admissionPolicyDraft"
-              @change="admissionPolicyDraft = String(($event.target as HTMLSelectElement).value || 'legacy_topk'); setInputValue('valAdmissionPolicy', admissionPolicyDraft)"
+              @change="
+                admissionPolicyDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'legacy_topk',
+                );
+                setInputValue('valAdmissionPolicy', admissionPolicyDraft);
+              "
             >
               <option value="legacy_topk">Legacy Top K</option>
               <option value="scalar_union">Scalar union</option>
@@ -815,7 +964,12 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="seedDraft"
-              @input="seedDraft = String(($event.target as HTMLInputElement).value || '1'); queueInputValue('valSeed', seedDraft)"
+              @input="
+                seedDraft = String(
+                  ($event.target as HTMLInputElement).value || '1',
+                );
+                queueInputValue('valSeed', seedDraft);
+              "
               @change="commitInputValue('valSeed', seedDraft)"
             />
           </div>
@@ -828,7 +982,12 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="minPsrDraft"
-              @input="minPsrDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinPsr', minPsrDraft)"
+              @input="
+                minPsrDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valMinPsr', minPsrDraft);
+              "
               @change="commitInputValue('valMinPsr', minPsrDraft)"
             />
           </div>
@@ -841,7 +1000,12 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="minDsrDraft"
-              @input="minDsrDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinDsr', minDsrDraft)"
+              @input="
+                minDsrDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valMinDsr', minDsrDraft);
+              "
               @change="commitInputValue('valMinDsr', minDsrDraft)"
             />
           </div>
@@ -853,7 +1017,12 @@ onBeforeUnmount(() => {
               min="4"
               step="2"
               :value="cscvDraft"
-              @input="cscvDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valCscvSlices', cscvDraft)"
+              @input="
+                cscvDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valCscvSlices', cscvDraft);
+              "
               @change="commitInputValue('valCscvSlices', cscvDraft)"
             />
           </div>
@@ -869,18 +1038,30 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="minCscvRankDraft"
-              @input="minCscvRankDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinCscvRank', minCscvRankDraft)"
+              @input="
+                minCscvRankDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valMinCscvRank', minCscvRankDraft);
+              "
               @change="commitInputValue('valMinCscvRank', minCscvRankDraft)"
             />
           </div>
           <div>
-            <label for="vueValMinCscvMetric">Min CSCV out-of-sample metric</label>
+            <label for="vueValMinCscvMetric"
+              >Min CSCV out-of-sample metric</label
+            >
             <input
               id="vueValMinCscvMetric"
               type="number"
               step="any"
               :value="minCscvMetricDraft"
-              @input="minCscvMetricDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMinCscvMetric', minCscvMetricDraft)"
+              @input="
+                minCscvMetricDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valMinCscvMetric', minCscvMetricDraft);
+              "
               @change="commitInputValue('valMinCscvMetric', minCscvMetricDraft)"
             />
           </div>
@@ -893,53 +1074,117 @@ onBeforeUnmount(() => {
               max="1"
               step="0.01"
               :value="maxPboDraft"
-              @input="maxPboDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMaxPbo', maxPboDraft)"
+              @input="
+                maxPboDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valMaxPbo', maxPboDraft);
+              "
               @change="commitInputValue('valMaxPbo', maxPboDraft)"
             />
           </div>
         </div>
 
         <div class="actions">
-          <button type="button" class="primary" data-qa-action="validation.run" :disabled="validateDisabled" @click="runValidationAction">Run validation</button>
-          <button type="button" data-qa-action="validation.export.shortlistCsv" :disabled="!canExportValidationCsv" @click="exportShortlistCsvAction">Export shortlist CSV</button>
-          <button type="button" data-qa-action="validation.export.validationJson" :disabled="!canExportValidationJson" @click="exportValidationJsonAction">Export validation JSON</button>
-          <button type="button" data-qa-action="validation.export.reportJson" :disabled="!canExportReportJson" @click="exportReportJsonAction">Export report JSON</button>
-          <button type="button" data-qa-action="validation.export.reportXlsx" :disabled="!canExportReportXlsx" @click="exportReportXlsxAction">Export report XLSX</button>
-          <button type="button" data-qa-action="validation.reports.openFolder" :disabled="!canOpenReportsDir" @click="openReportsDirAction">Open reports folder</button>
+          <button
+            type="button"
+            class="primary"
+            data-qa-action="validation.run"
+            :disabled="validateDisabled"
+            @click="runValidationAction"
+          >
+            Run validation
+          </button>
+          <button
+            type="button"
+            data-qa-action="validation.export.shortlistCsv"
+            :disabled="!canExportValidationCsv"
+            @click="exportShortlistCsvAction"
+          >
+            Export shortlist CSV
+          </button>
+          <button
+            type="button"
+            data-qa-action="validation.export.validationJson"
+            :disabled="!canExportValidationJson"
+            @click="exportValidationJsonAction"
+          >
+            Export validation JSON
+          </button>
+          <button
+            type="button"
+            data-qa-action="validation.export.reportJson"
+            :disabled="!canExportReportJson"
+            @click="exportReportJsonAction"
+          >
+            Export report JSON
+          </button>
+          <button
+            type="button"
+            data-qa-action="validation.export.reportXlsx"
+            :disabled="!canExportReportXlsx"
+            @click="exportReportXlsxAction"
+          >
+            Export report XLSX
+          </button>
+          <button
+            type="button"
+            data-qa-action="validation.reports.openFolder"
+            :disabled="!canOpenReportsDir"
+            @click="openReportsDirAction"
+          >
+            Open reports folder
+          </button>
         </div>
 
         <div class="gridFour compactMetaGrid">
           <div>
             <label>Expected Route</label>
-            <div class="metaLine mono">{{ expectedExecutionSummary.routeSummary }}</div>
+            <div class="metaLine mono">
+              {{ expectedExecutionSummary.routeSummary }}
+            </div>
           </div>
           <div>
             <label>Expected Cross</label>
-            <div class="metaLine mono">{{ expectedExecutionSummary.crossSummary }}</div>
+            <div class="metaLine mono">
+              {{ expectedExecutionSummary.crossSummary }}
+            </div>
           </div>
           <div>
             <label>Expected Modules</label>
-            <div class="metaLine mono">{{ expectedExecutionSummary.moduleSummary }}</div>
+            <div class="metaLine mono">
+              {{ expectedExecutionSummary.moduleSummary }}
+            </div>
           </div>
           <div>
             <label>Expected Categories</label>
-            <div class="metaLine mono">{{ expectedExecutionSummary.categorySummary }}</div>
+            <div class="metaLine mono">
+              {{ expectedExecutionSummary.categorySummary }}
+            </div>
           </div>
           <div>
             <label>Expected Skips</label>
-            <div class="metaLine mono">{{ expectedExecutionSummary.skippedSummary }}</div>
+            <div class="metaLine mono">
+              {{ expectedExecutionSummary.skippedSummary }}
+            </div>
           </div>
           <div>
             <label>Expected Notes</label>
-            <div class="metaLine mono">{{ expectedExecutionSummary.warningSummary }}</div>
+            <div class="metaLine mono">
+              {{ expectedExecutionSummary.warningSummary }}
+            </div>
           </div>
           <div>
             <label>Admission Compare</label>
-            <div class="metaLine mono">{{ expectedAdmissionComparison.summary }}</div>
+            <div class="metaLine mono">
+              {{ expectedAdmissionComparison.summary }}
+            </div>
           </div>
           <div>
             <label>Admission Delta</label>
-            <div class="metaLine mono">{{ expectedAdmissionComparison.detail }}</div>
+            <div class="metaLine mono">
+              {{ expectedAdmissionComparison.detail }}
+            </div>
           </div>
         </div>
       </section>
@@ -950,21 +1195,28 @@ onBeforeUnmount(() => {
             <div class="panelEyebrow">Policies</div>
             <h3 class="panelPaneTitle">Modules and automation</h3>
             <div class="panelSectionLead">
-              Configure robustness modules, automation, and cross-dataset policy before the next validation pass. Results, exports, and debug output remain below once a run completes.
+              Configure robustness modules, automation, and cross-dataset policy
+              before the next validation pass. Results, exports, and debug
+              output remain below once a run completes.
             </div>
           </div>
         </div>
         <div class="panelMuted">
-          {{ showValidationResults
-            ? 'These settings still shape reruns and follow-up validation passes for the current shortlist.'
-            : 'Set automation and module policy now so the first validation run already reflects the intended robustness workflow.' }}
+          {{
+            showValidationResults
+              ? "These settings still shape reruns and follow-up validation passes for the current shortlist."
+              : "Set automation and module policy now so the first validation run already reflects the intended robustness workflow."
+          }}
         </div>
         <div class="checks">
           <label>
             <input
               type="checkbox"
               :checked="autoRunDraft"
-              @change="autoRunDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valAutoRun', autoRunDraft)"
+              @change="
+                autoRunDraft = ($event.target as HTMLInputElement).checked;
+                setCheckedValue('valAutoRun', autoRunDraft);
+              "
             />
             Auto-run after optimization (composite)
           </label>
@@ -972,7 +1224,11 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="autoExportXlsxDraft"
-              @change="autoExportXlsxDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valAutoExportXlsx', autoExportXlsxDraft)"
+              @change="
+                autoExportXlsxDraft = ($event.target as HTMLInputElement)
+                  .checked;
+                setCheckedValue('valAutoExportXlsx', autoExportXlsxDraft);
+              "
             />
             Auto-export report XLSX after validation
           </label>
@@ -980,7 +1236,11 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="autoRevealReportDraft"
-              @change="autoRevealReportDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valAutoRevealReport', autoRevealReportDraft)"
+              @change="
+                autoRevealReportDraft = ($event.target as HTMLInputElement)
+                  .checked;
+                setCheckedValue('valAutoRevealReport', autoRevealReportDraft);
+              "
             />
             Reveal report in folder after save
           </label>
@@ -988,20 +1248,31 @@ onBeforeUnmount(() => {
 
         <div class="gridThree">
           <div>
-            <label for="vueValAutoExportTopN">Max rows in XLSX (0 = default)</label>
+            <label for="vueValAutoExportTopN"
+              >Max rows in XLSX (0 = default)</label
+            >
             <input
               id="vueValAutoExportTopN"
               type="number"
               min="0"
               step="1"
               :value="autoExportTopNDraft"
-              @input="autoExportTopNDraft = String(($event.target as HTMLInputElement).value || '20'); queueInputValue('valAutoExportTopN', autoExportTopNDraft)"
-              @change="commitInputValue('valAutoExportTopN', autoExportTopNDraft)"
+              @input="
+                autoExportTopNDraft = String(
+                  ($event.target as HTMLInputElement).value || '20',
+                );
+                queueInputValue('valAutoExportTopN', autoExportTopNDraft);
+              "
+              @change="
+                commitInputValue('valAutoExportTopN', autoExportTopNDraft)
+              "
             />
           </div>
           <div>
             <label>&nbsp;</label>
-            <div class="panelMuted">Saved to app data under <span class="mono">reports/</span>.</div>
+            <div class="panelMuted">
+              Saved to app data under <span class="mono">reports/</span>.
+            </div>
           </div>
         </div>
 
@@ -1010,7 +1281,10 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="wfEnableDraft"
-              @change="wfEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valWfEnable', wfEnableDraft)"
+              @change="
+                wfEnableDraft = ($event.target as HTMLInputElement).checked;
+                setCheckedValue('valWfEnable', wfEnableDraft);
+              "
             />
             Walk-forward (recommended)
           </label>
@@ -1018,7 +1292,11 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="perturbEnableDraft"
-              @change="perturbEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valPerturbEnable', perturbEnableDraft)"
+              @change="
+                perturbEnableDraft = ($event.target as HTMLInputElement)
+                  .checked;
+                setCheckedValue('valPerturbEnable', perturbEnableDraft);
+              "
             />
             Parameter perturbations
           </label>
@@ -1026,7 +1304,10 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="mcEnableDraft"
-              @change="mcEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valMcEnable', mcEnableDraft)"
+              @change="
+                mcEnableDraft = ($event.target as HTMLInputElement).checked;
+                setCheckedValue('valMcEnable', mcEnableDraft);
+              "
             />
             Trade bootstrap (Monte Carlo)
           </label>
@@ -1034,7 +1315,10 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="cscvEnableDraft"
-              @change="cscvEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valCscvEnable', cscvEnableDraft)"
+              @change="
+                cscvEnableDraft = ($event.target as HTMLInputElement).checked;
+                setCheckedValue('valCscvEnable', cscvEnableDraft);
+              "
             />
             CSCV/PBO (recommended)
           </label>
@@ -1042,7 +1326,10 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="spaEnableDraft"
-              @change="spaEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valSpaEnable', spaEnableDraft)"
+              @change="
+                spaEnableDraft = ($event.target as HTMLInputElement).checked;
+                setCheckedValue('valSpaEnable', spaEnableDraft);
+              "
             />
             Hansen SPA
           </label>
@@ -1050,7 +1337,11 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="reoptWfEnableDraft"
-              @change="reoptWfEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valReoptWfEnable', reoptWfEnableDraft)"
+              @change="
+                reoptWfEnableDraft = ($event.target as HTMLInputElement)
+                  .checked;
+                setCheckedValue('valReoptWfEnable', reoptWfEnableDraft);
+              "
             />
             Finalist re-opt walk-forward
           </label>
@@ -1065,7 +1356,12 @@ onBeforeUnmount(() => {
               min="64"
               step="1"
               :value="wfWindowDraft"
-              @input="wfWindowDraft = String(($event.target as HTMLInputElement).value || '20000'); queueInputValue('valWfWindow', wfWindowDraft)"
+              @input="
+                wfWindowDraft = String(
+                  ($event.target as HTMLInputElement).value || '20000',
+                );
+                queueInputValue('valWfWindow', wfWindowDraft);
+              "
               @change="commitInputValue('valWfWindow', wfWindowDraft)"
             />
           </div>
@@ -1077,7 +1373,12 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="wfStepDraft"
-              @input="wfStepDraft = String(($event.target as HTMLInputElement).value || '20000'); queueInputValue('valWfStep', wfStepDraft)"
+              @input="
+                wfStepDraft = String(
+                  ($event.target as HTMLInputElement).value || '20000',
+                );
+                queueInputValue('valWfStep', wfStepDraft);
+              "
               @change="commitInputValue('valWfStep', wfStepDraft)"
             />
           </div>
@@ -1089,7 +1390,12 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="perturbItersDraft"
-              @input="perturbItersDraft = String(($event.target as HTMLInputElement).value || '8'); queueInputValue('valPerturbIters', perturbItersDraft)"
+              @input="
+                perturbItersDraft = String(
+                  ($event.target as HTMLInputElement).value || '8',
+                );
+                queueInputValue('valPerturbIters', perturbItersDraft);
+              "
               @change="commitInputValue('valPerturbIters', perturbItersDraft)"
             />
           </div>
@@ -1104,7 +1410,12 @@ onBeforeUnmount(() => {
               min="4"
               step="1"
               :value="spaSlicesDraft"
-              @input="spaSlicesDraft = String(($event.target as HTMLInputElement).value || '16'); queueInputValue('valSpaSlices', spaSlicesDraft)"
+              @input="
+                spaSlicesDraft = String(
+                  ($event.target as HTMLInputElement).value || '16',
+                );
+                queueInputValue('valSpaSlices', spaSlicesDraft);
+              "
               @change="commitInputValue('valSpaSlices', spaSlicesDraft)"
             />
           </div>
@@ -1116,8 +1427,21 @@ onBeforeUnmount(() => {
               min="100"
               step="1"
               :value="spaBootstrapSamplesDraft"
-              @input="spaBootstrapSamplesDraft = String(($event.target as HTMLInputElement).value || '500'); queueInputValue('valSpaBootstrapSamples', spaBootstrapSamplesDraft)"
-              @change="commitInputValue('valSpaBootstrapSamples', spaBootstrapSamplesDraft)"
+              @input="
+                spaBootstrapSamplesDraft = String(
+                  ($event.target as HTMLInputElement).value || '500',
+                );
+                queueInputValue(
+                  'valSpaBootstrapSamples',
+                  spaBootstrapSamplesDraft,
+                );
+              "
+              @change="
+                commitInputValue(
+                  'valSpaBootstrapSamples',
+                  spaBootstrapSamplesDraft,
+                )
+              "
             />
           </div>
           <div>
@@ -1128,34 +1452,55 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="spaBlockLengthDraft"
-              @input="spaBlockLengthDraft = String(($event.target as HTMLInputElement).value || '4'); queueInputValue('valSpaBlockLength', spaBlockLengthDraft)"
-              @change="commitInputValue('valSpaBlockLength', spaBlockLengthDraft)"
+              @input="
+                spaBlockLengthDraft = String(
+                  ($event.target as HTMLInputElement).value || '4',
+                );
+                queueInputValue('valSpaBlockLength', spaBlockLengthDraft);
+              "
+              @change="
+                commitInputValue('valSpaBlockLength', spaBlockLengthDraft)
+              "
             />
           </div>
         </div>
 
         <div class="gridThree">
           <div>
-            <label for="vueValReoptWfWindow">Re-opt walk-forward window (bars)</label>
+            <label for="vueValReoptWfWindow"
+              >Re-opt walk-forward window (bars)</label
+            >
             <input
               id="vueValReoptWfWindow"
               type="number"
               min="64"
               step="1"
               :value="reoptWfWindowDraft"
-              @input="reoptWfWindowDraft = String(($event.target as HTMLInputElement).value || '20000'); queueInputValue('valReoptWfWindow', reoptWfWindowDraft)"
+              @input="
+                reoptWfWindowDraft = String(
+                  ($event.target as HTMLInputElement).value || '20000',
+                );
+                queueInputValue('valReoptWfWindow', reoptWfWindowDraft);
+              "
               @change="commitInputValue('valReoptWfWindow', reoptWfWindowDraft)"
             />
           </div>
           <div>
-            <label for="vueValReoptWfStep">Re-opt walk-forward step (bars)</label>
+            <label for="vueValReoptWfStep"
+              >Re-opt walk-forward step (bars)</label
+            >
             <input
               id="vueValReoptWfStep"
               type="number"
               min="1"
               step="1"
               :value="reoptWfStepDraft"
-              @input="reoptWfStepDraft = String(($event.target as HTMLInputElement).value || '5000'); queueInputValue('valReoptWfStep', reoptWfStepDraft)"
+              @input="
+                reoptWfStepDraft = String(
+                  ($event.target as HTMLInputElement).value || '5000',
+                );
+                queueInputValue('valReoptWfStep', reoptWfStepDraft);
+              "
               @change="commitInputValue('valReoptWfStep', reoptWfStepDraft)"
             />
           </div>
@@ -1167,7 +1512,12 @@ onBeforeUnmount(() => {
               min="1"
               step="1"
               :value="reoptWfTopNDraft"
-              @input="reoptWfTopNDraft = String(($event.target as HTMLInputElement).value || '8'); queueInputValue('valReoptWfTopN', reoptWfTopNDraft)"
+              @input="
+                reoptWfTopNDraft = String(
+                  ($event.target as HTMLInputElement).value || '8',
+                );
+                queueInputValue('valReoptWfTopN', reoptWfTopNDraft);
+              "
               @change="commitInputValue('valReoptWfTopN', reoptWfTopNDraft)"
             />
           </div>
@@ -1181,7 +1531,12 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="perturbMinDraft"
-              @input="perturbMinDraft = String(($event.target as HTMLInputElement).value || '0.015'); queueInputValue('valPerturbMin', perturbMinDraft)"
+              @input="
+                perturbMinDraft = String(
+                  ($event.target as HTMLInputElement).value || '0.015',
+                );
+                queueInputValue('valPerturbMin', perturbMinDraft);
+              "
               @change="commitInputValue('valPerturbMin', perturbMinDraft)"
             />
           </div>
@@ -1192,7 +1547,12 @@ onBeforeUnmount(() => {
               type="number"
               step="any"
               :value="perturbMaxDraft"
-              @input="perturbMaxDraft = String(($event.target as HTMLInputElement).value || '0.06'); queueInputValue('valPerturbMax', perturbMaxDraft)"
+              @input="
+                perturbMaxDraft = String(
+                  ($event.target as HTMLInputElement).value || '0.06',
+                );
+                queueInputValue('valPerturbMax', perturbMaxDraft);
+              "
               @change="commitInputValue('valPerturbMax', perturbMaxDraft)"
             />
           </div>
@@ -1204,7 +1564,12 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="mcSimsDraft"
-              @input="mcSimsDraft = String(($event.target as HTMLInputElement).value || '500'); queueInputValue('valMcSims', mcSimsDraft)"
+              @input="
+                mcSimsDraft = String(
+                  ($event.target as HTMLInputElement).value || '500',
+                );
+                queueInputValue('valMcSims', mcSimsDraft);
+              "
               @change="commitInputValue('valMcSims', mcSimsDraft)"
             />
           </div>
@@ -1213,7 +1578,12 @@ onBeforeUnmount(() => {
             <select
               id="vueValMcMode"
               :value="mcModeDraft"
-              @change="mcModeDraft = String(($event.target as HTMLSelectElement).value || 'compare'); commitInputValue('valMcMode', mcModeDraft)"
+              @change="
+                mcModeDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'compare',
+                );
+                commitInputValue('valMcMode', mcModeDraft);
+              "
             >
               <option value="compare">Compare (IID + Stationary)</option>
               <option value="iid_only">IID only</option>
@@ -1228,7 +1598,12 @@ onBeforeUnmount(() => {
               step="1"
               :disabled="mcModeDraft === 'iid_only'"
               :value="mcBlockLenDraft"
-              @input="mcBlockLenDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valMcBlockLen', mcBlockLenDraft)"
+              @input="
+                mcBlockLenDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valMcBlockLen', mcBlockLenDraft);
+              "
               @change="commitInputValue('valMcBlockLen', mcBlockLenDraft)"
             />
           </div>
@@ -1239,7 +1614,10 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="crossEnableDraft"
-              @change="crossEnableDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('valCrossEnable', crossEnableDraft)"
+              @change="
+                crossEnableDraft = ($event.target as HTMLInputElement).checked;
+                setCheckedValue('valCrossEnable', crossEnableDraft);
+              "
             />
             Cross-ticker validation
           </label>
@@ -1254,7 +1632,12 @@ onBeforeUnmount(() => {
               min="0"
               step="1"
               :value="crossMaxDraft"
-              @input="crossMaxDraft = String(($event.target as HTMLInputElement).value || '6'); queueInputValue('valCrossMax', crossMaxDraft)"
+              @input="
+                crossMaxDraft = String(
+                  ($event.target as HTMLInputElement).value || '6',
+                );
+                queueInputValue('valCrossMax', crossMaxDraft);
+              "
               @change="commitInputValue('valCrossMax', crossMaxDraft)"
             />
           </div>
@@ -1263,7 +1646,12 @@ onBeforeUnmount(() => {
             <select
               id="vueValCrossMode"
               :value="crossModeDraft"
-              @change="crossModeDraft = String(($event.target as HTMLSelectElement).value || 'auto'); setInputValue('valCrossMode', crossModeDraft)"
+              @change="
+                crossModeDraft = String(
+                  ($event.target as HTMLSelectElement).value || 'auto',
+                );
+                setInputValue('valCrossMode', crossModeDraft);
+              "
             >
               <option value="auto">Auto by strategy</option>
               <option value="preserved_finalists">Preserved finalists</option>
@@ -1277,17 +1665,46 @@ onBeforeUnmount(() => {
               id="vueValCrossSearch"
               type="text"
               :value="crossSearchDraft"
-              @input="crossSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('valCrossSearch', crossSearchDraft)"
+              @input="
+                crossSearchDraft = String(
+                  ($event.target as HTMLInputElement).value || '',
+                );
+                queueInputValue('valCrossSearch', crossSearchDraft);
+              "
               @change="commitInputValue('valCrossSearch', crossSearchDraft)"
             />
           </div>
           <div>
             <label>&nbsp;</label>
-            <div class="actions" style="margin-top: 0;">
-              <button type="button" :disabled="!canCrossRefresh" @click="crossRefreshAction">Refresh list</button>
-              <button type="button" :disabled="!canCrossSelectAll" @click="crossSelectAllAction">All</button>
-              <button type="button" :disabled="!canCrossSelectNone" @click="crossSelectNoneAction">None</button>
-              <button type="button" :disabled="!canCrossSelectMatch" @click="crossSelectMatchAction">Match current</button>
+            <div class="actions" style="margin-top: 0">
+              <button
+                type="button"
+                :disabled="!canCrossRefresh"
+                @click="crossRefreshAction"
+              >
+                Refresh list
+              </button>
+              <button
+                type="button"
+                :disabled="!canCrossSelectAll"
+                @click="crossSelectAllAction"
+              >
+                All
+              </button>
+              <button
+                type="button"
+                :disabled="!canCrossSelectNone"
+                @click="crossSelectNoneAction"
+              >
+                None
+              </button>
+              <button
+                type="button"
+                :disabled="!canCrossSelectMatch"
+                @click="crossSelectMatchAction"
+              >
+                Match current
+              </button>
             </div>
           </div>
         </div>
@@ -1297,7 +1714,11 @@ onBeforeUnmount(() => {
           Selected {{ crossSelectedCount }}/{{ crossTotalCount }}
         </div>
 
-        <div class="crossList" role="group" aria-label="Cross-ticker validation datasets">
+        <div
+          class="crossList"
+          role="group"
+          aria-label="Cross-ticker validation datasets"
+        >
           <label
             v-for="(item, index) in renderedCrossDatasets"
             :key="`cross_item_${item.path || item.label}_${index}`"
@@ -1307,7 +1728,9 @@ onBeforeUnmount(() => {
           >
             <div class="left">
               <div class="mono">{{ item.label }}</div>
-              <div :id="crossDatasetDescriptionId(index)" class="panelMuted">{{ item.meta }}</div>
+              <div :id="crossDatasetDescriptionId(index)" class="panelMuted">
+                {{ item.meta }}
+              </div>
             </div>
             <input
               :id="crossDatasetInputId(index)"
@@ -1315,7 +1738,12 @@ onBeforeUnmount(() => {
               :checked="item.checked"
               :disabled="item.disabled"
               :aria-describedby="crossDatasetDescriptionId(index)"
-              @change="toggleCrossDatasetByPath(item.path, ($event.target as HTMLInputElement).checked)"
+              @change="
+                toggleCrossDatasetByPath(
+                  item.path,
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
             />
           </label>
         </div>
@@ -1327,62 +1755,81 @@ onBeforeUnmount(() => {
             <div class="panelEyebrow">Results</div>
             <h3 class="panelPaneTitle">Validation summary table</h3>
             <div class="panelSectionLead">
-              Review route, category, cross-check, and warning outcomes for the current shortlist before export.
+              Review route, category, cross-check, and warning outcomes for the
+              current shortlist before export.
             </div>
           </div>
         </div>
         <div class="validationSummary surfaceSunken">
-          <div class="gridFour compactMetaGrid">
-            <div>
-              <label>Route</label>
-              <div class="metaLine mono">{{ validationRouteSummary }}</div>
-            </div>
-            <div>
-              <label>Route Detail</label>
-              <div class="metaLine mono">{{ validationRouteDetailSummary }}</div>
-            </div>
-            <div>
-              <label>Categories</label>
-              <div class="metaLine mono">{{ validationCategorySummary }}</div>
-            </div>
-            <div>
-              <label>Aux CPU</label>
-              <div class="metaLine mono">{{ validationAuxCpuSummary }}</div>
-            </div>
-            <div>
-              <label>Bootstrap</label>
-              <div class="metaLine mono">{{ validationBootstrapSummary }}</div>
-            </div>
-            <div>
-              <label>Monte Carlo</label>
-              <div class="metaLine mono">{{ validationMonteCarloSummary }}</div>
-            </div>
-            <div>
-              <label>Regime</label>
-              <div class="metaLine mono">{{ validationRegimeSummary }}</div>
-            </div>
-            <div>
-              <label>Friction</label>
-              <div class="metaLine mono">{{ validationFrictionSummary }}</div>
-            </div>
-            <div>
-              <label>Cross</label>
-              <div class="metaLine mono">{{ validationCrossSummary }}</div>
-            </div>
-            <div>
-              <label>Skipped</label>
-              <div class="metaLine mono">{{ validationSkippedSummary }}</div>
-            </div>
-            <div>
-              <label>Top Warning</label>
-              <div class="metaLine mono">{{ validationWarningSummary }}</div>
-            </div>
+          <div class="metaLine mono" role="status" aria-live="polite">
+            {{ validationAccelerationStatus }}
           </div>
+          <details class="columnDetails">
+            <summary>Validation diagnostics</summary>
+            <div class="gridFour compactMetaGrid">
+              <div>
+                <label>Route</label>
+                <div class="metaLine mono">{{ validationRouteSummary }}</div>
+              </div>
+              <div>
+                <label>Route Detail</label>
+                <div class="metaLine mono">
+                  {{ validationRouteDetailSummary }}
+                </div>
+              </div>
+              <div>
+                <label>Categories</label>
+                <div class="metaLine mono">{{ validationCategorySummary }}</div>
+              </div>
+              <div>
+                <label>Aux CPU</label>
+                <div class="metaLine mono">{{ validationAuxCpuSummary }}</div>
+              </div>
+              <div>
+                <label>Bootstrap</label>
+                <div class="metaLine mono">
+                  {{ validationBootstrapSummary }}
+                </div>
+              </div>
+              <div>
+                <label>Monte Carlo</label>
+                <div class="metaLine mono">
+                  {{ validationMonteCarloSummary }}
+                </div>
+              </div>
+              <div>
+                <label>Regime</label>
+                <div class="metaLine mono">{{ validationRegimeSummary }}</div>
+              </div>
+              <div>
+                <label>Friction</label>
+                <div class="metaLine mono">{{ validationFrictionSummary }}</div>
+              </div>
+              <div>
+                <label>Cross</label>
+                <div class="metaLine mono">{{ validationCrossSummary }}</div>
+              </div>
+              <div>
+                <label>Skipped</label>
+                <div class="metaLine mono">{{ validationSkippedSummary }}</div>
+              </div>
+              <div>
+                <label>Top Warning</label>
+                <div class="metaLine mono">{{ validationWarningSummary }}</div>
+              </div>
+            </div>
+          </details>
           <div class="validationSummaryMeta">
-            <div class="metaLine mono" role="status" aria-live="polite">{{ validationMeta }}</div>
-            <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
+            <div class="metaLine mono" role="status" aria-live="polite">
+              {{ validationMeta }}
+            </div>
+            <div v-if="validationReoptMeta !== '-'" class="metaLine mono">
+              {{ validationReoptMeta }}
+            </div>
             <div class="metaLine mono">{{ validationShortlistMeta }}</div>
-            <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
+            <div class="metaLine mono">
+              Table visible: {{ tableVisible ? "yes" : "no" }}
+            </div>
           </div>
           <div
             v-if="renderedMonteCarloHistogram.length > 0"
@@ -1393,7 +1840,9 @@ onBeforeUnmount(() => {
               v-for="(bar, index) in renderedMonteCarloHistogram"
               :key="`mc_hist_${index}`"
               class="monteCarloHistogramBar"
-              :style="{ height: `${Math.max(4, Math.round((Number(bar.count || 0) / Math.max(1, monteCarloHistogramMaxCount)) * 42))}px` }"
+              :style="{
+                height: `${Math.max(4, Math.round((Number(bar.count || 0) / Math.max(1, monteCarloHistogramMaxCount)) * 42))}px`,
+              }"
               :title="`${bar.label}: ${bar.count} (${(Number(bar.pct || 0) * 100).toFixed(1)}%)`"
             ></div>
           </div>
@@ -1420,16 +1869,24 @@ onBeforeUnmount(() => {
               <details v-if="renderedColumns.length > 0" class="columnDetails">
                 <summary class="columnDetailsSummary">
                   <span>Visible columns</span>
-                  <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+                  <span class="mono panelNumeric">{{
+                    columnVisibilitySummary
+                  }}</span>
                 </summary>
                 <div class="columnDetailsBody">
                   <div class="panelMuted">{{ columnVisibilityHint }}</div>
-                  <div class="columnToggleGrid" role="group" aria-label="Visible validation result columns">
+                  <div
+                    class="columnToggleGrid"
+                    role="group"
+                    aria-label="Visible validation result columns"
+                  >
                     <label
                       v-for="column in columnOptions"
                       :key="column.key"
                       class="columnToggle"
-                      :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                      :class="{
+                        disabled: !canHideColumn(column.key) && column.visible,
+                      }"
                       :for="validationColumnToggleId(column.key)"
                     >
                       <input
@@ -1443,7 +1900,11 @@ onBeforeUnmount(() => {
                     </label>
                   </div>
                   <div class="actions columnDetailsActions">
-                    <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                    <button
+                      type="button"
+                      :disabled="!canRestoreDefaults"
+                      @click="restoreDefaultColumns()"
+                    >
                       Restore defaults
                     </button>
                   </div>
@@ -1464,7 +1925,8 @@ onBeforeUnmount(() => {
           >
             <table class="validationTableVue">
               <caption class="srOnly">
-                Validation metrics for the current shortlist, including route, category, and cross-ticker results.
+                Validation metrics for the current shortlist, including route,
+                category, and cross-ticker results.
               </caption>
               <thead>
                 <tr v-for="headerGroup in headerGroups" :key="headerGroup.id">
@@ -1484,38 +1946,70 @@ onBeforeUnmount(() => {
                       @click="clickValidationHeader(header)"
                     >
                       <span>{{ headerMeta(header).columnLabel }}</span>
-                      <span v-if="validationHeaderSortState(header).sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
-                      <span v-else-if="validationHeaderSortState(header).sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
+                      <span
+                        v-if="validationHeaderSortState(header).sort === 'asc'"
+                        class="sortGlyph"
+                        aria-hidden="true"
+                        >↑</span
+                      >
+                      <span
+                        v-else-if="
+                          validationHeaderSortState(header).sort === 'desc'
+                        "
+                        class="sortGlyph"
+                        aria-hidden="true"
+                        >↓</span
+                      >
                     </button>
                     <button
                       v-if="!header.isPlaceholder"
                       type="button"
                       class="columnResizeHandle"
-                      :class="{ active: resizingValidationColumnKey === headerMeta(header).columnKey }"
+                      :class="{
+                        active:
+                          resizingValidationColumnKey ===
+                          headerMeta(header).columnKey,
+                      }"
                       :aria-label="`Resize ${headerMeta(header).columnLabel} column`"
                       title="Drag to resize. Use Left/Right arrows to adjust, Delete to reset."
                       @click.stop
                       @pointerdown="startValidationColumnResize($event, header)"
-                      @keydown.stop="onValidationColumnResizeKeydown($event, header)"
+                      @keydown.stop="
+                        onValidationColumnResizeKeydown($event, header)
+                      "
                     ></button>
                   </th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                  <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
+                <tr
+                  v-if="virtualTopSpacerPx > 0"
+                  class="spacerRow"
+                  aria-hidden="true"
+                >
+                  <td
+                    :colspan="Math.max(1, visibleLeafColumns.length)"
+                    :style="{ height: `${virtualTopSpacerPx}px` }"
+                  ></td>
                 </tr>
                 <tr
                   v-for="virtualRow in virtualRows"
                   :key="virtualRow.row.id"
                   class="selectableRow"
-                  :class="{ selected: isSelectedValidationRow(virtualRow.index) }"
+                  :class="{
+                    selected: isSelectedValidationRow(virtualRow.index),
+                  }"
                   tabindex="0"
-                  :aria-selected="isSelectedValidationRow(virtualRow.index) ? 'true' : 'false'"
+                  :aria-selected="
+                    isSelectedValidationRow(virtualRow.index) ? 'true' : 'false'
+                  "
                   @click="selectValidationRow(virtualRow.index)"
                   @keydown="onValidationRowKeydown($event, virtualRow.index)"
                 >
-                  <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
+                  <template
+                    v-for="cell in virtualRow.row.getVisibleCells()"
+                    :key="cell.id"
+                  >
                     <td
                       :class="validationCellPayload(cell).className"
                       :style="validationCellStyle(cell)"
@@ -1524,13 +2018,25 @@ onBeforeUnmount(() => {
                       <AppMetricCell
                         :text="validationCellPayload(cell).text"
                         :visual="validationCellVisual(cell)"
-                        :align="(cell.column.columnDef.meta as MatrixColumnMeta).alignLeft ? 'left' : 'right'"
+                        :align="
+                          (cell.column.columnDef.meta as MatrixColumnMeta)
+                            .alignLeft
+                            ? 'left'
+                            : 'right'
+                        "
                       />
                     </td>
                   </template>
                 </tr>
-                <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                  <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
+                <tr
+                  v-if="virtualBottomSpacerPx > 0"
+                  class="spacerRow"
+                  aria-hidden="true"
+                >
+                  <td
+                    :colspan="Math.max(1, visibleLeafColumns.length)"
+                    :style="{ height: `${virtualBottomSpacerPx}px` }"
+                  ></td>
                 </tr>
               </tbody>
             </table>
@@ -1553,7 +2059,12 @@ onBeforeUnmount(() => {
                 :data-qa-state="`validation.rowDetail.${item.key}`"
               >
                 <span>{{ item.label }}</span>
-                <strong class="mono" :class="item.className" :title="item.title || undefined">{{ item.text }}</strong>
+                <strong
+                  class="mono"
+                  :class="item.className"
+                  :title="item.title || undefined"
+                  >{{ item.text }}</strong
+                >
               </div>
             </div>
           </section>
@@ -1566,7 +2077,8 @@ onBeforeUnmount(() => {
             <div class="panelEyebrow">Debug</div>
             <h3 class="panelPaneTitle">Validation output</h3>
             <div class="panelSectionLead">
-              Keep the structured payload available for troubleshooting without letting it crowd the operational view.
+              Keep the structured payload available for troubleshooting without
+              letting it crowd the operational view.
             </div>
           </div>
         </div>
@@ -1578,7 +2090,13 @@ onBeforeUnmount(() => {
         </details>
       </section>
 
-      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+      <div
+        class="panelStatus mono panelNumeric"
+        role="status"
+        aria-live="polite"
+      >
+        {{ statusLine }}
+      </div>
     </section>
   </Teleport>
 </template>
@@ -1599,7 +2117,11 @@ onBeforeUnmount(() => {
 .pane {
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-working) 95%,
+    var(--panel-footer)
+  );
   padding: 0.75rem 0.8rem;
   min-width: 0;
 }
@@ -1664,7 +2186,8 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
-  padding: calc(var(--density-pane-y) - 0.08rem) calc(var(--density-pane-x) - 0.04rem);
+  padding: calc(var(--density-pane-y) - 0.08rem)
+    calc(var(--density-pane-x) - 0.04rem);
   display: grid;
   gap: 0.55rem;
 }
@@ -1735,7 +2258,11 @@ onBeforeUnmount(() => {
 
 .columnDetails[open] {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 38%, var(--border));
-  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel-footer));
+  background: color-mix(
+    in oklab,
+    var(--surface-working) 94%,
+    var(--panel-footer)
+  );
 }
 
 .columnDetailsSummary {
@@ -1745,7 +2272,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.75rem;
   cursor: pointer;
-  padding: calc(var(--density-pane-y) - 0.12rem) calc(var(--density-pane-x) - 0.02rem);
+  padding: calc(var(--density-pane-y) - 0.12rem)
+    calc(var(--density-pane-x) - 0.02rem);
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--muted-strong);
@@ -1757,7 +2285,8 @@ onBeforeUnmount(() => {
 
 .columnDetailsBody {
   border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
-  padding: calc(var(--density-pane-y) - 0.05rem) calc(var(--density-pane-x) - 0.02rem);
+  padding: calc(var(--density-pane-y) - 0.05rem)
+    calc(var(--density-pane-x) - 0.02rem);
   display: grid;
   gap: 0.65rem;
 }
@@ -1904,7 +2433,8 @@ onBeforeUnmount(() => {
 }
 
 .validationTableVue tbody tr.selectableRow:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--panel-focus-edge) 76%, var(--accent));
+  outline: 2px solid
+    color-mix(in oklab, var(--panel-focus-edge) 76%, var(--accent));
   outline-offset: -2px;
 }
 
@@ -2053,8 +2583,8 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-[data-vue-panel='validate'][data-vue-validation='1'] > :not(#validationVueShellMount) {
+[data-vue-panel="validate"][data-vue-validation="1"]
+  > :not(#validationVueShellMount) {
   display: none !important;
 }
 </style>
-

@@ -299,6 +299,8 @@ function deriveSubtitle(state: Pick<WorkflowState, 'mode' | 'workspace' | 'workf
     view = 'Appearance + storage'
   } else if (workspace === 'live') {
     view = 'Broker operations'
+  } else if (workspace === 'portfolio') {
+    view = 'Feasibility evidence'
   }
 
   const next = base ? (view ? `${base} (${view})` : base) : (view || '—')
@@ -500,6 +502,12 @@ export const useWorkflowStore = defineStore('workflow', {
         nextControls = 'data'
         nextResults = 'overview'
       } else if (nextWorkspace === 'live') {
+        rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
+        nextWorkflow = normalizeWorkflow(this.workflow) || DEFAULT_WORKFLOW
+        nextStep = normalizeStep(this.workflowStep) || workflowStep(nextWorkflow)
+        nextControls = normalizeControls(this.controlsTab) || resolveTabs(this.mode, nextWorkflow).controls
+        nextResults = normalizeResults(this.resultsTab) || resolveTabs(this.mode, nextWorkflow).results
+      } else if (nextWorkspace === 'portfolio') {
         rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
         nextWorkflow = normalizeWorkflow(this.workflow) || DEFAULT_WORKFLOW
         nextStep = normalizeStep(this.workflowStep) || workflowStep(nextWorkflow)

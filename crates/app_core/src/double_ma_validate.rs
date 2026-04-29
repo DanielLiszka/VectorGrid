@@ -61,6 +61,24 @@ fn validation_backend_label(backend: &Backend) -> &'static str {
     }
 }
 
+fn validation_residency_tier(
+    backend_used: &BackendUsed,
+    backend_route: Option<&str>,
+) -> &'static str {
+    let route = backend_route.unwrap_or_default();
+    match backend_used {
+        BackendUsed::Gpu if route.contains("GpuHybridKernel") && !route.contains("->CpuOnly") => {
+            "gpu_hybrid_kernel"
+        }
+        BackendUsed::Gpu if route.contains("GpuKernel") && !route.contains("->CpuOnly") => {
+            "gpu_kernel"
+        }
+        BackendUsed::Gpu => "gpu",
+        BackendUsed::Cpu if route.contains("->CpuOnly") => "cpu_fallback",
+        BackendUsed::Cpu => "cpu",
+    }
+}
+
 fn resolve_validation_backend_runtime(
     backend: &Backend,
     gpu_activated: bool,
@@ -1691,6 +1709,8 @@ impl ValidationPostCandidate for DoubleMaValidationCandidateResult {
 pub struct DoubleMaValidationResult {
     pub data_id: String,
     pub runtime_ms: u64,
+    pub requested_backend: String,
+    pub validation_residency_tier: String,
     pub backend_used: BackendUsed,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_route: Option<String>,
@@ -4568,9 +4588,14 @@ pub fn run_double_ma_validation_blocking_with_candles_with_aux_mask(
         } else {
             resolve_validation_backend_runtime(&req.backend, false, gpu_validation_fallback_reason)
         };
+    let requested_backend = validation_backend_label(&req.backend).to_string();
+    let validation_residency_tier =
+        validation_residency_tier(&backend_used, backend_route.as_deref()).to_string();
     Ok(DoubleMaValidationResult {
         data_id: req.data_id,
         runtime_ms,
+        requested_backend,
+        validation_residency_tier,
         backend_used,
         backend_route,
         backend_fallback_reason,
@@ -4783,6 +4808,8 @@ mod tests {
         }
         assert!(c.robust_score.is_finite());
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.requested_backend, "CpuOnly");
+        assert_eq!(res.validation_residency_tier, "cpu");
         assert_eq!(res.backend_route.as_deref(), Some("CpuOnly"));
         assert!(res.backend_fallback_reason.is_none());
     }
