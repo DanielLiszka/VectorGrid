@@ -15103,6 +15103,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gpu_hybrid_rejects_exact_shortlist_controls_before_execution() {
+        let candles = make_trending_candles(256);
+        let cancel = AtomicBool::new(false);
+
+        let mut extra_req = build_single_pair_request(
+            Backend::GpuHybridKernel { device_id: 0 },
+            StrategyConfig::default(),
+        );
+        extra_req.extra_shortlist_objectives = Some(vec![ObjectiveKind::Pnl]);
+        let extra_err =
+            run_double_ma_optimization_blocking_with_candles(extra_req, &candles, &cancel, None)
+                .expect_err("GpuHybridKernel should reject exact shortlist extras");
+        assert!(
+            extra_err.contains(
+                "extra_shortlist_objectives currently require the exact GpuKernel backend route"
+            ),
+            "unexpected error: {extra_err}"
+        );
+
+        let mut confidence_req = build_single_pair_request(
+            Backend::GpuHybridKernel { device_id: 0 },
+            StrategyConfig::default(),
+        );
+        confidence_req.shortlist_confidence_mode = Some(DoubleMaShortlistConfidenceMode::Psr);
+        let confidence_err = run_double_ma_optimization_blocking_with_candles(
+            confidence_req,
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect_err("GpuHybridKernel should reject exact shortlist confidence mode");
+        assert!(
+            confidence_err.contains(
+                "shortlist_confidence_mode currently requires the exact GpuKernel backend route"
+            ),
+            "unexpected error: {confidence_err}"
+        );
+    }
+
     fn assert_trade22_metrics_match_trade_stats(
         label: &str,
         metrics: &Metrics,

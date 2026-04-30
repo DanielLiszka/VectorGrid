@@ -4904,6 +4904,8 @@ mod tests {
             config_fingerprint: "cfg-1".to_string(),
             config_fingerprint_version: Some(1),
             has_validation,
+            replay_class: "exact_evidence_review".to_string(),
+            replay_reasons: Vec::new(),
             report_xlsx_path: String::new(),
             report_xlsx_exists: None,
             csv_path: "C:/data/AAPL.csv".to_string(),

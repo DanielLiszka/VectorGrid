@@ -18,6 +18,8 @@
     "typecheck:desktop": "tsc --noEmit -p tsconfig.wdio.json",
     "parity": "node ./scripts/check-tauri-parity.mjs",
     "check:tauri-command-risk-policy": "node ./scripts/check-tauri-command-risk-policy.mjs",
+    "check:node-reproducibility": "node ../scripts/check_node_reproducibility.mjs",
+    "check:release-secret-hygiene": "node ../scripts/check_release_secret_hygiene.mjs",
     "security:desktop-boundary": "npm run check:commands && npm run parity && npm run check:tauri-capabilities && npm run check:tauri-command-risk-policy",
     "check:qa-actions": "tsx ./scripts/check-action-coverage-manifest.ts",
     "check:qa-selectors": "node ./scripts/check-qa-selector-inventory.mjs",

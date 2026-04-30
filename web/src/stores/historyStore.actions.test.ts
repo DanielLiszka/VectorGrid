@@ -332,6 +332,8 @@ describe('history store actions', () => {
         bytes: 2048,
         strategyKind: 'DoubleMA',
         hasValidation: true,
+        replayClass: 'exact_evidence_review',
+        replayReasons: ['saved_run_result_payload_present'],
         reportXlsxPath: 'C:/runs/aapl.xlsx',
         csvPath: 'C:/data/aapl.csv',
         tags: ['aapl', '1m'],
@@ -380,6 +382,8 @@ describe('history store actions', () => {
         bytes: 2048,
         strategyKind: 'DoubleMA',
         hasValidation: true,
+        replayClass: 'exact_evidence_review',
+        replayReasons: ['saved_run_result_payload_present'],
         reportXlsxPath: 'C:/runs/aapl.xlsx',
         csvPath: 'C:/data/aapl.csv',
         tags: ['aapl', 'holdout'],
@@ -402,6 +406,11 @@ describe('history store actions', () => {
         csvPath: 'C:/data/aapl.csv',
         reportPath: 'C:/runs/aapl.xlsx',
         hasValidation: true,
+        replayClass: 'exact_evidence_review',
+        replayReasons: [
+          'saved_run_result_payload_present',
+          'compatible_recompute_inputs_available',
+        ],
         metricSurfaceSummary: 'Core17',
         metricSurfaceDetail: 'fields=pnl',
         validationAdmissionSummary: 'scalar_union',
@@ -423,10 +432,15 @@ describe('history store actions', () => {
     store.syncSavedRunsView('C:/runs/aapl.json')
     expect(store.savedSelectedValue).toBe('C:/runs/aapl.json')
     expect(store.savedRunDetailTitle).toBe('2026-02-25T00:00:00Z')
+    expect(store.savedRunDetailReplay).toContain('Exact evidence review')
+    expect(store.savedRunsMeta).toContain('replay=Exact evidence review')
 
     store.setSavedRunsSearch('aapl')
     expect(store.savedSelectedValue).toBe('C:/runs/aapl.json')
     expect(store.savedRunDetailTitle).toBe('2026-02-25T00:00:00Z')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
+
+    store.setSavedRunsSearch('exact_evidence')
     expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
 
     store.setSavedRunsSearch('zzz')
@@ -480,6 +494,8 @@ describe('history store actions', () => {
         bytes: 2048,
         strategyKind: 'DoubleMA',
         hasValidation: true,
+        replayClass: 'exact_evidence_review',
+        replayReasons: ['saved_run_result_payload_present'],
         reportXlsxPath: 'C:/runs/aapl.xlsx',
         reportXlsxExists: false,
         csvPath: 'C:/data/aapl.csv',

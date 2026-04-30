@@ -968,6 +968,12 @@ function formatStage5EvidencePolicyMeta(result: Record<string, unknown>): string
   return parts.length > 0 ? `evidence=${parts.join(" ")}` : "";
 }
 
+function formatEvidenceTier(value: unknown): string {
+  const raw = normalizeText(value);
+  if (!raw) return "";
+  return raw.split("_").join(" ");
+}
+
 function renderMetaStage4(resp: Record<string, unknown> | null): void {
   LAST_META_STAGE4_RUN = resp;
   const result = asRecord(resp?.result);
@@ -976,6 +982,11 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   const path = responseStage5Path(resp);
   const sourceMetaPath = normalizePath(result?.source_meta_json_path);
   const trainingManifest = asRecord(result?.training_manifest);
+  const evidenceTier = formatEvidenceTier(result?.model_evidence_tier);
+  const warningCount = Math.max(
+    0,
+    Math.floor(Number(result?.warning_count ?? 0)),
+  );
   const warnings = Array.isArray(result?.warnings)
     ? result.warnings
         .map((item) => normalizeText(item))
@@ -998,6 +1009,11 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   lines.push(
     `source_meta=${sourceMetaPath ? fileBasename(sourceMetaPath) : "—"} model=${normalizeText(result.model_path) ? fileBasename(normalizeText(result.model_path)) : "—"} state=${normalizeText(result.model_state) || "unknown"} healthy=${normalizeBoolean(result.model_healthy) ? "yes" : "no"} trained_now=${normalizeBoolean(result.model_trained_now) ? "yes" : "no"}`,
   );
+  if (evidenceTier) {
+    lines.push(
+      `model_evidence_tier=${evidenceTier} training_artifacts=${Math.max(0, Math.floor(Number(result.training_artifact_count || trainingManifest?.training_artifact_count || 0)))} source_sha256=${normalizeText(result.source_artifact_sha256) || "—"}`,
+    );
+  }
   lines.push(
     "execution=run_meta_stage5_ml_confidence artifact=json replay=stage5_saved",
   );
@@ -1061,10 +1077,12 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
       `warnings=${warnings.length}: ${warnings.join(" | ")}`,
     );
   }
-  const warningStatus = warnings.length > 0 ? ` · warn=${warnings.length}` : "";
+  const effectiveWarningCount = Math.max(warningCount, warnings.length);
+  const warningStatus =
+    effectiveWarningCount > 0 ? ` · warn=${effectiveWarningCount}` : "";
 
   patchAnalysisStore({
-    metaStage4Status: `Stage 5 complete: selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} accept/review/reject=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}${warningStatus} · file=${path ? fileBasename(path) : "—"}`,
+    metaStage4Status: `Stage 5 complete: selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} accept/review/reject=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}${evidenceTier ? ` · evidence=${evidenceTier}` : ""}${warningStatus} · file=${path ? fileBasename(path) : "—"}`,
     metaStage4OutputPreview: lines.join("\n"),
   });
 
@@ -1198,6 +1216,7 @@ function formatMlStatus(
         ? "healthy"
         : "unknown";
   const target = normalizeText(modelMeta?.target);
+  const evidenceTier = formatEvidenceTier(modelMeta?.evidence_tier);
   const modelKind = normalizeText(modelSummary?.model_kind);
   const trainedRows = Number(modelMeta?.trained_rows);
   const auc = Number(modelMeta?.cv_auc);
@@ -1216,6 +1235,7 @@ function formatMlStatus(
 
   if (modelKind) parts.push(`model_kind=${modelKind}`);
   if (target) parts.push(`target=${target}`);
+  if (evidenceTier) parts.push(`evidence=${evidenceTier}`);
   if (legacyModel) parts.push("legacy");
   if (Number.isFinite(trainedRows))
     parts.push(`trained_rows=${Math.max(0, Math.floor(trainedRows))}`);
@@ -1322,6 +1342,7 @@ function filterStage4Saved(
       normalizeText(item.strategy_kind).toLowerCase(),
       normalizeText(item.timeframe).toLowerCase(),
       normalizeText(item.source_meta_json_path).toLowerCase(),
+      normalizeText(item.model_evidence_tier).toLowerCase(),
       tags,
     ].join(" ");
     return terms.every((term) => haystack.includes(term));
@@ -1538,6 +1559,15 @@ function updateStage4SavedState(preferredPath = ""): void {
           ? `top_k=${Math.max(0, Math.floor(Number(selectedEntry.top_k || 0)))}`
           : "",
         `model=${normalizeBoolean(selectedEntry.model_healthy) ? "healthy" : "unhealthy"}`,
+        normalizeText(selectedEntry.model_evidence_tier)
+          ? `evidence=${formatEvidenceTier(selectedEntry.model_evidence_tier)}`
+          : "",
+        Number.isFinite(Number(selectedEntry.training_artifact_count))
+          ? `training_artifacts=${Math.max(0, Math.floor(Number(selectedEntry.training_artifact_count || 0)))}`
+          : "",
+        Number.isFinite(Number(selectedEntry.warning_count))
+          ? `warn=${Math.max(0, Math.floor(Number(selectedEntry.warning_count || 0)))}`
+          : "",
         normalizeText(selectedEntry.source_meta_json_path)
           ? `source=${fileBasename(normalizeText(selectedEntry.source_meta_json_path))}`
           : "",
@@ -1579,15 +1609,17 @@ function updateStage4SavedState(preferredPath = ""): void {
         Math.floor(Number(entry.groups_considered || 0)),
       );
       const minConf = Number(entry.min_ml_confidence);
+      const evidenceTier = formatEvidenceTier(entry.model_evidence_tier);
       const tagsCount = Array.isArray(entry.tags) ? entry.tags.length : 0;
       const tfHint = tf ? ` | ${tf}` : "";
       const confHint = Number.isFinite(minConf)
         ? ` | min_ml=${minConf.toFixed(2)}`
         : "";
+      const evidenceHint = evidenceTier ? ` | evidence=${evidenceTier}` : "";
       const tagsHint = tagsCount ? ` | tags=${tagsCount}` : "";
       return {
         value: normalizePath(entry.path),
-        label: `${ts} | ${kind}${tfHint} | selected=${selected}/${scored}/${considered}${confHint}${tagsHint}`,
+        label: `${ts} | ${kind}${tfHint} | selected=${selected}/${scored}/${considered}${confHint}${evidenceHint}${tagsHint}`,
         disabled: false,
       };
     }),
@@ -1824,6 +1856,13 @@ function buildStage5SavedEntryFromResponse(
     min_ml_confidence: Number(result.min_ml_confidence),
     top_k: Math.max(0, Math.floor(Number(result.top_k || 0))),
     model_healthy: normalizeBoolean(result.model_healthy),
+    model_evidence_tier: normalizeText(result.model_evidence_tier),
+    training_artifact_count: Math.max(
+      0,
+      Math.floor(Number(result.training_artifact_count || 0)),
+    ),
+    source_artifact_sha256: normalizeText(result.source_artifact_sha256),
+    warning_count: Math.max(0, Math.floor(Number(result.warning_count || 0))),
     source_meta_json_path: normalizePath(result.source_meta_json_path),
     stage_completions: serializeStageCompletionsForArtifact([
       buildStage5MlConfidenceStageCompletion({

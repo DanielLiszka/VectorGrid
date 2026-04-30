@@ -51,6 +51,31 @@ describe("simpleWorkflowModel", () => {
     ]);
   });
 
+  it("carries a basic validation execution status into the Simple summary", () => {
+    const summary = buildSimpleRunSummary({
+      datasetLabel: "AAPL sample",
+      strategyKind: "DoubleMa",
+      optimizationReady: true,
+      validationReady: true,
+      validationRows: 8,
+      validationAccelerationStatus: "GPU validation path used for core checks.",
+      validationVerdictTitle: "Validation passed.",
+    });
+
+    expect(summary.validation.accelerationLabel).toBe(
+      "GPU validation path used for core checks.",
+    );
+    expect(summary.validation.metricItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "validation_engine",
+          label: "Engine",
+          value: "GPU validation path used for core checks.",
+        }),
+      ]),
+    );
+  });
+
   it("marks validation as recommended after optimization and before validation", () => {
     expect(
       resolveSimpleValidationRecommendation({
@@ -114,6 +139,7 @@ describe("simpleWorkflowModel", () => {
     expect(markdown).toContain("Generated: 2026-04-29T12:00:00.000Z");
     expect(markdown).toContain("- Dataset: AAPL sample");
     expect(markdown).toContain("- Best candidate: Rank 1");
+    expect(markdown).toContain("- Engine: Not run");
     expect(markdown).toContain("not trading advice");
   });
 });

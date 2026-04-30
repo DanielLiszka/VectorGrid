@@ -492,6 +492,10 @@ pub struct RunArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_fingerprint_version: Option<u32>,
     pub has_validation: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub replay_class: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replay_reasons: Vec<String>,
     pub report_xlsx_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_xlsx_exists: Option<bool>,
@@ -686,6 +690,10 @@ pub struct MetaArtifactSummary {
     pub tags: Vec<String>,
 }
 
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stage5ArtifactSummary {
     pub ts: String,
@@ -701,6 +709,14 @@ pub struct Stage5ArtifactSummary {
     pub min_ml_confidence: f64,
     pub top_k: usize,
     pub model_healthy: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_evidence_tier: String,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub training_artifact_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_artifact_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub warning_count: usize,
     pub tags: Vec<String>,
 }
 
@@ -809,6 +825,10 @@ pub struct RunArtifactDetailResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_path_exists: Option<bool>,
     pub has_validation: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub replay_class: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replay_reasons: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config_fingerprint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3049,6 +3069,82 @@ fn normalize_report_xlsx_fields(value: Option<&Value>) -> (String, Option<bool>)
     (path, exists)
 }
 
+fn push_replay_reason(reasons: &mut Vec<String>, reason: &str) {
+    if !reason.is_empty() && !reasons.iter().any(|existing| existing == reason) {
+        reasons.push(reason.to_string());
+    }
+}
+
+fn classify_run_artifact_replay(
+    artifact: &Value,
+    report_xlsx_path: &str,
+    report_xlsx_exists: Option<bool>,
+) -> (String, Vec<String>) {
+    let mut reasons = Vec::new();
+    let has_run_req = artifact.pointer("/run/req").is_some();
+    let has_run_res = artifact.pointer("/run/res").is_some();
+    let has_validation_res = artifact.pointer("/validation/res").is_some();
+    let csv_path = resolve_run_artifact_csv_path(artifact);
+    let (config_fingerprint, _) = normalized_config_fingerprint_fields(artifact);
+
+    if has_run_res {
+        push_replay_reason(&mut reasons, "saved_run_result_payload_present");
+    } else {
+        push_replay_reason(&mut reasons, "saved_run_result_payload_missing");
+    }
+    if has_validation_res {
+        push_replay_reason(&mut reasons, "saved_validation_result_payload_present");
+    }
+    if has_run_req {
+        push_replay_reason(&mut reasons, "saved_run_request_present");
+    } else {
+        push_replay_reason(&mut reasons, "saved_run_request_missing");
+    }
+    if csv_path.trim().is_empty() {
+        push_replay_reason(&mut reasons, "source_dataset_path_missing");
+    } else {
+        push_replay_reason(&mut reasons, "source_dataset_path_recorded");
+    }
+    if config_fingerprint.trim().is_empty() {
+        push_replay_reason(&mut reasons, "config_fingerprint_missing");
+    } else {
+        push_replay_reason(&mut reasons, "config_fingerprint_available");
+    }
+    if artifact
+        .pointer("/dataset_meta/source_content_fingerprint")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        push_replay_reason(&mut reasons, "source_content_fingerprint_recorded");
+    } else {
+        push_replay_reason(&mut reasons, "source_content_fingerprint_missing_legacy");
+    }
+    if report_xlsx_path.trim().is_empty() {
+        push_replay_reason(&mut reasons, "report_not_exported");
+    } else {
+        match report_xlsx_exists {
+            Some(true) => push_replay_reason(&mut reasons, "report_available"),
+            Some(false) => push_replay_reason(&mut reasons, "report_missing_on_disk"),
+            None => push_replay_reason(&mut reasons, "report_existence_unknown"),
+        }
+    }
+
+    let replay_class = if has_run_res {
+        "exact_evidence_review"
+    } else if has_validation_res {
+        "review_only_saved_result"
+    } else {
+        push_replay_reason(&mut reasons, "no_saved_result_payload");
+        "blocked"
+    };
+
+    if has_run_req && !csv_path.trim().is_empty() && !config_fingerprint.trim().is_empty() {
+        push_replay_reason(&mut reasons, "compatible_recompute_inputs_available");
+    }
+
+    (replay_class.to_string(), reasons)
+}
+
 fn normalize_optional_text_value(value: Option<&Value>) -> Option<String> {
     let text = normalize_text_value(value);
     if text.is_empty() {
@@ -4082,6 +4178,8 @@ fn build_run_artifact_detail_response(
     .unwrap_or_default();
     let (report_xlsx_path, report_xlsx_exists) =
         normalize_report_xlsx_fields(artifact.get("report_xlsx_path"));
+    let (replay_class, replay_reasons) =
+        classify_run_artifact_replay(artifact, &report_xlsx_path, report_xlsx_exists);
 
     Ok(RunArtifactDetailResponse {
         ts: resolved_ts,
@@ -4095,6 +4193,8 @@ fn build_run_artifact_detail_response(
         report_path: report_xlsx_path,
         report_path_exists: report_xlsx_exists,
         has_validation: validation_res.is_some(),
+        replay_class,
+        replay_reasons,
         config_fingerprint,
         config_fingerprint_version,
         tags: normalized_tags(artifact),
@@ -4339,6 +4439,8 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
     let has_validation = v.pointer("/validation/res").is_some();
     let (report_xlsx_path, report_xlsx_exists) =
         normalize_report_xlsx_fields(v.get("report_xlsx_path"));
+    let (replay_class, replay_reasons) =
+        classify_run_artifact_replay(v, &report_xlsx_path, report_xlsx_exists);
     let csv_path = resolve_run_artifact_csv_path(v);
     let timeframe = resolve_run_artifact_timeframe(v);
     let base_timeframe = v
@@ -4454,6 +4556,8 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         config_fingerprint,
         config_fingerprint_version,
         has_validation,
+        replay_class,
+        replay_reasons,
         report_xlsx_path,
         report_xlsx_exists,
         csv_path,
@@ -4649,6 +4753,36 @@ fn build_stage5_artifact_summary(
             .pointer("/res/model_healthy")
             .and_then(|x| x.as_bool())
             .unwrap_or(false),
+        model_evidence_tier: v
+            .pointer("/res/model_evidence_tier")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        training_artifact_count: v
+            .pointer("/res/training_artifact_count")
+            .and_then(|x| x.as_u64())
+            .or_else(|| {
+                v.pointer("/res/training_manifest/training_artifact_count")
+                    .and_then(|x| x.as_u64())
+            })
+            .unwrap_or(0) as usize,
+        source_artifact_sha256: v
+            .pointer("/res/source_artifact_sha256")
+            .and_then(|x| x.as_str())
+            .or_else(|| {
+                v.pointer("/res/training_manifest/source_artifact/artifact_sha256")
+                    .and_then(|x| x.as_str())
+            })
+            .map(|value| value.to_string()),
+        warning_count: v
+            .pointer("/res/warning_count")
+            .and_then(|x| x.as_u64())
+            .or_else(|| {
+                v.pointer("/res/warnings")
+                    .and_then(|x| x.as_array())
+                    .map(|items| items.len() as u64)
+            })
+            .unwrap_or(0) as usize,
         tags: normalized_tags(v),
     })
 }
@@ -5469,6 +5603,24 @@ mod tests {
         format!("{prefix}_{unique}")
     }
 
+    fn canonical_json_for_saved_repair_equivalence(value: &Value) -> String {
+        let mut normalized = value.clone();
+        if let Some(stage_completions) = normalized
+            .get_mut("stage_completions")
+            .and_then(Value::as_array_mut)
+        {
+            for packet in stage_completions {
+                if let Some(packet) = packet.as_object_mut() {
+                    packet.insert(
+                        "artifact_path".to_string(),
+                        Value::String("<artifact_path>".to_string()),
+                    );
+                }
+            }
+        }
+        canonical_json(&normalized)
+    }
+
     fn sample_retention_settings() -> settings::ArtifactRetentionSettings {
         settings::ArtifactRetentionSettings {
             run_keep_newest: Some(31),
@@ -6200,7 +6352,17 @@ mod tests {
         let encoded = serde_json::to_value(hydration).expect("serialize");
 
         assert_eq!(summary.report_xlsx_exists, Some(true));
+        assert_eq!(summary.replay_class, "exact_evidence_review");
+        assert!(summary
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "report_available"));
         assert_eq!(detail.report_xlsx_exists, Some(true));
+        assert_eq!(detail.replay_class, "exact_evidence_review");
+        assert!(detail
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "saved_run_result_payload_present"));
         assert_eq!(detail.report_xlsx_path, report_path_text);
         assert_eq!(detail.report_path_exists, Some(true));
         assert_eq!(
@@ -6209,6 +6371,45 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn run_artifact_replay_class_blocks_when_saved_result_payload_is_missing() {
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": "C:/runs/missing-report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d",
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_missing_result.json"),
+            256,
+            &artifact,
+        )
+        .expect("summary");
+        let detail = build_run_artifact_detail_response(
+            "C:/runs/vectorgrid_run_missing_result.json",
+            &artifact,
+        )
+        .expect("detail");
+
+        assert_eq!(summary.replay_class, "blocked");
+        assert_eq!(detail.replay_class, "blocked");
+        assert!(summary
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "no_saved_result_payload"));
+        assert!(summary
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "report_missing_on_disk"));
     }
 
     #[test]
@@ -7626,8 +7827,8 @@ mod tests {
                 .expect("load repaired canonical artifact");
 
         assert_eq!(
-            canonical_json(&saved_value),
-            canonical_json(&repaired_value)
+            canonical_json_for_saved_repair_equivalence(&saved_value),
+            canonical_json_for_saved_repair_equivalence(&repaired_value)
         );
         assert_eq!(
             saved_value
@@ -8315,7 +8516,11 @@ mod tests {
                 "groups_considered": 6,
                 "top_k": 10,
                 "min_ml_confidence": 0.55,
-                "model_healthy": true
+                "model_healthy": true,
+                "model_evidence_tier": "cross_validation",
+                "training_artifact_count": 4,
+                "source_artifact_sha256": "abc123",
+                "warning_count": 1
             },
             "tags": ["stage5", "final"]
         });
@@ -8334,6 +8539,10 @@ mod tests {
         assert_eq!(summary.top_k, 10);
         assert!((summary.min_ml_confidence - 0.55).abs() < f64::EPSILON);
         assert!(summary.model_healthy);
+        assert_eq!(summary.model_evidence_tier, "cross_validation");
+        assert_eq!(summary.training_artifact_count, 4);
+        assert_eq!(summary.source_artifact_sha256.as_deref(), Some("abc123"));
+        assert_eq!(summary.warning_count, 1);
         assert_eq!(
             summary.tags,
             vec!["stage5".to_string(), "final".to_string()]

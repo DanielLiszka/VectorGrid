@@ -82,6 +82,7 @@ export interface WorkflowMlSignalArtifact {
   calibration: Record<string, unknown> | null;
   scoreContract: Record<string, unknown> | null;
   scoreContractVersion: string;
+  scoreCacheContractMode: string;
   scoreCacheProvenance: Record<string, unknown> | null;
   bundleStatus: Record<string, unknown> | null;
   nativeBackendRequested: string;
@@ -328,6 +329,8 @@ function normalizeMlSignalArtifact(
     scoreContract?: unknown;
     score_contract_version?: unknown;
     scoreContractVersion?: unknown;
+    score_cache_contract_mode?: unknown;
+    scoreCacheContractMode?: unknown;
     score_cache_provenance?: unknown;
     scoreCacheProvenance?: unknown;
     source_bundle_id?: unknown;
@@ -558,6 +561,10 @@ function normalizeMlSignalArtifact(
         "score_contract_version",
         row.score_contract_version ?? row.scoreContractVersion,
       ],
+      [
+        "score_cache_contract_mode",
+        row.score_cache_contract_mode ?? row.scoreCacheContractMode,
+      ],
       ["score_scope_policy", row.score_scope_policy ?? row.scoreScopePolicy],
     ]);
   const bundleStatus = normalizeOptionalRecord(
@@ -615,6 +622,14 @@ function normalizeMlSignalArtifact(
         scoreContract?.score_contract_version ??
         scoreContract?.scoreContractVersion ??
         scoreCacheProvenance?.score_contract_version,
+    ),
+    scoreCacheContractMode: normalizeText(
+      row.score_cache_contract_mode ??
+        row.scoreCacheContractMode ??
+        scoreContract?.score_cache_contract_mode ??
+        scoreContract?.scoreCacheContractMode ??
+        scoreCacheProvenance?.score_cache_contract_mode ??
+        scoreCacheProvenance?.scoreCacheContractMode,
     ),
     scoreCacheProvenance: markRawUnknown(scoreCacheProvenance),
     bundleStatus: markRawUnknown(bundleStatus),
@@ -716,6 +731,7 @@ function normalizeMlSignalArtifact(
     !out.calibration &&
     !out.scoreContract &&
     !out.scoreContractVersion &&
+    !out.scoreCacheContractMode &&
     !out.scoreCacheProvenance &&
     !out.bundleStatus &&
     !out.nativeBackendRequested &&

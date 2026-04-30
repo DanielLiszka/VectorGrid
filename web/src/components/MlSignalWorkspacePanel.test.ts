@@ -378,6 +378,28 @@ describe("MlSignalWorkspacePanel", () => {
     expect(buildButton?.attributes("disabled")).toBeUndefined();
   });
 
+  it("exposes the validation score-cache contract mode without changing the default", async () => {
+    const optimize = useOptimizeStore();
+
+    const wrapper = mount(MlSignalWorkspacePanel, {
+      global: { plugins: [pinia] },
+    });
+
+    const contractSelect = wrapper.get("#mlSignalScoreCacheContractMode");
+    expect((contractSelect.element as HTMLSelectElement).value).toBe(
+      "research",
+    );
+    expect(wrapper.text()).toContain("research mode is used by validation");
+
+    await contractSelect.setValue("release_strict");
+    await nextTick();
+
+    expect(optimize.mlSignalScoreCacheContractMode).toBe("release_strict");
+    expect(wrapper.text()).toContain(
+      "release strict mode is used by validation",
+    );
+  });
+
   it("refreshes the native bundle status message when Stage 2 switches to native mode", async () => {
     const data = useDataStore();
     const optimize = useOptimizeStore();

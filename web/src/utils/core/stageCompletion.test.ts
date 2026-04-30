@@ -158,6 +158,9 @@ describe("stageCompletion", () => {
         groups_selected: 4,
         groups_scored: 9,
         model_healthy: true,
+        model_evidence_tier: "cross_validation",
+        training_artifact_count: 4,
+        warning_count: 1,
         min_ml_confidence: 0.72,
       },
       backfilled: true,
@@ -176,7 +179,13 @@ describe("stageCompletion", () => {
     expect(stage5).toMatchObject({
       stage: "stage5_ml_confidence",
       artifactKind: "vectorgrid_meta_stage5_ml_confidence",
-      summary: { groupsSelected: 4, modelHealthy: true },
+      summary: {
+        groupsSelected: 4,
+        modelHealthy: true,
+        modelEvidenceTier: "cross_validation",
+        trainingArtifactCount: 4,
+        warningCount: 1,
+      },
       backfilled: true,
     });
     expect(policy).toMatchObject({

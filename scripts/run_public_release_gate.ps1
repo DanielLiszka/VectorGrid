@@ -104,6 +104,12 @@ function Assert-PublicReleaseEvidence {
   if ($null -eq $manifest) {
     throw "Release manifest is missing."
   }
+  if (-not $AllowUnsignedBeta -and ([bool]$manifest.unsigned_beta -or [bool]$manifest.publishable -eq $false)) {
+    throw "Public release requires a publishable manifest. Re-run without unsigned beta labeling."
+  }
+  if ($AllowUnsignedBeta -and -not [bool]$manifest.unsigned_beta) {
+    throw "Unsigned beta rehearsal requires manifest.unsigned_beta=true and beta-labeled artifacts."
+  }
   if ([string]$manifest.artifact_source_kind -ne "bundle") {
     throw "Public release requires staged bundle artifacts, not only a raw release executable."
   }
@@ -155,6 +161,8 @@ function Write-PublicReleaseSummary {
     hashes = (Join-Path $resolvedOutDir "SHA256SUMS.txt")
     packaged_smoke = (Join-Path $resolvedOutDir "packaged-smoke-summary.json")
     artifact_source_kind = if ($null -ne $manifest) { [string]$manifest.artifact_source_kind } else { $null }
+    manifest_publishable = if ($null -ne $manifest) { [bool]$manifest.publishable } else { $null }
+    manifest_unsigned_beta = if ($null -ne $manifest) { [bool]$manifest.unsigned_beta } else { $null }
     smoke_mode = if ($null -ne $smoke) { [string]$smoke.smoke_mode } else { $null }
     staged_artifacts = if ($null -ne $manifest) { @($manifest.staged_artifacts | ForEach-Object { [string]$_.staged_path }) } else { @() }
     steps = $script:StepResults
@@ -171,6 +179,10 @@ function Write-PublicReleaseSummary {
     "- Unsigned beta allowed: $([bool]$AllowUnsignedBeta)",
     "- Post-build signing hook: $(if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) { 'env/default or none' } else { [System.IO.Path]::GetFullPath($PostBuildSignScript) })"
   )
+  if ($null -ne $manifest) {
+    $lines += "- Manifest publishable: $([bool]$manifest.publishable)"
+    $lines += "- Manifest unsigned beta: $([bool]$manifest.unsigned_beta)"
+  }
   if (-not [string]::IsNullOrWhiteSpace($ErrorMessage)) {
     $lines += ""
     $lines += "## Failure"
@@ -213,6 +225,7 @@ try {
     "-OutDir", $resolvedOutDir,
     "-IncludeDesktopSmoke"
   )
+  $candidateArgs += "-IncludeOutputParity"
   if ($IncludePerf) {
     $candidateArgs += "-IncludePerf"
   }
@@ -230,6 +243,9 @@ try {
   }
   if (-not [string]::IsNullOrWhiteSpace($PostBuildSignScript)) {
     $candidateArgs += @("-PostBuildSignScript", [System.IO.Path]::GetFullPath($PostBuildSignScript))
+  }
+  if ($AllowUnsignedBeta) {
+    $candidateArgs += "-UnsignedBeta"
   }
 
   Invoke-PublicReleaseStep -Name "Release candidate gate" -CommandText ("powershell " + ($candidateArgs -join " ")) -Action {

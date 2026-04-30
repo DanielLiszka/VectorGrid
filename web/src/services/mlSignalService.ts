@@ -125,6 +125,8 @@ interface MlSignalArtifactLike {
   scoreContract?: unknown;
   score_contract_version?: unknown;
   scoreContractVersion?: unknown;
+  score_cache_contract_mode?: unknown;
+  scoreCacheContractMode?: unknown;
   score_cache_provenance?: unknown;
   scoreCacheProvenance?: unknown;
   source_bundle_id?: unknown;
@@ -240,6 +242,17 @@ function parseOptionalInteger(value: unknown): number | null {
 
 function isMlNativeScoreSource(value: unknown): boolean {
   return normalizeText(value).toLowerCase() === "native";
+}
+
+function normalizeMlScoreCacheContractMode(value: unknown): string {
+  const raw = normalizeText(value).toLowerCase().replace(/[-\s]+/g, "_");
+  return raw === "release_strict" ? "release_strict" : "research";
+}
+
+function formatMlScoreCacheContractMode(value: unknown): string {
+  return normalizeMlScoreCacheContractMode(value) === "release_strict"
+    ? "release strict"
+    : "research";
 }
 
 function parseOptionalNumber(value: unknown): number | null {
@@ -899,6 +912,18 @@ function buildMlSignalArtifactPayload(
   const validationScoreSummary =
     resolveMlScoreSummaryRecord(validationResRecord);
   const prior = (priorMlSignal ?? {}) as MlSignalArtifactLike;
+  const scoreCacheContractMode = normalizeMlScoreCacheContractMode(
+    firstMeaningfulValue(
+      validationScoreSummary?.score_cache_contract_mode,
+      validationScoreSummary?.scoreCacheContractMode,
+      validationReq?.score_cache_contract_mode,
+      validationReq?.scoreCacheContractMode,
+      runReq.score_cache_contract_mode,
+      runReq.scoreCacheContractMode,
+      prior.score_cache_contract_mode,
+      prior.scoreCacheContractMode,
+    ),
+  );
   const exporter = resolveMlArtifactMetadataRecord(
     [
       validationScoreSummary?.exporter,
@@ -1470,6 +1495,20 @@ function buildMlSignalArtifactPayload(
           prior.scoreContractVersion,
         ),
       ],
+      [
+        "score_cache_contract_mode",
+        firstMeaningfulValue(
+          validationScoreSummary?.score_cache_contract_mode,
+          validationScoreSummary?.scoreCacheContractMode,
+          validationReq?.score_cache_contract_mode,
+          validationReq?.scoreCacheContractMode,
+          runReq.score_cache_contract_mode,
+          runReq.scoreCacheContractMode,
+          prior.score_cache_contract_mode,
+          prior.scoreCacheContractMode,
+          scoreCacheContractMode,
+        ),
+      ],
     ],
   );
   const bundleStatus = resolveMlArtifactMetadataRecord(
@@ -1638,6 +1677,7 @@ function buildMlSignalArtifactPayload(
     calibration,
     score_contract: scoreContract,
     score_contract_version: scoreContractVersion,
+    score_cache_contract_mode: scoreCacheContractMode,
     score_cache_provenance: scoreCacheProvenance,
     bundle_status: bundleStatus,
     score_cache_path: scoreCachePath,
@@ -2047,6 +2087,9 @@ function formatMlScoreCoverageMeta(
     summary.score_scope_policy ?? summary.scoreScopePolicy,
   );
   const scoreSpace = normalizeText(summary.score_space ?? summary.scoreSpace);
+  const scoreCacheContractMode = normalizeText(
+    summary.score_cache_contract_mode ?? summary.scoreCacheContractMode,
+  );
   const duplicates = parseOptionalInteger(
     summary.duplicate_timestamps ?? summary.duplicateTimestamps,
   );
@@ -2055,6 +2098,9 @@ function formatMlScoreCoverageMeta(
   }
   if (scoreScope) parts.push(`scope ${scoreScope}`);
   if (scoreScopePolicy) parts.push(`policy ${scoreScopePolicy}`);
+  if (scoreCacheContractMode) {
+    parts.push(`contract ${formatMlScoreCacheContractMode(scoreCacheContractMode)}`);
+  }
   if (scoreSpace) parts.push(`space ${scoreSpace}`);
   if (duplicates != null) parts.push(`duplicates ${duplicates}`);
   return parts.join(" • ");
@@ -2400,12 +2446,16 @@ export async function runMlSignalValidation(): Promise<unknown> {
   if (!scoreCachePath)
     throw new Error("Generate or choose a score cache path first.");
   const data = requireDataContext();
+  const scoreCacheContractMode = normalizeMlScoreCacheContractMode(
+    optimize.mlSignalScoreCacheContractMode,
+  );
 
   let validationReq: Record<string, unknown>;
   try {
     validationReq = {
       data_id: data.dataId,
       score_cache_path: scoreCachePath,
+      score_cache_contract_mode: scoreCacheContractMode,
       candidates: [
         {
           t_long: parseRequiredProbabilityWithDefault(
@@ -2534,12 +2584,16 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
   if (!scoreCachePath)
     throw new Error("Generate or choose a score cache path first.");
   const data = requireDataContext();
+  const scoreCacheContractMode = normalizeMlScoreCacheContractMode(
+    optimize.mlSignalScoreCacheContractMode,
+  );
 
   let sweepReq: Record<string, unknown>;
   try {
     sweepReq = {
       data_id: data.dataId,
       score_cache_path: scoreCachePath,
+      score_cache_contract_mode: scoreCacheContractMode,
       t_long: buildOptionalProbabilitySweepAxis(
         "Long threshold",
         optimize.mlSignalSweepLongStart,

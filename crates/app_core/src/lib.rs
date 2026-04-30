@@ -197,10 +197,10 @@ pub use ml_confidence::{
     predict_ml_confidence_for_group, prepare_ml_confidence_rows_from_meta_artifacts,
     train_ml_confidence_model_from_meta_artifacts, train_ml_confidence_model_from_prepared_rows,
     train_ml_confidence_model_from_rows, MlConfidenceCalibrationBin, MlConfidenceCompatibilityKey,
-    MlConfidenceDatasetRow, MlConfidenceGroupFeatures, MlConfidenceLabelConfig, MlConfidenceModel,
-    MlConfidenceModelFamily, MlConfidenceModelKind, MlConfidenceModelSummary,
-    MlConfidencePreparedArtifactRows, MlConfidencePreparedRows, MlConfidenceScope,
-    MlConfidenceTarget, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
+    MlConfidenceDatasetRow, MlConfidenceEvidenceTier, MlConfidenceGroupFeatures,
+    MlConfidenceLabelConfig, MlConfidenceModel, MlConfidenceModelFamily, MlConfidenceModelKind,
+    MlConfidenceModelSummary, MlConfidencePreparedArtifactRows, MlConfidencePreparedRows,
+    MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
 };
 
 pub use ml_signal::{
@@ -212,9 +212,10 @@ pub use ml_signal::{
     MlSignalDatasetExportRequest, MlSignalDatasetExportResult, MlSignalFeatureSchema,
     MlSignalModelBundleManifest, MlSignalModelBundleStatus, MlSignalModelBundleSummary,
     MlSignalPolicyParams, MlSignalPolicySweepRequest, MlSignalPolicySweepResult,
-    MlSignalScoreCacheBuildRequest, MlSignalScoreCacheBuildResult, MlSignalScoreCacheManifest,
-    MlSignalSplitPlan, MlSignalSplitWindow, MlSignalSweepAxisF64, MlSignalSweepAxisUsize,
-    MlSignalTickerHoldoutConfig, MlSignalValidationRequest, MlSignalValidationResult,
+    MlSignalScoreCacheBuildRequest, MlSignalScoreCacheBuildResult, MlSignalScoreCacheContractMode,
+    MlSignalScoreCacheManifest, MlSignalSplitPlan, MlSignalSplitWindow, MlSignalSweepAxisF64,
+    MlSignalSweepAxisUsize, MlSignalTickerHoldoutConfig, MlSignalValidationRequest,
+    MlSignalValidationResult,
 };
 
 pub use options_data_store::{

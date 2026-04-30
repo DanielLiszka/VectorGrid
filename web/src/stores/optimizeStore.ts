@@ -303,6 +303,9 @@ function applyVueFieldUpdate(
     case "mlSignalScoreSource":
       state.mlSignalScoreSource = next || "csv";
       return true;
+    case "mlSignalScoreCacheContractMode":
+      state.mlSignalScoreCacheContractMode = next || "research";
+      return true;
     case "mlSignalNativeBackend":
       state.mlSignalNativeBackend = next || "native_cpu";
       return true;
@@ -515,6 +518,7 @@ interface OptimizeState {
   mlSignalScoreCachePath: string;
   mlSignalModelBundleId: string;
   mlSignalScoreSource: string;
+  mlSignalScoreCacheContractMode: string;
   mlSignalNativeBackend: string;
   mlSignalNativeLibraryPath: string;
   mlSignalNativeGpuDeviceId: string;
@@ -622,6 +626,7 @@ export const useOptimizeStore = defineStore("optimize", {
     mlSignalScoreCachePath: "",
     mlSignalModelBundleId: "",
     mlSignalScoreSource: "csv",
+    mlSignalScoreCacheContractMode: "research",
     mlSignalNativeBackend: "native_cpu",
     mlSignalNativeLibraryPath: "",
     mlSignalNativeGpuDeviceId: "",
@@ -818,6 +823,12 @@ export const useOptimizeStore = defineStore("optimize", {
       this.mlSignalScoreSource = String(
         snapshot.mlSignalScoreSource ?? this.mlSignalScoreSource ?? "csv",
       );
+      this.mlSignalScoreCacheContractMode =
+        String(
+          snapshot.mlSignalScoreCacheContractMode ??
+            this.mlSignalScoreCacheContractMode ??
+            "research",
+        ).trim() || "research";
       this.mlSignalNativeBackend = String(
         snapshot.mlSignalNativeBackend ??
           this.mlSignalNativeBackend ??

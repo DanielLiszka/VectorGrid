@@ -85,6 +85,7 @@ describe('GuidedWorkspacePanel', () => {
     validationStore.$patch({
       tableVisible: true,
       tableRowCount: 8,
+      validationAccelerationStatus: 'GPU validation path used for core checks.',
       validationShortlistMeta: '8 candidates admitted.',
       validationRouteSummary: 'Holdout validation complete.',
       validationWarningSummary: '-',
@@ -114,6 +115,56 @@ describe('GuidedWorkspacePanel', () => {
     document.querySelector<HTMLButtonElement>('[data-qa-action="guided.advancedMode.open"]')?.click()
     await nextTick()
     expect(settingsStore.uiMode).toBe('advanced')
+
+    wrapper.unmount()
+  })
+
+  it('shows a basic validation execution status in the Simple validation step', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const optimizeStore = useOptimizeStore(pinia)
+    const settingsStore = useSettingsStore(pinia)
+    const validationStore = useValidationStore(pinia)
+    vi.spyOn(dataStore, 'hydrateStartupState').mockResolvedValue(undefined)
+
+    settingsStore.setUiMode('guided')
+    settingsStore.setGuidedStep('validate')
+    dataStore.$patch({
+      dataId: 'dataset-1',
+      datasetLabel: 'AAPL sample',
+      dataTimeframe: '15m',
+    })
+    optimizeStore.$patch({
+      strategyKind: 'DoubleMa',
+      objective: 'Sharpe',
+      backend: 'Auto',
+      runDisabled: false,
+    })
+    analysisStore.$patch({
+      topRows: 12,
+      selectedTopTitle: 'Rank 1 · Sharpe 1.42',
+    })
+    validationStore.$patch({
+      tableVisible: true,
+      tableRowCount: 8,
+      validationAccelerationStatus: 'GPU validation path used for core checks.',
+      validationRouteSummary: 'Holdout validation complete.',
+      validationWarningSummary: '-',
+    })
+
+    const wrapper = mount(GuidedWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    })
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Engine')
+    expect(text).toContain('GPU validation path used for core checks.')
 
     wrapper.unmount()
   })

@@ -50,6 +50,7 @@ const {
   savedRunDetailDataset,
   savedRunDetailTimeframe,
   savedRunDetailValidation,
+  savedRunDetailReplay,
   savedRunDetailProvenance,
   savedRunDetailLineage,
   savedRunDetailMetricSurface,
@@ -937,6 +938,12 @@ onBeforeUnmount(() => {
             <span class="panelMetricKey">Validation</span
             ><span class="panelMetricValue mono panelNumeric">{{
               savedRunDetailValidation
+            }}</span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Replay</span
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailReplay
             }}</span>
           </div>
           <div class="full">

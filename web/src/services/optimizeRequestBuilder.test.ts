@@ -2890,13 +2890,29 @@ describe("optimizeRequestBuilder", () => {
       trendUseAdx: true,
       topK: "257",
     });
+    const breakoutKernelReq = () =>
+      buildCompositeDoubleMaRequest("BreakoutMomentum", {
+        breakoutUseAdx: false,
+        topK: "257",
+      });
+    const breakoutHybridReq = buildCompositeDoubleMaRequest("BreakoutMomentum", {
+      breakoutUseAdx: true,
+      topK: "257",
+    });
+    const regimeHybridReq = buildCompositeDoubleMaRequest("RegimeHybrid", {
+      backend: "GpuKernel",
+      topK: "257",
+    });
     const cpuReq = buildCompositeDoubleMaRequest("CompositeTrend", {
       backend: "CpuOnly",
       topK: "257",
     });
 
     expect(kernelReq).toThrow(/topK <= 256/);
+    expect(breakoutKernelReq).toThrow(/topK <= 256/);
     expect(hybridReq).toBeTruthy();
+    expect(breakoutHybridReq).toBeTruthy();
+    expect(regimeHybridReq).toBeTruthy();
     expect(cpuReq).toBeTruthy();
   });
 
@@ -2950,6 +2966,18 @@ describe("optimizeRequestBuilder", () => {
       buildCompositeDoubleMaRequest("BreakoutMomentum", {
         breakoutUseAdx: true,
         shortlistSliceMode: "Halves",
+      }),
+    ).toThrow(/supported only for the GPU kernel route/i);
+
+    expect(() =>
+      buildCompositeDoubleMaRequest("RegimeHybrid", {
+        extraShortlistObjectives: "Pnl",
+      }),
+    ).toThrow(/supported only for the GPU kernel route/i);
+
+    expect(() =>
+      buildCompositeDoubleMaRequest("RegimeHybrid", {
+        shortlistConfidenceMode: "psr",
       }),
     ).toThrow(/supported only for the GPU kernel route/i);
   });
@@ -3057,6 +3085,33 @@ describe("optimizeRequestBuilder", () => {
     expect(req).toBeTruthy();
     expect((req as Record<string, unknown>).backend).toEqual({
       backend: "GpuKernel",
+      device_id: 0,
+    });
+  });
+
+  it("normalizes composite legacy GPU aliases through the same route policy", () => {
+    const trendGpuOnly = buildCompositeDoubleMaRequest("CompositeTrend", {
+      backend: "GpuOnly",
+      trendUseAdx: false,
+    });
+    const trendHybridAlias = buildCompositeDoubleMaRequest("CompositeTrend", {
+      backend: "GpuHybridKernel",
+      trendUseAdx: true,
+    });
+    const regimeGpuOnly = buildCompositeDoubleMaRequest("RegimeHybrid", {
+      backend: "GpuOnly",
+    });
+
+    expect((trendGpuOnly as Record<string, unknown>).backend).toEqual({
+      backend: "GpuKernel",
+      device_id: 0,
+    });
+    expect((trendHybridAlias as Record<string, unknown>).backend).toEqual({
+      backend: "GpuHybridKernel",
+      device_id: 0,
+    });
+    expect((regimeGpuOnly as Record<string, unknown>).backend).toEqual({
+      backend: "GpuHybridKernel",
       device_id: 0,
     });
   });

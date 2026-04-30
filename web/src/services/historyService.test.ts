@@ -1383,6 +1383,11 @@ describe("historyService", () => {
         bytes: 2048,
         strategy_kind: "MlSignal",
         has_validation: true,
+        replay_class: "exact_evidence_review",
+        replay_reasons: [
+          "saved_run_result_payload_present",
+          "compatible_recompute_inputs_available",
+        ],
         report_xlsx_path: "C:/runs/run1.xlsx",
         report_xlsx_exists: false,
         csv_path: "C:/data/aapl.csv",
@@ -1403,6 +1408,11 @@ describe("historyService", () => {
       bytes: 2048,
       strategyKind: "MlSignal",
       hasValidation: true,
+      replayClass: "exact_evidence_review",
+      replayReasons: [
+        "saved_run_result_payload_present",
+        "compatible_recompute_inputs_available",
+      ],
       reportXlsxPath: "C:/runs/run1.xlsx",
       reportXlsxExists: false,
       csvPath: "C:/data/aapl.csv",
@@ -1443,6 +1453,11 @@ describe("historyService", () => {
       csvPath: "C:/data/msft.csv",
       reportPath: "C:/runs/report.xlsx",
       hasValidation: true,
+      replayClass: "exact_evidence_review",
+      replayReasons: [
+        "saved_run_result_payload_present",
+        "report_available",
+      ],
       optimization_metric_surface: {
         surface: "core17",
         fields: [
@@ -1489,6 +1504,11 @@ describe("historyService", () => {
       csvPath: "C:/data/msft.csv",
       reportPath: "C:/runs/report.xlsx",
       hasValidation: true,
+      replayClass: "exact_evidence_review",
+      replayReasons: [
+        "saved_run_result_payload_present",
+        "report_available",
+      ],
       metricSurfaceSummary: "Core17 • 7 metrics",
       metricSurfaceDetail:
         "fields=pnl, trades, max_dd, mean, std, exposure +1 more",

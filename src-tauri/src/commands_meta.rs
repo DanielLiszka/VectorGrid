@@ -15,8 +15,9 @@ use std::sync::Arc;
 use ta_app_core::{
     EvidenceGateRole, EvidenceMetricClass, EvidencePolicyMetric, EvidencePolicySummary,
     MetaSelectionRequest, MetaSelectionResult, MlConfidenceCompatibilityKey,
-    MlConfidenceGroupFeatures, MlConfidenceLabelConfig, MlConfidenceModel,
-    MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
+    MlConfidenceEvidenceTier, MlConfidenceGroupFeatures, MlConfidenceLabelConfig,
+    MlConfidenceModel, MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTrainConfig,
+    MlConfidenceTrainMetrics,
 };
 use tauri::Manager;
 
@@ -305,6 +306,7 @@ pub struct MetaStage4Result {
     pub source_meta_json_path: String,
     pub model_path: String,
     pub model_state: MlConfidenceModelState,
+    pub model_evidence_tier: MlConfidenceEvidenceTier,
     pub model_healthy: bool,
     pub model_trained_now: bool,
     pub groups_considered: usize,
@@ -323,6 +325,10 @@ pub struct MetaStage4Result {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
     pub training_manifest: Stage5TrainingManifest,
+    pub training_artifact_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_artifact_sha256: Option<String>,
+    pub warning_count: usize,
     pub evidence_policy_summary: EvidencePolicySummary,
     pub warnings: Vec<String>,
 }
@@ -2383,6 +2389,20 @@ fn run_meta_stage5_ml_confidence_blocking(
         ));
     }
 
+    let model_evidence_tier = model
+        .meta
+        .as_ref()
+        .map(|meta| meta.evidence_tier)
+        .unwrap_or_default();
+    let training_artifact_count = training_manifest.training_artifact_count.max(
+        model
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.meta_artifacts_used)
+            .unwrap_or(0),
+    );
+    let source_artifact_sha256 = training_manifest.source_artifact.artifact_sha256.clone();
+    let warning_count = warnings.len();
     let ts = chrono::Utc::now().to_rfc3339();
     let result = MetaStage4Result {
         strategy_kind: scope.strategy_kind.clone(),
@@ -2390,6 +2410,7 @@ fn run_meta_stage5_ml_confidence_blocking(
         source_meta_json_path: source_meta_path.to_string_lossy().to_string(),
         model_path: model_path.to_string_lossy().to_string(),
         model_state,
+        model_evidence_tier,
         model_healthy,
         model_trained_now,
         groups_considered: groups.len(),
@@ -2407,6 +2428,9 @@ fn run_meta_stage5_ml_confidence_blocking(
         selected_groups,
         fallback_reason,
         training_manifest,
+        training_artifact_count,
+        source_artifact_sha256,
+        warning_count,
         evidence_policy_summary: stage5_evidence_policy_summary(),
         warnings,
     };
@@ -4181,9 +4205,9 @@ mod tests {
     use ta_app_core::{
         meta_group_key_for_request, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig,
         MetaGroupingMode, MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest,
-        MetaSelectionResult, MlConfidenceCompatibilityKey, MlConfidenceLabelConfig,
-        MlConfidenceModelKind, MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTarget,
-        MlConfidenceTrainConfig,
+        MetaSelectionResult, MlConfidenceCompatibilityKey, MlConfidenceEvidenceTier,
+        MlConfidenceLabelConfig, MlConfidenceModelKind, MlConfidenceModelSummary,
+        MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
     };
 
     fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -5034,6 +5058,7 @@ mod tests {
                 cv_auc: Some(0.71),
                 cv_brier: Some(0.21),
                 cv_brier_calibrated: Some(0.19),
+                evidence_tier: MlConfidenceEvidenceTier::CrossValidation,
                 baseline_brier: 0.25,
                 healthy: true,
                 warnings: Vec::new(),
@@ -5096,6 +5121,7 @@ mod tests {
                 cv_auc: Some(0.71),
                 cv_brier: Some(0.21),
                 cv_brier_calibrated: Some(0.19),
+                evidence_tier: MlConfidenceEvidenceTier::CrossValidation,
                 baseline_brier: 0.25,
                 healthy: true,
                 warnings: Vec::new(),

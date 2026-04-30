@@ -33,6 +33,14 @@ function Resolve-OutDir {
   return Join-Path (Join-Path $repoRoot "output\\release_candidates") "${stamp}-${Variant}"
 }
 
+function Read-JsonFile {
+  param([string]$Path)
+  if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path $Path)) {
+    return Get-Content -Raw $Path | ConvertFrom-Json
+  }
+  return $null
+}
+
 function Invoke-DoctorStep {
   param(
     [Parameter(Mandatory = $true)]
@@ -63,6 +71,9 @@ $resolvedOutDir = Resolve-OutDir -Value $OutDir
 New-Item -ItemType Directory -Force -Path $resolvedOutDir | Out-Null
 
 $checkSyncCommand = "node scripts/check_tauri_config_sync.mjs"
+$nodeReproPath = Join-Path $resolvedOutDir "node-reproducibility.json"
+$secretHygienePath = Join-Path $resolvedOutDir "release-secret-hygiene.json"
+$commandRiskPolicyPath = Join-Path $resolvedOutDir "tauri-command-risk-policy.json"
 $coreReportPath = Join-Path $resolvedOutDir "readiness.core.json"
 $readinessPath = Join-Path $resolvedOutDir "readiness.json"
 
@@ -85,6 +96,18 @@ try {
     node "$repoRoot\\scripts\\check_tauri_config_sync.mjs"
   }
 
+  $steps += Invoke-DoctorStep -Name "Node/npm reproducibility" -CommandText "node scripts/check_node_reproducibility.mjs --out $nodeReproPath" -Action {
+    node "$repoRoot\\scripts\\check_node_reproducibility.mjs" --out $nodeReproPath
+  }
+
+  $steps += Invoke-DoctorStep -Name "Release secret hygiene" -CommandText "node scripts/check_release_secret_hygiene.mjs --out $secretHygienePath" -Action {
+    node "$repoRoot\\scripts\\check_release_secret_hygiene.mjs" --out $secretHygienePath
+  }
+
+  $steps += Invoke-DoctorStep -Name "Tauri command risk policy" -CommandText "node web/scripts/check-tauri-command-risk-policy.mjs --out $commandRiskPolicyPath" -Action {
+    node "$repoRoot\\web\\scripts\\check-tauri-command-risk-policy.mjs" --out $commandRiskPolicyPath
+  }
+
   $steps += Invoke-DoctorStep -Name "Release readiness core" -CommandText ("cargo " + ($cargoArgs -join " ")) -Action {
     & cargo @cargoArgs
   }
@@ -102,6 +125,9 @@ try {
     packaged_smoke_required = [bool]$RequirePackagedSmoke
     supported = [bool]$core.supported
     steps = $steps
+    node_reproducibility = Read-JsonFile -Path $nodeReproPath
+    secret_hygiene = Read-JsonFile -Path $secretHygienePath
+    command_risk_policy = Read-JsonFile -Path $commandRiskPolicyPath
     core = $core
   }
 

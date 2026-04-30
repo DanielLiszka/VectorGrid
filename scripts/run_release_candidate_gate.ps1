@@ -11,6 +11,8 @@ param(
   [switch]$SkipPackagedSmoke,
   [switch]$SkipWorkspaceTests,
   [switch]$IncludeLiveSafetyHarness,
+  [switch]$IncludeOutputParity,
+  [switch]$UnsignedBeta,
   [string]$PostBuildSignScript = ""
 )
 
@@ -133,8 +135,10 @@ function Write-ReleaseSummary {
     include_baseline_ui = [bool]$IncludeBaselineUi
     include_desktop_smoke = [bool]$IncludeDesktopSmoke
     include_live_safety_harness = [bool]$IncludeLiveSafetyHarness
+    include_output_parity = [bool]$IncludeOutputParity
     skip_packaged_smoke = [bool]$SkipPackagedSmoke
     skip_workspace_tests = [bool]$SkipWorkspaceTests
+    unsigned_beta = [bool]$UnsignedBeta
     post_build_sign_script = if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) { $null } else { [System.IO.Path]::GetFullPath($PostBuildSignScript) }
     error = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
     artifacts = [ordered]@{
@@ -173,8 +177,10 @@ function Write-ReleaseSummary {
     "- Include baseline UI: $([bool]$IncludeBaselineUi)",
     "- Include desktop smoke: $([bool]$IncludeDesktopSmoke)",
     "- Include live safety harness: $([bool]$IncludeLiveSafetyHarness)",
+    "- Include output parity: $([bool]$IncludeOutputParity)",
     "- Skip packaged smoke: $([bool]$SkipPackagedSmoke)",
     "- Skip workspace tests: $([bool]$SkipWorkspaceTests)",
+    "- Unsigned beta artifact labeling: $([bool]$UnsignedBeta)",
     "- Post-build signing hook: $(if ([string]::IsNullOrWhiteSpace($PostBuildSignScript)) { 'none' } else { [System.IO.Path]::GetFullPath($PostBuildSignScript) })"
   )
   if ($null -ne $manifest -and -not [string]::IsNullOrWhiteSpace([string]$manifest.artifact_source_kind)) {
@@ -266,7 +272,16 @@ try {
     }
   }
 
-  Write-Host "[SKIP] Output parity sample baselines are local-only in the backend-preview public tree."
+  if ($IncludeOutputParity) {
+    Invoke-ReleaseStep -Name "Output parity" -CommandText "node scripts/run_output_parity_check.mjs" -Action {
+      node "$repoRoot\\scripts\\run_output_parity_check.mjs"
+      if ($LASTEXITCODE -ne 0) {
+        throw "output parity failed with exit code $LASTEXITCODE"
+      }
+    }
+  } else {
+    Write-Host "[SKIP] Output parity sample baselines are local-only in the backend-preview public tree."
+  }
 
   $workflowArgs = @("-File", (Join-Path $repoRoot "scripts\\run_workflow_gate.ps1"), "-Mode", "candidate")
   Invoke-ReleaseStep -Name "Workflow gate" -CommandText ("powershell " + ($workflowArgs -join " ")) -Action {
@@ -398,6 +413,9 @@ try {
     "-ReleaseBinaryPath", $releaseBinaryPath,
     "-ProvenancePath", (Join-Path $resolvedOutDir "provenance.json")
   )
+  if ($UnsignedBeta) {
+    $manifestArgs += "-UnsignedBeta"
+  }
   Invoke-ReleaseStep -Name "Release manifest" -CommandText ("powershell " + ($manifestArgs -join " ")) -Action {
     powershell @manifestArgs
     if ($LASTEXITCODE -ne 0) {

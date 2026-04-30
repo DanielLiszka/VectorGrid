@@ -613,6 +613,14 @@ export function buildStage5MlConfidenceStageCompletion(
     ),
     topK: nonNegativeInt(res?.top_k ?? res?.topK),
     modelHealthy: optionalBoolean(res?.model_healthy ?? res?.modelHealthy),
+    modelEvidenceTier: firstText(
+      res?.model_evidence_tier,
+      res?.modelEvidenceTier,
+    ),
+    warningCount: nonNegativeInt(res?.warning_count ?? res?.warningCount),
+    trainingArtifactCount: nonNegativeInt(
+      res?.training_artifact_count ?? res?.trainingArtifactCount,
+    ),
   });
   const modelHealthy = optionalBoolean(res?.model_healthy ?? res?.modelHealthy);
   const packet: StageCompletionPacketV1 = {

@@ -37,6 +37,7 @@ const {
   mlSignalScoreCachePath,
   mlSignalModelBundleId,
   mlSignalScoreSource,
+  mlSignalScoreCacheContractMode,
   mlSignalNativeBackend,
   mlSignalNativeLibraryPath,
   mlSignalNativeGpuDeviceId,
@@ -822,10 +823,22 @@ const currentScoreCoverageSummary = computed(() => {
           Math.floor(Number(artifact.duplicateTimestamps)),
         )}`
       : "",
+    artifact.scoreCacheContractMode
+      ? `contract ${formatScoreCacheContractMode(artifact.scoreCacheContractMode)}`
+      : "",
     artifact.nativeBackendUsed ? `native ${artifact.nativeBackendUsed}` : "",
   ].filter((part) => part);
   return parts.join(" • ") || "No score-cache summary attached yet.";
 });
+
+function formatScoreCacheContractMode(value: unknown): string {
+  const raw = String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  return raw === "release_strict" ? "release strict" : "research";
+}
+
+const scoreCacheContractModeLabel = computed(() =>
+  formatScoreCacheContractMode(mlSignalScoreCacheContractMode.value),
+);
 
 const currentDeployabilitySummary = computed(() => {
   const artifact = currentMlArtifact.value;
@@ -1766,6 +1779,30 @@ onMounted(() => {
               )
             "
           />
+        </div>
+      </div>
+      <div class="gridTwo">
+        <div>
+          <label for="mlSignalScoreCacheContractMode">
+            Score cache contract
+          </label>
+          <select
+            id="mlSignalScoreCacheContractMode"
+            :value="mlSignalScoreCacheContractMode"
+            @change="
+              optimizeStore.setInputField(
+                'mlSignalScoreCacheContractMode',
+                String(($event.target as HTMLSelectElement).value || ''),
+              )
+            "
+          >
+            <option value="research">Research</option>
+            <option value="release_strict">Release strict</option>
+          </select>
+        </div>
+        <div class="muted">
+          {{ scoreCacheContractModeLabel }} mode is used by validation and
+          policy sweep.
         </div>
       </div>
       <div class="summaryGrid" aria-label="ML validation contract">

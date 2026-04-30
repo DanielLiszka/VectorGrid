@@ -177,6 +177,19 @@ pub enum MlSignalNativeLibraryDiscoveryPolicy {
     LegacyReplay,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlSignalScoreCacheContractMode {
+    Research,
+    ReleaseStrict,
+}
+
+impl Default for MlSignalScoreCacheContractMode {
+    fn default() -> Self {
+        Self::Research
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MlSignalScoreCacheSummary {
     pub matched_rows: usize,
@@ -186,6 +199,8 @@ pub struct MlSignalScoreCacheSummary {
     pub coverage_ratio: f64,
     pub score_space: MlSignalScoreSpace,
     pub score_scope: MlSignalScoreScope,
+    #[serde(default)]
+    pub score_cache_contract_mode: MlSignalScoreCacheContractMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_content_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -558,6 +573,8 @@ impl Default for MlSignalPolicyParams {
 pub struct MlSignalValidationRequest {
     pub data_id: String,
     pub score_cache_path: String,
+    #[serde(default)]
+    pub score_cache_contract_mode: MlSignalScoreCacheContractMode,
     pub candidates: Vec<MlSignalPolicyParams>,
     #[serde(default)]
     pub iterative: IterativeSimConfig,
@@ -587,6 +604,8 @@ pub struct MlSignalSweepAxisUsize {
 pub struct MlSignalPolicySweepRequest {
     pub data_id: String,
     pub score_cache_path: String,
+    #[serde(default)]
+    pub score_cache_contract_mode: MlSignalScoreCacheContractMode,
     #[serde(default)]
     pub t_long: Option<MlSignalSweepAxisF64>,
     #[serde(default)]
@@ -4508,6 +4527,7 @@ fn load_score_cache(
             coverage_ratio,
             score_space: cache.score_space,
             score_scope: cache.score_scope,
+            score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
             data_content_fingerprint: cache.data_content_fingerprint,
             score_scope_policy: cache.score_scope_policy,
             raw_score_observations: cache.raw_score_observations,
@@ -5325,6 +5345,7 @@ fn expand_axis_usize(
 fn validate_score_cache_contract(
     cache: &LoadedScoreCache,
     candidates: &[MlSignalPolicyParams],
+    contract_mode: MlSignalScoreCacheContractMode,
 ) -> Result<(), String> {
     if cache.summary.score_space != MlSignalScoreSpace::Probability {
         return Err(
@@ -5359,7 +5380,61 @@ fn validate_score_cache_contract(
             cache.rows_missing_short_probability
         ));
     }
+    if contract_mode == MlSignalScoreCacheContractMode::ReleaseStrict {
+        let actual_score_obs = cache.points.iter().filter(|point| point.is_some()).count();
+        let dependence_summary =
+            summarize_ml_signal_dependence(actual_score_obs, &cache.overlap_metadata);
+        validate_release_strict_score_cache_contract(cache, &dependence_summary)?;
+    }
     Ok(())
+}
+
+fn option_text_present(value: &Option<String>) -> bool {
+    value
+        .as_deref()
+        .map(str::trim)
+        .map(|value| !value.is_empty())
+        .unwrap_or(false)
+}
+
+fn validate_release_strict_score_cache_contract(
+    cache: &LoadedScoreCache,
+    dependence_summary: &MlSignalDependenceSummary,
+) -> Result<(), String> {
+    let summary = &cache.summary;
+    let mut missing_or_invalid = Vec::new();
+    if !option_text_present(&summary.data_content_fingerprint) {
+        missing_or_invalid.push("data_content_fingerprint");
+    }
+    if summary.score_scope != MlSignalScoreScope::WalkforwardTest {
+        missing_or_invalid.push("score_scope=walkforward_test");
+    }
+    if dependence_summary.raw_walkforward_test_windows.unwrap_or(0) == 0 {
+        missing_or_invalid.push("walkforward_test_overlap_metadata");
+    }
+    if !option_text_present(&summary.feature_schema_hash)
+        && !option_text_present(&summary.feature_schema_sha256)
+    {
+        missing_or_invalid.push("feature_schema_hash");
+    }
+    if !option_text_present(&summary.source_bundle_manifest_hash)
+        && !option_text_present(&summary.bundle_manifest_sha256)
+    {
+        missing_or_invalid.push("model_bundle_manifest_hash");
+    }
+    if summary.score_contract_version != Some(ML_SIGNAL_SCORE_CONTRACT_VERSION) {
+        missing_or_invalid.push("current_score_contract_version");
+    }
+    if !option_text_present(&summary.threshold_policy) {
+        missing_or_invalid.push("threshold_policy");
+    }
+    if missing_or_invalid.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "release-strict score cache contract failed: missing or invalid {}",
+        missing_or_invalid.join(", ")
+    ))
 }
 
 fn score_scope_warning_flag(scope: MlSignalScoreScope) -> Option<&'static str> {
@@ -5405,8 +5480,9 @@ pub fn run_ml_signal_validation_blocking_with_candles(
         return Err("not enough candles for ML validation".to_string());
     }
 
-    let score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
-    validate_score_cache_contract(&score_cache, &req.candidates)?;
+    let mut score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
+    score_cache.summary.score_cache_contract_mode = req.score_cache_contract_mode;
+    validate_score_cache_contract(&score_cache, &req.candidates, req.score_cache_contract_mode)?;
     let validation_context = req.validation_context.clone();
     validate_ml_signal_candidates(
         req.data_id,
@@ -5493,8 +5569,9 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
         }
     }
     let sweep_size = candidates.len();
-    let score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
-    validate_score_cache_contract(&score_cache, &candidates)?;
+    let mut score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
+    score_cache.summary.score_cache_contract_mode = req.score_cache_contract_mode;
+    validate_score_cache_contract(&score_cache, &candidates, req.score_cache_contract_mode)?;
     let validation_context = req.validation_context.clone();
     let mut validation = validate_ml_signal_candidates(
         req.data_id,
@@ -6027,6 +6104,7 @@ mod tests {
             coverage_ratio: 1.0,
             score_space: MlSignalScoreSpace::Probability,
             score_scope,
+            score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
             data_content_fingerprint: Some("sha256:test-data-content".to_string()),
             score_scope_policy: None,
             raw_score_observations: Some(10),
@@ -6324,6 +6402,68 @@ mod tests {
         )
     }
 
+    fn write_basic_probability_score_csv(
+        input_path: &str,
+        candles: &Candles,
+        start: usize,
+        take: usize,
+        score_scope: MlSignalScoreScope,
+    ) {
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short", "score_scope"])
+            .expect("header");
+        for (idx, ts) in candles.timestamp.iter().enumerate().skip(start).take(take) {
+            let (p_long, p_short) = if idx % 4 < 2 {
+                ("0.78", "0.18")
+            } else {
+                ("0.22", "0.74")
+            };
+            writer
+                .write_record([
+                    ts.to_string(),
+                    p_long.to_string(),
+                    p_short.to_string(),
+                    score_scope.as_snake_str().to_string(),
+                ])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+    }
+
+    fn write_minimal_bundle_manifest_file() -> String {
+        let bundle_manifest_path = temp_file_path("ml_strict_bundle_manifest", "json");
+        fs::write(
+            &bundle_manifest_path,
+            r#"{"bundle_id":"bundle-a","schema_version":1}"#,
+        )
+        .expect("write bundle manifest");
+        bundle_manifest_path
+    }
+
+    fn strict_score_cache_build_request(
+        data_id: &str,
+        input_path: &str,
+        cache_path: &str,
+        export_manifest_path: &str,
+        feature_schema_path: &str,
+        bundle_manifest_path: &str,
+        score_scope: MlSignalScoreScope,
+    ) -> MlSignalScoreCacheBuildRequest {
+        let mut req = score_cache_build_request(data_id, input_path, cache_path, Some("bundle-a"));
+        req.score_scope = Some(score_scope);
+        req.feature_schema_path = Some(feature_schema_path.to_string());
+        req.export_manifest_path = Some(export_manifest_path.to_string());
+        req.source_bundle_manifest_path = Some(bundle_manifest_path.to_string());
+        req.threshold_policy = Some("desktop_probability_threshold_only".to_string());
+        req.producer_kind = Some("test_harness".to_string());
+        req.score_contract_version = Some(ML_SIGNAL_SCORE_CONTRACT_VERSION);
+        req
+    }
+
     #[test]
     fn score_cache_build_request_defaults_to_native_cpu_when_backend_missing() {
         let parsed: MlSignalScoreCacheBuildRequest = serde_json::from_value(serde_json::json!({
@@ -6339,6 +6479,30 @@ mod tests {
             MlSignalInferenceBackendPreference::NativeCpu
         );
         assert_eq!(parsed.native_prediction_batch_size, None);
+    }
+
+    #[test]
+    fn validation_and_sweep_requests_default_to_research_score_cache_contract() {
+        let validation: MlSignalValidationRequest = serde_json::from_value(serde_json::json!({
+            "data_id": "data-1",
+            "score_cache_path": "C:/runs/ml_score_cache.json",
+            "candidates": []
+        }))
+        .expect("deserialize validation request");
+        assert_eq!(
+            validation.score_cache_contract_mode,
+            MlSignalScoreCacheContractMode::Research
+        );
+
+        let sweep: MlSignalPolicySweepRequest = serde_json::from_value(serde_json::json!({
+            "data_id": "data-1",
+            "score_cache_path": "C:/runs/ml_score_cache.json"
+        }))
+        .expect("deserialize sweep request");
+        assert_eq!(
+            sweep.score_cache_contract_mode,
+            MlSignalScoreCacheContractMode::Research
+        );
     }
 
     #[test]
@@ -6830,6 +6994,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -6883,6 +7048,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams {
                     strategy,
                     ..MlSignalPolicyParams::default()
@@ -6958,6 +7124,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams {
                     strategy,
                     ..MlSignalPolicyParams::default()
@@ -7026,6 +7193,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams {
                     t_long: 0.60,
                     t_short: 0.60,
@@ -7060,6 +7228,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -7477,6 +7646,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams {
                     strategy,
                     ..MlSignalPolicyParams::default()
@@ -7531,6 +7701,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams {
                     strategy: long_only_strategy,
                     ..MlSignalPolicyParams::default()
@@ -7556,6 +7727,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams {
                     strategy: long_short_strategy,
                     ..MlSignalPolicyParams::default()
@@ -7614,6 +7786,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -7776,6 +7949,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -7795,6 +7969,264 @@ mod tests {
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
         let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn release_strict_validation_accepts_walkforward_cache_with_release_provenance() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(40);
+        let input_path = temp_file_path("strict_walkforward_scores_in", "csv");
+        let cache_path = temp_file_path("strict_walkforward_scores_cache", "json");
+        let bundle_manifest_path = write_minimal_bundle_manifest_file();
+        let cancel = AtomicBool::new(false);
+        let split_windows = vec![MlSignalSplitWindow {
+            split_id: "roll_000".to_string(),
+            train_start: 0,
+            train_end: 16,
+            calibration_start: 16,
+            calibration_end: 20,
+            test_start: 20,
+            test_end: 32,
+        }];
+        let (export_manifest_path, feature_schema_path, split_manifest_path) =
+            write_overlap_metadata_files("data-1", 4, split_windows);
+        write_basic_probability_score_csv(
+            &input_path,
+            &candles,
+            20,
+            10,
+            MlSignalScoreScope::WalkforwardTest,
+        );
+
+        let build = build_ml_signal_score_cache_from_csv(
+            strict_score_cache_build_request(
+                "data-1",
+                &input_path,
+                &cache_path,
+                &export_manifest_path,
+                &feature_schema_path,
+                &bundle_manifest_path,
+                MlSignalScoreScope::WalkforwardTest,
+            ),
+            &candles,
+            &cancel,
+        )
+        .expect("build strict cache");
+        let validation = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::ReleaseStrict,
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("release-strict validation should pass");
+
+        assert_eq!(
+            validation.score_summary.score_cache_contract_mode,
+            MlSignalScoreCacheContractMode::ReleaseStrict
+        );
+        assert_eq!(
+            validation
+                .dependence_summary
+                .as_ref()
+                .and_then(|summary| summary.raw_walkforward_test_windows),
+            Some(1)
+        );
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+        let _ = fs::remove_file(&bundle_manifest_path);
+        let _ = fs::remove_file(&export_manifest_path);
+        let _ = fs::remove_file(&feature_schema_path);
+        let _ = fs::remove_file(&split_manifest_path);
+    }
+
+    #[test]
+    fn release_strict_validation_rejects_legacy_cache_missing_data_fingerprint() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(40);
+        let input_path = temp_file_path("strict_missing_fingerprint_scores_in", "csv");
+        let cache_path = temp_file_path("strict_missing_fingerprint_scores_cache", "json");
+        let bundle_manifest_path = write_minimal_bundle_manifest_file();
+        let cancel = AtomicBool::new(false);
+        let split_windows = vec![MlSignalSplitWindow {
+            split_id: "roll_000".to_string(),
+            train_start: 0,
+            train_end: 16,
+            calibration_start: 16,
+            calibration_end: 20,
+            test_start: 20,
+            test_end: 32,
+        }];
+        let (export_manifest_path, feature_schema_path, split_manifest_path) =
+            write_overlap_metadata_files("data-1", 4, split_windows);
+        write_basic_probability_score_csv(
+            &input_path,
+            &candles,
+            20,
+            10,
+            MlSignalScoreScope::WalkforwardTest,
+        );
+        let build = build_ml_signal_score_cache_from_csv(
+            strict_score_cache_build_request(
+                "data-1",
+                &input_path,
+                &cache_path,
+                &export_manifest_path,
+                &feature_schema_path,
+                &bundle_manifest_path,
+                MlSignalScoreScope::WalkforwardTest,
+            ),
+            &candles,
+            &cancel,
+        )
+        .expect("build strict cache");
+        let mut cache_json: serde_json::Value =
+            serde_json::from_reader(BufReader::new(File::open(&cache_path).expect("open cache")))
+                .expect("parse cache");
+        cache_json
+            .as_object_mut()
+            .expect("score cache object")
+            .remove("data_content_fingerprint");
+        serde_json::to_writer_pretty(
+            BufWriter::new(File::create(&cache_path).expect("rewrite cache")),
+            &cache_json,
+        )
+        .expect("rewrite cache without fingerprint");
+
+        let research_validation = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("research validation should warn, not reject");
+        assert!(research_validation
+            .run_verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "score_cache_missing_data_fingerprint"));
+
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::ReleaseStrict,
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("strict validation should reject missing fingerprint");
+        assert!(err.contains("release-strict score cache contract"));
+        assert!(err.contains("data_content_fingerprint"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+        let _ = fs::remove_file(&bundle_manifest_path);
+        let _ = fs::remove_file(&export_manifest_path);
+        let _ = fs::remove_file(&feature_schema_path);
+        let _ = fs::remove_file(&split_manifest_path);
+    }
+
+    #[test]
+    fn release_strict_policy_sweep_rejects_non_walkforward_score_scope() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(40);
+        let input_path = temp_file_path("strict_sweep_scope_scores_in", "csv");
+        let cache_path = temp_file_path("strict_sweep_scope_scores_cache", "json");
+        let bundle_manifest_path = write_minimal_bundle_manifest_file();
+        let cancel = AtomicBool::new(false);
+        let split_windows = vec![MlSignalSplitWindow {
+            split_id: "roll_000".to_string(),
+            train_start: 0,
+            train_end: 16,
+            calibration_start: 16,
+            calibration_end: 20,
+            test_start: 20,
+            test_end: 32,
+        }];
+        let (export_manifest_path, feature_schema_path, split_manifest_path) =
+            write_overlap_metadata_files("data-1", 4, split_windows);
+        write_basic_probability_score_csv(
+            &input_path,
+            &candles,
+            20,
+            10,
+            MlSignalScoreScope::CalibrationSlice,
+        );
+        let build = build_ml_signal_score_cache_from_csv(
+            strict_score_cache_build_request(
+                "data-1",
+                &input_path,
+                &cache_path,
+                &export_manifest_path,
+                &feature_schema_path,
+                &bundle_manifest_path,
+                MlSignalScoreScope::CalibrationSlice,
+            ),
+            &candles,
+            &cancel,
+        )
+        .expect("build strict cache");
+
+        let err = run_ml_signal_policy_sweep_blocking_with_candles(
+            MlSignalPolicySweepRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::ReleaseStrict,
+                t_long: Some(MlSignalSweepAxisF64 {
+                    start: 0.55,
+                    end: 0.55,
+                    step: 0.10,
+                }),
+                t_short: None,
+                delta: None,
+                max_hold_bars: None,
+                exit_on_flat_values: Some(vec![false]),
+                exit_on_opposite_values: Some(vec![true]),
+                base_strategy: StrategyConfig::default(),
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+                top_k: 1,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("strict sweep should reject non-walkforward cache");
+        assert!(err.contains("release-strict score cache contract"));
+        assert!(err.contains("score_scope=walkforward_test"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+        let _ = fs::remove_file(&bundle_manifest_path);
+        let _ = fs::remove_file(&export_manifest_path);
+        let _ = fs::remove_file(&feature_schema_path);
+        let _ = fs::remove_file(&split_manifest_path);
     }
 
     #[test]
@@ -7871,6 +8303,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: baseline_cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -7886,6 +8319,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -8356,6 +8790,7 @@ mod tests {
             MlSignalPolicySweepRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 t_long: Some(MlSignalSweepAxisF64 {
                     start: 0.55,
                     end: 0.65,
@@ -8437,6 +8872,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -8491,6 +8927,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -8559,6 +8996,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,
@@ -8610,6 +9048,7 @@ mod tests {
             MlSignalValidationRequest {
                 data_id: "data-1".to_string(),
                 score_cache_path: cache_path.clone(),
+                score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                 candidates: vec![MlSignalPolicyParams::default()],
                 iterative: IterativeSimConfig::default(),
                 min_psr: None,

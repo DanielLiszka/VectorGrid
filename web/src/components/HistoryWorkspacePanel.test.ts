@@ -80,6 +80,8 @@ describe("HistoryWorkspacePanel", () => {
     history.savedRunDetailDataset = "spy.csv";
     history.savedRunDetailTimeframe = "1d";
     history.savedRunDetailValidation = "Available";
+    history.savedRunDetailReplay =
+      "Exact evidence review · saved run result payload present";
     history.savedRunDetailMetricSurface = "Core17 • 17 metrics";
     history.savedRunDetailMetricSurfaceDetail =
       "fields=pnl, trades, max_dd, mean, std, exposure +11 more";
@@ -123,6 +125,10 @@ describe("HistoryWorkspacePanel", () => {
     );
     expect(bodyText).toContain("Admission");
     expect(bodyText).toContain("scalar_union • kept 16/20");
+    expect(bodyText).toContain("Replay");
+    expect(bodyText).toContain(
+      "Exact evidence review · saved run result payload present",
+    );
     expect(bodyText).toContain("Metric Surface");
     expect(bodyText).toContain("Core17 • 17 metrics");
     expect(bodyText).toContain("Metric Detail");

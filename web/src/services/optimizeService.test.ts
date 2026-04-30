@@ -163,6 +163,97 @@ function firstOptimizationRunRequest(): Record<string, unknown> {
     : {};
 }
 
+async function runCompositeDoubleMaRouteCase(input: {
+  strategyKind: "CompositeTrend" | "RegimeHybrid" | "BreakoutMomentum";
+  backend?: string;
+  strategy?: Record<string, unknown>;
+}): Promise<{ command: string; req: Record<string, unknown> }> {
+  vi.clearAllMocks();
+  installDefaultInvokeCommandMock();
+  (pinia.state.value as Record<string, unknown>).optimize = {
+    strategyKind: input.strategyKind,
+    backend: input.backend ?? "GpuKernel",
+    fastStart: "5",
+    fastEnd: "15",
+    fastStep: "5",
+    slowStart: "20",
+    slowEnd: "40",
+    slowStep: "10",
+    fastMaType: "sma",
+    slowMaType: "ema",
+  };
+  (pinia.state.value as Record<string, unknown>).advanced = {
+    maSource: "close",
+    objective: "Sharpe",
+    mode: "Grid",
+    topK: "20",
+    includeAll: "false",
+    heatmapBins: "64",
+  };
+  (pinia.state.value as Record<string, unknown>).strategy = {
+    startingEquity: "10000",
+    costPreset: "custom",
+    feeBps: "1",
+    spreadBps: "2",
+    slippageBps: "0",
+    epsRel: "0",
+    stopLossPct: "",
+    takeProfitPct: "",
+    cooldownBars: "0",
+    signalPersistenceBars: "1",
+    exitMode: "cross",
+    kaufmanStopPeriod: "22",
+    kaufmanStopMult: "2.0",
+    kaufmanStopMaType: "sma",
+    longOnly: false,
+    allowFlip: true,
+    tradeOnNext: false,
+    trendUseRoc: true,
+    trendUseAdx: false,
+    trendLrPeriod: "34",
+    trendLrMinDeg: "2.0",
+    trendBbwPeriod: "20",
+    trendBbwMult: "2.0",
+    trendBbwMin: "0.04",
+    trendRocPeriod: "9",
+    trendAdxPeriod: "14",
+    trendAdxMin: "20",
+    regimeAdxPeriod: "14",
+    regimeAdxEnter: "22",
+    regimeAdxExit: "18",
+    regimeRevEntryRel: "0.0035",
+    regimeRevExitRel: "0.0012",
+    breakoutBbPeriod: "20",
+    breakoutBbMult: "2.0",
+    breakoutConfirmBars: "1",
+    breakoutMacdFast: "12",
+    breakoutMacdSlow: "26",
+    breakoutMacdSignal: "9",
+    breakoutCmoPeriod: "14",
+    breakoutCmoMinAbs: "20",
+    breakoutAdoscShort: "3",
+    breakoutAdoscLong: "10",
+    breakoutUseAdx: false,
+    breakoutAdxPeriod: "14",
+    breakoutAdxMin: "20",
+    ...input.strategy,
+  };
+  (pinia.state.value as Record<string, unknown>).data = {
+    dataId: `data-${input.strategyKind.toLowerCase()}`,
+    dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+    dataLen: "10000",
+    dataTimeframe: "1m",
+  };
+
+  await runOptimization();
+  const [command, args] = firstOptimizationRunCall();
+  const req =
+    args.req && typeof args.req === "object"
+      ? (args.req as Record<string, unknown>)
+      : {};
+  return { command, req };
+}
+
 describe("optimizeService", () => {
   beforeEach(() => {
     pinia = createPinia();
@@ -2276,6 +2367,38 @@ describe("optimizeService", () => {
     expect(command).toBe("run_double_ma_optimization");
     expect(req.strategy_kind).toBe("CompositeTrend");
     expect(req.backend).toEqual({ backend: "CpuOnly" });
+  });
+
+  it("pins composite profile backend routing across ADX and CPU fallback cases", async () => {
+    const trendAdx = await runCompositeDoubleMaRouteCase({
+      strategyKind: "CompositeTrend",
+      strategy: { trendUseAdx: true },
+    });
+    expect(trendAdx.command).toBe("run_double_ma_optimization");
+    expect(trendAdx.req.strategy_kind).toBe("CompositeTrend");
+    expect(trendAdx.req.backend).toEqual({
+      backend: "GpuHybridKernel",
+      device_id: 0,
+    });
+
+    const breakoutNoAdx = await runCompositeDoubleMaRouteCase({
+      strategyKind: "BreakoutMomentum",
+      strategy: { breakoutUseAdx: false },
+    });
+    expect(breakoutNoAdx.command).toBe("run_double_ma_optimization");
+    expect(breakoutNoAdx.req.strategy_kind).toBe("BreakoutMomentum");
+    expect(breakoutNoAdx.req.backend).toEqual({
+      backend: "GpuKernel",
+      device_id: 0,
+    });
+
+    const regimeCpu = await runCompositeDoubleMaRouteCase({
+      strategyKind: "RegimeHybrid",
+      backend: "CpuOnly",
+    });
+    expect(regimeCpu.command).toBe("run_double_ma_optimization");
+    expect(regimeCpu.req.strategy_kind).toBe("RegimeHybrid");
+    expect(regimeCpu.req.backend).toEqual({ backend: "CpuOnly" });
   });
 
   it("routes VCC through the composite CPU optimization command", async () => {

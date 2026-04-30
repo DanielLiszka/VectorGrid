@@ -352,6 +352,8 @@ interface RunArtifactSummaryResponse {
   config_fingerprint?: unknown;
   config_fingerprint_version?: unknown;
   has_validation?: unknown;
+  replay_class?: unknown;
+  replay_reasons?: unknown;
   report_xlsx_path?: unknown;
   report_xlsx_exists?: unknown;
   csv_path?: unknown;
@@ -382,6 +384,8 @@ export interface HistorySavedRunSummary {
   configFingerprint?: string;
   configFingerprintVersion?: number | null;
   hasValidation: boolean;
+  replayClass?: string;
+  replayReasons?: string[];
   reportXlsxPath: string;
   reportXlsxExists?: boolean | null;
   csvPath: string;
@@ -427,6 +431,8 @@ export interface HistorySavedRunDetail {
   reportPath: string;
   reportPathExists?: boolean | null;
   hasValidation: boolean;
+  replayClass?: string;
+  replayReasons?: string[];
   datasetMeta?: Record<string, unknown> | null;
   routeProvenance?: RouteProvenanceSummary | null;
   lineage?: ArtifactLineageSummary | null;
@@ -1897,6 +1903,8 @@ function normalizeRunArtifactSummary(
       row.config_fingerprint_version,
     ),
     hasValidation: !!row.has_validation,
+    replayClass: normalizeText(row.replay_class),
+    replayReasons: normalizeStringList(row.replay_reasons),
     reportXlsxPath: normalizeText(row.report_xlsx_path),
     reportXlsxExists: parseBooleanLike(row.report_xlsx_exists),
     csvPath: normalizeText(row.csv_path),
@@ -2305,6 +2313,14 @@ export async function loadSavedRunDetail(
         (detail as unknown as Record<string, unknown>).report_path_exists,
     ),
     hasValidation: !!detail.hasValidation,
+    replayClass: normalizeText(
+      (detail as unknown as Record<string, unknown>).replayClass ??
+        (detail as unknown as Record<string, unknown>).replay_class,
+    ),
+    replayReasons: normalizeStringList(
+      (detail as unknown as Record<string, unknown>).replayReasons ??
+        (detail as unknown as Record<string, unknown>).replay_reasons,
+    ),
     datasetMeta:
       detail.datasetMeta && typeof detail.datasetMeta === "object"
         ? (detail.datasetMeta as Record<string, unknown>)

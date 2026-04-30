@@ -439,11 +439,12 @@ describe("mlSignalService", () => {
       },
     );
     expect(invokeCommandMock).toHaveBeenCalledWith("run_ml_signal_validation", {
-      req: expect.objectContaining({
-        data_id: "data-1",
-        score_cache_path: "C:\\data\\score_cache.json",
-        min_psr: 0.6,
-        min_dsr: 0.4,
+        req: expect.objectContaining({
+          data_id: "data-1",
+          score_cache_path: "C:\\data\\score_cache.json",
+          score_cache_contract_mode: "research",
+          min_psr: 0.6,
+          min_dsr: 0.4,
         validation_context: {
           strategy_kind: "MlSignal",
           csv_path: "C:\\data\\prices.csv",
@@ -471,6 +472,7 @@ describe("mlSignalService", () => {
           stage: "validation",
           feature_schema_hash: "schemahash0123456789abcdef",
           score_cache_path: "C:\\data\\score_cache.json",
+          score_cache_contract_mode: "research",
           score_contract_version: "3",
           score_space: "Probability",
           score_scope: "CalibrationSlice",
@@ -523,6 +525,9 @@ describe("mlSignalService", () => {
     );
     expect(workflowArtifacts.currentRun?.mlSignal?.scoreContractVersion).toBe(
       "3",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.scoreCacheContractMode).toBe(
+      "research",
     );
     expect(
       workflowArtifacts.currentRun?.mlSignal?.scoreCacheProvenance,
@@ -578,6 +583,71 @@ describe("mlSignalService", () => {
     );
     expect(useOptimizeStore(pinia).statusLine).toContain(
       "boundary long~25.0%, delta~12.5%",
+    );
+  });
+
+  it("passes release-strict score-cache contract mode through validation and sweep", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalScoreCacheContractMode = "release_strict";
+
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "run_ml_signal_validation") {
+        return {
+          score_summary: {
+            score_cache_contract_mode: "release_strict",
+            score_space: "Probability",
+            score_scope: "WalkforwardTest",
+            coverage_ratio: 1,
+          },
+          candidates: [],
+          run_verdict: { warning_flags: [] },
+        };
+      }
+      if (command === "run_ml_signal_policy_sweep") {
+        return {
+          sweep_size: 1,
+          top_k: 1,
+          validation: {
+            score_summary: {
+              score_cache_contract_mode: "release_strict",
+              score_space: "Probability",
+              score_scope: "WalkforwardTest",
+              coverage_ratio: 1,
+            },
+            candidates: [],
+            run_verdict: { warning_flags: [] },
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_ml_signal_strict.json" };
+      }
+      return {};
+    });
+
+    await runMlSignalValidation();
+    expect(invokeCommandMock).toHaveBeenCalledWith("run_ml_signal_validation", {
+      req: expect.objectContaining({
+        score_cache_contract_mode: "release_strict",
+      }),
+    });
+    expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
+      "contract release strict",
+    );
+
+    invokeCommandMock.mockClear();
+    await runMlSignalPolicySweep();
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "run_ml_signal_policy_sweep",
+      {
+        req: expect.objectContaining({
+          score_cache_contract_mode: "release_strict",
+        }),
+      },
+    );
+    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
+      "contract release strict",
     );
   });
 
@@ -811,6 +881,7 @@ describe("mlSignalService", () => {
         req: expect.objectContaining({
           data_id: "data-1",
           score_cache_path: "C:\\data\\score_cache.json",
+          score_cache_contract_mode: "research",
           t_long: { start: 0.5, end: 0.7, step: 0.1 },
           t_short: { start: 0.5, end: 0.7, step: 0.1 },
           delta: { start: 0, end: 0.1, step: 0.05 },
@@ -845,6 +916,7 @@ describe("mlSignalService", () => {
         ml_signal: expect.objectContaining({
           stage: "policy_sweep",
           score_cache_path: "C:\\data\\score_cache.json",
+          score_cache_contract_mode: "research",
           policy_sweep: expect.objectContaining({
             sweep_size: 27,
             top_k: 4,

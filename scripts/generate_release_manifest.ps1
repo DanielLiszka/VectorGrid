@@ -6,7 +6,8 @@ param(
   [string]$ReleaseBinaryPath = "",
   [string]$ProvenancePath = "",
   [string]$Version = "",
-  [switch]$AllowMissingCatboostNative
+  [switch]$AllowMissingCatboostNative,
+  [switch]$UnsignedBeta
 )
 
 $ErrorActionPreference = "Stop"
@@ -94,6 +95,66 @@ function Get-CodeSignatureInfo {
   }
 }
 
+function ConvertTo-RelativeSlashPath {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $null
+  }
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $rootPath = [System.IO.Path]::GetFullPath($repoRoot)
+  while ($rootPath.EndsWith("\") -or $rootPath.EndsWith("/")) {
+    $rootPath = $rootPath.Substring(0, $rootPath.Length - 1)
+  }
+  $rootPath = $rootPath + [System.IO.Path]::DirectorySeparatorChar
+  if ($fullPath.StartsWith($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $fullPath.Substring($rootPath.Length).Replace([char]92, [char]47)
+  }
+  return $fullPath.Replace([char]92, [char]47)
+}
+
+function Get-OptionalSha256 {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return $null
+  }
+  return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Test-WindowsBundleResourceTarget {
+  param([string]$Target)
+  if ($null -eq $windowsBundleResources) {
+    return $false
+  }
+  $normalizedTarget = $Target.Replace([char]92, [char]47)
+  foreach ($property in $windowsBundleResources.PSObject.Properties) {
+    if ([string]$property.Value -eq $normalizedTarget) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function New-RequiredResourceDetail {
+  param(
+    [string]$Id,
+    [string]$Path,
+    [string]$BundleTarget,
+    [bool]$ExpectedInWindowsBundle
+  )
+
+  $exists = Test-Path -LiteralPath $Path -PathType Leaf
+  [ordered]@{
+    id = $Id
+    path = $Path
+    repo_relative_path = ConvertTo-RelativeSlashPath -Path $Path
+    exists = $exists
+    sha256 = Get-OptionalSha256 -Path $Path
+    expected_in_windows_bundle = $ExpectedInWindowsBundle
+    bundle_target = if ([string]::IsNullOrWhiteSpace($BundleTarget)) { $null } else { $BundleTarget }
+    declared_in_windows_bundle_resources = if ([string]::IsNullOrWhiteSpace($BundleTarget)) { $false } else { Test-WindowsBundleResourceTarget -Target $BundleTarget }
+  }
+}
+
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $resolvedOutDir = Resolve-OutDir -Value $OutDir
 New-Item -ItemType Directory -Force -Path $resolvedOutDir | Out-Null
@@ -114,6 +175,8 @@ if ($null -eq $resolvedReleaseBinary) {
 }
 
 $tauriConfig = Get-Content -Raw (Join-Path $repoRoot "src-tauri\\tauri.conf.json") | ConvertFrom-Json
+$windowsTauriConfig = Get-Content -Raw (Join-Path $repoRoot "src-tauri\\tauri.windows.conf.json") | ConvertFrom-Json
+$windowsBundleResources = $windowsTauriConfig.bundle.resources
 $productName = [string]$tauriConfig.productName
 $resolvedVersion = if ([string]::IsNullOrWhiteSpace($Version)) { [string]$tauriConfig.version } else { $Version }
 $identifier = [string]$tauriConfig.identifier
@@ -131,7 +194,8 @@ $hashLines = @()
 if ($bundleArtifacts.Count -gt 0) {
   foreach ($artifact in $bundleArtifacts) {
     $sourceNamePart = ConvertTo-SafeNamePart -Value $artifact.BaseName
-    $normalizedName = "vectorgrid-$resolvedVersion-windows-x64-$Variant-$sourceNamePart$($artifact.Extension.ToLowerInvariant())"
+    $betaPart = if ($UnsignedBeta) { "-unsigned-beta" } else { "" }
+    $normalizedName = "vectorgrid-$resolvedVersion-windows-x64-$Variant$betaPart-$sourceNamePart$($artifact.Extension.ToLowerInvariant())"
     $stagedPath = Join-Path $artifactsDir $normalizedName
     Copy-Item -LiteralPath $artifact.FullName -Destination $stagedPath -Force
     $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $stagedPath
@@ -150,7 +214,8 @@ if ($bundleArtifacts.Count -gt 0) {
     }
   }
 } else {
-  $normalizedName = "vectorgrid-$resolvedVersion-windows-x64-$Variant.exe"
+  $betaPart = if ($UnsignedBeta) { "-unsigned-beta" } else { "" }
+  $normalizedName = "vectorgrid-$resolvedVersion-windows-x64-$Variant$betaPart.exe"
   $stagedPath = Join-Path $artifactsDir $normalizedName
   Copy-Item -LiteralPath $resolvedReleaseBinary -Destination $stagedPath -Force
   $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $stagedPath
@@ -181,6 +246,13 @@ if (-not $AllowMissingCatboostNative -and -not $catboostExists) {
   throw "Required packaged CatBoost native library is missing: $catboostPath. Use -AllowMissingCatboostNative only for non-shipping diagnostic manifests."
 }
 
+$requiredResourceDetails = @(
+  (New-RequiredResourceDetail -Id "catboost_native_library" -Path $catboostPath -BundleTarget "native/catboostmodel.dll" -ExpectedInWindowsBundle $true),
+  (New-RequiredResourceDetail -Id "synthetic_sample_csv" -Path $sampleCsvPath -BundleTarget "sample-data/vectorgrid_synthetic_ohlcv.csv" -ExpectedInWindowsBundle $true),
+  (New-RequiredResourceDetail -Id "double_crossover_prebuilt_ptx" -Path $kernelPtxPath -BundleTarget "" -ExpectedInWindowsBundle $false),
+  (New-RequiredResourceDetail -Id "options_expression_prebuilt_ptx" -Path $optionsPtxPath -BundleTarget "" -ExpectedInWindowsBundle $false)
+)
+
 $signedArtifacts = @($stagedArtifacts | Where-Object {
   $null -ne $_.code_signature -and [bool]$_.code_signature.checked -and [string]$_.code_signature.status -eq "Valid"
 })
@@ -195,6 +267,8 @@ $manifest = [ordered]@{
   schema_version = 1
   generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
   variant = $Variant
+  publishable = -not [bool]$UnsignedBeta
+  unsigned_beta = [bool]$UnsignedBeta
   artifact_source_kind = if ($bundleArtifacts.Count -gt 0) { "bundle" } else { "release_binary" }
   product_name = $productName
   version = $resolvedVersion
@@ -207,12 +281,17 @@ $manifest = [ordered]@{
   required_resources = [ordered]@{
     catboost_bundle_resource_path = $catboostPath
     catboost_bundle_resource_exists = $catboostExists
+    catboost_bundle_resource_sha256 = Get-OptionalSha256 -Path $catboostPath
     synthetic_sample_csv_path = $sampleCsvPath
     synthetic_sample_csv_exists = Test-Path -LiteralPath $sampleCsvPath -PathType Leaf
+    synthetic_sample_csv_sha256 = Get-OptionalSha256 -Path $sampleCsvPath
     double_crossover_prebuilt_ptx_path = $kernelPtxPath
     double_crossover_prebuilt_ptx_exists = Test-Path $kernelPtxPath
+    double_crossover_prebuilt_ptx_sha256 = Get-OptionalSha256 -Path $kernelPtxPath
     options_expression_prebuilt_ptx_path = $optionsPtxPath
     options_expression_prebuilt_ptx_exists = Test-Path $optionsPtxPath
+    options_expression_prebuilt_ptx_sha256 = Get-OptionalSha256 -Path $optionsPtxPath
+    details = $requiredResourceDetails
   }
   signing = [ordered]@{
     checked_artifact_count = $signatureCheckedArtifacts.Count

@@ -53,6 +53,7 @@ export interface SimpleRunSummaryInput {
   validationVerdictBody?: unknown;
   validationVerdictTone?: SimpleStatusTone;
   validationPreview?: unknown;
+  validationAccelerationStatus?: unknown;
 }
 
 export interface SimpleRunSummary {
@@ -81,6 +82,7 @@ export interface SimpleRunSummary {
     ready: boolean;
     rowsLabel: string;
     warningsLabel: string;
+    accelerationLabel: string;
     preview: string;
     recommendation: SimpleValidationRecommendation;
     metricItems: SimpleMetricItem[];
@@ -271,6 +273,9 @@ export function buildSimpleRunSummary(
   const validationReady = Boolean(input.validationReady);
   const validationRows = nonNegativeInteger(input.validationRows) ?? 0;
   const validationWarnings = firstText(input.validationWarnings, "None reported");
+  const validationAccelerationLabel = validationReady
+    ? firstText(input.validationAccelerationStatus, "Validation execution recorded")
+    : "Not run";
   const metricItems = normalizeSimpleMetricItems(input.bestStats);
 
   if (optimizationReady && !metricItems.some((item) => item.key === "ranked_results")) {
@@ -342,6 +347,7 @@ export function buildSimpleRunSummary(
         ? plural(validationRows, "evidence row")
         : "No validation rows yet",
       warningsLabel: validationReady ? validationWarnings : "Run validation after optimization",
+      accelerationLabel: validationAccelerationLabel,
       preview: firstText(input.validationPreview, "No validation output yet."),
       recommendation,
       metricItems: [
@@ -354,6 +360,12 @@ export function buildSimpleRunSummary(
               ? "success"
               : "warning"
             : "neutral",
+        },
+        {
+          key: "validation_engine",
+          label: "Engine",
+          value: validationAccelerationLabel,
+          tone: validationReady ? "accent" : "neutral",
         },
         {
           key: "validation_state",
@@ -408,6 +420,7 @@ export function formatSimpleRunSummaryMarkdown(
     `- Recommendation: ${summary.validation.recommendation.title}`,
     `- Detail: ${summary.validation.recommendation.body}`,
     `- Evidence rows: ${summary.validation.rowsLabel}`,
+    `- Engine: ${summary.validation.accelerationLabel}`,
     `- Warnings: ${summary.validation.warningsLabel}`,
     "",
     "This summary is research evidence only, not trading advice or live-trading approval.",

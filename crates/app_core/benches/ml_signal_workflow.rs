@@ -9,8 +9,8 @@ use ta_app_core::ml_signal::{
 use ta_app_core::{
     build_ml_signal_score_cache_from_csv, run_ml_signal_policy_sweep_blocking_with_candles,
     run_ml_signal_validation_blocking_with_candles, IterativeSimConfig, MlSignalPolicyParams,
-    MlSignalPolicySweepRequest, MlSignalScoreCacheBuildRequest, MlSignalSweepAxisF64,
-    MlSignalSweepAxisUsize, MlSignalValidationRequest,
+    MlSignalPolicySweepRequest, MlSignalScoreCacheBuildRequest, MlSignalScoreCacheContractMode,
+    MlSignalSweepAxisF64, MlSignalSweepAxisUsize, MlSignalValidationRequest,
 };
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
@@ -305,6 +305,7 @@ fn bench_ml_signal_workflow(c: &mut Criterion) {
                 MlSignalValidationRequest {
                     data_id: "bench-data".to_string(),
                     score_cache_path: cache_path.clone(),
+                    score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                     candidates: vec![MlSignalPolicyParams {
                         t_long: 0.60,
                         t_short: 0.60,
@@ -352,6 +353,7 @@ fn bench_ml_signal_workflow(c: &mut Criterion) {
                 MlSignalPolicySweepRequest {
                     data_id: "bench-data".to_string(),
                     score_cache_path: cache_path.clone(),
+                    score_cache_contract_mode: MlSignalScoreCacheContractMode::Research,
                     t_long: Some(MlSignalSweepAxisF64 {
                         start: 0.55,
                         end: 0.65,

@@ -44,6 +44,8 @@ interface SavedRunSearchRecord {
   index: number;
   ts: string;
   strategyKind: string;
+  replayClass: string;
+  replayReasons: string[];
   csvPath: string;
   csvBasename: string;
   artifactPath: string;
@@ -68,8 +70,10 @@ const SAVED_RUN_FUSE_OPTIONS: IFuseOptions<SavedRunSearchRecord> = {
     { name: "strategyKind", weight: 0.22 },
     { name: "csvBasename", weight: 0.2 },
     { name: "artifactBasename", weight: 0.16 },
-    { name: "tags", weight: 0.12 },
-    { name: "csvPath", weight: 0.05 },
+    { name: "tags", weight: 0.1 },
+    { name: "replayClass", weight: 0.04 },
+    { name: "replayReasons", weight: 0.02 },
+    { name: "csvPath", weight: 0.01 },
   ],
 };
 
@@ -162,6 +166,29 @@ function savedRunLabel(entry: HistorySavedRunEntry): string {
   return `${entry.ts || "unknown"} | ${entry.strategyKind || ""} | ${hasVal}/${hasXlsx}${tagsHint}`;
 }
 
+function replayClassLabel(value: unknown): string {
+  const next = normalizeText(value);
+  if (next === "exact_evidence_review") return "Exact evidence review";
+  if (next === "compatible_recompute") return "Compatible recompute";
+  if (next === "replacement_scoped_validation")
+    return "Replacement-scoped validation";
+  if (next === "review_only_saved_result") return "Review-only saved result";
+  if (next === "blocked") return "Blocked";
+  return next;
+}
+
+function replayClassSummary(
+  entry: Pick<HistorySavedRunEntry, "replayClass" | "replayReasons">,
+  detail?: Pick<HistorySavedRunDetail, "replayClass" | "replayReasons"> | null,
+): string {
+  const replayClass = replayClassLabel(detail?.replayClass || entry.replayClass);
+  if (!replayClass) return "—";
+  const reasons = normalizeTags(detail?.replayReasons ?? entry.replayReasons)
+    .slice(0, 3)
+    .map((reason) => reason.split("_").join(" "));
+  return reasons.length ? `${replayClass} · ${reasons.join(", ")}` : replayClass;
+}
+
 function sessionRunLabel(entry: HistorySessionSummary): string {
   return `${entry.ts || "unknown"} | ${entry.backend || ""} | ${Math.max(0, Math.floor(Number(entry.pairs || 0)))} pairs`;
 }
@@ -184,9 +211,15 @@ function buildSavedRunSearchRecords(
     const tags = entry.tags
       .map((tag) => normalizeSearchText(tag))
       .filter((tag) => tag.length > 0);
+    const replayClass = normalizeSearchText(entry.replayClass);
+    const replayReasons = normalizeTags(entry.replayReasons)
+      .map((reason) => normalizeSearchText(reason))
+      .filter((reason) => reason.length > 0);
     const searchText = [
       ts,
       strategyKind,
+      replayClass,
+      ...replayReasons,
       csvPath,
       csvBasename,
       artifactPath,
@@ -200,6 +233,8 @@ function buildSavedRunSearchRecords(
       index,
       ts,
       strategyKind,
+      replayClass,
+      replayReasons,
       csvPath,
       csvBasename,
       artifactPath,
@@ -319,6 +354,7 @@ interface HistoryState {
   savedRunDetailDataset: string;
   savedRunDetailTimeframe: string;
   savedRunDetailValidation: string;
+  savedRunDetailReplay: string;
   savedRunDetailProvenance: string;
   savedRunDetailLineage: string;
   savedRunDetailMetricSurface: string;
@@ -424,6 +460,8 @@ function sanitizeSavedRunsArray(value: unknown): HistorySavedRunEntry[] {
       resampleApplied:
         typed.resampleApplied == null ? null : Boolean(typed.resampleApplied),
       sourceContentFingerprint: normalizeText(typed.sourceContentFingerprint),
+      replayClass: normalizeText(typed.replayClass),
+      replayReasons: normalizeTags(typed.replayReasons),
       mlScoreSpace: normalizeText(typed.mlScoreSpace),
       mlScoreScope: normalizeText(typed.mlScoreScope),
       mlScoreContractSummary: normalizeText(typed.mlScoreContractSummary),
@@ -646,6 +684,7 @@ export const useHistoryStore = defineStore("history", {
     savedRunDetailDataset: "—",
     savedRunDetailTimeframe: "—",
     savedRunDetailValidation: "—",
+    savedRunDetailReplay: "—",
     savedRunDetailProvenance: "—",
     savedRunDetailLineage: "—",
     savedRunDetailMetricSurface: "—",
@@ -837,6 +876,10 @@ export const useHistoryStore = defineStore("history", {
           snapshot.savedRunDetailValidation ??
             this.savedRunDetailValidation ??
             "—",
+        ).trim() || "—";
+      this.savedRunDetailReplay =
+        String(
+          snapshot.savedRunDetailReplay ?? this.savedRunDetailReplay ?? "—",
         ).trim() || "—";
       this.savedRunDetailProvenance =
         String(
@@ -1103,6 +1146,7 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailDataset = "—";
         this.savedRunDetailTimeframe = "—";
         this.savedRunDetailValidation = "—";
+        this.savedRunDetailReplay = "—";
         this.savedRunDetailProvenance = "—";
         this.savedRunDetailLineage = "—";
         this.savedRunDetailMetricSurface = "—";
@@ -1177,11 +1221,17 @@ export const useHistoryStore = defineStore("history", {
           reportPath,
           selectedDetail?.reportPathExists ?? selectedEntry.reportXlsxExists,
         );
+        const replaySummary = replayClassSummary(selectedEntry, selectedDetail);
 
         const parts: string[] = [];
         if (selectedEntry.ts) parts.push(`ts=${selectedEntry.ts}`);
         if (strategyKind) parts.push(`strategy=${strategyKind}`);
         if (hasValidation) parts.push("validation=yes");
+        if (replaySummary !== "—") {
+          parts.push(
+            `replay=${replayClassLabel(selectedDetail?.replayClass || selectedEntry.replayClass)}`,
+          );
+        }
         if (strategyKind === "MlSignal") parts.push("ml/cache");
         if (mlScoreContractSummary)
           parts.push(`score=${mlScoreContractSummary}`);
@@ -1199,6 +1249,7 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailValidation = hasValidation
           ? "Available"
           : "Not saved";
+        this.savedRunDetailReplay = replaySummary;
         this.savedRunDetailProvenance = provenanceText || "—";
         this.savedRunDetailLineage = lineageText || "—";
         this.savedRunDetailMetricSurface =

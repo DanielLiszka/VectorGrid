@@ -262,6 +262,7 @@ describe("workflowArtifactsStore", () => {
             },
             score_contract: {
               validation_scores_scope: "calibration_slice",
+              score_cache_contract_mode: "release_strict",
             },
             score_contract_version: 3,
             score_cache_provenance: {
@@ -302,8 +303,10 @@ describe("workflowArtifactsStore", () => {
       },
       scoreContract: {
         validation_scores_scope: "calibration_slice",
+        score_cache_contract_mode: "release_strict",
       },
       scoreContractVersion: "3",
+      scoreCacheContractMode: "release_strict",
       scoreCacheProvenance: {
         source_bundle_id: "bundle-a",
         producer_kind: "catboost_pair",

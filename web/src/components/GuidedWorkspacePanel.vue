@@ -78,6 +78,7 @@ const {
 } = storeToRefs(optimizeStore)
 const {
   tableRowCount,
+  validationAccelerationStatus,
   validationOutputPreview,
   validationRouteSummary,
   validationShortlistMeta,
@@ -215,6 +216,7 @@ const simpleRunSummary = computed(() => buildSimpleRunSummary({
   validationVerdictBody: readiness.validationVerdictBody.value,
   validationVerdictTone: readiness.validationVerdictTone.value,
   validationPreview: validationPreviewText.value,
+  validationAccelerationStatus: validationAccelerationStatus.value,
 }))
 const validationRecommendation = computed(() => simpleRunSummary.value.validation.recommendation)
 const validationCandidateLabel = computed(() => (readiness.optimizationReady.value ? selectedCandidateTitle.value : 'Run optimization first'))
@@ -797,6 +799,10 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               <article>
                 <span>Warnings</span>
                 <strong>{{ validationWarningsLabel }}</strong>
+              </article>
+              <article>
+                <span>Engine</span>
+                <strong>{{ simpleRunSummary.validation.accelerationLabel }}</strong>
               </article>
             </div>
 

@@ -14,7 +14,12 @@ function buildCompositeExportRequest(
     context: {
       strategy_kind: kind,
       data_id: `data-${kind.toLowerCase()}`,
-      current_data_meta: { has_close: true, has_high: true, has_low: true },
+      current_data_meta: {
+        has_close: true,
+        has_high: true,
+        has_low: true,
+        has_volume: true,
+      },
     },
     backend: options.backend,
     fastStart: '5',
@@ -215,6 +220,9 @@ describe('strategyOptimizationCapabilities', () => {
       requestedBackend: 'GpuKernel',
       trendUseAdx: true,
     })
+    const regimeHybridCaps = describeStrategyOptimizationCapabilities('RegimeHybrid', {
+      requestedBackend: 'GpuKernel',
+    })
     const cpuCaps = describeStrategyOptimizationCapabilities('RegimeHybrid', {
       requestedBackend: 'CpuOnly',
     })
@@ -243,6 +251,8 @@ describe('strategyOptimizationCapabilities', () => {
     expect(hybridCaps.supportsAdvancedExactKernelControls).toBe(false)
     expect(hybridCaps.outputSummary).toContain('Explicit Full17 and Trade22 metric-contract requests are available')
     expect(hybridCaps.outputSummary).toContain('advanced exact-kernel shortlist/score controls remain disabled')
+    expect(regimeHybridCaps.supportsExportAll).toBe(false)
+    expect(regimeHybridCaps.supportsAdvancedExactKernelControls).toBe(false)
     expect(cpuCaps.supportsExportAll).toBe(false)
     expect(cpuCaps.supportsHeatmap).toBe(true)
     expect(cpuCaps.supportsTopK).toBe(true)
@@ -261,8 +271,12 @@ describe('strategyOptimizationCapabilities', () => {
   it.each([
     ['CompositeTrend', { requestedBackend: 'Auto', trendUseAdx: false }, 'GPU kernel route', true, true],
     ['CompositeTrend', { requestedBackend: 'Auto', trendUseAdx: true }, 'hybrid GPU route', false, false],
+    ['BreakoutMomentum', { requestedBackend: 'Auto', breakoutUseAdx: false }, 'GPU kernel route', true, true],
+    ['BreakoutMomentum', { requestedBackend: 'Auto', breakoutUseAdx: true }, 'hybrid GPU route', false, false],
+    ['BreakoutMomentum', { requestedBackend: 'GpuKernel', breakoutUseAdx: false }, 'GPU kernel route', true, true],
     ['BreakoutMomentum', { requestedBackend: 'GpuKernel', breakoutUseAdx: true }, 'hybrid GPU route', false, false],
     ['RegimeHybrid', { requestedBackend: 'Auto' }, 'hybrid GPU route', false, false],
+    ['RegimeHybrid', { requestedBackend: 'GpuKernel' }, 'hybrid GPU route', false, false],
     ['RegimeHybrid', { requestedBackend: 'CpuOnly' }, 'CPU fallback route', false, false],
   ] as const)(
     'keeps %s capability summaries aligned with the route preview for %j',
@@ -311,6 +325,9 @@ describe('strategyOptimizationCapabilities', () => {
       requestedBackend: 'GpuKernel',
       trendUseAdx: true,
     })
+    const regimeHybridCaps = describeStrategyOptimizationCapabilities('RegimeHybrid', {
+      requestedBackend: 'GpuKernel',
+    })
     const cpuCaps = describeStrategyOptimizationCapabilities('RegimeHybrid', {
       requestedBackend: 'CpuOnly',
     })
@@ -323,11 +340,42 @@ describe('strategyOptimizationCapabilities', () => {
       }),
     ).toBeTruthy()
 
+    const breakoutKernelCaps = describeStrategyOptimizationCapabilities('BreakoutMomentum', {
+      requestedBackend: 'GpuKernel',
+      breakoutUseAdx: false,
+    })
+    expect(breakoutKernelCaps.supportsExportAll).toBe(true)
+    expect(
+      buildCompositeExportRequest('BreakoutMomentum', {
+        backend: 'GpuKernel',
+        breakoutUseAdx: false,
+      }),
+    ).toBeTruthy()
+
     expect(hybridCaps.supportsExportAll).toBe(false)
     expect(() =>
       buildCompositeExportRequest('CompositeTrend', {
         backend: 'GpuKernel',
         trendUseAdx: true,
+      }),
+    ).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
+
+    const breakoutHybridCaps = describeStrategyOptimizationCapabilities('BreakoutMomentum', {
+      requestedBackend: 'GpuKernel',
+      breakoutUseAdx: true,
+    })
+    expect(breakoutHybridCaps.supportsExportAll).toBe(false)
+    expect(() =>
+      buildCompositeExportRequest('BreakoutMomentum', {
+        backend: 'GpuKernel',
+        breakoutUseAdx: true,
+      }),
+    ).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
+
+    expect(regimeHybridCaps.supportsExportAll).toBe(false)
+    expect(() =>
+      buildCompositeExportRequest('RegimeHybrid', {
+        backend: 'GpuKernel',
       }),
     ).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
 

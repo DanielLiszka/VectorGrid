@@ -161,12 +161,16 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
         source_meta_json_path: "C:/runs/vectorgrid_meta.json",
         model_path: "C:/models/meta_model.json",
         model_state: "healthy",
+        model_evidence_tier: "cross_validation",
         model_healthy: true,
         model_trained_now: false,
         groups_selected: 1,
         groups_scored: 1,
         groups_considered: 2,
         min_ml_confidence: 0.55,
+        training_artifact_count: 3,
+        source_artifact_sha256: "stage5-source-hash",
+        warning_count: 0,
         decision_counts: { accept: 1, review: 0, reject: 1 },
         evidence_policy_summary: {
           version: 1,
@@ -643,12 +647,16 @@ describe("meta service", () => {
             source_meta_json_path: "C:/runs/vectorgrid_meta.json",
             model_path: "C:/models/meta_model.json",
             model_state: "warning",
+            model_evidence_tier: "train_only",
             model_healthy: false,
             model_trained_now: true,
             groups_selected: 1,
             groups_scored: 1,
             groups_considered: 1,
             min_ml_confidence: 0.55,
+            training_artifact_count: 1,
+            source_artifact_sha256: "stage5-source-hash",
+            warning_count: 2,
             decision_counts: { accept: 0, review: 1, reject: 0 },
             training_manifest: {
               policy: "source_excluded",
@@ -694,6 +702,10 @@ describe("meta service", () => {
     });
 
     expect(analysisStore.metaStage4Status).toContain("warn=2");
+    expect(analysisStore.metaStage4Status).toContain("evidence=train only");
+    expect(analysisStore.metaStage4OutputPreview).toContain(
+      "model_evidence_tier=train only training_artifacts=1 source_sha256=stage5-source-hash",
+    );
     expect(analysisStore.metaStage4OutputPreview).toContain(
       "warnings=2: Auto-train did not find the active source meta artifact",
     );
@@ -1166,7 +1178,14 @@ describe("meta service", () => {
             { path: "C:/runs/meta_saved.json", ts: "2026-02-26T10:00:00Z" },
           ],
           stage5: [
-            { path: "C:/runs/stage5_saved.json", ts: "2026-02-26T10:02:00Z" },
+            {
+              path: "C:/runs/stage5_saved.json",
+              ts: "2026-02-26T10:02:00Z",
+              strategy_kind: "CompositeMo",
+              model_evidence_tier: "cross_validation",
+              training_artifact_count: 4,
+              warning_count: 1,
+            },
           ],
           policyEvals: [
             { path: "C:/runs/policy_saved.json", ts: "2026-02-26T10:03:00Z" },
@@ -1182,6 +1201,9 @@ describe("meta service", () => {
 
     expect(analysisStore.metaSavedSelected).toBe("C:/runs/meta_saved.json");
     expect(analysisStore.stage4SavedSelected).toBe("C:/runs/stage5_saved.json");
+    expect(analysisStore.stage4SavedMeta).toContain("evidence=cross validation");
+    expect(analysisStore.stage4SavedMeta).toContain("training_artifacts=4");
+    expect(analysisStore.stage4SavedMeta).toContain("warn=1");
     expect(analysisStore.policyEvalSavedSelected).toBe(
       "C:/runs/policy_saved.json",
     );

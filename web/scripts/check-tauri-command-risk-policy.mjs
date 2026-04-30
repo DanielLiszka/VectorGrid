@@ -17,6 +17,12 @@ function readText(filePath) {
   return fs.readFileSync(filePath, 'utf8')
 }
 
+function argValue(name, fallback = '') {
+  const idx = process.argv.findIndex((arg) => arg === name)
+  if (idx < 0) return fallback
+  return process.argv[idx + 1] ?? fallback
+}
+
 function uniqueSorted(items) {
   return Array.from(new Set(items)).sort()
 }
@@ -199,12 +205,18 @@ function summarizeHighRisk(command, entry) {
 }
 
 function writeReport(repoRoot, report) {
+  const explicitOut = argValue('--out', '')
+  if (explicitOut) {
+    const outPath = path.isAbsolute(explicitOut) ? explicitOut : path.resolve(process.cwd(), explicitOut)
+    fs.mkdirSync(path.dirname(outPath), { recursive: true })
+    fs.writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`)
+    return outPath
+  }
   const outDir = path.join(repoRoot, 'output', 'qa')
   fs.mkdirSync(outDir, { recursive: true })
-  fs.writeFileSync(
-    path.join(outDir, 'tauri-command-risk-policy.json'),
-    `${JSON.stringify(report, null, 2)}\n`,
-  )
+  const outPath = path.join(outDir, 'tauri-command-risk-policy.json')
+  fs.writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`)
+  return outPath
 }
 
 function main() {
@@ -269,7 +281,7 @@ function main() {
     highRiskCommands,
     errors,
   }
-  writeReport(repoRoot, report)
+  const reportPath = writeReport(repoRoot, report)
 
   console.log(
     `Tauri command risk policy: ${backendCommands.length} registered commands, ${policyCommands.length} policy rows.`,
@@ -277,6 +289,7 @@ function main() {
   for (const [riskClass, count] of Object.entries(riskClassCounts).sort()) {
     console.log(`  ${riskClass}: ${count}`)
   }
+  console.log(`  report: ${reportPath}`)
 
   if (errors.length > 0) {
     console.error('ERROR: Tauri command risk policy check failed:')

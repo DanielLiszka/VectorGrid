@@ -49,6 +49,8 @@ data/*.csv
 !/docs/gpt55_pro_hard_problem_atlas_2026-04-27.md
 !/docs/gpt55_pro_final_prompt_dossiers_2026-04-27.md
 !/docs/gpt55_pro_high_roi_future_prompt_ideas_2026-04-27.md
+!/docs/repo_wide_deep_dive_2026-04-30/
+!/docs/repo_wide_deep_dive_2026-04-30/**
 !/docs/NUMERICAL_REPRODUCIBILITY.md
 !/docs/artifact_replay_report_evidence_contract.md
 !/docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md

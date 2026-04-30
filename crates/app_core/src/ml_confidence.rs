@@ -191,6 +191,22 @@ pub struct MlConfidenceCalibrationBin {
     pub y_mean: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MlConfidenceEvidenceTier {
+    Unknown,
+    TrainOnly,
+    CrossValidation,
+    Holdout,
+    ExternalCrossTicker,
+}
+
+impl Default for MlConfidenceEvidenceTier {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MlConfidenceTrainMetrics {
     pub rows: usize,
@@ -210,6 +226,8 @@ pub struct MlConfidenceTrainMetrics {
     pub cv_brier: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cv_brier_calibrated: Option<f64>,
+    #[serde(default)]
+    pub evidence_tier: MlConfidenceEvidenceTier,
     pub healthy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta_artifacts_used: Option<usize>,
@@ -250,6 +268,8 @@ pub struct MlConfidenceModelMeta {
     pub cv_brier: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cv_brier_calibrated: Option<f64>,
+    #[serde(default)]
+    pub evidence_tier: MlConfidenceEvidenceTier,
     pub baseline_brier: f64,
     pub healthy: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1750,6 +1770,11 @@ fn train_ml_confidence_model_from_rows_inner(
         calibration_bins(&trained.train_ps, &ys, 10)
     };
 
+    let evidence_tier = if cv_auc.is_some() || cv_brier.is_some() || cv_brier_cal.is_some() {
+        MlConfidenceEvidenceTier::CrossValidation
+    } else {
+        MlConfidenceEvidenceTier::TrainOnly
+    };
     let eval_auc = cv_auc.unwrap_or(train_auc);
     let eval_brier = cv_brier_cal.or(cv_brier).unwrap_or(train_brier);
     if cv_auc.is_none() {
@@ -1812,6 +1837,7 @@ fn train_ml_confidence_model_from_rows_inner(
             cv_auc,
             cv_brier,
             cv_brier_calibrated: cv_brier_cal,
+            evidence_tier,
             baseline_brier: base_brier,
             healthy,
             warnings: warnings.clone(),
@@ -1831,6 +1857,7 @@ fn train_ml_confidence_model_from_rows_inner(
         cv_auc,
         cv_brier,
         cv_brier_calibrated: cv_brier_cal,
+        evidence_tier,
         healthy,
         meta_artifacts_used: Some(build.used_meta),
         newest_meta_ts_used: build.newest_meta_ts,
@@ -2207,6 +2234,7 @@ mod tests {
             raw_metrics.newest_meta_ts_used,
             prepared_metrics.newest_meta_ts_used
         );
+        assert_eq!(raw_metrics.evidence_tier, prepared_metrics.evidence_tier);
 
         let good_group = json!({
             "samples": 52,
@@ -2428,6 +2456,7 @@ mod tests {
 
         assert!(metrics.cv_auc.is_none());
         assert!(metrics.cv_brier.is_none());
+        assert_eq!(metrics.evidence_tier, MlConfidenceEvidenceTier::TrainOnly);
         assert!(metrics
             .warnings
             .iter()
@@ -2437,6 +2466,7 @@ mod tests {
             .iter()
             .any(|warning| warning.contains("train Brier and calibration bins")));
         let meta = model.meta.expect("model metadata");
+        assert_eq!(meta.evidence_tier, MlConfidenceEvidenceTier::TrainOnly);
         assert!(meta
             .warnings
             .iter()
@@ -2445,6 +2475,35 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("train Brier and calibration bins")));
+    }
+
+    #[test]
+    fn cross_validation_evidence_tier_is_explicit_when_cv_predictions_exist() {
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+        let rows = build_manual_rows(60, 3);
+        let (model, metrics) = train_ml_confidence_model_from_rows(
+            scope,
+            &rows,
+            MlConfidenceTrainConfig::default(),
+            MlConfidenceTarget::HoldoutGate,
+            0,
+            None,
+            Vec::new(),
+        )
+        .expect("cross-validation evidence training");
+
+        assert!(metrics.cv_brier.is_some());
+        assert_eq!(
+            metrics.evidence_tier,
+            MlConfidenceEvidenceTier::CrossValidation
+        );
+        assert_eq!(
+            model.meta.expect("model metadata").evidence_tier,
+            MlConfidenceEvidenceTier::CrossValidation
+        );
     }
 
     #[test]
