@@ -2,6 +2,10 @@
 
 VectorGrid is research and analysis software.
 
+For broader public workflow context, see `docs/public/01_product_overview.md`,
+`docs/public/07_validation_and_evidence.md`, and
+`docs/public/12_live_execution_and_risk.md`.
+
 It is not financial advice, investment advice, legal advice, tax advice, or a recommendation to buy, sell, short, hold, hedge, or trade any security, option, derivative, cryptocurrency, commodity, or other financial instrument.
 
 Backtests, simulations, optimization results, validation reports, Monte Carlo outputs, and GPU/CPU performance figures are informational and may be wrong, incomplete, overfit, stale, or unsuitable for any real-world decision.

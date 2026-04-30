@@ -15,6 +15,8 @@ This repository is currently published as a **backend/CLI preview**.
 
 Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases. For those signed desktop artifacts, the intended first-run path is Simple Mode: load the bundled synthetic sample or a local CSV, run a CPU-safe optimization, optionally validate, copy the compact summary, or switch to Advanced Mode for detailed exports.
 
+Website-ready end-user documentation for that signed desktop release path is staged under `docs/public/`. Start with `docs/public/README.md` for the public documentation index, first-run guide, data setup, validation guide, troubleshooting, FAQ, and release-page template.
+
 ## Stored Benchmark Snapshots
 
 These figures are saved faceoff artifacts, not current perf-gate outputs. The VectorGrid timings for the two active warm app-path rows below were refreshed on `2026-04-16`; the VectorBT timings remain the last stored runs for those same scenarios and keep their original artifact dates.

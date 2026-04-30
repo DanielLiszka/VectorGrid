@@ -2,6 +2,10 @@
 
 Use these notes with a signed public VectorGrid Windows release.
 
+For the comprehensive public documentation set, including first-run guidance,
+data setup, troubleshooting, FAQ, and website-ready release copy, see
+`docs/public/README.md`.
+
 ## Requirements
 
 - Windows 10 or Windows 11, x64.

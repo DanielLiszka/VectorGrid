@@ -1,5 +1,8 @@
 # Support
 
+For user-facing installation, first-run, data setup, troubleshooting, and FAQ
+pages, start with `docs/public/README.md`.
+
 ## Where To Ask For Help
 
 Use GitHub Issues for:

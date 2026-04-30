@@ -1,5 +1,8 @@
 # Security Policy
 
+For user-facing privacy, credential, local-data, and safe-sharing guidance, see
+`docs/public/13_privacy_security_local_data.md`.
+
 ## Reporting A Vulnerability
 
 Please do not report security vulnerabilities through public GitHub issues.

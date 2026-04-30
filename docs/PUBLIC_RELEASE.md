@@ -4,6 +4,8 @@ This runbook is the maintainer checklist for publishing VectorGrid as a Windows 
 
 The default public target is a signed Windows x64 NSIS setup executable. CPU-only is the first recommended public variant because it avoids CUDA driver/runtime ambiguity. GPU variants should be released only with variant-specific evidence and clear system requirements.
 
+Public website and end-user documentation lives under `docs/public/`. Before publishing, verify the release page, installer notes, privacy/disclaimer language, troubleshooting page, and first-run Simple Mode guide match the exact release variant.
+
 ## Release Variant Policy
 
 | Variant | Public label | Required gate |

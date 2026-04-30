@@ -2,6 +2,9 @@
 
 VectorGrid is designed as a local desktop application. Public release builds should not include maintainer credentials, private datasets, benchmark outputs, or local machine paths beyond normal application runtime paths.
 
+For the fuller public privacy, credential, local-data, logs, and sharing guide,
+see `docs/public/13_privacy_security_local_data.md`.
+
 ## Local Data
 
 The app may store local settings, cached market data, run artifacts, reports, logs, and provider configuration under the operating system's application data directory for the configured app identifier.
