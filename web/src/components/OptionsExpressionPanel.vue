@@ -4262,7 +4262,9 @@ function focusTupleIndex(index: number): void {
             This download is options-only and stays separate from the normal
             stock data workflow. Keep the date, expiry, strike, and contract
             windows bounded so the resulting 1m dataset remains usable for
-            options-expression optimization.
+            options-expression optimization. It uses the saved Polygon.io API
+            key; free REST keys are rate-limited, so cached or imported data is
+            preferable for broad research sweeps.
           </div>
           <div v-if="realismLane !== 'aggregate'" class="warningText">
             Direct provider download in this panel is currently available only

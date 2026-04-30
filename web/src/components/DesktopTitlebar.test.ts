@@ -4,8 +4,10 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import DesktopTitlebar from './DesktopTitlebar.vue'
 import { bindRuntimePinia } from '../stores/runtimePinia'
+import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
+import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -160,18 +162,20 @@ describe('DesktopTitlebar', () => {
   })
 
   it('uses guided labels and routes guided primary actions through existing commands', async () => {
+    const analysisStore = useAnalysisStore()
     const commandActionStore = useCommandActionStore()
     const settingsStore = useSettingsStore()
     const optimizeStore = useOptimizeStore()
     settingsStore.setUiMode('guided')
     settingsStore.setGuidedStep('validate')
     optimizeStore.$patch({ validateDisabled: false, runDisabled: false })
+    analysisStore.$patch({ topRows: 1, bestTitle: 'Rank 1' })
     const validateSpy = vi.spyOn(commandActionStore, 'validateOptimization')
 
     const wrapper = mount(DesktopTitlebar)
     const primary = wrapper.get('.titlebarPrimary')
 
-    expect(wrapper.text()).toContain('Guided · Validate')
+    expect(wrapper.text()).toContain('Simple · Validate')
     expect(primary.attributes('aria-label')).toBe('Run validation')
     await primary.trigger('click')
 
@@ -221,6 +225,7 @@ describe('DesktopTitlebar', () => {
 
   it('runs guided optimization only from the optimize step with a supported strategy', async () => {
     const commandActionStore = useCommandActionStore()
+    const dataStore = useDataStore()
     const settingsStore = useSettingsStore()
     const optimizeStore = useOptimizeStore()
     settingsStore.setUiMode('guided')
@@ -236,6 +241,12 @@ describe('DesktopTitlebar', () => {
     expect(runSpy).not.toHaveBeenCalled()
 
     optimizeStore.$patch({ strategyKind: 'DoubleMa' })
+    await nextTick()
+    expect((primary.element as HTMLButtonElement).disabled).toBe(true)
+    await primary.trigger('click')
+    expect(runSpy).not.toHaveBeenCalled()
+
+    dataStore.$patch({ dataId: 'dataset-1', datasetLabel: 'AAPL sample' })
     await nextTick()
     expect((primary.element as HTMLButtonElement).disabled).toBe(false)
     await primary.trigger('click')

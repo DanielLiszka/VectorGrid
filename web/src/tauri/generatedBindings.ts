@@ -50,7 +50,7 @@ export type GpuSpeedupEntry = { indicator_id: string; indicator_name: string; sp
 export type GpuStatus = { built_with_cuda: boolean; built_with_cuda_backtest_kernel: boolean; cuda_available: boolean; auto_device_name?: string | null; auto_device_memory_bytes?: number | null; auto_device_error?: string | null }
 export type RepoDataCsvEntry = { csv_path: string; source_size_bytes?: number | null; source_mtime_utc_ms?: number | null }
 export type RepoDataCsvList = { dir?: string | null; csv_paths: string[]; csv_entries: RepoDataCsvEntry[]; truncated: boolean }
-export type SampleCsv = { id: string; label: string; path: string }
+export type SampleCsv = { id: string; label: string; path: string; source_kind: string; timeframe: string; row_count?: number | null; range: string; description: string; license: string; research_note: string }
 
 /** tauri-specta globals **/
 

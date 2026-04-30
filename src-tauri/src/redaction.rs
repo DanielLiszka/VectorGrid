@@ -27,7 +27,8 @@ pub fn redact_sensitive_text_with_values<'a>(
     }
 
     out = redact_bearer_tokens(out);
-    redact_assignments(out)
+    out = redact_assignments(out);
+    redact_url_params(out)
 }
 
 fn redact_bearer_tokens(input: String) -> String {
@@ -118,6 +119,29 @@ fn find_value_end(input: &str, start: usize, quote: Option<u8>) -> usize {
     cursor
 }
 
+fn redact_url_params(input: String) -> String {
+    let mut out = input;
+    for key in SENSITIVE_KEYS {
+        let marker = format!("{key}=");
+        let mut start = 0usize;
+        loop {
+            let lower = out.to_ascii_lowercase();
+            let Some(relative) = lower[start..].find(&marker) else {
+                break;
+            };
+            let value_start = start + relative + marker.len();
+            let value_end = find_value_end(&out, value_start, None);
+            if value_end > value_start {
+                out.replace_range(value_start..value_end, REDACTED);
+                start = value_start + REDACTED.len();
+            } else {
+                start = value_start;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::redact_sensitive_text_with_values;
@@ -138,5 +162,16 @@ mod tests {
     fn leaves_guidance_without_secret_values_readable() {
         let text = redact_sensitive_text_with_values("Polygon API key is not set.", []);
         assert_eq!(text, "Polygon API key is not set.");
+    }
+
+    #[test]
+    fn redacts_camel_case_api_key_without_explicit_secret() {
+        let text = redact_sensitive_text_with_values(
+            "https://api.polygon.io/v2/aggs?apiKey=poly_secret_123&limit=1",
+            [],
+        );
+        assert!(text.contains("[redacted]"));
+        assert!(!text.contains("poly_secret_123"));
+        assert!(text.contains("limit=1"));
     }
 }

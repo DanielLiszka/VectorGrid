@@ -728,6 +728,37 @@ describe("data store actions", () => {
     expect(store.baseSourceKind).toBe("polygon");
   });
 
+  it("blocks Polygon downloads when the date range is inverted", async () => {
+    const store = useDataStore();
+    store.setInputField("polygonSymbol", "aapl");
+    store.setInputField("polygonFrom", "2024-02-01");
+    store.setInputField("polygonTo", "2024-01-01");
+
+    store.downloadPolygonDataset();
+    await flushAsync();
+
+    expect(downloadPolygonDatasetMock).not.toHaveBeenCalled();
+    expect(store.statusLine).toContain("end date must be on or after");
+  });
+
+  it("normalizes Polygon provider failures into user-facing guidance", async () => {
+    const store = useDataStore();
+    store.setInputField("polygonApiKey", "poly_secret_123");
+    store.setInputField("polygonSymbol", "aapl");
+    store.setInputField("polygonFrom", "2024-01-01");
+    store.setInputField("polygonTo", "2024-01-31");
+    downloadPolygonDatasetMock.mockRejectedValueOnce(
+      new Error("Polygon API request failed 429: apiKey=poly_secret_123"),
+    );
+
+    store.downloadPolygonDataset();
+    await flushAsync();
+
+    expect(store.statusLine).toContain("Polygon rate limit reached");
+    expect(store.statusLine).toContain("reduce the date range");
+    expect(store.statusLine).not.toContain("poly_secret_123");
+  });
+
   it("redacts typed Polygon API keys from surfaced action failures", async () => {
     const store = useDataStore();
     store.setInputField("polygonApiKey", "poly_secret_123");

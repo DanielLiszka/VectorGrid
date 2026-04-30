@@ -1297,6 +1297,13 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     coveredBy: ["shell.guided.handoff"],
   },
   {
+    actionId: "guided.advancedResearch.open",
+    surface: "guided",
+    required: true,
+    priority: "important",
+    coveredBy: ["shell.guided.handoff"],
+  },
+  {
     actionId: "guided.step.select",
     surface: "guided",
     required: true,
@@ -1408,6 +1415,30 @@ export const actionCoverageManifest: QaActionCoverageEntry[] = [
     required: true,
     priority: "important",
     coveredBy: ["shell.guided.handoff"],
+  },
+  {
+    actionId: "guided.summary.copy",
+    surface: "guided",
+    required: false,
+    priority: "extended",
+    coveredBy: [],
+    waiver: {
+      reason: "Visible only after optimization or validation is ready; covered by Simple component tests until the full Simple success browser fixture is added.",
+      owner: "frontend-qa",
+      expires: "2026-06-01",
+    },
+  },
+  {
+    actionId: "guided.summary.save",
+    surface: "guided",
+    required: false,
+    priority: "extended",
+    coveredBy: [],
+    waiver: {
+      reason: "Visible only after optimization or validation is ready; native save-dialog execution is covered by component/service tests until a desktop smoke fixture is added.",
+      owner: "frontend-qa",
+      expires: "2026-06-01",
+    },
   },
   {
     actionId: "guided.validation.run",

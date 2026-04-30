@@ -242,6 +242,14 @@ async function main() {
   await scan(page, 'workflow shell')
   await wcag22Scan(page, 'workflow shell')
 
+  await dispatchClick(page, '#uiModeBar button[data-ui-mode="guided"]')
+  await page.waitForSelector('#guidedShellGrid', { timeout: 15000 })
+  await scan(page, 'guided shell')
+  await wcag22Scan(page, 'guided shell')
+
+  await dispatchClick(page, '#uiModeBar button[data-ui-mode="advanced"]')
+  await page.waitForSelector('#workspaceBar button[data-workspace="workflow"]', { timeout: 15000 })
+
   await dispatchClick(page, '#workspaceBar button[data-workspace="live"]')
   await page.waitForSelector('[aria-label="Execution runtime status"]', { timeout: 15000 })
   await page.selectOption('#vueExecTarget', 'local_paper')

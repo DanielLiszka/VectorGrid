@@ -11,8 +11,13 @@ import {
   stageCompletionIsComplete,
   stageCompletionNeedsReview,
 } from "../utils/core/stageCompletion";
+import {
+  SIMPLE_OPTIMIZATION_STRATEGIES,
+  isSimpleOptimizationStrategySupported,
+  simpleStrategyLabel,
+} from "../utils/simpleWorkflowModel";
 
-export const GUIDED_LIVE_STRATEGIES = ["DoubleMa", "CompositeCpu"] as const;
+export const GUIDED_LIVE_STRATEGIES = SIMPLE_OPTIMIZATION_STRATEGIES;
 
 export type GuidedStatusTone = "blocked" | "ready" | "done" | "warning";
 
@@ -108,11 +113,10 @@ export function useGuidedWorkflowReadiness() {
     if (Number(tableRowCount.value || 0) > 0) return true;
     return hasText(validationOutputPreview.value);
   });
-  const liveStrategySupported = computed(() =>
-    GUIDED_LIVE_STRATEGIES.includes(
-      strategyKind.value as (typeof GUIDED_LIVE_STRATEGIES)[number],
-    ),
+  const simpleOptimizationSupported = computed(() =>
+    isSimpleOptimizationStrategySupported(strategyKind.value),
   );
+  const liveStrategySupported = simpleOptimizationSupported;
   const executionSymbolReady = computed(() => hasText(executionStore.symbol));
   const executionDryRunReady = computed(() => Boolean(executionStore.dryRun));
   const executionCredentialReady = computed(() =>
@@ -186,9 +190,9 @@ export function useGuidedWorkflowReadiness() {
     },
     {
       label: "Strategy selected",
-      detail: `${strategyKind.value || "DoubleMa"} · ${objective.value || "Sharpe"} · ${backend.value || "Auto"}`,
-      complete: liveStrategySupported.value,
-      tone: liveStrategySupported.value ? "done" : "warning",
+      detail: `${simpleStrategyLabel(strategyKind.value)} · ${objective.value || "Sharpe"} · ${backend.value || "Auto"}`,
+      complete: simpleOptimizationSupported.value,
+      tone: simpleOptimizationSupported.value ? "done" : "warning",
     },
     {
       label: "Optimization run",
@@ -204,21 +208,19 @@ export function useGuidedWorkflowReadiness() {
       tone: optimizationReady.value ? "done" : "blocked",
     },
     {
-      label: "Validation run",
+      label: "Validation optional",
       detail: validationReady.value
         ? validationCompletion.value?.recommendation ||
           `${Number(tableRowCount.value || 0)} validation row${Number(tableRowCount.value || 0) === 1 ? "" : "s"}`
-        : "Run validation before trading readiness.",
+        : optimizationReady.value
+          ? "Run validation when you want robustness evidence."
+          : "Available after optimization.",
       complete: validationReady.value,
-      tone: validationVerdictTone.value,
-    },
-    {
-      label: "Live strategy support",
-      detail: liveStrategySupported.value
-        ? "Supported for the current live runner."
-        : "Switch to DoubleMa or CompositeCpu for Guided paper/live readiness.",
-      complete: liveStrategySupported.value,
-      tone: liveStrategySupported.value ? "done" : "warning",
+      tone: validationReady.value
+        ? validationVerdictTone.value
+        : optimizationReady.value
+          ? "ready"
+          : "blocked",
     },
   ]);
 
@@ -233,11 +235,11 @@ export function useGuidedWorkflowReadiness() {
     },
     {
       label: "Supported strategy",
-      detail: liveStrategySupported.value
-        ? `${strategyKind.value} is supported by live execution.`
-        : "Guided live setup supports DoubleMa and CompositeCpu only.",
-      complete: liveStrategySupported.value,
-      tone: liveStrategySupported.value ? "done" : "warning",
+      detail: simpleOptimizationSupported.value
+        ? `${simpleStrategyLabel(strategyKind.value)} is supported by Simple optimization.`
+        : "Simple optimization supports Double MA crossover and Composite signal only.",
+      complete: simpleOptimizationSupported.value,
+      tone: simpleOptimizationSupported.value ? "done" : "warning",
     },
     {
       label: "Symbol",
@@ -251,7 +253,7 @@ export function useGuidedWorkflowReadiness() {
       label: "Dry-run first",
       detail: executionDryRunReady.value
         ? "Dry-run is enabled."
-        : "Guided Mode starts runners only in dry-run. Open Advanced Mode for broker-armed launch.",
+        : "Open Advanced Mode for dry-run, paper, or broker-armed launch.",
       complete: executionDryRunReady.value,
       tone: executionDryRunReady.value ? "done" : "warning",
     },
@@ -294,6 +296,7 @@ export function useGuidedWorkflowReadiness() {
     liveStrategySupported,
     optimizationReady,
     runnerReady,
+    simpleOptimizationSupported,
     tradeChecklist,
     validationReady,
     validationVerdictBody,

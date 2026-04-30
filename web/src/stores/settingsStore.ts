@@ -1126,7 +1126,7 @@ export const useSettingsStore = defineStore("settings", {
       applyUiModeLocally(normalized);
       this.statusLine =
         normalized === "guided"
-          ? "Switched to Guided Mode."
+          ? "Switched to Simple Mode."
           : "Switched to Advanced Mode.";
       this.markVueUpdate();
     },

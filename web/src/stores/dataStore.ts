@@ -38,6 +38,14 @@ export interface DataSampleOption {
   label: string;
   path: string;
   disabled: boolean;
+  sourceKind?: string;
+  timeframe?: string;
+  rowCount?: number | null;
+  range?: string;
+  description?: string;
+  license?: string;
+  researchNote?: string;
+  detail?: string;
 }
 
 type DataSourceKind = "csv" | "polygon";
@@ -358,6 +366,17 @@ function normalizedSamples(values: unknown): DataSampleOption[] {
       label,
       path: String(typed.path || "").trim(),
       disabled: Boolean(typed.disabled),
+      sourceKind: String(typed.sourceKind || "").trim(),
+      timeframe: String(typed.timeframe || "").trim(),
+      rowCount:
+        typed.rowCount == null || !Number.isFinite(Number(typed.rowCount))
+          ? null
+          : Math.max(0, Math.floor(Number(typed.rowCount))),
+      range: String(typed.range || "").trim(),
+      description: String(typed.description || "").trim(),
+      license: String(typed.license || "").trim(),
+      researchNote: String(typed.researchNote || "").trim(),
+      detail: String(typed.detail || "").trim(),
     });
   }
   return entries;
@@ -483,8 +502,14 @@ function rewriteRecentPathsForMovedRoot(
 
 function polygonIntegrityText(dataset: PolygonDatasetSummary): string {
   const integrity = dataset.integrity;
-  if (!integrity) return "Integrity: unchecked";
-  return `Integrity: parse=${integrity.parseErrors} dup=${integrity.duplicates} order=${integrity.outOfOrder} gaps=${integrity.sameDayGapsGt2Min}`;
+  if (!integrity)
+    return "Integrity: unchecked - validate before relying on cache";
+  const hasIssues =
+    integrity.parseErrors > 0 ||
+    integrity.duplicates > 0 ||
+    integrity.outOfOrder > 0 ||
+    integrity.sameDayGapsGt2Min > 0;
+  return `Integrity: ${hasIssues ? "review" : "clean"} parse=${integrity.parseErrors} dup=${integrity.duplicates} order=${integrity.outOfOrder} gaps=${integrity.sameDayGapsGt2Min}`;
 }
 
 function polygonDatasetMetaText(dataset: PolygonDatasetSummary): string {
@@ -570,6 +595,89 @@ function redactDataStoreText(
   return redactKnownSecrets(raw, [state.polygonApiKey]);
 }
 
+function parseIsoDateDay(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const ms = Date.UTC(year, month - 1, day);
+  if (!Number.isFinite(ms)) return null;
+  const parsed = new Date(ms);
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return ms;
+}
+
+function polygonDownloadPreflightMessage(
+  state: Pick<DataState, "polygonSymbol" | "polygonFrom" | "polygonTo">,
+): string {
+  if (!String(state.polygonSymbol || "").trim()) {
+    return "Enter a Polygon symbol before downloading.";
+  }
+  const from = String(state.polygonFrom || "").trim();
+  const to = String(state.polygonTo || "").trim();
+  if (!from || !to) return "Choose a Polygon start and end date first.";
+  const fromMs = parseIsoDateDay(from);
+  const toMs = parseIsoDateDay(to);
+  if (fromMs === null || toMs === null) {
+    return "Polygon dates must use YYYY-MM-DD.";
+  }
+  if (toMs < fromMs) {
+    return "Polygon end date must be on or after the start date.";
+  }
+  return "";
+}
+
+function polygonUserFacingError(
+  state: Pick<DataState, "polygonApiKey">,
+  raw: unknown,
+  fallback: string,
+): string {
+  const redacted = redactDataStoreText(state, raw);
+  const lower = redacted.toLowerCase();
+  if (!lower) return fallback;
+  if (lower.includes("rate limit") || lower.includes("429")) {
+    return "Polygon rate limit reached. Wait and retry, reduce the date range, or load an already cached dataset.";
+  }
+  if (
+    lower.includes("not entitled") ||
+    lower.includes("entitlement") ||
+    lower.includes("401") ||
+    lower.includes("403") ||
+    (lower.includes("api key") &&
+      (lower.includes("rejected") || lower.includes("invalid")))
+  ) {
+    return "Polygon key or plan does not allow this request. Check the saved API key, subscription entitlements, symbol, and requested history.";
+  }
+  if (
+    lower.includes("no aggregate bars") ||
+    lower.includes("no bars") ||
+    lower.includes("no data for that range")
+  ) {
+    return "Polygon returned no bars for that request. Check the ticker, market, date range, subscription recency, and whether the interval had eligible trades.";
+  }
+  if (lower.includes("to date must be >= from date")) {
+    return "Polygon end date must be on or after the start date.";
+  }
+  if (lower.includes("bad request") || lower.includes("400")) {
+    return "Polygon rejected the request parameters. Check symbol format, market, date range, and timeframe.";
+  }
+  if (
+    lower.includes("server error") ||
+    lower.includes("503") ||
+    lower.includes("502")
+  ) {
+    return "Polygon returned a temporary server error. Retry later or reduce the request size.";
+  }
+  return redacted || fallback;
+}
+
 function normalizeStartupSnapshot(raw: unknown): DataStartupSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Partial<DataStartupSnapshot>;
@@ -609,7 +717,9 @@ function startupRestoreSourceIdentityWarning(
       ? snapshot.baseSourceMtimeUtcMs
       : null;
   const actualSize =
-    meta && typeof meta.sourceSizeBytes === "number" ? meta.sourceSizeBytes : null;
+    meta && typeof meta.sourceSizeBytes === "number"
+      ? meta.sourceSizeBytes
+      : null;
   const actualMtime =
     meta && typeof meta.sourceMtimeUtcMs === "number"
       ? meta.sourceMtimeUtcMs
@@ -676,7 +786,7 @@ function selectPolygonDatasetPath(state: DataState, preferredPath = ""): void {
       (row) => row.csvPath === state.polygonSelectedPath,
     )
   ) {
-      } else {
+  } else {
     state.polygonSelectedPath = state.polygonDatasets[0]?.csvPath || "";
   }
   const selected =
@@ -1069,10 +1179,8 @@ export const useDataStore = defineStore("data", {
             markVueUpdate(this);
             try {
               const base = await loadCsvAction(restorePath);
-              const restoreIdentityWarning = startupRestoreSourceIdentityWarning(
-                startup,
-                base.meta,
-              );
+              const restoreIdentityWarning =
+                startupRestoreSourceIdentityWarning(startup, base.meta);
               this.applyLoadResult(base, {
                 treatAsBase: true,
                 statusLine: baseLoadStatusText(base, restoreSource),
@@ -1094,7 +1202,8 @@ export const useDataStore = defineStore("data", {
                 markVueUpdate(this);
               }
               if (restoreIdentityWarning) {
-                this.statusLine = `${this.statusLine} ${restoreIdentityWarning}`.trim();
+                this.statusLine =
+                  `${this.statusLine} ${restoreIdentityWarning}`.trim();
                 markVueUpdate(this);
               }
             } catch (error: unknown) {
@@ -1357,7 +1466,8 @@ export const useDataStore = defineStore("data", {
           });
         })
         .catch((error: unknown) => {
-          this.statusLine = redactDataStoreText(this, error) || "Data load failed.";
+          this.statusLine =
+            redactDataStoreText(this, error) || "Data load failed.";
           markVueUpdate(this);
         })
         .finally(() => {
@@ -1497,6 +1607,12 @@ export const useDataStore = defineStore("data", {
     },
 
     downloadPolygonDataset(): void {
+      const preflightMessage = polygonDownloadPreflightMessage(this);
+      if (preflightMessage) {
+        this.statusLine = preflightMessage;
+        markVueUpdate(this);
+        return;
+      }
       setControlsBusy(this, true);
       this.statusLine = "Downloading Polygon dataset...";
       markVueUpdate(this);
@@ -1562,8 +1678,11 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           setControlsBusy(this, false);
-          this.statusLine =
-            redactDataStoreText(this, error) || "Polygon download failed.";
+          this.statusLine = polygonUserFacingError(
+            this,
+            error,
+            "Polygon download failed.",
+          );
           markVueUpdate(this);
         });
     },
@@ -1631,8 +1750,11 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           setControlsBusy(this, false);
-          this.statusLine =
-            redactDataStoreText(this, error) || "Polygon top-off failed.";
+          this.statusLine = polygonUserFacingError(
+            this,
+            error,
+            "Polygon top-off failed.",
+          );
           markVueUpdate(this);
         });
     },
@@ -1666,8 +1788,11 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           setControlsBusy(this, false);
-          this.statusLine =
-            redactDataStoreText(this, error) || "Polygon validation failed.";
+          this.statusLine = polygonUserFacingError(
+            this,
+            error,
+            "Polygon validation failed.",
+          );
           markVueUpdate(this);
         });
     },
@@ -1701,8 +1826,11 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           setControlsBusy(this, false);
-          this.statusLine =
-            redactDataStoreText(this, error) || "Polygon repair failed.";
+          this.statusLine = polygonUserFacingError(
+            this,
+            error,
+            "Polygon repair failed.",
+          );
           markVueUpdate(this);
         });
     },
@@ -1729,7 +1857,8 @@ export const useDataStore = defineStore("data", {
           });
         })
         .catch((error: unknown) => {
-          this.statusLine = redactDataStoreText(this, error) || "Data load failed.";
+          this.statusLine =
+            redactDataStoreText(this, error) || "Data load failed.";
           markVueUpdate(this);
         })
         .finally(() => {
@@ -1784,8 +1913,7 @@ export const useDataStore = defineStore("data", {
         })
         .catch((error: unknown) => {
           this.statusLine =
-            redactDataStoreText(this, error) ||
-            `Resample to ${target} failed.`;
+            redactDataStoreText(this, error) || `Resample to ${target} failed.`;
           this.dataTimeframe = "";
           markVueUpdate(this);
         })
@@ -1921,7 +2049,8 @@ export const useDataStore = defineStore("data", {
           });
         })
         .catch((error: unknown) => {
-          this.statusLine = redactDataStoreText(this, error) || "Data load failed.";
+          this.statusLine =
+            redactDataStoreText(this, error) || "Data load failed.";
           markVueUpdate(this);
         })
         .finally(() => {

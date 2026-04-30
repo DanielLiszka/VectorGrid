@@ -13,7 +13,7 @@ This repository is currently published as a **backend/CLI preview**.
 - Do not treat `web/`, `npm run dev`, `npm run build`, `cargo run -p ta_desktop_demo_app`, or Tauri packaging as the public quick-start path for this release.
 - No financial, trading, broker, paper-trading, or live-execution workflow in this repo should be treated as production advice or a production trading system.
 
-Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases.
+Desktop release work is tracked separately from the backend-preview status. Maintainers preparing a Windows desktop build should use `docs/PUBLIC_RELEASE.md` and `scripts/run_public_release_gate.ps1`; only artifacts that pass that gate from a clean, signed release environment should be treated as public desktop releases. For those signed desktop artifacts, the intended first-run path is Simple Mode: load the bundled synthetic sample or a local CSV, run a CPU-safe optimization, optionally validate, copy the compact summary, or switch to Advanced Mode for detailed exports.
 
 ## Stored Benchmark Snapshots
 

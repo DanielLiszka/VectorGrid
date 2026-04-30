@@ -13,7 +13,7 @@ Release evidence is layered. Do not treat one release artifact as proof of a dif
 | Is the local machine/repo ready for this variant? | `powershell -File scripts/run_release_doctor.ps1 -Variant <variant>` and `readiness.json` | The doctor runs Tauri config sync and release-readiness core. It does not build, stage, hash, or smoke a package. |
 | Was a candidate locally rehearsed? | `powershell -File scripts/run_release_candidate_gate.ps1 -Variant <variant>` and `summary.json` / `summary.md` | The release-candidate summary is broad rehearsal evidence, not a replacement for manifest, provenance, hashes, smoke, or output parity. |
 | What exactly was built? | `provenance.json`, with `provenance.txt` as secondary human-readable evidence | Use this for build identity, toolchain, and environment. |
-| Which assets were staged? | `manifest.json` | Current required resources include the CatBoost native DLL and `double_crossover.prebuilt.ptx`. |
+| Which assets were staged? | `manifest.json` | Current required resources include the CatBoost native DLL, bundled synthetic sample CSV, and `double_crossover.prebuilt.ptx`. |
 | What are the asset hashes? | `SHA256SUMS.txt`, interpreted against `manifest.json` | Hashes alone are not variant authority. |
 | Did the packaged artifact launch? | `packaged-smoke-summary.json` | Check `smoke_mode`; raw release-binary smoke is not bundle-level packaging proof. |
 | Are artifact/report outputs still compatible? | `node scripts/run_output_parity_check.mjs` | Output parity is separate authority from the release-candidate gate. |
@@ -60,6 +60,7 @@ The Windows platform config is intentionally explicit:
 - `src-tauri/tauri.windows.conf.json` and root `tauri.windows.conf.json` must remain mirrored.
 - The configured public bundle target is `nsis`, producing a setup `.exe`.
 - `resources/native/catboostmodel.dll` is bundled as `native/catboostmodel.dll` so packaged ML/native workflows can resolve it from Tauri's resource directory.
+- `resources/sample-data/vectorgrid_synthetic_ohlcv.csv` is bundled as `sample-data/vectorgrid_synthetic_ohlcv.csv` so Simple Mode has a clean-machine sample fast path.
 - WebView2 install behavior is declared explicitly with `downloadBootstrapper`; offline WebView2 distribution is a future release-profile decision because it materially increases installer size.
 
 `node scripts/check_tauri_config_sync.mjs` validates the mirror, resource source paths, NSIS target, WebView2 install mode, and installer icon path.

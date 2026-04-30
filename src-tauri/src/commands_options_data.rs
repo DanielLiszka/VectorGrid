@@ -1,4 +1,4 @@
-use crate::{polygon, settings};
+use crate::{polygon, redaction::redact_sensitive_text_with_values, settings};
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use reqwest::blocking::Client;
 use serde::Deserialize;
@@ -567,13 +567,44 @@ fn parse_retry_after_ms(value: &str, now: DateTime<Utc>, max_wait_ms: u64) -> Op
     if let Ok(seconds) = trimmed.parse::<u64>() {
         return Some(seconds.saturating_mul(1000).min(max_wait_ms));
     }
-    let retry_at = DateTime::parse_from_rfc2822(trimmed).ok()?;
+    let retry_at = DateTime::parse_from_rfc2822(trimmed)
+        .or_else(|_| DateTime::parse_from_rfc3339(trimmed))
+        .ok()?;
     let delay_ms = retry_at
         .with_timezone(&Utc)
         .signed_duration_since(now)
         .num_milliseconds()
         .max(0) as u64;
     Some(delay_ms.min(max_wait_ms))
+}
+
+fn compact_polygon_options_detail(raw: &str) -> String {
+    const MAX_DETAIL_CHARS: usize = 320;
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut detail = compact.trim().to_string();
+    if detail.len() > MAX_DETAIL_CHARS {
+        detail.truncate(MAX_DETAIL_CHARS);
+        detail.push_str("...");
+    }
+    detail
+}
+
+fn polygon_options_http_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    let reason = match status.as_u16() {
+        400 => "Polygon.io rejected the options request parameters. Check root, expiry, strike, contract type, dates, and entitlement.",
+        401 | 403 => "Polygon.io rejected the API key or the account is not entitled for options data.",
+        404 => "Polygon.io did not recognize the requested options ticker or endpoint.",
+        429 => "Polygon.io rate limit reached. Wait and retry, narrow the options request, or use an imported/cached dataset.",
+        500..=599 => "Polygon.io returned a temporary server error. Retry later or narrow the options request.",
+        _ => "Polygon.io request failed.",
+    };
+    let redacted_body = redact_sensitive_text_with_values(body, []);
+    let detail = compact_polygon_options_detail(&redacted_body);
+    if detail.is_empty() {
+        format!("{reason} HTTP status: {status}.")
+    } else {
+        format!("{reason} HTTP status: {status}. Provider detail: {detail}")
+    }
 }
 
 fn send_json_with_retry<T, F>(make_request: F) -> Result<T, String>
@@ -588,7 +619,7 @@ where
         let resp = match resp {
             Ok(r) => r,
             Err(e) => {
-                last_err = Some(e.to_string());
+                last_err = Some(redact_sensitive_text_with_values(&e.to_string(), []));
                 if attempt < 6 {
                     std::thread::sleep(std::time::Duration::from_millis(
                         (1_000u64.saturating_mul(1u64 << attempt)).min(MAX_RETRY_WAIT_MS),
@@ -604,7 +635,9 @@ where
 
         let status = resp.status();
         if status.is_success() {
-            return resp.json::<T>().map_err(|e| e.to_string());
+            return resp
+                .json::<T>()
+                .map_err(|e| redact_sensitive_text_with_values(&e.to_string(), []));
         }
 
         let retry_after_ms = resp
@@ -612,19 +645,19 @@ where
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|value| parse_retry_after_ms(value, Utc::now(), MAX_RETRY_WAIT_MS));
-        let body = resp.text().unwrap_or_default();
+        let body = redact_sensitive_text_with_values(&resp.text().unwrap_or_default(), []);
         let retriable = status.as_u16() == 429 || status.is_server_error();
-        last_err = Some(format!("({status}) {body}"));
+        last_err = Some(polygon_options_http_error_message(status, &body));
         if retriable && attempt < 6 {
             let backoff_ms = (1_000u64.saturating_mul(1u64 << attempt)).min(MAX_RETRY_WAIT_MS);
             let wait_ms = retry_after_ms.unwrap_or(backoff_ms).max(backoff_ms);
             std::thread::sleep(std::time::Duration::from_millis(wait_ms));
             continue;
         }
-        return Err(format!("Polygon.io request failed {}: {}", status, body));
+        return Err(polygon_options_http_error_message(status, &body));
     }
     Err(format!(
-        "Polygon.io request failed: {}",
+        "Polygon.io request failed after retries: {}",
         last_err.unwrap_or_else(|| "unknown error".to_string())
     ))
 }
@@ -1445,6 +1478,25 @@ mod tests {
             parse_retry_after_ms("Wed, 01 Apr 2026 12:10:00 GMT", now, 30_000),
             Some(30_000)
         );
+        assert_eq!(
+            parse_retry_after_ms("2026-04-01T12:00:06Z", now, 30_000),
+            Some(6_000)
+        );
+    }
+
+    #[test]
+    fn polygon_options_http_error_message_redacts_and_classifies() {
+        let message = polygon_options_http_error_message(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "apiKey=poly_secret_123",
+        );
+        assert!(message.contains("rate limit"));
+        assert!(message.contains("narrow the options request"));
+        assert!(!message.contains("poly_secret_123"));
+
+        let redacted = redact_sensitive_text_with_values("apiKey=poly_secret_123", []);
+        assert!(redacted.contains("[redacted]"));
+        assert!(!redacted.contains("poly_secret_123"));
     }
 
     #[test]

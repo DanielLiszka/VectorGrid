@@ -58,6 +58,7 @@ export const TAURI_COMMANDS = [
   'build_validation_shortlist_csv',
   'save_report_xlsx',
   'save_report_xlsx_from_artifact',
+  'save_simple_summary_markdown',
   'open_reports_dir',
   'open_runs_dir',
   'reveal_path',

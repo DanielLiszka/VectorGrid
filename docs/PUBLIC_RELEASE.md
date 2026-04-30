@@ -49,6 +49,16 @@ powershell -ExecutionPolicy Bypass -File scripts/run_public_release_gate.ps1 -Va
 
 The unsigned rehearsal may prove packaging mechanics, but it is not public-release complete.
 
+To create a clean-machine smoke checklist from a staged release evidence folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/write_clean_machine_smoke_checklist.ps1 `
+  -Variant cpu `
+  -EvidenceDir output/public_release_candidates/<timestamp>-cpu
+```
+
+The checklist script writes JSON and Markdown under `output/clean_machine_smoke_checklists/`. It does not replace the actual clean-machine install test; it turns the manual verification into repeatable release evidence and prechecks that the expected release manifest, hashes, staged artifacts, and bundled synthetic sample evidence are present.
+
 ## Release Evidence
 
 Each run writes evidence under `output/public_release_candidates/<timestamp>-<variant>/`:
@@ -127,8 +137,12 @@ After the public gate passes, verify on a clean Windows 10/11 machine or VM:
 - inspect Authenticode publisher and timestamp;
 - install without developer tools installed;
 - launch from Start menu and desktop shortcut if created;
-- run a CPU-only optimization and validation;
-- export JSON/CSV/XLSX reports;
+- confirm the app opens into Simple Mode or can be switched there immediately;
+- load the bundled synthetic sample dataset, or a known local CSV if the sample is unavailable;
+- run a CPU-only Simple optimization and confirm the run summary names the dataset, strategy, candidate, and metrics;
+- optionally run Simple validation and confirm the recommendation state is clear;
+- copy the Simple run summary and save the Markdown summary file;
+- switch to Advanced Mode and export JSON/CSV/XLSX reports;
 - verify local data directories are created under the expected app identifier;
 - confirm no credentials are bundled and no private local paths are exposed in public logs;
 - uninstall and verify the app is removed cleanly.
@@ -147,4 +161,5 @@ Every public release should include:
 - `docs/WINDOWS_INSTALL.md` or equivalent release-page install notes;
 - no-financial-advice and no-production-trading disclaimer;
 - known limitations and supported workflows;
+- first-run Simple Mode steps and the bundled synthetic sample note;
 - hashes and publisher/signature identity.

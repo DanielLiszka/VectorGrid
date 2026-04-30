@@ -120,7 +120,7 @@ const requestedInspectorMode = ref<WorkbenchInspectorMode | "">("");
 const uiModeItems = [
   {
     id: "guided",
-    label: "Guided",
+    label: "Simple",
     actionId: "shell.uiMode.guided",
     tabId: "ui_mode_tab_guided",
   },
@@ -168,7 +168,7 @@ const currentWorkspaceLabel = computed(() =>
 );
 const shellSubtitle = computed(() => {
   if (guidedModeActive.value)
-    return "Guided path: optimize, validate, then prepare paper/live trading.";
+    return "Simple path: optimize backtests, then validate when needed.";
   return String(workflowSubtitle.value || "").trim() || "Ready.";
 });
 const standardWorkspaceActive = computed(
@@ -634,10 +634,14 @@ function onResultsKeydown(
         <div class="titleRow">
           <div class="titleCopy">
             <span class="eyebrow">VectorGrid</span>
-            <h1>{{ guidedModeActive ? "Guided" : currentWorkspaceLabel }}</h1>
+            <h1>{{ guidedModeActive ? "Simple" : currentWorkspaceLabel }}</h1>
             <p>{{ shellSubtitle }}</p>
           </div>
-          <div class="headerContext" aria-label="Current workbench context">
+          <div
+            v-if="!guidedModeActive"
+            class="headerContext"
+            aria-label="Current workbench context"
+          >
             <span class="contextChip mono">{{ navState.modeLabel }}</span>
             <span class="contextChip mono">{{ dataContextLabel }}</span>
             <span
@@ -759,7 +763,7 @@ function onResultsKeydown(
         >
           {{
             guidedModeActive
-              ? "Workspace Guided Mode."
+              ? "Workspace Simple Mode."
               : navState.selectionAnnouncement
           }}
         </div>
@@ -767,7 +771,7 @@ function onResultsKeydown(
         <section
           v-show="guidedModeActive"
           id="guidedShellGrid"
-          aria-label="Guided workspace shell"
+          aria-label="Simple workspace shell"
         >
           <div id="guidedVueShellMount"></div>
         </section>

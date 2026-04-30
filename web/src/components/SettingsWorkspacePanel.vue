@@ -1004,20 +1004,20 @@ onBeforeUnmount(() => {
               "
             >
               <option value="guided">
-                Guided Mode (optimize, validate, paper/live)
+                Simple Mode (optimize backtests, optional validation)
               </option>
               <option value="advanced">
                 Advanced Mode (all research tools)
               </option>
             </select>
             <div class="panelMuted">
-              Guided Mode keeps the first-run path narrow. Advanced Mode keeps
+              Simple Mode keeps the first-run path focused. Advanced Mode keeps
               Meta, Stage 5 ML confidence, ML Signal/CatBoost, options,
               campaigns, diagnostics, and artifact replay reachable.
             </div>
           </div>
           <div class="rowSingle" v-if="uiModeDraft === 'guided'">
-            <label for="vueSettingsGuidedStep">Guided start step</label>
+            <label for="vueSettingsGuidedStep">Simple start step</label>
             <select
               id="vueSettingsGuidedStep"
               :value="guidedStepDraft"
@@ -1032,10 +1032,9 @@ onBeforeUnmount(() => {
               <option value="strategy">Strategy</option>
               <option value="optimize">Optimize</option>
               <option value="validate">Validate</option>
-              <option value="trade">Trade Ready</option>
             </select>
             <div class="panelMuted">
-              This only chooses the visible guided step. It does not remove or
+              This only chooses the visible Simple step. It does not remove or
               reset any loaded data, runs, or advanced workspace state.
             </div>
           </div>

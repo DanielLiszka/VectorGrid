@@ -253,43 +253,164 @@ pub struct SampleCsv {
     pub id: String,
     pub label: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub timeframe: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub range: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub license: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub research_note: String,
 }
 
-fn sample_csvs_from_root(root: &Path) -> Vec<SampleCsv> {
-    let data_dir = find_repo_data_dir_from(root).unwrap_or_else(|| root.join("data"));
-    let candidates: [(&str, &str, &str); 3] = [
-        ("10k", "10k candles", "10kCandles.csv"),
-        (
-            "100k",
-            "100k candles",
-            "bitfinex btc-usd 100,000 candles ends 09-01-24.csv",
-        ),
-        ("1m", "1M candles", "1MillionCandles.csv"),
-    ];
+#[derive(Clone, Copy)]
+struct SampleCsvCandidate {
+    id: &'static str,
+    label: &'static str,
+    rel_path: &'static str,
+    source_kind: &'static str,
+    timeframe: &'static str,
+    row_count: Option<usize>,
+    range: &'static str,
+    description: &'static str,
+    license: &'static str,
+    research_note: &'static str,
+}
 
+const RESOURCE_SAMPLE_CSVS: [SampleCsvCandidate; 1] = [SampleCsvCandidate {
+    id: "synthetic-ohlcv",
+    label: "Synthetic OHLCV sample - 160 x 1m candles",
+    rel_path: "sample-data/vectorgrid_synthetic_ohlcv.csv",
+    source_kind: "bundled_synthetic",
+    timeframe: "1m",
+    row_count: Some(160),
+    range: "relative 0m -> 2h 39m",
+    description: "Bundled synthetic OHLCV data for first-run optimization and validation smoke tests.",
+    license: "Synthetic/generated data, redistributable with VectorGrid.",
+    research_note: "Synthetic research sample only; not real market data, trading advice, or live-trading evidence.",
+}];
+
+const REPO_SAMPLE_CSVS: [SampleCsvCandidate; 3] = [
+    SampleCsvCandidate {
+        id: "10k",
+        label: "10k candles",
+        rel_path: "10kCandles.csv",
+        source_kind: "repo_local",
+        timeframe: "",
+        row_count: Some(10_000),
+        range: "",
+        description: "Repository-local development sample. Public installers do not depend on this file.",
+        license: "Local repository sample; verify redistribution rights before bundling.",
+        research_note: "Research and development sample only; not trading advice.",
+    },
+    SampleCsvCandidate {
+        id: "100k",
+        label: "100k candles",
+        rel_path: "bitfinex btc-usd 100,000 candles ends 09-01-24.csv",
+        source_kind: "repo_local",
+        timeframe: "",
+        row_count: Some(100_000),
+        range: "ends 2024-09-01",
+        description: "Repository-local development sample. Public installers do not depend on this file.",
+        license: "Local repository sample; verify redistribution rights before bundling.",
+        research_note: "Research and development sample only; not trading advice.",
+    },
+    SampleCsvCandidate {
+        id: "1m",
+        label: "1M candles",
+        rel_path: "1MillionCandles.csv",
+        source_kind: "repo_local",
+        timeframe: "",
+        row_count: Some(1_000_000),
+        range: "",
+        description: "Repository-local large development sample. Public installers do not depend on this file.",
+        license: "Local repository sample; verify redistribution rights before bundling.",
+        research_note: "Research and development sample only; not trading advice.",
+    },
+];
+
+fn sample_csvs_from_candidates(
+    base_dir: &Path,
+    candidates: &[SampleCsvCandidate],
+) -> Vec<SampleCsv> {
     let mut out: Vec<SampleCsv> = Vec::new();
-    for (id, label, rel) in candidates {
-        let path = data_dir.join(rel);
+    for candidate in candidates {
+        let path = base_dir.join(candidate.rel_path);
         if path.exists() {
             out.push(SampleCsv {
-                id: id.to_string(),
-                label: label.to_string(),
+                id: candidate.id.to_string(),
+                label: candidate.label.to_string(),
                 path: path.to_string_lossy().to_string(),
+                source_kind: candidate.source_kind.to_string(),
+                timeframe: candidate.timeframe.to_string(),
+                row_count: candidate.row_count,
+                range: candidate.range.to_string(),
+                description: candidate.description.to_string(),
+                license: candidate.license.to_string(),
+                research_note: candidate.research_note.to_string(),
             });
         }
     }
     out
 }
 
-#[tauri::command]
-pub fn list_sample_csvs() -> Vec<SampleCsv> {
+fn sample_csvs_from_resource_dir(resource_dir: &Path) -> Vec<SampleCsv> {
+    sample_csvs_from_candidates(resource_dir, &RESOURCE_SAMPLE_CSVS)
+}
+
+fn sample_csvs_from_root(root: &Path) -> Vec<SampleCsv> {
+    let data_dir = find_repo_data_dir_from(root).unwrap_or_else(|| root.join("data"));
+    sample_csvs_from_candidates(&data_dir, &REPO_SAMPLE_CSVS)
+}
+
+fn append_unique_sample_csvs(out: &mut Vec<SampleCsv>, samples: Vec<SampleCsv>) {
+    for sample in samples {
+        if out
+            .iter()
+            .any(|existing| existing.id == sample.id || existing.path == sample.path)
+        {
+            continue;
+        }
+        out.push(sample);
+    }
+}
+
+fn dev_resource_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources")
+}
+
+fn list_sample_csvs_impl(resource_dir: Option<&Path>) -> Vec<SampleCsv> {
+    let mut out: Vec<SampleCsv> = Vec::new();
+
+    if let Some(resource_dir) = resource_dir {
+        append_unique_sample_csvs(&mut out, sample_csvs_from_resource_dir(resource_dir));
+    }
+    append_unique_sample_csvs(&mut out, sample_csvs_from_resource_dir(&dev_resource_dir()));
+
     let root: PathBuf = find_workspace_root().unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
     });
-    sample_csvs_from_root(&root)
+    append_unique_sample_csvs(&mut out, sample_csvs_from_root(&root));
+    out
+}
+
+pub fn list_sample_csvs_for_bindings() -> Vec<SampleCsv> {
+    list_sample_csvs_impl(None)
+}
+
+#[tauri::command]
+pub fn list_sample_csvs(app: tauri::AppHandle) -> Vec<SampleCsv> {
+    let resource_dir = app.path().resource_dir().ok();
+    list_sample_csvs_impl(resource_dir.as_deref())
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -1597,6 +1718,7 @@ pub fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::append_unique_sample_csvs;
     use super::artifact_retention_info_for_base;
     use super::artifact_retention_info_for_base_with_env_overrides;
     use super::begin_background_download;
@@ -1611,11 +1733,13 @@ mod tests {
     use super::normalize_polygon_live_bar;
     use super::normalize_save_csv_path;
     use super::parse_csv_fields;
+    use super::sample_csvs_from_resource_dir;
     use super::sample_csvs_from_root;
     use super::set_artifact_retention_settings_for_base;
     use super::set_market_data_dir_for_base;
     use super::should_force_runner_review_posture;
     use super::validate_picked_csv_path;
+    use super::SampleCsv;
     use crate::state::AppState;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -1988,6 +2112,86 @@ mod tests {
                 .and_then(|value| value.to_str()),
             Some("10kCandles.csv")
         );
+    }
+
+    #[test]
+    fn sample_csvs_from_resource_dir_finds_packaged_synthetic_sample() {
+        let rows = sample_csvs_from_resource_dir(&super::dev_resource_dir());
+        let sample = rows
+            .iter()
+            .find(|row| row.id == "synthetic-ohlcv")
+            .expect("packaged synthetic sample should be discoverable");
+
+        assert_eq!(sample.label, "Synthetic OHLCV sample - 160 x 1m candles");
+        assert_eq!(sample.source_kind, "bundled_synthetic");
+        assert_eq!(sample.timeframe, "1m");
+        assert_eq!(sample.row_count, Some(160));
+        assert!(sample.description.contains("first-run"));
+        assert!(sample.research_note.contains("not real market data"));
+        assert!(sample.path.ends_with("vectorgrid_synthetic_ohlcv.csv"));
+        assert!(Path::new(&sample.path).is_file());
+    }
+
+    #[test]
+    fn append_unique_sample_csvs_dedupes_by_id_or_path() {
+        let mut rows = vec![SampleCsv {
+            id: "synthetic-ohlcv".to_string(),
+            label: "Packaged synthetic sample".to_string(),
+            path: "C:/release/sample-data/vectorgrid_synthetic_ohlcv.csv".to_string(),
+            source_kind: "bundled_synthetic".to_string(),
+            timeframe: "1m".to_string(),
+            row_count: Some(160),
+            range: "relative 0m -> 2h 39m".to_string(),
+            description: "Packaged sample".to_string(),
+            license: "Synthetic".to_string(),
+            research_note: "Research only".to_string(),
+        }];
+
+        append_unique_sample_csvs(
+            &mut rows,
+            vec![
+                SampleCsv {
+                    id: "synthetic-ohlcv".to_string(),
+                    label: "Dev synthetic sample".to_string(),
+                    path: "C:/repo/src-tauri/resources/sample-data/vectorgrid_synthetic_ohlcv.csv"
+                        .to_string(),
+                    source_kind: "bundled_synthetic".to_string(),
+                    timeframe: "1m".to_string(),
+                    row_count: Some(160),
+                    range: "relative 0m -> 2h 39m".to_string(),
+                    description: "Dev sample".to_string(),
+                    license: "Synthetic".to_string(),
+                    research_note: "Research only".to_string(),
+                },
+                SampleCsv {
+                    id: "10k".to_string(),
+                    label: "Duplicate path".to_string(),
+                    path: "C:/release/sample-data/vectorgrid_synthetic_ohlcv.csv".to_string(),
+                    source_kind: "repo_local".to_string(),
+                    timeframe: String::new(),
+                    row_count: Some(10_000),
+                    range: String::new(),
+                    description: "Duplicate path".to_string(),
+                    license: String::new(),
+                    research_note: "Research only".to_string(),
+                },
+                SampleCsv {
+                    id: "100k".to_string(),
+                    label: "Unique sample".to_string(),
+                    path: "C:/repo/data/100k.csv".to_string(),
+                    source_kind: "repo_local".to_string(),
+                    timeframe: String::new(),
+                    row_count: Some(100_000),
+                    range: String::new(),
+                    description: "Unique sample".to_string(),
+                    license: String::new(),
+                    research_note: "Research only".to_string(),
+                },
+            ],
+        );
+
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, vec!["synthetic-ohlcv", "100k"]);
     }
 
     #[test]

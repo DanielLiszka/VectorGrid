@@ -20,7 +20,7 @@ async fn list_gpu_speedups() -> Result<Vec<GpuSpeedupEntry>, String> {
 #[tauri::command]
 #[specta::specta]
 fn list_sample_csvs() -> Vec<SampleCsv> {
-    crate::commands::list_sample_csvs()
+    crate::commands::list_sample_csvs_for_bindings()
 }
 
 #[tauri::command]

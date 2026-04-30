@@ -16,6 +16,7 @@ pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
+#[cfg(test)]
 pub(crate) fn existing_path(path: String) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {

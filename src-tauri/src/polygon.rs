@@ -1,5 +1,5 @@
 use crate::redaction::redact_sensitive_text_with_values;
-use chrono::{Duration, NaiveDate};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -687,6 +687,66 @@ fn encode_path_segment(seg: &str) -> String {
     seg.replace(':', "%3A")
 }
 
+fn parse_retry_after_ms(value: &str, now: DateTime<Utc>, max_wait_ms: u64) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = trimmed.parse::<u64>() {
+        return Some(seconds.saturating_mul(1000).min(max_wait_ms));
+    }
+    let parsed = DateTime::parse_from_rfc2822(trimmed)
+        .or_else(|_| DateTime::parse_from_rfc3339(trimmed))
+        .ok()?
+        .with_timezone(&Utc);
+    if parsed <= now {
+        return Some(0);
+    }
+    Some(parsed.signed_duration_since(now).num_milliseconds().max(0) as u64)
+        .map(|ms| ms.min(max_wait_ms))
+}
+
+fn compact_polygon_detail(raw: &str) -> String {
+    const MAX_DETAIL_CHARS: usize = 320;
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut detail = compact.trim().to_string();
+    if detail.len() > MAX_DETAIL_CHARS {
+        detail.truncate(MAX_DETAIL_CHARS);
+        detail.push_str("...");
+    }
+    detail
+}
+
+fn polygon_http_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    let reason = match status.as_u16() {
+        400 => "Polygon rejected the request parameters. Check the symbol, market, date range, and entitlement for the requested data.",
+        401 | 403 => "Polygon rejected the API key or the account is not entitled for this endpoint, symbol, or date range.",
+        404 => "Polygon did not recognize the requested ticker or endpoint.",
+        429 => "Polygon rate limit reached. Wait and retry, reduce the date range, or load an already cached dataset.",
+        500..=599 => "Polygon returned a temporary server error. Retry later or reduce the request size.",
+        _ => "Polygon request failed.",
+    };
+    let detail = compact_polygon_detail(body);
+    if detail.is_empty() {
+        format!("{reason} HTTP status: {status}.")
+    } else {
+        format!("{reason} HTTP status: {status}. Provider detail: {detail}")
+    }
+}
+
+fn polygon_payload_error_message(label: &str, value: &str) -> String {
+    let detail = compact_polygon_detail(value);
+    if detail.is_empty() {
+        format!("Polygon returned an unexpected {label}.")
+    } else {
+        format!("Polygon returned {label}: {detail}")
+    }
+}
+
+fn polygon_no_bars_message() -> String {
+    "Polygon returned no aggregate bars for that request. Check the ticker, market, date range, subscription recency, and whether eligible trades existed during the selected interval.".to_string()
+}
+
 fn fetch_chunk(
     client: &Client,
     api_key: &str,
@@ -744,17 +804,13 @@ fn fetch_chunk(
                 .json()
                 .map_err(|e| redact_sensitive_text_with_values(&e.to_string(), [api_key]))?;
             if let Some(err) = parsed.error {
-                return Err(format!(
-                    "Polygon API error: {}",
-                    redact_sensitive_text_with_values(&err, [api_key])
-                ));
+                let err = redact_sensitive_text_with_values(&err, [api_key]);
+                return Err(polygon_payload_error_message("an API error", &err));
             }
             let st = parsed.status.unwrap_or_default();
-            if !st.is_empty() && st.to_ascii_uppercase() != "OK" {
-                return Err(format!(
-                    "Polygon API status: {}",
-                    redact_sensitive_text_with_values(&st, [api_key])
-                ));
+            if !st.is_empty() && !st.eq_ignore_ascii_case("OK") {
+                let st = redact_sensitive_text_with_values(&st, [api_key]);
+                return Err(polygon_payload_error_message("status", &st));
             }
             return Ok(parsed.results.unwrap_or_default());
         }
@@ -763,12 +819,11 @@ fn fetch_chunk(
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .map(|secs| secs.saturating_mul(1000));
+            .and_then(|s| parse_retry_after_ms(s, Utc::now(), 120_000));
 
         let body = redact_sensitive_text_with_values(&resp.text().unwrap_or_default(), [api_key]);
         let retriable = status.as_u16() == 429 || status.is_server_error();
-        last_err = Some(format!("({status}) {body}"));
+        last_err = Some(polygon_http_error_message(status, &body));
         if retriable && attempt < 6 {
             let backoff_ms = (1_000u64.saturating_mul(1u64 << attempt)).min(30_000);
             let wait_ms = retry_after_ms.unwrap_or(backoff_ms).max(backoff_ms);
@@ -776,11 +831,11 @@ fn fetch_chunk(
             continue;
         }
 
-        return Err(format!("Polygon API request failed {}: {}", status, body));
+        return Err(polygon_http_error_message(status, &body));
     }
 
     Err(format!(
-        "Polygon API request failed: {}",
+        "Polygon request failed after retries: {}",
         last_err.unwrap_or_else(|| "unknown error".to_string())
     ))
 }
@@ -1371,7 +1426,7 @@ pub fn download_1m_to_cache(
             }
             check_cancelled(cancel)?;
             if all.is_empty() {
-                return Err("Polygon returned no data for that range.".to_string());
+                return Err(polygon_no_bars_message());
             }
 
             all.sort_by_key(|b| b.t);
@@ -1385,7 +1440,7 @@ pub fn download_1m_to_cache(
     }
 
     if min_ts == 0 || max_ts == 0 {
-        return Err("No bars available (empty dataset).".to_string());
+        return Err(polygon_no_bars_message());
     }
 
     let meta = PolygonDatasetMeta {
@@ -1422,6 +1477,43 @@ mod tests {
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).expect("create temp dir");
         p
+    }
+
+    #[test]
+    fn parse_retry_after_ms_accepts_seconds_and_http_dates() {
+        let now = DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        assert_eq!(parse_retry_after_ms("2", now, 120_000), Some(2_000));
+        assert_eq!(parse_retry_after_ms("600", now, 120_000), Some(120_000));
+        assert_eq!(
+            parse_retry_after_ms("Thu, 30 Apr 2026 12:00:03 GMT", now, 120_000),
+            Some(3_000)
+        );
+        assert_eq!(
+            parse_retry_after_ms("Thu, 30 Apr 2026 11:59:59 GMT", now, 120_000),
+            Some(0)
+        );
+        assert_eq!(parse_retry_after_ms("not a date", now, 120_000), None);
+    }
+
+    #[test]
+    fn polygon_http_error_message_classifies_common_failures() {
+        let auth = polygon_http_error_message(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"status":"ERROR","error":"not entitled"}"#,
+        );
+        assert!(auth.contains("not entitled"));
+        assert!(auth.contains("HTTP status: 403 Forbidden"));
+
+        let rate_limit = polygon_http_error_message(reqwest::StatusCode::TOO_MANY_REQUESTS, "");
+        assert!(rate_limit.contains("rate limit"));
+        assert!(rate_limit.contains("reduce the date range"));
+
+        let no_bars = polygon_no_bars_message();
+        assert!(no_bars.contains("no aggregate bars"));
+        assert!(no_bars.contains("eligible trades"));
     }
 
     #[test]

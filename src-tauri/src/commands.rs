@@ -26,6 +26,8 @@ mod commands_portfolio;
 mod commands_reports;
 #[path = "commands_reports_api.rs"]
 mod commands_reports_api;
+#[path = "commands_simple_summary.rs"]
+mod commands_simple_summary;
 #[path = "commands_system.rs"]
 mod commands_system;
 #[path = "commands_validation.rs"]
@@ -66,16 +68,17 @@ pub use commands_data::{
     clear_artifact_retention_settings, clear_loaded_data, clear_market_data_dir,
     get_artifact_retention_info, get_market_data_dir_info, list_dynamic_indicators,
     list_gpu_speedups, list_moving_averages, list_repo_data_csvs, list_sample_csvs,
-    load_price_data, pick_csv_file, pick_folder, pick_save_csv, polygon_clear_api_key,
-    polygon_download_1m_and_load, polygon_get_cache_info, polygon_live_candle_stream_status,
-    polygon_repair_dataset, polygon_set_api_key, polygon_start_live_candle_stream,
-    polygon_stop_live_candle_stream, polygon_top_off_dataset, polygon_validate_dataset,
-    resample_price_data, set_artifact_retention_settings, set_market_data_dir,
-    ArtifactRetentionInfo, ArtifactRetentionSettingsDto, ArtifactRetentionValueSet,
-    ClearLoadedDataResponse, GpuSpeedupEntry, MarketDataDirInfo, PolygonDownloadAndLoadResponse,
-    PolygonLiveCandleStreamStatusResponse, PolygonStartLiveCandleStreamRequest,
-    PolygonStartLiveCandleStreamResponse, PolygonStopLiveCandleStreamResponse,
-    PolygonTopOffRequest, RepoDataCsvEntry, RepoDataCsvList, SampleCsv,
+    list_sample_csvs_for_bindings, load_price_data, pick_csv_file, pick_folder, pick_save_csv,
+    polygon_clear_api_key, polygon_download_1m_and_load, polygon_get_cache_info,
+    polygon_live_candle_stream_status, polygon_repair_dataset, polygon_set_api_key,
+    polygon_start_live_candle_stream, polygon_stop_live_candle_stream, polygon_top_off_dataset,
+    polygon_validate_dataset, resample_price_data, set_artifact_retention_settings,
+    set_market_data_dir, ArtifactRetentionInfo, ArtifactRetentionSettingsDto,
+    ArtifactRetentionValueSet, ClearLoadedDataResponse, GpuSpeedupEntry, MarketDataDirInfo,
+    PolygonDownloadAndLoadResponse, PolygonLiveCandleStreamStatusResponse,
+    PolygonStartLiveCandleStreamRequest, PolygonStartLiveCandleStreamResponse,
+    PolygonStopLiveCandleStreamResponse, PolygonTopOffRequest, RepoDataCsvEntry, RepoDataCsvList,
+    SampleCsv,
 };
 pub use commands_dynamic::{
     encode_dynamic_strategy_constant_bits, format_dynamic_strategy_ir_json,
@@ -149,6 +152,9 @@ pub(crate) use commands_reports::{build_meta_report_xlsx_bytes, sanitize_filenam
 pub use commands_reports_api::{
     build_report_xlsx, build_validation_shortlist_csv, open_path, open_reports_dir, reveal_path,
     save_report_xlsx, save_report_xlsx_from_artifact, SaveReportXlsxResponse,
+};
+pub use commands_simple_summary::{
+    save_simple_summary_markdown, SaveSimpleSummaryMarkdownResponse,
 };
 pub use commands_system::{exit_application, get_gpu_status, set_window_effect, GpuStatus};
 #[allow(unused_imports)]

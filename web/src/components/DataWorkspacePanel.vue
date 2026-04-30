@@ -11,7 +11,13 @@ import { storeToRefs } from "pinia";
 import { useShellMount } from "../composables/useShellMount";
 import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import ContextHelpTip from "./ContextHelpTip.vue";
-import { AppButton, AppMetricStrip, AppPanel, AppStatusChip, AppToolbar } from "./ui";
+import {
+  AppButton,
+  AppMetricStrip,
+  AppPanel,
+  AppStatusChip,
+  AppToolbar,
+} from "./ui";
 import { useDataStore } from "../stores/dataStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
@@ -116,6 +122,51 @@ const selectedPolygonDatasetSummary = computed(() => {
   return `Selected cached Polygon dataset ${parts.join(" · ")}.`;
 });
 
+const polygonAdjustedDisabled = computed(
+  () => String(polygonMarketDraft.value || "stocks").trim() !== "stocks",
+);
+const polygonAdjustedHint = computed(() =>
+  polygonAdjustedDisabled.value
+    ? "Split adjustment only applies to stock aggregate bars."
+    : "Stock aggregates default to split-adjusted bars.",
+);
+
+function parseDateInputMs(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const ms = Date.UTC(year, month - 1, day);
+  if (!Number.isFinite(ms)) return null;
+  const parsed = new Date(ms);
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return ms;
+}
+
+const polygonDateRangeHint = computed(() => {
+  const symbol = String(polygonSymbolDraft.value || "").trim();
+  const from = String(polygonFromDraft.value || "").trim();
+  const to = String(polygonToDraft.value || "").trim();
+  if (!symbol || !from || !to) {
+    return "Choose a symbol and date range. Downloads cache 1m bars; selected timeframes load from local resampling.";
+  }
+  const fromMs = parseDateInputMs(from);
+  const toMs = parseDateInputMs(to);
+  if (fromMs === null || toMs === null) return "Dates must use YYYY-MM-DD.";
+  if (toMs < fromMs) return "End date must be on or after start date.";
+  const days = Math.max(1, Math.floor((toMs - fromMs) / 86_400_000) + 1);
+  const requests = Math.max(1, Math.ceil(days / 30));
+  const plural = requests === 1 ? "" : "s";
+  return `About ${requests} Polygon request${plural} before cache reuse. Free REST keys are rate-limited; long ranges run in 30-day chunks.`;
+});
+
 const rowLabel = computed(() => {
   const rows = String(dataLen.value || "").trim();
   return rows || "—";
@@ -145,7 +196,11 @@ const dataSummaryChips = computed(() => {
 const datasetMetricItems = computed(() => [
   { key: "loaded_id", label: "Loaded ID", value: String(dataId.value || "—") },
   { key: "rows", label: "Rows", value: String(dataLen.value || "—") },
-  { key: "dataset", label: "Dataset", value: String(datasetLabel.value || "—") },
+  {
+    key: "dataset",
+    label: "Dataset",
+    value: String(datasetLabel.value || "—"),
+  },
   { key: "range", label: "Range", value: String(datasetRange.value || "—") },
 ]);
 
@@ -369,7 +424,12 @@ onBeforeUnmount(() => {
             @change="commitInputValue('csvPath', csvPathDraft)"
           />
           <AppToolbar aria-label="CSV data actions">
-            <AppButton size="sm" data-qa-action="data.csv.browse" :disabled="!canBrowseCsv" @click="browseCsv">
+            <AppButton
+              size="sm"
+              data-qa-action="data.csv.browse"
+              :disabled="!canBrowseCsv"
+              @click="browseCsv"
+            >
               Browse
             </AppButton>
             <AppButton
@@ -428,6 +488,7 @@ onBeforeUnmount(() => {
             size="sm"
             data-qa-action="data.sample.load"
             :disabled="sample.disabled"
+            :title="sample.detail || sample.description || sample.label"
             @click="loadSampleCsv(sample.path, index)"
           >
             {{ sample.label }}
@@ -450,7 +511,11 @@ onBeforeUnmount(() => {
             >
               Refresh cache
             </button>
-            <button type="button" data-qa-action="data.polygon.close" @click="dataStore.closePolygon()">
+            <button
+              type="button"
+              data-qa-action="data.polygon.close"
+              @click="dataStore.closePolygon()"
+            >
               Close
             </button>
           </div>
@@ -510,7 +575,8 @@ onBeforeUnmount(() => {
               readonly
             />
             <div class="muted mono">
-              Downloaded 1m data is cached here and reused automatically.
+              Downloaded 1m bars are cached here and reused automatically;
+              selected timeframes load from local resampling.
             </div>
           </div>
         </div>
@@ -579,7 +645,8 @@ onBeforeUnmount(() => {
             <label class="inlineCheck">
               <input
                 type="checkbox"
-                :checked="polygonAdjusted"
+                :checked="!polygonAdjustedDisabled && polygonAdjusted"
+                :disabled="polygonAdjustedDisabled"
                 @change="
                   setPolygonCheckboxValue(
                     'polygonAdjusted',
@@ -589,6 +656,7 @@ onBeforeUnmount(() => {
               />
               Adjusted prices
             </label>
+            <div class="muted mono">{{ polygonAdjustedHint }}</div>
           </div>
         </div>
 
@@ -624,6 +692,8 @@ onBeforeUnmount(() => {
             />
           </div>
         </div>
+
+        <div class="muted mono">{{ polygonDateRangeHint }}</div>
 
         <div class="actions">
           <button
@@ -720,7 +790,10 @@ onBeforeUnmount(() => {
             <h3 class="panelPaneTitle">Dataset context</h3>
           </div>
         </div>
-        <AppMetricStrip :items="datasetMetricItems" aria-label="Dataset context metrics" />
+        <AppMetricStrip
+          :items="datasetMetricItems"
+          aria-label="Dataset context metrics"
+        />
       </section>
 
       <section class="pane">

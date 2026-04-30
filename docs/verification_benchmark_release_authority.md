@@ -87,7 +87,7 @@ GPU validation `-Quick` is a smoke lane, not a full-profile replacement. It comp
 | Is the local machine/repo ready for this variant? | `scripts/run_release_doctor.ps1` and `readiness.json` | Doctor runs Tauri config sync and release-readiness core. It does not build, stage, hash, or smoke a package. |
 | Was a candidate locally rehearsed? | `scripts/run_release_candidate_gate.ps1` and `summary.json` / `summary.md` | Summary is broad rehearsal evidence, not a replacement for specific artifacts. |
 | What exactly was built? | `provenance.json` first, `provenance.txt` secondary | Includes build identity, toolchain, and environment evidence. |
-| Which assets were staged? | `manifest.json` | Current required resources include CatBoost native DLL and `double_crossover.prebuilt.ptx`. |
+| Which assets were staged? | `manifest.json` | Current required resources include CatBoost native DLL, bundled synthetic sample CSV, and `double_crossover.prebuilt.ptx`. |
 | What are the asset hashes? | `SHA256SUMS.txt`, interpreted against `manifest.json` | Hash file alone is not variant authority. |
 | Did the packaged artifact launch? | `packaged-smoke-summary.json` | Check `smoke_mode`; raw release-binary smoke is not bundle-level packaging proof. |
 | Are artifact/report outputs still compatible? | `node scripts/run_output_parity_check.mjs` | Separate from release-candidate gate because output parity is skipped there. |

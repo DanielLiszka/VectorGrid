@@ -6,6 +6,8 @@ Vue + Vite frontend workspace for the Tauri desktop app.
 
 This frontend is currently internal work-in-progress. It remains in the repository so the backend/frontend contract is visible, but it is not a supported public application for the current backend/CLI preview release.
 
+When maintainers produce a signed Windows desktop release candidate, Simple Mode is the public first-run surface. It is intentionally limited to loading sample or CSV candles, choosing a conventional strategy, running optimization, optionally validating, and copying a compact run summary. Advanced Mode remains the full workstation for live, options, ML, aggregate, diagnostics, artifact, and expert controls.
+
 For public usage, start from the root `README.md` backend CLI commands. Use the commands below only when intentionally working on the frontend.
 
 ## Commands

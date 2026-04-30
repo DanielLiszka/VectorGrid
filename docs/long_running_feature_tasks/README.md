@@ -22,7 +22,7 @@ The plans are intentionally separate from the existing roadmap files. Existing d
 
 ## Detailed Sub-Implementation Plans
 
-These docs refine the remaining work from the first eight plans into smaller implementation tracks. Each track has its own audit findings, external research references, additive boundary, checklist, and validation plan.
+These docs refine the remaining work from the first eight plans into smaller implementation tracks and capture later release-polish tracks as they become concrete. Each track has its own audit findings, external research references where relevant, additive boundary, checklist, and validation plan.
 
 9. [Local Paper Bracket Preview And Broker Observation Foundation](09_local_paper_bracket_preview_and_observation_foundation.md)
 10. [Portfolio Feasibility Exports And Construction Research Gate](10_portfolio_feasibility_exports_and_construction_research_gate.md)
@@ -30,6 +30,7 @@ These docs refine the remaining work from the first eight plans into smaller imp
 12. [Frontend QA Fixture Matrix, CI Artifacts, And Desktop Smoke Expansion](12_frontend_qa_fixture_matrix_ci_artifacts_desktop_smoke.md)
 13. [Options Finalist Stress And Monte Carlo Diagnostics](13_options_finalist_stress_and_monte_carlo_diagnostics.md)
 14. [GPU Validation Non-Benchmark Productization](14_gpu_validation_nonbenchmark_productization.md)
+15. [Simple Mode Public Workflow Polish](15_simple_mode_public_workflow_polish.md)
 
 ## Research Pass Assessment
 
@@ -43,6 +44,7 @@ The original plans are scoped and actionable, but they are not all equally imple
 - Frontend QA: implementation-ready for fixture ownership, dashboard artifacts, and non-default desktop smoke expansion.
 - Options MC: implementation-ready for contract and frontend diagnostic scaffolding only; options-local MC engine requires a separate bounded algorithm slice.
 - GPU validation: implementation-ready for docs and disabled-CI metadata only while CUDA benchmark work is deferred.
+- Simple Mode polish: implementation-ready for frontend-first public workflow clarity, run summaries, optional validation recommendations, empty/error states, and release-facing Simple path QA.
 
 The research notes are captured in [External Research Notes](external_research_notes_2026-04-29.md).
 

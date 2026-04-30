@@ -1,17 +1,29 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ArrowRight, CheckCircle2, Circle, CircleAlert, CircleDot, Play, ShieldCheck } from 'lucide-vue-next'
+import { ArrowRight, CheckCircle2, Circle, CircleAlert, CircleDot, Clipboard, FileChartColumn, ListTodo, Play, Save, ShieldCheck } from 'lucide-vue-next'
 import { useShellMount } from '../composables/useShellMount'
 import { useGuidedWorkflowReadiness, type GuidedChecklistItem, type GuidedStatusTone } from '../composables/useGuidedWorkflowReadiness'
+import {
+  TASK_CENTER_PANEL_ID,
+  openTaskCenter as requestTaskCenterOpen,
+  useTaskCenterVisibility,
+} from '../composables/useTaskCenterVisibility'
+import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
+import AppMetricStrip from './ui/AppMetricStrip.vue'
+import { copyTextToDesktopClipboard } from '../services/desktopClipboard'
+import { buildSimpleSummaryDefaultName, saveSimpleSummaryMarkdown } from '../services/simpleSummaryService'
+import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { type GuidedStep, useSettingsStore } from '../stores/settingsStore'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { buildSimpleRunSummary, formatSimpleRunSummaryMarkdown } from '../utils/simpleWorkflowModel'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
+const analysisStore = useAnalysisStore()
 const dataStore = useDataStore()
 const executionStore = useExecutionStore()
 const optimizeStore = useOptimizeStore()
@@ -19,12 +31,18 @@ const settingsStore = useSettingsStore()
 const validationStore = useValidationStore()
 const workflowStore = useWorkflowStore()
 const readiness = useGuidedWorkflowReadiness()
+const taskCenterOpen = useTaskCenterVisibility()
+const { activeTaskCount, centerStatusLabel, taskHeadline } = useTaskLifecycleSummary()
 
 const { mountReady } = useShellMount('#guidedVueShellMount', {
   paneSelector: '#guidedShellGrid',
   paneDatasetKey: 'vueGuided',
 })
 
+const {
+  bestStats,
+  topRows,
+} = storeToRefs(analysisStore)
 const {
   canApplyTimeframe,
   canBrowseCsv,
@@ -96,18 +114,19 @@ type GuidedStepMeta = {
   subtitle: string
 }
 
-type GuidedPrimaryAction = 'data' | 'strategy' | 'optimize' | 'validate' | 'trade' | 'runner'
+type GuidedPrimaryAction = 'data' | 'sample' | 'strategy' | 'optimize' | 'validate' | 'results' | 'runner'
 
 const stepMeta: GuidedStepMeta[] = [
   { key: 'data', label: 'Data', subtitle: 'Load candles' },
   { key: 'strategy', label: 'Strategy', subtitle: 'Pick template' },
   { key: 'optimize', label: 'Optimize', subtitle: 'Find candidates' },
-  { key: 'validate', label: 'Validate', subtitle: 'Check robustness' },
-  { key: 'trade', label: 'Trade Ready', subtitle: 'Dry-run first' },
+  { key: 'validate', label: 'Validate', subtitle: 'Optional evidence' },
 ]
+const visibleGuidedStepKeys = new Set<GuidedStep>(stepMeta.map((step) => step.key))
 
 const sampleIndexDraft = ref(0)
 const timeframeDraft = ref('')
+const copySummaryStatus = ref('')
 
 watch(
   sampleCsvOptions,
@@ -127,7 +146,9 @@ watch(
 )
 
 const stamp = computed(() => formatUiTimeFromUnixMs(dataUpdatedAtUnixMs.value))
-const activeStep = computed<GuidedStep>(() => guidedStep.value)
+const activeStep = computed<GuidedStep>(() =>
+  visibleGuidedStepKeys.has(guidedStep.value) ? guidedStep.value : 'validate',
+)
 const currentStrategyLabel = computed(() => {
   const value = String(strategyKind.value || '').trim() || 'DoubleMa'
   if (value === 'DoubleMa') return 'Double MA crossover'
@@ -143,17 +164,26 @@ const datasetSummary = computed(() => {
   return parts.join(' · ')
 })
 const selectedSample = computed(() => sampleCsvOptions.value[sampleIndexDraft.value] ?? null)
+const selectedSampleReady = computed(() => Boolean(selectedSample.value && !selectedSample.value.disabled))
+const selectedSampleDetail = computed(() => {
+  const sample = selectedSample.value
+  if (!sample) return ''
+  return String(
+    sample.detail ||
+      [
+        sample.description,
+        sample.timeframe ? `${sample.timeframe} candles` : '',
+        sample.rowCount != null ? `${sample.rowCount.toLocaleString()} rows` : '',
+        sample.range,
+        sample.researchNote,
+      ].filter(Boolean).join(' · '),
+  ).trim()
+})
 const selectedCandidateTitle = computed(() => {
+  if (!readiness.optimizationReady.value) return 'No ranked candidate yet'
   const title = String(readiness.selectedTopTitle.value || '').trim()
   if (!title || title === 'No ranked candidate selected.' || title === '—') return 'Best available candidate'
   return title
-})
-const selectedCandidateSummary = computed(() => {
-  const summary = String(readiness.selectedTopSummary.value || '').trim()
-  if (!summary || summary === 'No ranked candidates are available.' || summary === '—') {
-    return 'Run optimization to populate the shortlist.'
-  }
-  return summary
 })
 const validationPreviewText = computed(() => {
   const parts = [
@@ -163,25 +193,94 @@ const validationPreviewText = computed(() => {
   ].filter((part) => part && part !== '-')
   return parts.join(' ') || String(validationOutputPreview.value || '').trim() || 'No validation output yet.'
 })
-const guidedRunDisabled = computed(() => Boolean(runDisabled.value || !readiness.liveStrategySupported.value))
+const simpleRunSummary = computed(() => buildSimpleRunSummary({
+  datasetLabel: datasetLabel.value,
+  dataId: dataId.value,
+  dataTimeframe: dataTimeframe.value,
+  dataLen: dataLen.value,
+  datasetRange: datasetRange.value,
+  strategyKind: strategyKind.value,
+  objective: objective.value,
+  presetProfile: presetProfile.value,
+  backend: backend.value,
+  optimizationReady: readiness.optimizationReady.value,
+  selectedCandidateTitle: readiness.selectedTopTitle.value,
+  selectedCandidateSummary: readiness.selectedTopSummary.value,
+  topRows: topRows.value,
+  bestStats: bestStats.value,
+  validationReady: readiness.validationReady.value,
+  validationRows: tableRowCount.value,
+  validationWarnings: validationWarningSummary.value,
+  validationVerdictTitle: readiness.validationVerdictTitle.value,
+  validationVerdictBody: readiness.validationVerdictBody.value,
+  validationVerdictTone: readiness.validationVerdictTone.value,
+  validationPreview: validationPreviewText.value,
+}))
+const validationRecommendation = computed(() => simpleRunSummary.value.validation.recommendation)
+const validationCandidateLabel = computed(() => (readiness.optimizationReady.value ? selectedCandidateTitle.value : 'Run optimization first'))
+const validationWarningsLabel = computed(() => (
+  readiness.validationReady.value
+    ? String(validationWarningSummary.value || 'None reported')
+    : 'Run validation after optimization'
+))
+const executionCredentialSummary = computed(() => {
+  if (dryRun.value && !hasExecutionCredentials.value) return 'Not required for dry-run'
+  return hasExecutionCredentials.value || dryRun.value ? keyStateLabel.value : 'Missing'
+})
+const advancedModeLabel = computed(() => {
+  if (activeStep.value === 'data') return 'Open full data tools'
+  if (activeStep.value === 'validate') return 'Open full validation report'
+  return 'Open full strategy controls'
+})
+const guidedRunDisabled = computed(() =>
+  Boolean(runDisabled.value || !readiness.datasetReady.value || !readiness.simpleOptimizationSupported.value),
+)
+const guidedValidateDisabled = computed(() =>
+  Boolean(validateDisabled.value || !readiness.optimizationReady.value),
+)
+const guidedCanRunOnce = computed(() => Boolean(dryRun.value && canRunOnce.value))
 const guidedCanStartRunner = computed(() => Boolean(dryRun.value && canStartRunner.value))
+const guidedRunDisabledReason = computed(() => {
+  if (!readiness.datasetReady.value) return 'Load data before optimization.'
+  if (!readiness.simpleOptimizationSupported.value) return 'Choose Double MA or Composite before optimizing.'
+  if (runDisabled.value) return String(runReadinessHint.value || 'Optimization is not ready yet.').trim()
+  return ''
+})
+const guidedValidateDisabledReason = computed(() => {
+  if (!readiness.optimizationReady.value) return 'Run optimization before validation.'
+  if (validateDisabled.value) return 'Validation is not ready yet.'
+  return ''
+})
+const optimizeStatusLabel = computed(() => (
+  String(progressMeta.value || '').trim()
+  || guidedRunDisabledReason.value
+  || (readiness.optimizationReady.value ? 'Results ready.' : String(runReadinessHint.value || '').trim())
+  || 'Ready to optimize.'
+))
 const primaryGuidedAction = computed<{
   kind: GuidedPrimaryAction
   label: string
   detail: string
 }>(() => {
   if (!readiness.datasetReady.value) {
+    if (selectedSampleReady.value) {
+      return {
+        kind: 'sample',
+        label: 'Load sample data',
+        detail: selectedSampleDetail.value || `${selectedSample.value?.label || 'Sample candles'} is ready for a first run.`,
+      }
+    }
     return {
       kind: 'data',
       label: 'Choose data',
       detail: 'Start by loading CSV, sample, or Polygon candles.',
     }
   }
-  if (!readiness.liveStrategySupported.value) {
+  if (!readiness.simpleOptimizationSupported.value) {
     return {
       kind: 'strategy',
       label: 'Pick strategy',
-      detail: 'Use Double MA or Composite for the full guided path.',
+      detail: 'Use Double MA or Composite for the streamlined Simple path.',
     }
   }
   if (!readiness.optimizationReady.value) {
@@ -194,39 +293,43 @@ const primaryGuidedAction = computed<{
   if (!readiness.validationReady.value) {
     return {
       kind: 'validate',
-      label: 'Run validation',
-      detail: 'Check whether the selected candidate survives holdout review.',
-    }
-  }
-  if (!readiness.runnerReady.value) {
-    return {
-      kind: 'trade',
-      label: 'Review trade readiness',
-      detail: 'Confirm symbol, dry-run, credentials, and live candles.',
+      label: 'Optional validation',
+      detail: 'Optimization results are ready. Validation adds robustness evidence when you need it.',
     }
   }
   return {
-    kind: 'runner',
-    label: 'Start dry-run runner',
-    detail: 'Everything required for a dry-run runner is ready.',
+    kind: 'results',
+    label: 'Review results',
+    detail: 'Optimization and validation outputs are ready for inspection or export.',
   }
 })
 const primaryGuidedActionDisabled = computed(() => {
+  if (primaryGuidedAction.value.kind === 'sample') return !selectedSampleReady.value
   if (primaryGuidedAction.value.kind === 'optimize') return guidedRunDisabled.value
-  if (primaryGuidedAction.value.kind === 'validate') return Boolean(validateDisabled.value)
+  if (primaryGuidedAction.value.kind === 'validate') return guidedValidateDisabled.value
   if (primaryGuidedAction.value.kind === 'runner') return !guidedCanStartRunner.value
   return false
+})
+const primaryGuidedActionTitle = computed(() => {
+  if (!primaryGuidedActionDisabled.value) return primaryGuidedAction.value.label
+  if (primaryGuidedAction.value.kind === 'sample') return 'No enabled sample dataset is available.'
+  if (primaryGuidedAction.value.kind === 'optimize') return guidedRunDisabledReason.value
+  if (primaryGuidedAction.value.kind === 'validate') return guidedValidateDisabledReason.value
+  if (primaryGuidedAction.value.kind === 'results') return 'Review the full optimization and validation outputs.'
+  if (primaryGuidedAction.value.kind === 'runner') return 'Confirm dry-run readiness and live candles before starting the runner.'
+  return primaryGuidedAction.value.detail
 })
 
 const stepStatuses = computed<Record<GuidedStep, GuidedStatusTone>>(() => ({
   data: readiness.datasetReady.value ? 'done' : 'blocked',
-  strategy: readiness.liveStrategySupported.value ? 'done' : 'warning',
-  optimize: readiness.optimizationReady.value ? 'done' : readiness.datasetReady.value && readiness.liveStrategySupported.value ? 'ready' : 'blocked',
+  strategy: readiness.simpleOptimizationSupported.value ? 'done' : 'warning',
+  optimize: readiness.optimizationReady.value ? 'done' : readiness.datasetReady.value && readiness.simpleOptimizationSupported.value ? 'ready' : 'blocked',
   validate: readiness.validationReady.value ? readiness.validationVerdictTone.value : readiness.optimizationReady.value ? 'ready' : 'blocked',
   trade: readiness.runnerReady.value ? 'ready' : readiness.validationReady.value ? 'warning' : 'blocked',
 }))
 
-function stepStatusLabel(tone: GuidedStatusTone): string {
+function stepStatusLabel(tone: GuidedStatusTone, step?: GuidedStep): string {
+  if (step === 'validate' && tone === 'blocked' && !readiness.optimizationReady.value) return 'Later'
   if (tone === 'done') return 'Done'
   if (tone === 'ready') return 'Ready'
   if (tone === 'warning') return 'Review'
@@ -269,13 +372,43 @@ function runValidation(): void {
   optimizeStore.runValidation()
 }
 
+async function copySimpleSummary(): Promise<void> {
+  copySummaryStatus.value = 'Copying summary...'
+  const result = await copyTextToDesktopClipboard(
+    formatSimpleRunSummaryMarkdown(simpleRunSummary.value),
+  )
+  copySummaryStatus.value = result.ok
+    ? 'Copied Simple summary.'
+    : `Copy failed${result.error ? `: ${result.error}` : '.'}`
+}
+
+async function saveSimpleSummary(): Promise<void> {
+  copySummaryStatus.value = 'Saving summary...'
+  try {
+    const saved = await saveSimpleSummaryMarkdown(
+      formatSimpleRunSummaryMarkdown(simpleRunSummary.value),
+      buildSimpleSummaryDefaultName(simpleRunSummary.value.dataset.label),
+    )
+    copySummaryStatus.value = saved
+      ? `Saved Simple summary: ${saved.path}`
+      : 'Save canceled.'
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || '')
+    copySummaryStatus.value = `Save failed${message ? `: ${message}` : '.'}`
+  }
+}
+
 function runPrimaryGuidedAction(): void {
   const action = primaryGuidedAction.value.kind
   if (action === 'data') selectStep('data')
+  else if (action === 'sample') {
+    selectStep('data')
+    loadSelectedSample()
+  }
   else if (action === 'strategy') selectStep('strategy')
   else if (action === 'optimize') runOptimization()
   else if (action === 'validate') runValidation()
-  else if (action === 'trade') selectStep('trade')
+  else if (action === 'results') openAdvanced(readiness.validationReady.value ? 'validate' : 'optimize')
   else executionStore.startRunner()
 }
 
@@ -288,6 +421,16 @@ function openAdvanced(area: 'data' | 'optimize' | 'validate' | 'aggregate' | 'li
   else workflowStore.selectWorkspace('live')
 }
 
+function openAdvancedForActiveStep(): void {
+  if (activeStep.value === 'data') openAdvanced('data')
+  else if (activeStep.value === 'validate') openAdvanced('validate')
+  else openAdvanced('optimize')
+}
+
+function openTaskCenter(): void {
+  requestTaskCenterOpen(taskCenterOpen)
+}
+
 function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   if (item.tone === 'done') return CheckCircle2
   if (item.tone === 'ready') return CircleDot
@@ -298,14 +441,15 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 
 <template>
   <Teleport v-if="mountReady" to="#guidedVueShellMount">
-    <section class="guidedRoot" aria-label="Guided workflow">
+    <section class="guidedRoot" aria-label="Simple workflow" data-qa-panel="simple.workflow">
       <header class="guidedHero">
         <div class="guidedHeroCopy">
-          <div class="guidedEyebrow">Guided Mode</div>
-          <h2>Optimize, validate, then dry-run.</h2>
+          <div class="guidedEyebrow">Simple Mode</div>
+          <h2>Optimize backtests. Validate when needed.</h2>
           <p>
-            This view keeps the beginner path narrow while Advanced Mode keeps
-            every research, ML, options, diagnostic, and artifact workflow.
+            Simple view keeps the standard workflow focused: load candles,
+            choose a strategy, run a backtest optimization, then optionally
+            validate the leading candidate.
           </p>
         </div>
         <div class="guidedHeroActions">
@@ -313,18 +457,31 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             <span>Next</span>
             <strong>{{ primaryGuidedAction.label }}</strong>
             <small>{{ primaryGuidedAction.detail }}</small>
-            <button type="button" class="guidedPrimary" data-qa-action="guided.primaryAction.run" :disabled="primaryGuidedActionDisabled" @click="runPrimaryGuidedAction">
+            <button type="button" class="guidedPrimary" data-qa-action="guided.primaryAction.run" :disabled="primaryGuidedActionDisabled" :title="primaryGuidedActionTitle" @click="runPrimaryGuidedAction">
               <ArrowRight :size="15" aria-hidden="true" />
               {{ primaryGuidedAction.label }}
             </button>
           </div>
-          <button type="button" class="guidedSecondary" data-qa-action="guided.advancedMode.open" @click="settingsStore.setUiMode('advanced')">
-            Advanced Mode
+          <button
+            type="button"
+            class="guidedSecondary"
+            :class="{ active: activeTaskCount > 0 || taskCenterOpen }"
+            :aria-controls="TASK_CENTER_PANEL_ID"
+            :aria-expanded="taskCenterOpen ? 'true' : 'false'"
+            aria-haspopup="dialog"
+            :aria-label="`Open task center. ${centerStatusLabel}. ${taskHeadline}`"
+            @click="openTaskCenter"
+          >
+            <ListTodo :size="15" aria-hidden="true" />
+            {{ centerStatusLabel }}
+          </button>
+          <button type="button" class="guidedSecondary" data-qa-action="guided.advancedMode.open" :aria-label="advancedModeLabel" @click="openAdvancedForActiveStep">
+            {{ advancedModeLabel }}
           </button>
         </div>
       </header>
 
-      <nav class="guidedSteps" aria-label="Guided workflow steps">
+      <nav class="guidedSteps" aria-label="Simple workflow steps">
           <button
             v-for="step in stepMeta"
             :key="step.key"
@@ -340,15 +497,15 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             <span class="guidedStepLabel">{{ step.label }}</span>
             <span class="guidedStepSubtitle">{{ step.subtitle }}</span>
           </span>
-          <span class="guidedStepState">{{ stepStatusLabel(stepStatuses[step.key]) }}</span>
+          <span class="guidedStepState">{{ stepStatusLabel(stepStatuses[step.key], step.key) }}</span>
         </button>
       </nav>
 
       <section class="guidedLayout">
-        <aside class="guidedRail" aria-label="Guided checklist">
+        <section class="guidedRail" aria-label="Simple checklist">
           <div class="guidedRailHeader">
             <div class="guidedEyebrow">Readiness</div>
-            <h3>Current path</h3>
+            <h3>Backtest path</h3>
           </div>
           <ol class="guidedChecklist">
             <li v-for="item in readiness.guidedChecklist.value" :key="item.label" :class="item.tone">
@@ -360,18 +517,18 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             </li>
           </ol>
           <div class="guidedAdvancedNote">
-            <strong>Advanced Mode stays complete.</strong>
-            Meta analysis, Stage 5 ML confidence, ML Signal/CatBoost, options
-            optimization, campaigns, diagnostics, and artifact replay remain
-            there.
+            <strong>Need the full workstation?</strong>
+            Advanced Mode keeps live trading, ML, options, campaign,
+            diagnostic, and artifact replay tools available without crowding
+            this path.
           </div>
-          <button type="button" class="guidedSecondary fullWidth" @click="openAdvanced('aggregate')">
+          <button type="button" class="guidedSecondary fullWidth" data-qa-action="guided.advancedResearch.open" @click="openAdvanced('aggregate')">
             Open advanced research tools
           </button>
-        </aside>
+        </section>
 
-        <main class="guidedMain">
-          <section v-if="activeStep === 'data'" class="guidedPane" aria-label="Guided data setup">
+        <section class="guidedMain" aria-label="Simple step detail">
+          <section v-if="activeStep === 'data'" class="guidedPane" aria-label="Simple data setup" data-qa-panel="simple.data">
             <div class="guidedPaneHeader">
               <div>
                 <div class="guidedEyebrow">Step 1</div>
@@ -429,15 +586,17 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               </label>
             </div>
 
+            <p v-if="selectedSampleDetail" class="guidedMuted">{{ selectedSampleDetail }}</p>
+
             <div class="guidedActions">
-              <button type="button" class="guidedPrimary" data-qa-action="guided.data.csv.browse" :disabled="!canBrowseCsv" @click="dataStore.browseCsv()">
+              <button type="button" class="guidedPrimary" data-qa-action="guided.data.sample.load" :disabled="!selectedSampleReady" @click="loadSelectedSample">
+                Load sample
+              </button>
+              <button type="button" class="guidedSecondary" data-qa-action="guided.data.csv.browse" :disabled="!canBrowseCsv" @click="dataStore.browseCsv()">
                 Browse CSV
               </button>
               <button type="button" class="guidedSecondary" data-qa-action="guided.data.csv.load" :disabled="!canLoadCsv" @click="dataStore.loadCsv()">
                 Load CSV
-              </button>
-              <button type="button" class="guidedSecondary" data-qa-action="guided.data.sample.load" :disabled="!selectedSample || selectedSample.disabled" @click="loadSelectedSample">
-                Load sample
               </button>
               <button type="button" class="guidedSecondary" data-qa-action="guided.data.polygon.open" :disabled="!canPolygonOpen" @click="dataStore.openPolygon()">
                 Polygon data
@@ -450,7 +609,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               </button>
             </div>
 
-            <p class="guidedMuted">{{ dataStatusLine }}</p>
+            <p class="guidedMuted" role="status" aria-live="polite">{{ dataStatusLine }}</p>
             <p v-if="dataFieldHint" class="guidedWarning">{{ dataFieldHint }}</p>
             <p class="guidedMuted">{{ dataTimeframeHint }}</p>
             <p class="guidedMuted mono">{{ datasetContext }}</p>
@@ -459,12 +618,12 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             </button>
           </section>
 
-          <section v-else-if="activeStep === 'strategy'" class="guidedPane" aria-label="Guided strategy setup">
+          <section v-else-if="activeStep === 'strategy'" class="guidedPane" aria-label="Simple strategy setup" data-qa-panel="simple.strategy">
             <div class="guidedPaneHeader">
               <div>
                 <div class="guidedEyebrow">Step 2</div>
                 <h3>Pick a conventional strategy</h3>
-                <p>Guided trading readiness starts with live-supported strategies.</p>
+                <p>Simple mode starts with stable backtest templates and sensible defaults.</p>
               </div>
             </div>
 
@@ -484,7 +643,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
                   <ShieldCheck :size="18" aria-hidden="true" />
                   <h4>Composite signal</h4>
                 </div>
-                <p>Conventional composite signal path that can still move into live execution.</p>
+                <p>Conventional multi-signal template for optimization and validation.</p>
                 <button type="button" class="guidedPrimary" data-qa-action="guided.strategy.template.compositeCpu" @click="setTemplate('CompositeCpu')">
                   Use Composite
                 </button>
@@ -525,7 +684,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
                 </select>
               </label>
               <label>
-                Backend
+                Engine
                 <select :value="backend" @change="optimizeStore.setSelectField('backend', ($event.target as HTMLSelectElement).value)">
                   <option value="Auto">Auto</option>
                   <option value="CpuOnly">CPU only</option>
@@ -533,7 +692,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               </label>
             </div>
             <p class="guidedMuted">
-              Advanced Mode keeps the full backend route controls, including GPU and hybrid routes.
+              Advanced Mode keeps the full engine and route controls, including GPU and hybrid routes.
             </p>
 
             <div class="guidedActions">
@@ -546,7 +705,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
             </div>
           </section>
 
-          <section v-else-if="activeStep === 'optimize'" class="guidedPane" aria-label="Guided optimization">
+          <section v-else-if="activeStep === 'optimize'" class="guidedPane" aria-label="Simple optimization" data-qa-panel="simple.optimize">
             <div class="guidedPaneHeader">
               <div>
                 <div class="guidedEyebrow">Step 3</div>
@@ -564,12 +723,12 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
                 <strong>{{ currentStrategyLabel }}</strong>
               </article>
               <article>
-                <span>Backend</span>
-                <strong>{{ backend }}</strong>
+                <span>Engine</span>
+                <strong>{{ simpleRunSummary.strategy.engineLabel }}</strong>
               </article>
               <article>
                 <span>Status</span>
-                <strong>{{ progressMeta || runReadinessHint }}</strong>
+                <strong>{{ optimizeStatusLabel }}</strong>
               </article>
             </div>
 
@@ -578,7 +737,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               <button v-if="canCancel" type="button" class="guidedDanger" data-qa-action="guided.optimize.cancel" @click="optimizeStore.cancelOptimization()">
                 Stop run
               </button>
-              <button v-else type="button" class="guidedPrimary" data-qa-action="guided.optimize.run" :disabled="guidedRunDisabled" @click="runOptimization">
+              <button v-else type="button" class="guidedPrimary" data-qa-action="guided.optimize.run" :disabled="guidedRunDisabled" :title="guidedRunDisabledReason || 'Run optimization'" @click="runOptimization">
                 <Play :size="15" aria-hidden="true" />
                 Run optimization
               </button>
@@ -589,56 +748,101 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
                 Open results in Advanced
               </button>
             </div>
+            <p v-if="guidedRunDisabledReason" class="guidedMuted" role="status" aria-live="polite">{{ guidedRunDisabledReason }}</p>
 
-            <section class="guidedCandidate" aria-label="Selected candidate summary">
-              <div class="guidedEyebrow">Candidate</div>
-              <h4>{{ selectedCandidateTitle }}</h4>
-              <p>{{ selectedCandidateSummary }}</p>
+            <section class="guidedCandidate guidedRunSummary" aria-label="Simple run summary" data-qa-state="guided.optimization.summary">
+              <div class="guidedEyebrow">Run summary</div>
+              <h4>{{ simpleRunSummary.optimization.candidateTitle }}</h4>
+              <p>{{ simpleRunSummary.optimization.candidateSummary }}</p>
+              <AppMetricStrip
+                v-if="simpleRunSummary.optimization.metricItems.length"
+                :items="simpleRunSummary.optimization.metricItems"
+                aria-label="Simple optimization metrics"
+              />
+              <div class="guidedActions">
+                <button type="button" class="guidedSecondary" data-qa-action="guided.summary.copy" :disabled="!readiness.optimizationReady.value" @click="copySimpleSummary">
+                  <Clipboard :size="15" aria-hidden="true" />
+                  Copy summary
+                </button>
+                <button type="button" class="guidedSecondary" data-qa-action="guided.summary.save" :disabled="!readiness.optimizationReady.value" @click="saveSimpleSummary">
+                  <Save :size="15" aria-hidden="true" />
+                  Save summary
+                </button>
+              </div>
+              <p v-if="copySummaryStatus" class="guidedMuted" role="status" aria-live="polite">{{ copySummaryStatus }}</p>
             </section>
           </section>
 
-          <section v-else-if="activeStep === 'validate'" class="guidedPane" aria-label="Guided validation">
+          <section v-else-if="activeStep === 'validate'" class="guidedPane" aria-label="Simple validation" data-qa-panel="simple.validate">
             <div class="guidedPaneHeader">
               <div>
                 <div class="guidedEyebrow">Step 4</div>
-                <h3>{{ readiness.validationVerdictTitle.value }}</h3>
-                <p>{{ readiness.validationVerdictBody.value }}</p>
+                <h3>{{ validationRecommendation.title }}</h3>
+                <p>{{ validationRecommendation.body }}</p>
               </div>
-              <span class="guidedStatusPill" :class="readiness.validationVerdictTone.value">
-                {{ stepStatusLabel(readiness.validationVerdictTone.value) }}
+              <span class="guidedStatusPill" :class="validationRecommendation.tone">
+                {{ stepStatusLabel(validationRecommendation.tone, 'validate') }}
               </span>
             </div>
 
             <div class="guidedSummaryGrid">
               <article>
-                <span>Rows</span>
-                <strong>{{ tableRowCount }}</strong>
+                <span>Evidence</span>
+                <strong>{{ simpleRunSummary.validation.rowsLabel }}</strong>
               </article>
               <article>
                 <span>Candidate</span>
-                <strong>{{ selectedCandidateTitle }}</strong>
+                <strong>{{ validationCandidateLabel }}</strong>
               </article>
               <article>
                 <span>Warnings</span>
-                <strong>{{ validationWarningSummary || 'None reported' }}</strong>
+                <strong>{{ validationWarningsLabel }}</strong>
               </article>
             </div>
 
-            <p class="guidedMuted">{{ validationPreviewText }}</p>
+            <section class="guidedCandidate guidedRecommendation" :class="validationRecommendation.tone" aria-label="Validation recommendation" data-qa-state="guided.validation.recommendation">
+              <div class="guidedEyebrow">Recommendation</div>
+              <h4>{{ validationRecommendation.title }}</h4>
+              <p>{{ validationRecommendation.body }}</p>
+              <AppMetricStrip
+                :items="simpleRunSummary.validation.metricItems"
+                aria-label="Simple validation metrics"
+              />
+            </section>
+            <p class="guidedMuted" role="status" aria-live="polite">{{ validationPreviewText }}</p>
             <div class="guidedActions">
-              <button type="button" class="guidedPrimary" data-qa-action="guided.validation.run" :disabled="validateDisabled" @click="runValidation">
+              <button type="button" class="guidedPrimary" data-qa-action="guided.validation.run" :disabled="guidedValidateDisabled" :title="guidedValidateDisabledReason || 'Run validation'" @click="runValidation">
                 Run validation
               </button>
-              <button type="button" class="guidedSecondary" data-qa-action="guided.validation.continueToTrade" :disabled="!readiness.validationReady.value" @click="selectStep('trade')">
-                Continue to trade readiness
+              <button type="button" class="guidedSecondary" @click="openAdvanced('optimize')">
+                Review optimization results
               </button>
               <button type="button" class="guidedSecondary" data-qa-action="guided.validation.advanced.open" @click="openAdvanced('validate')">
                 Full validation report
               </button>
+              <button type="button" class="guidedSecondary" data-qa-action="guided.summary.copy" :disabled="!readiness.optimizationReady.value" @click="copySimpleSummary">
+                <Clipboard :size="15" aria-hidden="true" />
+                Copy summary
+              </button>
+              <button type="button" class="guidedSecondary" data-qa-action="guided.summary.save" :disabled="!readiness.optimizationReady.value" @click="saveSimpleSummary">
+                <Save :size="15" aria-hidden="true" />
+                Save summary
+              </button>
             </div>
+            <p v-if="guidedValidateDisabledReason" class="guidedMuted" role="status" aria-live="polite">{{ guidedValidateDisabledReason }}</p>
+            <p v-if="copySummaryStatus" class="guidedMuted" role="status" aria-live="polite">{{ copySummaryStatus }}</p>
+            <section class="guidedCandidate" aria-label="Optional live execution handoff">
+              <div class="guidedEyebrow">Optional next step</div>
+              <h4>Paper/live trading stays in Advanced Mode</h4>
+              <p>Simple Mode stops at optimization and optional validation. Use Advanced Mode when you are ready to review dry-run, broker, and feed controls.</p>
+              <button type="button" class="guidedSecondary" data-qa-action="guided.validation.continueToTrade" @click="openAdvanced('live')">
+                <FileChartColumn :size="15" aria-hidden="true" />
+                Advanced live tools
+              </button>
+            </section>
           </section>
 
-          <section v-else class="guidedPane" aria-label="Guided paper and live readiness">
+          <section v-else class="guidedPane" aria-label="Simple paper and live readiness">
             <div class="guidedPaneHeader">
               <div>
                 <div class="guidedEyebrow">Step 5</div>
@@ -694,7 +898,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               Dry-run only
             </label>
             <p v-if="!dryRun" class="guidedWarning">
-              Dry-run is off. Guided Mode will not start the auto-runner in this state; open Advanced Mode for broker-armed launch after manual review.
+              Dry-run is off. Simple Mode will not start the auto-runner in this state; open Advanced Mode for broker-armed launch after manual review.
             </p>
 
             <div class="guidedSummaryGrid">
@@ -712,12 +916,12 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               </article>
               <article>
                 <span>Credentials</span>
-                <strong>{{ hasExecutionCredentials || dryRun ? keyStateLabel : 'Missing' }}</strong>
+                <strong>{{ executionCredentialSummary }}</strong>
               </article>
             </div>
 
             <div class="guidedActions">
-              <button type="button" class="guidedSecondary" :disabled="!canRunOnce" @click="executionStore.runOnce()">
+              <button type="button" class="guidedSecondary" :disabled="!guidedCanRunOnce" @click="executionStore.runOnce()">
                 Simulate once
               </button>
               <button v-if="canStopLive" type="button" class="guidedSecondary" @click="executionStore.stopLive()">
@@ -737,12 +941,12 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
               </button>
             </div>
 
-            <p class="guidedMuted">{{ liveStatusHint }}</p>
+            <p class="guidedMuted" role="status" aria-live="polite">{{ liveStatusHint }}</p>
             <p class="guidedMuted">{{ runnerStatusHint }}</p>
             <p class="guidedMuted">{{ executionStatusLine }}</p>
             <p class="guidedMuted">{{ keyStateDetail }}</p>
           </section>
-        </main>
+        </section>
       </section>
     </section>
   </Teleport>
@@ -756,11 +960,10 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 }
 
 .guidedHero,
-.guidedLayout,
 .guidedPane,
 .guidedRail {
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  border-radius: 14px;
+  border-radius: 8px;
   background: color-mix(in oklab, var(--panel) 98%, var(--surface));
   box-shadow: var(--shadow-sm);
 }
@@ -785,6 +988,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 .guidedCandidate h4,
 .guidedTemplate h4 {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .guidedHero p,
@@ -825,6 +1029,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   max-width: 22rem;
   color: var(--muted-strong);
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .guidedEyebrow {
@@ -836,7 +1041,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 
 .guidedSteps {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.55rem;
 }
 
@@ -848,7 +1053,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   gap: 0.55rem;
   text-align: left;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  border-radius: 12px;
+  border-radius: 8px;
   background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
   padding: 0.7rem 0.75rem;
 }
@@ -865,6 +1070,16 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 
 .guidedStepButton.warning {
   color: var(--warning-ink, var(--text));
+}
+
+.guidedStepButton:focus-visible,
+.guidedPrimary:focus-visible,
+.guidedSecondary:focus-visible,
+.guidedDanger:focus-visible,
+.guidedTextLink:focus-visible {
+  outline: none;
+  border-color: var(--focus-border);
+  box-shadow: var(--focus-ring);
 }
 
 .guidedStepText {
@@ -892,7 +1107,6 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   display: grid;
   grid-template-columns: minmax(17rem, 0.32fr) minmax(0, 1fr);
   gap: 1rem;
-  padding: 1rem;
 }
 
 .guidedRail,
@@ -924,7 +1138,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   gap: 0.55rem;
   align-items: start;
   border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
-  border-radius: 10px;
+  border-radius: 8px;
   background: color-mix(in oklab, var(--surface) 96%, var(--panel));
   padding: 0.62rem 0.68rem;
 }
@@ -997,7 +1211,7 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 
 .guidedWarning {
   border: 1px solid color-mix(in oklab, var(--warning, var(--accent)) 42%, var(--border));
-  border-radius: 10px;
+  border-radius: 8px;
   background: color-mix(in oklab, var(--surface-warning, var(--surface-working)) 86%, var(--panel));
   color: var(--warning-ink, var(--text));
   padding: 0.62rem 0.7rem;
@@ -1016,11 +1230,28 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 .guidedCandidate {
   min-width: 0;
   border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
-  border-radius: 12px;
+  border-radius: 8px;
   background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
   padding: 0.75rem;
   display: grid;
   gap: 0.2rem;
+}
+
+.guidedRunSummary,
+.guidedRecommendation {
+  gap: 0.6rem;
+}
+
+.guidedCandidate.done {
+  border-color: color-mix(in oklab, var(--success, var(--accent)) 34%, var(--border));
+}
+
+.guidedCandidate.ready {
+  border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
+}
+
+.guidedCandidate.warning {
+  border-color: color-mix(in oklab, var(--warning, var(--accent)) 40%, var(--border));
 }
 
 .guidedSummaryGrid span {
@@ -1074,15 +1305,17 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
 .guidedSecondary,
 .guidedDanger,
 .guidedTextLink {
+  max-width: 100%;
   min-height: 2.25rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.42rem;
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 0.42rem 0.72rem;
   font-size: 0.76rem;
   font-weight: 700;
+  text-align: center;
 }
 
 .guidedPrimary {
@@ -1097,6 +1330,11 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   background: color-mix(in oklab, var(--surface-inline) 88%, var(--panel));
   color: var(--text);
+}
+
+.guidedSecondary.active {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 42%, var(--border));
+  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-working));
 }
 
 .guidedDanger {
@@ -1185,6 +1423,18 @@ function checklistIcon(item: GuidedChecklistItem): typeof CheckCircle2 {
   .guidedFormGrid.compact,
   .guidedTemplateGrid {
     grid-template-columns: 1fr;
+  }
+
+  .guidedMain {
+    order: 1;
+  }
+
+  .guidedRail {
+    order: 2;
+  }
+
+  .guidedActions > button {
+    width: 100%;
   }
 }
 </style>

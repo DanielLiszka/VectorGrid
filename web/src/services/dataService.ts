@@ -23,6 +23,25 @@ function normalizeUnixTs(value: unknown): number {
   return Math.floor(parsed);
 }
 
+function parseIsoDateDay(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const ms = Date.UTC(year, month - 1, day);
+  if (!Number.isFinite(ms)) return null;
+  const parsed = new Date(ms);
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return ms;
+}
+
 function normalizeMaybeNumber(value: unknown): number | null {
   if (value == null) return null;
   const parsed = Number(value);
@@ -145,6 +164,14 @@ export interface DataSampleCsvSummary {
   label: string;
   path: string;
   disabled: boolean;
+  sourceKind?: string;
+  timeframe?: string;
+  rowCount?: number | null;
+  range?: string;
+  description?: string;
+  license?: string;
+  researchNote?: string;
+  detail?: string;
 }
 
 export interface MarketDataDirInfoSummary {
@@ -439,6 +466,21 @@ function fileBasename(path: string): string {
   return normalizeText(parts[parts.length - 1] || "");
 }
 
+function sampleCsvDetailText(
+  summary: Omit<DataSampleCsvSummary, "detail">,
+): string {
+  const parts = [
+    summary.description,
+    summary.timeframe ? `${summary.timeframe} candles` : "",
+    summary.rowCount != null ? `${summary.rowCount.toLocaleString()} rows` : "",
+    summary.range,
+    summary.researchNote,
+  ].filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+  return parts.join(" · ");
+}
+
 export async function getMarketDataDirInfo(): Promise<MarketDataDirInfoSummary> {
   const info = await invokeCommand("get_market_data_dir_info");
   return normalizeMarketDataDirInfo(info);
@@ -453,10 +495,22 @@ export async function listSampleCsvs(): Promise<DataSampleCsvSummary[]> {
     const path = normalizeText(typed.path);
     if (!path) continue;
     const label = normalizeText(typed.label) || fileBasename(path) || path;
-    out.push({
+    const summary: Omit<DataSampleCsvSummary, "detail"> = {
       label,
       path,
       disabled: false,
+      sourceKind: normalizeText(typed.source_kind),
+      timeframe: normalizeText(typed.timeframe),
+      rowCount:
+        typed.row_count == null ? null : normalizeInteger(typed.row_count),
+      range: normalizeText(typed.range),
+      description: normalizeText(typed.description),
+      license: normalizeText(typed.license),
+      researchNote: normalizeText(typed.research_note),
+    };
+    out.push({
+      ...summary,
+      detail: sampleCsvDetailText(summary),
     });
   }
   return out;
@@ -469,7 +523,7 @@ export async function browseCsv(): Promise<DataLoadResult | null> {
     if (!path) return null;
     return await loadCsv(path);
   } catch {
-        return null;
+    return null;
   }
 }
 
@@ -566,7 +620,7 @@ export async function loadSampleCsv(
     if (!samplePath) return null;
     return await loadCsv(samplePath);
   } catch {
-        return null;
+    return null;
   }
 }
 
@@ -600,6 +654,14 @@ export async function downloadPolygonDataset(
   if (!symbol) throw new Error("Enter a symbol.");
   if (!from) throw new Error("Choose a start date.");
   if (!to) throw new Error("Choose an end date.");
+  const fromMs = parseIsoDateDay(from);
+  const toMs = parseIsoDateDay(to);
+  if (fromMs === null || toMs === null) {
+    throw new Error("Polygon dates must use YYYY-MM-DD.");
+  }
+  if (toMs < fromMs) {
+    throw new Error("Polygon end date must be on or after the start date.");
+  }
   const raw = (await invokeCommand("polygon_download_1m_and_load", {
     req: {
       market,
@@ -611,16 +673,19 @@ export async function downloadPolygonDataset(
     },
   })) as unknown;
   const row = parseBoundaryObject(raw) as PolygonDownloadAndLoadResponse;
-  return ensureValidPolygonDownloadAndLoadSummary({
-    csvPath: normalizeText(row.csv_path),
-    downloadedBars: normalizeInteger(row.downloaded_bars),
-    usedCacheOnly: Boolean(row.used_cache_only),
-    baseLoad: normalizeLoadPriceDataResponse(
-      row.base_load,
-      normalizeText(row.csv_path),
-    ),
-    load: normalizeLoadPriceDataResponse(row, normalizeText(row.csv_path)),
-  }, "download");
+  return ensureValidPolygonDownloadAndLoadSummary(
+    {
+      csvPath: normalizeText(row.csv_path),
+      downloadedBars: normalizeInteger(row.downloaded_bars),
+      usedCacheOnly: Boolean(row.used_cache_only),
+      baseLoad: normalizeLoadPriceDataResponse(
+        row.base_load,
+        normalizeText(row.csv_path),
+      ),
+      load: normalizeLoadPriceDataResponse(row, normalizeText(row.csv_path)),
+    },
+    "download",
+  );
 }
 
 export async function topOffPolygonDataset(
@@ -636,16 +701,19 @@ export async function topOffPolygonDataset(
     },
   })) as unknown;
   const row = parseBoundaryObject(raw) as PolygonDownloadAndLoadResponse;
-  return ensureValidPolygonDownloadAndLoadSummary({
-    csvPath: normalizeText(row.csv_path),
-    downloadedBars: normalizeInteger(row.downloaded_bars),
-    usedCacheOnly: Boolean(row.used_cache_only),
-    baseLoad: normalizeLoadPriceDataResponse(
-      row.base_load,
-      normalizeText(row.csv_path),
-    ),
-    load: normalizeLoadPriceDataResponse(row, normalizeText(row.csv_path)),
-  }, "top-off");
+  return ensureValidPolygonDownloadAndLoadSummary(
+    {
+      csvPath: normalizeText(row.csv_path),
+      downloadedBars: normalizeInteger(row.downloaded_bars),
+      usedCacheOnly: Boolean(row.used_cache_only),
+      baseLoad: normalizeLoadPriceDataResponse(
+        row.base_load,
+        normalizeText(row.csv_path),
+      ),
+      load: normalizeLoadPriceDataResponse(row, normalizeText(row.csv_path)),
+    },
+    "top-off",
+  );
 }
 
 export async function validatePolygonDataset(

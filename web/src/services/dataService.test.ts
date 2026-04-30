@@ -258,7 +258,17 @@ describe("dataService market-data directory actions", () => {
   it("lists sample CSV entries with normalized labels and paths", async () => {
     invokeCommandMock.mockResolvedValueOnce([
       { path: " C:/samples/aapl.csv " },
-      { label: "MSFT sample", path: "C:/samples/msft.csv" },
+      {
+        label: "MSFT sample",
+        path: "C:/samples/msft.csv",
+        source_kind: "bundled_synthetic",
+        timeframe: "1m",
+        row_count: "160",
+        range: "relative 0m -> 2h 39m",
+        description: "Synthetic sample",
+        license: "Redistributable",
+        research_note: "Research only",
+      },
       { label: "bad", path: "   " },
     ]);
 
@@ -266,8 +276,33 @@ describe("dataService market-data directory actions", () => {
 
     expect(invokeCommandMock).toHaveBeenCalledWith("list_sample_csvs");
     expect(rows).toEqual([
-      { label: "aapl.csv", path: "C:/samples/aapl.csv", disabled: false },
-      { label: "MSFT sample", path: "C:/samples/msft.csv", disabled: false },
+      {
+        label: "aapl.csv",
+        path: "C:/samples/aapl.csv",
+        disabled: false,
+        sourceKind: "",
+        timeframe: "",
+        rowCount: null,
+        range: "",
+        description: "",
+        license: "",
+        researchNote: "",
+        detail: "",
+      },
+      {
+        label: "MSFT sample",
+        path: "C:/samples/msft.csv",
+        disabled: false,
+        sourceKind: "bundled_synthetic",
+        timeframe: "1m",
+        rowCount: 160,
+        range: "relative 0m -> 2h 39m",
+        description: "Synthetic sample",
+        license: "Redistributable",
+        researchNote: "Research only",
+        detail:
+          "Synthetic sample · 1m candles · 160 rows · relative 0m -> 2h 39m · Research only",
+      },
     ]);
   });
 
@@ -645,6 +680,32 @@ describe("dataService market-data directory actions", () => {
     expect(toppedOff.load.dataId).toBe("poly-2");
     expect(validated.integrity?.duplicates).toBe(1);
     expect(repaired.integrity?.duplicates).toBe(0);
+  });
+
+  it("rejects malformed or inverted Polygon download date ranges before invoking backend", async () => {
+    await expect(
+      downloadPolygonDataset({
+        market: "stocks",
+        symbol: "AAPL",
+        from: "2024-02-31",
+        to: "2024-03-01",
+        adjusted: true,
+        timeframe: "1m",
+      }),
+    ).rejects.toThrow("Polygon dates must use YYYY-MM-DD.");
+
+    await expect(
+      downloadPolygonDataset({
+        market: "stocks",
+        symbol: "AAPL",
+        from: "2024-03-01",
+        to: "2024-02-01",
+        adjusted: true,
+        timeframe: "1m",
+      }),
+    ).rejects.toThrow("Polygon end date must be on or after the start date.");
+
+    expect(invokeCommandMock).not.toHaveBeenCalled();
   });
 
   it("rejects malformed Polygon download and top-off responses", async () => {

@@ -160,10 +160,10 @@ describe('CommandPaletteOverlay', () => {
     expect(settingsStore.uiMode).toBe('advanced')
 
     paletteStore.openPalette()
-    paletteStore.setQuery('guided mode')
+    paletteStore.setQuery('simple mode')
     await nextTick()
     firstRow = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="option"]')
-    expect(firstRow?.textContent).toContain('Switch to Guided Mode')
+    expect(firstRow?.textContent).toContain('Switch to Simple Mode')
     firstRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await nextTick()
     expect(settingsStore.uiMode).toBe('guided')

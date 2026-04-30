@@ -173,6 +173,7 @@ $hashPath = Join-Path $resolvedOutDir "SHA256SUMS.txt"
 Set-Content -Path $hashPath -Encoding UTF8 -Value $hashLines
 
 $catboostPath = Join-Path $repoRoot "src-tauri\\resources\\native\\catboostmodel.dll"
+$sampleCsvPath = Join-Path $repoRoot "src-tauri\\resources\\sample-data\\vectorgrid_synthetic_ohlcv.csv"
 $kernelPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\double_crossover.prebuilt.ptx"
 $optionsPtxPath = Join-Path $repoRoot "crates\\app_core\\src\\kernels\\options_expression.prebuilt.ptx"
 $catboostExists = Test-Path -LiteralPath $catboostPath -PathType Leaf
@@ -206,6 +207,8 @@ $manifest = [ordered]@{
   required_resources = [ordered]@{
     catboost_bundle_resource_path = $catboostPath
     catboost_bundle_resource_exists = $catboostExists
+    synthetic_sample_csv_path = $sampleCsvPath
+    synthetic_sample_csv_exists = Test-Path -LiteralPath $sampleCsvPath -PathType Leaf
     double_crossover_prebuilt_ptx_path = $kernelPtxPath
     double_crossover_prebuilt_ptx_exists = Test-Path $kernelPtxPath
     options_expression_prebuilt_ptx_path = $optionsPtxPath

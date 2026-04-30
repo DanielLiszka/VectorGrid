@@ -135,8 +135,8 @@ const commands = computed<PaletteCommand[]>(() => {
     {
       id: 'switch_guided_mode',
       group: 'navigation',
-      name: 'Switch to Guided Mode',
-      desc: 'Open the simplified optimize, validate, and paper/live path.',
+      name: 'Switch to Simple Mode',
+      desc: 'Open the streamlined backtest optimization and optional validation path.',
       keys: [],
       keywords: ['guided', 'simple', 'beginner', 'mode'],
       enabled: true,

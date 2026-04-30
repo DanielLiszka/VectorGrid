@@ -1,4 +1,4 @@
-import { mount } from "@vue/test-utils";
+import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,13 +72,19 @@ describe("DataWorkspacePanel", () => {
 
     const loadSelected = Array.from(
       document.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => String(button.textContent || "").includes("Load selected"));
+    ).find((button) =>
+      String(button.textContent || "").includes("Load selected"),
+    );
     const validateSelected = Array.from(
       document.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => String(button.textContent || "").includes("Validate selected"));
+    ).find((button) =>
+      String(button.textContent || "").includes("Validate selected"),
+    );
     const repairSelected = Array.from(
       document.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => String(button.textContent || "").includes("Repair selected"));
+    ).find((button) =>
+      String(button.textContent || "").includes("Repair selected"),
+    );
     expect(loadSelected?.disabled).toBe(false);
     expect(validateSelected?.disabled).toBe(false);
     expect(repairSelected?.disabled).toBe(false);
@@ -126,7 +132,8 @@ describe("DataWorkspacePanel", () => {
     dataStore.dataTimeframe = "15m";
     dataStore.dataTimeframeHint =
       "Using 15m derived from base 1m (no extra downloads). Periods are in candles.";
-    dataStore.datasetContext = "source=csv • file=aapl.csv • load=csv parsed + cached";
+    dataStore.datasetContext =
+      "source=csv • file=aapl.csv • load=csv parsed + cached";
     dataStore.dataFields = ["open", "high", "low", "close"];
     dataStore.dataFieldHint = "No volume -> VWMA/VPWMA disabled.";
     dataStore.marketDataDirHint =
@@ -201,7 +208,10 @@ describe("DataWorkspacePanel", () => {
       "API key saved · Cache: C:/default/polygon-cache · 1 cached dataset",
     );
     expect(bodyText).toContain(
-      "Downloaded 1m data is cached here and reused automatically.",
+      "Downloaded 1m bars are cached here and reused automatically",
+    );
+    expect(bodyText).toContain(
+      "selected timeframes load from local resampling",
     );
   });
 

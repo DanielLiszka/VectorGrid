@@ -9,6 +9,7 @@ test.describe('browser shell ux', () => {
     const workflowTab = page.locator(workspaceTabSelector('workflow'))
     const libraryTab = page.locator(workspaceTabSelector('library'))
     const aggregateTab = page.locator(workspaceTabSelector('aggregate'))
+    const portfolioTab = page.locator(workspaceTabSelector('portfolio'))
     const proTab = page.locator(workspaceTabSelector('pro'))
     const liveTab = page.locator(workspaceTabSelector('live'))
     const settingsTab = page.locator(workspaceTabSelector('settings'))
@@ -26,6 +27,11 @@ test.describe('browser shell ux', () => {
     await expect(page.locator('#results_panel_meta')).toBeVisible()
 
     await aggregateTab.press('ArrowRight')
+    await expect(portfolioTab).toHaveAttribute('aria-selected', 'true')
+    await expect(portfolioTab).toBeFocused()
+    await expect(page.locator('#portfolioShellGrid')).toBeVisible()
+
+    await portfolioTab.press('ArrowRight')
     await expect(liveTab).toHaveAttribute('aria-selected', 'true')
     await expect(liveTab).toBeFocused()
     await expect(page.locator(shellSelectors.liveGrid)).toBeVisible()

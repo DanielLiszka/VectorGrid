@@ -80,8 +80,9 @@ const jsdomTestInclude = [
     ],
   },
   build: {
+    emptyOutDir: true,
     outDir: 'dist',
-    sourcemap: true,
+    sourcemap: mode === 'analyze',
     target: 'es2022',
     chunkSizeWarningLimit: 650,
     rollupOptions: {

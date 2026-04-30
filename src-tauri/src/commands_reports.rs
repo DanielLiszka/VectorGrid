@@ -15,6 +15,7 @@ mod commands_reports_validation_common;
 #[path = "commands_reports_validation_xlsx.rs"]
 mod commands_reports_validation_xlsx;
 
+#[cfg(test)]
 pub(crate) fn existing_path(path: String) -> Result<PathBuf, String> {
     commands_reports_shared::existing_path(path)
 }
