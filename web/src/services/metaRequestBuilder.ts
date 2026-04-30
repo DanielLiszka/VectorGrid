@@ -21,6 +21,14 @@ function normalizeBootstrapMode(raw: unknown): 'compare' | 'iid_only' {
   return normalizeText(raw).toLowerCase() === 'iid_only' ? 'iid_only' : 'compare'
 }
 
+function normalizeHoldoutMode(raw: unknown): 'light' | 'heavy' {
+  return normalizeText(raw).toLowerCase() === 'heavy' ? 'heavy' : 'light'
+}
+
+function normalizeGroupingMode(raw: unknown): 'clustered' | 'exact' {
+  return normalizeText(raw).toLowerCase() === 'exact' ? 'exact' : 'clustered'
+}
+
 export interface MetaSelectionBuildInputs {
   strategyKind?: unknown
   timeframe?: unknown
@@ -60,14 +68,14 @@ export function buildMetaSelectionRequest(inputs: MetaSelectionBuildInputs): Rec
   const topK = Math.max(1, Math.floor(num(inputs.topK, 25)))
   const holdoutTagRaw = normalizeText(inputs.holdoutTag)
   const evalHoldout = holdoutSupported && normalizeBoolean(inputs.evalHoldout)
-  const holdoutModeRaw = normalizeText(inputs.holdoutMode || 'light') || 'light'
+  const holdoutModeRaw = normalizeHoldoutMode(inputs.holdoutMode)
   const holdoutMode = evalHoldout ? holdoutModeRaw : 'light'
   const holdoutEvalTopN = Math.max(0, Math.floor(num(inputs.holdoutEvalTopN, 0)))
   const holdoutExploreN = Math.max(0, Math.floor(num(inputs.holdoutExploreN, 0)))
   const holdoutRankBy = normalizeText(inputs.holdoutRankBy || 'auto') || 'auto'
   const repsRaw = Math.floor(num(inputs.holdoutReps, 2))
   const clusterRepresentatives = Math.min(3, Math.max(1, Number.isFinite(repsRaw) ? repsRaw : 2))
-  const groupingMode = normalizeText(inputs.groupingMode || 'clustered') || 'clustered'
+  const groupingMode = normalizeGroupingMode(inputs.groupingMode)
   const intBucket = Math.max(1, Math.floor(num(inputs.clusterIntBucket, 5)))
   const floatBucketRaw = Number(inputs.clusterFloatBucket)
   const floatBucket = Number.isFinite(floatBucketRaw) ? Math.max(0, floatBucketRaw) : 0.25

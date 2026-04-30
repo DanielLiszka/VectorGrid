@@ -7,7 +7,7 @@ use crate::validation_pipeline::{
     apply_candidate_hard_gates, build_ml_signal_evidence_policy_summary, build_run_verdict,
     compute_probability_metrics_with_effective_counts, mark_robust_pareto,
     robust_score_from_metrics, sanitize_hard_gates, ValidationCandidateVerdict,
-    ValidationPostCandidate, ValidationRunVerdict,
+    ValidationPostCandidate, ValidationRecommendation, ValidationRunVerdict,
 };
 use crate::validation_shared::{
     canonical_json_key_bytes, EvidencePolicySummary, ValidationArtifactContext,
@@ -186,6 +186,8 @@ pub struct MlSignalScoreCacheSummary {
     pub coverage_ratio: f64,
     pub score_space: MlSignalScoreSpace,
     pub score_scope: MlSignalScoreScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_content_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score_scope_policy: Option<MlSignalScoreScopePolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -446,6 +448,8 @@ pub struct MlSignalScoreCacheBuildResult {
     pub input_path: String,
     pub output_path: String,
     pub manifest_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_content_fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_schema_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -780,6 +784,8 @@ pub struct MlSignalScoreCacheManifest {
     pub kind: String,
     pub strategy_kind: String,
     pub data_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_content_fingerprint: Option<String>,
     pub input_path: String,
     pub feature_schema_version: u32,
     #[serde(default = "default_ml_signal_score_space")]
@@ -1909,6 +1915,34 @@ fn sha256_file_hex(path: &Path) -> Result<Option<String>, String> {
         hasher.update(&buffer[..read]);
     }
     Ok(Some(format!("{:x}", hasher.finalize())))
+}
+
+fn hash_i64_slice(hasher: &mut Sha256, label: &[u8], values: &[i64]) {
+    hasher.update(label);
+    hasher.update(values.len().to_le_bytes());
+    for value in values {
+        hasher.update(value.to_le_bytes());
+    }
+}
+
+fn hash_f64_slice(hasher: &mut Sha256, label: &[u8], values: &[f64]) {
+    hasher.update(label);
+    hasher.update(values.len().to_le_bytes());
+    for value in values {
+        hasher.update(value.to_bits().to_le_bytes());
+    }
+}
+
+fn candles_content_fingerprint(candles: &Candles) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ml_signal_candles_content_v1");
+    hash_i64_slice(&mut hasher, b"timestamp", &candles.timestamp);
+    hash_f64_slice(&mut hasher, b"open", &candles.open);
+    hash_f64_slice(&mut hasher, b"high", &candles.high);
+    hash_f64_slice(&mut hasher, b"low", &candles.low);
+    hash_f64_slice(&mut hasher, b"close", &candles.close);
+    hash_f64_slice(&mut hasher, b"volume", &candles.volume);
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn validate_or_compute_sha256(
@@ -3565,6 +3599,8 @@ struct MlSignalScoreCacheFile {
     strategy_kind: String,
     feature_schema_version: u32,
     data_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data_content_fingerprint: Option<String>,
     input_path: String,
     #[serde(default = "default_ml_signal_score_space")]
     score_space: MlSignalScoreSpace,
@@ -4061,6 +4097,7 @@ fn write_ml_signal_score_cache(
     let native_fallback_reason = native_metadata
         .as_ref()
         .and_then(|meta| meta.fallback_reason.clone());
+    let data_content_fingerprint = candles_content_fingerprint(candles);
 
     let cache = MlSignalScoreCacheFile {
         version: ML_SIGNAL_SCORE_CACHE_VERSION,
@@ -4068,6 +4105,7 @@ fn write_ml_signal_score_cache(
         strategy_kind: "MlSignal".to_string(),
         feature_schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
         data_id: req.data_id.clone(),
+        data_content_fingerprint: Some(data_content_fingerprint.clone()),
         input_path: req.input_path.clone(),
         score_space,
         score_scope,
@@ -4114,6 +4152,7 @@ fn write_ml_signal_score_cache(
         kind: cache.kind.clone(),
         strategy_kind: cache.strategy_kind.clone(),
         data_id: cache.data_id.clone(),
+        data_content_fingerprint: cache.data_content_fingerprint.clone(),
         input_path: cache.input_path.clone(),
         feature_schema_version: cache.feature_schema_version,
         score_space: cache.score_space,
@@ -4162,6 +4201,7 @@ fn write_ml_signal_score_cache(
         input_path: req.input_path,
         output_path: req.output_path,
         manifest_path,
+        data_content_fingerprint: cache.data_content_fingerprint.clone(),
         feature_schema_path,
         export_manifest_path: cache.export_manifest_path.clone(),
         source_bundle_manifest_path: cache.source_bundle_manifest_path.clone(),
@@ -4382,6 +4422,15 @@ fn load_score_cache(
             cache.duplicate_timestamps
         ));
     }
+    let current_data_fingerprint = candles_content_fingerprint(candles);
+    if let Some(cache_fingerprint) = cache.data_content_fingerprint.as_deref() {
+        if cache_fingerprint != current_data_fingerprint {
+            return Err(
+                "score cache data_content_fingerprint does not match the loaded candles; rebuild the score cache for this dataset"
+                    .to_string(),
+            );
+        }
+    }
     let overlap_metadata =
         load_ml_signal_overlap_metadata(score_cache_path, cache.export_manifest_path.as_deref());
 
@@ -4459,6 +4508,7 @@ fn load_score_cache(
             coverage_ratio,
             score_space: cache.score_space,
             score_scope: cache.score_scope,
+            data_content_fingerprint: cache.data_content_fingerprint,
             score_scope_policy: cache.score_scope_policy,
             raw_score_observations: cache.raw_score_observations,
             effective_score_observations: cache.effective_score_observations,
@@ -4679,6 +4729,40 @@ fn append_overlap_adjustment_warning_flags(
     {
         push_validation_warning_flag(run_verdict, "score_scope_walkforward_overlap_adjusted");
     }
+}
+
+fn append_score_cache_fingerprint_warning_flag(
+    run_verdict: &mut ValidationRunVerdict,
+    score_summary: &MlSignalScoreCacheSummary,
+) {
+    if score_summary.data_content_fingerprint.is_none() {
+        push_validation_warning_flag(run_verdict, "score_cache_missing_data_fingerprint");
+    }
+}
+
+fn build_ml_signal_run_verdict(
+    candidates: &[MlSignalValidationCandidateResult],
+    candidates_tested: usize,
+    gates: &crate::validation_pipeline::ValidationHardGateConfig,
+    score_summary: &MlSignalScoreCacheSummary,
+    dependence_summary: &MlSignalDependenceSummary,
+) -> ValidationRunVerdict {
+    let mut ranked = candidates.to_vec();
+    ranked.sort_by(|a, b| b.robust_score.total_cmp(&a.robust_score));
+    let mut run_verdict = build_run_verdict(&ranked, candidates_tested, gates, None, None);
+    append_score_scope_warning_flag(&mut run_verdict, score_summary);
+    append_score_cache_fingerprint_warning_flag(&mut run_verdict, score_summary);
+    append_overlap_adjustment_warning_flags(&mut run_verdict, score_summary, dependence_summary);
+    if run_verdict.approved
+        && !run_verdict.warning_flags.is_empty()
+        && matches!(
+            run_verdict.final_recommendation,
+            ValidationRecommendation::SingleCandidateSupported
+        )
+    {
+        run_verdict.final_recommendation = ValidationRecommendation::ApprovedWithWarnings;
+    }
+    run_verdict
 }
 
 fn push_deployability_gate(
@@ -5148,9 +5232,8 @@ fn validate_ml_signal_candidates(
     );
     mark_robust_pareto(&mut out);
     apply_candidate_hard_gates(&mut out, &gates, None);
-    let mut run_verdict = build_run_verdict(&out, out.len(), &gates, None, None);
-    append_score_scope_warning_flag(&mut run_verdict, &score_summary);
-    append_overlap_adjustment_warning_flags(&mut run_verdict, &score_summary, &dependence_summary);
+    let run_verdict =
+        build_ml_signal_run_verdict(&out, out.len(), &gates, &score_summary, &dependence_summary);
     let deployability = build_ml_signal_deployability(
         validation_context,
         &score_summary,
@@ -5434,21 +5517,16 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
     if req.top_k > 0 && validation.candidates.len() > req.top_k {
         validation.candidates.truncate(req.top_k);
     }
-    validation.run_verdict = build_run_verdict(
+    validation.run_verdict = build_ml_signal_run_verdict(
         &validation.candidates,
         sweep_size,
         &sanitize_hard_gates(req.min_psr, req.min_dsr, None, None, None),
-        None,
-        None,
+        &validation.score_summary,
+        validation
+            .dependence_summary
+            .as_ref()
+            .expect("ml signal validation always includes dependence summary"),
     );
-    append_score_scope_warning_flag(&mut validation.run_verdict, &validation.score_summary);
-    if let Some(summary) = validation.dependence_summary.as_ref() {
-        append_overlap_adjustment_warning_flags(
-            &mut validation.run_verdict,
-            &validation.score_summary,
-            summary,
-        );
-    }
     validation.deployability = build_ml_signal_deployability(
         validation_context.as_ref(),
         &validation.score_summary,
@@ -5937,6 +6015,45 @@ mod tests {
             native_gpu_device_id: None,
             native_prediction_batch_size: None,
             native_library_discovery_policy: MlSignalNativeLibraryDiscoveryPolicy::Production,
+        }
+    }
+
+    fn minimal_score_summary(score_scope: MlSignalScoreScope) -> MlSignalScoreCacheSummary {
+        MlSignalScoreCacheSummary {
+            matched_rows: 10,
+            skipped_rows: 0,
+            bars_scored: 10,
+            duplicate_timestamps: 0,
+            coverage_ratio: 1.0,
+            score_space: MlSignalScoreSpace::Probability,
+            score_scope,
+            data_content_fingerprint: Some("sha256:test-data-content".to_string()),
+            score_scope_policy: None,
+            raw_score_observations: Some(10),
+            effective_score_observations: Some(10),
+            first_timestamp: None,
+            last_timestamp: None,
+            feature_schema_hash: Some("schema-hash".to_string()),
+            calibration_state: None,
+            threshold_policy: None,
+            producer_kind: None,
+            score_contract_version: Some(ML_SIGNAL_SCORE_CONTRACT_VERSION),
+            source_bundle_manifest_hash: Some("bundle-hash".to_string()),
+            export_manifest_hash: None,
+            bundle_manifest_sha256: None,
+            model_long_sha256: None,
+            model_short_sha256: None,
+            feature_schema_sha256: None,
+            export_manifest_sha256: None,
+            training_config_hash: None,
+            native_backend_requested: None,
+            native_backend_used: None,
+            native_library_path: None,
+            native_library_sha256: None,
+            native_library_discovery_policy: None,
+            native_gpu_device_id: None,
+            native_prediction_batch_size: None,
+            native_fallback_reason: None,
         }
     }
 
@@ -6656,6 +6773,11 @@ mod tests {
         assert_eq!(build.score_scope, MlSignalScoreScope::CustomPartial);
         assert_eq!(build.duplicate_timestamps, 1);
         assert!((build.coverage_ratio - 0.10).abs() < 1.0e-9);
+        assert!(build
+            .data_content_fingerprint
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("sha256:"));
 
         let manifest: MlSignalScoreCacheManifest = serde_json::from_reader(BufReader::new(
             File::open(&build.manifest_path).expect("open manifest"),
@@ -6665,6 +6787,10 @@ mod tests {
         assert_eq!(manifest.score_scope, MlSignalScoreScope::CustomPartial);
         assert_eq!(manifest.duplicate_timestamps, 1);
         assert!((manifest.coverage_ratio - 0.10).abs() < 1.0e-9);
+        assert_eq!(
+            manifest.data_content_fingerprint,
+            build.data_content_fingerprint
+        );
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
@@ -6887,6 +7013,11 @@ mod tests {
         .expect("build score cache");
         assert_eq!(build.matched_rows, 50);
         assert_eq!(build.skipped_rows, 0);
+        assert!(build
+            .data_content_fingerprint
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("sha256:"));
         assert!(Path::new(&build.manifest_path).exists());
 
         let mut strategy = StrategyConfig::default();
@@ -6918,6 +7049,28 @@ mod tests {
         assert_eq!(validation.candidates.len(), 1);
         assert!(!validation.backend_route.unwrap_or_default().is_empty());
         assert!(validation.candidates[0].track_record_bars >= 2);
+        assert_eq!(
+            validation.score_summary.data_content_fingerprint,
+            build.data_content_fingerprint
+        );
+
+        let mut changed_candles = candles.clone();
+        changed_candles.close[10] += 1.0;
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &changed_candles,
+            &cancel,
+        )
+        .expect_err("changed candles should invalidate score cache fingerprint");
+        assert!(err.contains("data_content_fingerprint"));
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
@@ -7480,6 +7633,109 @@ mod tests {
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);
         let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn ml_signal_run_verdict_uses_ranked_candidate_for_top_stats() {
+        fn verdict_candidate(
+            psr: f64,
+            dsr: f64,
+            robust_score: f64,
+        ) -> MlSignalValidationCandidateResult {
+            MlSignalValidationCandidateResult {
+                params: MlSignalPolicyParams::default(),
+                in_sample: Metrics::default(),
+                iterative_in_sample: None,
+                psr: Some(psr),
+                dsr: Some(dsr),
+                track_record_bars: 30,
+                min_track_record_length_bars: Some(2),
+                validation_verdict: ValidationCandidateVerdict::default(),
+                boundary_diagnostics: None,
+                request_word_diagnostics: None,
+                robust_score,
+                robust_pareto: false,
+            }
+        }
+
+        let worse_first = verdict_candidate(0.25, 0.20, 0.10);
+        let better_second = verdict_candidate(0.91, 0.88, 2.0);
+        let dependence_summary = MlSignalDependenceSummary {
+            raw_score_observations: 30,
+            effective_score_observations_lower_bound: 30,
+            label_horizon_bars: None,
+            raw_walkforward_test_windows: None,
+            effective_walkforward_test_windows_upper_bound: None,
+            walkforward_test_bars_covered: None,
+        };
+        let verdict = build_ml_signal_run_verdict(
+            &[worse_first, better_second],
+            2,
+            &crate::validation_pipeline::ValidationHardGateConfig::default(),
+            &minimal_score_summary(MlSignalScoreScope::WalkforwardTest),
+            &dependence_summary,
+        );
+
+        assert_eq!(verdict.first_approved_rank, Some(1));
+        assert_eq!(verdict.top_candidate_psr, Some(0.91));
+        assert_eq!(verdict.top_candidate_dsr, Some(0.88));
+
+        let warned_verdict = build_ml_signal_run_verdict(
+            &[verdict_candidate(0.91, 0.88, 2.0)],
+            1,
+            &crate::validation_pipeline::ValidationHardGateConfig::default(),
+            &minimal_score_summary(MlSignalScoreScope::CalibrationSlice),
+            &dependence_summary,
+        );
+        assert_eq!(
+            warned_verdict.final_recommendation,
+            ValidationRecommendation::ApprovedWithWarnings
+        );
+    }
+
+    #[test]
+    fn ml_signal_run_verdict_warns_when_score_cache_lacks_data_fingerprint() {
+        let candidate = MlSignalValidationCandidateResult {
+            params: MlSignalPolicyParams::default(),
+            in_sample: Metrics::default(),
+            iterative_in_sample: None,
+            psr: Some(0.91),
+            dsr: Some(0.88),
+            track_record_bars: 30,
+            min_track_record_length_bars: Some(2),
+            validation_verdict: ValidationCandidateVerdict::default(),
+            boundary_diagnostics: None,
+            request_word_diagnostics: None,
+            robust_score: 1.0,
+            robust_pareto: false,
+        };
+        let mut score_summary = minimal_score_summary(MlSignalScoreScope::WalkforwardTest);
+        score_summary.data_content_fingerprint = None;
+        let dependence_summary = MlSignalDependenceSummary {
+            raw_score_observations: 30,
+            effective_score_observations_lower_bound: 30,
+            label_horizon_bars: None,
+            raw_walkforward_test_windows: Some(3),
+            effective_walkforward_test_windows_upper_bound: Some(3),
+            walkforward_test_bars_covered: Some(30),
+        };
+
+        let verdict = build_ml_signal_run_verdict(
+            &[candidate],
+            1,
+            &crate::validation_pipeline::ValidationHardGateConfig::default(),
+            &score_summary,
+            &dependence_summary,
+        );
+
+        assert!(verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "score_cache_missing_data_fingerprint"));
+        assert_eq!(
+            verdict.final_recommendation,
+            ValidationRecommendation::ApprovedWithWarnings
+        );
     }
 
     #[test]

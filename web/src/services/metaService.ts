@@ -618,27 +618,28 @@ function tryBuildAutoMetaMlPolicyEvaluationRequest(): Record<
   const timeframe = normalizeText(scope.timeframe);
   if (!timeframe) return null;
 
+  const normalizedStage5 = buildMetaStage5Request({
+    strategyKind: scope.strategy_kind,
+    timeframe,
+    topK: readStoreTextInputValue("metaStage4TopK"),
+    minMlConfidence: readStoreTextInputValue("metaStage4MinConf"),
+    metaWeight: readStoreTextInputValue("metaStage4MetaWeight"),
+    mlWeight: readStoreTextInputValue("metaStage4MlWeight"),
+    uncertaintyWeight: readStoreTextInputValue("metaStage4UncertaintyWeight"),
+    requireHealthyModel: readStoreCheckboxValue("metaStage4RequireHealthy"),
+    fallbackToMetaIfEmpty: readStoreCheckboxValue("metaStage4FallbackToMeta"),
+  });
+
   return {
     strategy_kind: normalizeText(scope.strategy_kind),
     timeframe,
-    top_k: Math.max(
-      1,
-      Math.floor(Number(readStoreTextInputValue("metaStage4TopK") || "10")),
-    ),
-    min_ml_confidence: Number(
-      readStoreTextInputValue("metaStage4MinConf") || "0.55",
-    ),
-    meta_weight: Number(
-      readStoreTextInputValue("metaStage4MetaWeight") || "0.60",
-    ),
-    ml_weight: Number(readStoreTextInputValue("metaStage4MlWeight") || "0.35"),
-    uncertainty_weight: Number(
-      readStoreTextInputValue("metaStage4UncertaintyWeight") || "0.05",
-    ),
-    require_healthy_model: readStoreCheckboxValue("metaStage4RequireHealthy"),
-    fallback_to_meta_if_empty: readStoreCheckboxValue(
-      "metaStage4FallbackToMeta",
-    ),
+    top_k: normalizedStage5.top_k,
+    min_ml_confidence: normalizedStage5.min_ml_confidence,
+    meta_weight: normalizedStage5.meta_weight,
+    ml_weight: normalizedStage5.ml_weight,
+    uncertainty_weight: normalizedStage5.uncertainty_weight,
+    require_healthy_model: normalizedStage5.require_healthy_model,
+    fallback_to_meta_if_empty: normalizedStage5.fallback_to_meta_if_empty,
   };
 }
 
@@ -975,6 +976,11 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   const path = responseStage5Path(resp);
   const sourceMetaPath = normalizePath(result?.source_meta_json_path);
   const trainingManifest = asRecord(result?.training_manifest);
+  const warnings = Array.isArray(result?.warnings)
+    ? result.warnings
+        .map((item) => normalizeText(item))
+        .filter((item) => item.length > 0)
+    : [];
 
   if (!result || groups.length === 0) {
     patchAnalysisStore({
@@ -1050,18 +1056,15 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
     );
   }
 
-  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   if (warnings.length > 0) {
     lines.push(
-      `warnings=${warnings.length}: ${warnings
-        .map((item) => normalizeText(item))
-        .filter((item) => item.length > 0)
-        .join(" | ")}`,
+      `warnings=${warnings.length}: ${warnings.join(" | ")}`,
     );
   }
+  const warningStatus = warnings.length > 0 ? ` · warn=${warnings.length}` : "";
 
   patchAnalysisStore({
-    metaStage4Status: `Stage 5 complete: selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} accept/review/reject=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))} · file=${path ? fileBasename(path) : "—"}`,
+    metaStage4Status: `Stage 5 complete: selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} accept/review/reject=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}${warningStatus} · file=${path ? fileBasename(path) : "—"}`,
     metaStage4OutputPreview: lines.join("\n"),
   });
 

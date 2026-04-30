@@ -785,6 +785,66 @@ fn stage4_training_metas_for_policy(
     (out, manifest)
 }
 
+fn push_unique_stage5_warning(warnings: &mut Vec<String>, warning: String) {
+    if !warnings.iter().any(|existing| existing == &warning) {
+        warnings.push(warning);
+    }
+}
+
+fn append_stage5_training_manifest_warnings(
+    manifest: &Stage5TrainingManifest,
+    warnings: &mut Vec<String>,
+) {
+    if manifest.excluded_source_count > 0 {
+        push_unique_stage5_warning(
+            warnings,
+            format!(
+                "Auto-train excluded {} source meta artifact(s) to avoid train/score leakage.",
+                manifest.excluded_source_count
+            ),
+        );
+    } else {
+        push_unique_stage5_warning(
+            warnings,
+            "Auto-train did not find the active source meta artifact in saved history; duplicate hash/content checks found no source match.".to_string(),
+        );
+    }
+
+    if manifest.training_artifact_count == 0 {
+        push_unique_stage5_warning(
+            warnings,
+            "Auto-train has no eligible historical meta artifacts after leakage filters; Stage 5 will fall back to an existing model if available.".to_string(),
+        );
+    } else if manifest.training_artifact_count < 2 {
+        push_unique_stage5_warning(
+            warnings,
+            format!(
+                "Auto-train history is thin: only {} eligible meta artifact(s) after leakage filters.",
+                manifest.training_artifact_count
+            ),
+        );
+    }
+
+    if manifest.excluded_future_or_equal_count > 0 {
+        push_unique_stage5_warning(
+            warnings,
+            format!(
+                "Auto-train chronological policy excluded {} source-or-future meta artifact(s).",
+                manifest.excluded_future_or_equal_count
+            ),
+        );
+    }
+    if manifest.excluded_missing_ts_count > 0 {
+        push_unique_stage5_warning(
+            warnings,
+            format!(
+                "Auto-train chronological policy excluded {} meta artifact(s) with missing/invalid timestamps.",
+                manifest.excluded_missing_ts_count
+            ),
+        );
+    }
+}
+
 fn try_load_ml_confidence_model(path: &Path) -> Option<MlConfidenceModel> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<MlConfidenceModel>(&raw).ok()
@@ -2048,24 +2108,7 @@ fn run_meta_stage5_ml_confidence_blocking(
             req.training_history_policy,
         );
         training_manifest = manifest;
-        if training_manifest.excluded_source_count > 0 {
-            warnings.push(format!(
-                "Auto-train excluded {} source meta artifact(s) to avoid train/score leakage.",
-                training_manifest.excluded_source_count
-            ));
-        }
-        if training_manifest.excluded_future_or_equal_count > 0 {
-            warnings.push(format!(
-                "Auto-train chronological policy excluded {} source-or-future meta artifact(s).",
-                training_manifest.excluded_future_or_equal_count
-            ));
-        }
-        if training_manifest.excluded_missing_ts_count > 0 {
-            warnings.push(format!(
-                "Auto-train chronological policy excluded {} meta artifact(s) with missing/invalid timestamps.",
-                training_manifest.excluded_missing_ts_count
-            ));
-        }
+        append_stage5_training_manifest_warnings(&training_manifest, &mut warnings);
         let cfg = MlConfidenceTrainConfig::default();
         match ta_app_core::train_ml_confidence_model_from_meta_artifacts(scope.clone(), &metas, cfg)
         {
@@ -4111,8 +4154,8 @@ fn apply_holdout_evaluation(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_holdout_accumulators_to_result, artifact_matches_meta_req,
-        artifact_matches_meta_req_relaxed, build_meta_cohort_manifest,
+        append_stage5_training_manifest_warnings, apply_holdout_accumulators_to_result,
+        artifact_matches_meta_req, artifact_matches_meta_req_relaxed, build_meta_cohort_manifest,
         build_metric_surface_meta_summary, build_metric_surface_meta_warnings,
         build_ml_confidence_status, build_prepared_holdout_batches, canonical_typed_param_key,
         decode_double_ma_validation_params, evaluate_ml_confidence_policy_from_scoped_metas,
@@ -4527,6 +4570,80 @@ mod tests {
             .excluded_artifacts
             .iter()
             .any(|entry| entry.reason == "source_artifact_duplicate"));
+    }
+
+    #[test]
+    fn stage5_training_manifest_warnings_flag_thin_history_and_missing_source_match() {
+        let source = PathBuf::from("runs/vectorgrid_meta_source.json");
+        let source_meta = json!({
+            "kind": "vectorbt_meta_selection",
+            "ts": "2026-01-02T00:00:00Z"
+        });
+        let metas = vec![(
+            PathBuf::from("runs/vectorgrid_meta_other.json"),
+            json!({"kind":"vectorbt_meta_selection","ts":"2026-01-01T00:00:00Z"}),
+        )];
+
+        let (_filtered, manifest) = stage4_training_metas_for_policy(
+            metas,
+            &source,
+            &source_meta,
+            Stage5TrainingHistoryPolicy::SourceExcluded,
+        );
+        let mut warnings = Vec::new();
+        append_stage5_training_manifest_warnings(&manifest, &mut warnings);
+
+        assert_eq!(manifest.excluded_source_count, 0);
+        assert_eq!(manifest.training_artifact_count, 1);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("did not find the active source meta artifact")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("history is thin")));
+    }
+
+    #[test]
+    fn stage5_training_manifest_warnings_flag_source_exclusion_and_chronological_filters() {
+        let source = PathBuf::from("runs/vectorgrid_meta_source.json");
+        let source_meta = json!({
+            "kind": "vectorbt_meta_selection",
+            "ts": "2026-01-02T00:00:00Z"
+        });
+        let metas = vec![
+            (source.clone(), source_meta.clone()),
+            (
+                PathBuf::from("runs/past.json"),
+                json!({"kind":"vectorbt_meta_selection","ts":"2026-01-01T00:00:00Z"}),
+            ),
+            (
+                PathBuf::from("runs/future.json"),
+                json!({"kind":"vectorbt_meta_selection","ts":"2026-01-03T00:00:00Z"}),
+            ),
+            (
+                PathBuf::from("runs/missing_ts.json"),
+                json!({"kind":"vectorbt_meta_selection"}),
+            ),
+        ];
+
+        let (_filtered, manifest) = stage4_training_metas_for_policy(
+            metas,
+            &source,
+            &source_meta,
+            Stage5TrainingHistoryPolicy::ChronologicalBeforeSource,
+        );
+        let mut warnings = Vec::new();
+        append_stage5_training_manifest_warnings(&manifest, &mut warnings);
+
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("excluded 1 source meta artifact")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("excluded 1 source-or-future")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("missing/invalid timestamps")));
     }
 
     #[test]

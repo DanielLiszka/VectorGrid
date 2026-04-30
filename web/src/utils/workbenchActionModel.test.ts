@@ -83,4 +83,34 @@ describe('workbenchActionModel', () => {
     expect(finalize.label).toBe('Artifacts ready')
     expect(finalize.disabledReason).toBe('Current ML artifacts are inspect-only from this stage.')
   })
+
+  it('allows native ML Signal score-cache actions without a score CSV input', () => {
+    const action = resolveWorkbenchPrimaryAction({
+      mode: 'ml-signal',
+      workflowStep: 'optimize',
+      dataLoaded: true,
+      runDisabled: false,
+      mlSignalScoreSource: 'native',
+      mlSignalModelBundleId: 'bundle-a',
+      mlSignalScoreInputPath: '',
+      mlSignalScoreCachePath: 'C:/score_cache.json',
+    })
+
+    expect(action.label).toBe('Build score cache')
+    expect(action.disabled).toBe(false)
+
+    const missingBundle = resolveWorkbenchPrimaryAction({
+      mode: 'ml-signal',
+      workflowStep: 'optimize',
+      dataLoaded: true,
+      runDisabled: false,
+      mlSignalScoreSource: 'native',
+      mlSignalModelBundleId: '',
+      mlSignalScoreInputPath: '',
+      mlSignalScoreCachePath: 'C:/score_cache.json',
+    })
+
+    expect(missingBundle.disabled).toBe(true)
+    expect(missingBundle.disabledReason).toBe('Choose an ML model bundle before native scoring.')
+  })
 })

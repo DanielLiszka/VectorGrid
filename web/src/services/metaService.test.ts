@@ -492,7 +492,7 @@ describe("meta service", () => {
       metaStrategyKind: "CompositeMo",
       metaTimeframe: "1m",
       metaStage4TopK: "15",
-      metaStage4MinConf: "0.58",
+      metaStage4MinConf: "58",
     });
 
     await runMeta();
@@ -617,11 +617,88 @@ describe("meta service", () => {
         ?.top_k,
     ).toBe(15);
     expect(
+      (call?.[1] as { req?: { min_ml_confidence?: number } }).req
+        ?.min_ml_confidence,
+    ).toBe(0.58);
+    expect(
       (call?.[1] as { req?: { source_meta_path?: string | null } }).req
         ?.source_meta_path,
     ).toBe("C:/runs/vectorgrid_meta.json");
     expect(analysisStore.metaStage4OutputPreview).toContain(
       "evidence=ml_confidence=model_estimated_holdout_success_probability decision_bucket=review_label_not_deployability_proof",
+    );
+  });
+
+  it("surfaces Stage 5 lineage warnings in the status and preview", async () => {
+    const analysisStore = useAnalysisStore(pinia);
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_meta_stage5_ml_confidence") {
+        return {
+          ts: "2026-02-26T10:02:00Z",
+          stage4_json_path: "C:/runs/vectorgrid_stage5.json",
+          stage5_json_path: "C:/runs/vectorgrid_stage5.json",
+          result: {
+            strategy_kind: "CompositeMo",
+            timeframe: "1m",
+            source_meta_json_path: "C:/runs/vectorgrid_meta.json",
+            model_path: "C:/models/meta_model.json",
+            model_state: "warning",
+            model_healthy: false,
+            model_trained_now: true,
+            groups_selected: 1,
+            groups_scored: 1,
+            groups_considered: 1,
+            min_ml_confidence: 0.55,
+            decision_counts: { accept: 0, review: 1, reject: 0 },
+            training_manifest: {
+              policy: "source_excluded",
+              training_artifact_count: 1,
+              excluded_source_count: 0,
+              excluded_future_or_equal_count: 0,
+              excluded_missing_ts_count: 0,
+            },
+            warnings: [
+              "Auto-train did not find the active source meta artifact in saved history.",
+              "Auto-train history is thin: only 1 eligible meta artifact(s) after leakage filters.",
+            ],
+            selected_groups: [
+              {
+                stage5_rank: 1,
+                decision_bucket: "review",
+                final_rank_score: 0.42,
+                ml_confidence: 0.6,
+                ml_uncertainty: 0.2,
+                params: {
+                  fast_ma_type: "ema",
+                  fast_len: 10,
+                  slow_ma_type: "ema",
+                  slow_len: 20,
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (command === "list_artifact_library") {
+        return { meta: [], stage5: [], policyEvals: [] };
+      }
+      return invokeDefaultMock(command);
+    });
+
+    await runStage5({
+      request: {
+        strategy_kind: "CompositeMo",
+        timeframe: "1m",
+        source_meta_path: "C:/runs/vectorgrid_meta.json",
+      },
+    });
+
+    expect(analysisStore.metaStage4Status).toContain("warn=2");
+    expect(analysisStore.metaStage4OutputPreview).toContain(
+      "warnings=2: Auto-train did not find the active source meta artifact",
+    );
+    expect(analysisStore.metaStage4OutputPreview).toContain(
+      "training_history=source_excluded artifacts=1 excluded_source=0",
     );
   });
 

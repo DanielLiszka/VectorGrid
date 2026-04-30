@@ -285,4 +285,18 @@ describe('metaRequestBuilder', () => {
       holdout_eval_rank_by: 'auto',
     })
   })
+
+  it('falls back to safe enum defaults for invalid persisted mode values', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'CompositeMo',
+      evalHoldout: true,
+      holdoutMode: 'surprise',
+      groupingMode: 'unknown-grouping',
+    })
+
+    expect(req).toMatchObject({
+      holdout_mode: 'light',
+      grouping_mode: 'clustered',
+    })
+  })
 })

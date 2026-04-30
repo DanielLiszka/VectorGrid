@@ -64,8 +64,10 @@ const {
   canCancel,
   gpuStatus,
   mlSignalDatasetExportPath,
+  mlSignalModelBundleId,
   mlSignalScoreCachePath,
   mlSignalScoreInputPath,
+  mlSignalScoreSource,
   objective,
   pairsPreview,
   progressMeta,
@@ -273,8 +275,10 @@ const primaryActionPreview = computed(() =>
     validationHint: validationHint.value,
     validationStage: validationStage.value,
     mlSignalDatasetExportPath: mlSignalDatasetExportPath.value,
+    mlSignalModelBundleId: mlSignalModelBundleId.value,
     mlSignalScoreInputPath: mlSignalScoreInputPath.value,
     mlSignalScoreCachePath: mlSignalScoreCachePath.value,
+    mlSignalScoreSource: mlSignalScoreSource.value,
   }),
 );
 const validationCompatibilityPreview = computed(() => {

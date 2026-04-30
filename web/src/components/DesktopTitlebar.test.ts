@@ -93,13 +93,17 @@ describe('DesktopTitlebar', () => {
   })
 
   it('keeps MlSignal shared primary actions truthful across workflow steps', async () => {
+    const dataStore = useDataStore()
     const workflowStore = useWorkflowStore()
     const optimizeStore = useOptimizeStore()
     workflowStore.selectMode('ml-signal', { persist: false })
+    dataStore.dataId = 'data-1'
     optimizeStore.$patch({
       mlSignalDatasetExportPath: 'C:/data/ml_dataset.csv',
-      mlSignalScoreInputPath: 'C:/data/ml_scores.csv',
+      mlSignalModelBundleId: 'bundle-a',
+      mlSignalScoreInputPath: '',
       mlSignalScoreCachePath: 'C:/data/ml_score_cache.json',
+      mlSignalScoreSource: 'native',
       runDisabled: false,
       validateDisabled: false,
     })
@@ -110,6 +114,11 @@ describe('DesktopTitlebar', () => {
     workflowStore.selectWorkflowStep('data', { persist: false })
     await nextTick()
     expect(primary.attributes('aria-label')).toBe('Export dataset')
+
+    workflowStore.selectWorkflowStep('optimize', { persist: false })
+    await nextTick()
+    expect(primary.attributes('aria-label')).toBe('Build score cache')
+    expect((primary.element as HTMLButtonElement).disabled).toBe(false)
 
     workflowStore.selectWorkflowStep('analyze', { persist: false })
     await nextTick()

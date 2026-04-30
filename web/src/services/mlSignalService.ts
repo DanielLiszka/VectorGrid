@@ -201,17 +201,34 @@ function parseNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function parseProbabilityLike(
+  value: unknown,
+  label: string,
+  fallback?: number,
+): number {
+  const text = normalizeText(value);
+  if (!text && fallback != null) return fallback;
+  const cleaned = text.endsWith("%") ? text.slice(0, -1).trim() : text;
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a probability between 0 and 1.`);
+  }
+  const normalized = parsed > 1 && parsed <= 100 ? parsed / 100 : parsed;
+  if (normalized < 0 || normalized > 1) {
+    throw new Error(`${label} must be between 0 and 1, or 0 and 100 as a percentage.`);
+  }
+  return normalized;
+}
+
 function parseOptionalPositive(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return parsed;
 }
 
-function parseProbabilityGate(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  if (parsed < 0 || parsed > 1) return null;
-  return parsed;
+function parseProbabilityGate(value: unknown, label: string): number | null {
+  if (!normalizeText(value)) return null;
+  return parseProbabilityLike(value, label);
 }
 
 function parseOptionalInteger(value: unknown): number | null {
@@ -305,35 +322,63 @@ async function openOrRevealPath(path: string): Promise<{
   }
 }
 
-function buildOptionalSweepAxisF64(
+function buildOptionalProbabilitySweepAxis(
+  label: string,
   startRaw: unknown,
   endRaw: unknown,
   stepRaw: unknown,
 ): SweepAxisF64 | null {
-  const start = Number(startRaw);
-  const end = Number(endRaw);
-  const step = Number(stepRaw);
-  if (
-    !Number.isFinite(start) ||
-    !Number.isFinite(end) ||
-    !Number.isFinite(step)
-  )
-    return null;
-  if (step <= 0 || end < start) return null;
+  const allBlank =
+    !normalizeText(startRaw) && !normalizeText(endRaw) && !normalizeText(stepRaw);
+  if (allBlank) return null;
+  if (!normalizeText(startRaw) || !normalizeText(endRaw) || !normalizeText(stepRaw)) {
+    throw new Error(`${label} sweep axis requires start, end, and step.`);
+  }
+  const start = parseProbabilityLike(startRaw, `${label} start`);
+  const end = parseProbabilityLike(endRaw, `${label} end`);
+  const step = parseProbabilityLike(stepRaw, `${label} step`);
+  if (step <= 0) throw new Error(`${label} sweep step must be greater than 0.`);
+  if (end < start) throw new Error(`${label} sweep end must be greater than or equal to start.`);
   return { start, end, step };
 }
 
 function buildOptionalSweepAxisUsize(
+  label: string,
   startRaw: unknown,
   endRaw: unknown,
   stepRaw: unknown,
 ): SweepAxisUsize | null {
+  const allBlank =
+    !normalizeText(startRaw) && !normalizeText(endRaw) && !normalizeText(stepRaw);
+  if (allBlank) return null;
+  if (!normalizeText(startRaw) || !normalizeText(endRaw) || !normalizeText(stepRaw)) {
+    throw new Error(`${label} sweep axis requires start, end, and step.`);
+  }
   const start = parseOptionalInteger(startRaw);
   const end = parseOptionalInteger(endRaw);
   const step = parseOptionalInteger(stepRaw);
-  if (start == null || end == null || step == null) return null;
-  if (step <= 0 || end < start) return null;
+  if (start == null || end == null || step == null)
+    throw new Error(`${label} sweep axis must use whole numbers.`);
+  if (step <= 0) throw new Error(`${label} sweep step must be greater than 0.`);
+  if (end < start) throw new Error(`${label} sweep end must be greater than or equal to start.`);
   return { start: Math.max(1, start), end: Math.max(1, end), step };
+}
+
+function parsePositiveInteger(value: unknown, fallback: number, label: string): number {
+  const text = normalizeText(value);
+  const parsed = text ? Number(text) : fallback;
+  if (!Number.isFinite(parsed)) throw new Error(`${label} must be a whole number.`);
+  const floored = Math.floor(parsed);
+  if (floored < 1) throw new Error(`${label} must be at least 1.`);
+  return floored;
+}
+
+function parseRequiredProbabilityWithDefault(
+  value: unknown,
+  fallback: number,
+  label: string,
+): number {
+  return parseProbabilityLike(value, label, fallback);
 }
 
 function readCandidateRows(value: unknown): Array<Record<string, unknown>> {
@@ -1839,12 +1884,19 @@ function applyVueRunArtifacts(
   );
 }
 
+interface PersistedMlValidationArtifact {
+  path: string;
+  ts: string;
+  csvPath: string;
+  artifactPersistenceWarning?: string;
+}
+
 async function persistValidationArtifact(
   runReq: Record<string, unknown>,
   runRes: unknown,
   validationReq: Record<string, unknown>,
   validationRes: unknown,
-): Promise<{ path: string; ts: string; csvPath: string }> {
+): Promise<PersistedMlValidationArtifact> {
   const pinia = resolveRuntimePinia();
   const artifacts = pinia ? useWorkflowArtifactsStore(pinia) : null;
   const currentRun = artifacts?.currentRun as WorkflowRunArtifact | null;
@@ -1874,15 +1926,17 @@ async function persistValidationArtifact(
     tags: currentRun?.tags ?? [],
   };
   let path = normalizeText(currentRun?.artifactPath);
+  let artifactPersistenceWarning = "";
   try {
     const saved = (await invokeCommand("save_run_artifact", {
       artifact,
     })) as SaveRunArtifactResponse;
     path = normalizeText(saved?.path) || path;
-  } catch {
-
+  } catch (error) {
+    artifactPersistenceWarning =
+      normalizeText(error) || "save_run_artifact failed";
   }
-  return { path, ts, csvPath };
+  return { path, ts, csvPath, artifactPersistenceWarning };
 }
 
 function applyVueValidationArtifacts(
@@ -1890,7 +1944,7 @@ function applyVueValidationArtifacts(
   runRes: unknown,
   validationReq: Record<string, unknown>,
   validationRes: unknown,
-  persisted: { path: string; ts: string; csvPath: string },
+  persisted: PersistedMlValidationArtifact,
 ): void {
   const pinia = resolveRuntimePinia();
   const artifacts = pinia ? useWorkflowArtifactsStore(pinia) : null;
@@ -1923,6 +1977,29 @@ function applyVueValidationArtifacts(
     },
     "vue",
   );
+}
+
+function appendMlArtifactPersistenceWarning(
+  persisted: PersistedMlValidationArtifact,
+  metaFields: Array<"mlSignalValidationMeta" | "mlSignalSweepMeta">,
+): void {
+  const warning = normalizeText(persisted.artifactPersistenceWarning);
+  if (!warning) return;
+  const pinia = resolveRuntimePinia();
+  if (!pinia) return;
+  const optimize = useOptimizeStore(pinia);
+  const message = `validation artifact not saved: ${warning}`;
+  const patch: Record<string, unknown> = {
+    statusLine: [normalizeText(optimize.statusLine), message]
+      .filter((part) => part)
+      .join(" • "),
+  };
+  for (const field of metaFields) {
+    patch[field] = [normalizeText(optimize[field]), message]
+      .filter((part) => part)
+      .join(" • ");
+  }
+  patchOptimizeState(patch);
 }
 
 function currentRunSnapshot(): {
@@ -2324,36 +2401,57 @@ export async function runMlSignalValidation(): Promise<unknown> {
     throw new Error("Generate or choose a score cache path first.");
   const data = requireDataContext();
 
-  const validationReq = {
-    data_id: data.dataId,
-    score_cache_path: scoreCachePath,
-    candidates: [
-      {
-        t_long: parseNumber(optimize.mlSignalLongThreshold, 0.55),
-        t_short: parseNumber(optimize.mlSignalShortThreshold, 0.55),
-        delta: parseNumber(optimize.mlSignalDelta, 0.05),
-        max_hold_bars: Math.max(
-          1,
-          Math.floor(parseNumber(optimize.mlSignalMaxHoldBars, 10)),
+  let validationReq: Record<string, unknown>;
+  try {
+    validationReq = {
+      data_id: data.dataId,
+      score_cache_path: scoreCachePath,
+      candidates: [
+        {
+          t_long: parseRequiredProbabilityWithDefault(
+            optimize.mlSignalLongThreshold,
+            0.55,
+            "Long threshold",
+          ),
+          t_short: parseRequiredProbabilityWithDefault(
+            optimize.mlSignalShortThreshold,
+            0.55,
+            "Short threshold",
+          ),
+          delta: parseRequiredProbabilityWithDefault(
+            optimize.mlSignalDelta,
+            0.05,
+            "Delta threshold",
+          ),
+          max_hold_bars: parsePositiveInteger(
+            optimize.mlSignalMaxHoldBars,
+            10,
+            "Max hold bars",
+          ),
+          exit_on_flat: Boolean(optimize.mlSignalExitOnFlat),
+          exit_on_opposite: Boolean(optimize.mlSignalExitOnOpposite),
+          label: "ml_signal_v1",
+          strategy: buildMlStrategyConfig(),
+        },
+      ],
+      iterative: {
+        stop_loss_pct: parseOptionalPositive(useStrategyStore(pinia).stopLossPct),
+        take_profit_pct: parseOptionalPositive(
+          useStrategyStore(pinia).takeProfitPct,
         ),
-        exit_on_flat: Boolean(optimize.mlSignalExitOnFlat),
-        exit_on_opposite: Boolean(optimize.mlSignalExitOnOpposite),
-        label: "ml_signal_v1",
-        strategy: buildMlStrategyConfig(),
+        intrabar_rule: "pessimistic",
+        slippage_vol_mult: 0,
       },
-    ],
-    iterative: {
-      stop_loss_pct: parseOptionalPositive(useStrategyStore(pinia).stopLossPct),
-      take_profit_pct: parseOptionalPositive(
-        useStrategyStore(pinia).takeProfitPct,
-      ),
-      intrabar_rule: "pessimistic",
-      slippage_vol_mult: 0,
-    },
-    min_psr: parseProbabilityGate(optimize.mlSignalMinPsr),
-    min_dsr: parseProbabilityGate(optimize.mlSignalMinDsr),
-    validation_context: buildValidationContext(),
-  };
+      min_psr: parseProbabilityGate(optimize.mlSignalMinPsr, "Min PSR gate"),
+      min_dsr: parseProbabilityGate(optimize.mlSignalMinDsr, "Min DSR gate"),
+      validation_context: buildValidationContext(),
+    };
+  } catch (error) {
+    patchOptimizeState({
+      statusLine: `ML validation failed: ${String(error || "")}`.trim(),
+    });
+    throw error;
+  }
 
   setMlBusy("Running ML score-cache validation…");
   try {
@@ -2416,6 +2514,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
       validationRes,
       persisted,
     );
+    appendMlArtifactPersistenceWarning(persisted, ["mlSignalValidationMeta"]);
     return validationRes;
   } catch (error) {
     patchOptimizeState({
@@ -2436,45 +2535,57 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
     throw new Error("Generate or choose a score cache path first.");
   const data = requireDataContext();
 
-  const sweepReq = {
-    data_id: data.dataId,
-    score_cache_path: scoreCachePath,
-    t_long: buildOptionalSweepAxisF64(
-      optimize.mlSignalSweepLongStart,
-      optimize.mlSignalSweepLongEnd,
-      optimize.mlSignalSweepLongStep,
-    ),
-    t_short: buildOptionalSweepAxisF64(
-      optimize.mlSignalSweepShortStart,
-      optimize.mlSignalSweepShortEnd,
-      optimize.mlSignalSweepShortStep,
-    ),
-    delta: buildOptionalSweepAxisF64(
-      optimize.mlSignalSweepDeltaStart,
-      optimize.mlSignalSweepDeltaEnd,
-      optimize.mlSignalSweepDeltaStep,
-    ),
-    max_hold_bars: buildOptionalSweepAxisUsize(
-      optimize.mlSignalSweepHoldStart,
-      optimize.mlSignalSweepHoldEnd,
-      optimize.mlSignalSweepHoldStep,
-    ),
-    exit_on_flat_values: [Boolean(optimize.mlSignalExitOnFlat)],
-    exit_on_opposite_values: [Boolean(optimize.mlSignalExitOnOpposite)],
-    base_strategy: buildMlStrategyConfig(),
-    iterative: {
-      stop_loss_pct: parseOptionalPositive(useStrategyStore(pinia).stopLossPct),
-      take_profit_pct: parseOptionalPositive(
-        useStrategyStore(pinia).takeProfitPct,
+  let sweepReq: Record<string, unknown>;
+  try {
+    sweepReq = {
+      data_id: data.dataId,
+      score_cache_path: scoreCachePath,
+      t_long: buildOptionalProbabilitySweepAxis(
+        "Long threshold",
+        optimize.mlSignalSweepLongStart,
+        optimize.mlSignalSweepLongEnd,
+        optimize.mlSignalSweepLongStep,
       ),
-      intrabar_rule: "pessimistic",
-      slippage_vol_mult: 0,
-    },
-    min_psr: parseProbabilityGate(optimize.mlSignalMinPsr),
-    min_dsr: parseProbabilityGate(optimize.mlSignalMinDsr),
-    validation_context: buildValidationContext(),
-    top_k: Math.max(1, Math.floor(parseNumber(optimize.mlSignalSweepTopK, 10))),
-  };
+      t_short: buildOptionalProbabilitySweepAxis(
+        "Short threshold",
+        optimize.mlSignalSweepShortStart,
+        optimize.mlSignalSweepShortEnd,
+        optimize.mlSignalSweepShortStep,
+      ),
+      delta: buildOptionalProbabilitySweepAxis(
+        "Delta",
+        optimize.mlSignalSweepDeltaStart,
+        optimize.mlSignalSweepDeltaEnd,
+        optimize.mlSignalSweepDeltaStep,
+      ),
+      max_hold_bars: buildOptionalSweepAxisUsize(
+        "Max hold",
+        optimize.mlSignalSweepHoldStart,
+        optimize.mlSignalSweepHoldEnd,
+        optimize.mlSignalSweepHoldStep,
+      ),
+      exit_on_flat_values: [Boolean(optimize.mlSignalExitOnFlat)],
+      exit_on_opposite_values: [Boolean(optimize.mlSignalExitOnOpposite)],
+      base_strategy: buildMlStrategyConfig(),
+      iterative: {
+        stop_loss_pct: parseOptionalPositive(useStrategyStore(pinia).stopLossPct),
+        take_profit_pct: parseOptionalPositive(
+          useStrategyStore(pinia).takeProfitPct,
+        ),
+        intrabar_rule: "pessimistic",
+        slippage_vol_mult: 0,
+      },
+      min_psr: parseProbabilityGate(optimize.mlSignalMinPsr, "Min PSR gate"),
+      min_dsr: parseProbabilityGate(optimize.mlSignalMinDsr, "Min DSR gate"),
+      validation_context: buildValidationContext(),
+      top_k: Math.max(1, Math.floor(parseNumber(optimize.mlSignalSweepTopK, 10))),
+    };
+  } catch (error) {
+    patchOptimizeState({
+      statusLine: `ML policy sweep failed: ${String(error || "")}`.trim(),
+    });
+    throw error;
+  }
 
   setMlBusy("Running ML policy sweep…");
   try {
@@ -2616,6 +2727,10 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
       sweepRes,
     );
     applyVueValidationArtifacts(runReq, runRes, sweepReq, sweepRes, persisted);
+    appendMlArtifactPersistenceWarning(persisted, [
+      "mlSignalSweepMeta",
+      "mlSignalValidationMeta",
+    ]);
     return sweepRes;
   } catch (error) {
     patchOptimizeState({

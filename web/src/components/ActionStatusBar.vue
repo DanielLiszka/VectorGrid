@@ -18,6 +18,7 @@ import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { AppButton, AppStatusChip } from './ui'
 import { mlSignalPrimaryActionForStep, workflowStepLabelForMode } from '../utils/core/workflowModel'
+import { mlSignalScoreCacheDisabledReason } from '../utils/workbenchActionModel'
 import { formatOverallProgressLabel, taskLifecycleLabel } from '../utils/statusPresentation'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
@@ -78,10 +79,12 @@ const mlSignalDisabledReason = computed(() => {
         ? ''
         : 'Choose a dataset export path before exporting.'
     case 'score_cache':
-      if (!String(optimizeStore.mlSignalScoreInputPath || '').trim()) return 'Choose a score input path before building the cache.'
-      return String(optimizeStore.mlSignalScoreCachePath || '').trim()
-        ? ''
-        : 'Choose a score-cache output path before building the cache.'
+      return mlSignalScoreCacheDisabledReason({
+        mlSignalModelBundleId: optimizeStore.mlSignalModelBundleId,
+        mlSignalScoreCachePath: optimizeStore.mlSignalScoreCachePath,
+        mlSignalScoreInputPath: optimizeStore.mlSignalScoreInputPath,
+        mlSignalScoreSource: optimizeStore.mlSignalScoreSource,
+      })
     case 'validation':
     case 'policy_sweep':
       return String(optimizeStore.mlSignalScoreCachePath || '').trim()

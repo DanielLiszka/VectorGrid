@@ -91,4 +91,18 @@ describe("metaStage4RequestBuilder", () => {
     expect(req.require_healthy_model).toBe(true);
     expect(req.fallback_to_meta_if_empty).toBe(true);
   });
+
+  it("normalizes confidence percentages and keeps review below accept", () => {
+    const req = buildMetaStage4Request({
+      minMlConfidence: "65",
+      acceptConfidence: "80%",
+      reviewConfidence: "90%",
+      maxAcceptUncertainty: "35",
+    });
+
+    expect(req.min_ml_confidence).toBe(0.65);
+    expect(req.accept_confidence).toBe(0.8);
+    expect(req.review_confidence).toBe(0.8);
+    expect(req.max_accept_uncertainty).toBe(0.35);
+  });
 });

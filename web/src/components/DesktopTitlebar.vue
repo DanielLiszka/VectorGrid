@@ -24,6 +24,7 @@ import {
   workflowStepLabelForMode,
   workflowStepSubtitleForMode,
 } from '../utils/core/workflowModel'
+import { mlSignalScoreCacheDisabledReason } from '../utils/workbenchActionModel'
 
 const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
@@ -108,8 +109,12 @@ const mlSignalPrimaryActionDisabled = computed(() => {
         || !!runDisabled.value
     case 'score_cache':
       return !dataLoaded
-        || !String(optimizeStore.mlSignalScoreInputPath || '').trim()
-        || !String(optimizeStore.mlSignalScoreCachePath || '').trim()
+        || !!mlSignalScoreCacheDisabledReason({
+          mlSignalModelBundleId: optimizeStore.mlSignalModelBundleId,
+          mlSignalScoreCachePath: optimizeStore.mlSignalScoreCachePath,
+          mlSignalScoreInputPath: optimizeStore.mlSignalScoreInputPath,
+          mlSignalScoreSource: optimizeStore.mlSignalScoreSource,
+        })
         || !!runDisabled.value
     case 'validation':
       return !dataLoaded

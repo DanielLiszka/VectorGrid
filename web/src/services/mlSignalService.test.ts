@@ -1097,6 +1097,82 @@ describe("mlSignalService", () => {
     );
   });
 
+  it("normalizes percent-style ML Signal probabilities before validation", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalLongThreshold = "60";
+    optimize.mlSignalShortThreshold = "61%";
+    optimize.mlSignalDelta = "8";
+    optimize.mlSignalMinPsr = "90";
+    optimize.mlSignalMinDsr = "40%";
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "run_ml_signal_validation") {
+        return { candidates: [{ params: {}, robust_score: 1.0 }] };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_ml_signal_percent.json" };
+      }
+      return {};
+    });
+
+    await runMlSignalValidation();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith("run_ml_signal_validation", {
+      req: expect.objectContaining({
+        min_psr: 0.9,
+        min_dsr: 0.4,
+        candidates: [
+          expect.objectContaining({
+            t_long: 0.6,
+            t_short: 0.61,
+            delta: 0.08,
+          }),
+        ],
+      }),
+    });
+  });
+
+  it("surfaces ML validation artifact persistence failures without hiding the validation result", async () => {
+    seedStores();
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "run_ml_signal_validation") {
+        return { candidates: [{ params: {}, robust_score: 1.0 }] };
+      }
+      if (command === "save_run_artifact") {
+        throw new Error("disk full");
+      }
+      return {};
+    });
+
+    await runMlSignalValidation();
+
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "validation artifact not saved",
+    );
+    expect(useOptimizeStore(pinia).statusLine).toContain("disk full");
+    expect(useOptimizeStore(pinia).mlSignalValidationMeta).toContain(
+      "validation artifact not saved",
+    );
+  });
+
+  it("rejects invalid ML Signal policy-sweep axes before invoking the backend", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalSweepLongStart = "0.70";
+    optimize.mlSignalSweepLongEnd = "0.50";
+
+    await expect(runMlSignalPolicySweep()).rejects.toThrow(
+      "Long threshold sweep end must be greater than or equal to start.",
+    );
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "run_ml_signal_policy_sweep",
+      expect.anything(),
+    );
+    expect(useOptimizeStore(pinia).statusLine).toContain(
+      "ML policy sweep failed",
+    );
+  });
+
   it("omits unset sweep axes while keeping the dedicated policy-sweep contract", async () => {
     seedStores();
     const optimize = useOptimizeStore(pinia);

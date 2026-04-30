@@ -168,8 +168,10 @@ describe('ActionStatusBar', () => {
       runDisabled: false,
       validateDisabled: false,
       mlSignalDatasetExportPath: 'C:\\data\\ml_dataset.csv',
-      mlSignalScoreInputPath: 'C:\\data\\scores.csv',
+      mlSignalModelBundleId: 'bundle-a',
+      mlSignalScoreInputPath: '',
       mlSignalScoreCachePath: 'C:\\data\\score_cache.json',
+      mlSignalScoreSource: 'native',
     })
 
     const wrapper = mount(ActionStatusBar, {
@@ -181,6 +183,12 @@ describe('ActionStatusBar', () => {
     workflow.selectWorkflowStep('data', { persist: false })
     await flushPanel()
     expect(findButton('Export dataset')).toBeDefined()
+
+    workflow.selectWorkflowStep('optimize', { persist: false })
+    await flushPanel()
+    const scoreCachePrimary = findButton('Build score cache')
+    expect(scoreCachePrimary).toBeDefined()
+    expect(scoreCachePrimary?.disabled).toBe(false)
 
     workflow.selectWorkflowStep('validate', { persist: false })
     await flushPanel()

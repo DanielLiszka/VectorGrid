@@ -23,6 +23,8 @@ export interface WorkbenchPrimaryActionInput {
   mlSignalDatasetExportPath?: string
   mlSignalScoreInputPath?: string
   mlSignalScoreCachePath?: string
+  mlSignalScoreSource?: string
+  mlSignalModelBundleId?: string
 }
 
 export interface WorkbenchPrimaryAction {
@@ -43,6 +45,19 @@ function normalizeStep(value: unknown): WorkflowStep {
 
 function hasText(value: unknown): boolean {
   return String(value ?? '').trim().length > 0
+}
+
+function isNativeScoreSource(value: unknown): boolean {
+  return String(value ?? '').trim().toLowerCase() === 'native'
+}
+
+export function mlSignalScoreCacheDisabledReason(input: WorkbenchPrimaryActionInput): string {
+  if (isNativeScoreSource(input.mlSignalScoreSource)) {
+    if (!hasText(input.mlSignalModelBundleId)) return 'Choose an ML model bundle before native scoring.'
+  } else if (!hasText(input.mlSignalScoreInputPath)) {
+    return 'Choose a score input path before building the cache.'
+  }
+  return hasText(input.mlSignalScoreCachePath) ? '' : 'Choose a score-cache output path before building the cache.'
 }
 
 function validationDisabledReason(input: WorkbenchPrimaryActionInput): string {
@@ -66,8 +81,7 @@ function mlSignalDisabledReason(input: WorkbenchPrimaryActionInput, step: Workfl
     case 'dataset_export':
       return hasText(input.mlSignalDatasetExportPath) ? '' : 'Choose a dataset export path before exporting.'
     case 'score_cache':
-      if (!hasText(input.mlSignalScoreInputPath)) return 'Choose a score input path before building the cache.'
-      return hasText(input.mlSignalScoreCachePath) ? '' : 'Choose a score-cache output path before building the cache.'
+      return mlSignalScoreCacheDisabledReason(input)
     case 'validation':
     case 'policy_sweep':
       return hasText(input.mlSignalScoreCachePath) ? '' : 'Build or select a score cache before this stage.'
