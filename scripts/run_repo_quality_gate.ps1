@@ -74,6 +74,7 @@ try {
   }
 
   if (-not $SkipWeb) {
+    Invoke-Step "Manifest/toolchain contract" { & npm.cmd --prefix web run check:manifest-toolchain }
     Invoke-Step "Web lint" { & npm.cmd --prefix web run lint }
     Invoke-Step "Web typecheck" { & npm.cmd --prefix web run typecheck }
 

@@ -69,8 +69,6 @@ const taskStore = useTaskStore();
 const workflowStore = useWorkflowStore();
 const {
   densityMode,
-  uiMode,
-  guidedStep,
   theme,
   effect,
   helpMode,
@@ -91,6 +89,10 @@ const {
   artifactCatalogLoading,
   artifactCatalogRebuilding,
   artifactCatalogStatusLine,
+  localDataInventory,
+  localDataInventoryLoaded,
+  localDataInventoryLoading,
+  localDataInventoryStatusLine,
   canManageArtifactRetention,
   canBrowseMarketDataDir,
   canSetMarketDataDir,
@@ -143,8 +145,6 @@ const themeDraft = ref("system");
 const effectDraft = ref("none");
 const helpModeDraft = ref("full");
 const densityModeDraft = ref("standard");
-const uiModeDraft = ref("guided");
-const guidedStepDraft = ref("data");
 const desktopNotificationModeDraft = ref("off");
 const marketDataDirDraft = ref("");
 const artifactRetentionDrafts = reactive<ArtifactRetentionDraftState>({
@@ -202,7 +202,7 @@ const settingsSummaryChips = computed(() => [
   `Effect ${String(effectDraft.value || "none").trim() || "none"}`,
   `Help ${String(helpModeDraft.value || "full").trim() || "full"}`,
   `Density ${String(densityModeDraft.value || "standard").trim() || "standard"}`,
-  `UI ${String(uiModeDraft.value || "guided").trim() || "guided"}`,
+  "UI Advanced",
   `Desktop alerts ${String(desktopNotificationModeDraft.value || "off").trim() || "off"}`,
   workflowAdvanced.value ? "Advanced controls on" : "Advanced controls off",
   controlsCollapsed.value
@@ -439,6 +439,35 @@ const artifactCatalogStamp = computed(() => {
   if (artifactCatalogLoading.value) return "Refreshing";
   return artifactCatalogSummary.value.total > 0 ? "Catalog loaded" : "Catalog idle";
 });
+const localDataInventoryStamp = computed(() => {
+  if (localDataInventoryLoading.value) return "Building";
+  if (!localDataInventoryLoaded.value) return "Dry run idle";
+  return formatUiTimeFromUnixMs(localDataInventory.value.generatedAtUnixMs);
+});
+const localDataInventorySummaryText = computed(() => {
+  const summary = localDataInventory.value;
+  return `${summary.polygonDatasetCount} Polygon dataset${summary.polygonDatasetCount === 1 ? "" : "s"} · ${summary.artifactCatalog.total} artifact${summary.artifactCatalog.total === 1 ? "" : "s"} · raw data not scanned`;
+});
+const localDataInventoryPathText = computed(() => {
+  const paths = localDataInventory.value.pathSummary;
+  const root = paths.configuredRootDir
+    ? `Custom root ${paths.configuredRootDir}`
+    : `Default root ${paths.defaultRootDir || "not reported"}`;
+  return `${root}. Polygon cache ${paths.polygonCacheDir || "not reported"}.`;
+});
+const localDataInventoryCredentialText = computed(() => {
+  const credentials = localDataInventory.value.credentialSummary;
+  const presence = credentials.polygonHasApiKey
+    ? "Polygon credential present"
+    : "Polygon credential not stored";
+  const degraded = credentials.polygonCredentialDegraded ? "degraded" : "ok";
+  return `${presence}; ${credentials.polygonCredentialStorageBackend || credentials.polygonCredentialState} storage ${degraded}.`;
+});
+const localDataInventoryWarningText = computed(() => {
+  const warnings = localDataInventory.value.warnings;
+  if (!warnings.length) return "No inventory warnings.";
+  return warnings.join(" ");
+});
 const taskAttentionLine = computed(() => {
   const failed = taskPosture.value.failed[0] ?? null;
   if (failed)
@@ -553,6 +582,13 @@ const desktopDiagnosticsSnapshot = computed(() => {
     `- status: ${artifactCatalogStatusLine.value}`,
     `- counts: ${artifactCatalogSummaryText.value}`,
     "",
+    "Local data inventory",
+    `- status: ${localDataInventoryStatusLine.value}`,
+    `- summary: ${localDataInventorySummaryText.value}`,
+    `- paths: ${localDataInventoryPathText.value}`,
+    `- credentials: ${localDataInventoryCredentialText.value}`,
+    `- warnings: ${localDataInventoryWarningText.value}`,
+    "",
     "Task posture",
     `- center: ${centerStatusLabel.value}`,
     `- summary: ${taskHeadline.value}`,
@@ -640,8 +676,6 @@ watch(
       String(effect.value || "none").trim() || "none",
       String(helpMode.value || "full").trim() || "full",
       String(densityMode.value || "standard").trim() || "standard",
-      String(uiMode.value || "guided").trim() || "guided",
-      String(guidedStep.value || "data").trim() || "data",
       String(desktopNotificationMode.value || "off").trim() || "off",
       String(marketDataDir.value || ""),
       String(selectedPerspectiveId.value || ""),
@@ -651,8 +685,6 @@ watch(
     nextEffect,
     nextHelpMode,
     nextDensityMode,
-    nextUiMode,
-    nextGuidedStep,
     nextDesktopNotificationMode,
     nextMarketDataDir,
     nextPerspectiveId,
@@ -663,9 +695,6 @@ watch(
       helpModeDraft.value = nextHelpMode;
     if (densityModeDraft.value !== nextDensityMode)
       densityModeDraft.value = nextDensityMode;
-    if (uiModeDraft.value !== nextUiMode) uiModeDraft.value = nextUiMode;
-    if (guidedStepDraft.value !== nextGuidedStep)
-      guidedStepDraft.value = nextGuidedStep;
     if (desktopNotificationModeDraft.value !== nextDesktopNotificationMode) {
       desktopNotificationModeDraft.value = nextDesktopNotificationMode;
     }
@@ -721,6 +750,10 @@ function setMarketDataDirFromDraft(): void {
 
 function refreshArtifactRetentionInfo(): void {
   void settingsStore.loadArtifactRetentionInfo(true);
+}
+
+function refreshLocalDataInventory(): void {
+  void settingsStore.loadLocalDataInventory(true);
 }
 
 function applyArtifactRetentionDrafts(): void {
@@ -989,53 +1022,6 @@ onBeforeUnmount(() => {
             <div class="panelMuted">
               Use this as the global policy for optional in-app help. Safety
               notices, errors, and runtime status still stay visible.
-            </div>
-          </div>
-          <div class="rowSingle">
-            <label for="vueSettingsUiMode">Default interface</label>
-            <select
-              id="vueSettingsUiMode"
-              :value="uiModeDraft"
-              @change="
-                uiModeDraft = String(
-                  ($event.target as HTMLSelectElement).value || 'guided',
-                );
-                setSelectValue('settingsUiMode', uiModeDraft);
-              "
-            >
-              <option value="guided">
-                Simple Mode (optimize backtests, optional validation)
-              </option>
-              <option value="advanced">
-                Advanced Mode (all research tools)
-              </option>
-            </select>
-            <div class="panelMuted">
-              Simple Mode keeps the first-run path focused. Advanced Mode keeps
-              Meta, Stage 5 ML confidence, ML Signal/CatBoost, options,
-              campaigns, diagnostics, and artifact replay reachable.
-            </div>
-          </div>
-          <div class="rowSingle" v-if="uiModeDraft === 'guided'">
-            <label for="vueSettingsGuidedStep">Simple start step</label>
-            <select
-              id="vueSettingsGuidedStep"
-              :value="guidedStepDraft"
-              @change="
-                guidedStepDraft = String(
-                  ($event.target as HTMLSelectElement).value || 'data',
-                );
-                setSelectValue('settingsGuidedStep', guidedStepDraft);
-              "
-            >
-              <option value="data">Data</option>
-              <option value="strategy">Strategy</option>
-              <option value="optimize">Optimize</option>
-              <option value="validate">Validate</option>
-            </select>
-            <div class="panelMuted">
-              This only chooses the visible Simple step. It does not remove or
-              reset any loaded data, runs, or advanced workspace state.
             </div>
           </div>
           <div class="rowSingle">
@@ -1721,6 +1707,47 @@ onBeforeUnmount(() => {
                     artifactCatalogRebuilding
                       ? "Rebuilding catalog…"
                       : "Rebuild catalog"
+                  }}
+                </button>
+              </div>
+            </section>
+
+            <section
+              class="diagnosticsCard"
+              aria-label="Local data inventory diagnostics card"
+            >
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Local data inventory</div>
+                <div class="mono diagnosticsStamp">
+                  {{ localDataInventoryStamp }}
+                </div>
+              </header>
+              <div class="diagnosticsPrimary">
+                {{ localDataInventorySummaryText }}
+              </div>
+              <div class="panelMuted">
+                {{ localDataInventoryPathText }}
+              </div>
+              <div class="panelMuted">
+                {{ localDataInventoryCredentialText }}
+              </div>
+              <div class="panelMuted">
+                {{ localDataInventoryWarningText }}
+              </div>
+              <div class="panelMuted">
+                {{ localDataInventoryStatusLine }}
+              </div>
+              <div class="actions diagnosticsInlineActions">
+                <button
+                  type="button"
+                  data-qa-action="settings.localDataInventory.refresh"
+                  :disabled="localDataInventoryLoading"
+                  @click="refreshLocalDataInventory"
+                >
+                  {{
+                    localDataInventoryLoading
+                      ? "Building inventory..."
+                      : "Build inventory dry run"
                   }}
                 </button>
               </div>

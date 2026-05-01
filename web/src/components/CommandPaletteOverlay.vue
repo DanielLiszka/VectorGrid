@@ -70,13 +70,11 @@ const commandGroupMeta: Record<PaletteCommand['group'], string> = {
 const commandGroupOrder: PaletteCommand['group'][] = ['actions', 'data', 'exports', 'layout', 'navigation']
 
 function setWorkflowStepIfNeeded(step: string): void {
-  if (settingsStore.uiMode !== 'advanced') settingsStore.setUiMode('advanced')
   if (String(workspace.value || '').trim() === 'workflow' && String(workflowStep.value || '').trim() === step) return
   workflowStore.selectWorkflowStep(step)
 }
 
 function setWorkspaceIfNeeded(nextWorkspace: string): void {
-  if (settingsStore.uiMode !== 'advanced') settingsStore.setUiMode('advanced')
   if (String(workspace.value || '').trim() === nextWorkspace) return
   workflowStore.selectWorkspace(nextWorkspace)
 }
@@ -132,30 +130,6 @@ const sharedShortcutCommands = computed<PaletteCommand[]>(() => createSharedShel
 const commands = computed<PaletteCommand[]>(() => {
   return [
     ...sharedShortcutCommands.value,
-    {
-      id: 'switch_guided_mode',
-      group: 'navigation',
-      name: 'Switch to Simple Mode',
-      desc: 'Open the streamlined backtest optimization and optional validation path.',
-      keys: [],
-      keywords: ['guided', 'simple', 'beginner', 'mode'],
-      enabled: true,
-      run: () => {
-        settingsStore.setUiMode('guided')
-      },
-    },
-    {
-      id: 'switch_advanced_mode',
-      group: 'navigation',
-      name: 'Switch to Advanced Mode',
-      desc: 'Restore the full workbench with Meta, ML Signal, options, diagnostics, and artifact tools.',
-      keys: [],
-      keywords: ['advanced', 'full', 'mode', 'meta', 'ml', 'options'],
-      enabled: true,
-      run: () => {
-        settingsStore.setUiMode('advanced')
-      },
-    },
     {
       id: 'go_step_data',
       group: 'navigation',
@@ -412,8 +386,6 @@ function commandQaAction(commandId: string): string {
     open_latest_report: 'openLatestReport',
     open_polygon: 'openPolygon',
     open_task_center: 'openTaskCenter',
-    switch_advanced_mode: 'switchAdvancedMode',
-    switch_guided_mode: 'switchGuidedMode',
     toggle_controls: 'toggleControls',
   }
   return `commandPalette.command.${overrides[normalized] ?? normalized}`

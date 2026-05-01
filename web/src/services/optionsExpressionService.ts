@@ -505,6 +505,7 @@ export interface RunOptionsExpressionSummary {
   optionsDatasetHash: string;
   optionsDatasetNormalizedRowsSha256?: string;
   optionsDatasetManifestSemanticSha256?: string;
+  datasetProvenance: OptionsExpressionDatasetProvenanceSummary | null;
   exactnessSemantics?: OptionsExpressionExactnessSemanticsSummary | null;
   objectiveConfig?: OptionsObjectiveConfigSummary;
   backendUsed: string;
@@ -1868,6 +1869,7 @@ function normalizeRunOptionsExpression(
     optionsDatasetManifestSemanticSha256: normalizeText(
       artifact.options_dataset_manifest_semantic_sha256,
     ),
+    datasetProvenance: normalizeDatasetProvenance(artifact.dataset_provenance),
     exactnessSemantics: normalizeExactnessSemantics(
       row.exactness_semantics ??
         row.exactnessSemantics ??

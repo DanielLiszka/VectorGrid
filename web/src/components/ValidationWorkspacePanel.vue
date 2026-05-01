@@ -147,6 +147,7 @@ const {
   validationFrictionSummary,
   validationCrossSummary,
   validationSkippedSummary,
+  validationEvidenceSummary,
   validationWarningSummary,
   validationReoptMeta,
   validationShortlistMeta,
@@ -1808,6 +1809,10 @@ onBeforeUnmount(() => {
               <div>
                 <label>Cross</label>
                 <div class="metaLine mono">{{ validationCrossSummary }}</div>
+              </div>
+              <div>
+                <label>Evidence</label>
+                <div class="metaLine mono">{{ validationEvidenceSummary }}</div>
               </div>
               <div>
                 <label>Skipped</label>

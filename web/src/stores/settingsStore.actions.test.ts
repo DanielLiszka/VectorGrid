@@ -45,6 +45,72 @@ vi.mock("../services/settingsService", () => ({
     "campaignSummary",
     "optionsExpression",
   ],
+  buildLocalDataInventoryDryRun: vi.fn(async () => ({
+    generatedAtUnixMs: 1777551600000,
+    scanMode: "dry_run",
+    rawMarketDataContentsScanned: false,
+    pathSummary: {
+      defaultRootDir: "C:/default",
+      configuredRootDir: "",
+      effectiveRootDir: "C:/default",
+      polygonCacheDir: "C:/default/polygon-cache",
+    },
+    credentialSummary: {
+      polygonHasApiKey: false,
+      polygonCredentialState: "missing",
+      polygonCredentialStorageBackend: "missing",
+      polygonCredentialDegraded: false,
+      polygonCredentialMessage: "",
+    },
+    polygonDatasetCount: 2,
+    artifactCatalog: {
+      runs: 2,
+      meta: 1,
+      stage5: 0,
+      policyEvals: 1,
+      optionsExpression: 1,
+      total: 5,
+    },
+    artifactRetention: {
+      defaults: {
+        run: 200,
+        meta: 100,
+        stage5: 100,
+        mlPolicyEval: 100,
+        batchSummary: 100,
+        campaignSummary: 100,
+        optionsExpression: 100,
+      },
+      configured: {
+        run: null,
+        meta: null,
+        stage5: null,
+        mlPolicyEval: null,
+        batchSummary: null,
+        campaignSummary: null,
+        optionsExpression: null,
+      },
+      envOverrides: {
+        run: null,
+        meta: null,
+        stage5: null,
+        mlPolicyEval: null,
+        batchSummary: null,
+        campaignSummary: null,
+        optionsExpression: null,
+      },
+      effective: {
+        run: 200,
+        meta: 100,
+        stage5: 100,
+        mlPolicyEval: 100,
+        batchSummary: 100,
+        campaignSummary: 100,
+        optionsExpression: 100,
+      },
+    },
+    warnings: [],
+  })),
   clearArtifactRetentionSettings: vi.fn(async () => undefined),
   getArtifactRetentionInfo: vi.fn(async () => ({
     defaults: {
@@ -114,6 +180,9 @@ const setMarketDataDirMock = vi.mocked(dataService.setMarketDataDir);
 
 const clearArtifactRetentionSettingsMock = vi.mocked(
   settingsService.clearArtifactRetentionSettings,
+);
+const buildLocalDataInventoryDryRunMock = vi.mocked(
+  settingsService.buildLocalDataInventoryDryRun,
 );
 const getArtifactRetentionInfoMock = vi.mocked(
   settingsService.getArtifactRetentionInfo,
@@ -272,23 +341,52 @@ describe("settings store actions", () => {
     clearArtifactRetentionSettingsMock.mockResolvedValue(
       undefined as never,
     );
+    buildLocalDataInventoryDryRunMock.mockResolvedValue({
+      generatedAtUnixMs: 1777551600000,
+      scanMode: "dry_run",
+      rawMarketDataContentsScanned: false,
+      pathSummary: {
+        defaultRootDir: "C:/default",
+        configuredRootDir: "",
+        effectiveRootDir: "C:/default",
+        polygonCacheDir: "C:/default/polygon-cache",
+      },
+      credentialSummary: {
+        polygonHasApiKey: false,
+        polygonCredentialState: "missing",
+        polygonCredentialStorageBackend: "missing",
+        polygonCredentialDegraded: false,
+        polygonCredentialMessage: "",
+      },
+      polygonDatasetCount: 2,
+      artifactCatalog: {
+        runs: 2,
+        meta: 1,
+        stage5: 0,
+        policyEvals: 1,
+        optionsExpression: 1,
+        total: 5,
+      },
+      artifactRetention: defaultArtifactRetentionInfo,
+      warnings: [],
+    });
     harness = installDocumentHarness();
   });
 
-  it("defaults first-run users to guided mode but persists explicit advanced mode", () => {
+  it("defaults first-run users to advanced mode and ignores legacy guided mode", () => {
     const store = useSettingsStore();
-    expect(store.uiMode).toBe("guided");
+    expect(store.uiMode).toBe("advanced");
+
+    store.setUiMode("guided");
+
+    expect(store.uiMode).toBe("advanced");
+    expect(harness.dataset.uiMode).toBe("advanced");
+    expect(localStorage.getItem("vta_ui_mode_v1")).toBeNull();
 
     store.setUiMode("advanced");
 
     expect(store.uiMode).toBe("advanced");
     expect(harness.dataset.uiMode).toBe("advanced");
-    expect(localStorage.getItem("vta_ui_mode_v1")).toBe("advanced");
-
-    store.setUiMode("guided");
-
-    expect(store.uiMode).toBe("guided");
-    expect(harness.dataset.uiMode).toBe("guided");
     expect(localStorage.getItem("vta_ui_mode_v1")).toBeNull();
   });
 
@@ -301,7 +399,6 @@ describe("settings store actions", () => {
     store.setSelectField("settingsDensityMode", "dense");
     store.setSelectField("settingsUiMode", "advanced");
     store.setSelectField("settingsUiMode", "guided");
-    store.setSelectField("settingsGuidedStep", "trade");
     store.setSelectField("settingsDesktopNotifications", "important");
     store.setCheckboxField("settingsWorkflowAdvanced", true);
     store.setCheckboxField("settingsControlsCollapsed", true);
@@ -316,10 +413,8 @@ describe("settings store actions", () => {
     expect(harness.dataset.helpMode).toBe("off");
     expect(store.densityMode).toBe("dense");
     expect(harness.dataset.density).toBe("dense");
-    expect(store.uiMode).toBe("guided");
-    expect(harness.dataset.uiMode).toBe("guided");
-    expect(store.guidedStep).toBe("trade");
-    expect(harness.dataset.guidedStep).toBe("trade");
+    expect(store.uiMode).toBe("advanced");
+    expect(harness.dataset.uiMode).toBe("advanced");
     expect(store.desktopNotificationMode).toBe("important");
     expect(store.workflowAdvanced).toBe(true);
     expect(harness.dataset.workflowAdvanced).toBe("1");
@@ -343,7 +438,6 @@ describe("settings store actions", () => {
     store.setSelectField("settingsHelpMode", "concise");
     store.setSelectField("settingsDensityMode", "dense");
     store.setSelectField("settingsUiMode", "guided");
-    store.setSelectField("settingsGuidedStep", "optimize");
     store.setSelectField("settingsDesktopNotifications", "important");
     store.setCheckboxField("settingsWorkflowAdvanced", true);
     store.setCheckboxField("settingsControlsCollapsed", true);
@@ -357,7 +451,6 @@ describe("settings store actions", () => {
     store.setSelectField("settingsHelpMode", "concise");
     store.setSelectField("settingsDensityMode", "dense");
     store.setSelectField("settingsUiMode", "guided");
-    store.setSelectField("settingsGuidedStep", "optimize");
     store.setSelectField("settingsDesktopNotifications", "important");
     store.setCheckboxField("settingsWorkflowAdvanced", true);
     store.setCheckboxField("settingsControlsCollapsed", true);
@@ -369,8 +462,7 @@ describe("settings store actions", () => {
     expect(store.effect).toBe("mica");
     expect(store.helpMode).toBe("concise");
     expect(store.densityMode).toBe("dense");
-    expect(store.uiMode).toBe("guided");
-    expect(store.guidedStep).toBe("optimize");
+    expect(store.uiMode).toBe("advanced");
     expect(store.desktopNotificationMode).toBe("important");
     expect(store.workflowAdvanced).toBe(true);
     expect(store.controlsCollapsed).toBe(true);
@@ -528,6 +620,22 @@ describe("settings store actions", () => {
     expect(settingsStore.artifactCatalogSummary.total).toBe(8);
     expect(settingsStore.artifactCatalogStatusLine).toContain(
       "Rebuilt artifact catalog for 8 artifacts.",
+    );
+  });
+
+  it("loads local data inventory as a dry-run diagnostic", async () => {
+    const settingsStore = useSettingsStore();
+
+    await settingsStore.loadLocalDataInventory();
+
+    expect(buildLocalDataInventoryDryRunMock).toHaveBeenCalledTimes(1);
+    expect(settingsStore.localDataInventoryLoaded).toBe(true);
+    expect(settingsStore.localDataInventoryLoading).toBe(false);
+    expect(settingsStore.localDataInventory.rawMarketDataContentsScanned).toBe(false);
+    expect(settingsStore.localDataInventory.polygonDatasetCount).toBe(2);
+    expect(settingsStore.localDataInventory.artifactCatalog.total).toBe(5);
+    expect(settingsStore.localDataInventoryStatusLine).toContain(
+      "Built local data inventory dry run",
     );
   });
 

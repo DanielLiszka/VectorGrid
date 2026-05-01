@@ -815,8 +815,8 @@ describe("data store actions", () => {
     store.polygonDatasets = [
       {
         ...defaultPolygonDataset,
-        minTs: Date.UTC(2024, 0, 1),
-        maxTs: Date.UTC(2024, 0, 31),
+        minTs: Date.UTC(2024, 0, 1, 14, 30),
+        maxTs: Date.UTC(2024, 0, 31, 21, 0),
       },
     ];
     store.polygonSelectedPath = defaultPolygonDataset.csvPath;

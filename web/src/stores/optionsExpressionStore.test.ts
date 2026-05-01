@@ -137,6 +137,7 @@ function makeRunSummary(overrides: Record<string, unknown> = {}) {
     artifactTs: "2026-04-05T12:00:00Z",
     parentArtifactId: "vectorgrid_run_1",
     optionsDatasetHash: "hash-1",
+    datasetProvenance: null,
     objectiveConfig: { profile: "balanced" },
     backendUsed: "cpu_reference",
     priceSemantics: "minute_aggregate",
@@ -1044,6 +1045,35 @@ describe("optionsExpressionStore", () => {
       "GPU planner probe failed; using CPU.",
     );
     expect(store.latestRun).toBeNull();
+  });
+
+  it("exposes active dataset provenance from latest runs before saved artifacts", () => {
+    const store = useOptionsExpressionStore();
+    store.activeArtifact = makeArtifactRecord({
+      datasetProvenance: {
+        providerName: "saved-provider",
+        providerSourceSurface: "saved-surface",
+        quoteResolution: "",
+        aggregatePriceField: "",
+        contractReferenceAsOfUtc: "",
+        quoteQuality: null,
+      },
+    });
+    store.latestRun = makeRunSummary({
+      datasetProvenance: {
+        providerName: "polygon.io",
+        providerSourceSurface: "options_aggs",
+        quoteResolution: "top_of_book",
+        aggregatePriceField: "mid",
+        contractReferenceAsOfUtc: "2026-04-05T00:00:00Z",
+        quoteQuality: null,
+      },
+    });
+
+    expect(store.activeDatasetProvenance?.providerName).toBe("polygon.io");
+    expect(store.activeDatasetProvenance?.providerSourceSurface).toBe(
+      "options_aggs",
+    );
   });
 
   it("refreshes saved artifact summaries even when retained-leader summary fields are absent", async () => {

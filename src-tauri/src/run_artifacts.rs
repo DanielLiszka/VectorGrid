@@ -18,6 +18,8 @@ use super::{
 
 const DATASET_META_SCHEMA_VERSION: u64 = 2;
 const CONFIG_FINGERPRINT_SCHEMA_VERSION: u64 = 1;
+const RUN_ARTIFACT_SCHEMA_VERSION: u32 = 1;
+const RUN_ARTIFACT_COMMAND_RESPONSE_VERSION: u32 = 1;
 const REPRODUCIBILITY_SCHEMA_VERSION: u64 = 1;
 const NUMERIC_POLICY_VERSION: u64 = 1;
 const ORDERING_POLICY_VERSION: u64 = 1;
@@ -481,12 +483,50 @@ pub struct RouteProvenanceSummary {
     pub fallback_reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactCompatibilitySummary {
+    pub artifact_family: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artifact_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_schema_version: Option<u32>,
+    pub supported_schema_version: u32,
+    pub command_response_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_schema_version: Option<u32>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    pub review_only: bool,
+    pub replay_blocked: bool,
+}
+
+impl Default for ArtifactCompatibilitySummary {
+    fn default() -> Self {
+        Self {
+            artifact_family: "run".to_string(),
+            artifact_kind: String::new(),
+            artifact_schema_version: None,
+            supported_schema_version: RUN_ARTIFACT_SCHEMA_VERSION,
+            command_response_version: RUN_ARTIFACT_COMMAND_RESPONSE_VERSION,
+            report_schema_version: None,
+            status: "legacy_unknown".to_string(),
+            reason: "No top-level artifact schema version was recorded; treating artifact as legacy-compatible.".to_string(),
+            review_only: false,
+            replay_blocked: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunArtifactSummary {
     pub ts: String,
     pub path: String,
     pub bytes: u64,
     pub kind: String,
+    #[serde(default)]
+    pub artifact_compatibility: ArtifactCompatibilitySummary,
     pub strategy_kind: String,
     pub config_fingerprint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -761,6 +801,10 @@ pub struct ArtifactLibrarySnapshot {
 pub struct WorkflowArtifactRunPayload {
     pub ts: String,
     pub artifact_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artifact_kind: String,
+    #[serde(default)]
+    pub artifact_compatibility: ArtifactCompatibilitySummary,
     pub report_xlsx_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_xlsx_exists: Option<bool>,
@@ -814,6 +858,8 @@ pub struct RunArtifactDetailResponse {
     pub ts: String,
     pub artifact_path: String,
     pub kind: String,
+    #[serde(default)]
+    pub artifact_compatibility: ArtifactCompatibilitySummary,
     pub strategy_kind: String,
     pub timeframe: String,
     pub csv_path: String,
@@ -3075,6 +3121,136 @@ fn push_replay_reason(reasons: &mut Vec<String>, reason: &str) {
     }
 }
 
+fn parse_optional_u32_schema_version(value: Option<&Value>) -> Result<Option<u32>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    if let Some(number) = value.as_u64() {
+        return u32::try_from(number)
+            .map(Some)
+            .map_err(|_| format!("schema version {number} exceeds u32 range"));
+    }
+    if let Some(number) = value.as_i64() {
+        return u32::try_from(number)
+            .map(Some)
+            .map_err(|_| format!("schema version {number} is not a valid unsigned integer"));
+    }
+    if let Some(text) = value.as_str() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        return trimmed
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| format!("schema version '{trimmed}' is not a valid unsigned integer"));
+    }
+    Err("schema version must be an unsigned integer".to_string())
+}
+
+fn resolve_run_artifact_schema_version_value(artifact: &Value) -> Option<&Value> {
+    artifact
+        .get("artifact_schema_version")
+        .or_else(|| artifact.get("artifactSchemaVersion"))
+        .or_else(|| artifact.get("version"))
+        .or_else(|| artifact.get("schema_version"))
+        .or_else(|| artifact.get("schemaVersion"))
+}
+
+fn resolve_run_report_schema_version_value(artifact: &Value) -> Option<&Value> {
+    artifact
+        .get("report_schema_version")
+        .or_else(|| artifact.get("reportSchemaVersion"))
+        .or_else(|| artifact.pointer("/report/schema_version"))
+        .or_else(|| artifact.pointer("/report/schemaVersion"))
+}
+
+fn build_run_artifact_compatibility(artifact: &Value) -> ArtifactCompatibilitySummary {
+    let artifact_kind = normalize_text_value(artifact.get("kind"));
+    let report_schema_version =
+        parse_optional_u32_schema_version(resolve_run_report_schema_version_value(artifact))
+            .ok()
+            .flatten();
+    let base = ArtifactCompatibilitySummary {
+        artifact_family: "run".to_string(),
+        artifact_kind,
+        artifact_schema_version: None,
+        supported_schema_version: RUN_ARTIFACT_SCHEMA_VERSION,
+        command_response_version: RUN_ARTIFACT_COMMAND_RESPONSE_VERSION,
+        report_schema_version,
+        status: String::new(),
+        reason: String::new(),
+        review_only: false,
+        replay_blocked: false,
+    };
+
+    match parse_optional_u32_schema_version(resolve_run_artifact_schema_version_value(artifact)) {
+        Ok(None) => ArtifactCompatibilitySummary {
+            status: "legacy_unknown".to_string(),
+            reason: "No top-level artifact schema version was recorded; treating artifact as legacy-compatible.".to_string(),
+            ..base
+        },
+        Ok(Some(0)) => ArtifactCompatibilitySummary {
+            artifact_schema_version: Some(0),
+            status: "invalid".to_string(),
+            reason: "Artifact schema version 0 is invalid; artifact is review-only.".to_string(),
+            review_only: true,
+            replay_blocked: true,
+            ..base
+        },
+        Ok(Some(version)) if version <= RUN_ARTIFACT_SCHEMA_VERSION => {
+            ArtifactCompatibilitySummary {
+                artifact_schema_version: Some(version),
+                status: "supported".to_string(),
+                reason: "Artifact schema version is supported by this command surface."
+                    .to_string(),
+                ..base
+            }
+        }
+        Ok(Some(version)) => ArtifactCompatibilitySummary {
+            artifact_schema_version: Some(version),
+            status: "future_unsupported".to_string(),
+            reason: format!(
+                "Artifact schema version {version} is newer than supported version {RUN_ARTIFACT_SCHEMA_VERSION}; artifact is review-only until an adapter is added."
+            ),
+            review_only: true,
+            replay_blocked: true,
+            ..base
+        },
+        Err(err) => ArtifactCompatibilitySummary {
+            status: "invalid".to_string(),
+            reason: format!("Artifact schema version is invalid: {err}; artifact is review-only."),
+            review_only: true,
+            replay_blocked: true,
+            ..base
+        },
+    }
+}
+
+fn apply_artifact_compatibility_to_replay(
+    mut replay_class: String,
+    mut reasons: Vec<String>,
+    compatibility: &ArtifactCompatibilitySummary,
+) -> (String, Vec<String>) {
+    match compatibility.status.as_str() {
+        "supported" => push_replay_reason(&mut reasons, "artifact_schema_supported"),
+        "legacy_unknown" => push_replay_reason(&mut reasons, "artifact_schema_legacy_unknown"),
+        "future_unsupported" => {
+            push_replay_reason(&mut reasons, "artifact_schema_future_unsupported")
+        }
+        "invalid" => push_replay_reason(&mut reasons, "artifact_schema_invalid"),
+        _ => push_replay_reason(&mut reasons, "artifact_schema_status_unknown"),
+    }
+    if compatibility.replay_blocked {
+        replay_class = "blocked".to_string();
+        push_replay_reason(&mut reasons, "artifact_schema_replay_blocked");
+    }
+    (replay_class, reasons)
+}
+
 fn classify_run_artifact_replay(
     artifact: &Value,
     report_xlsx_path: &str,
@@ -4103,6 +4279,10 @@ fn build_workflow_artifacts_hydration_payload(
     artifact_path: &str,
     artifact: &Value,
 ) -> Result<WorkflowArtifactsHydrationPayload, String> {
+    let artifact_compatibility = build_run_artifact_compatibility(artifact);
+    if artifact_compatibility.replay_blocked {
+        return Err(artifact_compatibility.reason.clone());
+    }
     let run_req = artifact
         .pointer("/run/req")
         .cloned()
@@ -4119,6 +4299,8 @@ fn build_workflow_artifacts_hydration_payload(
     let current_run = WorkflowArtifactRunPayload {
         ts: resolved_ts.clone(),
         artifact_path: artifact_path.to_string(),
+        artifact_kind: normalize_text_value(artifact.get("kind")),
+        artifact_compatibility,
         report_xlsx_path,
         report_xlsx_exists,
         csv_path: resolve_run_artifact_csv_path(artifact),
@@ -4178,13 +4360,20 @@ fn build_run_artifact_detail_response(
     .unwrap_or_default();
     let (report_xlsx_path, report_xlsx_exists) =
         normalize_report_xlsx_fields(artifact.get("report_xlsx_path"));
+    let artifact_compatibility = build_run_artifact_compatibility(artifact);
     let (replay_class, replay_reasons) =
         classify_run_artifact_replay(artifact, &report_xlsx_path, report_xlsx_exists);
+    let (replay_class, replay_reasons) = apply_artifact_compatibility_to_replay(
+        replay_class,
+        replay_reasons,
+        &artifact_compatibility,
+    );
 
     Ok(RunArtifactDetailResponse {
         ts: resolved_ts,
         artifact_path: artifact_path.to_string(),
         kind: normalize_text_value(artifact.get("kind")),
+        artifact_compatibility,
         strategy_kind: resolve_run_artifact_strategy_kind(artifact),
         timeframe: resolve_run_artifact_timeframe(artifact),
         csv_path: resolve_run_artifact_csv_path(artifact),
@@ -4439,8 +4628,14 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
     let has_validation = v.pointer("/validation/res").is_some();
     let (report_xlsx_path, report_xlsx_exists) =
         normalize_report_xlsx_fields(v.get("report_xlsx_path"));
+    let artifact_compatibility = build_run_artifact_compatibility(v);
     let (replay_class, replay_reasons) =
         classify_run_artifact_replay(v, &report_xlsx_path, report_xlsx_exists);
+    let (replay_class, replay_reasons) = apply_artifact_compatibility_to_replay(
+        replay_class,
+        replay_reasons,
+        &artifact_compatibility,
+    );
     let csv_path = resolve_run_artifact_csv_path(v);
     let timeframe = resolve_run_artifact_timeframe(v);
     let base_timeframe = v
@@ -4552,6 +4747,7 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
         path: path.to_string_lossy().to_string(),
         bytes,
         kind,
+        artifact_compatibility,
         strategy_kind,
         config_fingerprint,
         config_fingerprint_version,
@@ -6410,6 +6606,97 @@ mod tests {
             .replay_reasons
             .iter()
             .any(|reason| reason == "report_missing_on_disk"));
+    }
+
+    #[test]
+    fn run_artifact_schema_missing_is_legacy_compatible() {
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": "2026-04-02T12:00:00Z",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d",
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_legacy.json"),
+            256,
+            &artifact,
+        )
+        .expect("summary");
+        let hydration = build_workflow_artifacts_hydration_payload(
+            "C:/runs/vectorgrid_run_legacy.json",
+            &artifact,
+        )
+        .expect("hydration");
+        let encoded = serde_json::to_value(hydration).expect("serialize");
+
+        assert_eq!(summary.artifact_compatibility.status, "legacy_unknown");
+        assert_eq!(summary.artifact_compatibility.artifact_schema_version, None);
+        assert!(!summary.artifact_compatibility.replay_blocked);
+        assert_eq!(summary.replay_class, "exact_evidence_review");
+        assert!(summary
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "artifact_schema_legacy_unknown"));
+        assert_eq!(
+            encoded
+                .pointer("/currentRun/artifact_compatibility/status")
+                .and_then(Value::as_str),
+            Some("legacy_unknown")
+        );
+    }
+
+    #[test]
+    fn run_artifact_future_schema_is_visible_but_replay_blocked() {
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "version": 2,
+            "ts": "2026-04-02T12:00:00Z",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d",
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_future.json"),
+            256,
+            &artifact,
+        )
+        .expect("summary");
+        let detail =
+            build_run_artifact_detail_response("C:/runs/vectorgrid_run_future.json", &artifact)
+                .expect("detail");
+        let hydration_error = build_workflow_artifacts_hydration_payload(
+            "C:/runs/vectorgrid_run_future.json",
+            &artifact,
+        )
+        .expect_err("future schema blocks hydration");
+
+        assert_eq!(summary.artifact_compatibility.status, "future_unsupported");
+        assert_eq!(
+            summary.artifact_compatibility.artifact_schema_version,
+            Some(2)
+        );
+        assert!(summary.artifact_compatibility.review_only);
+        assert!(summary.artifact_compatibility.replay_blocked);
+        assert_eq!(summary.replay_class, "blocked");
+        assert_eq!(detail.replay_class, "blocked");
+        assert!(summary
+            .replay_reasons
+            .iter()
+            .any(|reason| reason == "artifact_schema_future_unsupported"));
+        assert!(hydration_error.contains("newer than supported version"));
     }
 
     #[test]

@@ -14,17 +14,17 @@ type StageStep = {
   tone: StepTone
 }
 
-const MIN_VISIBLE_MS = 360
-const SIGNATURE_MS = 900
+const MIN_VISIBLE_MS = 560
+const SIGNATURE_MS = 760
 const EXIT_MS = 180
-const SKIP_UNLOCK_MS = MIN_VISIBLE_MS
+const SKIP_UNLOCK_MS = 360
 const HOLD_QUERY_VALUE = 'hold'
 const HOLD_QUERY_KEY = 'startup_overlay'
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
 
 const STAGE_STRIP = [
   { key: 'restore', label: 'Restore' },
-  { key: 'desktop', label: 'Desktop' },
+  { key: 'desktop', label: 'Services' },
   { key: 'shell', label: 'Shell' },
 ] as const
 
@@ -65,8 +65,6 @@ function readHoldDebugFlag(): boolean {
     if (params.get(HOLD_QUERY_KEY) === HOLD_QUERY_VALUE) return true
     if (sessionStorage.getItem(HOLD_STORAGE_KEY) === '1') return true
     if (localStorage.getItem(HOLD_STORAGE_KEY) === '1') {
-
-
       localStorage.removeItem(HOLD_STORAGE_KEY)
     }
     return false
@@ -77,7 +75,9 @@ function readHoldDebugFlag(): boolean {
 
 function resolveStageIndex(stage: string): number {
   if (stage === BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES) return 1
-  if (stage === BOOT_STAGES.MOUNTING_WORKSPACE_SHELL || stage === BOOT_STAGES.FRONTEND_RUNTIME_READY) return 2
+  if (stage === BOOT_STAGES.FINALIZING_DATASET_READINESS || stage === BOOT_STAGES.MOUNTING_WORKSPACE_SHELL || stage === BOOT_STAGES.FRONTEND_RUNTIME_READY) {
+    return 2
+  }
   return 0
 }
 
@@ -85,19 +85,28 @@ const holdDebugState = computed(() => readHoldDebugFlag())
 const showOverlay = computed(() => overlayStage.value === 'intro' || overlayStage.value === 'exiting')
 const railTone = computed(() => {
   if (bootPhase.value === 'error') return 'error'
+  if (bootPhase.value === 'ready') return 'ready'
   if (overlayStage.value === 'exiting') return 'settling'
   return 'booting'
 })
 const stageLabel = computed(() => String(bootStage.value || '').trim() || 'Starting VectorGrid')
 const phaseLabel = computed(() => {
   if (bootPhase.value === 'error') return 'Error'
-  if (overlayStage.value === 'exiting' && bootPhase.value === 'ready') return 'Ready'
+  if (bootPhase.value === 'ready') return 'Ready'
   if (overlayStage.value === 'exiting') return 'Finishing'
   return 'Booting'
 })
 const stageReference = computed(() => {
   if (bootPhase.value === 'error') return lastBootingStage.value
   return String(bootStage.value || '').trim()
+})
+const progressPercent = computed(() => {
+  if (bootPhase.value === 'ready') return 100
+  const activeIndex = resolveStageIndex(stageReference.value)
+  if (bootPhase.value === 'error') {
+    return Math.max(18, Math.round((activeIndex / Math.max(1, STAGE_STRIP.length - 1)) * 100))
+  }
+  return Math.min(92, Math.round(((activeIndex + 0.45) / STAGE_STRIP.length) * 100))
 })
 const stageSteps = computed<StageStep[]>(() => {
   const activeIndex = resolveStageIndex(stageReference.value)
@@ -123,10 +132,10 @@ const stageSteps = computed<StageStep[]>(() => {
   })
 })
 const assistLabel = computed(() => {
-  if (bootPhase.value === 'error') return 'Handing off to runtime diagnostics.'
-  if (overlayStage.value === 'exiting' && bootPhase.value === 'ready') return 'Workspace live. Releasing the startup veil.'
-  if (canSkip.value) return 'Dismiss the veil without interrupting real startup.'
-  return 'Shell is already mounted underneath while startup finishes.'
+  if (bootPhase.value === 'error') return 'Opening runtime diagnostics.'
+  if (bootPhase.value === 'ready') return 'Startup checks complete.'
+  if (canSkip.value) return 'Dismiss the overlay without interrupting startup.'
+  return 'Workspace is mounted while startup checks finish.'
 })
 const skipHintVisible = computed(() => canSkip.value && bootPhase.value !== 'error')
 const skipButtonLabel = computed(() => (bootPhase.value === 'ready' ? 'Enter workspace' : 'Dismiss'))
@@ -259,14 +268,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    v-if="showOverlay"
-    id="startupAnimationOverlay"
-    class="startupOverlay"
-    :class="[overlayStage, { reduced: prefersReducedMotion }]"
-    :data-stage="overlayStage"
-    @click="requestSkip"
-  >
+  <div v-if="showOverlay" id="startupAnimationOverlay" class="startupOverlay" :class="[overlayStage, { reduced: prefersReducedMotion }]" :data-stage="overlayStage" :aria-busy="bootPhase === 'booting' ? 'true' : 'false'">
     <div class="startupVeil" aria-hidden="true"></div>
     <div class="startupSurvey" aria-hidden="true">
       <span class="startupSurveyLine startupSurveyLine--top"></span>
@@ -291,26 +293,19 @@ onBeforeUnmount(() => {
           <div class="startupAssistRow">
             <p class="startupAssistLabel">{{ assistLabel }}</p>
             <div class="startupStageSteps" aria-hidden="true">
-              <span
-                v-for="step in stageSteps"
-                :key="step.key"
-                class="startupStageStep"
-                :class="step.tone"
-              >
+              <span v-for="step in stageSteps" :key="step.key" class="startupStageStep" :class="step.tone">
                 <span class="startupStageDot"></span>
                 <span class="startupStageText">{{ step.label }}</span>
               </span>
             </div>
           </div>
         </div>
-        <button
-          v-if="skipHintVisible"
-          type="button"
-          class="startupSkipButton"
-          @click.stop="requestSkip"
-        >
+        <button v-if="skipHintVisible" type="button" class="startupSkipButton" @click.stop="requestSkip">
           {{ skipButtonLabel }}
         </button>
+        <div class="startupProgressTrack" aria-hidden="true">
+          <span class="startupProgressFill" :style="{ width: `${progressPercent}%` }"></span>
+        </div>
       </div>
     </section>
   </div>
@@ -336,8 +331,13 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 12% 10%, color-mix(in oklab, var(--accent-soft) 42%, transparent), transparent 34%),
-    radial-gradient(circle at 84% 12%, color-mix(in oklab, var(--surface-accent) 68%, transparent), transparent 22%),
+    linear-gradient(
+      115deg,
+      color-mix(in oklab, var(--surface-overlay) 16%, transparent) 0%,
+      color-mix(in oklab, var(--accent-soft) 26%, transparent) 34%,
+      color-mix(in oklab, var(--surface-accent) 22%, transparent) 62%,
+      color-mix(in oklab, var(--surface-sticky) 18%, transparent) 100%
+    ),
     linear-gradient(
       180deg,
       color-mix(in oklab, var(--header-bg) 44%, transparent),
@@ -345,9 +345,26 @@ onBeforeUnmount(() => {
       color-mix(in oklab, var(--surface-overlay) 14%, transparent) 58%,
       color-mix(in oklab, var(--surface-sticky) 12%, transparent) 100%
     );
-  backdrop-filter: blur(14px) saturate(1.05);
-  opacity: 0.96;
+  backdrop-filter: blur(12px) saturate(1.08);
+  opacity: 0.91;
   pointer-events: none;
+}
+
+.startupVeil::before {
+  content: '';
+  position: absolute;
+  top: calc(var(--desktop-titlebar-h, 0px) + 8.4rem);
+  left: -24vw;
+  width: min(52rem, 78vw);
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in oklab, var(--accent-soft-2) 48%, transparent) 18%, color-mix(in oklab, var(--accent) 72%, white 8%) 50%, color-mix(in oklab, var(--surface-accent) 46%, transparent) 74%, transparent 100%);
+  box-shadow:
+    0 0 18px color-mix(in oklab, var(--accent) 28%, transparent),
+    0 0 42px color-mix(in oklab, var(--accent-soft-2) 24%, transparent);
+  opacity: 0;
+  transform: translateX(-16vw) skewX(-18deg);
+  animation: startupScanBeam 620ms 70ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupSurvey {
@@ -373,7 +390,8 @@ onBeforeUnmount(() => {
     color-mix(in oklab, var(--border-strong) 28%, transparent) 48%,
     transparent 100%
   );
-  animation: startupFieldReveal 300ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+  transform-origin: left center;
+  animation: startupFieldReveal 300ms 60ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupSurveyLine--top {
@@ -390,8 +408,8 @@ onBeforeUnmount(() => {
   left: -6%;
   width: min(68rem, 94vw);
   height: 12rem;
-  background: radial-gradient(circle at 18% 36%, color-mix(in oklab, var(--accent-soft-2) 88%, transparent), transparent 58%);
-  filter: blur(26px);
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent-soft-2) 46%, transparent) 22%, color-mix(in oklab, var(--surface-accent) 28%, transparent) 56%, transparent);
+  filter: blur(22px);
   animation: startupGlowReveal 360ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
@@ -412,19 +430,34 @@ onBeforeUnmount(() => {
   gap: 0.9rem;
   align-items: center;
   padding: 0.82rem 0.98rem;
-  border-radius: 16px;
+  border-radius: 10px;
   border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 22%, var(--border-strong));
-  background:
-    linear-gradient(
-      155deg,
-      color-mix(in oklab, var(--surface-overlay) 92%, var(--surface-working)),
-      color-mix(in oklab, var(--panel-footer) 96%, var(--surface-working))
-    );
+  background: linear-gradient(155deg, color-mix(in oklab, var(--surface-overlay) 92%, var(--surface-working)), color-mix(in oklab, var(--panel-footer) 96%, var(--surface-working)));
   box-shadow:
-    0 18px 34px rgb(var(--shadow-overflow-rgb, 15 23 42) / 0.13),
+    0 18px 34px rgb(var(--shadow-overflow-rgb, 15 23 42) / 0.14),
+    0 0 0 1px color-mix(in oklab, var(--startup-rail-accent) 8%, transparent),
+    0 0 28px color-mix(in oklab, var(--startup-rail-accent) 12%, transparent),
     inset 0 1px 0 rgb(255 255 255 / 0.18);
   backdrop-filter: blur(16px);
-  animation: startupRailReveal 280ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+  overflow: hidden;
+  animation: startupRailReveal 260ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+.startupRail > * {
+  position: relative;
+  z-index: 1;
+}
+
+.startupRail::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: linear-gradient(105deg, transparent 0%, color-mix(in oklab, var(--startup-rail-accent) 0%, transparent) 31%, color-mix(in oklab, var(--startup-rail-accent) 18%, transparent) 44%, rgb(255 255 255 / 0.2) 50%, color-mix(in oklab, var(--startup-rail-accent) 12%, transparent) 57%, transparent 72%);
+  transform: translateX(-112%);
+  animation: startupRailSweep 620ms 80ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+  pointer-events: none;
 }
 
 .startupRail::after {
@@ -434,17 +467,16 @@ onBeforeUnmount(() => {
   right: 1.3rem;
   bottom: 0;
   height: 1px;
-  background: linear-gradient(
-    90deg,
-    color-mix(in oklab, var(--startup-rail-accent) 30%, transparent),
-    color-mix(in oklab, var(--startup-rail-accent) 10%, transparent) 54%,
-    transparent 100%
-  );
+  background: linear-gradient(90deg, color-mix(in oklab, var(--startup-rail-accent) 30%, transparent), color-mix(in oklab, var(--startup-rail-accent) 10%, transparent) 54%, transparent 100%);
   opacity: 0.9;
 }
 
 .startupRail.settling {
   --startup-rail-accent: var(--accent-hover);
+}
+
+.startupRail.ready {
+  --startup-rail-accent: var(--ok);
 }
 
 .startupRail.error {
@@ -455,14 +487,12 @@ onBeforeUnmount(() => {
   width: 4px;
   align-self: stretch;
   border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, white 18%, var(--startup-rail-accent)),
-    color-mix(in srgb, black 4%, var(--startup-rail-accent))
-  );
+  background: linear-gradient(180deg, color-mix(in srgb, white 18%, var(--startup-rail-accent)), color-mix(in srgb, black 4%, var(--startup-rail-accent)));
   box-shadow:
     0 0 0 1px color-mix(in oklab, var(--startup-rail-accent) 18%, transparent),
     0 0 18px color-mix(in oklab, var(--startup-rail-accent) 22%, transparent);
+  transform-origin: center bottom;
+  animation: startupAccentCharge 480ms 70ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupMarkCluster {
@@ -474,8 +504,10 @@ onBeforeUnmount(() => {
 .startupMarkHalo {
   position: absolute;
   inset: -18%;
-  border-radius: 18px;
-  background: radial-gradient(circle, color-mix(in oklab, var(--startup-rail-accent) 18%, transparent), transparent 72%);
+  border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 14%, transparent);
+  box-shadow: 0 0 18px color-mix(in oklab, var(--startup-rail-accent) 18%, transparent);
+  animation: startupMarkPulse 540ms 70ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupMarkPlate {
@@ -484,14 +516,24 @@ onBeforeUnmount(() => {
   height: 100%;
   display: grid;
   place-items: center;
-  border-radius: 14px;
+  border-radius: 9px;
   border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 18%, var(--border));
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.1), transparent 42%),
-    color-mix(in oklab, var(--surface-overlay) 86%, var(--surface-sunken));
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.1), transparent 42%), color-mix(in oklab, var(--surface-overlay) 86%, var(--surface-sunken));
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.18),
     0 10px 18px rgb(var(--shadow-overflow-rgb, 15 23 42) / 0.1);
+  overflow: hidden;
+  animation: startupMarkPop 360ms 40ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+.startupMarkPlate::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  background: linear-gradient(100deg, transparent 18%, rgb(255 255 255 / 0.42) 48%, transparent 72%);
+  transform: translateX(-120%);
+  animation: startupMarkSweep 520ms 120ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+  pointer-events: none;
 }
 
 .startupMarkLogo {
@@ -517,6 +559,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted-soft);
+  animation: startupCopyRise 260ms 120ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupPhaseTag {
@@ -532,6 +575,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text);
+  animation: startupCopyRise 240ms 135ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupStageLine {
@@ -541,6 +585,7 @@ onBeforeUnmount(() => {
   line-height: 1.28;
   color: var(--text);
   text-wrap: pretty;
+  animation: startupCopyRise 260ms 155ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupAssistRow {
@@ -556,6 +601,32 @@ onBeforeUnmount(() => {
   font-size: 0.77rem;
   line-height: 1.35;
   color: var(--muted-strong);
+  animation: startupCopyRise 260ms 190ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+.startupProgressTrack {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 0 0 10px 10px;
+  border: 0;
+  background: color-mix(in oklab, var(--startup-rail-accent) 12%, var(--surface-inline));
+  pointer-events: none;
+}
+
+.startupProgressFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  border-radius: inherit;
+  background: var(--startup-rail-accent);
+  box-shadow: 0 0 10px color-mix(in oklab, var(--startup-rail-accent) 34%, transparent);
+  transform-origin: left center;
+  transition: width 180ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1));
+  animation: startupProgressDraw 560ms 110ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
 }
 
 .startupStageSteps {
@@ -575,6 +646,19 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
   background: color-mix(in oklab, var(--surface-working) 90%, var(--surface-inline));
   color: var(--muted);
+  animation: startupStepPop 240ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+.startupStageStep:nth-child(1) {
+  animation-delay: 160ms;
+}
+
+.startupStageStep:nth-child(2) {
+  animation-delay: 210ms;
+}
+
+.startupStageStep:nth-child(3) {
+  animation-delay: 260ms;
 }
 
 .startupStageDot {
@@ -625,9 +709,7 @@ onBeforeUnmount(() => {
   padding: 0.5rem 0.82rem;
   border-radius: 12px;
   border: 1px solid color-mix(in oklab, var(--startup-rail-accent) 18%, var(--border));
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.12), transparent 48%),
-    color-mix(in oklab, var(--surface-inline) 88%, var(--panel-footer));
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.12), transparent 48%), color-mix(in oklab, var(--surface-inline) 88%, var(--panel-footer));
   color: var(--text);
   box-shadow: var(--shadow-inline);
   font-size: 0.76rem;
@@ -636,30 +718,136 @@ onBeforeUnmount(() => {
 }
 
 .startupSkipButton:hover {
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.14), transparent 48%),
-    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer));
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.14), transparent 48%), color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer));
 }
 
 @keyframes startupRailReveal {
   from {
+    opacity: 0.34;
+    transform: translateY(-8px) scale(0.988);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes startupScanBeam {
+  0% {
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateX(-16vw) skewX(-18deg);
+  }
+  24% {
+    opacity: 0.92;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(142vw) skewX(-18deg);
+  }
+}
+
+@keyframes startupAccentCharge {
+  0% {
+    opacity: 0.42;
+    transform: scaleY(0.18);
+  }
+  62% {
+    opacity: 1;
+    transform: scaleY(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes startupRailSweep {
+  from {
+    transform: translateX(-112%);
+  }
+  to {
+    transform: translateX(112%);
+  }
+}
+
+@keyframes startupMarkPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes startupMarkPulse {
+  0% {
+    opacity: 0;
+    transform: scale(0.78);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0.86;
+    transform: scale(1);
+  }
+}
+
+@keyframes startupMarkSweep {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes startupCopyRise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes startupStepPop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes startupProgressDraw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
   }
 }
 
 @keyframes startupFieldReveal {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(-4px) scaleX(0.28);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scaleX(1);
   }
 }
 
@@ -675,10 +863,23 @@ onBeforeUnmount(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .startupVeil::before,
   .startupSurveyLine,
   .startupSurveyGlow,
-  .startupRail {
+  .startupRail,
+  .startupRail::before,
+  .startupRailAccent,
+  .startupMarkHalo,
+  .startupMarkPlate,
+  .startupMarkPlate::before,
+  .startupProductLabel,
+  .startupPhaseTag,
+  .startupStageLine,
+  .startupAssistLabel,
+  .startupStageStep,
+  .startupProgressFill {
     animation: none;
+    transition: none;
   }
 }
 

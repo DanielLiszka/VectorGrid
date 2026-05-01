@@ -57,6 +57,8 @@ data/*.csv
 !/docs/artifact_replay_report_evidence_contract.md
 !/docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md
 !/docs/frontend_trading_technology_additions_implementation_plan_2026-04-27.md
+!/docs/feature_expansion_implementation_plans_2026-04-30/
+!/docs/feature_expansion_implementation_plans_2026-04-30/**
 !/docs/trade22_cuda_device_shortlist_implementation_guide.md
 !/docs/stage_completion_reporting_implementation_plan_2026-04-28.md
 !/docs/hard_problem_decisions/

@@ -1,502 +1,619 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPinia, setActivePinia } from 'pinia'
-import { invokeCommand } from '../tauri/invoke'
-import { bindRuntimePinia } from '../stores/runtimePinia'
-import { refreshAnalysisFromWorkflowRun } from './analysisService'
-import { clearArtifactHistoryPerfEntries, readArtifactHistoryPerfEntries } from './artifactHistoryPerf'
-import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
-import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
-import { useWorkflowStore } from '../stores/workflowStore'
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { invokeCommand } from "../tauri/invoke";
+import { bindRuntimePinia } from "../stores/runtimePinia";
+import { refreshAnalysisFromWorkflowRun } from "./analysisService";
+import {
+  clearArtifactHistoryPerfEntries,
+  readArtifactHistoryPerfEntries,
+} from "./artifactHistoryPerf";
+import { syncWorkflowArtifactsFromLegacyRuntime } from "./workflowArtifactsSync";
+import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 
-vi.mock('../tauri/invoke', () => ({
+vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => undefined),
-}))
+}));
 
-vi.mock('./analysisService', () => ({
+vi.mock("./analysisService", () => ({
   refreshAnalysisFromWorkflowRun: vi.fn(() => true),
-}))
+}));
 
-const invokeCommandMock = vi.mocked(invokeCommand)
-const refreshAnalysisFromWorkflowRunMock = vi.mocked(refreshAnalysisFromWorkflowRun)
-let pinia: ReturnType<typeof createPinia>
+const invokeCommandMock = vi.mocked(invokeCommand);
+const refreshAnalysisFromWorkflowRunMock = vi.mocked(
+  refreshAnalysisFromWorkflowRun,
+);
+let pinia: ReturnType<typeof createPinia>;
 
-describe('workflowArtifactsSync', () => {
+describe("workflowArtifactsSync", () => {
   beforeEach(() => {
-    pinia = createPinia()
-    setActivePinia(pinia)
-    bindRuntimePinia(pinia)
-    useWorkflowArtifactsStore(pinia).clearArtifacts()
-    vi.clearAllMocks()
-    clearArtifactHistoryPerfEntries()
-  })
+    pinia = createPinia();
+    setActivePinia(pinia);
+    bindRuntimePinia(pinia);
+    useWorkflowArtifactsStore(pinia).clearArtifacts();
+    vi.clearAllMocks();
+    clearArtifactHistoryPerfEntries();
+  });
 
-  it('hydrates workflow artifact store from latest saved run artifact', async () => {
+  it("hydrates workflow artifact store from latest saved run artifact", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_hydration') {
+      if (command === "load_latest_run_artifact_hydration") {
         return {
           summary: {
-            ts: '2026-02-25T12:00:00Z',
-            path: 'C:/runs/run.json',
-            report_xlsx_path: 'C:/runs/report.xlsx',
-            csv_path: 'C:/data/sample.csv',
-            tags: ['alpha'],
+            ts: "2026-02-25T12:00:00Z",
+            path: "C:/runs/run.json",
+            report_xlsx_path: "C:/runs/report.xlsx",
+            csv_path: "C:/data/sample.csv",
+            tags: ["alpha"],
           },
           hydration: {
             currentRun: {
-              ts: '2026-02-25T12:00:00Z',
-              artifact_path: 'C:/runs/run.json',
-              report_xlsx_path: 'C:/runs/report.xlsx',
-              csv_path: 'C:/data/sample.csv',
-              tags: ['alpha'],
-              req: { strategy_kind: 'DoubleMa' },
+              ts: "2026-02-25T12:00:00Z",
+              artifact_path: "C:/runs/run.json",
+              report_xlsx_path: "C:/runs/report.xlsx",
+              csv_path: "C:/data/sample.csv",
+              tags: ["alpha"],
+              req: { strategy_kind: "DoubleMa" },
               res: { rows: 1 },
             },
             currentValidation: {
-              ts: '2026-02-25T12:00:00Z',
+              ts: "2026-02-25T12:00:00Z",
               req: { candidates: 32 },
               res: { rows: [] },
             },
           },
-        }
+        };
       }
 
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
-    const store = useWorkflowArtifactsStore(pinia)
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
+    const store = useWorkflowArtifactsStore(pinia);
 
-    expect(synced).toBe(true)
-    expect(store.currentRun?.artifactPath).toContain('run.json')
-    expect(store.currentValidation?.ts).toBe('2026-02-25T12:00:00Z')
-    expect(store.source).toBe('legacy-runtime')
-    expect(useWorkflowStore(pinia).mode).toBe('conventional')
-    expect(useWorkflowStore(pinia).workflowStep).toBe('validate')
-    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_hydration')
+    expect(synced).toBe(true);
+    expect(store.currentRun?.artifactPath).toContain("run.json");
+    expect(store.currentValidation?.ts).toBe("2026-02-25T12:00:00Z");
+    expect(store.source).toBe("legacy-runtime");
+    expect(useWorkflowStore(pinia).mode).toBe("conventional");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
+    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "load_latest_run_artifact_hydration",
+    );
     expect(readArtifactHistoryPerfEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          name: 'workflowArtifactsSync.latestRunFastPathMs',
+          name: "workflowArtifactsSync.latestRunFastPathMs",
           meta: expect.objectContaining({
-            source: 'legacy-runtime',
+            source: "legacy-runtime",
             hasCurrentIdentity: false,
             synced: true,
-            outcome: 'ok',
+            outcome: "ok",
           }),
         }),
       ]),
-    )
-  })
+    );
+  });
 
-  it('preserves dataset metadata, tags, ml signal, and metric surface when hydrating the latest artifact', async () => {
+  it("preserves dataset metadata, tags, ml signal, and metric surface when hydrating the latest artifact", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_hydration') {
+      if (command === "load_latest_run_artifact_hydration") {
         return {
           summary: {
-            ts: '2026-02-25T12:00:00Z',
-            path: 'C:/runs/run.json',
-            report_xlsx_path: 'C:/runs/report.xlsx',
-            csv_path: 'C:/data/sample.csv',
-            tags: ['alpha', 'beta'],
+            ts: "2026-02-25T12:00:00Z",
+            path: "C:/runs/run.json",
+            report_xlsx_path: "C:/runs/report.xlsx",
+            csv_path: "C:/data/sample.csv",
+            tags: ["alpha", "beta"],
           },
           hydration: {
             currentRun: {
-              ts: '2026-02-25T12:00:00Z',
-              artifact_path: 'C:/runs/run.json',
-              report_xlsx_path: 'C:/runs/report.xlsx',
-              csv_path: 'C:/data/sample.csv',
+              ts: "2026-02-25T12:00:00Z",
+              artifact_path: "C:/runs/run.json",
+              report_xlsx_path: "C:/runs/report.xlsx",
+              csv_path: "C:/data/sample.csv",
               dataset_meta: {
-                csv_path: 'C:/data/sample.csv',
-                timeframe: '15m',
-                base_timeframe: '1m',
-                derived_timeframe: '15m',
+                csv_path: "C:/data/sample.csv",
+                timeframe: "15m",
+                base_timeframe: "1m",
+                derived_timeframe: "15m",
                 resample_applied: true,
               },
               ml_signal: {
-                stage: 'stage5',
-                bundle_id: 'bundle-1',
-                score_cache_path: 'C:/runs/score_cache.json',
+                stage: "stage5",
+                bundle_id: "bundle-1",
+                score_cache_path: "C:/runs/score_cache.json",
               },
               optimization_metric_surface: {
-                surface: 'trade22',
-                fields: ['pnl', 'sharpe'],
+                surface: "trade22",
+                fields: ["pnl", "sharpe"],
               },
-              tags: ['alpha', 'beta'],
-              req: { strategy_kind: 'CompositeTrend' },
+              tags: ["alpha", "beta"],
+              req: { strategy_kind: "CompositeTrend" },
               res: { rows: 1 },
             },
             currentValidation: null,
           },
-        }
+        };
       }
 
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
-    const store = useWorkflowArtifactsStore(pinia)
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
+    const store = useWorkflowArtifactsStore(pinia);
 
-    expect(synced).toBe(true)
+    expect(synced).toBe(true);
     expect(store.currentRun?.datasetMeta).toMatchObject({
-      csv_path: 'C:/data/sample.csv',
-      timeframe: '15m',
-      base_timeframe: '1m',
-      derived_timeframe: '15m',
+      csv_path: "C:/data/sample.csv",
+      timeframe: "15m",
+      base_timeframe: "1m",
+      derived_timeframe: "15m",
       resample_applied: true,
-    })
+    });
     expect(store.currentRun?.mlSignal).toMatchObject({
-      stage: 'stage5',
-      bundleId: 'bundle-1',
-      scoreCachePath: 'C:/runs/score_cache.json',
-    })
+      stage: "stage5",
+      bundleId: "bundle-1",
+      scoreCachePath: "C:/runs/score_cache.json",
+    });
     expect(store.currentRun?.optimizationMetricSurface).toMatchObject({
-      surface: 'trade22',
-      fields: ['pnl', 'sharpe'],
-    })
-    expect(store.currentRun?.tags).toEqual(['alpha', 'beta'])
-    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-  })
+      surface: "trade22",
+      fields: ["pnl", "sharpe"],
+    });
+    expect(store.currentRun?.tags).toEqual(["alpha", "beta"]);
+    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1);
+  });
 
-  it('returns false when no artifacts exist', async () => {
-    invokeCommandMock.mockResolvedValueOnce(null)
+  it("returns false when no artifacts exist", async () => {
+    invokeCommandMock.mockResolvedValueOnce(null);
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('vue')
+    const synced = await syncWorkflowArtifactsFromLegacyRuntime("vue");
 
-    expect(synced).toBe(false)
-    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_hydration')
-  })
+    expect(synced).toBe(false);
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "load_latest_run_artifact_hydration",
+    );
+  });
 
-  it('returns false when invoke throws', async () => {
-    invokeCommandMock.mockRejectedValueOnce(new Error('boom'))
+  it("returns false when invoke throws", async () => {
+    invokeCommandMock.mockRejectedValueOnce(new Error("boom"));
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('vue')
+    const synced = await syncWorkflowArtifactsFromLegacyRuntime("vue");
 
-    expect(synced).toBe(false)
-  })
+    expect(synced).toBe(false);
+  });
 
-  it('skips the artifact load when the latest identity is already loaded with validation', async () => {
-    const store = useWorkflowArtifactsStore(pinia)
+  it("skips the artifact load when the latest identity is already loaded with validation", async () => {
+    const store = useWorkflowArtifactsStore(pinia);
     store.applyVueRuntimePayload({
       currentRun: {
-        ts: '2026-02-25T12:00:00Z',
-        artifact_path: 'C:/runs/run.json',
-        req: { strategy_kind: 'DoubleMa' },
+        ts: "2026-02-25T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        req: { strategy_kind: "DoubleMa" },
         res: { rows: 1 },
       },
       currentValidation: {
-        ts: '2026-02-25T12:00:00Z',
+        ts: "2026-02-25T12:00:00Z",
         req: { candidates: 32 },
         res: { rows: [] },
       },
-    })
+    });
     invokeCommandMock.mockResolvedValueOnce({
-      ts: '2026-02-25T12:00:00Z',
-      path: 'C:/runs/run.json',
-    })
+      ts: "2026-02-25T12:00:00Z",
+      path: "C:/runs/run.json",
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
 
-    expect(synced).toBe(false)
-    expect(store.source).toBe('legacy-runtime')
-    expect(refreshAnalysisFromWorkflowRunMock).not.toHaveBeenCalled()
-    expect(invokeCommandMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_summary')
-  })
+    expect(synced).toBe(false);
+    expect(store.source).toBe("legacy-runtime");
+    expect(refreshAnalysisFromWorkflowRunMock).not.toHaveBeenCalled();
+    expect(invokeCommandMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "load_latest_run_artifact_summary",
+    );
+  });
 
-  it('still loads same-path same-ts artifacts when validation is currently absent', async () => {
-    const store = useWorkflowArtifactsStore(pinia)
+  it("still loads same-path same-ts artifacts when validation is currently absent", async () => {
+    const store = useWorkflowArtifactsStore(pinia);
     store.applyVueRuntimePayload({
       currentRun: {
-        ts: '2026-02-25T12:00:00Z',
-        artifact_path: 'C:/runs/run.json',
-        req: { strategy_kind: 'DoubleMa' },
+        ts: "2026-02-25T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        req: { strategy_kind: "DoubleMa" },
         res: { rows: 1 },
       },
       currentValidation: null,
-    })
+    });
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_summary') {
+      if (command === "load_latest_run_artifact_summary") {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          path: 'C:/runs/run.json',
-        }
+          ts: "2026-02-25T12:00:00Z",
+          path: "C:/runs/run.json",
+        };
       }
-      if (command === 'load_run_artifact_hydration') {
+      if (command === "load_run_artifact_hydration") {
         return {
           currentRun: {
-            ts: '2026-02-25T12:00:00Z',
-            artifact_path: 'C:/runs/run.json',
-            req: { strategy_kind: 'DoubleMa' },
+            ts: "2026-02-25T12:00:00Z",
+            artifact_path: "C:/runs/run.json",
+            req: { strategy_kind: "DoubleMa" },
             res: { rows: 1 },
           },
           currentValidation: {
-            ts: '2026-02-25T12:00:00Z',
+            ts: "2026-02-25T12:00:00Z",
             req: { candidates: 32 },
             res: { rows: [] },
           },
-        }
+        };
       }
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('vue')
+    const synced = await syncWorkflowArtifactsFromLegacyRuntime("vue");
 
-    expect(synced).toBe(true)
-    expect(store.currentValidation?.req).toMatchObject({ candidates: 32 })
-    expect(useWorkflowStore(pinia).mode).toBe('conventional')
-    expect(useWorkflowStore(pinia).workflowStep).toBe('validate')
-    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
+    expect(synced).toBe(true);
+    expect(store.currentValidation?.req).toMatchObject({ candidates: 32 });
+    expect(useWorkflowStore(pinia).mode).toBe("conventional");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
+    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_latest_run_artifact_summary",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "load_run_artifact_hydration",
+      { path: "C:/runs/run.json" },
+    );
     expect(readArtifactHistoryPerfEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          name: 'workflowArtifactsSync.latestRunSummaryCheckMs',
+          name: "workflowArtifactsSync.latestRunSummaryCheckMs",
           meta: expect.objectContaining({
-            source: 'vue',
+            source: "vue",
             hasCurrentIdentity: true,
             hasLatestPath: true,
-            outcome: 'ok',
+            outcome: "ok",
           }),
         }),
         expect.objectContaining({
-          name: 'workflowArtifactsSync.latestRunRehydrationMs',
+          name: "workflowArtifactsSync.latestRunRehydrationMs",
           meta: expect.objectContaining({
-            source: 'vue',
-            path: 'C:/runs/run.json',
-            outcome: 'ok',
+            source: "vue",
+            path: "C:/runs/run.json",
+            outcome: "ok",
           }),
         }),
       ]),
-    )
-  })
+    );
+  });
 
-  it('reloads same-path same-ts artifacts when summary tags or report paths changed', async () => {
-    const store = useWorkflowArtifactsStore(pinia)
+  it("reloads same-path same-ts artifacts when summary tags or report paths changed", async () => {
+    const store = useWorkflowArtifactsStore(pinia);
     store.applyVueRuntimePayload({
       currentRun: {
-        ts: '2026-02-25T12:00:00Z',
-        artifact_path: 'C:/runs/run.json',
-        report_xlsx_path: 'C:/runs/old_report.xlsx',
-        csv_path: 'C:/data/sample.csv',
-        tags: ['alpha'],
-        req: { strategy_kind: 'DoubleMa' },
+        ts: "2026-02-25T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        report_xlsx_path: "C:/runs/old_report.xlsx",
+        csv_path: "C:/data/sample.csv",
+        tags: ["alpha"],
+        req: { strategy_kind: "DoubleMa" },
         res: { rows: 1 },
       },
       currentValidation: {
-        ts: '2026-02-25T12:00:00Z',
+        ts: "2026-02-25T12:00:00Z",
         req: { candidates: 32 },
         res: { rows: [] },
       },
-    })
+    });
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_summary') {
+      if (command === "load_latest_run_artifact_summary") {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          path: 'C:/runs/run.json',
-          report_xlsx_path: 'C:/runs/new_report.xlsx',
-          csv_path: 'C:/data/sample.csv',
-          tags: ['alpha', 'beta'],
-        }
+          ts: "2026-02-25T12:00:00Z",
+          path: "C:/runs/run.json",
+          report_xlsx_path: "C:/runs/new_report.xlsx",
+          csv_path: "C:/data/sample.csv",
+          tags: ["alpha", "beta"],
+        };
       }
-      if (command === 'load_run_artifact_hydration') {
+      if (command === "load_run_artifact_hydration") {
         return {
           currentRun: {
-            ts: '2026-02-25T12:00:00Z',
-            artifact_path: 'C:/runs/run.json',
-            report_xlsx_path: 'C:/runs/new_report.xlsx',
-            csv_path: 'C:/data/sample.csv',
-            tags: ['alpha', 'beta'],
-            req: { strategy_kind: 'DoubleMa' },
+            ts: "2026-02-25T12:00:00Z",
+            artifact_path: "C:/runs/run.json",
+            report_xlsx_path: "C:/runs/new_report.xlsx",
+            csv_path: "C:/data/sample.csv",
+            tags: ["alpha", "beta"],
+            req: { strategy_kind: "DoubleMa" },
             res: { rows: 1 },
           },
           currentValidation: {
-            ts: '2026-02-25T12:00:00Z',
+            ts: "2026-02-25T12:00:00Z",
             req: { candidates: 32 },
             res: { rows: [] },
           },
-        }
+        };
       }
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
 
-    expect(synced).toBe(true)
-    expect(store.currentRun?.reportXlsxPath).toBe('C:/runs/new_report.xlsx')
-    expect(store.currentRun?.tags).toEqual(['alpha', 'beta'])
-    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
-  })
+    expect(synced).toBe(true);
+    expect(store.currentRun?.reportXlsxPath).toBe("C:/runs/new_report.xlsx");
+    expect(store.currentRun?.tags).toEqual(["alpha", "beta"]);
+    expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1);
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_latest_run_artifact_summary",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "load_run_artifact_hydration",
+      { path: "C:/runs/run.json" },
+    );
+  });
 
-  it('reloads same-path same-ts artifacts when config fingerprint drifted', async () => {
-    const store = useWorkflowArtifactsStore(pinia)
+  it("reloads same-path same-ts artifacts when schema compatibility changed", async () => {
+    const store = useWorkflowArtifactsStore(pinia);
     store.applyVueRuntimePayload({
       currentRun: {
-        ts: '2026-02-25T12:00:00Z',
-        artifact_path: 'C:/runs/run.json',
-        config_fingerprint: 'old-fingerprint',
-        req: { strategy_kind: 'DoubleMa' },
+        ts: "2026-02-25T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        artifact_compatibility: {
+          artifactSchemaVersion: 1,
+          status: "supported",
+          replayBlocked: false,
+        },
+        req: { strategy_kind: "DoubleMa" },
         res: { rows: 1 },
       },
       currentValidation: {
-        ts: '2026-02-25T12:00:00Z',
+        ts: "2026-02-25T12:00:00Z",
         req: { candidates: 32 },
         res: { rows: [] },
       },
-    })
+    });
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_summary') {
+      if (command === "load_latest_run_artifact_summary") {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          path: 'C:/runs/run.json',
-          config_fingerprint: 'new-fingerprint',
-        }
+          ts: "2026-02-25T12:00:00Z",
+          path: "C:/runs/run.json",
+          artifact_compatibility: {
+            artifactSchemaVersion: 1,
+            status: "supported",
+            replayBlocked: false,
+            reason: "resolver updated",
+          },
+        };
       }
-      if (command === 'load_run_artifact_hydration') {
+      if (command === "load_run_artifact_hydration") {
         return {
           currentRun: {
-            ts: '2026-02-25T12:00:00Z',
-            artifact_path: 'C:/runs/run.json',
-            config_fingerprint: 'new-fingerprint',
-            req: { strategy_kind: 'DoubleMa' },
+            ts: "2026-02-25T12:00:00Z",
+            artifact_path: "C:/runs/run.json",
+            artifact_compatibility: {
+              artifactSchemaVersion: 1,
+              status: "supported",
+              replayBlocked: false,
+              reason: "resolver updated",
+            },
+            req: { strategy_kind: "DoubleMa" },
             res: { rows: 1 },
           },
           currentValidation: {
-            ts: '2026-02-25T12:00:00Z',
+            ts: "2026-02-25T12:00:00Z",
             req: { candidates: 32 },
             res: { rows: [] },
           },
-        }
+        };
       }
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
 
-    expect(synced).toBe(true)
-    expect(store.currentRun?.configFingerprint).toBe('new-fingerprint')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
-  })
+    expect(synced).toBe(true);
+    expect(store.currentRun?.artifactCompatibility?.reason).toBe(
+      "resolver updated",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_latest_run_artifact_summary",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "load_run_artifact_hydration",
+      { path: "C:/runs/run.json" },
+    );
+  });
 
-  it('reloads same-path same-ts artifacts when MlSignal provenance drifted', async () => {
-    const store = useWorkflowArtifactsStore(pinia)
+  it("reloads same-path same-ts artifacts when config fingerprint drifted", async () => {
+    const store = useWorkflowArtifactsStore(pinia);
     store.applyVueRuntimePayload({
       currentRun: {
-        ts: '2026-02-25T12:00:00Z',
-        artifact_path: 'C:/runs/run.json',
-        req: { strategy_kind: 'MlSignal' },
+        ts: "2026-02-25T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        config_fingerprint: "old-fingerprint",
+        req: { strategy_kind: "DoubleMa" },
+        res: { rows: 1 },
+      },
+      currentValidation: {
+        ts: "2026-02-25T12:00:00Z",
+        req: { candidates: 32 },
+        res: { rows: [] },
+      },
+    });
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "load_latest_run_artifact_summary") {
+        return {
+          ts: "2026-02-25T12:00:00Z",
+          path: "C:/runs/run.json",
+          config_fingerprint: "new-fingerprint",
+        };
+      }
+      if (command === "load_run_artifact_hydration") {
+        return {
+          currentRun: {
+            ts: "2026-02-25T12:00:00Z",
+            artifact_path: "C:/runs/run.json",
+            config_fingerprint: "new-fingerprint",
+            req: { strategy_kind: "DoubleMa" },
+            res: { rows: 1 },
+          },
+          currentValidation: {
+            ts: "2026-02-25T12:00:00Z",
+            req: { candidates: 32 },
+            res: { rows: [] },
+          },
+        };
+      }
+      return undefined;
+    });
+
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
+
+    expect(synced).toBe(true);
+    expect(store.currentRun?.configFingerprint).toBe("new-fingerprint");
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "load_latest_run_artifact_summary",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "load_run_artifact_hydration",
+      { path: "C:/runs/run.json" },
+    );
+  });
+
+  it("reloads same-path same-ts artifacts when MlSignal provenance drifted", async () => {
+    const store = useWorkflowArtifactsStore(pinia);
+    store.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-02-25T12:00:00Z",
+        artifact_path: "C:/runs/run.json",
+        req: { strategy_kind: "MlSignal" },
         res: { rows: 1 },
         ml_signal: {
-          stage: 'validation',
-          source_bundle_manifest_path: 'C:/models/bundle-a/manifest.json',
-          source_bundle_manifest_hash: 'old-hash',
-          feature_schema_hash: 'schema-a',
+          stage: "validation",
+          source_bundle_manifest_path: "C:/models/bundle-a/manifest.json",
+          source_bundle_manifest_hash: "old-hash",
+          feature_schema_hash: "schema-a",
         },
       },
       currentValidation: {
-        ts: '2026-02-25T12:00:00Z',
+        ts: "2026-02-25T12:00:00Z",
         req: { candidates: [{ t_long: 0.6 }] },
         res: { rows: [] },
       },
-    })
+    });
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_summary') {
+      if (command === "load_latest_run_artifact_summary") {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          path: 'C:/runs/run.json',
-          ml_source_bundle_manifest_hash: 'new-hash',
-          ml_feature_schema_hash: 'schema-a',
-        }
+          ts: "2026-02-25T12:00:00Z",
+          path: "C:/runs/run.json",
+          ml_source_bundle_manifest_hash: "new-hash",
+          ml_feature_schema_hash: "schema-a",
+        };
       }
-      if (command === 'load_run_artifact_hydration') {
+      if (command === "load_run_artifact_hydration") {
         return {
           currentRun: {
-            ts: '2026-02-25T12:00:00Z',
-            artifact_path: 'C:/runs/run.json',
-            req: { strategy_kind: 'MlSignal' },
+            ts: "2026-02-25T12:00:00Z",
+            artifact_path: "C:/runs/run.json",
+            req: { strategy_kind: "MlSignal" },
             res: { rows: 1 },
             ml_signal: {
-              stage: 'validation',
-              source_bundle_manifest_path: 'C:/models/bundle-a/manifest.json',
-              source_bundle_manifest_hash: 'new-hash',
-              feature_schema_hash: 'schema-a',
+              stage: "validation",
+              source_bundle_manifest_path: "C:/models/bundle-a/manifest.json",
+              source_bundle_manifest_hash: "new-hash",
+              feature_schema_hash: "schema-a",
             },
           },
           currentValidation: {
-            ts: '2026-02-25T12:00:00Z',
+            ts: "2026-02-25T12:00:00Z",
             req: { candidates: [{ t_long: 0.6 }] },
             res: { rows: [] },
           },
-        }
+        };
       }
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
 
-    expect(synced).toBe(true)
-    expect(store.currentRun?.mlSignal?.sourceBundleManifestPath).toBe('C:/models/bundle-a/manifest.json')
+    expect(synced).toBe(true);
+    expect(store.currentRun?.mlSignal?.sourceBundleManifestPath).toBe(
+      "C:/models/bundle-a/manifest.json",
+    );
     expect(store.currentRun?.mlSignal?.scoreCacheProvenance).toMatchObject({
-      source_bundle_manifest_hash: 'new-hash',
-    })
-  })
+      source_bundle_manifest_hash: "new-hash",
+    });
+  });
 
-  it('aligns shell mode and workflow step from an MlSignal validation artifact on first hydration', async () => {
+  it("aligns shell mode and workflow step from an MlSignal validation artifact on first hydration", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_hydration') {
+      if (command === "load_latest_run_artifact_hydration") {
         return {
           summary: {
-            ts: '2026-02-25T12:00:00Z',
-            path: 'C:/runs/ml_run.json',
+            ts: "2026-02-25T12:00:00Z",
+            path: "C:/runs/ml_run.json",
           },
           hydration: {
             currentRun: {
-              ts: '2026-02-25T12:00:00Z',
-              artifact_path: 'C:/runs/ml_run.json',
-              req: { strategy_kind: 'MlSignal' },
+              ts: "2026-02-25T12:00:00Z",
+              artifact_path: "C:/runs/ml_run.json",
+              req: { strategy_kind: "MlSignal" },
               res: { rows: 1 },
               ml_signal: {
-                stage: 'validation',
+                stage: "validation",
               },
             },
             currentValidation: {
-              ts: '2026-02-25T12:00:00Z',
+              ts: "2026-02-25T12:00:00Z",
               req: { candidates: [{ t_long: 0.6, t_short: 0.55 }] },
               res: { rows: [] },
             },
           },
-        }
+        };
       }
 
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
 
-    expect(synced).toBe(true)
-    expect(useWorkflowStore(pinia).mode).toBe('ml-signal')
-    expect(useWorkflowStore(pinia).workflowStep).toBe('validate')
-  })
+    expect(synced).toBe(true);
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
+  });
 
-  it('returns false when the hydration payload is malformed', async () => {
+  it("returns false when the hydration payload is malformed", async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'load_latest_run_artifact_hydration') {
-        return 'invalid-payload'
+      if (command === "load_latest_run_artifact_hydration") {
+        return "invalid-payload";
       }
-      return undefined
-    })
+      return undefined;
+    });
 
-    const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
-    const store = useWorkflowArtifactsStore(pinia)
+    const synced =
+      await syncWorkflowArtifactsFromLegacyRuntime("legacy-runtime");
+    const store = useWorkflowArtifactsStore(pinia);
 
-    expect(synced).toBe(false)
-    expect(store.currentRun).toBeNull()
-    expect(store.currentValidation).toBeNull()
-    expect(refreshAnalysisFromWorkflowRunMock).not.toHaveBeenCalled()
-  })
-})
+    expect(synced).toBe(false);
+    expect(store.currentRun).toBeNull();
+    expect(store.currentValidation).toBeNull();
+    expect(refreshAnalysisFromWorkflowRunMock).not.toHaveBeenCalled();
+  });
+});

@@ -51,14 +51,9 @@ defineWorkflow({
       await expectNoStuckBusyState(page)
     }
 
-    await action('shell.uiMode.guided').click()
-    await expect(page.locator('#guidedShellGrid')).toBeVisible()
-    for (const stepButton of await action('guided.step.select').all()) {
-      await stepButton.click()
-      await expectNoStuckBusyState(page)
-    }
-    await action('shell.uiMode.advanced').click()
-    await expect(action('shell.uiMode.advanced')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('#uiModeBar')).toHaveCount(0)
+    await expect(page.locator('#guidedShellGrid')).toHaveCount(0)
+    await expect(page.locator('#workspaceBar')).toBeVisible()
 
     await expectNoHorizontalDocumentOverflow(page)
   },

@@ -20,6 +20,13 @@ import {
   formatRouteProvenanceCompact,
   type RouteProvenanceSummary,
 } from "../utils/core/runArtifactReview";
+import {
+  artifactCompatibilityAllowsReplay,
+  artifactCompatibilityLabel,
+  type ArtifactCompatibilitySummary,
+  formatReportStateShortLabel,
+  resolveReportState,
+} from "../utils/core/artifactEvidenceStatus";
 import { HISTORY_SAVED_RUNS_TABLE_DENSITY_KEY } from "../utils/core/storageKeys";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
@@ -51,6 +58,7 @@ const {
   savedRunDetailTimeframe,
   savedRunDetailValidation,
   savedRunDetailReplay,
+  savedRunDetailCompatibility,
   savedRunDetailProvenance,
   savedRunDetailLineage,
   savedRunDetailMetricSurface,
@@ -103,6 +111,7 @@ interface SavedRunListEntry {
   bytes: number;
   strategyKind: string;
   hasValidation: boolean;
+  artifactCompatibility?: ArtifactCompatibilitySummary;
   reportXlsxPath: string;
   reportXlsxExists?: boolean | null;
   csvPath: string;
@@ -229,10 +238,24 @@ function savedRunMlScoreNote(entry: SavedRunListEntry): string {
   return String(entry.mlScoreNote || "").trim();
 }
 
-function hasSavedRunReport(entry: SavedRunListEntry): boolean {
-  const reportPath = String(entry.reportXlsxPath || "").trim();
-  if (!reportPath) return false;
-  return entry.reportXlsxExists == null ? true : !!entry.reportXlsxExists;
+function savedRunReportState(entry: SavedRunListEntry) {
+  return resolveReportState(entry.reportXlsxPath, entry.reportXlsxExists);
+}
+
+function savedRunReportLabel(entry: SavedRunListEntry): string {
+  return formatReportStateShortLabel(savedRunReportState(entry));
+}
+
+function savedRunReportAvailable(entry: SavedRunListEntry): boolean {
+  return savedRunReportState(entry) === "available";
+}
+
+function savedRunCompatibilityLabel(entry: SavedRunListEntry): string {
+  return artifactCompatibilityLabel(entry.artifactCompatibility);
+}
+
+function savedRunCompatibilityOk(entry: SavedRunListEntry): boolean {
+  return artifactCompatibilityAllowsReplay(entry.artifactCompatibility);
 }
 
 watch(
@@ -665,13 +688,15 @@ onBeforeUnmount(() => {
                       placeholder="strategy, dataset, tag, artifact…"
                       @input="
                         onSavedSearch(
-                          String(($event.target as HTMLInputElement).value || ''),
+                          String(
+                            ($event.target as HTMLInputElement).value || '',
+                          ),
                         )
                       "
                     />
                     <div class="panelMuted fieldHint">
-                      Filters Saved Runs only. Use Ctrl+K for global commands and
-                      navigation.
+                      Filters Saved Runs only. Use Ctrl+K for global commands
+                      and navigation.
                     </div>
                   </div>
                   <div>
@@ -684,7 +709,9 @@ onBeforeUnmount(() => {
                         placeholder="aapl,1m,robust"
                         @input="
                           onSavedTags(
-                            String(($event.target as HTMLInputElement).value || ''),
+                            String(
+                              ($event.target as HTMLInputElement).value || '',
+                            ),
                           )
                         "
                       />
@@ -764,11 +791,15 @@ onBeforeUnmount(() => {
                     </span>
                     <span
                       class="pill"
-                      :class="{ good: hasSavedRunReport(virtualRow.row) }"
+                      :class="{ good: savedRunReportAvailable(virtualRow.row) }"
                     >
-                      {{
-                        hasSavedRunReport(virtualRow.row) ? "xlsx" : "artifact only"
-                      }}
+                      {{ savedRunReportLabel(virtualRow.row) }}
+                    </span>
+                    <span
+                      class="pill"
+                      :class="{ good: savedRunCompatibilityOk(virtualRow.row) }"
+                    >
+                      {{ savedRunCompatibilityLabel(virtualRow.row) }}
                     </span>
                     <span
                       v-if="
@@ -947,6 +978,12 @@ onBeforeUnmount(() => {
             }}</span>
           </div>
           <div class="full">
+            <span class="panelMetricKey">Compatibility</span
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailCompatibility
+            }}</span>
+          </div>
+          <div class="full">
             <span class="panelMetricKey">Execution Route</span
             ><span class="panelMetricValue mono panelNumeric">{{
               savedRunDetailProvenance
@@ -1100,7 +1137,8 @@ onBeforeUnmount(() => {
           <summary>Artifact repair</summary>
           <div class="panelDetailsBody compareDetailsBody">
             <div class="panelMuted">
-              Dry-run checks report canonicalization changes. Write repair creates a sibling repaired artifact copy in the runs directory.
+              Dry-run checks report canonicalization changes. Write repair
+              creates a sibling repaired artifact copy in the runs directory.
             </div>
             <pre class="mono">{{ savedRunRepairSummary }}</pre>
           </div>
@@ -1112,6 +1150,7 @@ onBeforeUnmount(() => {
         :parent-artifact-path="String(savedValue || '').trim()"
         :parent-strategy-kind="savedRunDetailStrategy"
         :parent-dataset-label="savedRunDetailDataset"
+        :parent-compatible="canLoadSavedRun"
       />
 
       <div

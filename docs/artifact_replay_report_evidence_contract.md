@@ -129,6 +129,28 @@ are added.
 Do not require byte-for-byte XLSX equality. If XLSX semantics need stronger
 coverage, add sheet/cell invariants instead of raw ZIP-byte equality.
 
+## Artifact Compatibility Summary
+
+Run-history list/detail/hydration responses expose a derived
+`artifact_compatibility` summary. It is not persisted as a duplicate source of
+truth; it is resolved from the artifact family/kind, top-level artifact schema
+version, optional report schema version, and command response version.
+
+Compatibility states:
+
+- `supported`: current command surface can load/replay the artifact.
+- `legacy_unknown`: no top-level artifact schema version was recorded; the run
+  remains inspectable and replay-compatible under legacy fallback rules.
+- `future_unsupported`: artifact schema is newer than this command surface;
+  history detail/report review stays available, but load/apply/rerun hydration is
+  blocked until an adapter is added.
+- `invalid`: artifact schema metadata is malformed; review-only handling is
+  required.
+
+The compatibility summary is intentionally part of saved-run history responses
+only. It must not be added to headless report JSON or output-parity baselines
+unless a separate report schema/versioning plan is approved.
+
 ## Migration Policy
 
 Artifact evidence changes should be additive and read-compatible:

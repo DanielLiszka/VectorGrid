@@ -20,6 +20,7 @@ import {
 } from "./ui";
 import { useDataStore } from "../stores/dataStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+import { parsePolygonDateInput } from "../utils/marketTime";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 
 const dataStore = useDataStore();
@@ -131,25 +132,6 @@ const polygonAdjustedHint = computed(() =>
     : "Stock aggregates default to split-adjusted bars.",
 );
 
-function parseDateInputMs(value: string): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const ms = Date.UTC(year, month - 1, day);
-  if (!Number.isFinite(ms)) return null;
-  const parsed = new Date(ms);
-  if (
-    parsed.getUTCFullYear() !== year ||
-    parsed.getUTCMonth() !== month - 1 ||
-    parsed.getUTCDate() !== day
-  ) {
-    return null;
-  }
-  return ms;
-}
-
 const polygonDateRangeHint = computed(() => {
   const symbol = String(polygonSymbolDraft.value || "").trim();
   const from = String(polygonFromDraft.value || "").trim();
@@ -157,9 +139,11 @@ const polygonDateRangeHint = computed(() => {
   if (!symbol || !from || !to) {
     return "Choose a symbol and date range. Downloads cache 1m bars; selected timeframes load from local resampling.";
   }
-  const fromMs = parseDateInputMs(from);
-  const toMs = parseDateInputMs(to);
-  if (fromMs === null || toMs === null) return "Dates must use YYYY-MM-DD.";
+  const parsedFrom = parsePolygonDateInput(from);
+  const parsedTo = parsePolygonDateInput(to);
+  if (!parsedFrom || !parsedTo) return "Dates must use YYYY-MM-DD.";
+  const fromMs = Date.parse(`${parsedFrom.date}T00:00:00.000Z`);
+  const toMs = Date.parse(`${parsedTo.date}T00:00:00.000Z`);
   if (toMs < fromMs) return "End date must be on or after start date.";
   const days = Math.max(1, Math.floor((toMs - fromMs) / 86_400_000) + 1);
   const requests = Math.max(1, Math.ceil(days / 30));

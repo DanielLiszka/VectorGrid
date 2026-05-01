@@ -109,6 +109,28 @@ interface ArtifactLibrarySnapshotResponse {
   options_expression?: unknown;
 }
 
+interface MarketDataDirInfoResponse {
+  default_root_dir?: unknown;
+  configured_root_dir?: unknown;
+  effective_root_dir?: unknown;
+  polygon_cache_dir?: unknown;
+}
+
+interface PolygonCacheInfoResponse {
+  cache_dir?: unknown;
+  has_api_key?: unknown;
+  credential_status?: unknown;
+  datasets?: unknown;
+}
+
+interface PolygonCredentialStatusResponse {
+  has_api_key?: unknown;
+  state?: unknown;
+  storage_backend?: unknown;
+  degraded?: unknown;
+  message?: unknown;
+}
+
 export type ArtifactRetentionConfiguredSettingsSummary = Record<
   ArtifactRetentionFamilyKey,
   number | null
@@ -134,10 +156,41 @@ export interface ArtifactCatalogSummary {
   total: number;
 }
 
+export interface LocalDataInventoryPathSummary {
+  defaultRootDir: string;
+  configuredRootDir: string;
+  effectiveRootDir: string;
+  polygonCacheDir: string;
+}
+
+export interface LocalDataInventoryCredentialSummary {
+  polygonHasApiKey: boolean;
+  polygonCredentialState: string;
+  polygonCredentialStorageBackend: string;
+  polygonCredentialDegraded: boolean;
+  polygonCredentialMessage: string;
+}
+
+export interface LocalDataInventorySummary {
+  generatedAtUnixMs: number;
+  scanMode: "dry_run";
+  rawMarketDataContentsScanned: false;
+  pathSummary: LocalDataInventoryPathSummary;
+  credentialSummary: LocalDataInventoryCredentialSummary;
+  polygonDatasetCount: number;
+  artifactCatalog: ArtifactCatalogSummary;
+  artifactRetention: ArtifactRetentionInfoSummary;
+  warnings: string[];
+}
+
 function normalizePositiveInteger(value: unknown, fallback = 0): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
+}
+
+function normalizeText(value: unknown): string {
+  return String(value ?? "").trim();
 }
 
 function normalizeOptionalPositiveInteger(value: unknown): number | null {
@@ -242,6 +295,83 @@ function normalizeArtifactCatalogSummary(raw: unknown): ArtifactCatalogSummary {
   };
 }
 
+function normalizeMarketDataDirInfo(
+  raw: unknown,
+): LocalDataInventoryPathSummary {
+  const row =
+    raw && typeof raw === "object" ? (raw as MarketDataDirInfoResponse) : {};
+  return {
+    defaultRootDir: normalizeText(row.default_root_dir),
+    configuredRootDir: normalizeText(row.configured_root_dir),
+    effectiveRootDir: normalizeText(row.effective_root_dir),
+    polygonCacheDir: normalizeText(row.polygon_cache_dir),
+  };
+}
+
+function normalizePolygonCredentialStatus(
+  raw: unknown,
+  fallbackHasApiKey: boolean,
+): LocalDataInventoryCredentialSummary {
+  const row =
+    raw && typeof raw === "object"
+      ? (raw as PolygonCredentialStatusResponse)
+      : {};
+  const state =
+    normalizeText(row.state) || (fallbackHasApiKey ? "unknown" : "missing");
+  return {
+    polygonHasApiKey:
+      row.has_api_key == null ? fallbackHasApiKey : Boolean(row.has_api_key),
+    polygonCredentialState: state,
+    polygonCredentialStorageBackend:
+      normalizeText(row.storage_backend) || state,
+    polygonCredentialDegraded: Boolean(row.degraded),
+    polygonCredentialMessage: normalizeText(row.message),
+  };
+}
+
+function normalizePolygonCacheInventory(
+  raw: unknown,
+): {
+  cacheDir: string;
+  credentialSummary: LocalDataInventoryCredentialSummary;
+  datasetCount: number;
+} {
+  const row =
+    raw && typeof raw === "object" ? (raw as PolygonCacheInfoResponse) : {};
+  const hasApiKey = Boolean(row.has_api_key);
+  return {
+    cacheDir: normalizeText(row.cache_dir),
+    credentialSummary: normalizePolygonCredentialStatus(
+      row.credential_status,
+      hasApiKey,
+    ),
+    datasetCount: Array.isArray(row.datasets) ? row.datasets.length : 0,
+  };
+}
+
+function buildLocalDataInventoryWarnings(args: {
+  pathSummary: LocalDataInventoryPathSummary;
+  polygonCacheDir: string;
+  credentialSummary: LocalDataInventoryCredentialSummary;
+  artifactCatalog: ArtifactCatalogSummary;
+}): string[] {
+  const warnings: string[] = [];
+  if (
+    args.polygonCacheDir &&
+    args.pathSummary.polygonCacheDir &&
+    args.polygonCacheDir !== args.pathSummary.polygonCacheDir
+  ) {
+    warnings.push("Polygon cache path differs between directory and cache summaries.");
+  }
+  if (args.credentialSummary.polygonCredentialDegraded) {
+    warnings.push("Polygon credential storage is degraded.");
+  }
+  if (args.artifactCatalog.total === 0) {
+    warnings.push("Artifact catalog is empty or has not been built yet.");
+  }
+  return warnings;
+}
+
 function serializeArtifactRetentionSettings(
   settings: ArtifactRetentionConfiguredSettingsSummary,
 ): Partial<Record<ArtifactRetentionRawField, number>> {
@@ -307,4 +437,40 @@ export async function rebuildArtifactCatalogSummary(): Promise<ArtifactCatalogSu
   );
   writeCachedCatalog(artifactCatalogSummaryQueryKey, summary);
   return summary;
+}
+
+export async function buildLocalDataInventoryDryRun(): Promise<LocalDataInventorySummary> {
+  const [
+    marketDataInfoRaw,
+    polygonCacheInfoRaw,
+    artifactRetentionRaw,
+    artifactCatalogRaw,
+  ] = await Promise.all([
+    invokeCommand("get_market_data_dir_info"),
+    invokeCommand("polygon_get_cache_info"),
+    invokeCommand("get_artifact_retention_info"),
+    invokeCommand("list_artifact_library"),
+  ]);
+
+  const pathSummary = normalizeMarketDataDirInfo(marketDataInfoRaw);
+  const polygonCache = normalizePolygonCacheInventory(polygonCacheInfoRaw);
+  const artifactCatalog = normalizeArtifactCatalogSummary(artifactCatalogRaw);
+  const artifactRetention = normalizeArtifactRetentionInfo(artifactRetentionRaw);
+
+  return {
+    generatedAtUnixMs: Date.now(),
+    scanMode: "dry_run",
+    rawMarketDataContentsScanned: false,
+    pathSummary,
+    credentialSummary: polygonCache.credentialSummary,
+    polygonDatasetCount: polygonCache.datasetCount,
+    artifactCatalog,
+    artifactRetention,
+    warnings: buildLocalDataInventoryWarnings({
+      pathSummary,
+      polygonCacheDir: polygonCache.cacheDir,
+      credentialSummary: polygonCache.credentialSummary,
+      artifactCatalog,
+    }),
+  };
 }

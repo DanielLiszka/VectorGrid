@@ -136,6 +136,7 @@ function makeRunSummary(overrides: Record<string, unknown> = {}) {
     artifactTs: "2026-04-05T12:00:00Z",
     parentArtifactId: "vectorgrid_run_1",
     optionsDatasetHash: "hash-1",
+    datasetProvenance: null,
     backendUsed: "cpu_reference",
     priceSemantics: "minute_aggregate",
     tupleCount: 0,
@@ -1324,6 +1325,40 @@ describe("OptionsExpressionPanel", () => {
       artifactTs: "2026-04-07T14:00:00Z",
       parentArtifactId: "vectorgrid_run_1",
       optionsDatasetHash: "hash-1",
+      datasetProvenance: {
+        providerName: "polygon.io",
+        providerSourceSurface: "options_aggs",
+        quoteResolution: "top_of_book",
+        aggregatePriceField: "mid",
+        contractReferenceAsOfUtc: "2026-04-05T00:00:00Z",
+        quoteQuality: {
+          priceSemantics: "top_of_book_quote",
+          rowCount: 100,
+          contractCount: 2,
+          anyQuoteRowCount: 80,
+          bidRowCount: 80,
+          askRowCount: 80,
+          bidAskRowCount: 75,
+          midRowCount: 80,
+          quoteAgeRowCount: 70,
+          staleQuoteThresholdMs: 60000,
+          staleQuoteRowCount: 5,
+          zeroBidRowCount: 1,
+          lockedBidAskRowCount: 2,
+          crossedBidAskRowCount: 1,
+          invalidBidAskRowCount: 3,
+          anyQuoteCoverageRate: 0.8,
+          bidAskCoverageRate: 0.75,
+          midCoverageRate: 0.8,
+          staleQuoteRate: 0.05,
+          meanSpreadBps: 12.5,
+          medianSpreadBps: 10.5,
+          maxSpreadBps: 40,
+          maxQuoteAgeMs: 120000,
+          perContract: [],
+          warnings: ["stale_quote_rows_present"],
+        },
+      },
       backendUsed: "cpu_reference",
       backendFallbackReason: "GPU planner probe failed; using CPU.",
       priceSemantics: "minute_aggregate",
@@ -1384,6 +1419,10 @@ describe("OptionsExpressionPanel", () => {
 
     expect(wrapper.text()).toContain("Backend detail");
     expect(wrapper.text()).toContain("GPU planner probe failed; using CPU.");
+    expect(wrapper.text()).toContain("polygon.io");
+    expect(wrapper.text()).toContain("Bid/ask coverage");
+    expect(wrapper.text()).toContain("75.0%");
+    expect(wrapper.text()).toContain("stale_quote_rows_present");
   });
 
   it("renders the feasibility preview summary when available", async () => {

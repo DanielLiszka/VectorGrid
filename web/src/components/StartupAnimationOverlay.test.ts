@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { defineComponent, nextTick } from 'vue'
@@ -6,10 +6,10 @@ import StartupAnimationOverlay from './StartupAnimationOverlay.vue'
 import AppRuntimeBanner from './AppRuntimeBanner.vue'
 import { BOOT_STAGES, useRuntimeStore } from '../stores/runtimeStore'
 
-const MIN_VISIBLE_MS = 360
-const SIGNATURE_MS = 900
+const MIN_VISIBLE_MS = 560
+const SIGNATURE_MS = 760
 const EXIT_MS = 180
-const SKIP_UNLOCK_MS = MIN_VISIBLE_MS
+const SKIP_UNLOCK_MS = 360
 
 const StartupHarness = defineComponent({
   components: {
@@ -79,11 +79,12 @@ describe('StartupAnimationOverlay', () => {
     expect(wrapper.text()).toContain('Restoring workspace state')
     expect(wrapper.find('.startupRail').exists()).toBe(true)
     expect(wrapper.find('.startupPhaseTag').text()).toBe('Booting')
-    expect(wrapper.find('.startupAssistLabel').text()).toContain('Shell is already mounted underneath')
+    expect(wrapper.find('.startupAssistLabel').text()).toContain('Workspace is mounted')
     expect(wrapper.findAll('.startupStageStep')).toHaveLength(3)
     expect(wrapper.text()).toContain('Restore')
-    expect(wrapper.text()).toContain('Desktop')
+    expect(wrapper.text()).toContain('Services')
     expect(wrapper.text()).toContain('Shell')
+    expect(wrapper.find('.startupProgressTrack').exists()).toBe(true)
 
     runtimeStore.markReady()
     await nextTick()
@@ -199,6 +200,8 @@ describe('StartupAnimationOverlay', () => {
     await flushTimers(SIGNATURE_MS + MIN_VISIBLE_MS + EXIT_MS)
 
     expect(document.querySelector('#startupAnimationOverlay')?.getAttribute('data-stage')).toBe('intro')
+    expect(wrapper.find('.startupPhaseTag').text()).toBe('Ready')
+    expect(wrapper.find('.startupAssistLabel').text()).toBe('Startup checks complete.')
     expect(wrapper.find('.startupSkipButton').exists()).toBe(true)
 
     await wrapper.find('.startupSkipButton').trigger('click')

@@ -14,10 +14,16 @@ import {
   normalizeStageCompletions,
   type StageCompletionPacketV1,
 } from "../utils/core/stageCompletion";
+import {
+  normalizeArtifactCompatibility,
+  type ArtifactCompatibilitySummary,
+} from "../utils/core/artifactEvidenceStatus";
 
 export interface WorkflowRunArtifact {
   ts: string;
   artifactPath: string;
+  artifactKind?: string;
+  artifactCompatibility?: ArtifactCompatibilitySummary;
   reportXlsxPath: string;
   reportXlsxExists?: boolean | null;
   csvPath: string;
@@ -43,6 +49,8 @@ export interface WorkflowValidationArtifact {
 export interface WorkflowRunSnapshot {
   ts: string;
   artifactPath: string;
+  artifactKind?: string;
+  artifactCompatibility?: ArtifactCompatibilitySummary;
   configFingerprint?: string;
   routeProvenance?: RouteProvenanceSummary | null;
   req: unknown;
@@ -149,6 +157,8 @@ function workflowRunSignature(run: WorkflowRunArtifact | null): string {
   return stableStringify({
     ts: run.ts,
     artifactPath: run.artifactPath,
+    artifactKind: run.artifactKind,
+    artifactCompatibility: run.artifactCompatibility,
     reportXlsxPath: run.reportXlsxPath,
     reportXlsxExists: run.reportXlsxExists ?? null,
     csvPath: run.csvPath,
@@ -769,6 +779,11 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     ts?: unknown;
     artifact_path?: unknown;
     artifactPath?: unknown;
+    artifact_kind?: unknown;
+    artifactKind?: unknown;
+    kind?: unknown;
+    artifact_compatibility?: unknown;
+    artifactCompatibility?: unknown;
     report_xlsx_path?: unknown;
     report_xlsx_exists?: unknown;
     reportXlsxPath?: unknown;
@@ -811,6 +826,18 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
   return markRaw({
     ts: normalizeText(row.ts),
     artifactPath: normalizeText(row.artifact_path ?? row.artifactPath),
+    artifactKind: normalizeText(
+      row.artifact_kind ?? row.artifactKind ?? row.kind,
+    ),
+    artifactCompatibility: normalizeArtifactCompatibility(
+      row.artifact_compatibility ?? row.artifactCompatibility,
+      {
+        artifactFamily: "run",
+        artifactKind: normalizeText(
+          row.artifact_kind ?? row.artifactKind ?? row.kind,
+        ),
+      },
+    ),
     reportXlsxPath: normalizeText(row.report_xlsx_path ?? row.reportXlsxPath),
     reportXlsxExists: normalizeOptionalBoolean(
       row.report_xlsx_exists ?? row.reportXlsxExists,
@@ -892,6 +919,8 @@ export const useWorkflowArtifactsStore = defineStore("workflowArtifacts", {
 export function readLatestWorkflowRunSnapshot(): {
   ts: string;
   artifactPath: string;
+  artifactKind?: string;
+  artifactCompatibility?: ArtifactCompatibilitySummary;
   configFingerprint?: string;
   routeProvenance?: RouteProvenanceSummary | null;
   req: unknown;
@@ -928,6 +957,10 @@ function applyNormalizedArtifacts(
       ? {
           ts: run.ts,
           artifactPath: run.artifactPath,
+          ...(run.artifactKind ? { artifactKind: run.artifactKind } : {}),
+          ...(run.artifactCompatibility
+            ? { artifactCompatibility: run.artifactCompatibility }
+            : {}),
           configFingerprint: run.configFingerprint ?? "",
           routeProvenance: run.routeProvenance ?? null,
           req: run.req ?? null,
@@ -1003,7 +1036,7 @@ export function applyWorkflowArtifactsPayload(
         ensureDerivedStageCompletions(run.stageCompletions, {
           ts: run.ts,
           completedAt: run.ts,
-          artifactKind: "vectorgrid_run_artifact",
+          artifactKind: run.artifactKind || "vectorgrid_run_artifact",
           artifactPath: run.artifactPath,
           reportXlsxPath: run.reportXlsxPath,
           csvPath: run.csvPath,

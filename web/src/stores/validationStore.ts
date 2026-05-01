@@ -374,6 +374,7 @@ interface ValidationState {
   validationFrictionSummary: string;
   validationCrossSummary: string;
   validationSkippedSummary: string;
+  validationEvidenceSummary: string;
   validationWarningSummary: string;
   validationReoptMeta: string;
   validationShortlistMeta: string;
@@ -457,6 +458,7 @@ export const useValidationStore = defineStore("validation", {
     validationFrictionSummary: "-",
     validationCrossSummary: "-",
     validationSkippedSummary: "-",
+    validationEvidenceSummary: "Validation evidence not run.",
     validationWarningSummary: "-",
     validationReoptMeta: "-",
     validationShortlistMeta: "-",
@@ -599,6 +601,12 @@ export const useValidationStore = defineStore("validation", {
             this.validationSkippedSummary ??
             "-",
         ).trim() || "-";
+      this.validationEvidenceSummary =
+        String(
+          snapshot.validationEvidenceSummary ??
+            this.validationEvidenceSummary ??
+            "Validation evidence not run.",
+        ).trim() || "Validation evidence not run.";
       this.validationWarningSummary =
         String(
           snapshot.validationWarningSummary ??

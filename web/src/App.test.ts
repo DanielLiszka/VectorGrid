@@ -1,4 +1,5 @@
-import { createPinia, setActivePinia } from 'pinia'
+
+import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -19,7 +20,6 @@ const APP_STUBS = {
   CandidateDetailWorkspacePanel: { template: '<div data-stub="CandidateDetailWorkspacePanel" />' },
   ExecutionWorkspacePanel: { template: '<div data-stub="ExecutionWorkspacePanel" />' },
   HeatmapWorkspacePanel: { template: '<div data-stub="HeatmapWorkspacePanel" />' },
-  GuidedWorkspacePanel: { template: '<div data-stub="GuidedWorkspacePanel" />' },
   HistoryWorkspacePanel: { template: '<div data-stub="HistoryWorkspacePanel" />' },
   MetaWorkspacePanel: { template: '<div data-stub="MetaWorkspacePanel" />' },
   MlSignalShellPanel: { template: '<div data-stub="MlSignalShellPanel" />' },
@@ -42,10 +42,12 @@ async function flushApp(): Promise<void> {
 describe('App root shell', () => {
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
+    window.history.replaceState({}, '', '/')
     document.body.innerHTML = ''
   })
 
-  it('mounts the root shell surfaces without the startup overlay', async () => {
+  it('mounts the advanced root shell surfaces without startup overlay chrome', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const settingsStore = useSettingsStore(pinia)
@@ -69,7 +71,7 @@ describe('App root shell', () => {
     expect(document.querySelector('[data-stub="ActionStatusBar"]')).not.toBeNull()
   })
 
-  it('defaults first-run users into the guided shell', async () => {
+  it('defaults first-run users into the advanced shell', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
 
@@ -82,15 +84,14 @@ describe('App root shell', () => {
     })
     await flushApp()
 
-    expect(document.querySelector('[data-stub="GuidedWorkspacePanel"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="WorkbenchShell"]')).not.toBeNull()
-    expect(document.querySelector('[data-stub="ActionStatusBar"]')).toBeNull()
-    expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).toBeNull()
+    expect(document.querySelector('[data-stub="ActionStatusBar"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).not.toBeNull()
 
     wrapper.unmount()
   })
 
-  it('keeps guided mode focused by hiding advanced workflow panels and the advanced footer', async () => {
+  it('ignores legacy guided mode requests and keeps the advanced shell mounted', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const settingsStore = useSettingsStore(pinia)
@@ -105,10 +106,9 @@ describe('App root shell', () => {
     })
     await flushApp()
 
-    expect(document.querySelector('[data-stub="GuidedWorkspacePanel"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="WorkbenchShell"]')).not.toBeNull()
-    expect(document.querySelector('[data-stub="ActionStatusBar"]')).toBeNull()
-    expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).toBeNull()
+    expect(document.querySelector('[data-stub="ActionStatusBar"]')).not.toBeNull()
+    expect(document.querySelector('[data-stub="DataWorkspacePanel"]')).not.toBeNull()
     expect(document.querySelector('[data-stub="OptimizeWorkspacePanel"]')).toBeNull()
 
     wrapper.unmount()

@@ -69,15 +69,15 @@ test('visual baseline: desktop saved options artifact state @visual', async ({ p
   await guard.assertClean()
 })
 
-test('visual baseline: mobile guided shell @visual', async ({ page, context }) => {
+test('visual baseline: mobile advanced shell @visual', async ({ page, context }) => {
   const guard = installQaGuards(page)
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoMockedShellWithScenario(page, context, emptyAppScenario)
 
-  await page.locator('[data-qa-action="shell.uiMode.guided"]').click()
-  await expect(page.locator('#guidedShellGrid')).toBeVisible()
+  await expect(page.locator('#uiModeBar')).toHaveCount(0)
+  await expect(page.locator('#workspaceBar')).toBeVisible()
   await stabilizeVisualSurface(page)
 
-  await expect(page).toHaveScreenshot('mobile-guided-shell.png', screenshotOptions)
+  await expect(page).toHaveScreenshot('mobile-advanced-shell.png', screenshotOptions)
   await guard.assertClean()
 })

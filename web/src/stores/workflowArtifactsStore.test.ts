@@ -145,6 +145,12 @@ describe("workflowArtifactsStore", () => {
         currentRun: {
           ts: "2026-04-01T12:00:00Z",
           artifact_path: "C:/runs/run.json",
+          artifact_kind: "vectorgrid_run_artifact",
+          artifact_compatibility: {
+            artifactSchemaVersion: 1,
+            status: "supported",
+            replayBlocked: false,
+          },
           report_xlsx_path: "C:/runs/report.xlsx",
           report_xlsx_exists: false,
           csv_path: "C:/data/spy.csv",
@@ -169,6 +175,12 @@ describe("workflowArtifactsStore", () => {
 
     expect(store.currentRun).toMatchObject({
       artifactPath: "C:/runs/run.json",
+      artifactKind: "vectorgrid_run_artifact",
+      artifactCompatibility: {
+        artifactSchemaVersion: 1,
+        status: "supported",
+        replayBlocked: false,
+      },
       reportXlsxPath: "C:/runs/report.xlsx",
       reportXlsxExists: false,
       csvPath: "C:/data/spy.csv",

@@ -101,8 +101,7 @@ test('visible QA actions are represented in the action coverage manifest @workfl
   await collect()
   await page.locator('[data-qa-action="shell.workspace.settings"]').click()
   await collect()
-  await page.locator('[data-qa-action="shell.uiMode.guided"]').click()
-  await collect()
+  await expect(page.locator('#uiModeBar')).toHaveCount(0)
 
   await assertManifestCoverage(discovered, 'action-coverage')
   await guard.assertClean()

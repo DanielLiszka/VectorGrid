@@ -3,7 +3,6 @@ import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTaskCenterVisibility } from '../../composables/useTaskCenterVisibility'
 import { useHistoryStore } from '../../stores/historyStore'
-import { useSettingsStore } from '../../stores/settingsStore'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { createTestPinia } from '../../test/pinia'
 import WorkbenchShell from './WorkbenchShell.vue'
@@ -80,10 +79,8 @@ describe('WorkbenchShell', () => {
     wrapper.unmount()
   })
 
-  it('keeps guided mode additive and removes advanced workbench chrome', async () => {
+  it('keeps the advanced workbench chrome mounted for the default shell', async () => {
     const pinia = createTestPinia()
-    const settingsStore = useSettingsStore(pinia)
-    settingsStore.setUiMode('guided')
 
     const wrapper = mount(WorkbenchShell, {
       global: { plugins: [pinia] },
@@ -91,10 +88,10 @@ describe('WorkbenchShell', () => {
     })
     await flushUi()
 
-    expect(document.querySelector('#uiModeBar')?.getAttribute('role')).toBe('tablist')
-    expect(document.querySelector('#workspaceBar')).toBeNull()
-    expect(document.querySelector('#guidedShellGrid')).not.toBeNull()
-    expect(document.querySelector('#runFooterShell')).toBeNull()
+    expect(document.querySelector('#uiModeBar')).toBeNull()
+    expect(document.querySelector('#workspaceBar')).not.toBeNull()
+    expect(document.querySelector('#guidedShellGrid')).toBeNull()
+    expect(document.querySelector('#runFooterShell')).not.toBeNull()
 
     wrapper.unmount()
   })

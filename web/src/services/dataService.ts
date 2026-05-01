@@ -5,6 +5,7 @@ import {
   parseBoundaryObject,
   parseOptionalBoundaryObject,
 } from "./serviceBoundarySchemas";
+import { parsePolygonDateInput } from "../utils/marketTime";
 
 function normalizeText(value: unknown): string {
   return String(value || "").trim();
@@ -21,25 +22,6 @@ function normalizeUnixTs(value: unknown): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 0;
   return Math.floor(parsed);
-}
-
-function parseIsoDateDay(value: string): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const ms = Date.UTC(year, month - 1, day);
-  if (!Number.isFinite(ms)) return null;
-  const parsed = new Date(ms);
-  if (
-    parsed.getUTCFullYear() !== year ||
-    parsed.getUTCMonth() !== month - 1 ||
-    parsed.getUTCDate() !== day
-  ) {
-    return null;
-  }
-  return ms;
 }
 
 function normalizeMaybeNumber(value: unknown): number | null {
@@ -654,20 +636,20 @@ export async function downloadPolygonDataset(
   if (!symbol) throw new Error("Enter a symbol.");
   if (!from) throw new Error("Choose a start date.");
   if (!to) throw new Error("Choose an end date.");
-  const fromMs = parseIsoDateDay(from);
-  const toMs = parseIsoDateDay(to);
-  if (fromMs === null || toMs === null) {
+  const parsedFrom = parsePolygonDateInput(from);
+  const parsedTo = parsePolygonDateInput(to);
+  if (!parsedFrom || !parsedTo) {
     throw new Error("Polygon dates must use YYYY-MM-DD.");
   }
-  if (toMs < fromMs) {
+  if (parsedTo.startUtcIso < parsedFrom.startUtcIso) {
     throw new Error("Polygon end date must be on or after the start date.");
   }
   const raw = (await invokeCommand("polygon_download_1m_and_load", {
     req: {
       market,
       symbol,
-      from,
-      to,
+      from: parsedFrom.date,
+      to: parsedTo.date,
       adjusted: !!inputs.adjusted,
       timeframe,
     },

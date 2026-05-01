@@ -2,7 +2,6 @@ import {
   CONTROLS_COLLAPSED_KEY,
   CONTROLS_WIDTH_KEY,
   DENSITY_MODE_KEY,
-  GUIDED_STEP_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
   UI_MODE_KEY,
@@ -17,15 +16,13 @@ import { normalizeWindowEffect } from './utils/windowEffects'
 type ThemePref = 'light' | 'dark' | 'system'
 type HelpMode = 'full' | 'concise' | 'off'
 type DensityMode = 'comfortable' | 'standard' | 'dense'
-type UiMode = 'guided' | 'advanced'
-type GuidedStep = 'data' | 'strategy' | 'optimize' | 'validate' | 'trade'
+type UiMode = 'advanced'
 
 const THEME_VALUES = new Set<ThemePref>(['light', 'dark', 'system'])
 const HELP_MODE_VALUES = new Set<HelpMode>(['full', 'concise', 'off'])
 const DENSITY_MODE_VALUES = new Set<DensityMode>(['comfortable', 'standard', 'dense'])
-const UI_MODE_VALUES = new Set<UiMode>(['guided', 'advanced'])
-const DEFAULT_UI_MODE: UiMode = 'guided'
-const GUIDED_STEP_VALUES = new Set<GuidedStep>(['data', 'strategy', 'optimize', 'validate', 'trade'])
+const UI_MODE_VALUES = new Set<UiMode>(['advanced'])
+const DEFAULT_UI_MODE: UiMode = 'advanced'
 const WORKFLOW_VALUES = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize', 'history', 'settings'])
 const WORKSPACE_VALUES = new Set(['workflow', 'library', 'aggregate', 'pro', 'live', 'settings'])
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
@@ -86,9 +83,7 @@ function applyDensityAndHelpPreflight(): void {
 
 function applyUiModePreflight(): void {
   const uiMode = readStorageString(UI_MODE_KEY).toLowerCase()
-  const guidedStep = readStorageString(GUIDED_STEP_KEY).toLowerCase()
   setRootDataAttr('uiMode', UI_MODE_VALUES.has(uiMode as UiMode) ? uiMode : DEFAULT_UI_MODE)
-  setRootDataAttr('guidedStep', GUIDED_STEP_VALUES.has(guidedStep as GuidedStep) ? guidedStep : 'data')
 }
 
 applyThemePreflight()

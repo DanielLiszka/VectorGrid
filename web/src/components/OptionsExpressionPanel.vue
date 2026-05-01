@@ -5,6 +5,7 @@ import AppVisualIcon from "./AppVisualIcon.vue";
 import type {
   OptionsExpressionCoverageAdequacyVerdict,
   OptionsExpressionArtifactSummary,
+  OptionsExpressionDatasetQuoteQualitySummary,
   OptionsExpressionMetricsSummary,
   OptionsExpressionTupleSummary,
   OptionsExpressionValidationVerdict,
@@ -42,11 +43,17 @@ import {
   formatOptionsFinalistNumber,
 } from "../utils/optionsFinalistDashboardModel";
 
-const props = defineProps<{
-  parentArtifactPath: string;
-  parentStrategyKind: string;
-  parentDatasetLabel: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    parentArtifactPath: string;
+    parentStrategyKind: string;
+    parentDatasetLabel: string;
+    parentCompatible?: boolean;
+  }>(),
+  {
+    parentCompatible: true,
+  },
+);
 
 const store = useOptionsExpressionStore();
 const {
@@ -93,6 +100,7 @@ const {
   statusLine,
   supportedParent,
   activeDiagnostics,
+  activeDatasetProvenance,
   activeTupleInspection,
   activeOptionsDatasetHash,
   activeRequest,
@@ -1313,10 +1321,15 @@ watch(
       props.parentArtifactPath,
       props.parentStrategyKind,
       props.parentDatasetLabel,
+      props.parentCompatible,
     ] as const,
-  ([path, strategyKind, datasetLabel]) => {
+  ([path, strategyKind, datasetLabel, parentCompatible]) => {
     store.attachParent(path, strategyKind, datasetLabel);
-    if (normalizeText(path) && isSupportedParentStrategyKind(strategyKind)) {
+    if (
+      parentCompatible &&
+      normalizeText(path) &&
+      isSupportedParentStrategyKind(strategyKind)
+    ) {
       void store.bootstrap();
     }
   },
@@ -1575,6 +1588,18 @@ const activeDatasetManifest = computed(() => {
 });
 
 const activeDatasetProvenanceSummary = computed(() => {
+  const explicitProvenance = activeDatasetProvenance.value;
+  if (explicitProvenance) {
+    return [
+      normalizeText(explicitProvenance.providerName),
+      normalizeText(explicitProvenance.providerSourceSurface),
+      normalizeText(explicitProvenance.quoteResolution),
+      normalizeText(explicitProvenance.aggregatePriceField),
+      normalizeText(explicitProvenance.contractReferenceAsOfUtc),
+    ]
+      .filter((entry) => entry.length > 0)
+      .join(" | ");
+  }
   const activeDataset = activeDatasetManifest.value;
   const requestDatasetId = normalizeText(activeRequest.value?.optionsDatasetId);
   if (!activeDataset) {
@@ -1590,6 +1615,15 @@ const activeDatasetProvenanceSummary = computed(() => {
     .filter((entry) => entry.length > 0)
     .join(" | ");
 });
+const activeDatasetQuoteQuality = computed(
+  (): OptionsExpressionDatasetQuoteQualitySummary | null =>
+    activeDatasetProvenance.value?.quoteQuality ?? null,
+);
+const activeDatasetQuoteQualityWarnings = computed(() =>
+  activeDatasetQuoteQuality.value?.warnings.length
+    ? activeDatasetQuoteQuality.value.warnings.join(" ")
+    : "",
+);
 const selectedDatasetPriceSemantics = computed(
   () =>
     normalizeText(selectedDataset.value?.priceSemantics) ||
@@ -6135,12 +6169,72 @@ function focusTupleIndex(index: number): void {
 
         <details v-if="requestSummaryRows.length > 0" class="panelDetails">
           <summary>Run provenance</summary>
-          <div class="panelDetailsBody detailGrid detailGridTight">
-            <div v-for="row in requestSummaryRows" :key="row.key">
-              <span class="panelMetricKey">{{ row.label }}</span>
-              <span class="panelMetricValue mono panelNumeric">{{
-                row.value
-              }}</span>
+          <div class="panelDetailsBody">
+            <div class="detailGrid detailGridTight">
+              <div v-for="row in requestSummaryRows" :key="row.key">
+                <span class="panelMetricKey">{{ row.label }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{
+                  row.value
+                }}</span>
+              </div>
+            </div>
+            <div
+              v-if="activeDatasetQuoteQuality"
+              class="detailGrid detailGridTight"
+            >
+              <div>
+                <span class="panelMetricKey">Quote rows</span>
+                <span class="panelMetricValue mono panelNumeric">
+                  {{ activeDatasetQuoteQuality.anyQuoteRowCount }} /
+                  {{ activeDatasetQuoteQuality.rowCount }}
+                </span>
+              </div>
+              <div>
+                <span class="panelMetricKey">Bid/ask coverage</span>
+                <span class="panelMetricValue mono panelNumeric">
+                  {{
+                    formatPercent(
+                      activeDatasetQuoteQuality.bidAskCoverageRate,
+                      1,
+                    )
+                  }}
+                </span>
+              </div>
+              <div>
+                <span class="panelMetricKey">Median spread</span>
+                <span class="panelMetricValue mono panelNumeric">
+                  {{
+                    formatOptionalDecimal(
+                      activeDatasetQuoteQuality.medianSpreadBps,
+                      1,
+                    )
+                  }}
+                  bps
+                </span>
+              </div>
+              <div>
+                <span class="panelMetricKey">Stale quotes</span>
+                <span class="panelMetricValue mono panelNumeric">
+                  {{
+                    formatPercent(activeDatasetQuoteQuality.staleQuoteRate, 1)
+                  }}
+                </span>
+              </div>
+              <div>
+                <span class="panelMetricKey">Quote warnings</span>
+                <span class="panelMetricValue mono panelNumeric">
+                  {{ activeDatasetQuoteQuality.warnings.length }}
+                </span>
+              </div>
+              <div>
+                <span class="panelMetricKey">Invalid bid/ask</span>
+                <span class="panelMetricValue mono panelNumeric">
+                  {{ activeDatasetQuoteQuality.invalidBidAskRowCount }}
+                </span>
+              </div>
+            </div>
+            <div v-if="activeDatasetQuoteQualityWarnings" class="panelMuted">
+              {{ activeDatasetQuoteQualityWarnings }}
             </div>
           </div>
         </details>

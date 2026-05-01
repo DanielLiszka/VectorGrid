@@ -146,19 +146,15 @@ defineWorkflow({
 })
 
 defineWorkflow({
-  id: 'shell.guided.handoff',
-  title: 'switches into guided mode and back to advanced mode',
-  tags: ['@workflow', '@responsive'],
+  id: 'shell.advancedOnly',
+  title: 'keeps the shell on the advanced workbench without UI mode switching',
+  tags: ['@workflow', '@responsive', '@regression'],
   scenario: emptyAppScenario,
-  run: async ({ page, action }) => {
-    await action('shell.uiMode.guided').click()
-    await expect(page.locator('#guidedShellGrid')).toBeVisible()
-    await expect(action('guided.primaryAction.run')).toBeVisible()
-    await expect(action('guided.data.csv.browse')).toBeVisible()
-
-    await action('guided.advancedMode.open').click()
+  run: async ({ page }) => {
+    await expect(page.locator('#uiModeBar')).toHaveCount(0)
+    await expect(page.locator('#guidedShellGrid')).toHaveCount(0)
     await expect(page.locator('#workspaceBar')).toBeVisible()
-    await expect(action('shell.uiMode.advanced')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('#runFooterShell')).toBeVisible()
   },
 })
 

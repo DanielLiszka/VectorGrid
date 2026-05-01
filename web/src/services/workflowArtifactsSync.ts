@@ -7,6 +7,7 @@ import {
 import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { applyShellStateForRunRequest } from "../utils/core/workflowRunRestore";
 import { normalizeStageCompletions } from "../utils/core/stageCompletion";
+import { normalizeArtifactCompatibility } from "../utils/core/artifactEvidenceStatus";
 import { refreshAnalysisFromWorkflowRun } from "./analysisService";
 import { measureArtifactHistoryPerf } from "./artifactHistoryPerf";
 
@@ -154,6 +155,18 @@ function latestSummaryMatchesCurrentStore(
       reportXlsxPath: normalizeText(
         latest.report_xlsx_path ?? latest.reportXlsxPath,
       ),
+      artifactKind: normalizeText(
+        latest.kind ?? latest.artifact_kind ?? latest.artifactKind,
+      ),
+      artifactCompatibility: normalizeArtifactCompatibility(
+        latest.artifact_compatibility ?? latest.artifactCompatibility,
+        {
+          artifactFamily: "run",
+          artifactKind: normalizeText(
+            latest.kind ?? latest.artifact_kind ?? latest.artifactKind,
+          ),
+        },
+      ),
       reportXlsxExists: normalizeOptionalBoolean(
         latest.report_xlsx_exists ?? latest.reportXlsxExists,
       ),
@@ -177,6 +190,14 @@ function latestSummaryMatchesCurrentStore(
     }) ===
     stableStringify({
       reportXlsxPath: normalizeText(currentRun.reportXlsxPath),
+      artifactKind: normalizeText(currentRun.artifactKind),
+      artifactCompatibility: normalizeArtifactCompatibility(
+        currentRun.artifactCompatibility,
+        {
+          artifactFamily: "run",
+          artifactKind: currentRun.artifactKind || "",
+        },
+      ),
       reportXlsxExists: normalizeOptionalBoolean(currentRun.reportXlsxExists),
       csvPath: normalizeText(currentRun.csvPath),
       configFingerprint: normalizeText(currentRun.configFingerprint),

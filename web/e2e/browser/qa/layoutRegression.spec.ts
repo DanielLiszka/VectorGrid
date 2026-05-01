@@ -58,7 +58,7 @@ async function readShellLayout(page: Page): Promise<ShellLayoutSnapshot> {
     const main = readRect('#shellMainPanel')
     const footer = readRect('#runFooterShell')
     const navTargets = Array.from(
-      document.querySelectorAll('#uiModeBar .tabBtn, #workspaceBar .tabBtn, #modeBar .tabBtn, #workflowStepBar .tabBtn'),
+      document.querySelectorAll('#workspaceBar .tabBtn, #modeBar .tabBtn, #workflowStepBar .tabBtn'),
     ).map((element) => {
       const rect = element.getBoundingClientRect()
       return {

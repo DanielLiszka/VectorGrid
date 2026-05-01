@@ -4,13 +4,11 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import DesktopTitlebar from './DesktopTitlebar.vue'
 import { bindRuntimePinia } from '../stores/runtimePinia'
-import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
-import { useSettingsStore } from '../stores/settingsStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -168,98 +166,6 @@ describe('DesktopTitlebar', () => {
 
     expect(validateSpy).toHaveBeenCalledTimes(1)
     expect(runSpy).not.toHaveBeenCalled()
-  })
-
-  it('uses guided labels and routes guided primary actions through existing commands', async () => {
-    const analysisStore = useAnalysisStore()
-    const commandActionStore = useCommandActionStore()
-    const settingsStore = useSettingsStore()
-    const optimizeStore = useOptimizeStore()
-    settingsStore.setUiMode('guided')
-    settingsStore.setGuidedStep('validate')
-    optimizeStore.$patch({ validateDisabled: false, runDisabled: false })
-    analysisStore.$patch({ topRows: 1, bestTitle: 'Rank 1' })
-    const validateSpy = vi.spyOn(commandActionStore, 'validateOptimization')
-
-    const wrapper = mount(DesktopTitlebar)
-    const primary = wrapper.get('.titlebarPrimary')
-
-    expect(wrapper.text()).toContain('Simple · Validate')
-    expect(primary.attributes('aria-label')).toBe('Run validation')
-    await primary.trigger('click')
-
-    expect(validateSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it('opens settings from guided mode by switching to the advanced settings workspace', async () => {
-    const settingsStore = useSettingsStore()
-    const workflowStore = useWorkflowStore()
-    settingsStore.setUiMode('guided')
-    const settingsSpy = vi.spyOn(workflowStore, 'selectWorkspace')
-
-    const wrapper = mount(DesktopTitlebar)
-    await wrapper.get('button[aria-label="Open settings workspace"]').trigger('click')
-
-    expect(settingsStore.uiMode).toBe('advanced')
-    expect(settingsSpy).toHaveBeenCalledWith('settings')
-  })
-
-  it('does not let the guided titlebar bypass data or strategy choices', async () => {
-    const commandActionStore = useCommandActionStore()
-    const settingsStore = useSettingsStore()
-    const optimizeStore = useOptimizeStore()
-    settingsStore.setUiMode('guided')
-    optimizeStore.$patch({ runDisabled: false, strategyKind: 'DoubleMa' })
-    const loadSpy = vi.spyOn(commandActionStore, 'loadData')
-    const runSpy = vi.spyOn(commandActionStore, 'runOptimization')
-
-    const wrapper = mount(DesktopTitlebar)
-    const primary = wrapper.get('.titlebarPrimary')
-
-    settingsStore.setGuidedStep('data')
-    await nextTick()
-    expect(primary.attributes('aria-label')).toBe('Choose data')
-    expect((primary.element as HTMLButtonElement).disabled).toBe(true)
-    await primary.trigger('click')
-
-    settingsStore.setGuidedStep('strategy')
-    await nextTick()
-    expect(primary.attributes('aria-label')).toBe('Pick strategy')
-    expect((primary.element as HTMLButtonElement).disabled).toBe(true)
-    await primary.trigger('click')
-
-    expect(loadSpy).not.toHaveBeenCalled()
-    expect(runSpy).not.toHaveBeenCalled()
-  })
-
-  it('runs guided optimization only from the optimize step with a supported strategy', async () => {
-    const commandActionStore = useCommandActionStore()
-    const dataStore = useDataStore()
-    const settingsStore = useSettingsStore()
-    const optimizeStore = useOptimizeStore()
-    settingsStore.setUiMode('guided')
-    settingsStore.setGuidedStep('optimize')
-    optimizeStore.$patch({ runDisabled: false, strategyKind: 'MlSignal' })
-    const runSpy = vi.spyOn(commandActionStore, 'runOptimization')
-
-    const wrapper = mount(DesktopTitlebar)
-    const primary = wrapper.get('.titlebarPrimary')
-
-    expect((primary.element as HTMLButtonElement).disabled).toBe(true)
-    await primary.trigger('click')
-    expect(runSpy).not.toHaveBeenCalled()
-
-    optimizeStore.$patch({ strategyKind: 'DoubleMa' })
-    await nextTick()
-    expect((primary.element as HTMLButtonElement).disabled).toBe(true)
-    await primary.trigger('click')
-    expect(runSpy).not.toHaveBeenCalled()
-
-    dataStore.$patch({ dataId: 'dataset-1', datasetLabel: 'AAPL sample' })
-    await nextTick()
-    expect((primary.element as HTMLButtonElement).disabled).toBe(false)
-    await primary.trigger('click')
-    expect(runSpy).toHaveBeenCalledTimes(1)
   })
 
   it('uses native window controls when available', async () => {

@@ -227,6 +227,41 @@ describe("optionsExpressionService", () => {
           options_dataset_hash: "hash-1",
           options_dataset_normalized_rows_sha256: "rows-sha256-1",
           options_dataset_manifest_semantic_sha256: "manifest-sha256-1",
+          dataset_provenance: {
+            provider_name: "polygon.io",
+            provider_source_surface: "options_aggs",
+            quote_resolution: "top_of_book",
+            aggregate_price_field: "mid",
+            contract_reference_as_of_utc: "2026-04-05T00:00:00Z",
+            normalized_rows_sha256: "rows-sha256-1",
+            manifest_semantic_sha256: "manifest-sha256-1",
+            quote_quality: {
+              price_semantics: "top_of_book_quote",
+              row_count: 100,
+              contract_count: 2,
+              any_quote_row_count: 80,
+              bid_row_count: 80,
+              ask_row_count: 80,
+              bid_ask_row_count: 75,
+              mid_row_count: 80,
+              quote_age_row_count: 70,
+              stale_quote_threshold_ms: 60000,
+              stale_quote_row_count: 5,
+              zero_bid_row_count: 1,
+              locked_bid_ask_row_count: 2,
+              crossed_bid_ask_row_count: 1,
+              invalid_bid_ask_row_count: 3,
+              any_quote_coverage_rate: 0.8,
+              bid_ask_coverage_rate: 0.75,
+              mid_coverage_rate: 0.8,
+              stale_quote_rate: 0.05,
+              mean_spread_bps: 12.5,
+              median_spread_bps: 10.5,
+              max_spread_bps: 40,
+              max_quote_age_ms: 120000,
+              warnings: ["stale_quote_rows_present"],
+            },
+          },
           request: {
             parent_artifact_path: "C:/runs/vectorgrid_run_1.json",
             options_dataset_id: "spy_options",
@@ -527,6 +562,11 @@ describe("optionsExpressionService", () => {
     expect(run.optionsDatasetHash).toBe("hash-1");
     expect(run.optionsDatasetNormalizedRowsSha256).toBe("rows-sha256-1");
     expect(run.optionsDatasetManifestSemanticSha256).toBe("manifest-sha256-1");
+    expect(run.datasetProvenance?.providerName).toBe("polygon.io");
+    expect(run.datasetProvenance?.quoteQuality?.bidAskCoverageRate).toBe(0.75);
+    expect(run.datasetProvenance?.quoteQuality?.warnings[0]).toBe(
+      "stale_quote_rows_present",
+    );
     expect(run.backendUsed).toBe("cpu_reference");
     expect(run.exactnessSemantics).toEqual({
       exactnessClass: "aggregate_class",

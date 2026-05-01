@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeCommand } from "../tauri/invoke";
 import {
   clearArtifactRetentionSettings,
+  buildLocalDataInventoryDryRun,
   getArtifactRetentionInfo,
   loadArtifactCatalogSummary,
   openReportsDir,
@@ -20,6 +21,10 @@ const invokeCommandMock = vi.mocked(invokeCommand);
 describe("settings service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("maps window effect payload for native command", async () => {
@@ -192,5 +197,130 @@ describe("settings service", () => {
 
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "list_artifact_library");
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "rebuild_artifact_catalog");
+  });
+
+  it("builds a redacted local data inventory dry run from existing read-only commands", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-30T15:00:00.000Z"));
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        default_root_dir: "C:/Users/example/AppData/Local/vectorgrid",
+        configured_root_dir: "D:/VectorGridData",
+        effective_root_dir: "D:/VectorGridData",
+        polygon_cache_dir: "D:/VectorGridData/polygon",
+      })
+      .mockResolvedValueOnce({
+        cache_dir: "D:/VectorGridData/polygon",
+        has_api_key: true,
+        credential_status: {
+          has_api_key: true,
+          state: "keyring",
+          storage_backend: "windows-credential-manager",
+          degraded: false,
+          message: "",
+        },
+        datasets: [{ csv_path: "D:/VectorGridData/polygon/a.csv" }, {}],
+      })
+      .mockResolvedValueOnce({
+        defaults: {
+          run_keep_newest: 200,
+          meta_keep_newest: 100,
+          stage5_keep_newest: 100,
+          ml_policy_eval_keep_newest: 100,
+          batch_summary_keep_newest: 100,
+          campaign_summary_keep_newest: 100,
+          options_expression_keep_newest: 100,
+        },
+        configured: { run_keep_newest: 150 },
+        env_overrides: {},
+        effective: {
+          run_keep_newest: 150,
+          meta_keep_newest: 100,
+          stage5_keep_newest: 100,
+          ml_policy_eval_keep_newest: 100,
+          batch_summary_keep_newest: 100,
+          campaign_summary_keep_newest: 100,
+          options_expression_keep_newest: 100,
+        },
+      })
+      .mockResolvedValueOnce({
+        runs: [{}, {}],
+        meta: [{}],
+        stage5: [],
+        policy_evals: [{}],
+        options_expression: [{}],
+      });
+
+    await expect(buildLocalDataInventoryDryRun()).resolves.toEqual({
+      generatedAtUnixMs: Date.parse("2026-04-30T15:00:00.000Z"),
+      scanMode: "dry_run",
+      rawMarketDataContentsScanned: false,
+      pathSummary: {
+        defaultRootDir: "C:/Users/example/AppData/Local/vectorgrid",
+        configuredRootDir: "D:/VectorGridData",
+        effectiveRootDir: "D:/VectorGridData",
+        polygonCacheDir: "D:/VectorGridData/polygon",
+      },
+      credentialSummary: {
+        polygonHasApiKey: true,
+        polygonCredentialState: "keyring",
+        polygonCredentialStorageBackend: "windows-credential-manager",
+        polygonCredentialDegraded: false,
+        polygonCredentialMessage: "",
+      },
+      polygonDatasetCount: 2,
+      artifactCatalog: {
+        runs: 2,
+        meta: 1,
+        stage5: 0,
+        policyEvals: 1,
+        optionsExpression: 1,
+        total: 5,
+      },
+      artifactRetention: {
+        defaults: {
+          run: 200,
+          meta: 100,
+          stage5: 100,
+          mlPolicyEval: 100,
+          batchSummary: 100,
+          campaignSummary: 100,
+          optionsExpression: 100,
+        },
+        configured: {
+          run: 150,
+          meta: null,
+          stage5: null,
+          mlPolicyEval: null,
+          batchSummary: null,
+          campaignSummary: null,
+          optionsExpression: null,
+        },
+        envOverrides: {
+          run: null,
+          meta: null,
+          stage5: null,
+          mlPolicyEval: null,
+          batchSummary: null,
+          campaignSummary: null,
+          optionsExpression: null,
+        },
+        effective: {
+          run: 150,
+          meta: 100,
+          stage5: 100,
+          mlPolicyEval: 100,
+          batchSummary: 100,
+          campaignSummary: 100,
+          optionsExpression: 100,
+        },
+      },
+      warnings: [],
+    });
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "get_market_data_dir_info");
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "polygon_get_cache_info");
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, "get_artifact_retention_info");
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(4, "list_artifact_library");
   });
 });

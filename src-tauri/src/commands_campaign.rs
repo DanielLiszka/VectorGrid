@@ -4900,6 +4900,7 @@ mod tests {
             path: path.to_string(),
             bytes: 1024,
             kind: "vectorgrid_run_artifact".to_string(),
+            artifact_compatibility: super::run_artifacts::ArtifactCompatibilitySummary::default(),
             strategy_kind: "DoubleMa".to_string(),
             config_fingerprint: "cfg-1".to_string(),
             config_fingerprint_version: Some(1),

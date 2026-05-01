@@ -56,7 +56,7 @@ const {
   workflowStep,
   workflowSubtitle,
 } = storeToRefs(workflowStore);
-const { controlsCollapsed, uiMode } = storeToRefs(settingsStore);
+const { controlsCollapsed } = storeToRefs(settingsStore);
 const { dataId, dataLen, dataTimeframe, datasetLabel, datasetRange } =
   storeToRefs(dataStore);
 const {
@@ -119,21 +119,6 @@ const { datasetReady, hasOptimizationResults, validationStage } =
 const inspectorCollapsed = ref(false);
 const requestedInspectorMode = ref<WorkbenchInspectorMode | "">("");
 
-const uiModeItems = [
-  {
-    id: "guided",
-    label: "Simple",
-    actionId: "shell.uiMode.guided",
-    tabId: "ui_mode_tab_guided",
-  },
-  {
-    id: "advanced",
-    label: "Advanced",
-    actionId: "shell.uiMode.advanced",
-    tabId: "ui_mode_tab_advanced",
-  },
-] as const;
-
 const modeItems = [
   {
     id: "conventional",
@@ -149,10 +134,6 @@ const modeItems = [
   },
 ] as const;
 
-const currentUiMode = computed(() =>
-  String(uiMode.value || "").trim() === "guided" ? "guided" : "advanced",
-);
-const guidedModeActive = computed(() => currentUiMode.value === "guided");
 const navState = computed(() =>
   buildWorkbenchNavigationState({
     workspace: workspace.value,
@@ -168,26 +149,23 @@ const currentMode = computed(() => navState.value.mode);
 const currentWorkspaceLabel = computed(() =>
   workbenchWorkspaceLabel(currentWorkspace.value),
 );
-const shellSubtitle = computed(() => {
-  if (guidedModeActive.value)
-    return "Simple path: optimize backtests, then validate when needed.";
-  return String(workflowSubtitle.value || "").trim() || "Ready.";
-});
+const shellSubtitle = computed(
+  () => String(workflowSubtitle.value || "").trim() || "Ready.",
+);
 const standardWorkspaceActive = computed(
   () =>
-    !guidedModeActive.value &&
     currentWorkspace.value !== "settings" &&
     currentWorkspace.value !== "live" &&
     currentWorkspace.value !== "portfolio",
 );
 const liveWorkspaceActive = computed(
-  () => !guidedModeActive.value && currentWorkspace.value === "live",
+  () => currentWorkspace.value === "live",
 );
 const portfolioWorkspaceActive = computed(
-  () => !guidedModeActive.value && currentWorkspace.value === "portfolio",
+  () => currentWorkspace.value === "portfolio",
 );
 const settingsWorkspaceActive = computed(
-  () => !guidedModeActive.value && currentWorkspace.value === "settings",
+  () => currentWorkspace.value === "settings",
 );
 const liveSupportRows = ref<ExecutionStrategySupportRow[]>([]);
 const liveSupportMatrixStatus = ref(
@@ -246,11 +224,7 @@ const researchCockpitVisible = computed(
 const workbenchGridClass = computed(() => ({
   singleColumn: !controlsColumnVisible.value || !resultsColumnVisible.value,
 }));
-const selectedShellLabelledBy = computed(() =>
-  guidedModeActive.value
-    ? "ui_mode_tab_guided"
-    : navState.value.selectedShellTabId,
-);
+const selectedShellLabelledBy = computed(() => navState.value.selectedShellTabId);
 const dataContextLabel = computed(() => {
   const label = String(datasetLabel.value || "").trim();
   const timeframe = String(dataTimeframe.value || "").trim();
@@ -411,10 +385,6 @@ function selectWorkspace(id: string): void {
   workflowStore.selectWorkspace(id);
 }
 
-function selectUiMode(id: string): void {
-  settingsStore.setUiMode(id === "guided" ? "guided" : "advanced");
-}
-
 function selectMode(id: string): void {
   workflowStore.selectMode(id);
 }
@@ -557,16 +527,6 @@ function moveTabFocus(
   focusSelector(selectorForId(nextItem.id));
 }
 
-function onUiModeKeydown(event: KeyboardEvent, id: string): void {
-  moveTabFocus(
-    event,
-    uiModeItems,
-    id,
-    selectUiMode,
-    (nextId) => `#uiModeBar [data-ui-mode="${nextId}"]`,
-  );
-}
-
 function onModeKeydown(event: KeyboardEvent, id: string): void {
   moveTabFocus(
     event,
@@ -620,11 +580,10 @@ function onResultsKeydown(
 <template>
   <section
     class="workbenchRoot"
-    :class="{ guided: guidedModeActive, inspectorCollapsed }"
+    :class="{ inspectorCollapsed }"
     data-qa-shell="workbench"
   >
     <WorkbenchRail
-      v-if="!guidedModeActive"
       :items="navState.workspaceItems"
       @select="selectWorkspace"
     />
@@ -638,11 +597,10 @@ function onResultsKeydown(
         <div class="titleRow">
           <div class="titleCopy">
             <span class="eyebrow">VectorGrid</span>
-            <h1>{{ guidedModeActive ? "Simple" : currentWorkspaceLabel }}</h1>
+            <h1>{{ currentWorkspaceLabel }}</h1>
             <p>{{ shellSubtitle }}</p>
           </div>
           <div
-            v-if="!guidedModeActive"
             class="headerContext"
             aria-label="Current workbench context"
           >
@@ -659,32 +617,6 @@ function onResultsKeydown(
 
         <div class="toolbarRow">
           <div
-            id="uiModeBar"
-            class="segmentedBar"
-            role="tablist"
-            aria-label="UI mode"
-          >
-            <button
-              v-for="item in uiModeItems"
-              :id="item.tabId"
-              :key="item.id"
-              type="button"
-              class="tabBtn"
-              :class="{ active: currentUiMode === item.id }"
-              role="tab"
-              :aria-selected="currentUiMode === item.id ? 'true' : 'false'"
-              :tabindex="currentUiMode === item.id ? 0 : -1"
-              :data-ui-mode="item.id"
-              :data-qa-action="item.actionId"
-              @click="selectUiMode(item.id)"
-              @keydown="onUiModeKeydown($event, item.id)"
-            >
-              {{ item.label }}
-            </button>
-          </div>
-
-          <div
-            v-if="!guidedModeActive"
             id="modeBar"
             class="segmentedBar"
             role="tablist"
@@ -710,7 +642,6 @@ function onResultsKeydown(
           </div>
 
           <button
-            v-if="!guidedModeActive"
             type="button"
             class="taskLauncher"
             :class="{ active: activeTaskCount > 0, open: taskCenterOpen }"
@@ -727,7 +658,7 @@ function onResultsKeydown(
         </div>
 
         <div
-          v-if="!guidedModeActive && currentWorkspace === 'workflow'"
+          v-if="currentWorkspace === 'workflow'"
           id="workflowStepBar"
           class="stageBar"
           role="tablist"
@@ -765,20 +696,8 @@ function onResultsKeydown(
           role="status"
           aria-live="polite"
         >
-          {{
-            guidedModeActive
-              ? "Workspace Simple Mode."
-              : navState.selectionAnnouncement
-          }}
+          {{ navState.selectionAnnouncement }}
         </div>
-
-        <section
-          v-show="guidedModeActive"
-          id="guidedShellGrid"
-          aria-label="Simple workspace shell"
-        >
-          <div id="guidedVueShellMount"></div>
-        </section>
 
         <ResearchCockpit v-if="researchCockpitVisible" />
 
@@ -1153,14 +1072,13 @@ function onResultsKeydown(
     </div>
 
     <WorkbenchInspector
-      v-if="!guidedModeActive"
       :state="inspectorState"
       :collapsed="inspectorCollapsed"
       @toggle="toggleInspector"
       @select-mode="selectInspectorMode"
       @run-action="runInspectorAction"
     />
-    <WorkbenchActionBar v-if="!guidedModeActive" />
+    <WorkbenchActionBar />
   </section>
 </template>
 
@@ -1182,11 +1100,6 @@ function onResultsKeydown(
   grid-template-columns: 72px minmax(0, 1fr) 48px;
 }
 
-.workbenchRoot.guided {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-}
-
 .workbenchRoot :deep(.workbenchRail) {
   grid-column: 1;
   grid-row: 1 / 3;
@@ -1199,10 +1112,6 @@ function onResultsKeydown(
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-}
-
-.workbenchRoot.guided .workbenchContent {
-  grid-column: 1;
 }
 
 .workbenchRoot :deep(.workbenchInspector) {
@@ -1466,7 +1375,6 @@ function onResultsKeydown(
   min-height: 0;
 }
 
-#guidedShellGrid,
 #settingsShellGrid,
 #portfolioShellGrid,
 #liveShellGrid {
@@ -1643,7 +1551,6 @@ function onResultsKeydown(
   }
 
   .workbenchPaneGrid,
-  #guidedShellGrid,
   #settingsShellGrid,
   #portfolioShellGrid,
   #liveShellGrid {

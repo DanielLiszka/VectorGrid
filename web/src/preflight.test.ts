@@ -3,7 +3,6 @@ import {
   CONTROLS_COLLAPSED_KEY,
   CONTROLS_WIDTH_KEY,
   DENSITY_MODE_KEY,
-  GUIDED_STEP_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
   UI_MODE_KEY,
@@ -54,7 +53,6 @@ describe('preflight', () => {
       'density',
       'helpMode',
       'uiMode',
-      'guidedStep',
     ]) {
       delete document.documentElement.dataset[key as keyof DOMStringMap]
     }
@@ -65,11 +63,10 @@ describe('preflight', () => {
     vi.unstubAllGlobals()
   })
 
-  it('defaults first-run users to guided mode before Vue mounts', async () => {
+  it('defaults first-run users to advanced mode before Vue mounts', async () => {
     await importPreflightFor('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
 
-    expect(document.documentElement.dataset.uiMode).toBe('guided')
-    expect(document.documentElement.dataset.guidedStep).toBe('data')
+    expect(document.documentElement.dataset.uiMode).toBe('advanced')
   })
 
   it('applies root dataset attributes from persisted shell preferences', async () => {
@@ -81,7 +78,6 @@ describe('preflight', () => {
     localStorage.setItem(DENSITY_MODE_KEY, 'dense')
     localStorage.setItem(HELP_MODE_KEY, 'concise')
     localStorage.setItem(UI_MODE_KEY, 'guided')
-    localStorage.setItem(GUIDED_STEP_KEY, 'trade')
     localStorage.setItem(CONTROLS_WIDTH_KEY, '417')
     stubMatchMedia(true)
 
@@ -95,8 +91,7 @@ describe('preflight', () => {
     expect(document.documentElement.dataset.workspace).toBe('workflow')
     expect(document.documentElement.dataset.density).toBe('dense')
     expect(document.documentElement.dataset.helpMode).toBe('concise')
-    expect(document.documentElement.dataset.uiMode).toBe('guided')
-    expect(document.documentElement.dataset.guidedStep).toBe('trade')
+    expect(document.documentElement.dataset.uiMode).toBe('advanced')
     expect(document.documentElement.style.getPropertyValue('--controls-w')).toBe('417px')
   })
 

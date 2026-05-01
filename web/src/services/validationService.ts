@@ -21,6 +21,7 @@ import {
 } from "../utils/core/stageCompletion";
 import { openPathWithRevealFallback } from "../utils/openPath";
 import { formatUiCount, formatUtcDateFromUnixMs } from "../utils/uiFormat";
+import { buildValidationEvidenceSummary } from "../utils/validationEvidenceSummary";
 import {
   measureValidationReportPerf,
   recordValidationReportPerf,
@@ -2952,6 +2953,7 @@ export async function runValidation(
       validationAuxCpuSummary: "-",
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
+      validationEvidenceSummary: "Validation evidence not run.",
       validationWarningSummary: "-",
     });
     writeDomTextContent("status", message, VALIDATION_PANEL_SELECTOR);
@@ -2973,6 +2975,7 @@ export async function runValidation(
       validationAuxCpuSummary: "-",
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
+      validationEvidenceSummary: "Validation evidence not run.",
       validationWarningSummary: "-",
     });
     writeDomTextContent("status", message, VALIDATION_PANEL_SELECTOR);
@@ -2990,6 +2993,7 @@ export async function runValidation(
       validationAuxCpuSummary: "-",
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
+      validationEvidenceSummary: "Validation evidence not run.",
       validationWarningSummary: "-",
     });
     writeDomTextContent("status", message, VALIDATION_PANEL_SELECTOR);
@@ -3063,6 +3067,7 @@ export async function runValidation(
     validationFrictionSummary: "-",
     validationCrossSummary: "-",
     validationSkippedSummary: "-",
+    validationEvidenceSummary: "Validation evidence not run.",
     validationWarningSummary: "-",
     validationReoptMeta: "-",
   });
@@ -3181,6 +3186,13 @@ export async function runValidation(
         autoExportStatus = `Auto-export XLSX failed: ${reason}`;
       }
     }
+    const evidenceSummary = buildValidationEvidenceSummary({
+      validationReq,
+      validationRes,
+      datasetMeta,
+      reportPath: reportXlsxPath,
+      replayClass: "exact_evidence_review",
+    });
     const persisted = await persistValidationArtifact(
       runReq,
       runRes,
@@ -3237,6 +3249,7 @@ export async function runValidation(
       validationFrictionSummary: executionSummary.frictionSummary,
       validationCrossSummary: executionSummary.crossSummary,
       validationSkippedSummary: executionSummary.skippedSummary,
+      validationEvidenceSummary: evidenceSummary.summaryLine,
       validationWarningSummary: executionSummary.warningSummary,
       validationReoptMeta,
       validationColumns,
@@ -3276,6 +3289,7 @@ export async function runValidation(
       validationFrictionSummary: "-",
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
+      validationEvidenceSummary: "Validation evidence not run.",
       validationWarningSummary: "-",
       validationReoptMeta: "-",
     });

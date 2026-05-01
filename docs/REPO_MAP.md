@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-04-26
+Last updated: 2026-04-30
 
 ## Purpose
 
@@ -36,6 +36,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `docs/artifact_replay_report_evidence_contract.md` for the current artifact/replay/report evidence contract, report mutation boundaries, replay classes, and output parity authority
 - `docs/tauri_desktop_technology_adoption_implementation_plan_2026-04-27.md` for the researched implementation plan covering native Tauri desktop plugins, IPC type generation, runtime validation, async cached reads, and low-regression advanced npm adoption
 - `docs/frontend_trading_technology_additions_implementation_plan_2026-04-27.md` for the follow-on frontend/npm technology plan focused on live trading backpressure, chart annotations, market-time correctness, and optional large-artifact analytics
+- `docs/feature_expansion_implementation_plans_2026-04-30/README.md` for the web-researched, facet-by-facet feature expansion implementation package covering data, optimization, validation, options, ML/meta, portfolio/live execution, frontend, artifacts/reports, desktop security/release, CUDA, verification/CI, and prioritized sequencing
 
 Archived planning and implementation notes under `docs/archive/` plus dated notes under `docs/options_research/` are optional background only. Do not open them by default unless this map routes you there for the exact task you are doing.
 

@@ -19,9 +19,7 @@ export async function gotoMockedShell(page: Page, context: BrowserContext): Prom
 export async function waitForShellReady(page: Page): Promise<void> {
   await expect(page.locator(shellSelectors.titlebar)).toBeVisible()
   await expect(page.locator(shellSelectors.shellHeader)).toBeVisible()
-  if (!(await page.locator(shellSelectors.workspaceBar).isVisible().catch(() => false))) {
-    await page.locator('#uiModeBar [data-ui-mode="advanced"]').click()
-  }
+  await expect(page.locator('#uiModeBar')).toHaveCount(0)
   await expect(page.locator(shellSelectors.workspaceBar)).toBeVisible()
   await expect(page.locator(shellSelectors.runFooter)).toBeVisible()
   await expect(page.locator(workspaceTabSelector('workflow'))).toHaveAttribute('aria-selected', 'true')

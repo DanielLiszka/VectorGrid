@@ -26,10 +26,11 @@ import {
   topOffPolygonDataset as topOffPolygonDatasetAction,
   validatePolygonDataset as validatePolygonDatasetAction,
 } from "../services/dataService";
+import { formatPolygonProviderErrorMessage } from "../services/providerErrorTaxonomy";
 import { DATA_STARTUP_SNAPSHOT_KEY } from "../utils/core/storageKeys";
+import { formatMarketDate, parsePolygonDateInput } from "../utils/marketTime";
 import { redactKnownSecrets } from "../utils/redaction";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
-import { formatUtcDateFromUnixMs } from "../utils/uiFormat";
 import { resolveRuntimePinia } from "./runtimePinia";
 import { useWorkflowArtifactsStore } from "./workflowArtifactsStore";
 import { useWorkflowStore } from "./workflowStore";
@@ -148,7 +149,7 @@ function normalizeUnixToDateText(value: number): string {
   const ts = Number(value);
   if (!Number.isFinite(ts) || ts <= 0) return "—";
   const ms = ts >= 1_000_000_000_000 ? ts : ts * 1000;
-  return formatUtcDateFromUnixMs(ms);
+  return formatMarketDate(ms, "—");
 }
 
 const RELATIVE_TIME_AXIS_EPOCH_CUTOFF_MS = 315_532_800_000;
@@ -389,7 +390,7 @@ function normalizeDatasetDateInput(value: string): string {
 }
 
 function polygonDatasetDateText(ts: number): string {
-  return normalizeDatasetDateInput(formatUtcDateFromUnixMs(ts, ""));
+  return normalizeDatasetDateInput(formatMarketDate(ts, ""));
 }
 
 function polygonDatasetMatchesDownloadInputs(
@@ -595,25 +596,6 @@ function redactDataStoreText(
   return redactKnownSecrets(raw, [state.polygonApiKey]);
 }
 
-function parseIsoDateDay(value: string): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const ms = Date.UTC(year, month - 1, day);
-  if (!Number.isFinite(ms)) return null;
-  const parsed = new Date(ms);
-  if (
-    parsed.getUTCFullYear() !== year ||
-    parsed.getUTCMonth() !== month - 1 ||
-    parsed.getUTCDate() !== day
-  ) {
-    return null;
-  }
-  return ms;
-}
-
 function polygonDownloadPreflightMessage(
   state: Pick<DataState, "polygonSymbol" | "polygonFrom" | "polygonTo">,
 ): string {
@@ -623,12 +605,12 @@ function polygonDownloadPreflightMessage(
   const from = String(state.polygonFrom || "").trim();
   const to = String(state.polygonTo || "").trim();
   if (!from || !to) return "Choose a Polygon start and end date first.";
-  const fromMs = parseIsoDateDay(from);
-  const toMs = parseIsoDateDay(to);
-  if (fromMs === null || toMs === null) {
+  const parsedFrom = parsePolygonDateInput(from);
+  const parsedTo = parsePolygonDateInput(to);
+  if (!parsedFrom || !parsedTo) {
     return "Polygon dates must use YYYY-MM-DD.";
   }
-  if (toMs < fromMs) {
+  if (parsedTo.startUtcIso < parsedFrom.startUtcIso) {
     return "Polygon end date must be on or after the start date.";
   }
   return "";
@@ -640,42 +622,7 @@ function polygonUserFacingError(
   fallback: string,
 ): string {
   const redacted = redactDataStoreText(state, raw);
-  const lower = redacted.toLowerCase();
-  if (!lower) return fallback;
-  if (lower.includes("rate limit") || lower.includes("429")) {
-    return "Polygon rate limit reached. Wait and retry, reduce the date range, or load an already cached dataset.";
-  }
-  if (
-    lower.includes("not entitled") ||
-    lower.includes("entitlement") ||
-    lower.includes("401") ||
-    lower.includes("403") ||
-    (lower.includes("api key") &&
-      (lower.includes("rejected") || lower.includes("invalid")))
-  ) {
-    return "Polygon key or plan does not allow this request. Check the saved API key, subscription entitlements, symbol, and requested history.";
-  }
-  if (
-    lower.includes("no aggregate bars") ||
-    lower.includes("no bars") ||
-    lower.includes("no data for that range")
-  ) {
-    return "Polygon returned no bars for that request. Check the ticker, market, date range, subscription recency, and whether the interval had eligible trades.";
-  }
-  if (lower.includes("to date must be >= from date")) {
-    return "Polygon end date must be on or after the start date.";
-  }
-  if (lower.includes("bad request") || lower.includes("400")) {
-    return "Polygon rejected the request parameters. Check symbol format, market, date range, and timeframe.";
-  }
-  if (
-    lower.includes("server error") ||
-    lower.includes("503") ||
-    lower.includes("502")
-  ) {
-    return "Polygon returned a temporary server error. Retry later or reduce the request size.";
-  }
-  return redacted || fallback;
+  return formatPolygonProviderErrorMessage(redacted, fallback);
 }
 
 function normalizeStartupSnapshot(raw: unknown): DataStartupSnapshot | null {

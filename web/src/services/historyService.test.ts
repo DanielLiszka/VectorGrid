@@ -649,6 +649,28 @@ describe("historyService", () => {
     ]);
   });
 
+  it("blocks apply for future-schema saved runs while keeping detail readable", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      strategyKind: "DoubleMa",
+      csvPath: "C:/data/spy.csv",
+      artifactCompatibility: {
+        artifactSchemaVersion: 2,
+        status: "future_unsupported",
+        reason: "newer than supported version",
+      },
+      runReq: { strategy_kind: "DoubleMa" },
+      paramsText: "",
+      tags: [],
+    });
+
+    await expect(applySavedRun(" C:/runs/future.json ")).rejects.toThrow(
+      "Apply saved run is unavailable",
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
+      path: "C:/runs/future.json",
+    });
+  });
+
   it("clears stale advanced builder fields when the saved run omits them", async () => {
     useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     const advanced = useAdvancedStore(pinia);
@@ -1364,7 +1386,9 @@ describe("historyService", () => {
       },
     });
 
-    const wrote = await repairSavedRun(" C:/runs/run1.json ", { dryRun: false });
+    const wrote = await repairSavedRun(" C:/runs/run1.json ", {
+      dryRun: false,
+    });
 
     expect(invokeCommandMock).toHaveBeenLastCalledWith("repair_run_artifact", {
       path: "C:/runs/run1.json",
@@ -1381,6 +1405,12 @@ describe("historyService", () => {
         ts: "2026-02-25T00:00:00Z",
         path: " C:/runs/run1.json ",
         bytes: 2048,
+        kind: "vectorgrid_run_artifact",
+        artifact_compatibility: {
+          artifactSchemaVersion: 1,
+          status: "supported",
+          replayBlocked: false,
+        },
         strategy_kind: "MlSignal",
         has_validation: true,
         replay_class: "exact_evidence_review",
@@ -1406,6 +1436,12 @@ describe("historyService", () => {
       ts: "2026-02-25T00:00:00Z",
       path: "C:/runs/run1.json",
       bytes: 2048,
+      artifactKind: "vectorgrid_run_artifact",
+      artifactCompatibility: expect.objectContaining({
+        artifactSchemaVersion: 1,
+        status: "supported",
+        replayBlocked: false,
+      }),
       strategyKind: "MlSignal",
       hasValidation: true,
       replayClass: "exact_evidence_review",
@@ -1448,16 +1484,19 @@ describe("historyService", () => {
 
   it("loads saved-run detail via artifact command", async () => {
     invokeCommandMock.mockResolvedValueOnce({
+      kind: "vectorgrid_run_artifact",
+      artifactCompatibility: {
+        artifactSchemaVersion: 1,
+        status: "supported",
+        replayBlocked: false,
+      },
       strategyKind: "CompositeMo",
       timeframe: "5m",
       csvPath: "C:/data/msft.csv",
       reportPath: "C:/runs/report.xlsx",
       hasValidation: true,
       replayClass: "exact_evidence_review",
-      replayReasons: [
-        "saved_run_result_payload_present",
-        "report_available",
-      ],
+      replayReasons: ["saved_run_result_payload_present", "report_available"],
       optimization_metric_surface: {
         surface: "core17",
         fields: [
@@ -1500,15 +1539,18 @@ describe("historyService", () => {
     });
     expect(detail).toMatchObject({
       strategyKind: "CompositeMo",
+      kind: "vectorgrid_run_artifact",
+      artifactCompatibility: expect.objectContaining({
+        artifactSchemaVersion: 1,
+        status: "supported",
+        replayBlocked: false,
+      }),
       timeframe: "5m",
       csvPath: "C:/data/msft.csv",
       reportPath: "C:/runs/report.xlsx",
       hasValidation: true,
       replayClass: "exact_evidence_review",
-      replayReasons: [
-        "saved_run_result_payload_present",
-        "report_available",
-      ],
+      replayReasons: ["saved_run_result_payload_present", "report_available"],
       metricSurfaceSummary: "Core17 • 7 metrics",
       metricSurfaceDetail:
         "fields=pnl, trades, max_dd, mean, std, exposure +1 more",

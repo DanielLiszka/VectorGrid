@@ -3,7 +3,6 @@ import {
   CONTROLS_COLLAPSED_KEY,
   DESKTOP_NOTIFICATION_MODE_KEY,
   DENSITY_MODE_KEY,
-  GUIDED_STEP_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
   UI_MODE_KEY,
@@ -12,6 +11,7 @@ import {
   WORKFLOW_ADVANCED_KEY,
 } from "../utils/core/storageKeys";
 import {
+  buildLocalDataInventoryDryRun as buildLocalDataInventoryDryRunService,
   clearArtifactRetentionSettings as clearArtifactRetentionSettingsService,
   getArtifactRetentionInfo as getArtifactRetentionInfoService,
   loadArtifactCatalogSummary as loadArtifactCatalogSummaryService,
@@ -25,6 +25,7 @@ import {
   type ArtifactRetentionConfiguredSettingsSummary,
   type ArtifactRetentionInfoSummary,
   type ArtifactRetentionResolvedSettingsSummary,
+  type LocalDataInventorySummary,
 } from "../services/settingsService";
 import { useDataStore } from "./dataStore";
 import { resolveRuntimePinia } from "./runtimePinia";
@@ -42,15 +43,8 @@ import {
 const THEME_KEYS = new Set(["light", "dark", "system"]);
 const HELP_MODE_KEYS = new Set(["full", "concise", "off"]);
 const DENSITY_MODE_KEYS = new Set(["comfortable", "standard", "dense"]);
-const UI_MODE_KEYS = new Set(["guided", "advanced"]);
-const DEFAULT_UI_MODE: UiMode = "guided";
-const GUIDED_STEP_KEYS = new Set([
-  "data",
-  "strategy",
-  "optimize",
-  "validate",
-  "trade",
-]);
+const UI_MODE_KEYS = new Set(["advanced"]);
+const DEFAULT_UI_MODE: UiMode = "advanced";
 const DESKTOP_NOTIFICATION_MODE_KEYS = new Set([
   "off",
   "failures",
@@ -59,8 +53,7 @@ const DESKTOP_NOTIFICATION_MODE_KEYS = new Set([
 
 export type HelpMode = "full" | "concise" | "off";
 export type DensityMode = "comfortable" | "standard" | "dense";
-export type UiMode = "guided" | "advanced";
-export type GuidedStep = "data" | "strategy" | "optimize" | "validate" | "trade";
+export type UiMode = "advanced";
 export type DesktopNotificationMode = "off" | "failures" | "important";
 
 export interface WorkstationPerspectiveSnapshot {
@@ -117,6 +110,31 @@ function emptyArtifactCatalogSummary(): ArtifactCatalogSummary {
   };
 }
 
+function emptyLocalDataInventorySummary(): LocalDataInventorySummary {
+  return {
+    generatedAtUnixMs: 0,
+    scanMode: "dry_run",
+    rawMarketDataContentsScanned: false,
+    pathSummary: {
+      defaultRootDir: "",
+      configuredRootDir: "",
+      effectiveRootDir: "",
+      polygonCacheDir: "",
+    },
+    credentialSummary: {
+      polygonHasApiKey: false,
+      polygonCredentialState: "missing",
+      polygonCredentialStorageBackend: "missing",
+      polygonCredentialDegraded: false,
+      polygonCredentialMessage: "",
+    },
+    polygonDatasetCount: 0,
+    artifactCatalog: emptyArtifactCatalogSummary(),
+    artifactRetention: cloneArtifactRetentionInfo(),
+    warnings: [],
+  };
+}
+
 function cloneArtifactCatalogSummary(
   value: ArtifactCatalogSummary = emptyArtifactCatalogSummary(),
 ): ArtifactCatalogSummary {
@@ -130,6 +148,58 @@ function cloneArtifactCatalogSummary(
       Math.floor(Number(value.optionsExpression || 0)),
     ),
     total: Math.max(0, Math.floor(Number(value.total || 0))),
+  };
+}
+
+function cloneLocalDataInventorySummary(
+  value: LocalDataInventorySummary = emptyLocalDataInventorySummary(),
+): LocalDataInventorySummary {
+  return {
+    generatedAtUnixMs: Math.max(
+      0,
+      Math.floor(Number(value.generatedAtUnixMs || 0)),
+    ),
+    scanMode: "dry_run",
+    rawMarketDataContentsScanned: false,
+    pathSummary: {
+      defaultRootDir: String(value.pathSummary?.defaultRootDir || "").trim(),
+      configuredRootDir: String(
+        value.pathSummary?.configuredRootDir || "",
+      ).trim(),
+      effectiveRootDir: String(value.pathSummary?.effectiveRootDir || "").trim(),
+      polygonCacheDir: String(value.pathSummary?.polygonCacheDir || "").trim(),
+    },
+    credentialSummary: {
+      polygonHasApiKey: Boolean(
+        value.credentialSummary?.polygonHasApiKey,
+      ),
+      polygonCredentialState:
+        String(
+          value.credentialSummary?.polygonCredentialState || "missing",
+        ).trim() || "missing",
+      polygonCredentialStorageBackend:
+        String(
+          value.credentialSummary?.polygonCredentialStorageBackend ||
+            "missing",
+        ).trim() || "missing",
+      polygonCredentialDegraded: Boolean(
+        value.credentialSummary?.polygonCredentialDegraded,
+      ),
+      polygonCredentialMessage: String(
+        value.credentialSummary?.polygonCredentialMessage || "",
+      ).trim(),
+    },
+    polygonDatasetCount: Math.max(
+      0,
+      Math.floor(Number(value.polygonDatasetCount || 0)),
+    ),
+    artifactCatalog: cloneArtifactCatalogSummary(value.artifactCatalog),
+    artifactRetention: cloneArtifactRetentionInfo(value.artifactRetention),
+    warnings: Array.isArray(value.warnings)
+      ? value.warnings
+          .map((warning) => String(warning || "").trim())
+          .filter((warning) => warning.length > 0)
+      : [],
   };
 }
 
@@ -242,14 +312,6 @@ function normalizeUiMode(value: unknown): UiMode {
   return DEFAULT_UI_MODE;
 }
 
-function normalizeGuidedStep(value: unknown): GuidedStep {
-  const next = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (GUIDED_STEP_KEYS.has(next)) return next as GuidedStep;
-  return "data";
-}
-
 function normalizeDesktopNotificationMode(
   value: unknown,
 ): DesktopNotificationMode {
@@ -326,15 +388,6 @@ function persistUiMode(mode: UiMode): void {
   writeStorageString(UI_MODE_KEY, normalized);
 }
 
-function persistGuidedStep(step: GuidedStep): void {
-  const normalized = normalizeGuidedStep(step);
-  if (normalized === "data") {
-    removeStorageKey(GUIDED_STEP_KEY);
-    return;
-  }
-  writeStorageString(GUIDED_STEP_KEY, normalized);
-}
-
 function persistDesktopNotificationMode(mode: DesktopNotificationMode): void {
   if (mode === "off") {
     removeStorageKey(DESKTOP_NOTIFICATION_MODE_KEY);
@@ -374,15 +427,6 @@ function applyUiModeLocally(
   const normalized = normalizeUiMode(mode);
   setRootDataAttr("uiMode", normalized);
   if (shouldPersistLocally(options)) persistUiMode(normalized);
-}
-
-function applyGuidedStepLocally(
-  step: GuidedStep,
-  options?: LocalApplyOptions,
-): void {
-  const normalized = normalizeGuidedStep(step);
-  setRootDataAttr("guidedStep", normalized);
-  if (shouldPersistLocally(options)) persistGuidedStep(normalized);
 }
 
 function applyThemeLocally(pref: string, options?: LocalApplyOptions): void {
@@ -582,7 +626,6 @@ interface SettingsState {
   helpMode: HelpMode;
   densityMode: DensityMode;
   uiMode: UiMode;
-  guidedStep: GuidedStep;
   desktopNotificationMode: DesktopNotificationMode;
   workflowAdvanced: boolean;
   controlsCollapsed: boolean;
@@ -601,6 +644,10 @@ interface SettingsState {
   artifactCatalogLoading: boolean;
   artifactCatalogRebuilding: boolean;
   artifactCatalogStatusLine: string;
+  localDataInventory: LocalDataInventorySummary;
+  localDataInventoryLoaded: boolean;
+  localDataInventoryLoading: boolean;
+  localDataInventoryStatusLine: string;
   canManageArtifactRetention: boolean;
   canBrowseMarketDataDir: boolean;
   canSetMarketDataDir: boolean;
@@ -623,7 +670,6 @@ export interface SettingsBootstrapSnapshot {
   helpMode?: string;
   densityMode?: string;
   uiMode?: string;
-  guidedStep?: string;
   desktopNotificationMode?: string;
   workflowAdvanced?: boolean | null;
   controlsCollapsed?: boolean | null;
@@ -636,7 +682,6 @@ export const useSettingsStore = defineStore("settings", {
     helpMode: "full",
     densityMode: normalizeDensityMode(readStorageString(DENSITY_MODE_KEY, "")),
     uiMode: normalizeUiMode(readStorageString(UI_MODE_KEY, "")),
-    guidedStep: normalizeGuidedStep(readStorageString(GUIDED_STEP_KEY, "")),
     desktopNotificationMode: normalizeDesktopNotificationMode(
       readStorageString(DESKTOP_NOTIFICATION_MODE_KEY, ""),
     ),
@@ -657,6 +702,10 @@ export const useSettingsStore = defineStore("settings", {
     artifactCatalogLoading: false,
     artifactCatalogRebuilding: false,
     artifactCatalogStatusLine: "Artifact catalog counts not loaded yet.",
+    localDataInventory: emptyLocalDataInventorySummary(),
+    localDataInventoryLoaded: false,
+    localDataInventoryLoading: false,
+    localDataInventoryStatusLine: "Local data inventory not loaded yet.",
     canManageArtifactRetention: true,
     canBrowseMarketDataDir: true,
     canSetMarketDataDir: true,
@@ -691,9 +740,6 @@ export const useSettingsStore = defineStore("settings", {
         snapshot.densityMode ?? this.densityMode ?? "standard",
       );
       this.uiMode = normalizeUiMode(snapshot.uiMode ?? this.uiMode);
-      this.guidedStep = normalizeGuidedStep(
-        snapshot.guidedStep ?? this.guidedStep,
-      );
       this.desktopNotificationMode = normalizeDesktopNotificationMode(
         snapshot.desktopNotificationMode ??
           this.desktopNotificationMode ??
@@ -758,6 +804,21 @@ export const useSettingsStore = defineStore("settings", {
             this.artifactCatalogStatusLine ??
             "Artifact catalog counts not loaded yet.",
         ).trim() || "Artifact catalog counts not loaded yet.";
+      this.localDataInventory = cloneLocalDataInventorySummary(
+        snapshot.localDataInventory ?? this.localDataInventory,
+      );
+      this.localDataInventoryLoaded = Boolean(
+        snapshot.localDataInventoryLoaded ?? this.localDataInventoryLoaded,
+      );
+      this.localDataInventoryLoading = Boolean(
+        snapshot.localDataInventoryLoading ?? this.localDataInventoryLoading,
+      );
+      this.localDataInventoryStatusLine =
+        String(
+          snapshot.localDataInventoryStatusLine ??
+            this.localDataInventoryStatusLine ??
+            "Local data inventory not loaded yet.",
+        ).trim() || "Local data inventory not loaded yet.";
       this.canManageArtifactRetention = Boolean(
         snapshot.canManageArtifactRetention ?? this.canManageArtifactRetention,
       );
@@ -796,7 +857,6 @@ export const useSettingsStore = defineStore("settings", {
         "Ready.";
       applyDensityModeLocally(this.densityMode);
       applyUiModeLocally(this.uiMode);
-      applyGuidedStepLocally(this.guidedStep);
       this.source = "vue";
       this.updatedAtUnixMs = Date.now();
     },
@@ -836,13 +896,6 @@ export const useSettingsStore = defineStore("settings", {
         const normalized = normalizeUiMode(snapshot.uiMode);
         this.uiMode = normalized;
         applyUiModeLocally(normalized, { persist: false });
-        changed = true;
-      }
-
-      if (snapshot.guidedStep) {
-        const normalized = normalizeGuidedStep(snapshot.guidedStep);
-        this.guidedStep = normalized;
-        applyGuidedStepLocally(normalized, { persist: false });
         changed = true;
       }
 
@@ -911,15 +964,12 @@ export const useSettingsStore = defineStore("settings", {
         this.markVueUpdate();
       } else if (key === "settingsUiMode") {
         const normalized = normalizeUiMode(next);
-        if (this.uiMode === normalized) return;
+        if (this.uiMode === normalized) {
+          applyUiModeLocally(normalized);
+          return;
+        }
         this.uiMode = normalized;
         applyUiModeLocally(normalized);
-        this.markVueUpdate();
-      } else if (key === "settingsGuidedStep") {
-        const normalized = normalizeGuidedStep(next);
-        if (this.guidedStep === normalized) return;
-        this.guidedStep = normalized;
-        applyGuidedStepLocally(normalized);
         this.markVueUpdate();
       } else if (key === "settingsDesktopNotifications") {
         const normalized = normalizeDesktopNotificationMode(next);
@@ -1119,23 +1169,49 @@ export const useSettingsStore = defineStore("settings", {
       }
     },
 
-    setUiMode(mode: UiMode): void {
-      const normalized = normalizeUiMode(mode);
-      if (this.uiMode === normalized) return;
-      this.uiMode = normalized;
-      applyUiModeLocally(normalized);
-      this.statusLine =
-        normalized === "guided"
-          ? "Switched to Simple Mode."
-          : "Switched to Advanced Mode.";
+    applyLocalDataInventory(summary: LocalDataInventorySummary): void {
+      this.localDataInventory = cloneLocalDataInventorySummary(summary);
+      this.localDataInventoryLoaded = true;
       this.markVueUpdate();
     },
 
-    setGuidedStep(step: GuidedStep): void {
-      const normalized = normalizeGuidedStep(step);
-      if (this.guidedStep === normalized) return;
-      this.guidedStep = normalized;
-      applyGuidedStepLocally(normalized);
+    async loadLocalDataInventory(force = false): Promise<void> {
+      if (this.localDataInventoryLoading) return;
+      if (this.localDataInventoryLoaded && !force) return;
+      this.localDataInventoryLoading = true;
+      this.localDataInventoryStatusLine = "Building local data inventory dry run...";
+      this.markVueUpdate();
+      try {
+        const summary = await buildLocalDataInventoryDryRunService();
+        this.applyLocalDataInventory(summary);
+        const warningCount = summary.warnings.length;
+        this.localDataInventoryStatusLine =
+          warningCount > 0
+            ? `Built local data inventory with ${warningCount} warning${warningCount === 1 ? "" : "s"}.`
+            : "Built local data inventory dry run.";
+        this.statusLine = "Built local data inventory dry run.";
+      } catch (error) {
+        const message = normalizeErrorMessage(
+          error,
+          "Local data inventory unavailable.",
+        );
+        this.localDataInventoryStatusLine = message;
+        this.statusLine = message;
+      } finally {
+        this.localDataInventoryLoading = false;
+        this.markVueUpdate();
+      }
+    },
+
+    setUiMode(mode: unknown): void {
+      const normalized = normalizeUiMode(mode);
+      if (this.uiMode === normalized) {
+        applyUiModeLocally(normalized);
+        return;
+      }
+      this.uiMode = normalized;
+      applyUiModeLocally(normalized);
+      this.statusLine = "Switched to Advanced Mode.";
       this.markVueUpdate();
     },
 

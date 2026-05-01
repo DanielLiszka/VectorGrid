@@ -21,6 +21,12 @@ import {
   applyWorkflowArtifactsPayload,
   useWorkflowArtifactsStore,
 } from "../stores/workflowArtifactsStore";
+import {
+  artifactCompatibilityAllowsReplay,
+  artifactCompatibilitySummary,
+  normalizeArtifactCompatibility,
+  type ArtifactCompatibilitySummary,
+} from "../utils/core/artifactEvidenceStatus";
 import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { measureArtifactHistoryPerf } from "./artifactHistoryPerf";
 import { openPathWithRevealFallback } from "../utils/openPath";
@@ -348,6 +354,9 @@ interface RunArtifactSummaryResponse {
   ts?: unknown;
   path?: unknown;
   bytes?: unknown;
+  kind?: unknown;
+  artifact_compatibility?: unknown;
+  artifactCompatibility?: unknown;
   strategy_kind?: unknown;
   config_fingerprint?: unknown;
   config_fingerprint_version?: unknown;
@@ -380,6 +389,8 @@ export interface HistorySavedRunSummary {
   ts: string;
   path: string;
   bytes: number;
+  artifactKind?: string;
+  artifactCompatibility?: ArtifactCompatibilitySummary;
   strategyKind: string;
   configFingerprint?: string;
   configFingerprintVersion?: number | null;
@@ -423,6 +434,8 @@ export interface HistoryRunArtifactRepairSummary {
 export interface HistorySavedRunDetail {
   ts?: string;
   artifactPath?: string;
+  kind?: string;
+  artifactCompatibility?: ArtifactCompatibilitySummary;
   strategyKind: string;
   configFingerprint?: string;
   configFingerprintVersion?: number | null;
@@ -448,6 +461,7 @@ export interface HistorySavedRunDetail {
   validationAdmissionDetail?: string;
   tags: string[];
   mlBundleId?: string;
+  mlSignalStage?: string;
   mlNativeBackendRequested?: string;
   mlNativeBackendUsed?: string;
   mlNativeLibraryPath?: string;
@@ -1637,6 +1651,8 @@ function seedMlSignalArtifactContextFromDetail(
       currentRun: {
         ts: normalizeText(detail.ts) || new Date().toISOString(),
         artifact_path: normalizePath(artifactPath),
+        artifact_kind: normalizeText(detail.kind),
+        artifact_compatibility: detail.artifactCompatibility,
         report_xlsx_path: normalizeText(detail.reportPath),
         report_xlsx_exists: detail.reportPathExists,
         csv_path: normalizeText(detail.csvPath),
@@ -1772,6 +1788,16 @@ async function loadRunArtifactDetailRecord(
   );
 }
 
+function assertSavedRunSchemaCompatible(
+  detail: Pick<HistorySavedRunDetail, "artifactCompatibility">,
+  action: string,
+): void {
+  if (artifactCompatibilityAllowsReplay(detail.artifactCompatibility)) return;
+  throw new Error(
+    `${action} is unavailable: ${artifactCompatibilitySummary(detail.artifactCompatibility)}`,
+  );
+}
+
 export async function applySession(ts: string): Promise<void> {
   const selectedTs = normalizeText(ts);
   if (!selectedTs) throw new Error("Select a run from history first.");
@@ -1882,6 +1908,14 @@ function normalizeRunArtifactSummary(
     row.ml_native_prediction_batch_size,
   );
   const mlNativeFallbackReason = normalizeText(row.ml_native_fallback_reason);
+  const artifactKind = normalizeText(row.kind);
+  const artifactCompatibility = normalizeArtifactCompatibility(
+    row.artifact_compatibility ?? row.artifactCompatibility,
+    {
+      artifactFamily: "run",
+      artifactKind,
+    },
+  );
   const mlScoreNote = [
     buildMlScoreNote(mlScoreSpace, mlScoreScope, row.ml_score_note),
     buildMlNativeScoreNote(
@@ -1897,6 +1931,8 @@ function normalizeRunArtifactSummary(
     ts: normalizeText(row.ts),
     path,
     bytes: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0,
+    artifactKind,
+    artifactCompatibility,
     strategyKind: normalizeText(row.strategy_kind),
     configFingerprint: normalizeText(row.config_fingerprint),
     configFingerprintVersion: normalizeOptionalNumber(
@@ -2011,8 +2047,9 @@ export async function loadSavedRun(path: string): Promise<void> {
 }
 
 export async function applySavedRun(path: string): Promise<void> {
-  const loaded = await loadRunArtifactDetailRecord(path);
-  const detail = loaded.detail;
+  const selectedPath = normalizePath(path);
+  const detail = await loadSavedRunDetail(selectedPath);
+  assertSavedRunSchemaCompatible(detail, "Apply saved run");
   const req = asRecord(detail.runReq);
   const validationReq = asRecord(detail.validationReq);
   if (!req) throw new Error("Saved run artifact is missing run.req.");
@@ -2020,7 +2057,7 @@ export async function applySavedRun(path: string): Promise<void> {
   const timeframe = normalizeText(detail.timeframe);
   if (isMlSignalSavedRun(req, detail.mlSignalStage)) {
     seedMlSignalArtifactContextFromDetail(
-      loaded.path,
+      normalizePath(detail.artifactPath || "") || selectedPath,
       detail,
       req,
       validationReq,
@@ -2037,8 +2074,12 @@ export async function applySavedRun(path: string): Promise<void> {
 }
 
 export async function rerunSavedRun(path: string): Promise<void> {
-  const loaded = await loadRunArtifactDetailRecord(path);
-  const detail = loaded.detail;
+  const selectedPath = normalizePath(path);
+  const detail = await loadSavedRunDetail(selectedPath);
+  assertSavedRunSchemaCompatible(detail, "Rerun saved run");
+  if (normalizeText(detail.replayClass) === "blocked") {
+    throw new Error("Rerun saved run is unavailable: replay is blocked.");
+  }
   const req = asRecord(detail.runReq);
   const validationReq = asRecord(detail.validationReq);
   if (!req) throw new Error("Saved run artifact is missing run.req.");
@@ -2077,7 +2118,7 @@ export async function rerunSavedRun(path: string): Promise<void> {
   }
   if (isMlSignalSavedRun(req, detail.mlSignalStage)) {
     seedMlSignalArtifactContextFromDetail(
-      loaded.path,
+      normalizePath(detail.artifactPath || "") || selectedPath,
       detail,
       req,
       validationReq,
@@ -2225,6 +2266,7 @@ export async function loadSavedRunDetail(
 ): Promise<HistorySavedRunDetail> {
   const loaded = await loadRunArtifactDetailRecord(path);
   const detail = loaded.detail;
+  const detailRow = detail as unknown as Record<string, unknown>;
   const validationReq = asRecord(detail.validationReq);
   const mlScoreSpace = canonicalMlScoreSpace(detail.mlScoreSpace);
   const mlScoreScope = canonicalMlScoreScope(detail.mlScoreScope);
@@ -2239,31 +2281,23 @@ export async function loadSavedRunDetail(
     detail.mlScoreNote,
   );
   const mlNativeBackendRequested = normalizeText(
-    (detail as unknown as Record<string, unknown>).mlNativeBackendRequested ??
-      (detail as unknown as Record<string, unknown>)
-        .ml_native_backend_requested,
+    detailRow.mlNativeBackendRequested ?? detailRow.ml_native_backend_requested,
   );
   const mlNativeBackendUsed = normalizeText(
-    (detail as unknown as Record<string, unknown>).mlNativeBackendUsed ??
-      (detail as unknown as Record<string, unknown>).ml_native_backend_used,
+    detailRow.mlNativeBackendUsed ?? detailRow.ml_native_backend_used,
   );
   const mlNativeLibraryPath = normalizeText(
-    (detail as unknown as Record<string, unknown>).mlNativeLibraryPath ??
-      (detail as unknown as Record<string, unknown>).ml_native_library_path,
+    detailRow.mlNativeLibraryPath ?? detailRow.ml_native_library_path,
   );
   const mlNativeGpuDeviceId = normalizeOptionalNumber(
-    (detail as unknown as Record<string, unknown>).mlNativeGpuDeviceId ??
-      (detail as unknown as Record<string, unknown>).ml_native_gpu_device_id,
+    detailRow.mlNativeGpuDeviceId ?? detailRow.ml_native_gpu_device_id,
   );
   const mlNativePredictionBatchSize = normalizeOptionalNumber(
-    (detail as unknown as Record<string, unknown>)
-      .mlNativePredictionBatchSize ??
-      (detail as unknown as Record<string, unknown>)
-        .ml_native_prediction_batch_size,
+    detailRow.mlNativePredictionBatchSize ??
+      detailRow.ml_native_prediction_batch_size,
   );
   const mlNativeFallbackReason = normalizeText(
-    (detail as unknown as Record<string, unknown>).mlNativeFallbackReason ??
-      (detail as unknown as Record<string, unknown>).ml_native_fallback_reason,
+    detailRow.mlNativeFallbackReason ?? detailRow.ml_native_fallback_reason,
   );
   const mlNativeScoreNote = buildMlNativeScoreNote(
     mlNativeBackendUsed,
@@ -2276,19 +2310,25 @@ export async function loadSavedRunDetail(
   const admission = buildValidationAdmissionSummary(validationReq);
   const metricSurface = buildMetricSurfaceSummary(
     asRecord(
-      (detail as unknown as Record<string, unknown>)
-        .optimizationMetricSurface ??
-        (detail as unknown as Record<string, unknown>)
-          .optimization_metric_surface,
+      detailRow.optimizationMetricSurface ??
+        detailRow.optimization_metric_surface,
     ),
   );
+  const artifactKind = normalizeText(detail.kind ?? detailRow.kind);
+  const artifactCompatibility = normalizeArtifactCompatibility(
+    detailRow.artifactCompatibility ?? detailRow.artifact_compatibility,
+    {
+      artifactFamily: "run",
+      artifactKind,
+    },
+  );
   return {
-    ts: normalizeText((detail as unknown as Record<string, unknown>).ts),
+    ts: normalizeText(detailRow.ts),
     artifactPath:
-      normalizeText(
-        (detail as unknown as Record<string, unknown>).artifactPath ??
-          (detail as unknown as Record<string, unknown>).artifact_path,
-      ) || loaded.path,
+      normalizeText(detailRow.artifactPath ?? detailRow.artifact_path) ||
+      loaded.path,
+    kind: artifactKind,
+    artifactCompatibility,
     strategyKind: normalizeText(detail.strategyKind),
     configFingerprint: normalizeText(
       detail.configFingerprint ??
@@ -2357,6 +2397,9 @@ export async function loadSavedRunDetail(
       : {}),
     tags: normalizeStringList(detail.tags),
     mlBundleId: normalizeText(detail.mlBundleId),
+    mlSignalStage: normalizeText(
+      detailRow.mlSignalStage ?? detailRow.ml_signal_stage,
+    ),
     mlNativeBackendRequested,
     mlNativeBackendUsed,
     mlNativeLibraryPath,

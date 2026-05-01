@@ -2,7 +2,6 @@ import {
   CONTROLS_COLLAPSED_KEY,
   DESKTOP_NOTIFICATION_MODE_KEY,
   DENSITY_MODE_KEY,
-  GUIDED_STEP_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
   UI_MODE_KEY,
@@ -17,8 +16,7 @@ import { readSupportedWindowEffect } from '../utils/windowEffects'
 const THEME_KEYS = new Set(['light', 'dark', 'system'])
 const HELP_MODE_KEYS = new Set(['full', 'concise', 'off'])
 const DENSITY_MODE_KEYS = new Set(['comfortable', 'standard', 'dense'])
-const UI_MODE_KEYS = new Set(['guided', 'advanced'])
-const GUIDED_STEP_KEYS = new Set(['data', 'strategy', 'optimize', 'validate', 'trade'])
+const UI_MODE_KEYS = new Set(['advanced'])
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off'])
 
@@ -28,7 +26,6 @@ export interface SettingsBootstrapState {
   helpMode: string
   densityMode: string
   uiMode: string
-  guidedStep: string
   desktopNotificationMode: string
   workflowAdvanced: boolean | null
   controlsCollapsed: boolean | null
@@ -62,7 +59,6 @@ export function readSettingsBootstrapState(): SettingsBootstrapState {
     helpMode: normalizeFromSet(readStorageValue(HELP_MODE_KEY), HELP_MODE_KEYS),
     densityMode: normalizeFromSet(readStorageValue(DENSITY_MODE_KEY), DENSITY_MODE_KEYS),
     uiMode: normalizeFromSet(readStorageValue(UI_MODE_KEY), UI_MODE_KEYS),
-    guidedStep: normalizeFromSet(readStorageValue(GUIDED_STEP_KEY), GUIDED_STEP_KEYS),
     desktopNotificationMode: normalizeFromSet(
       readStorageValue(DESKTOP_NOTIFICATION_MODE_KEY),
       new Set(['off', 'failures', 'important']),
@@ -80,7 +76,6 @@ export function applySettingsBootstrapFromStorage(): void {
     && !state.helpMode
     && !state.densityMode
     && !state.uiMode
-    && !state.guidedStep
     && !state.desktopNotificationMode
     && state.workflowAdvanced == null
     && state.controlsCollapsed == null

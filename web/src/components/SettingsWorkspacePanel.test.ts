@@ -386,7 +386,7 @@ describe("SettingsWorkspacePanel", () => {
     expect(document.body.textContent || "").toContain("8 total");
   });
 
-  it("exposes the Guided/Advanced interface preference without hiding advanced scope", async () => {
+  it("keeps interface mode controls retired from settings", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
 
@@ -400,24 +400,13 @@ describe("SettingsWorkspacePanel", () => {
     await nextTick();
     await nextTick();
 
-    const settingsStore = useSettingsStore(pinia);
     const modeSelect = document.querySelector<HTMLSelectElement>(
       "#vueSettingsUiMode",
     );
-    expect(modeSelect).not.toBeNull();
-    expect(document.body.textContent || "").toContain("Default interface");
-    expect(document.body.textContent || "").toContain(
-      "Meta, Stage 5 ML confidence, ML Signal/CatBoost, options",
-    );
-
-    if (modeSelect) {
-      modeSelect.value = "guided";
-      modeSelect.dispatchEvent(new Event("change"));
-    }
-    await nextTick();
-
-    expect(settingsStore.uiMode).toBe("guided");
-    expect(document.querySelector("#vueSettingsGuidedStep")).not.toBeNull();
+    expect(modeSelect).toBeNull();
+    expect(document.querySelector("#vueSettingsGuidedStep")).toBeNull();
+    expect(document.body.textContent || "").not.toContain("Default interface");
+    expect(document.body.textContent || "").toContain("UI Advanced");
   });
 
   it("renders density and saved-perspective controls for workstation state", async () => {

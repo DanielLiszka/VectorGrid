@@ -5,6 +5,7 @@ import type {
   OptionsDatasetManifestSummary,
   OptionsExpressionArtifactRecord,
   OptionsExpressionArtifactSummary,
+  OptionsExpressionDatasetProvenanceSummary,
   OptionsExpressionEventPathInspectionSummary,
   OptionsExpressionTupleInspectionSummary,
   ValidateOptionsExpressionArtifactSummary,
@@ -642,6 +643,16 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       return (
         normalizeText(state.latestRun?.priceSemantics) ||
         normalizeText(state.activeArtifact?.priceSemantics)
+      );
+    },
+
+    activeDatasetProvenance(
+      state,
+    ): OptionsExpressionDatasetProvenanceSummary | null {
+      return (
+        state.latestRun?.datasetProvenance ||
+        state.activeArtifact?.datasetProvenance ||
+        null
       );
     },
   },

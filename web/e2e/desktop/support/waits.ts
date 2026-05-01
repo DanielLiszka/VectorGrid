@@ -71,21 +71,13 @@ export async function waitForShellReady(timeout = 30000): Promise<void> {
       const workspaceBarVisible = await (await $(shellSelectors.workspaceBar))
         .isDisplayed()
         .catch(() => false)
-      const advancedModeVisible = await (await $('#uiModeBar [data-ui-mode="advanced"]'))
-        .isDisplayed()
-        .catch(() => false)
-      return workspaceBarVisible || advancedModeVisible
+      return workspaceBarVisible
     },
     {
       timeout,
-      timeoutMsg: 'Shell did not expose either Advanced workspace chrome or the UI mode switcher.',
+      timeoutMsg: 'Shell did not expose the Advanced workspace chrome.',
     },
   )
-  if (!(await (await $(shellSelectors.workspaceBar)).isDisplayed().catch(() => false))) {
-    const advancedModeButton = await $('#uiModeBar [data-ui-mode="advanced"]')
-    await advancedModeButton.waitForClickable({ timeout })
-    await advancedModeButton.click()
-  }
   await (await $(shellSelectors.workspaceBar)).waitForDisplayed({ timeout })
   await (await $(shellSelectors.runFooter)).waitForDisplayed({ timeout })
 

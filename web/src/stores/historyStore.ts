@@ -17,6 +17,17 @@ import {
   type RouteProvenanceSummary,
   type RunComparisonTarget,
 } from "../utils/core/runArtifactReview";
+import {
+  canOpenPersistedReport,
+  artifactCompatibilityAllowsReplay,
+  artifactCompatibilityMetaToken,
+  artifactCompatibilitySummary,
+  formatReportStateLabel,
+  formatReportStateMetaToken,
+  replayClassLabel,
+  replayClassSummary,
+  resolveReportState,
+} from "../utils/core/artifactEvidenceStatus";
 
 let historyServicePromise: Promise<
   typeof import("../services/historyService")
@@ -96,14 +107,6 @@ function normalizeOptionalBoolean(value: unknown): boolean | null {
   return null;
 }
 
-function canOpenPersistedReport(
-  path: string,
-  exists: boolean | null | undefined,
-): boolean {
-  if (!normalizePath(path)) return false;
-  return exists == null ? true : exists;
-}
-
 function normalizeTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -156,37 +159,18 @@ function runtimeRunning(): boolean {
 
 function savedRunLabel(entry: HistorySavedRunEntry): string {
   const hasVal = entry.hasValidation ? "val" : "-";
-  const hasXlsx = canOpenPersistedReport(
+  const reportState = resolveReportState(
     entry.reportXlsxPath,
     entry.reportXlsxExists,
-  )
-    ? "xlsx"
-    : "-";
+  );
+  const hasXlsx =
+    reportState === "available"
+      ? "xlsx"
+      : reportState === "unknown"
+        ? "xlsx?"
+        : "-";
   const tagsHint = entry.tags.length ? ` | tags=${entry.tags.length}` : "";
   return `${entry.ts || "unknown"} | ${entry.strategyKind || ""} | ${hasVal}/${hasXlsx}${tagsHint}`;
-}
-
-function replayClassLabel(value: unknown): string {
-  const next = normalizeText(value);
-  if (next === "exact_evidence_review") return "Exact evidence review";
-  if (next === "compatible_recompute") return "Compatible recompute";
-  if (next === "replacement_scoped_validation")
-    return "Replacement-scoped validation";
-  if (next === "review_only_saved_result") return "Review-only saved result";
-  if (next === "blocked") return "Blocked";
-  return next;
-}
-
-function replayClassSummary(
-  entry: Pick<HistorySavedRunEntry, "replayClass" | "replayReasons">,
-  detail?: Pick<HistorySavedRunDetail, "replayClass" | "replayReasons"> | null,
-): string {
-  const replayClass = replayClassLabel(detail?.replayClass || entry.replayClass);
-  if (!replayClass) return "—";
-  const reasons = normalizeTags(detail?.replayReasons ?? entry.replayReasons)
-    .slice(0, 3)
-    .map((reason) => reason.split("_").join(" "));
-  return reasons.length ? `${replayClass} · ${reasons.join(", ")}` : replayClass;
 }
 
 function sessionRunLabel(entry: HistorySessionSummary): string {
@@ -355,6 +339,7 @@ interface HistoryState {
   savedRunDetailTimeframe: string;
   savedRunDetailValidation: string;
   savedRunDetailReplay: string;
+  savedRunDetailCompatibility: string;
   savedRunDetailProvenance: string;
   savedRunDetailLineage: string;
   savedRunDetailMetricSurface: string;
@@ -685,6 +670,7 @@ export const useHistoryStore = defineStore("history", {
     savedRunDetailTimeframe: "—",
     savedRunDetailValidation: "—",
     savedRunDetailReplay: "—",
+    savedRunDetailCompatibility: "—",
     savedRunDetailProvenance: "—",
     savedRunDetailLineage: "—",
     savedRunDetailMetricSurface: "—",
@@ -880,6 +866,12 @@ export const useHistoryStore = defineStore("history", {
       this.savedRunDetailReplay =
         String(
           snapshot.savedRunDetailReplay ?? this.savedRunDetailReplay ?? "—",
+        ).trim() || "—";
+      this.savedRunDetailCompatibility =
+        String(
+          snapshot.savedRunDetailCompatibility ??
+            this.savedRunDetailCompatibility ??
+            "—",
         ).trim() || "—";
       this.savedRunDetailProvenance =
         String(
@@ -1147,6 +1139,7 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailTimeframe = "—";
         this.savedRunDetailValidation = "—";
         this.savedRunDetailReplay = "—";
+        this.savedRunDetailCompatibility = "—";
         this.savedRunDetailProvenance = "—";
         this.savedRunDetailLineage = "—";
         this.savedRunDetailMetricSurface = "—";
@@ -1217,17 +1210,28 @@ export const useHistoryStore = defineStore("history", {
         const lineageText = formatArtifactLineageCompact(
           selectedDetail?.lineage ?? selectedEntry.lineage ?? null,
         );
-        const canOpenReport = canOpenPersistedReport(
+        const reportState = resolveReportState(
           reportPath,
           selectedDetail?.reportPathExists ?? selectedEntry.reportXlsxExists,
         );
         const replaySummary = replayClassSummary(selectedEntry, selectedDetail);
+        const artifactCompatibility =
+          selectedDetail?.artifactCompatibility ??
+          selectedEntry.artifactCompatibility ??
+          null;
+        const compatibilitySummary = artifactCompatibilitySummary(
+          artifactCompatibility,
+        );
+        const compatibilityMetaToken = artifactCompatibilityMetaToken(
+          artifactCompatibility,
+        );
 
         const parts: string[] = [];
         if (selectedEntry.ts) parts.push(`ts=${selectedEntry.ts}`);
         if (strategyKind) parts.push(`strategy=${strategyKind}`);
         if (hasValidation) parts.push("validation=yes");
-        if (replaySummary !== "—") {
+        if (compatibilityMetaToken) parts.push(compatibilityMetaToken);
+        if (replaySummary !== "-") {
           parts.push(
             `replay=${replayClassLabel(selectedDetail?.replayClass || selectedEntry.replayClass)}`,
           );
@@ -1235,7 +1239,8 @@ export const useHistoryStore = defineStore("history", {
         if (strategyKind === "MlSignal") parts.push("ml/cache");
         if (mlScoreContractSummary)
           parts.push(`score=${mlScoreContractSummary}`);
-        if (reportPath) parts.push(canOpenReport ? "xlsx=yes" : "xlsx=missing");
+        const reportMetaToken = formatReportStateMetaToken(reportState);
+        if (reportMetaToken) parts.push(reportMetaToken);
         if (csvPath) parts.push(`csv=${csvPath}`);
         if (tags.length) parts.push(`tags=${tags.join(",")}`);
         if (selectedEntry.bytes > 0) parts.push(`bytes=${selectedEntry.bytes}`);
@@ -1250,6 +1255,7 @@ export const useHistoryStore = defineStore("history", {
           ? "Available"
           : "Not saved";
         this.savedRunDetailReplay = replaySummary;
+        this.savedRunDetailCompatibility = compatibilitySummary || "—";
         this.savedRunDetailProvenance = provenanceText || "—";
         this.savedRunDetailLineage = lineageText || "—";
         this.savedRunDetailMetricSurface =
@@ -1260,11 +1266,7 @@ export const useHistoryStore = defineStore("history", {
           normalizeText(selectedDetail?.validationAdmissionSummary) || "—";
         this.savedRunDetailAdmissionDetail =
           normalizeText(selectedDetail?.validationAdmissionDetail) || "—";
-        this.savedRunDetailReport = reportPath
-          ? canOpenReport
-            ? "XLSX available"
-            : "Missing on disk"
-          : "Not exported";
+        this.savedRunDetailReport = formatReportStateLabel(reportState);
         this.savedRunDetailSize =
           formatBytesCompact(selectedEntry.bytes) || "—";
         this.savedRunDetailTags = tags.length ? tags.join(", ") : "—";
@@ -1317,11 +1319,23 @@ export const useHistoryStore = defineStore("history", {
 
       const canMutate = !runtimeRunning();
       const hasSelection = !!selectedEntry;
+      const artifactReplayCompatible =
+        hasSelection &&
+        artifactCompatibilityAllowsReplay(
+          selectedDetail?.artifactCompatibility ??
+            selectedEntry?.artifactCompatibility ??
+            null,
+        );
+      const replayClassAllowsRerun =
+        normalizeText(
+          selectedDetail?.replayClass || selectedEntry?.replayClass,
+        ) !== "blocked";
       this.canSaveSavedRunTags = canMutate && hasSelection;
       this.canRefreshSavedRuns = canMutate;
-      this.canLoadSavedRun = canMutate && hasSelection;
-      this.canApplySavedRun = canMutate && hasSelection;
-      this.canRerunSavedRun = canMutate && hasSelection;
+      this.canLoadSavedRun = canMutate && artifactReplayCompatible;
+      this.canApplySavedRun = canMutate && artifactReplayCompatible;
+      this.canRerunSavedRun =
+        canMutate && artifactReplayCompatible && replayClassAllowsRerun;
       this.canOpenSavedRunReport =
         canMutate &&
         canOpenPersistedReport(
@@ -1715,7 +1729,8 @@ export const useHistoryStore = defineStore("history", {
         })
         .catch((error: unknown) => {
           const message =
-            String(error || "").trim() || "Failed to repair saved run artifact.";
+            String(error || "").trim() ||
+            "Failed to repair saved run artifact.";
           this.savedRunRepairSummary = message;
           this.statusLine = message;
           this.source = "vue";
