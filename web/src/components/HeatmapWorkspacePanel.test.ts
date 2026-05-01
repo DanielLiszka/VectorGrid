@@ -73,6 +73,11 @@ describe('HeatmapWorkspacePanel', () => {
 
     expect(refreshHeatmapFromWorkflowRunMock).toHaveBeenCalled()
     expect(document.body.textContent || '').toContain('Heatmap bins > 0')
+    expect(document.body.textContent || '').toContain('Current view')
+    expect(document.body.textContent || '').toContain('Canvas')
+    expect(document.body.textContent || '').toContain('Awaiting run')
+    expect(document.body.textContent || '').toContain('Export')
+    expect(document.body.textContent || '').toContain('Ready')
     const exportButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((candidate) =>
       String(candidate.textContent || '').includes('Export PNG'),
     )

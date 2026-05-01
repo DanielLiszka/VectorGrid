@@ -91,6 +91,41 @@ const overviewSummaryChips = computed(() => {
   return chips
 })
 
+const overviewHealthCards = computed(() => {
+  const baselineCount = Math.max(0, compareOptions.value.length - 1)
+  const exportTargets = [
+    canCopyBest.value ? 'Copy' : '',
+    canExportCsv.value ? 'CSV' : '',
+    canExportJson.value ? 'JSON' : '',
+  ].filter((item) => item.length > 0)
+  return [
+    {
+      label: 'Run state',
+      value: overviewStageLabel.value,
+      detail: String(statusLine.value || '').trim() || 'No run status yet.',
+      tone: showReadyOverview.value ? 'success' : 'neutral',
+    },
+    {
+      label: 'Winner',
+      value: String(bestKicker.value || '').trim() || 'Awaiting winner',
+      detail: String(bestTitle.value || bestMeta.value || '').trim() || 'Run optimization to score candidates.',
+      tone: showReadyOverview.value ? 'accent' : 'neutral',
+    },
+    {
+      label: 'Baselines',
+      value: baselineCount ? `${baselineCount} available` : 'None selected',
+      detail: baselineCount ? 'Use baseline review before promotion.' : 'Set a baseline from a completed run when needed.',
+      tone: baselineCount ? 'accent' : 'neutral',
+    },
+    {
+      label: 'Artifacts',
+      value: exportTargets.length ? exportTargets.join(' · ') : 'No exports',
+      detail: routeProvenanceSummary.value || 'Route provenance appears after a run artifact is loaded.',
+      tone: exportTargets.length ? 'success' : 'neutral',
+    },
+  ]
+})
+
 watch(
   compareSelectedValue,
   (value) => {
@@ -166,6 +201,20 @@ function reviewTopResults(): void {
           Results will appear here after an optimization run is scored or an existing run library result is loaded.
         </div>
         <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+      </section>
+
+      <section v-if="showReadyOverview" class="overviewHealthGrid" aria-label="Post-run health summary">
+        <h3 class="overviewHealthTitle">Run health</h3>
+        <article
+          v-for="card in overviewHealthCards"
+          :key="`overview_health_${card.label}_${card.value}`"
+          class="overviewHealthCard"
+          :class="card.tone"
+        >
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ card.detail }}</small>
+        </article>
       </section>
 
       <section v-if="showReadyOverview && executionRisk" class="riskNotice">
@@ -312,6 +361,64 @@ function reviewTopResults(): void {
   padding: 0.8rem 0.9rem;
 }
 
+.overviewHealthGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.overviewHealthTitle {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--muted-strong);
+}
+
+.overviewHealthCard {
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
+  padding: 0.62rem 0.68rem;
+  display: grid;
+  gap: 0.16rem;
+}
+
+.overviewHealthCard span {
+  min-width: 0;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.overviewHealthCard strong {
+  min-width: 0;
+  font-size: 0.88rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overviewHealthCard small {
+  min-width: 0;
+  color: var(--muted-strong);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.overviewHealthCard.accent {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 58%, var(--border));
+}
+
+.overviewHealthCard.success {
+  background: color-mix(in oklab, var(--surface-success) 64%, var(--surface-working));
+}
+
 .riskTitle {
   font-size: 0.86rem;
   font-weight: 650;
@@ -408,6 +515,18 @@ function reviewTopResults(): void {
 
 .mono {
   font-family: var(--mono);
+}
+
+@media (max-width: 1080px) {
+  .overviewHealthGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .overviewHealthGrid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
 

@@ -41,6 +41,24 @@ pub fn normalize_rank_score(score: f64) -> f64 {
     }
 }
 
+pub const HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR: &str = "slow_fast_row_major_v1";
+
+pub fn heatmap_axis_bins_for_period_count(requested_bins: usize, period_count: usize) -> usize {
+    if requested_bins == 0 {
+        return 0;
+    }
+    requested_bins.min(period_count.max(1)).max(1)
+}
+
+pub fn heatmap_axis_bins_for_period_span(
+    requested_bins: usize,
+    period_min: u16,
+    period_max: u16,
+) -> usize {
+    let period_count = period_max.saturating_sub(period_min) as usize + 1;
+    heatmap_axis_bins_for_period_count(requested_bins, period_count)
+}
+
 // Better candidates sort first. Equal normalized scores preserve earlier input order.
 pub fn compare_score_rank_desc(
     left_score: f64,
@@ -105,6 +123,8 @@ pub struct OptimizationHeatmap {
     pub fast_max: u16,
     pub slow_min: u16,
     pub slow_max: u16,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cell_order: Option<String>,
     pub values: Vec<Option<f64>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mean_values: Option<Vec<Option<f64>>>,
@@ -115,8 +135,9 @@ pub struct OptimizationHeatmap {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_score_rank_desc, normalize_rank_score, ObjectiveKind, OptimizationHeatmap,
-        OptimizationMode, OptimizationResult,
+        compare_score_rank_desc, heatmap_axis_bins_for_period_count,
+        heatmap_axis_bins_for_period_span, normalize_rank_score, ObjectiveKind,
+        OptimizationHeatmap, OptimizationMode, OptimizationResult,
     };
     use serde_json::{json, Value};
     use std::cmp::Ordering;
@@ -176,6 +197,15 @@ mod tests {
     }
 
     #[test]
+    fn heatmap_axis_bins_clamp_to_requested_period_span() {
+        assert_eq!(heatmap_axis_bins_for_period_span(128, 5, 20), 16);
+        assert_eq!(heatmap_axis_bins_for_period_span(128, 20, 80), 61);
+        assert_eq!(heatmap_axis_bins_for_period_span(8, 20, 80), 8);
+        assert_eq!(heatmap_axis_bins_for_period_span(0, 20, 80), 0);
+        assert_eq!(heatmap_axis_bins_for_period_count(128, 3), 3);
+    }
+
+    #[test]
     fn optimization_result_deserializes_with_optional_fields_omitted() {
         let result: OptimizationResult = serde_json::from_value(json!({
             "best_params": {
@@ -221,6 +251,7 @@ mod tests {
         .expect("deserialize heatmap");
 
         assert_eq!(heatmap.values.len(), 6);
+        assert!(heatmap.cell_order.is_none());
         assert!(heatmap.mean_values.is_none());
         assert!(heatmap.sample_counts.is_none());
     }
@@ -234,12 +265,17 @@ mod tests {
             "fast_max": 3,
             "slow_min": 7,
             "slow_max": 8,
+            "cell_order": "slow_fast_row_major_v1",
             "values": [0.5, 0.75],
             "mean_values": [0.25, null],
             "sample_counts": [2, 0]
         }))
         .expect("deserialize heatmap with aggregates");
 
+        assert_eq!(
+            heatmap.cell_order.as_deref(),
+            Some("slow_fast_row_major_v1")
+        );
         assert_eq!(heatmap.mean_values, Some(vec![Some(0.25), None]));
         assert_eq!(heatmap.sample_counts, Some(vec![2, 0]));
     }
@@ -277,6 +313,7 @@ mod tests {
             fast_max: 10,
             slow_min: 20,
             slow_max: 40,
+            cell_order: None,
             values: vec![Some(1.0), None, Some(2.5), None, None, Some(3.5)],
             mean_values: None,
             sample_counts: None,

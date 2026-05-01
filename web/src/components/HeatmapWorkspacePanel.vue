@@ -60,6 +60,46 @@ const scaleNote = computed(() =>
     : 'Zero-centered scale: red negative, blue near zero, green positive. Click opens a representative parameter pair for the selected heatmap region.',
 )
 
+function cleanText(value: unknown, fallback = ''): string {
+  const text = String(value ?? '').trim()
+  if (!text || text === '-' || text === '—' || text === 'undefined' || text === 'NaN') return fallback
+  return text
+}
+
+function formatHeatmapNumber(value: unknown, digits = 4): string {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return ''
+  return next.toFixed(Math.max(0, digits)).replace(/(\.\d*?[1-9])0+$/u, '$1').replace(/\.0+$/u, '')
+}
+
+const activeModeLabel = computed(() => {
+  const activeValue = String(heatmapMode.value || 'objective').trim()
+  return modeOptions.value.find((option) => option.value === activeValue)?.label || 'Objective score'
+})
+
+const heatmapDecisionStats = computed(() => {
+  const renderModel = heatmapCanvasModel.value
+  if (!renderModel) {
+    return [
+      { label: 'Mode', value: activeModeLabel.value },
+      { label: 'Canvas', value: 'Awaiting run' },
+      { label: 'Export', value: canHeatmapExportPng.value ? 'Ready' : 'Unavailable' },
+    ]
+  }
+  const binsFast = Number(renderModel.model?.binsFast ?? 0)
+  const binsSlow = Number(renderModel.model?.binsSlow ?? 0)
+  const cells = binsFast > 0 && binsSlow > 0 ? `${binsFast}x${binsSlow}` : ''
+  const range = `${formatHeatmapNumber(renderModel.range?.min)} to ${formatHeatmapNumber(renderModel.range?.max)}`
+  return [
+    { label: 'Mode', value: activeModeLabel.value },
+    { label: 'Surface', value: cells },
+    { label: 'Objective', value: cleanText(renderModel.displayLabel, 'Score') },
+    { label: 'Range', value: range },
+    { label: 'Markers', value: String(renderModel.markers?.length ?? 0) },
+    { label: 'Export', value: canHeatmapExportPng.value ? 'Ready' : 'Unavailable' },
+  ].filter((item) => cleanText(item.value).length > 0)
+})
+
 async function ensureVisibleHeatmap(): Promise<void> {
   await nextTick()
   if (!restoreHeatmapVisible()) {
@@ -122,11 +162,36 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#heatmapVueShellMount">
     <section class="heatmapPanelVueRoot heatmapVueShellMountHost" v-show="visible">
       <header class="head">
-        <h2 class="panelTitle">Heatmap</h2>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Parameter surface</div>
+          <h2 class="panelTitle">Heatmap</h2>
+          <div class="panelSubtitle">
+            Inspect parameter regions, then open representative candidate detail from populated cells.
+          </div>
+        </div>
         <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
       </header>
 
       <section class="pane">
+        <div class="heatmapDecisionHeader">
+          <div>
+            <div class="panelEyebrow">Current view</div>
+            <h3 class="panelPaneTitle">{{ activeModeLabel }}</h3>
+          </div>
+          <div class="panelMuted">
+            Top Results remains the exact retained-candidate path; heatmap cells open representative parameter-region detail.
+          </div>
+        </div>
+        <div class="heatmapMetricStrip" aria-label="Heatmap state">
+          <div
+            v-for="stat in heatmapDecisionStats"
+            :key="`heatmap_stat_${stat.label}_${stat.value}`"
+            class="heatmapMetric"
+          >
+            <span>{{ stat.label }}</span>
+            <strong class="mono panelNumeric">{{ stat.value }}</strong>
+          </div>
+        </div>
         <VisualizationToolbar label="Heatmap display controls">
           <div class="heatmapControls">
             <div>
@@ -152,7 +217,10 @@ onBeforeUnmount(() => {
           </template>
         </VisualizationToolbar>
         <div class="metaLine mono" role="status" aria-live="polite">{{ heatmapMeta }}</div>
-        <div class="metaLine mono">{{ scaleNote }}</div>
+        <details class="heatmapScaleDetails">
+          <summary>Scale and selection semantics</summary>
+          <div class="metaLine mono">{{ scaleNote }}</div>
+        </details>
       </section>
 
       <section class="pane">
@@ -180,23 +248,67 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
 }
 
 .pane {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: var(--panel-footer);
-  padding: 0.75rem 0.8rem;
+  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel-footer));
+  padding: var(--density-pane-y) var(--density-pane-x);
   min-width: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.heatmapDecisionHeader {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(18rem, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.heatmapMetricStrip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.heatmapMetric {
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-sunken) 72%, transparent);
+  padding: 0.45rem 0.5rem;
+  display: grid;
+  gap: 0.12rem;
+}
+
+.heatmapMetric span {
+  min-width: 0;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.heatmapMetric strong {
+  min-width: 0;
+  font-size: 0.8rem;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .heatmapControls {
   display: grid;
   gap: 0.65rem;
   grid-template-columns: minmax(0, 15rem);
-  margin-bottom: 0.55rem;
 }
 
 .actions {
@@ -232,8 +344,47 @@ onBeforeUnmount(() => {
   margin-top: 0.3rem;
 }
 
+.heatmapScaleDetails {
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-inline) 76%, transparent);
+  padding: 0.48rem 0.58rem;
+}
+
+.heatmapScaleDetails summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--muted-strong);
+}
+
+.heatmapScaleDetails .metaLine {
+  margin-top: 0.45rem;
+}
+
 .mono {
   font-family: var(--mono);
+}
+
+@media (max-width: 1100px) {
+  .heatmapMetricStrip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .head,
+  .heatmapDecisionHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .head {
+    display: grid;
+  }
+
+  .heatmapMetricStrip {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 </style>

@@ -46,7 +46,7 @@ const {
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(optimizeStore)
-const { bestMeta, bestTitle, drillStatus, heatmapMeta, topRows } = storeToRefs(analysisStore)
+const { bestMeta, bestTitle, drillStatus, heatmapMeta, selectedTopSummary, selectedTopTitle, topRows } = storeToRefs(analysisStore)
 const {
   validationHint,
   validationMeta,
@@ -152,6 +152,11 @@ const footerSummary = computed(() => {
 
 const analysisSummary = computed(() => {
   if (mlSignalModeActive.value) return 'ML Signal stages use dataset export, score cache, validation, and sweep artifacts.'
+  const selectedTitle = String(selectedTopTitle.value || '').trim()
+  const selectedSummary = String(selectedTopSummary.value || '').trim()
+  if (selectedTitle && selectedTitle !== 'No ranked candidate selected.') {
+    return `${selectedTitle}${selectedSummary && selectedSummary !== 'No ranked candidates are available.' ? ` · ${selectedSummary}` : ''}`
+  }
   const title = String(bestTitle.value || '').trim()
   const meta = String(bestMeta.value || '').trim()
   if (title && title !== '—' && title !== '-') return `${title}${meta && meta !== '—' && meta !== '-' ? ` · ${meta}` : ''}`

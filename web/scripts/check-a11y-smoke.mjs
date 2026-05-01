@@ -242,12 +242,12 @@ async function main() {
   await scan(page, 'workflow shell')
   await wcag22Scan(page, 'workflow shell')
 
-  await dispatchClick(page, '#uiModeBar button[data-ui-mode="guided"]')
-  await page.waitForSelector('#guidedShellGrid', { timeout: 15000 })
-  await scan(page, 'guided shell')
-  await wcag22Scan(page, 'guided shell')
-
-  await dispatchClick(page, '#uiModeBar button[data-ui-mode="advanced"]')
+  if (await page.locator('#uiModeBar').count()) {
+    throw new Error('Advanced-only shell regression: #uiModeBar should not be mounted.')
+  }
+  if (await page.locator('#guidedShellGrid').count()) {
+    throw new Error('Advanced-only shell regression: #guidedShellGrid should not be mounted.')
+  }
   await page.waitForSelector('#workspaceBar button[data-workspace="workflow"]', { timeout: 15000 })
 
   await dispatchClick(page, '#workspaceBar button[data-workspace="live"]')

@@ -9485,7 +9485,7 @@ void heatmap_update_scores_tm_f32(
 
         const int fb = bin_period_i32(f, fast_min, fast_max, bins_fast);
         const int sb = bin_period_i32(s, slow_min, slow_max, bins_slow);
-        const int idx = fb * bins_slow + sb;
+        const int idx = sb * bins_fast + fb;
         atomicMaxFloat(&heatmap_out[idx], score);
         if (heatmap_sum_out != nullptr) {
             atomicAdd(&heatmap_sum_out[idx], score);

@@ -48,6 +48,10 @@ function mockCanvasContext() {
     () => ({
       clearRect: vi.fn(),
       setTransform: vi.fn(),
+      save: vi.fn(),
+      restore: vi.fn(),
+      translate: vi.fn(),
+      scale: vi.fn(),
       fillRect: vi.fn(),
       strokeRect: vi.fn(),
       beginPath: vi.fn(),
@@ -61,6 +65,52 @@ function mockCanvasContext() {
       createLinearGradient: vi.fn(() => ({ addColorStop: vi.fn() })),
     }) as never,
   )
+}
+
+function setElementRect(element: Element, width = 512, height = 512): void {
+  Object.defineProperty(element, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({
+      left: 0,
+      top: 0,
+      width,
+      height,
+      right: width,
+      bottom: height,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }),
+  })
+}
+
+function dispatchPointerLikeEvent(
+  element: Element,
+  type: string,
+  init: MouseEventInit & { deltaY?: number; pointerId?: number } = {},
+): void {
+  const event = type === 'wheel'
+    ? new WheelEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: init.clientX ?? 0,
+        clientY: init.clientY ?? 0,
+        deltaY: init.deltaY ?? 0,
+      })
+    : new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: init.button ?? 0,
+        clientX: init.clientX ?? 0,
+        clientY: init.clientY ?? 0,
+      })
+  if (init.pointerId != null) {
+    Object.defineProperty(event, 'pointerId', {
+      configurable: true,
+      value: init.pointerId,
+    })
+  }
+  element.dispatchEvent(event)
 }
 
 describe('HeatmapCanvas', () => {
@@ -103,20 +153,7 @@ describe('HeatmapCanvas', () => {
       },
     })
     const overlay = wrapper.get<HTMLCanvasElement>('#heatmapOverlayVue').element
-    Object.defineProperty(overlay, 'getBoundingClientRect', {
-      configurable: true,
-      value: () => ({
-        left: 0,
-        top: 0,
-        width: 512,
-        height: 512,
-        right: 512,
-        bottom: 512,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }),
-    })
+    setElementRect(overlay)
 
     expect(wrapper.get('#heatmapMetaVue').text()).toContain('Sharpe heatmap')
 
@@ -156,5 +193,83 @@ describe('HeatmapCanvas', () => {
       slow_len: 30,
       slow_ma_type: 'ema',
     })
+  })
+
+  it('zooms with the pointer wheel and resets from the viewport controls', async () => {
+    mockCanvasContext()
+    const wrapper = mount(HeatmapCanvas, {
+      props: {
+        ariaLabel: 'Optimization heatmap for the selected objective.',
+        renderModel: renderModel(),
+      },
+    })
+    setElementRect(wrapper.get('#heatmapCanvasStackVue').element)
+    setElementRect(wrapper.get('#heatmapOverlayVue').element)
+    await wrapper.vm.$nextTick()
+
+    dispatchPointerLikeEvent(wrapper.get('#heatmapCanvasStackVue').element, 'wheel', {
+      clientX: 256,
+      clientY: 256,
+      deltaY: -300,
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(Number(wrapper.get('#heatmapCanvasStackVue').attributes('data-viewport-scale'))).toBeGreaterThan(1)
+
+    await wrapper.get('button[aria-label="Reset heatmap viewport"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('#heatmapCanvasStackVue').attributes('data-viewport-scale')).toBe('1.000')
+    expect(wrapper.get('button[aria-label="Reset heatmap viewport"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('pans a zoomed heatmap and suppresses the drag-release click handoff', async () => {
+    mockCanvasContext()
+    const wrapper = mount(HeatmapCanvas, {
+      props: {
+        ariaLabel: 'Optimization heatmap for the selected objective.',
+        renderModel: renderModel(),
+      },
+    })
+    const stack = wrapper.get('#heatmapCanvasStackVue')
+    const overlay = wrapper.get('#heatmapOverlayVue')
+    setElementRect(stack.element)
+    setElementRect(overlay.element)
+    await wrapper.vm.$nextTick()
+
+    dispatchPointerLikeEvent(stack.element, 'wheel', {
+      clientX: 256,
+      clientY: 256,
+      deltaY: -300,
+    })
+    await wrapper.vm.$nextTick()
+    const offsetBeforePan = Number(stack.attributes('data-viewport-offset-x'))
+
+    dispatchPointerLikeEvent(overlay.element, 'pointerdown', {
+      pointerId: 7,
+      button: 0,
+      clientX: 256,
+      clientY: 256,
+    })
+    dispatchPointerLikeEvent(overlay.element, 'pointermove', {
+      pointerId: 7,
+      clientX: 296,
+      clientY: 256,
+    })
+    dispatchPointerLikeEvent(overlay.element, 'pointerup', {
+      pointerId: 7,
+      clientX: 296,
+      clientY: 256,
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(Number(stack.attributes('data-viewport-offset-x'))).toBeGreaterThan(offsetBeforePan)
+
+    dispatchPointerLikeEvent(overlay.element, 'click', {
+      clientX: 296,
+      clientY: 256,
+    })
+
+    expect(wrapper.emitted('request-candidate-detail')).toBeUndefined()
   })
 })

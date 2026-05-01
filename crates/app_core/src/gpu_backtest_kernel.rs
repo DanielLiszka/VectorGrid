@@ -20,7 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use ta_optimizer::stream::StreamAggregator;
-use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationResult};
+use ta_optimizer::{
+    heatmap_axis_bins_for_period_count, ObjectiveKind, OptimizationHeatmap, OptimizationResult,
+    HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR,
+};
 use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 use vector_ta::cuda::CudaDeviceSliceF32Ref;
 use vector_ta::utilities::data_loader::{source_type, Candles};
@@ -6786,7 +6789,8 @@ fn estimate_tile_bytes(
 
         if heatmap_bins > 0 {
             let heat_len = heatmap_bins.saturating_mul(heatmap_bins);
-            bytes = bytes.saturating_add(bytes_f32(heat_len));
+            bytes = bytes.saturating_add(bytes_f32(heat_len).saturating_mul(2));
+            bytes = bytes.saturating_add(bytes_i32(heat_len));
         }
     }
 
@@ -12595,11 +12599,17 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
 
     let heatmap_cfg = if heatmap_bins > 0 {
+        let f_min = *fast_periods.iter().min().unwrap_or(&0);
+        let f_max = *fast_periods.iter().max().unwrap_or(&0);
+        let s_min = *slow_periods.iter().min().unwrap_or(&0);
+        let s_max = *slow_periods.iter().max().unwrap_or(&0);
         Some((
-            *fast_periods.iter().min().unwrap_or(&0),
-            *fast_periods.iter().max().unwrap_or(&0),
-            *slow_periods.iter().min().unwrap_or(&0),
-            *slow_periods.iter().max().unwrap_or(&0),
+            f_min,
+            f_max,
+            s_min,
+            s_max,
+            heatmap_axis_bins_for_period_count(heatmap_bins, fast_periods.len()),
+            heatmap_axis_bins_for_period_count(heatmap_bins, slow_periods.len()),
         ))
     } else {
         None
@@ -12612,8 +12622,8 @@ fn optimize_double_ma_gpu_kernel_impl(
         agg = agg.with_score_fn(score_fn);
     }
     if device_include_all {
-        if let Some((f_min, f_max, s_min, s_max)) = heatmap_cfg {
-            agg = agg.with_heatmap(heatmap_bins, heatmap_bins, f_min, f_max, s_min, s_max);
+        if let Some((f_min, f_max, s_min, s_max, bins_fast, bins_slow)) = heatmap_cfg {
+            agg = agg.with_heatmap(bins_fast, bins_slow, f_min, f_max, s_min, s_max);
         }
     }
     let mut processed = 0usize;
@@ -13503,8 +13513,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             }
         }
 
-        if heatmap_cfg.is_some() {
-            let heatmap_len = heatmap_bins.saturating_mul(heatmap_bins);
+        if let Some((_, _, _, _, bins_fast, bins_slow)) = heatmap_cfg {
+            let heatmap_len = bins_fast.saturating_mul(bins_slow);
             if heatmap_len > 0 {
                 KernelScratch::ensure_len_f32(&mut scratch.d_heatmap, heatmap_len, bt_stream)?;
                 KernelScratch::ensure_len_f32(&mut scratch.d_heatmap_sum, heatmap_len, bt_stream)?;
@@ -14891,7 +14901,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                     }
                 }
 
-                if let (Some(h), Some(h_sum), Some(h_count), Some((f_min, f_max, s_min, s_max))) = (
+                if let (
+                    Some(h),
+                    Some(h_sum),
+                    Some(h_count),
+                    Some((f_min, f_max, s_min, s_max, bins_fast, bins_slow)),
+                ) = (
                     scratch.d_heatmap.as_ref(),
                     scratch.d_heatmap_sum.as_ref(),
                     scratch.d_heatmap_count.as_ref(),
@@ -14914,8 +14929,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut obj_i = objective_i;
                         let mut hurdle_tau_i = hurdle_tau;
-                        let mut bins_f = heatmap_bins as i32;
-                        let mut bins_s = heatmap_bins as i32;
+                        let mut bins_f = bins_fast as i32;
+                        let mut bins_s = bins_slow as i32;
                         let mut f_min_i = f_min as i32;
                         let mut f_max_i = f_max as i32;
                         let mut s_min_i = s_min as i32;
@@ -15843,13 +15858,18 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
 
     let heatmap_out: Option<OptimizationHeatmap> = if !device_include_all {
-        if let (Some(h), Some(h_sum), Some(h_count), Some((f_min, f_max, s_min, s_max))) = (
+        if let (
+            Some(h),
+            Some(h_sum),
+            Some(h_count),
+            Some((f_min, f_max, s_min, s_max, bins_fast, bins_slow)),
+        ) = (
             scratch.d_heatmap.as_ref(),
             scratch.d_heatmap_sum.as_ref(),
             scratch.d_heatmap_count.as_ref(),
             heatmap_cfg,
         ) {
-            let heatmap_len = heatmap_bins.saturating_mul(heatmap_bins);
+            let heatmap_len = bins_fast.saturating_mul(bins_slow);
             if heatmap_len == 0 {
                 None
             } else {
@@ -15891,12 +15911,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                     .collect();
                 host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
                 Some(OptimizationHeatmap {
-                    bins_fast: heatmap_bins,
-                    bins_slow: heatmap_bins,
+                    bins_fast,
+                    bins_slow,
                     fast_min: f_min,
                     fast_max: f_max,
                     slow_min: s_min,
                     slow_max: s_max,
+                    cell_order: Some(HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR.to_string()),
                     values,
                     mean_values: Some(mean_values),
                     sample_counts: Some(sample_counts),

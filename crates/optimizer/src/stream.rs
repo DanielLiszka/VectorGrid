@@ -1,4 +1,7 @@
-use crate::{normalize_rank_score, ObjectiveKind, OptimizationHeatmap, OptimizationResult};
+use crate::{
+    heatmap_axis_bins_for_period_span, normalize_rank_score, ObjectiveKind, OptimizationHeatmap,
+    OptimizationResult, HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR,
+};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics};
@@ -53,8 +56,8 @@ impl HeatmapAgg {
         slow_min: u16,
         slow_max: u16,
     ) -> Self {
-        let bins_fast = bins_fast.max(1);
-        let bins_slow = bins_slow.max(1);
+        let bins_fast = heatmap_axis_bins_for_period_span(bins_fast, fast_min, fast_max).max(1);
+        let bins_slow = heatmap_axis_bins_for_period_span(bins_slow, slow_min, slow_max).max(1);
         let len = bins_fast.saturating_mul(bins_slow);
         Self {
             bins_fast,
@@ -91,7 +94,7 @@ impl HeatmapAgg {
         let s_bin = Self::bin_period(slow_len, self.slow_min, self.slow_max, self.bins_slow)
             .min(self.bins_slow - 1);
 
-        let idx = f_bin.saturating_mul(self.bins_slow).saturating_add(s_bin);
+        let idx = s_bin.saturating_mul(self.bins_fast).saturating_add(f_bin);
         if let Some(cell) = self.values.get_mut(idx) {
             if score > *cell {
                 *cell = score;
@@ -136,6 +139,7 @@ impl HeatmapAgg {
             fast_max: self.fast_max,
             slow_min: self.slow_min,
             slow_max: self.slow_max,
+            cell_order: Some(HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR.to_string()),
             values,
             mean_values: Some(mean_values),
             sample_counts: Some(self.count_values),
@@ -502,6 +506,36 @@ mod tests {
     }
 
     #[test]
+    fn heatmap_uses_slow_fast_row_major_order_for_rectangular_surfaces() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100)
+            .with_heatmap(3, 2, 5, 15, 20, 30);
+        agg.push(params(15, 20), metrics_with_sharpe(1.25));
+
+        let heatmap = agg.finalize().expect("result").heatmap.expect("heatmap");
+        assert_eq!(heatmap.bins_fast, 3);
+        assert_eq!(heatmap.bins_slow, 2);
+        assert_eq!(
+            heatmap.cell_order.as_deref(),
+            Some(HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR)
+        );
+        assert_eq!(heatmap.values[2], Some(1.25));
+        assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[2], 1);
+    }
+
+    #[test]
+    fn heatmap_caps_bins_to_discrete_period_span() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 3, false, 100)
+            .with_heatmap(128, 128, 5, 20, 20, 80);
+        agg.push(params(5, 20), metrics_with_sharpe(1.0));
+
+        let heatmap = agg.finalize().expect("result").heatmap.expect("heatmap");
+        assert_eq!(heatmap.bins_fast, 16);
+        assert_eq!(heatmap.bins_slow, 61);
+        assert_eq!(heatmap.values.len(), 16 * 61);
+        assert_eq!(heatmap.values[0], Some(1.0));
+    }
+
+    #[test]
     fn with_score_fn_uses_custom_ranking_instead_of_objective() {
         let mut agg =
             StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100).with_score_fn(score_by_pnl);
@@ -717,7 +751,7 @@ mod tests {
         let heatmap = result
             .heatmap
             .expect("empty receiver can adopt truthful heatmap");
-        assert_eq!(heatmap.values[1], Some(3.0));
-        assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[1], 1);
+        assert_eq!(heatmap.values[2], Some(3.0));
+        assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[2], 1);
     }
 }

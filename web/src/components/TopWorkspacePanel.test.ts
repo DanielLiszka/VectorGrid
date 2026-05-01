@@ -310,6 +310,10 @@ describe("TopWorkspacePanel", () => {
     expect(selectionStatus?.textContent).toContain("Selected candidate 2 of 2");
     expect(selectionStatus?.textContent).toContain("row 2");
     expect(selectionStatus?.textContent).toContain("3.4");
+    expect(selectionStatus?.textContent).toContain("Selected");
+    expect(selectionStatus?.textContent).toContain("#2");
+    expect(selectionStatus?.textContent).toContain("Visible cols");
+    expect(selectionStatus?.textContent).toContain("Density");
   });
 
   it("adds metric visuals to numeric result cells without changing table text", async () => {

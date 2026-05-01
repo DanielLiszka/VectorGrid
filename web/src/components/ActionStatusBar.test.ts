@@ -5,6 +5,7 @@ import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ActionStatusBar from './ActionStatusBar.vue'
 import { TASK_CENTER_PANEL_ID } from '../composables/useTaskCenterVisibility'
+import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
@@ -328,6 +329,31 @@ describe('ActionStatusBar', () => {
     expect(text).toContain('1 queued')
     expect(text).toContain('1 failed')
     expect(text).toContain('Attention')
+
+    wrapper.unmount()
+  })
+
+  it('keeps the selected post-run candidate visible in the footer summary', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const data = useDataStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    workflow.selectWorkflowStep('analyze', { persist: false })
+    workflow.selectResultsTab('top', { persist: false })
+    data.dataId = 'data-1'
+    analysisStore.selectedTopTitle = 'Rank #2 · SMA 12 / EMA 48'
+    analysisStore.selectedTopSummary = 'Selected candidate 2 of 4: Sharpe 1.7.'
+
+    const wrapper = mount(ActionStatusBar, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Rank #2 · SMA 12 / EMA 48')
+    expect(text).toContain('Selected candidate 2 of 4: Sharpe 1.7.')
 
     wrapper.unmount()
   })

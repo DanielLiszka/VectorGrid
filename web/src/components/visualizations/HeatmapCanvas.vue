@@ -1,19 +1,27 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Minus, Plus, RotateCcw } from 'lucide-vue-next'
 import {
   buildHeatmapCellParams,
+  clampHeatmapViewport,
   clearHeatmapCanvas,
+  DEFAULT_HEATMAP_VIEWPORT,
   downloadHeatmapPng,
+  HEATMAP_MAX_VIEWPORT_SCALE,
+  HEATMAP_MIN_VIEWPORT_SCALE,
   heatmapTooltipText,
+  heatmapViewportIsZoomed,
   paintHeatmapBase,
   paintHeatmapOverlay,
   resolveHeatmapCellAt,
   resolveHeatmapCellFromPoint,
   type HeatmapCanvasRenderModel,
+  type HeatmapCanvasViewport,
   type HeatmapCellParams,
   type HeatmapHoverCell,
   type HeatmapResolvedCell,
 } from '../../visualizations/heatmapCanvasModel'
+import AppIconButton from '../ui/AppIconButton.vue'
 import HeatmapLegend from './HeatmapLegend.vue'
 
 const props = withDefaults(
@@ -40,8 +48,24 @@ const tooltipRef = ref<HTMLElement | null>(null)
 const legendRef = ref<InstanceType<typeof HeatmapLegend> | null>(null)
 const hoverCell = ref<HeatmapHoverCell | null>(null)
 const selectedCell = ref<HeatmapResolvedCell | null>(null)
+const viewport = ref<HeatmapCanvasViewport>({ ...DEFAULT_HEATMAP_VIEWPORT })
+const isPanning = ref(false)
 const lastBaseSignature = ref('')
 let resizeObserver: ResizeObserver | null = null
+let panPointerId: number | null = null
+let panLastPoint: { x: number; y: number } | null = null
+let panMoved = false
+let suppressNextClick = false
+const viewportKey = computed(() =>
+  `${viewport.value.scale.toFixed(4)}:${viewport.value.offsetX.toFixed(2)}:${viewport.value.offsetY.toFixed(2)}`,
+)
+const viewportScalePercent = computed(() => `${Math.round(viewport.value.scale * 100)}%`)
+const viewportScaleData = computed(() => viewport.value.scale.toFixed(3))
+const viewportOffsetXData = computed(() => viewport.value.offsetX.toFixed(1))
+const viewportOffsetYData = computed(() => viewport.value.offsetY.toFixed(1))
+const viewportZoomed = computed(() => heatmapViewportIsZoomed(viewport.value))
+const canZoomIn = computed(() => viewport.value.scale < HEATMAP_MAX_VIEWPORT_SCALE - 1.0e-6)
+const canZoomOut = computed(() => viewport.value.scale > HEATMAP_MIN_VIEWPORT_SCALE + 1.0e-6)
 const selectedCellSummary = computed(() => {
   const renderModel = props.renderModel
   const cell = selectedCell.value
@@ -93,6 +117,99 @@ function syncCanvasBackingStore(): boolean {
   return changed
 }
 
+function canvasLogicalSize(): { width: number; height: number } | null {
+  const canvas = overlayRef.value ?? canvasRef.value
+  if (!canvas) return null
+  const ratioRaw = Number(canvas.dataset.pixelRatio || 1)
+  const ratio = Number.isFinite(ratioRaw) && ratioRaw > 0 ? ratioRaw : 1
+  return {
+    width: Math.max(1, canvas.width / ratio),
+    height: Math.max(1, canvas.height / ratio),
+  }
+}
+
+function clampViewportState(next: HeatmapCanvasViewport = viewport.value): void {
+  const size = canvasLogicalSize()
+  viewport.value = size
+    ? clampHeatmapViewport(next, size.width, size.height)
+    : clampHeatmapViewport(next, 512, 512)
+}
+
+function resetViewport(): void {
+  viewport.value = { ...DEFAULT_HEATMAP_VIEWPORT }
+  endPan()
+  repaint(true)
+}
+
+function clientPointToLogicalCanvas(clientX: number, clientY: number): { x: number; y: number } | null {
+  const overlay = overlayRef.value
+  const size = canvasLogicalSize()
+  if (!overlay || !size) return null
+  const rect = overlay.getBoundingClientRect()
+  if (!rect.width || !rect.height) return null
+  return {
+    x: ((clientX - rect.left) / rect.width) * size.width,
+    y: ((clientY - rect.top) / rect.height) * size.height,
+  }
+}
+
+function zoomAtLogicalPoint(point: { x: number; y: number }, factor: number): void {
+  const size = canvasLogicalSize()
+  if (!size || !Number.isFinite(factor) || factor <= 0) return
+  const current = viewport.value
+  const nextScale = Math.max(
+    HEATMAP_MIN_VIEWPORT_SCALE,
+    Math.min(HEATMAP_MAX_VIEWPORT_SCALE, current.scale * factor),
+  )
+  const modelX = (point.x - current.offsetX) / current.scale
+  const modelY = (point.y - current.offsetY) / current.scale
+  clampViewportState({
+    scale: nextScale,
+    offsetX: point.x - modelX * nextScale,
+    offsetY: point.y - modelY * nextScale,
+  })
+  if (!viewportZoomed.value) endPan()
+  repaint(true)
+}
+
+function zoomAtClientPoint(clientX: number, clientY: number, factor: number): void {
+  const point = clientPointToLogicalCanvas(clientX, clientY)
+  if (point) zoomAtLogicalPoint(point, factor)
+}
+
+function zoomFromCenter(factor: number): void {
+  const size = canvasLogicalSize()
+  if (!size) return
+  zoomAtLogicalPoint({ x: size.width / 2, y: size.height / 2 }, factor)
+}
+
+function panByLogical(deltaX: number, deltaY: number): void {
+  if (!viewportZoomed.value) return
+  clampViewportState({
+    ...viewport.value,
+    offsetX: viewport.value.offsetX + deltaX,
+    offsetY: viewport.value.offsetY + deltaY,
+  })
+  hideTooltip()
+  repaint(true)
+}
+
+function endPan(pointerId: number | null = null): void {
+  if (pointerId != null && panPointerId != null && pointerId !== panPointerId) return
+  const overlay = overlayRef.value
+  if (pointerId != null) {
+    try {
+      overlay?.releasePointerCapture?.(pointerId)
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+  }
+  isPanning.value = false
+  panPointerId = null
+  panLastPoint = null
+  panMoved = false
+}
+
 function repaint(forceBase = false): void {
   const renderModel = props.renderModel
   const canvas = canvasRef.value
@@ -103,12 +220,14 @@ function repaint(forceBase = false): void {
     return
   }
   const backingStoreChanged = syncCanvasBackingStore()
-  if (forceBase || backingStoreChanged || lastBaseSignature.value !== renderModel.signature) {
-    paintHeatmapBase(renderModel, canvas)
+  if (backingStoreChanged) clampViewportState()
+  const renderSignature = `${renderModel.signature}:${viewportKey.value}`
+  if (forceBase || backingStoreChanged || lastBaseSignature.value !== renderSignature) {
+    paintHeatmapBase(renderModel, canvas, viewport.value)
     canvas.dataset.renderSignature = renderModel.signature
-    lastBaseSignature.value = renderModel.signature
+    lastBaseSignature.value = renderSignature
   }
-  paintHeatmapOverlay(renderModel, overlay, overlayCell())
+  paintHeatmapOverlay(renderModel, overlay, overlayCell(), viewport.value)
   overlay.dataset.renderSignature = renderModel.signature
   legendRef.value?.paint(renderModel.range, renderModel.palette)
 }
@@ -131,10 +250,17 @@ function handleMouseLeave(): void {
 }
 
 function handleMouseMove(event: MouseEvent): void {
+  if (isPanning.value) return
   const renderModel = props.renderModel
   const overlay = overlayRef.value
   if (!renderModel || !overlay) return
-  const cell = resolveHeatmapCellFromPoint(overlay, renderModel.model, event.clientX, event.clientY)
+  const cell = resolveHeatmapCellFromPoint(
+    overlay,
+    renderModel.model,
+    event.clientX,
+    event.clientY,
+    viewport.value,
+  )
   const tooltipText = cell ? heatmapTooltipText(renderModel, cell) : null
   if (!cell || !tooltipText) {
     hoverCell.value = null
@@ -147,11 +273,72 @@ function handleMouseMove(event: MouseEvent): void {
   repaint()
 }
 
+function handleWheel(event: WheelEvent): void {
+  if (!props.renderModel) return
+  event.preventDefault()
+  const delta = Number(event.deltaY)
+  if (!Number.isFinite(delta) || delta === 0) return
+  const factor = Math.exp(-delta * 0.0015)
+  zoomAtClientPoint(event.clientX, event.clientY, factor)
+}
+
+function handlePointerDown(event: PointerEvent): void {
+  if (!props.renderModel || !viewportZoomed.value || event.button !== 0) return
+  const overlay = overlayRef.value
+  event.preventDefault()
+  hideTooltip()
+  hoverCell.value = null
+  isPanning.value = true
+  panPointerId = event.pointerId
+  panLastPoint = { x: event.clientX, y: event.clientY }
+  panMoved = false
+  try {
+    overlay?.setPointerCapture?.(event.pointerId)
+  } catch {
+    // Pointer capture is best-effort in test and embedded-webview environments.
+  }
+  repaint()
+}
+
+function handlePointerMove(event: PointerEvent): void {
+  if (!isPanning.value || panPointerId !== event.pointerId || !panLastPoint) return
+  const overlay = overlayRef.value
+  const size = canvasLogicalSize()
+  if (!overlay || !size) return
+  const rect = overlay.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+  event.preventDefault()
+  const deltaX = ((event.clientX - panLastPoint.x) / rect.width) * size.width
+  const deltaY = ((event.clientY - panLastPoint.y) / rect.height) * size.height
+  if (Math.abs(event.clientX - panLastPoint.x) + Math.abs(event.clientY - panLastPoint.y) > 2) {
+    panMoved = true
+  }
+  panLastPoint = { x: event.clientX, y: event.clientY }
+  panByLogical(deltaX, deltaY)
+}
+
+function handlePointerUp(event: PointerEvent): void {
+  if (panPointerId === event.pointerId && panMoved) suppressNextClick = true
+  endPan(event.pointerId)
+  repaint()
+}
+
 function handleClick(event: MouseEvent): void {
+  if (suppressNextClick) {
+    suppressNextClick = false
+    return
+  }
+  if (isPanning.value) return
   const renderModel = props.renderModel
   const overlay = overlayRef.value
   if (!renderModel || !overlay) return
-  const cell = resolveHeatmapCellFromPoint(overlay, renderModel.model, event.clientX, event.clientY)
+  const cell = resolveHeatmapCellFromPoint(
+    overlay,
+    renderModel.model,
+    event.clientX,
+    event.clientY,
+    viewport.value,
+  )
   if (!cell) return
   const params = buildHeatmapCellParams(renderModel, cell)
   if (params) {
@@ -216,6 +403,21 @@ function requestSelectedCandidateDetail(): void {
 function handleKeydown(event: KeyboardEvent): void {
   const renderModel = props.renderModel
   if (!renderModel) return
+  if (event.key === '+' || event.key === '=') {
+    event.preventDefault()
+    zoomFromCenter(1.25)
+    return
+  }
+  if (event.key === '-' || event.key === '_') {
+    event.preventDefault()
+    zoomFromCenter(1 / 1.25)
+    return
+  }
+  if (event.key === '0') {
+    event.preventDefault()
+    resetViewport()
+    return
+  }
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
     requestSelectedCandidateDetail()
@@ -230,7 +432,11 @@ function handleKeydown(event: KeyboardEvent): void {
   const vector = movement[event.key]
   if (vector) {
     event.preventDefault()
-    selectKeyboardCell(directionalSelectableCell(renderModel, vector[0], vector[1]))
+    if (event.shiftKey && viewportZoomed.value) {
+      panByLogical(-vector[0] * 48, -vector[1] * 48)
+    } else {
+      selectKeyboardCell(directionalSelectableCell(renderModel, vector[0], vector[1]))
+    }
     return
   }
   if (event.key === 'Home' || event.key === 'End') {
@@ -277,7 +483,42 @@ defineExpose({ exportPng, repaint })
 
 <template>
   <div class="heatmapCanvasHost">
-    <h3 class="panelPaneTitle">Heatmap Chart</h3>
+    <div class="heatmapCanvasHeader">
+      <h3 class="panelPaneTitle">Heatmap Chart</h3>
+      <div v-if="renderModel" class="heatmapViewportControls" role="group" aria-label="Heatmap viewport controls">
+        <AppIconButton
+          :icon="Minus"
+          label="Zoom out"
+          title="Zoom out"
+          size="sm"
+          variant="subtle"
+          :disabled="!canZoomOut"
+          disabled-reason="Already fit to view"
+          @click="zoomFromCenter(1 / 1.25)"
+        />
+        <span class="heatmapZoomLevel mono panelNumeric" aria-live="polite">{{ viewportScalePercent }}</span>
+        <AppIconButton
+          :icon="Plus"
+          label="Zoom in"
+          title="Zoom in"
+          size="sm"
+          variant="subtle"
+          :disabled="!canZoomIn"
+          disabled-reason="Maximum zoom reached"
+          @click="zoomFromCenter(1.25)"
+        />
+        <AppIconButton
+          :icon="RotateCcw"
+          label="Reset heatmap viewport"
+          title="Reset viewport"
+          size="sm"
+          variant="subtle"
+          :disabled="!viewportZoomed"
+          disabled-reason="Viewport already reset"
+          @click="resetViewport"
+        />
+      </div>
+    </div>
     <div id="heatmapEmptyHintVue" v-show="!renderModel" class="panelStatus" role="status" aria-live="polite">
       Run an optimization with Heatmap bins &gt; 0 to generate a heatmap.
     </div>
@@ -306,8 +547,13 @@ defineExpose({ exportPng, repaint })
         class="heatmapCanvasStack chartSurface"
         :aria-label="ariaLabel"
         aria-describedby="heatmapKeyboardHint"
+        :class="{ zoomed: viewportZoomed, panning: isPanning }"
+        :data-viewport-scale="viewportScaleData"
+        :data-viewport-offset-x="viewportOffsetXData"
+        :data-viewport-offset-y="viewportOffsetYData"
         tabindex="0"
         @keydown="handleKeydown"
+        @wheel="handleWheel"
       >
         <canvas id="heatmapCanvasVue" ref="canvasRef" width="512" height="512" aria-hidden="true"></canvas>
         <canvas
@@ -318,6 +564,10 @@ defineExpose({ exportPng, repaint })
           aria-hidden="true"
           @mouseleave="handleMouseLeave"
           @mousemove="handleMouseMove"
+          @pointerdown="handlePointerDown"
+          @pointermove="handlePointerMove"
+          @pointerup="handlePointerUp"
+          @pointercancel="handlePointerUp"
           @click="handleClick"
         ></canvas>
         <div id="heatmapTooltipVue" ref="tooltipRef" class="heatmapTooltip" style="display: none;"></div>
@@ -348,6 +598,30 @@ defineExpose({ exportPng, repaint })
 .heatmapCanvasHost {
   display: grid;
   gap: 0.65rem;
+}
+
+.heatmapCanvasHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.heatmapCanvasHeader .panelPaneTitle {
+  margin: 0;
+}
+
+.heatmapViewportControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.heatmapZoomLevel {
+  min-width: 3.25rem;
+  text-align: center;
+  color: var(--muted-strong);
+  font-size: 0.76rem;
 }
 
 .chartAssist {
@@ -400,6 +674,20 @@ defineExpose({ exportPng, repaint })
   box-shadow: var(--focus-ring);
 }
 
+.heatmapCanvasStack {
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.heatmapCanvasStack.zoomed {
+  cursor: grab;
+}
+
+.heatmapCanvasStack.panning {
+  cursor: grabbing;
+}
+
 .heatmapLegendRow {
   margin-top: 0.75rem;
   display: grid;
@@ -417,6 +705,11 @@ defineExpose({ exportPng, repaint })
 }
 
 @media (max-width: 760px) {
+  .heatmapCanvasHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .heatmapLegendRow {
     grid-template-columns: 1fr;
   }

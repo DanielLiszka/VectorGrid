@@ -10,7 +10,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use ta_optimizer::stream::StreamAggregator;
-use ta_optimizer::{ObjectiveKind, OptimizationHeatmap, OptimizationMode, OptimizationResult};
+use ta_optimizer::{
+    heatmap_axis_bins_for_period_count, ObjectiveKind, OptimizationHeatmap, OptimizationMode,
+    OptimizationResult,
+};
 use ta_strategies::double_ma::{
     DoubleMaCurves, DoubleMaParams, IndicatorBar, Metrics, StrategyConfig, Trade, TradeStats,
 };
@@ -11721,18 +11724,24 @@ fn optimize_double_ma_cpu_tiled(
         agg = agg.with_score_fn(score_fn);
     }
     let heatmap_cfg = if heatmap_bins > 0 {
+        let f_min = *fast_periods.iter().min().unwrap_or(&0);
+        let f_max = *fast_periods.iter().max().unwrap_or(&0);
+        let s_min = *slow_periods.iter().min().unwrap_or(&0);
+        let s_max = *slow_periods.iter().max().unwrap_or(&0);
         Some((
-            *fast_periods.iter().min().unwrap_or(&0),
-            *fast_periods.iter().max().unwrap_or(&0),
-            *slow_periods.iter().min().unwrap_or(&0),
-            *slow_periods.iter().max().unwrap_or(&0),
+            f_min,
+            f_max,
+            s_min,
+            s_max,
+            heatmap_axis_bins_for_period_count(heatmap_bins, fast_periods.len()),
+            heatmap_axis_bins_for_period_count(heatmap_bins, slow_periods.len()),
         ))
     } else {
         None
     };
     if heatmap_bins > 0 {
-        let (f_min, f_max, s_min, s_max) = heatmap_cfg.unwrap();
-        agg = agg.with_heatmap(heatmap_bins, heatmap_bins, f_min, f_max, s_min, s_max);
+        let (f_min, f_max, s_min, s_max, bins_fast, bins_slow) = heatmap_cfg.unwrap();
+        agg = agg.with_heatmap(bins_fast, bins_slow, f_min, f_max, s_min, s_max);
     }
     let (pf_tile, ps_tile) = cpu_tile_sizes(fast_periods.len(), slow_periods.len(), n);
 
@@ -11854,15 +11863,9 @@ fn optimize_double_ma_cpu_tiled(
                     if let Some(score_fn) = score_fn {
                         local = local.with_score_fn(score_fn);
                     }
-                    if let Some((f_min, f_max, s_min, s_max)) = heatmap_cfg {
-                        local = local.with_heatmap(
-                            heatmap_bins,
-                            heatmap_bins,
-                            f_min,
-                            f_max,
-                            s_min,
-                            s_max,
-                        );
+                    if let Some((f_min, f_max, s_min, s_max, bins_fast, bins_slow)) = heatmap_cfg {
+                        local =
+                            local.with_heatmap(bins_fast, bins_slow, f_min, f_max, s_min, s_max);
                     }
                     local
                 };
@@ -12580,18 +12583,24 @@ fn optimize_double_ma_gpu_sweep_tiled(
         agg = agg.with_score_fn(score_fn);
     }
     let heatmap_cfg = if heatmap_bins > 0 {
+        let f_min = *fast_periods.iter().min().unwrap_or(&0);
+        let f_max = *fast_periods.iter().max().unwrap_or(&0);
+        let s_min = *slow_periods.iter().min().unwrap_or(&0);
+        let s_max = *slow_periods.iter().max().unwrap_or(&0);
         Some((
-            *fast_periods.iter().min().unwrap_or(&0),
-            *fast_periods.iter().max().unwrap_or(&0),
-            *slow_periods.iter().min().unwrap_or(&0),
-            *slow_periods.iter().max().unwrap_or(&0),
+            f_min,
+            f_max,
+            s_min,
+            s_max,
+            heatmap_axis_bins_for_period_count(heatmap_bins, fast_periods.len()),
+            heatmap_axis_bins_for_period_count(heatmap_bins, slow_periods.len()),
         ))
     } else {
         None
     };
     if heatmap_bins > 0 {
-        let (f_min, f_max, s_min, s_max) = heatmap_cfg.unwrap();
-        agg = agg.with_heatmap(heatmap_bins, heatmap_bins, f_min, f_max, s_min, s_max);
+        let (f_min, f_max, s_min, s_max, bins_fast, bins_slow) = heatmap_cfg.unwrap();
+        agg = agg.with_heatmap(bins_fast, bins_slow, f_min, f_max, s_min, s_max);
     }
     let (pf_tile, ps_tile) = sweep_tile_sizes(fast_periods.len(), slow_periods.len(), n);
 
@@ -12681,15 +12690,9 @@ fn optimize_double_ma_gpu_sweep_tiled(
                     if let Some(score_fn) = score_fn {
                         local = local.with_score_fn(score_fn);
                     }
-                    if let Some((f_min, f_max, s_min, s_max)) = heatmap_cfg {
-                        local = local.with_heatmap(
-                            heatmap_bins,
-                            heatmap_bins,
-                            f_min,
-                            f_max,
-                            s_min,
-                            s_max,
-                        );
+                    if let Some((f_min, f_max, s_min, s_max, bins_fast, bins_slow)) = heatmap_cfg {
+                        local =
+                            local.with_heatmap(bins_fast, bins_slow, f_min, f_max, s_min, s_max);
                     }
                     local
                 };
@@ -14205,7 +14208,14 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
             let f_max = *fast_periods.iter().max().unwrap_or(&0);
             let s_min = *slow_periods.iter().min().unwrap_or(&0);
             let s_max = *slow_periods.iter().max().unwrap_or(&0);
-            agg = agg.with_heatmap(heatmap_bins, heatmap_bins, f_min, f_max, s_min, s_max);
+            agg = agg.with_heatmap(
+                heatmap_axis_bins_for_period_count(heatmap_bins, fast_periods.len()),
+                heatmap_axis_bins_for_period_count(heatmap_bins, slow_periods.len()),
+                f_min,
+                f_max,
+                s_min,
+                s_max,
+            );
         }
         for (combo, metric) in filtered_rows.iter().cloned() {
             agg.push(combo, metric);
@@ -16642,7 +16652,14 @@ mod tests {
         assert_eq!(res.num_combos, 6);
         assert!(res.best_params.fast_len < res.best_params.slow_len);
         assert!(res.top.len() <= 5);
-        assert!(res.heatmap.is_some());
+        let heatmap = res.heatmap.expect("heatmap");
+        assert_eq!(heatmap.bins_fast, 3);
+        assert_eq!(heatmap.bins_slow, 2);
+        assert_eq!(
+            heatmap.cell_order.as_deref(),
+            Some(ta_optimizer::HEATMAP_CELL_ORDER_SLOW_FAST_ROW_MAJOR)
+        );
+        assert_eq!(heatmap.values.len(), 6);
     }
 
     #[test]

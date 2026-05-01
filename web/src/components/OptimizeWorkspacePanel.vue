@@ -67,6 +67,58 @@ interface BuilderOption {
   label: string;
 }
 
+const FALLBACK_GPU_KERNEL_MA_IDS: Array<[string, string]> = [
+  ["sma", "SMA"],
+  ["ema", "EMA"],
+  ["wma", "WMA"],
+  ["alma", "ALMA"],
+  ["dema", "DEMA"],
+  ["tema", "TEMA"],
+  ["jsa", "JSA"],
+  ["smma", "SMMA"],
+  ["sqwma", "SQWMA"],
+  ["highpass", "HighPass"],
+  ["swma", "SWMA"],
+  ["trima", "TRIMA"],
+  ["sinwma", "SinWMA"],
+  ["epma", "EPMA"],
+  ["wilders", "Wilders"],
+  ["maaq", "MAAQ"],
+  ["mwdx", "MWDX"],
+  ["cwma", "CWMA"],
+  ["fwma", "FWMA"],
+  ["pwma", "PWMA"],
+  ["srwma", "SRWMA"],
+  ["supersmoother", "SuperSmoother"],
+  ["supersmoother_3_pole", "SuperSmoother 3-pole"],
+  ["zlema", "ZLEMA"],
+  ["nma", "NMA"],
+  ["hma", "HMA"],
+  ["jma", "JMA"],
+  ["edcf", "EDCF"],
+  ["ehlers_itrend", "Ehlers ITrend"],
+  ["cora_wave", "CoRa Wave"],
+  ["vwma", "VWMA"],
+  ["vpwma", "VPWMA"],
+  ["frama", "FRAMA"],
+];
+
+const FALLBACK_GPU_KERNEL_MA_CATALOG: MovingAverageCatalogEntry[] =
+  FALLBACK_GPU_KERNEL_MA_IDS.map(([id, label]) => ({
+    id,
+    label,
+    supportsCpu: true,
+    supportsCuda: false,
+    supportsCudaMaSweep: false,
+    supportsCudaKernel: true,
+    prefersCudaKernel: true,
+    requiresCandles: id === "frama" || id === "vwma" || id === "vpwma",
+    periodBased: true,
+    singleOutput: true,
+    notes: "Fallback GPU-kernel moving average row.",
+    params: [],
+  }));
+
 const optimizeStore = useOptimizeStore();
 const strategyStore = useStrategyStore();
 const workflowStore = useWorkflowStore();
@@ -376,6 +428,11 @@ const executionSectionTitle = computed(() =>
   showBackendControl.value ? "Backend and GPU route" : "Execution route",
 );
 const showGpuPresetActions = computed(() => showBackendControl.value);
+const effectiveMaCatalogEntries = computed(() =>
+  maCatalogEntries.value.length > 0
+    ? maCatalogEntries.value
+    : FALLBACK_GPU_KERNEL_MA_CATALOG,
+);
 
 function supportsBackend(
   entry: MovingAverageCatalogEntry,
@@ -398,17 +455,23 @@ function maOptionLabel(
   if (!entry.periodBased || !entry.singleOutput) {
     return `${base} (not period/single-output)`;
   }
-  if (backendKind !== "GpuKernel") return base;
-
-  const supportsGpuPath = entry.supportsCuda;
+  const supportsGpuPath = entry.supportsCuda || entry.supportsCudaKernel;
   const backendSupported = supportsBackend(entry, backendKind);
+  const sweepOnly =
+    entry.supportsCudaMaSweep &&
+    !entry.supportsCpu &&
+    !entry.supportsCuda &&
+    !entry.supportsCudaKernel;
 
   let perfText = "";
-  if (supportsGpuPath) {
+  if (backendKind !== "CpuOnly" && supportsGpuPath) {
     if (speedup) {
       perfText = `${speedup.speedup.toFixed(2)}x GPU`;
     } else if (maSpeedupLoaded.value) {
-      perfText = "warning: GPU slower vs CPU";
+      perfText =
+        backendKind === "Auto"
+          ? "CPU preferred by policy"
+          : "GPU benchmark unavailable";
     } else {
       perfText = "GPU speed: loading...";
     }
@@ -416,6 +479,8 @@ function maOptionLabel(
 
   const supportText = backendSupported
     ? ""
+    : sweepOnly && backendKind !== "CpuOnly"
+      ? "CUDA sweep only; not Double MA route"
     : `not supported on ${backendLabel(backendKind)}`;
   if (perfText && supportText) {
     return `${base} (${perfText}; ${supportText})`;
@@ -455,7 +520,7 @@ function selectedMaHint(
   catalog: MovingAverageCatalogEntry[],
   speedupById: Record<string, GpuSpeedupEntry>,
 ): string {
-  if (backendKind !== "GpuKernel") return "";
+  if (backendKind === "CpuOnly") return "";
   const id = String(maType || "").trim();
   if (!id) return "";
   const entry = catalog.find((row) => row.id === id);
@@ -467,14 +532,30 @@ function selectedMaHint(
   if (entry.supportsCpu && !entry.supportsCudaKernel) {
     notes.push("This MA will use CPU staging in unified GPU mode.");
   }
-  if (entry.supportsCuda) {
+  if (entry.supportsCuda || entry.supportsCudaKernel) {
     const speedup = speedupById[id];
     if (speedup) {
       notes.push(
         `GPU speedup on this system: ${speedup.speedup.toFixed(2)}x vs CPU.`,
       );
     } else if (maSpeedupLoaded.value) {
-      notes.push("Warning: this MA is slower on GPU vs CPU on this system.");
+      notes.push(
+        backendKind === "Auto"
+          ? "gpu_speedups.csv does not prefer this MA on the Auto GPU path."
+          : "No gpu_speedups.csv row is available for this MA.",
+      );
+    }
+  }
+  if (entry.supportsCudaMaSweep && !entry.supportsCuda && !entry.supportsCudaKernel) {
+    const speedup = speedupById[id];
+    if (speedup) {
+      notes.push(
+        `CUDA sweep benchmark exists (${speedup.speedup.toFixed(2)}x), but this optimizer route requires CPU-single, CUDA-single, or GPU-kernel support.`,
+      );
+    } else {
+      notes.push(
+        "CUDA sweep support exists, but this optimizer route requires CPU-single, CUDA-single, or GPU-kernel support.",
+      );
     }
   }
   return notes.join(" ");
@@ -506,7 +587,7 @@ const selectedBackend = computed<BackendKind>(() =>
 );
 const backendAwareMaOptions = computed(() =>
   buildBackendAwareMaOptions(
-    maCatalogEntries.value,
+    effectiveMaCatalogEntries.value,
     selectedBackend.value,
     maSpeedupById.value,
   ),
@@ -515,7 +596,7 @@ const fastMaBackendHint = computed(() =>
   selectedMaHint(
     selectedFastMaType.value,
     selectedBackend.value,
-    maCatalogEntries.value,
+    effectiveMaCatalogEntries.value,
     maSpeedupById.value,
   ),
 );
@@ -523,10 +604,26 @@ const slowMaBackendHint = computed(() =>
   selectedMaHint(
     selectedSlowMaType.value,
     selectedBackend.value,
-    maCatalogEntries.value,
+    effectiveMaCatalogEntries.value,
     maSpeedupById.value,
   ),
 );
+const maCatalogMeta = computed(() => {
+  if (!maParamCatalogLoaded.value) return "MA catalog: loading desktop registry.";
+  const catalog = maCatalogEntries.value;
+  const source =
+    catalog.length > 0 ? catalog : FALLBACK_GPU_KERNEL_MA_CATALOG;
+  const kernelCapable = source.filter((entry) => entry.supportsCudaKernel).length;
+  const cudaSingleCapable = source.filter((entry) => entry.supportsCuda).length;
+  const cudaSweepCapable = source.filter(
+    (entry) => entry.supportsCudaMaSweep,
+  ).length;
+  const speedupRows = Object.keys(maSpeedupById.value).length;
+  if (catalog.length === 0) {
+    return `MA catalog: fallback ${source.length} GPU-kernel MAs; desktop registry unavailable; speedup rows=${speedupRows}.`;
+  }
+  return `MA catalog: ${catalog.length} MAs (${kernelCapable} GPU-kernel, ${cudaSingleCapable} CUDA-single, ${cudaSweepCapable} CUDA-sweep); speedup rows=${speedupRows}.`;
+});
 const dynamicCatalogMeta = computed(() => {
   const total = dynamicCatalogEntries.value.length;
   if (total <= 0) {
@@ -2431,6 +2528,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="meta mono">{{ pairsPreview }}</div>
           </div>
+          <div class="muted mono">{{ maCatalogMeta }}</div>
           <div class="split">
             <div class="rangeCard">
               <div class="rangeTitle">Fast side</div>

@@ -103,6 +103,52 @@ vi.mock("../services/movingAverageCatalogService", async () => {
           },
         ],
       },
+      {
+        id: "sweep_only",
+        label: "Sweep Only",
+        supportsCpu: false,
+        supportsCuda: false,
+        supportsCudaMaSweep: true,
+        supportsCudaKernel: false,
+        prefersCudaKernel: false,
+        requiresCandles: false,
+        periodBased: true,
+        singleOutput: true,
+        notes: "CUDA sweep benchmark only.",
+        params: [],
+      },
+    ]),
+  };
+});
+
+vi.mock("../services/gpuSpeedupsService", async () => {
+  const actual = await vi.importActual<
+    typeof import("../services/gpuSpeedupsService")
+  >("../services/gpuSpeedupsService");
+  return {
+    ...actual,
+    listGpuSpeedups: vi.fn(async () => [
+      {
+        id: "sma",
+        name: "SMA",
+        speedup: 34.41,
+        cpuMs: 113.24,
+        cudaMs: 3.69,
+      },
+      {
+        id: "ema",
+        name: "EMA",
+        speedup: 15.57,
+        cpuMs: 107,
+        cudaMs: 6.87,
+      },
+      {
+        id: "alma",
+        name: "ALMA",
+        speedup: 42.92,
+        cpuMs: 158.26,
+        cudaMs: 3.69,
+      },
     ]),
   };
 });
@@ -117,6 +163,12 @@ function installOptimizePanelMountShell(): void {
 async function flushPanel(): Promise<void> {
   await nextTick();
   await nextTick();
+}
+
+async function flushCatalogHydration(): Promise<void> {
+  await flushPanel();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushPanel();
 }
 
 function setInputValue(selector: string, value: string): void {
@@ -156,6 +208,43 @@ describe("OptimizeWorkspacePanel", () => {
 
     expect(document.querySelector("#vueBackend")).not.toBeNull();
     expect(document.querySelector("#vueMode")).not.toBeNull();
+
+    wrapper.unmount();
+  });
+
+  it("hydrates moving-average selects from the catalog with speedup labels", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    workflow.selectControlsTab("opt", { persist: false });
+    optimize.strategyKind = "DoubleMa";
+    optimize.backend = "Auto";
+    vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
+
+    const wrapper = mount(OptimizeWorkspacePanel, {
+      global: { plugins: [pinia, PiniaColada] },
+      attachTo: document.body,
+    });
+    await flushCatalogHydration();
+
+    const fastOptions = Array.from(
+      document.querySelectorAll<HTMLOptionElement>("#vueFastType option"),
+    );
+    const fastValues = fastOptions.map((option) => option.value);
+    const fastLabels = fastOptions.map((option) => option.textContent || "");
+    const sweepOnlyOption = fastOptions.find(
+      (option) => option.value === "sweep_only",
+    );
+
+    expect(fastValues).toContain("ema");
+    expect(fastValues).toContain("vidya");
+    expect(fastLabels.some((label) => label.includes("15.57x GPU"))).toBe(true);
+    expect(sweepOnlyOption?.disabled).toBe(true);
+    expect(sweepOnlyOption?.textContent || "").toContain(
+      "CUDA sweep only; not Double MA route",
+    );
+    expect(document.body.textContent || "").toContain("MA catalog: 5 MAs");
 
     wrapper.unmount();
   });

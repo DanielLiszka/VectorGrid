@@ -28,6 +28,12 @@ export interface HeatmapHoverCell {
   row: number
 }
 
+export interface HeatmapCanvasViewport {
+  scale: number
+  offsetX: number
+  offsetY: number
+}
+
 export interface HeatmapCanvasRequestModel {
   fastMaType: string
   slowMaType: string
@@ -53,6 +59,15 @@ export interface HeatmapCanvasRenderModel {
 }
 
 export type HeatmapCellParams = Record<string, unknown>
+
+export const HEATMAP_MIN_VIEWPORT_SCALE = 1
+export const HEATMAP_MAX_VIEWPORT_SCALE = 12
+
+export const DEFAULT_HEATMAP_VIEWPORT: HeatmapCanvasViewport = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+}
 
 export interface HeatmapLegendTargets {
   canvas: HTMLCanvasElement | null
@@ -81,6 +96,58 @@ function logicalCanvasSize(canvas: HTMLCanvasElement): { width: number; height: 
     height: canvas.height / ratio,
     ratio,
   }
+}
+
+function clampViewportScale(scale: unknown): number {
+  const next = Number(scale)
+  if (!Number.isFinite(next)) return HEATMAP_MIN_VIEWPORT_SCALE
+  return Math.max(HEATMAP_MIN_VIEWPORT_SCALE, Math.min(HEATMAP_MAX_VIEWPORT_SCALE, next))
+}
+
+export function clampHeatmapViewport(
+  viewport: HeatmapCanvasViewport | null | undefined,
+  width: number,
+  height: number,
+): HeatmapCanvasViewport {
+  const scale = clampViewportScale(viewport?.scale)
+  if (scale <= HEATMAP_MIN_VIEWPORT_SCALE) return { ...DEFAULT_HEATMAP_VIEWPORT }
+  const logicalWidth = Math.max(1, Number.isFinite(width) ? width : 1)
+  const logicalHeight = Math.max(1, Number.isFinite(height) ? height : 1)
+  const minOffsetX = logicalWidth - logicalWidth * scale
+  const minOffsetY = logicalHeight - logicalHeight * scale
+  const offsetXRaw = Number(viewport?.offsetX)
+  const offsetYRaw = Number(viewport?.offsetY)
+  return {
+    scale,
+    offsetX: Math.min(0, Math.max(minOffsetX, Number.isFinite(offsetXRaw) ? offsetXRaw : 0)),
+    offsetY: Math.min(0, Math.max(minOffsetY, Number.isFinite(offsetYRaw) ? offsetYRaw : 0)),
+  }
+}
+
+export function heatmapViewportIsZoomed(
+  viewport: HeatmapCanvasViewport | null | undefined,
+): boolean {
+  return clampViewportScale(viewport?.scale) > HEATMAP_MIN_VIEWPORT_SCALE + 1.0e-6
+}
+
+function normalizedHeatmapViewport(
+  viewport: HeatmapCanvasViewport | null | undefined,
+): HeatmapCanvasViewport {
+  return {
+    scale: clampViewportScale(viewport?.scale),
+    offsetX: Number.isFinite(Number(viewport?.offsetX)) ? Number(viewport?.offsetX) : 0,
+    offsetY: Number.isFinite(Number(viewport?.offsetY)) ? Number(viewport?.offsetY) : 0,
+  }
+}
+
+function applyHeatmapViewport(
+  ctx: CanvasRenderingContext2D,
+  viewport: HeatmapCanvasViewport | null | undefined,
+): HeatmapCanvasViewport {
+  const view = normalizedHeatmapViewport(viewport)
+  ctx.translate(view.offsetX, view.offsetY)
+  ctx.scale(view.scale, view.scale)
+  return view
 }
 
 function prepareLogicalCanvasContext(
@@ -216,6 +283,7 @@ export function clearHeatmapCanvas(canvas: HTMLCanvasElement | null): void {
 export function paintHeatmapBase(
   renderModel: HeatmapCanvasRenderModel,
   canvas: HTMLCanvasElement,
+  viewport?: HeatmapCanvasViewport | null,
 ): void {
   const { model, displayValues, range, palette } = renderModel
   const prepared = prepareLogicalCanvasContext(canvas)
@@ -225,6 +293,8 @@ export function paintHeatmapBase(
   const cellH = height / Math.max(1, model.binsSlow)
 
   ctx.clearRect(0, 0, width, height)
+  ctx.save()
+  applyHeatmapViewport(ctx, viewport)
   for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
     const drawRow = model.binsSlow - 1 - logicalRow
     for (let col = 0; col < model.binsFast; col += 1) {
@@ -240,12 +310,14 @@ export function paintHeatmapBase(
       ctx.fillRect(x, y, cellW, cellH)
     }
   }
+  ctx.restore()
 }
 
 export function paintHeatmapOverlay(
   renderModel: HeatmapCanvasRenderModel,
   overlay: HTMLCanvasElement,
   hoverCell: HeatmapHoverCell | null,
+  viewport?: HeatmapCanvasViewport | null,
 ): void {
   const { model, markers } = renderModel
   const prepared = prepareLogicalCanvasContext(overlay)
@@ -255,6 +327,8 @@ export function paintHeatmapOverlay(
   const cellH = height / Math.max(1, model.binsSlow)
 
   overlayCtx.clearRect(0, 0, width, height)
+  overlayCtx.save()
+  const view = applyHeatmapViewport(overlayCtx, viewport)
   for (const marker of markers) {
     const cx = (marker.col + 0.5) * cellW
     const cy = (marker.drawRow + 0.5) * cellH
@@ -263,18 +337,21 @@ export function paintHeatmapOverlay(
     overlayCtx.arc(cx, cy, Math.max(3, Math.min(cellW, cellH) * 0.18), 0, Math.PI * 2)
     overlayCtx.fill()
     overlayCtx.strokeStyle = 'rgba(15, 23, 42, 0.95)'
-    overlayCtx.lineWidth = 1
+    overlayCtx.lineWidth = 1 / view.scale
     overlayCtx.stroke()
     overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.95)'
     overlayCtx.font = '11px ui-monospace, monospace'
     overlayCtx.fillText(marker.label, cx + 5, cy - 5)
   }
 
-  if (!hoverCell) return
+  if (!hoverCell) {
+    overlayCtx.restore()
+    return
+  }
   const hoverX = hoverCell.col * cellW
   const hoverY = hoverCell.row * cellH
   overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.95)'
-  overlayCtx.lineWidth = 1.5
+  overlayCtx.lineWidth = 1.5 / view.scale
   overlayCtx.strokeRect(hoverX + 0.5, hoverY + 0.5, Math.max(0, cellW - 1), Math.max(0, cellH - 1))
   overlayCtx.beginPath()
   overlayCtx.moveTo(hoverX + cellW / 2, 0)
@@ -283,6 +360,7 @@ export function paintHeatmapOverlay(
   overlayCtx.lineTo(width, hoverY + cellH / 2)
   overlayCtx.strokeStyle = 'rgba(248, 250, 252, 0.28)'
   overlayCtx.stroke()
+  overlayCtx.restore()
 }
 
 export function resolveHeatmapCellFromPoint(
@@ -290,16 +368,22 @@ export function resolveHeatmapCellFromPoint(
   model: HeatmapModel,
   clientX: number,
   clientY: number,
+  viewport?: HeatmapCanvasViewport | null,
 ): HeatmapResolvedCell | null {
   const rect = overlay.getBoundingClientRect()
   if (!rect.width || !rect.height) return null
+  const { width, height } = logicalCanvasSize(overlay)
+  const view = normalizedHeatmapViewport(viewport)
+  const logicalX = (((clientX - rect.left) / rect.width) * width - view.offsetX) / view.scale
+  const logicalY = (((clientY - rect.top) / rect.height) * height - view.offsetY) / view.scale
+  if (logicalX < 0 || logicalY < 0 || logicalX > width || logicalY > height) return null
   const col = Math.max(
     0,
-    Math.min(model.binsFast - 1, Math.floor(((clientX - rect.left) / rect.width) * model.binsFast)),
+    Math.min(model.binsFast - 1, Math.floor((logicalX / width) * model.binsFast)),
   )
   const drawRow = Math.max(
     0,
-    Math.min(model.binsSlow - 1, Math.floor(((clientY - rect.top) / rect.height) * model.binsSlow)),
+    Math.min(model.binsSlow - 1, Math.floor((logicalY / height) * model.binsSlow)),
   )
   return resolveHeatmapCellAt(model, col, drawRow)
 }

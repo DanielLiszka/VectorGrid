@@ -8,24 +8,15 @@ import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { buildDrillChartModel, type DrillChartPriceBar } from '../visualizations/drillChartModel'
 
-vi.mock('lightweight-charts', () => {
-  const series = () => ({ setData: vi.fn() })
-  return {
-    CandlestickSeries: {},
-    LineSeries: {},
-    HistogramSeries: {},
-    createChart: vi.fn(() => ({
-      addSeries: vi.fn(() => series()),
-      addCandlestickSeries: vi.fn(() => series()),
-      applyOptions: vi.fn(),
-      remove: vi.fn(),
-      subscribeClick: vi.fn(),
-      unsubscribeClick: vi.fn(),
-      timeScale: () => ({ fitContent: vi.fn() }),
-    })),
-    createSeriesMarkers: vi.fn(() => ({ setMarkers: vi.fn() })),
-  }
-})
+vi.mock('../composables/useDrillPriceChartRuntime', () => ({
+  useDrillPriceChartRuntime: vi.fn(() => ({
+    setHost: vi.fn(),
+    render: vi.fn(async () => undefined),
+    updateSelectedTrade: vi.fn(),
+    clear: vi.fn(),
+    dispose: vi.fn(),
+  })),
+}))
 
 function installDrillPanelMountShell(): void {
   document.body.innerHTML = `
@@ -157,5 +148,43 @@ describe('CandidateDetailWorkspacePanel', () => {
     expect(await drillNextTrade()).toBeUndefined()
     await flushPanel()
     expect(document.querySelector('#tradeTableBodyVue tr.selected')?.getAttribute('data-trade-idx')).toBe('0')
+  })
+
+  it('shows selected-candidate context and navigable trade evidence', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('drill', { persist: false })
+    vi.spyOn(analysisStore, 'rerenderDrill').mockImplementation(() => undefined)
+    analysisStore.selectedTopTitle = 'Rank #2 · SMA 12 / EMA 48'
+    analysisStore.selectedTopSummary = 'Selected candidate 2 of 4: Sharpe 1.7 · MaxDD 0.08.'
+    analysisStore.selectedTopDecisionNote = 'Candidate is ready for detailed review.'
+    analysisStore.selectedTopProvenanceChips = ['Filtered shortlist', 'Risk view']
+
+    mount(CandidateDetailWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    analysisStore.drillWrapVisible = true
+    analysisStore.drillChartModel = markRaw(buildDrillChartModel(drillCurves, drillBars))
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Current review target')
+    expect(text).toContain('Rank #2 · SMA 12 / EMA 48')
+    expect(text).toContain('Filtered shortlist')
+    expect(text).toContain('3 price bars')
+    expect(text).toContain('Win rate')
+    expect(text).toContain('Profit factor')
+
+    const nextTradeButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Next trade'),
+    )
+    nextTradeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPanel()
+    expect(document.querySelector('#tradeTableBodyVue tr.selected')?.getAttribute('data-trade-idx')).toBe('0')
+    expect(document.body.textContent || '').toContain('Selected trade 1.')
   })
 })

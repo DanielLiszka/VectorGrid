@@ -197,6 +197,7 @@ describe("analysis service", () => {
             save: () => undefined,
             restore: () => undefined,
             translate: () => undefined,
+            scale: () => undefined,
             rotate: () => undefined,
             createLinearGradient: () => ({ addColorStop: () => undefined }),
           }) as never,
@@ -1191,6 +1192,7 @@ describe("analysis service", () => {
           save: () => undefined,
           restore: () => undefined,
           translate: () => undefined,
+          scale: () => undefined,
           rotate: () => undefined,
           createLinearGradient: () => ({ addColorStop: () => undefined }),
         }) as never;
