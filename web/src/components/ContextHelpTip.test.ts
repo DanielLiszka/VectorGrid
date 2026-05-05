@@ -43,7 +43,8 @@ describe('ContextHelpTip', () => {
     })
 
     expect(wrapper.attributes('data-help-mode')).toBe('full')
-    expect(wrapper.findComponent({ name: 'HoverCardRoot' }).attributes('open-delay')).toBe('1600')
+    expect(wrapper.findComponent({ name: 'HoverCardRoot' }).attributes('open-delay')).toBe('700')
+    expect(wrapper.findComponent({ name: 'HoverCardContent' }).attributes('role')).toBe('tooltip')
     expect(wrapper.text()).toContain('Scope')
     expect(wrapper.text()).toContain('Local search only.')
     expect(wrapper.text()).toContain('Use Ctrl+K for the global command palette.')
@@ -65,7 +66,7 @@ describe('ContextHelpTip', () => {
     })
 
     expect(wrapper.attributes('data-help-mode')).toBe('concise')
-    expect(wrapper.findComponent({ name: 'TooltipRoot' }).attributes('delay-duration')).toBe('750')
+    expect(wrapper.findComponent({ name: 'TooltipRoot' }).attributes('delay-duration')).toBe('450')
     expect(wrapper.text()).toContain('Local search only.')
     expect(wrapper.text()).not.toContain('Use Ctrl+K for the global command palette.')
 

@@ -142,6 +142,8 @@ interface AnalysisState {
   heatmapWrapVisible: boolean
   heatmapMode: string
   heatmapModeOptions: { value: string; label: string; disabled: boolean }[]
+  heatmapViewMode: string
+  heatmapViewModeOptions: { value: string; label: string; disabled: boolean }[]
   heatmapColor: string
   heatmapColorOptions: { value: string; label: string; disabled: boolean }[]
   heatmapRange: string
@@ -313,6 +315,9 @@ function applyVueAnalysisFieldUpdate(state: AnalysisState, field: string, value:
       return true
     case 'heatmapMode':
       state.heatmapMode = next || 'objective'
+      return true
+    case 'heatmapViewMode':
+      state.heatmapViewMode = next === '3d' ? '3d' : '2d'
       return true
     case 'heatmapRange':
       state.heatmapRange = next || 'q2_98'
@@ -559,6 +564,11 @@ export const useAnalysisStore = defineStore('analysis', {
     heatmapWrapVisible: false,
     heatmapMode: 'objective',
     heatmapModeOptions: [],
+    heatmapViewMode: '2d',
+    heatmapViewModeOptions: [
+      { value: '2d', label: '2D heatmap', disabled: false },
+      { value: '3d', label: '3D slices', disabled: true },
+    ],
     heatmapColor: 'cividis',
     heatmapColorOptions: [],
     heatmapRange: 'q2_98',
@@ -761,6 +771,8 @@ export const useAnalysisStore = defineStore('analysis', {
       this.heatmapWrapVisible = Boolean(snapshot.heatmapWrapVisible ?? this.heatmapWrapVisible)
       this.heatmapMode = String(snapshot.heatmapMode ?? this.heatmapMode ?? 'objective').trim() || 'objective'
       this.heatmapModeOptions = rawArray(snapshot.heatmapModeOptions, this.heatmapModeOptions)
+      this.heatmapViewMode = String(snapshot.heatmapViewMode ?? this.heatmapViewMode ?? '2d').trim() === '3d' ? '3d' : '2d'
+      this.heatmapViewModeOptions = rawArray(snapshot.heatmapViewModeOptions, this.heatmapViewModeOptions)
       this.heatmapColor = String(snapshot.heatmapColor ?? this.heatmapColor ?? 'cividis').trim() || 'cividis'
       this.heatmapColorOptions = rawArray(snapshot.heatmapColorOptions, this.heatmapColorOptions)
       this.heatmapRange = String(snapshot.heatmapRange ?? this.heatmapRange ?? 'q2_98').trim() || 'q2_98'

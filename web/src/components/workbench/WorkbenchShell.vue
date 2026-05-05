@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
-import { ListTodo } from "lucide-vue-next";
+import { ListTodo } from "@lucide/vue";
 import {
   TASK_CENTER_PANEL_ID,
   openTaskCenter as requestTaskCenterOpen,

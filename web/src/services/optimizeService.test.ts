@@ -939,6 +939,50 @@ describe("optimizeService", () => {
     expect(runValidationActionMock).toHaveBeenCalled();
   });
 
+  it("handles optimization command failures without leaking rejected UI actions", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      statusLine: "Ready.",
+      progressMeta: "",
+      runDisabled: false,
+      canCancel: false,
+      validateDisabled: false,
+    };
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        throw new Error("Optimization fixture failed.");
+      }
+      return {};
+    });
+
+    await expect(
+      runOptimization({
+        request: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-command-failure",
+          top_k: 20,
+        },
+        switchTab: false,
+      }),
+    ).resolves.toBeUndefined();
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.statusLine || "")).toContain(
+      "Optimization failed:",
+    );
+    expect(String(optimize.statusLine || "")).toContain(
+      "Optimization fixture failed.",
+    );
+    expect(optimize.runDisabled).toBe(false);
+    expect(optimize.validateDisabled).toBe(false);
+    expect(optimize.canCancel).toBe(false);
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "save_run_artifact",
+      expect.anything(),
+    );
+    expect(runValidationActionMock).not.toHaveBeenCalled();
+  });
+
   it("includes backend execution route details in status line when available", async () => {
     (pinia.state.value as Record<string, unknown>).optimize = {
       statusLine: "",

@@ -83,7 +83,7 @@ try {
   }
 
   if ($IncludeQaReport) {
-    Invoke-Step "Local QA summary report" { & npm.cmd --prefix web run qa:summary }
+    Invoke-Step "Local QA summary and dashboard report" { & npm.cmd --prefix web run check:qa-report }
   }
 
   Write-Host "Frontend E2E gate completed successfully."

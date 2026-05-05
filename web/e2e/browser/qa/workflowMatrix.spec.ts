@@ -1,21 +1,7 @@
 import { expect } from '@playwright/test'
-import { emptyAppScenario } from '../fixtures/scenarios'
+import { emptyAppScenario, liveReadyScenario, staleShellStateScenario } from '../fixtures'
 import { defineWorkflow } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow, expectNoStuckBusyState } from '../support/qaAssertions'
-
-const staleShellStateScenario = {
-  ...emptyAppScenario,
-  name: 'stale-shell-state',
-  description: 'Persisted workflow tab/step state contains stale tab vocabulary that must repair on launch.',
-  localStorage: {
-    ...emptyAppScenario.localStorage,
-    vta_workspace_tab_v1: 'workflow',
-    vta_workflow_tab_v1: 'settings',
-    vta_workflow_step_v1: 'settings',
-    vectorgrid_controls_tab_v1: 'advanced',
-    vectorgrid_results_tab_v1: 'debug',
-  },
-}
 
 defineWorkflow({
   id: 'shell.workspace.tabs',
@@ -205,6 +191,27 @@ defineWorkflow({
     await expect(action('live.safety.cancelOpenOrders')).toBeDisabled()
     await expect(action('live.safety.flattenPosition')).toBeDisabled()
     await expect(action('live.safety.emergencyHalt')).toBeDisabled()
+    await expectNoHorizontalDocumentOverflow(page)
+  },
+})
+
+defineWorkflow({
+  id: 'live.ready',
+  title: 'loads local-paper broker review evidence in the live workspace',
+  tags: ['@workflow'],
+  scenario: liveReadyScenario,
+  run: async ({ page, action }) => {
+    await action('shell.workspace.live').click()
+    await page.getByLabel('Execution target').selectOption('local_paper')
+    await page.getByLabel('Symbol').fill('AAPL')
+    await page.getByLabel('Symbol').press('Tab')
+
+    await expect(action('live.account.refreshOrders')).toBeEnabled()
+    await action('live.account.refreshOrders').click()
+    await expect(page.getByText(/Loaded 0 recent orders for AAPL/i).first()).toBeVisible()
+    await expect(page.getByText(/local-paper/i).first()).toBeVisible()
+    await expect(page.getByText(/get local paper execution snapshot/i).first()).toBeVisible()
+    await expectNoStuckBusyState(page)
     await expectNoHorizontalDocumentOverflow(page)
   },
 })

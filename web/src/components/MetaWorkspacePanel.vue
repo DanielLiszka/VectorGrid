@@ -1750,6 +1750,7 @@ onBeforeUnmount(() => {
             role="tab"
             :aria-selected="activeAggregateTab === item.key"
             :data-aggregate-tab="item.key"
+            :data-qa-action="`aggregate.tab.${item.key}`"
             :aria-controls="aggregatePanelId(item.key)"
             :tabindex="activeAggregateTab === item.key ? 0 : -1"
             @click="clickAggregateTab(item.key)"
@@ -1986,6 +1987,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="primary"
+            data-qa-action="aggregate.batch.run"
             :disabled="!canRunBatch"
             @click="runAction(() => analysisStore.runBatch())"
           >
@@ -1993,6 +1995,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
+            data-qa-action="aggregate.batch.stop"
             :disabled="!canBatchStop"
             @click="runAction(() => analysisStore.batchStop())"
           >
@@ -2000,6 +2003,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
+            data-qa-action="aggregate.batch.refresh"
             :disabled="!canBatchRefresh"
             @click="runAction(() => analysisStore.batchRefresh())"
           >
@@ -2007,6 +2011,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
+            data-qa-action="aggregate.batch.selectAll"
             :disabled="!canBatchSelectAll"
             @click="runAction(() => analysisStore.batchSelectAll())"
           >
@@ -2014,6 +2019,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
+            data-qa-action="aggregate.batch.selectNone"
             :disabled="!canBatchSelectNone"
             @click="runAction(() => analysisStore.batchSelectNone())"
           >
@@ -2021,6 +2027,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
+            data-qa-action="aggregate.batch.retryFailed"
             :disabled="!canBatchRetryFailed"
             @click="runAction(() => analysisStore.batchRetryFailed())"
           >
@@ -2028,6 +2035,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
+            data-qa-action="aggregate.batch.resumeIncomplete"
             :disabled="!canBatchResumeIncomplete"
             @click="runAction(() => analysisStore.batchResumeIncomplete())"
           >
@@ -2035,6 +2043,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
+            data-qa-action="aggregate.batch.revealSummary"
             :disabled="!canBatchRevealSummary"
             @click="runAction(() => analysisStore.batchRevealSummary())"
           >
@@ -2234,6 +2243,7 @@ onBeforeUnmount(() => {
                 />
                 <button
                   type="button"
+                  data-qa-action="aggregate.saved.saveTags"
                   :disabled="!savedArtifactFamilyConfig.canSaveTags"
                   @click="saveSelectedArtifactTags"
                 >
@@ -2247,6 +2257,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="buttonWithIcon"
+              data-qa-action="aggregate.saved.load"
               :disabled="!savedArtifactFamilyConfig.canLoad"
               @click="loadSelectedArtifact"
             >
@@ -2963,6 +2974,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="primary"
+              data-qa-action="aggregate.meta.run"
               :disabled="!canRunMeta"
               @click="runAction(() => analysisStore.runMeta())"
             >
@@ -2970,6 +2982,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="aggregate.meta.openReport"
               :disabled="!canOpenMetaReport"
               @click="runAction(() => analysisStore.openMetaReport())"
             >
@@ -2977,6 +2990,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
+              data-qa-action="aggregate.meta.revealFiles"
               :disabled="!canRevealMetaFiles"
               @click="runAction(() => analysisStore.revealMetaFiles())"
             >

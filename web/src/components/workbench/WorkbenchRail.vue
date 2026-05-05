@@ -8,7 +8,7 @@ import {
   FolderOpenDot,
   Play,
   Settings2,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import type { WorkbenchNavigationItem } from '../../utils/workbenchNavigationModel'
 
 const props = defineProps<{

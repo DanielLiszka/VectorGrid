@@ -143,6 +143,11 @@ describe('HeatmapWorkspacePanel', () => {
       { value: 'objective', label: 'Objective score', disabled: false },
       { value: 'plateau', label: 'Derived plateau', disabled: false },
     ]
+    analysisStore.heatmapViewMode = '2d'
+    analysisStore.heatmapViewModeOptions = [
+      { value: '2d', label: '2D heatmap', disabled: false },
+      { value: '3d', label: '3D slices', disabled: false },
+    ]
     const setSelectFieldSpy = vi.spyOn(analysisStore, 'setSelectField')
 
     mount(HeatmapWorkspacePanel, {
@@ -160,7 +165,16 @@ describe('HeatmapWorkspacePanel', () => {
     expect(setSelectFieldSpy).toHaveBeenCalledWith('heatmapMode', 'plateau')
     expect(document.body.textContent || '').toContain('supportive 8-neighbor agreement')
     expect(document.body.textContent || '').toContain('representative parameter pair')
-    expect(document.querySelector('#heatmapCanvasStackVue')?.getAttribute('aria-label') || '').toContain('Derived plateau heatmap')
+    expect(document.querySelector('#heatmapCanvasStackVue')?.getAttribute('aria-label') || '').toContain('Derived plateau display mode')
+
+    const viewSelect = document.querySelector<HTMLSelectElement>('#vueHeatmapViewMode')
+    expect(viewSelect).not.toBeNull()
+    viewSelect!.value = '3d'
+    viewSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPanel()
+
+    expect(setSelectFieldSpy).toHaveBeenCalledWith('heatmapViewMode', '3d')
+    expect(document.body.textContent || '').toContain('3D slices')
   })
 
   it('explains the plateau score as a derived robustness view', async () => {

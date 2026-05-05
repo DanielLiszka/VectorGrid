@@ -1,5 +1,7 @@
 import { expect, type Page } from '@playwright/test'
-import { emptyAppScenario } from '../fixtures/scenarios'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { emptyAppScenario, heatmapLayoutScenario } from '../fixtures'
 import { defineWorkflow } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow } from '../support/qaAssertions'
 
@@ -118,6 +120,41 @@ function expectNoInspectorOverlap(inspector: LayoutRect, reference: LayoutRect, 
   expect(overlaps, `${label} should not overlap the workbench inspector`).toBe(false)
 }
 
+async function expectCanvasHasPaint(page: Page): Promise<void> {
+  const painted = await page.locator('#heatmapCanvasVue').evaluate((node) => {
+    const canvas = node as HTMLCanvasElement
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx || canvas.width <= 0 || canvas.height <= 0) return false
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    for (let index = 3; index < image.data.length; index += 128) {
+      if (image.data[index] > 0) return true
+    }
+    return false
+  })
+  expect(painted, 'heatmap canvas should contain painted pixels').toBe(true)
+}
+
+async function expectWebglCanvasHasPaint(page: Page): Promise<void> {
+  const painted = await page.locator('#heatmapSurface3DCanvasVue').evaluate((node) => {
+    const canvas = node as HTMLCanvasElement
+    const gl =
+      canvas.getContext('webgl2', { preserveDrawingBuffer: true }) ||
+      canvas.getContext('webgl', { preserveDrawingBuffer: true })
+    if (!gl || canvas.width <= 0 || canvas.height <= 0) return false
+    const pixels = new Uint8Array(canvas.width * canvas.height * 4)
+    gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+    let paintedSamples = 0
+    for (let index = 0; index < pixels.length; index += 96) {
+      const alpha = pixels[index + 3] ?? 0
+      const rgb = (pixels[index] ?? 0) + (pixels[index + 1] ?? 0) + (pixels[index + 2] ?? 0)
+      if (alpha > 0 && rgb > 0) paintedSamples += 1
+      if (paintedSamples > 24) return true
+    }
+    return false
+  })
+  expect(painted, '3D heatmap WebGL canvas should contain painted pixels').toBe(true)
+}
+
 defineWorkflow({
   id: 'layout.mobile.workflow',
   title: 'keeps mobile workflow chrome within budget with visible navigation',
@@ -152,6 +189,68 @@ defineWorkflow({
     const snapshot = await readShellLayout(page)
     expectLayoutBudget(snapshot, { maxChrome: 260, minMainVisible: 720, maxFooter: 80 })
     expectVisibleNavTargets(snapshot)
+  },
+})
+
+defineWorkflow({
+  id: 'layout.desktop.heatmapSurface',
+  title: 'lets desktop heatmap surfaces use available panel space and labels masked bins',
+  tags: ['@workflow', '@responsive', '@layout'],
+  viewport: { width: 1600, height: 1000 },
+  scenario: heatmapLayoutScenario,
+  run: async ({ page, action }) => {
+    await action('shell.resultsTab.heatmap').click()
+    await expect(page.locator('#results_panel_heatmap')).toBeVisible()
+    await expect(page.locator('#heatmapCanvasStackVue')).toBeVisible()
+    await expect(page.locator('#heatmapDomainSummaryVue')).toContainText(/bins are unavailable/)
+    await expect(page.locator('#vueHeatmapFitMode')).toHaveValue('valid')
+    await expect(page.locator('#vueHeatmap2dSource')).toHaveValue('slice')
+    await expect(page.locator('#vueHeatmapSliceSelect')).toBeVisible()
+    await expect(page.locator('#heatmapMarginalSummaryVue')).toContainText(/Slice|Coverage/)
+
+    await page.locator('#vueHeatmap2dSource').selectOption('delta')
+    await expect(page.locator('#vueHeatmapBaselineSliceSelect')).toBeVisible()
+    await expect(page.locator('#heatmapMetaVue')).toContainText(/delta heatmap/)
+    await expect(page.locator('#heatmapMarginalSummaryVue')).toContainText(/Best Δ/)
+
+    const geometry = await page.locator('#heatmapCanvasStackVue').evaluate((element) => {
+      const rect = element.getBoundingClientRect()
+      const panelRect = document.querySelector('#results_panel_heatmap')?.getBoundingClientRect()
+      return {
+        width: rect.width,
+        height: rect.height,
+        right: rect.right,
+        panelWidth: panelRect?.width ?? window.innerWidth,
+        panelRight: panelRect?.right ?? window.innerWidth,
+      }
+    })
+
+    expect(geometry.width, 'heatmap should grow beyond the old 512px canvas footprint').toBeGreaterThanOrEqual(680)
+    expect(
+      geometry.width / Math.max(1, geometry.panelWidth),
+      'heatmap should use most of the available results panel width',
+    ).toBeGreaterThanOrEqual(0.86)
+    expect(Math.abs(geometry.width - geometry.height), 'heatmap should remain square').toBeLessThanOrEqual(2)
+    expect(geometry.right, 'heatmap should stay inside its results panel').toBeLessThanOrEqual(geometry.panelRight + 0.5)
+    await expectCanvasHasPaint(page)
+    await expectNoHorizontalDocumentOverflow(page)
+
+    await page.locator('#vueHeatmapViewMode').selectOption('3d')
+    await expect(page.locator('#heatmapSurface3DViewportVue')).toBeVisible()
+    await expect(page.locator('#heatmapSurface3DSliceSelectVue')).toBeVisible()
+    await expect(page.locator('#heatmapSurface3DMetaVue')).toContainText(/MA type \/ parameter slice/)
+    await expect(page.locator('#heatmapSurface3DViewportVue')).toHaveAttribute('data-render-ready', 'true')
+    await expect(page.locator('#heatmapSurface3DCanvasVue')).toBeVisible()
+    await expectWebglCanvasHasPaint(page)
+    await expectNoHorizontalDocumentOverflow(page)
+    await page.locator('#heatmapSurface3DSliceSelectVue').scrollIntoViewIfNeeded()
+    await expect(page.locator('#heatmapSurface3DSliceSelectVue')).toBeVisible()
+    const visualEvidenceDir = path.resolve(process.cwd(), '../output/playwright/heatmap-visual')
+    await fs.mkdir(visualEvidenceDir, { recursive: true })
+    await page.screenshot({
+      path: path.join(visualEvidenceDir, 'heatmap-3d-slices.png'),
+      fullPage: true,
+    })
   },
 })
 

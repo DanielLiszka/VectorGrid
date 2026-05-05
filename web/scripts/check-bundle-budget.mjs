@@ -7,8 +7,10 @@ const indexHtmlPath = path.join(distDir, 'index.html')
 
 const ENTRY_LIMIT_KB = 600
 const LAZY_LIMIT_KB = 550
-const TOTAL_JS_WARN_KB = 2800
-const TOTAL_JS_LIMIT_KB = 3200
+// The optional 3D heatmap is a lazy Three.js surface. Keep entry and per-lazy
+// caps tight, while allowing total output to include that opt-in renderer.
+const TOTAL_JS_WARN_KB = 3200
+const TOTAL_JS_LIMIT_KB = 3450
 
 function fail(message) {
   console.error(`[bundle-budget] ${message}`)

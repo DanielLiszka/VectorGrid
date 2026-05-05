@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { emptyAppScenario } from '../fixtures/scenarios'
+import { emptyAppScenario } from '../fixtures'
 import { defineWorkflow, type WorkflowContext } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow } from '../support/qaAssertions'
 

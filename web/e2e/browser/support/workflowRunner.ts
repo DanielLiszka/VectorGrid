@@ -2,7 +2,7 @@ import { expect, test, type BrowserContext, type Locator, type Page } from '@pla
 import { dismissStartupOverlay, installMockedTauri } from './mockTauri'
 import { waitForShellReady } from './appHarness'
 import { installQaGuards, type QaGuard } from './qaAssertions'
-import type { MockTauriScenario } from '../fixtures/scenarios'
+import type { MockTauriScenario } from '../fixtures'
 
 export interface WorkflowContext {
   page: Page
@@ -18,6 +18,8 @@ export interface WorkflowCase {
   title: string
   tags: string[]
   scenario: MockTauriScenario
+  priority?: 'critical' | 'important' | 'extended'
+  surfaces?: string[]
   viewport?: { width: number; height: number }
   run: (ctx: WorkflowContext) => Promise<void>
 }
@@ -54,6 +56,8 @@ export async function gotoMockedShellWithScenario(
   await installMockedTauri(context, {
     holdStartupOverlay: true,
     commandResults: scenario.commandResults,
+    commandDelays: scenario.commandDelays,
+    commandEvents: scenario.commandEvents,
   })
   const urlSearch = String(scenario.urlSearch || '').trim()
   const targetUrl = urlSearch ? `/${urlSearch.startsWith('?') ? urlSearch : `?${urlSearch}`}` : '/'
@@ -83,7 +87,20 @@ export function defineWorkflow(testCase: WorkflowCase): void {
         ((window as typeof window & { __VTA_TEST_INVOKES?: string[] }).__VTA_TEST_INVOKES || []).slice(),
       )
       const missingInvokes = testCase.scenario.expectedInvokes.filter((command) => !invokes.includes(command))
-      expect(missingInvokes, `missing expected Tauri invokes for scenario ${testCase.scenario.name}`).toEqual([])
+      expect(
+        missingInvokes,
+        `missing expected Tauri invokes for ${testCase.scenario.family}/${testCase.scenario.name}`,
+      ).toEqual([])
+    }
+    if (testCase.scenario.forbiddenInvokes?.length) {
+      const invokes = await page.evaluate(() =>
+        ((window as typeof window & { __VTA_TEST_INVOKES?: string[] }).__VTA_TEST_INVOKES || []).slice(),
+      )
+      const forbiddenInvokes = testCase.scenario.forbiddenInvokes.filter((command) => invokes.includes(command))
+      expect(
+        forbiddenInvokes,
+        `forbidden Tauri invokes for ${testCase.scenario.family}/${testCase.scenario.name}`,
+      ).toEqual([])
     }
     await guard.assertClean()
   })

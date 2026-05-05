@@ -142,12 +142,57 @@ const manifestIssues = actionCoverageManifest.flatMap((entry, index) => validate
 const requiredEntries = actionCoverageManifest.filter((entry) => entry.required)
 const waivedEntries = actionCoverageManifest.filter((entry) => !!entry.waiver)
 const requiredCoveredEntries = requiredEntries.filter((entry) => entry.coveredBy.length > 0)
+const now = Date.now()
+const waiverReports = waivedEntries
+  .map((entry) => {
+    const expiresAtMs = entry.waiver?.expires ? Date.parse(entry.waiver.expires) : Number.NaN
+    const daysUntilExpiry = Number.isFinite(expiresAtMs)
+      ? Math.ceil((expiresAtMs - now) / 86_400_000)
+      : null
+    return {
+      actionId: entry.actionId,
+      surface: entry.surface,
+      priority: entry.priority,
+      owner: entry.waiver?.owner ?? '',
+      reason: entry.waiver?.reason ?? '',
+      expires: entry.waiver?.expires ?? '',
+      daysUntilExpiry,
+      expired: typeof daysUntilExpiry === 'number' && daysUntilExpiry < 0,
+      nearExpiry: typeof daysUntilExpiry === 'number' && daysUntilExpiry >= 0 && daysUntilExpiry <= 30,
+    }
+  })
+  .sort((a, b) => {
+    const aDays = a.daysUntilExpiry ?? Number.POSITIVE_INFINITY
+    const bDays = b.daysUntilExpiry ?? Number.POSITIVE_INFINITY
+    if (aDays !== bDays) return aDays - bDays
+    return a.actionId.localeCompare(b.actionId)
+  })
 const priorityCounts = actionCoverageManifest.reduce<Record<string, number>>((acc, entry) => {
   acc[entry.priority] = (acc[entry.priority] ?? 0) + 1
   return acc
 }, {})
+const requiredCoverageByPriority = actionCoverageManifest.reduce<Record<string, { required: number; covered: number; waived: number }>>((acc, entry) => {
+  const bucket = acc[entry.priority] ?? { required: 0, covered: 0, waived: 0 }
+  if (entry.required) {
+    bucket.required += 1
+    if (entry.coveredBy.length > 0) bucket.covered += 1
+    if (entry.waiver) bucket.waived += 1
+  }
+  acc[entry.priority] = bucket
+  return acc
+}, {})
 const surfaceCounts = actionCoverageManifest.reduce<Record<string, number>>((acc, entry) => {
   acc[entry.surface] = (acc[entry.surface] ?? 0) + 1
+  return acc
+}, {})
+const requiredCoverageBySurface = actionCoverageManifest.reduce<Record<string, { required: number; covered: number; waived: number }>>((acc, entry) => {
+  const bucket = acc[entry.surface] ?? { required: 0, covered: 0, waived: 0 }
+  if (entry.required) {
+    bucket.required += 1
+    if (entry.coveredBy.length > 0) bucket.covered += 1
+    if (entry.waiver) bucket.waived += 1
+  }
+  acc[entry.surface] = bucket
   return acc
 }, {})
 
@@ -163,7 +208,12 @@ const report = {
   coveredByIds,
   unknownCoverageReferences,
   priorityCounts,
+  requiredCoverageByPriority,
   surfaceCounts,
+  requiredCoverageBySurface,
+  waivers: waiverReports,
+  nearExpiryWaivers: waiverReports.filter((waiver) => waiver.nearExpiry),
+  expiredWaivers: waiverReports.filter((waiver) => waiver.expired),
   missingFromManifest,
   notFoundAsLiteralSource,
   duplicateIds: [...new Set(duplicateIds)].sort(),
@@ -177,6 +227,7 @@ fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
 
 const failures = [
   ...missingFromManifest.map((id) => `source action is missing from manifest: ${id}`),
+  ...unknownCoverageReferences.map((id) => `coveredBy references unknown workflow id: ${id}`),
   ...[...new Set(duplicateIds)].map((id) => `duplicate manifest actionId: ${id}`),
   ...invalidSourceIds.map((item) => `invalid source action id ${item.id} at ${item.file}:${item.line}`),
   ...manifestIssues.map((issue) => `${issue.id}: ${issue.message}`),

@@ -1354,6 +1354,7 @@ onMounted(() => {
         <button
           type="button"
           class="primary"
+          data-qa-action="mlSignal.dataset.export"
           :disabled="!canExportDataset"
           @click="void onExportDataset()"
         >
@@ -1371,6 +1372,7 @@ onMounted(() => {
         </div>
         <button
           type="button"
+          data-qa-action="mlSignal.bundles.refresh"
           :disabled="!hasTauriRuntime || bundleRefreshBusy"
           @click="void refreshBundleOptions()"
         >
@@ -1429,6 +1431,7 @@ onMounted(() => {
           <label>&nbsp;</label>
           <button
             type="button"
+            data-qa-action="mlSignal.bundleStatus.refresh"
             :disabled="!hasTauriRuntime"
             @click="void refreshBundleStatus()"
           >
@@ -1645,6 +1648,7 @@ onMounted(() => {
         <button
           type="button"
           class="primary"
+          data-qa-action="mlSignal.scoreCache.build"
           :disabled="!canBuildScoreCache"
           @click="void onBuildScoreCache()"
         >
@@ -1855,6 +1859,7 @@ onMounted(() => {
         <button
           type="button"
           class="primary"
+          data-qa-action="mlSignal.validation.run"
           :disabled="!canRunValidation"
           @click="void onRunValidation()"
         >
@@ -2139,6 +2144,7 @@ onMounted(() => {
         <button
           type="button"
           class="primary"
+          data-qa-action="mlSignal.policySweep.run"
           :disabled="!canRunSweep"
           @click="void onRunPolicySweep()"
         >

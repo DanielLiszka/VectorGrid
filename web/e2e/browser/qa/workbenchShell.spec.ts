@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { emptyAppScenario } from '../fixtures/scenarios'
+import { emptyAppScenario } from '../fixtures'
 import { workbenchSelectors } from '../../desktop/support/selectors'
 import { defineWorkflow } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow } from '../support/qaAssertions'

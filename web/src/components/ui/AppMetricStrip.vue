@@ -1,27 +1,45 @@
 <script setup lang="ts">
+import { computed, type CSSProperties } from 'vue'
+
 export interface AppMetricItem {
   key: string
   label: string
   value: string
   tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent'
   trend?: string
+  detail?: string
   title?: string
 }
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     items: AppMetricItem[]
     ariaLabel?: string
+    minItemWidth?: string
+    size?: 'default' | 'compact'
+    surface?: 'default' | 'sunken'
   }>(),
   {
     items: () => [],
     ariaLabel: '',
+    minItemWidth: '8.5rem',
+    size: 'default',
+    surface: 'default',
   },
 )
+
+const stripStyle = computed<CSSProperties>(() => ({
+  '--app-metric-min-width': props.minItemWidth,
+}))
 </script>
 
 <template>
-  <dl class="appMetricStrip" :aria-label="ariaLabel || undefined">
+  <dl
+    class="appMetricStrip"
+    :class="[`appMetricStrip-${size}`, `appMetricStrip-surface-${surface}`]"
+    :style="stripStyle"
+    :aria-label="ariaLabel || undefined"
+  >
     <div
       v-for="item in items"
       :key="item.key"
@@ -33,6 +51,7 @@ withDefaults(
         <span class="appMetricPrimaryValue">{{ item.value || '—' }}</span>
         <span v-if="item.trend" class="appMetricTrend">{{ item.trend }}</span>
       </dd>
+      <small v-if="item.detail" class="appMetricDetail" :title="item.detail">{{ item.detail }}</small>
     </div>
   </dl>
 </template>
@@ -40,7 +59,7 @@ withDefaults(
 <style scoped>
 .appMetricStrip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(var(--app-metric-min-width, 8.5rem), 1fr));
   gap: 0.45rem;
   margin: 0;
 }
@@ -51,6 +70,20 @@ withDefaults(
   border-radius: 10px;
   background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
   padding: 0.45rem 0.55rem;
+}
+
+.appMetricStrip-compact {
+  gap: 0.4rem;
+}
+
+.appMetricStrip-compact .appMetricItem {
+  border-radius: 8px;
+  padding: 0.4rem 0.48rem;
+}
+
+.appMetricStrip-surface-sunken .appMetricItem {
+  background: color-mix(in oklab, var(--surface-sunken) 72%, transparent);
+  border-color: color-mix(in oklab, var(--border) 78%, transparent);
 }
 
 .appMetricLabel {
@@ -88,6 +121,15 @@ withDefaults(
   flex: 0 1 auto;
   color: var(--muted);
   font-size: 0.72rem;
+}
+
+.appMetricDetail {
+  display: block;
+  margin-top: 0.16rem;
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .appMetricItem-success {

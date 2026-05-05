@@ -8,7 +8,7 @@ import {
   Download,
   Play,
   RefreshCw,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { useShellMount } from "../composables/useShellMount";
 import {
   analyzePortfolioFeasibility,

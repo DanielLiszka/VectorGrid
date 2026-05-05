@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Maximize2, Minimize2, Play, Search, Settings2, Square, X } from 'lucide-vue-next'
+import { Maximize2, Minimize2, Play, Search, Settings2, Square, X } from '@lucide/vue'
 import { type CloseRequestedEvent, getCurrentWindow } from '@tauri-apps/api/window'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
 import ConfirmationDialog from './ConfirmationDialog.vue'

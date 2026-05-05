@@ -2,6 +2,10 @@ import { defineStore } from "pinia";
 import { markRaw } from "vue";
 import { useDataStore } from "./dataStore";
 import { resolveRuntimePinia } from "./runtimePinia";
+import type {
+  ValidationOverfitEvidenceItem,
+  ValidationOverfitEvidenceStatus,
+} from "../utils/validationEvidenceSummary";
 
 let validationServicePromise: Promise<
   typeof import("../services/validationService")
@@ -375,6 +379,9 @@ interface ValidationState {
   validationCrossSummary: string;
   validationSkippedSummary: string;
   validationEvidenceSummary: string;
+  validationOverfitSummary: string;
+  validationOverfitStatus: ValidationOverfitEvidenceStatus;
+  validationOverfitItems: ValidationOverfitEvidenceItem[];
   validationWarningSummary: string;
   validationReoptMeta: string;
   validationShortlistMeta: string;
@@ -459,6 +466,9 @@ export const useValidationStore = defineStore("validation", {
     validationCrossSummary: "-",
     validationSkippedSummary: "-",
     validationEvidenceSummary: "Validation evidence not run.",
+    validationOverfitSummary: "Overfit evidence not run.",
+    validationOverfitStatus: "not_run",
+    validationOverfitItems: [],
     validationWarningSummary: "-",
     validationReoptMeta: "-",
     validationShortlistMeta: "-",
@@ -607,6 +617,25 @@ export const useValidationStore = defineStore("validation", {
             this.validationEvidenceSummary ??
             "Validation evidence not run.",
         ).trim() || "Validation evidence not run.";
+      this.validationOverfitSummary =
+        String(
+          snapshot.validationOverfitSummary ??
+            this.validationOverfitSummary ??
+            "Overfit evidence not run.",
+        ).trim() || "Overfit evidence not run.";
+      const nextOverfitStatus = String(
+        snapshot.validationOverfitStatus ??
+          this.validationOverfitStatus ??
+          "not_run",
+      ).trim();
+      this.validationOverfitStatus =
+        nextOverfitStatus === "available" || nextOverfitStatus === "attention"
+          ? nextOverfitStatus
+          : "not_run";
+      this.validationOverfitItems = rawArray(
+        snapshot.validationOverfitItems,
+        this.validationOverfitItems,
+      );
       this.validationWarningSummary =
         String(
           snapshot.validationWarningSummary ??

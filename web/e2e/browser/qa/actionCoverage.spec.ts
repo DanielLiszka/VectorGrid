@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { actionCoverageManifest } from './actionCoverageManifest'
-import { emptyAppScenario, optionsValidationReadyScenario } from '../fixtures/scenarios'
+import { emptyAppScenario, optionsValidationReadyScenario } from '../fixtures'
 import { gotoMockedShellWithScenario } from '../support/workflowRunner'
 import { installQaGuards } from '../support/qaAssertions'
 
@@ -20,7 +20,12 @@ async function visibleQaActions(page: import('@playwright/test').Page): Promise<
   )
 }
 
-async function assertManifestCoverage(discovered: Set<string>, reportName: string): Promise<void> {
+async function assertManifestCoverage(
+  discovered: Set<string>,
+  reportName: string,
+  page: import('@playwright/test').Page,
+  testInfo: import('@playwright/test').TestInfo,
+): Promise<void> {
   const entries = new Map(actionCoverageManifest.map((entry) => [entry.actionId, entry]))
   const unknown = [...discovered].filter((id) => !entries.has(id)).sort()
   const requiredUncovered = [...entries.values()]
@@ -34,6 +39,12 @@ async function assertManifestCoverage(discovered: Set<string>, reportName: strin
 
   const report = {
     schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    reportName,
+    projectName: testInfo.project.name,
+    testTitle: testInfo.title,
+    specFile: path.relative(process.cwd(), testInfo.file).replace(/\\/g, '/'),
+    viewport: page.viewportSize(),
     discovered: [...discovered].sort(),
     manifestEntries: actionCoverageManifest.length,
     unknown,
@@ -49,7 +60,7 @@ async function assertManifestCoverage(discovered: Set<string>, reportName: strin
   expect(expiredWaivers, 'expired action coverage waivers').toEqual([])
 }
 
-test('visible QA actions are represented in the action coverage manifest @workflow', async ({ page, context }) => {
+test('visible QA actions are represented in the action coverage manifest @workflow', async ({ page, context }, testInfo) => {
   const guard = installQaGuards(page)
   await gotoMockedShellWithScenario(page, context, emptyAppScenario)
 
@@ -103,11 +114,11 @@ test('visible QA actions are represented in the action coverage manifest @workfl
   await collect()
   await expect(page.locator('#uiModeBar')).toHaveCount(0)
 
-  await assertManifestCoverage(discovered, 'action-coverage')
+  await assertManifestCoverage(discovered, 'action-coverage', page, testInfo)
   await guard.assertClean()
 })
 
-test('options-ready QA actions are represented in the action coverage manifest @workflow', async ({ page, context }) => {
+test('options-ready QA actions are represented in the action coverage manifest @workflow', async ({ page, context }, testInfo) => {
   const guard = installQaGuards(page)
   await gotoMockedShellWithScenario(page, context, optionsValidationReadyScenario)
 
@@ -129,6 +140,6 @@ test('options-ready QA actions are represented in the action coverage manifest @
   await expect(page.getByText(/Loaded saved options expression artifact/i).first()).toBeVisible()
   await collect()
 
-  await assertManifestCoverage(discovered, 'action-coverage-options')
+  await assertManifestCoverage(discovered, 'action-coverage-options', page, testInfo)
   await guard.assertClean()
 })

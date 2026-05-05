@@ -3040,10 +3040,9 @@ export async function runOptimization(
   } catch (error) {
     const statusLine = isCancellationError(error)
       ? "Cancelled."
-      : String(error || "");
+      : `Optimization failed: ${String(error || "")}`;
     patchStoreState("optimize", { statusLine });
     writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
-    throw error;
   } finally {
     markOptimizeIdle();
   }

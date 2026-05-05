@@ -109,6 +109,17 @@ describe('domain stores', () => {
       activeResultsTab: 'validate',
       validationHint: 'Run validation after optimization',
       validationMeta: 'validated 10',
+      validationOverfitSummary: 'Overfit evidence needs review.',
+      validationOverfitStatus: 'attention',
+      validationOverfitItems: [
+        {
+          id: 'pbo',
+          label: 'CSCV / PBO',
+          value: '12.0%',
+          detail: 'max 20.0%',
+          tone: 'good',
+        },
+      ],
       validationShortlistMeta: 'shortlist 4 rows',
       validationColumns: [{ label: '#', alignLeft: true }],
       validationRows: [{ cells: [{ text: '1', className: 'mono left', title: '' }] }],
@@ -148,6 +159,9 @@ describe('domain stores', () => {
     expect(store.activeResultsTab).toBe('validate')
     expect(store.validationHint).toContain('Run')
     expect(store.validationMeta).toContain('10')
+    expect(store.validationOverfitSummary).toContain('needs review')
+    expect(store.validationOverfitStatus).toBe('attention')
+    expect(store.validationOverfitItems.length).toBe(1)
     expect(store.validationShortlistMeta).toContain('shortlist')
     expect(store.validationColumns.length).toBe(1)
     expect(store.validationRows.length).toBe(1)
@@ -261,6 +275,7 @@ describe('domain stores', () => {
       stabilityWrapVisible: true,
       tradeStatsWrapVisible: false,
       heatmapWrapVisible: true,
+      heatmapViewMode: '3d',
       heatmapColor: 'viridis',
       canHeatmapExportPng: false,
       metaStrategyKind: 'CompositeCpu',
@@ -366,6 +381,7 @@ describe('domain stores', () => {
     expect(store.stabilityWrapVisible).toBe(true)
     expect(store.tradeStatsWrapVisible).toBe(false)
     expect(store.heatmapWrapVisible).toBe(true)
+    expect(store.heatmapViewMode).toBe('3d')
     expect(store.heatmapColor).toBe('viridis')
     expect(store.canHeatmapExportPng).toBe(false)
     expect(store.metaStrategyKind).toBe('CompositeCpu')

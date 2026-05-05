@@ -13,11 +13,27 @@ import {
 
 const ROOT = process.cwd()
 const DIST_DIR = path.resolve(ROOT, 'dist')
+const REPORT_PATH = path.resolve(ROOT, '..', 'output', 'qa', 'a11y-smoke.json')
 const PORT = 4181
 const INCLUDE_COLOR_CONTRAST =
   process.env.VECTORGRID_A11Y_INCLUDE_CONTRAST === '1' || process.argv.includes('--include-color-contrast')
 const INCLUDE_WCAG_22 =
   process.env.VECTORGRID_A11Y_INCLUDE_WCAG_22 === '1' || process.argv.includes('--include-wcag-2-2')
+const scannedSurfaces = []
+
+function writeReport(status, error = '') {
+  const report = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    status,
+    includeColorContrast: INCLUDE_COLOR_CONTRAST,
+    includeWcag22: INCLUDE_WCAG_22,
+    scannedSurfaces,
+    error,
+  }
+  fs.mkdirSync(path.dirname(REPORT_PATH), { recursive: true })
+  fs.writeFileSync(REPORT_PATH, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+}
 
 function mimeType(file) {
   if (file.endsWith('.html')) return 'text/html; charset=utf-8'
@@ -61,6 +77,12 @@ async function scan(page, name, options = {}) {
     builder.disableRules(['color-contrast'])
   }
   const result = await builder.analyze()
+  scannedSurfaces.push({
+    name,
+    violationCount: result.violations.length,
+    passes: result.passes.length,
+    incomplete: result.incomplete.length,
+  })
 
   if (!result.violations.length) return
 
@@ -263,6 +285,12 @@ async function main() {
   await scan(page, 'settings workspace')
   await wcag22Scan(page, 'settings workspace')
 
+  await dispatchClick(page, '#workspaceBar button[data-workspace="workflow"]')
+  await dispatchClick(page, '#workflowStepBar button[data-workflow-step="validate"]')
+  await page.waitForTimeout(200)
+  await scan(page, 'validation workflow')
+  await wcag22Scan(page, 'validation workflow')
+
   await dispatchClick(page, 'button[aria-label=\"Open command palette\"]')
   await page.waitForTimeout(150)
   await scan(page, 'command palette')
@@ -275,10 +303,13 @@ async function main() {
 
   await browser.close()
   await new Promise((resolve) => server.close(resolve))
+  writeReport('passed')
   console.log('Accessibility smoke checks passed.')
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error))
+  const message = error instanceof Error ? error.message : String(error)
+  writeReport('failed', message)
+  console.error(message)
   process.exit(1)
 })

@@ -35,6 +35,11 @@ import type {
   HeatmapCanvasRequestModel,
   HeatmapCellParams,
 } from "../visualizations/heatmapCanvasModel";
+import {
+  buildHeatmapSlice3dModel,
+  type HeatmapSlice3dModel,
+  type HeatmapSliceSourceRow,
+} from "../visualizations/heatmapSliceModel";
 import { normalizeIndexedPriceBars } from "../visualizations/priceSeriesModel";
 import {
   buildDrillChartModel,
@@ -108,6 +113,8 @@ interface AnalysisStoreState {
   heatmapWrapVisible?: unknown;
   heatmapMode?: unknown;
   heatmapModeOptions?: unknown;
+  heatmapViewMode?: unknown;
+  heatmapViewModeOptions?: unknown;
   heatmapColor?: unknown;
   heatmapColorOptions?: unknown;
   heatmapRange?: unknown;
@@ -3008,6 +3015,69 @@ function heatmapMarkerRows(
   return out;
 }
 
+function collectHeatmapSliceSourceRows(
+  req: Record<string, unknown>,
+  res: Record<string, unknown>,
+): HeatmapSliceSourceRow[] {
+  const all = Array.isArray(res.all) ? res.all : [];
+  if (!all.length) return [];
+  const allScores = Array.isArray(res.all_scores) ? res.all_scores : [];
+  const objective = objectiveOf(req);
+  const scoreMode = scoreModeOf(req);
+  const scoreContext = scoreObservationContextOf(res);
+  const rows: HeatmapSliceSourceRow[] = [];
+  for (let i = 0; i < all.length; i += 1) {
+    const row = Array.isArray(all[i]) ? (all[i] as unknown[]) : [];
+    const params = asRecord(row[0]);
+    const metrics = asRecord(row[1]);
+    if (!Object.keys(params).length || !Object.keys(metrics).length) continue;
+    const explicitScore = Number(allScores[i]);
+    rows.push({
+      params,
+      metrics,
+      score: Number.isFinite(explicitScore)
+        ? explicitScore
+        : scoreOf(metrics, objective, scoreMode, params, scoreContext),
+    });
+  }
+  return rows;
+}
+
+function buildHeatmapSliceModel(
+  req: Record<string, unknown>,
+  res: Record<string, unknown>,
+  model: HeatmapModel,
+): HeatmapSlice3dModel | null {
+  return buildHeatmapSlice3dModel({
+    model,
+    rows: collectHeatmapSliceSourceRows(req, res),
+    scoreLabel: scoreLabelOf(req),
+  });
+}
+
+function applyHeatmapViewModeAvailability(
+  store: AnalysisStoreState,
+  slice3d: HeatmapSlice3dModel | null,
+): void {
+  const sliceReady = !!slice3d;
+  store.heatmapViewModeOptions = [
+    { value: "2d", label: "2D heatmap", disabled: false },
+    {
+      value: "3d",
+      label: "3D slices",
+      disabled: !sliceReady,
+    },
+  ];
+  if (!sliceReady && text(store.heatmapViewMode) === "3d") {
+    store.heatmapViewMode = "2d";
+  } else if (text(store.heatmapViewMode) !== "3d") {
+    store.heatmapViewMode = "2d";
+  }
+  if (slice3d) {
+    slice3d.unavailableReason = "";
+  }
+}
+
 function heatmapBaseSignature(
   run: WorkflowRunState | null,
   req: Record<string, unknown>,
@@ -3060,6 +3130,7 @@ function setHeatmapCanvasModel(
   const topK = requestedTopK(req);
   const heatmapBins = requestedHeatmapBins(req);
   if (!model) {
+    applyHeatmapViewModeAvailability(store, null);
     heatmapRenderState = null;
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
@@ -3077,6 +3148,7 @@ function setHeatmapCanvasModel(
 
   const finite = finiteHeatmapValues(model);
   if (!finite.length) {
+    applyHeatmapViewModeAvailability(store, null);
     heatmapRenderState = null;
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
@@ -3090,6 +3162,7 @@ function setHeatmapCanvasModel(
   const display = resolveHeatmapDisplay(mode, req, model);
   const displayFinite = finiteValues(display.values);
   if (!displayFinite.length) {
+    applyHeatmapViewModeAvailability(store, null);
     heatmapRenderState = null;
     store.heatmapWrapVisible = false;
     store.canHeatmapExportPng = false;
@@ -3101,6 +3174,9 @@ function setHeatmapCanvasModel(
     store.heatmapStatusLine = "Heatmap unavailable for this run.";
     return true;
   }
+
+  const slice3d = buildHeatmapSliceModel(req, res, model);
+  applyHeatmapViewModeAvailability(store, slice3d);
 
   const meta = buildHeatmapMeta(
     mode,
@@ -3129,6 +3205,7 @@ function setHeatmapCanvasModel(
     range: display.range,
     palette: display.palette,
     plateauDiagnostics: display.plateauDiagnostics,
+    slice3d,
   };
 
   store.heatmapWrapVisible = true;
@@ -3152,6 +3229,10 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
   store.heatmapModeOptions = [
     { value: "objective", label: "Objective score", disabled: false },
     { value: "plateau", label: "Derived plateau", disabled: false },
+  ];
+  store.heatmapViewModeOptions = [
+    { value: "2d", label: "2D heatmap", disabled: false },
+    { value: "3d", label: "3D slices", disabled: true },
   ];
   const modeOptions = Array.isArray(store.heatmapModeOptions)
     ? (store.heatmapModeOptions as Array<{ value?: unknown }>)

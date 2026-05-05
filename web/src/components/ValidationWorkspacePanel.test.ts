@@ -212,7 +212,6 @@ describe("ValidationWorkspacePanel", () => {
     expect(bodyText).toContain("Expected Skips");
     expect(bodyText).toContain("Expected Notes");
     expect(bodyText).toContain("Admission Compare");
-    expect(bodyText).toContain("selected 0/1");
     expect(bodyText).toContain("Selected 0/1");
 
     const buttonByText = (label: string) =>
@@ -402,6 +401,32 @@ describe("ValidationWorkspacePanel", () => {
       "Cross reruns: preserved_finalists omit walk_forward + reopt WF + SPA + perturb + trade bootstrap";
     validationStore.validationWarningSummary =
       "cross_ticker_filtered_all_candidates";
+    validationStore.validationOverfitSummary =
+      "Overfit evidence needs review; approved; 58,300 trials; PBO 12.0%; PSR 0.910 · DSR 0.650.";
+    validationStore.validationOverfitStatus = "attention";
+    validationStore.validationOverfitItems = [
+      {
+        id: "verdict",
+        label: "Run Verdict",
+        value: "approved",
+        detail: "hard gates 2/4 · approved 1/2 · high_pbo",
+        tone: "warn",
+      },
+      {
+        id: "pbo",
+        label: "CSCV / PBO",
+        value: "12.0%",
+        detail: "max 20.0% · 100/128 combinations",
+        tone: "good",
+      },
+      {
+        id: "track_record",
+        label: "Track Record",
+        value: "25,000/20,000 bars",
+        detail: "meets minimum evidence length",
+        tone: "good",
+      },
+    ];
     validationStore.validationMeta =
       "backend=Cpu • route=Auto->CpuOnly • heads=legacy_topk • rec=single_candidate_supported";
     validationStore.validationReoptMeta = "reopt_wf: windows=3 • winners=2";
@@ -441,8 +466,28 @@ describe("ValidationWorkspacePanel", () => {
     );
     expect(bodyText).toContain("requested=preserved_finalists • ran 1/1");
     expect(bodyText).toContain("cross_ticker_filtered_all_candidates");
+    expect(bodyText).toContain("Overfit Evidence");
+    expect(bodyText).toContain("Needs review");
+    expect(bodyText).toContain(
+      "Overfit evidence needs review; approved; 58,300 trials; PBO 12.0%; PSR 0.910 · DSR 0.650.",
+    );
+    expect(bodyText).toContain("hard gates 2/4 · approved 1/2 · high_pbo");
+    expect(bodyText).toContain("25,000/20,000 bars");
+    expect(
+      document
+        .querySelector('[data-qa-panel="validation.overfitEvidence"]')
+        ?.getAttribute("data-qa-state"),
+    ).toBe("attention");
+    expect(
+      document.querySelector('[data-qa-state="validation.overfitEvidence.pbo"]')
+        ?.textContent,
+    ).toContain("12.0%");
+    expect(
+      document
+        .querySelector('[data-qa-state="validation.overfitEvidence.pbo"]')
+        ?.getAttribute("title"),
+    ).toContain("max 20.0%");
     expect(bodyText).toContain("shortlist=1 • approved=1");
-    expect(bodyText).toContain("Table visible: yes");
     expect(bodyText).toContain("Validation JSON preview");
     expect(bodyText).toContain('{"backend_used":"Cpu","approved":true}');
     expect(

@@ -1,16 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { MockTauriScenario } from './types'
 
-export interface MockTauriScenario {
-  name: string
-  description: string
-  urlSearch?: string
-  localStorage?: Record<string, string>
-  sessionStorage?: Record<string, string>
-  commandResults: Record<string, unknown>
-  expectedInvokes?: string[]
-}
+export type { FixtureFamilyId, MockTauriScenario } from './types'
 
 const fixtureDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -124,6 +117,7 @@ export const baseCommandResults: Record<string, unknown> = {
 
 export const emptyAppScenario: MockTauriScenario = {
   name: 'empty-app',
+  family: 'empty',
   description: 'Fresh app with no dataset, latest run, or saved live sessions.',
   localStorage: {
     vta_ui_mode_v1: 'advanced',
@@ -141,6 +135,7 @@ export const emptyAppScenario: MockTauriScenario = {
 export const dataLoadFailureScenario: MockTauriScenario = {
   ...emptyAppScenario,
   name: 'data-load-failure',
+  family: 'dataset',
   description: 'Sample CSV loading fails after the user activates the sample-data action.',
   commandResults: {
     ...emptyAppScenario.commandResults,
@@ -154,6 +149,7 @@ export const dataLoadFailureScenario: MockTauriScenario = {
 export const gpuStatusFailureScenario: MockTauriScenario = {
   ...emptyAppScenario,
   name: 'gpu-status-failure',
+  family: 'settings',
   description: 'GPU status probing fails after the user requests a refresh.',
   commandResults: {
     ...emptyAppScenario.commandResults,
@@ -166,6 +162,7 @@ export const gpuStatusFailureScenario: MockTauriScenario = {
 
 export const validationDatasetMismatchScenario: MockTauriScenario = {
   name: 'validation-dataset-mismatch',
+  family: 'validation',
   description: 'A saved optimization artifact is loaded without its matching dataset.',
   localStorage: {
     vta_ui_mode_v1: 'advanced',
@@ -367,6 +364,7 @@ const validationSuccessResult = {
 
 export const validationSuccessScenario: MockTauriScenario = {
   name: 'validation-success',
+  family: 'validation',
   description: 'A saved DoubleMa run and matching loaded sample dataset can complete validation.',
   localStorage: {
     vta_ui_mode_v1: 'advanced',
@@ -735,6 +733,7 @@ const optionsValidationResultFixture = {
 
 export const optionsValidationReadyScenario: MockTauriScenario = {
   name: 'options-validation-ready',
+  family: 'options',
   description: 'A saved DoubleMa run has a matching Polygon.io options artifact ready for validation.',
   localStorage: {
     vta_ui_mode_v1: 'advanced',
@@ -777,6 +776,7 @@ const optionsValidationSetupInvokes = [
 export const optionsValidationInputFailureScenario: MockTauriScenario = {
   ...optionsValidationReadyScenario,
   name: 'options-validation-input-failure',
+  family: 'options',
   description: 'A saved options artifact is loaded, then local validation-plan input fails before Tauri validation.',
   expectedInvokes: optionsValidationSetupInvokes,
 }
@@ -784,6 +784,7 @@ export const optionsValidationInputFailureScenario: MockTauriScenario = {
 export const optionsValidationPreviewFailureScenario: MockTauriScenario = {
   ...optionsValidationReadyScenario,
   name: 'options-validation-preview-failure',
+  family: 'options',
   description: 'A saved options artifact is loaded, then validation feasibility preview fails through mocked Tauri.',
   commandResults: {
     ...optionsValidationReadyScenario.commandResults,
@@ -799,6 +800,7 @@ export const optionsValidationPreviewFailureScenario: MockTauriScenario = {
 
 export const liveReadyScenario: MockTauriScenario = {
   name: 'live-ready',
+  family: 'liveExecution',
   description: 'Live workspace has credential status, stream status, and broker review data.',
   localStorage: {
     vta_ui_mode_v1: 'advanced',
@@ -826,14 +828,28 @@ export const liveReadyScenario: MockTauriScenario = {
       position: null,
       orders: [],
     },
+    get_local_paper_execution_snapshot: {
+      symbol: 'AAPL',
+      account_number: 'local-paper',
+      account_status: 'simulated',
+      currency: 'USD',
+      cash: '100000.00',
+      buying_power: '100000.00',
+      portfolio_value: '100000.00',
+      position: null,
+      orders: [],
+      fetched_at_unix_ms: 1_900_000_000_000,
+    },
     list_live_session_artifacts: [],
     load_live_session_artifact_detail: null,
   },
+  expectedInvokes: ['get_local_paper_execution_snapshot'],
 }
 
 export const liveSafetyReadyScenario: MockTauriScenario = {
   ...liveReadyScenario,
   name: 'live-safety-ready',
+  family: 'liveExecution',
   description: 'Local-paper safety controls are confirmable while a live candle stream is active.',
   commandResults: {
     ...liveReadyScenario.commandResults,

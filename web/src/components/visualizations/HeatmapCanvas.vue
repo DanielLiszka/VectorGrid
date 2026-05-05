@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Minus, Plus, RotateCcw } from 'lucide-vue-next'
+import { Minus, Plus, RotateCcw } from '@lucide/vue'
 import {
   buildHeatmapCellParams,
+  buildHeatmapCanvasSummaryItems,
   clampHeatmapViewport,
   clearHeatmapCanvas,
   DEFAULT_HEATMAP_VIEWPORT,
   downloadHeatmapPng,
+  fitHeatmapViewportToFiniteDomain,
   HEATMAP_MAX_VIEWPORT_SCALE,
   HEATMAP_MIN_VIEWPORT_SCALE,
   heatmapTooltipText,
@@ -18,10 +20,12 @@ import {
   type HeatmapCanvasRenderModel,
   type HeatmapCanvasViewport,
   type HeatmapCellParams,
+  type HeatmapFitMode,
   type HeatmapHoverCell,
   type HeatmapResolvedCell,
 } from '../../visualizations/heatmapCanvasModel'
 import AppIconButton from '../ui/AppIconButton.vue'
+import AppMetricStrip from '../ui/AppMetricStrip.vue'
 import HeatmapLegend from './HeatmapLegend.vue'
 
 const props = withDefaults(
@@ -29,10 +33,12 @@ const props = withDefaults(
     ariaLabel: string
     renderModel?: HeatmapCanvasRenderModel | null
     selectedSummary?: string
+    fitMode?: HeatmapFitMode
   }>(),
   {
     renderModel: null,
     selectedSummary: '',
+    fitMode: 'full',
   },
 )
 
@@ -66,6 +72,27 @@ const viewportOffsetYData = computed(() => viewport.value.offsetY.toFixed(1))
 const viewportZoomed = computed(() => heatmapViewportIsZoomed(viewport.value))
 const canZoomIn = computed(() => viewport.value.scale < HEATMAP_MAX_VIEWPORT_SCALE - 1.0e-6)
 const canZoomOut = computed(() => viewport.value.scale > HEATMAP_MIN_VIEWPORT_SCALE + 1.0e-6)
+const heatmapSummaryItems = computed(() => (
+  props.renderModel ? buildHeatmapCanvasSummaryItems(props.renderModel) : []
+))
+const fitModeLabel = computed(() => (props.fitMode === 'valid' ? 'valid domain' : 'full grid'))
+const unavailableCellCount = computed(() => {
+  const values = props.renderModel?.displayValues ?? []
+  return values.reduce<number>((count, value) => (
+    typeof value === 'number' && Number.isFinite(value) ? count : count + 1
+  ), 0)
+})
+const totalCellCount = computed(() => {
+  const model = props.renderModel?.model
+  return model ? Math.max(0, model.binsFast * model.binsSlow) : 0
+})
+const unavailableDomainSummary = computed(() => {
+  const unavailable = unavailableCellCount.value
+  const total = totalCellCount.value
+  if (!unavailable || !total) return ''
+  const verb = unavailable === 1 ? 'is' : 'are'
+  return `${unavailable} of ${total} bins ${verb} unavailable and shown as a muted mask. These are invalid or unscored parameter pairs.`
+})
 const selectedCellSummary = computed(() => {
   const renderModel = props.renderModel
   const cell = selectedCell.value
@@ -136,9 +163,22 @@ function clampViewportState(next: HeatmapCanvasViewport = viewport.value): void 
 }
 
 function resetViewport(): void {
+  if (props.fitMode === 'valid' && fitViewportToValidDomain()) return
   viewport.value = { ...DEFAULT_HEATMAP_VIEWPORT }
   endPan()
   repaint(true)
+}
+
+function fitViewportToValidDomain(): boolean {
+  const renderModel = props.renderModel
+  if (!renderModel) return false
+  syncCanvasBackingStore()
+  const size = canvasLogicalSize()
+  if (!size) return false
+  viewport.value = fitHeatmapViewportToFiniteDomain(renderModel, size.width, size.height)
+  endPan()
+  repaint(true)
+  return true
 }
 
 function clientPointToLogicalCanvas(clientX: number, clientY: number): { x: number; y: number } | null {
@@ -450,23 +490,40 @@ function exportPng(fileName = 'heatmap.png'): boolean {
 }
 
 watch(
-  () => props.renderModel?.signature ?? '',
+  () => `${props.renderModel?.signature ?? ''}:${props.fitMode}`,
   async () => {
     hoverCell.value = null
     selectedCell.value = null
     hideTooltip()
     await nextTick()
-    repaint(true)
+    if (props.fitMode === 'valid') {
+      fitViewportToValidDomain()
+    } else {
+      viewport.value = { ...DEFAULT_HEATMAP_VIEWPORT }
+      repaint(true)
+    }
   },
   { immediate: true },
 )
 
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined' && stackRef.value) {
-    resizeObserver = new ResizeObserver(() => repaint(true))
+    resizeObserver = new ResizeObserver(() => {
+      if (props.fitMode === 'valid') {
+        fitViewportToValidDomain()
+      } else {
+        repaint(true)
+      }
+    })
     resizeObserver.observe(stackRef.value)
   }
-  void nextTick(() => repaint(true))
+  void nextTick(() => {
+    if (props.fitMode === 'valid') {
+      fitViewportToValidDomain()
+    } else {
+      repaint(true)
+    }
+  })
 })
 
 onBeforeUnmount(() => {
@@ -517,6 +574,7 @@ defineExpose({ exportPng, repaint })
           disabled-reason="Viewport already reset"
           @click="resetViewport"
         />
+        <span id="heatmapFitModeBadgeVue" class="heatmapFitModeBadge mono panelNumeric">Fit {{ fitModeLabel }}</span>
       </div>
     </div>
     <div id="heatmapEmptyHintVue" v-show="!renderModel" class="panelStatus" role="status" aria-live="polite">
@@ -541,6 +599,23 @@ defineExpose({ exportPng, repaint })
       <div id="heatmapMetaVue" class="panelStatus heatmapRenderMeta" role="status" aria-live="polite">
         {{ renderModel?.meta || '-' }}
       </div>
+      <div
+        v-if="unavailableDomainSummary"
+        id="heatmapDomainSummaryVue"
+        class="panelMuted heatmapDomainSummary"
+      >
+        {{ unavailableDomainSummary }}
+      </div>
+      <AppMetricStrip
+        v-if="heatmapSummaryItems.length"
+        id="heatmapMarginalSummaryVue"
+        class="heatmapMarginalSummary"
+        :items="heatmapSummaryItems"
+        aria-label="Heatmap marginal summary"
+        min-item-width="6.8rem"
+        size="compact"
+        surface="sunken"
+      />
       <div
         id="heatmapCanvasStackVue"
         ref="stackRef"
@@ -624,6 +699,12 @@ defineExpose({ exportPng, repaint })
   font-size: 0.76rem;
 }
 
+.heatmapFitModeBadge {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
 .chartAssist {
   display: grid;
   gap: 0.35rem;
@@ -662,10 +743,20 @@ defineExpose({ exportPng, repaint })
 
 .heatmapWrap {
   margin-top: 0.1rem;
+  display: grid;
+  gap: 0.55rem;
 }
 
 .heatmapRenderMeta {
-  margin-bottom: 0.5rem;
+  margin: 0;
+}
+
+.heatmapDomainSummary {
+  max-width: 64rem;
+}
+
+.heatmapMarginalSummary {
+  margin-top: 0.05rem;
 }
 
 .chartSurface:focus-visible {
@@ -675,9 +766,27 @@ defineExpose({ exportPng, repaint })
 }
 
 .heatmapCanvasStack {
+  position: relative;
+  width: min(100%, clamp(30rem, 82vmin, 58rem));
+  aspect-ratio: 1 / 1;
+  margin-inline: auto;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, color-mix(in oklab, var(--surface-inline) 96%, transparent), transparent 44%),
+    color-mix(in oklab, var(--surface-working) 96%, var(--panel-footer));
   cursor: crosshair;
   touch-action: none;
   user-select: none;
+}
+
+.heatmapCanvasStack canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .heatmapCanvasStack.zoomed {
@@ -712,6 +821,10 @@ defineExpose({ exportPng, repaint })
 
   .heatmapLegendRow {
     grid-template-columns: 1fr;
+  }
+
+  .heatmapCanvasStack {
+    width: 100%;
   }
 }
 </style>

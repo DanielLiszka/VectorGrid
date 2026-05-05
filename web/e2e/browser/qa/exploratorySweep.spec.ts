@@ -1,12 +1,12 @@
 import { expect } from '@playwright/test'
-import { emptyAppScenario } from '../fixtures/scenarios'
+import { emptyAppScenario } from '../fixtures'
 import { defineWorkflow } from '../support/workflowRunner'
 import { expectNoHorizontalDocumentOverflow, expectNoStuckBusyState } from '../support/qaAssertions'
 
 defineWorkflow({
   id: 'shell.commandPalette.navigation',
   title: 'exercises safe navigation and overlay actions through the real browser',
-  tags: ['@explore'],
+  tags: ['@workflow', '@explore'],
   scenario: emptyAppScenario,
   run: async ({ page, action }) => {
     await action('shell.taskCenter.open').click()

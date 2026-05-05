@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { emptyAppScenario, optionsValidationReadyScenario } from '../fixtures/scenarios'
+import { emptyAppScenario, optionsValidationReadyScenario } from '../fixtures'
 import { gotoMockedShellWithScenario } from '../support/workflowRunner'
 import { installQaGuards } from '../support/qaAssertions'
 

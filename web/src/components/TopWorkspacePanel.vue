@@ -39,6 +39,7 @@ import { compareActionIcon } from "../utils/iconography";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import AppDataTableShell from "./ui/AppDataTableShell.vue";
 import AppMetricCell from "./ui/AppMetricCell.vue";
+import AppMetricStrip, { type AppMetricItem } from "./ui/AppMetricStrip.vue";
 import AppTableDensityControl from "./ui/AppTableDensityControl.vue";
 import AppTableViewPresetControl from "./ui/AppTableViewPresetControl.vue";
 import type { TableViewPresetOption } from "./ui/tableViewPresets";
@@ -268,12 +269,12 @@ const topTableShellSummary = computed(() => {
 const currentCandidateRankLabel = computed(() =>
   selectedTopIndex.value >= 0 ? `#${selectedTopIndex.value + 1}` : "None",
 );
-const topDecisionStats = computed(() => [
-  { label: "Selected", value: currentCandidateRankLabel.value },
-  { label: "Rows", value: String(topRows.value || 0) },
-  { label: "Pinned", value: String(pinnedTopCandidates.value.length || 0) },
-  { label: "Visible cols", value: `${visibleColumnCount.value}/${renderedColumns.value.length}` },
-  { label: "Density", value: tableDensity.value },
+const topDecisionStats = computed<AppMetricItem[]>(() => [
+  { key: "selected", label: "Selected", value: currentCandidateRankLabel.value },
+  { key: "rows", label: "Rows", value: String(topRows.value || 0) },
+  { key: "pinned", label: "Pinned", value: String(pinnedTopCandidates.value.length || 0) },
+  { key: "visible-cols", label: "Visible cols", value: `${visibleColumnCount.value}/${renderedColumns.value.length}` },
+  { key: "density", label: "Density", value: tableDensity.value },
 ]);
 const columnVisibilityHint = computed(() => {
   if (hiddenColumnCount.value > 0) {
@@ -904,16 +905,14 @@ onBeforeUnmount(() => {
               {{ chip }}
             </span>
           </div>
-          <div class="currentCandidateStats" aria-label="Current candidate table state">
-            <div
-              v-for="stat in topDecisionStats"
-              :key="`top_decision_stat_${stat.label}_${stat.value}`"
-              class="currentCandidateStat"
-            >
-              <span>{{ stat.label }}</span>
-              <strong class="mono panelNumeric">{{ stat.value }}</strong>
-            </div>
-          </div>
+          <AppMetricStrip
+            class="currentCandidateStats"
+            :items="topDecisionStats"
+            aria-label="Current candidate table state"
+            min-item-width="5.6rem"
+            size="compact"
+            surface="sunken"
+          />
           <div class="panelMuted">{{ displayedSelectedTopDecisionNote }}</div>
           <div class="panelMuted topSelectionPathNote">
             Use Candidate Detail for deeper proof and Overview for baseline
@@ -1581,42 +1580,6 @@ onBeforeUnmount(() => {
   top: -0.1rem;
 }
 
-.currentCandidateStats {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.45rem;
-}
-
-.currentCandidateStat {
-  min-width: 0;
-  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--surface-sunken) 72%, transparent);
-  padding: 0.4rem 0.48rem;
-  display: grid;
-  gap: 0.12rem;
-}
-
-.currentCandidateStat span {
-  min-width: 0;
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.currentCandidateStat strong {
-  min-width: 0;
-  font-size: 0.8rem;
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .topTableVue tbody tr.spacerRow {
   pointer-events: none;
 }
@@ -1759,10 +1722,6 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr 1fr;
   }
 
-  .currentCandidateStats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .columnToggleGrid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1776,10 +1735,6 @@ onBeforeUnmount(() => {
   .tableControlBar {
     display: grid;
     justify-content: stretch;
-  }
-
-  .currentCandidateStats {
-    grid-template-columns: 1fr 1fr;
   }
 
   .gridFive {

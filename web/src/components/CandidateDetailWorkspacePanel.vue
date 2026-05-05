@@ -13,6 +13,7 @@ import {
   type DrillTradeTableModel,
 } from '../visualizations/drillChartModel'
 import PriceChartPanel from './visualizations/PriceChartPanel.vue'
+import AppMetricStrip, { type AppMetricItem } from './ui/AppMetricStrip.vue'
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
@@ -125,7 +126,7 @@ const candidateProvenanceChips = computed(() => {
     .slice(0, 6)
 })
 
-const drillEvidenceStats = computed(() => {
+const drillEvidenceStats = computed<AppMetricItem[]>(() => {
   const model = drillChartModel.value
   const stats = model?.tradeStats ?? {}
   const closedTrades = formatMetricNumber(stats.closed_trades)
@@ -133,12 +134,12 @@ const drillEvidenceStats = computed(() => {
   const profitFactor = formatMetricNumber(stats.profit_factor, 2)
   const expectancy = formatMetricNumber(stats.expectancy, 4)
   const rows = [
-    { label: 'Bars', value: formatMetricNumber(model?.bars.length ?? Number.NaN) },
-    { label: 'Trades', value: formatMetricNumber(model?.trades.length ?? Number.NaN) },
-    { label: 'Closed', value: closedTrades },
-    { label: 'Win rate', value: winRate },
-    { label: 'Profit factor', value: profitFactor },
-    { label: 'Expectancy', value: expectancy },
+    { key: 'bars', label: 'Bars', value: formatMetricNumber(model?.bars.length ?? Number.NaN) },
+    { key: 'trades', label: 'Trades', value: formatMetricNumber(model?.trades.length ?? Number.NaN) },
+    { key: 'closed', label: 'Closed', value: closedTrades },
+    { key: 'win-rate', label: 'Win rate', value: winRate },
+    { key: 'profit-factor', label: 'Profit factor', value: profitFactor },
+    { key: 'expectancy', label: 'Expectancy', value: expectancy },
   ]
   return rows.filter((row) => cleanText(row.value).length > 0).slice(0, 6)
 })
@@ -328,16 +329,15 @@ onBeforeUnmount(() => {
             {{ chip }}
           </span>
         </div>
-        <div v-if="drillEvidenceStats.length > 0" class="candidateMetricStrip" aria-label="Candidate detail metrics">
-          <div
-            v-for="stat in drillEvidenceStats"
-            :key="`drill_stat_${stat.label}_${stat.value}`"
-            class="candidateMetric"
-          >
-            <span>{{ stat.label }}</span>
-            <strong class="mono panelNumeric">{{ stat.value }}</strong>
-          </div>
-        </div>
+        <AppMetricStrip
+          v-if="drillEvidenceStats.length > 0"
+          class="candidateMetricStrip"
+          :items="drillEvidenceStats"
+          aria-label="Candidate detail metrics"
+          min-item-width="5.8rem"
+          size="compact"
+          surface="sunken"
+        />
       </section>
 
       <section class="pane">
@@ -525,38 +525,6 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-.candidateMetricStrip {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0.5rem;
-}
-
-.candidateMetric {
-  min-width: 0;
-  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--surface-sunken) 70%, transparent);
-  padding: 0.48rem 0.55rem;
-  display: grid;
-  gap: 0.16rem;
-}
-
-.candidateMetric span {
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.candidateMetric strong {
-  min-width: 0;
-  font-size: 0.86rem;
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .chartEvidenceGrid {
   display: grid;
   gap: 0.85rem;
@@ -634,7 +602,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 980px) {
-  .candidateMetricStrip,
   .supportChartGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -647,7 +614,6 @@ onBeforeUnmount(() => {
     display: grid;
   }
 
-  .candidateMetricStrip,
   .supportChartGrid {
     grid-template-columns: 1fr;
   }

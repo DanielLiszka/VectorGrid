@@ -40,6 +40,7 @@ function renderModel(): HeatmapCanvasRenderModel {
       positive: '#15803d',
     },
     plateauDiagnostics: null,
+    slice3d: null,
   }
 }
 
@@ -168,6 +169,23 @@ describe('HeatmapCanvas', () => {
       slow_len: 20,
       slow_ma_type: 'ema',
     })
+  })
+
+  it('labels unavailable heatmap bins as a masked domain instead of silent whitespace', () => {
+    mockCanvasContext()
+    const model = renderModel()
+    model.displayValues = [0.1, null, Number.NaN, 0.05]
+    model.model.values = [0.1, Number.NaN, Number.NaN, 0.05]
+
+    const wrapper = mount(HeatmapCanvas, {
+      props: {
+        ariaLabel: 'Optimization heatmap for the selected objective.',
+        renderModel: model,
+      },
+    })
+
+    expect(wrapper.get('#heatmapDomainSummaryVue').text()).toContain('2 of 4 bins are unavailable')
+    expect(wrapper.get('#heatmapDomainSummaryVue').text()).toContain('invalid or unscored parameter pairs')
   })
 
   it('supports keyboard cell selection with a persistent selected-cell summary', async () => {

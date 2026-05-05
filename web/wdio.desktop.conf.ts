@@ -48,6 +48,7 @@ const stableSmokeSpecs = [
   './e2e/desktop/specs/desktop-app-close.spec.ts',
 ]
 const geometrySmokeSpec = './e2e/desktop/specs/desktop-window-geometry.spec.ts'
+const expandedSmokeSpecs = [...stableSmokeSpecs, geometrySmokeSpec]
 
 type TauriDesktopCapability = WebdriverIO.Capabilities & {
   'tauri:options': {
@@ -81,6 +82,59 @@ function appendEnvironmentSummary(prereqSummary: string): void {
     `appUrl: ${desktopSmokeAppUrl}`,
   ]
   writeTextFile(artifactContext.envSummaryPath, `${prereqSummary}\n${extraLines.join('\n')}\n`)
+}
+
+function selectedSuiteName(): string {
+  const suiteIndex = process.argv.findIndex((arg) => arg === '--suite')
+  if (suiteIndex >= 0) return String(process.argv[suiteIndex + 1] || '').trim()
+  const inlineSuite = process.argv.find((arg) => arg.startsWith('--suite='))
+  if (inlineSuite) return inlineSuite.slice('--suite='.length).trim()
+  return 'specs'
+}
+
+function selectedSuiteSpecCount(suiteName: string): number {
+  if (suiteName === 'smoke') return stableSmokeSpecs.length
+  if (suiteName === 'geometry') return 1
+  if (suiteName === 'smoke-expanded' || suiteName === 'all') return expandedSmokeSpecs.length
+  return stableSmokeSpecs.length
+}
+
+function writeDesktopSmokeSummary(exitCode: number): void {
+  const suiteName = selectedSuiteName()
+  const summary = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    status: exitCode === 0 ? 'passed' : 'failed',
+    exitCode,
+    suite: suiteName,
+    runId: artifactContext.runId,
+    specCount: selectedSuiteSpecCount(suiteName),
+    artifacts: {
+      runDir: path.relative(path.resolve(webRoot, '..'), artifactContext.runDir).replace(/\\/g, '/'),
+      logsDir: path.relative(path.resolve(webRoot, '..'), artifactContext.logsDir).replace(/\\/g, '/'),
+      screenshotsDir: path.relative(path.resolve(webRoot, '..'), artifactContext.screenshotsDir).replace(/\\/g, '/'),
+      environment: path.relative(path.resolve(webRoot, '..'), artifactContext.envSummaryPath).replace(/\\/g, '/'),
+    },
+  }
+  const summaryDir = ensureDir(path.resolve(webRoot, '..', 'output', 'wdio'))
+  const summaryPath = path.resolve(summaryDir, 'desktop-smoke-summary.json')
+  const expandedSummaryPath = path.resolve(summaryDir, 'desktop-smoke-expanded-summary.json')
+  writeTextFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
+  if (suiteName === 'smoke-expanded') {
+    writeTextFile(expandedSummaryPath, `${JSON.stringify(summary, null, 2)}\n`)
+  } else {
+    writeTextFile(expandedSummaryPath, `${JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: summary.generatedAt,
+      status: 'not_run',
+      exitCode: null,
+      suite: 'smoke-expanded',
+      clearedBySuite: suiteName,
+      runId: artifactContext.runId,
+      specCount: expandedSmokeSpecs.length,
+      artifacts: {},
+    }, null, 2)}\n`)
+  }
 }
 
 function registerShutdown(): void {
@@ -347,7 +401,8 @@ export const config: WebdriverIO.Config = {
   suites: {
     smoke: stableSmokeSpecs,
     geometry: [geometrySmokeSpec],
-    all: [...stableSmokeSpecs, geometrySmokeSpec],
+    'smoke-expanded': expandedSmokeSpecs,
+    all: expandedSmokeSpecs,
   },
   capabilities: [
     {
@@ -396,7 +451,8 @@ export const config: WebdriverIO.Config = {
       await browser.saveScreenshot(screenshotPath)
     }
   },
-  onComplete() {
+  onComplete(exitCode) {
+    writeDesktopSmokeSummary(Number(exitCode || 0))
     closeTauriDriver()
     closePreviewServer()
   },

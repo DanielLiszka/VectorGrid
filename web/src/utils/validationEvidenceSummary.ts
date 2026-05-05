@@ -12,6 +12,32 @@ export interface ValidationEvidenceModuleSummary {
   detail: string;
 }
 
+export type ValidationOverfitEvidenceTone =
+  | "neutral"
+  | "good"
+  | "warn"
+  | "bad";
+
+export type ValidationOverfitEvidenceStatus =
+  | "not_run"
+  | "available"
+  | "attention";
+
+export interface ValidationOverfitEvidenceItem {
+  id: string;
+  label: string;
+  value: string;
+  detail: string;
+  tone: ValidationOverfitEvidenceTone;
+}
+
+export interface ValidationOverfitEvidenceSummary {
+  status: ValidationOverfitEvidenceStatus;
+  statusLabel: string;
+  summaryLine: string;
+  items: ValidationOverfitEvidenceItem[];
+}
+
 export interface ValidationEvidenceSummary {
   status: "not_run" | "incomplete" | "available";
   summaryLine: string;
@@ -23,11 +49,13 @@ export interface ValidationEvidenceSummary {
   reportState: "not_generated" | "generated" | "unknown";
   datasetIdentity: string;
   modules: ValidationEvidenceModuleSummary[];
+  overfit: ValidationOverfitEvidenceSummary;
 }
 
 export interface BuildValidationEvidenceSummaryInput {
   validationReq?: unknown;
   validationRes?: unknown;
+  optimizationRes?: unknown;
   datasetMeta?: unknown;
   reportPath?: unknown;
   replayClass?: unknown;
@@ -93,6 +121,41 @@ function firstText(...values: unknown[]): string {
     if (next) return next;
   }
   return "";
+}
+
+function numberOrNull(value: unknown): number | null {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+function integerOrNull(value: unknown): number | null {
+  const next = numberOrNull(value);
+  if (next == null) return null;
+  return Math.max(0, Math.floor(next));
+}
+
+function formatCount(value: unknown): string {
+  const next = integerOrNull(value);
+  if (next == null) return "-";
+  return new Intl.NumberFormat("en-US").format(next);
+}
+
+function formatDecimal(value: unknown, digits = 3): string {
+  const next = numberOrNull(value);
+  if (next == null) return "-";
+  return next.toFixed(digits);
+}
+
+function formatProbability(value: unknown, digits = 1): string {
+  const next = numberOrNull(value);
+  if (next == null) return "-";
+  return `${(next * 100).toFixed(digits)}%`;
+}
+
+function formatGate(value: unknown): string {
+  const next = numberOrNull(value);
+  if (next == null) return "";
+  return next.toFixed(2);
 }
 
 function firstRecord(
@@ -177,12 +240,528 @@ function datasetIdentityFromMeta(datasetMeta: Record<string, unknown>): string {
   );
 }
 
+function validationCandidates(
+  validationRes: Record<string, unknown>,
+): Record<string, unknown>[] {
+  return Array.isArray(validationRes.candidates)
+    ? validationRes.candidates
+        .map((entry) => asRecord(entry))
+        .filter((entry) => Object.keys(entry).length > 0)
+    : [];
+}
+
+function topCandidateForEvidence(
+  validationRes: Record<string, unknown>,
+): Record<string, unknown> {
+  const candidates = validationCandidates(validationRes);
+  const verdict = asRecord(validationRes.run_verdict);
+  const firstApprovedRank = integerOrNull(verdict.first_approved_rank);
+  if (firstApprovedRank != null && firstApprovedRank > 0) {
+    return candidates[firstApprovedRank - 1] ?? candidates[0] ?? {};
+  }
+  return candidates[0] ?? {};
+}
+
+function requestModuleSummary(
+  validationReq: Record<string, unknown>,
+  moduleId: string,
+): boolean {
+  const module = MODULES.find((entry) => entry.id === moduleId);
+  return module ? hasRequestModule(validationReq, module.requestKeys) : false;
+}
+
+function toneForGate(
+  value: number | null,
+  gate: number | null,
+  direction: "min" | "max",
+): ValidationOverfitEvidenceTone {
+  if (value == null) return gate == null ? "neutral" : "warn";
+  if (gate == null) return "neutral";
+  if (direction === "min") return value >= gate ? "good" : "bad";
+  return value <= gate ? "good" : "bad";
+}
+
+function evidenceStatusFromItems(
+  validationRes: Record<string, unknown>,
+  items: ValidationOverfitEvidenceItem[],
+): ValidationOverfitEvidenceStatus {
+  if (Object.keys(validationRes).length === 0) return "not_run";
+  return items.some((item) => item.tone === "bad" || item.tone === "warn")
+    ? "attention"
+    : "available";
+}
+
+function statusLabel(status: ValidationOverfitEvidenceStatus): string {
+  if (status === "not_run") return "Not run";
+  if (status === "attention") return "Needs review";
+  return "Evidence available";
+}
+
+function resultModuleRecord(
+  validationRes: Record<string, unknown>,
+  moduleId: string,
+): Record<string, unknown> {
+  const module = MODULES.find((entry) => entry.id === moduleId);
+  return module ? (firstRecord(validationRes, module.resultKeys) ?? {}) : {};
+}
+
+function buildVerdictEvidenceItem(
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const candidates = validationCandidates(validationRes);
+  const verdict = asRecord(validationRes.run_verdict);
+  if (Object.keys(verdict).length === 0) {
+    return {
+      id: "verdict",
+      label: "Run Verdict",
+      value: "not reported",
+      detail: `${formatCount(candidates.length)} candidates returned`,
+      tone: candidates.length > 0 ? "neutral" : "warn",
+    };
+  }
+  const approved = verdict.approved === true;
+  const passed = verdict.passed !== false;
+  const warningFlags = Array.isArray(verdict.warning_flags)
+    ? verdict.warning_flags.map(text).filter((entry) => entry.length > 0)
+    : [];
+  const failReasons = Array.isArray(verdict.fail_reasons)
+    ? verdict.fail_reasons.map(text).filter((entry) => entry.length > 0)
+    : [];
+  const tested = integerOrNull(verdict.candidates_tested) ?? candidates.length;
+  const survived = integerOrNull(verdict.candidates_survived_hard_gates) ?? 0;
+  const approvedCount = integerOrNull(verdict.approved_candidate_count) ?? 0;
+  const recommendation = firstText(verdict.final_recommendation);
+  const firstNote = failReasons[0] || warningFlags[0] || recommendation;
+  return {
+    id: "verdict",
+    label: "Run Verdict",
+    value: approved ? "approved" : passed ? "not approved" : "failed",
+    detail: [
+      `hard gates ${formatCount(survived)}/${formatCount(tested)}`,
+      `approved ${formatCount(approvedCount)}/${formatCount(survived)}`,
+      firstNote,
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · "),
+    tone: !passed || !approved ? "bad" : warningFlags.length ? "warn" : "good",
+  };
+}
+
+function buildSearchEvidenceItem(
+  optimizationRes: Record<string, unknown>,
+  validationReq: Record<string, unknown>,
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const candidates = validationCandidates(validationRes);
+  const requestedCandidates =
+    integerOrNull(validationReq.candidates) ??
+    integerOrNull(validationReq.top_n) ??
+    integerOrNull(validationReq.topN);
+  const searchTrials =
+    integerOrNull(optimizationRes.num_combos) ??
+    integerOrNull(optimizationRes.numCombos) ??
+    integerOrNull(optimizationRes.evaluations) ??
+    integerOrNull(optimizationRes.evaluated);
+  const admission = firstText(validationReq.admission_policy);
+  return {
+    id: "search",
+    label: "Search Exposure",
+    value:
+      searchTrials != null
+        ? `${formatCount(searchTrials)} trials`
+        : "trials unknown",
+    detail: [
+      `validated ${formatCount(candidates.length)}${requestedCandidates != null ? `/${formatCount(requestedCandidates)}` : ""} candidates`,
+      admission ? `admission ${admission}` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · "),
+    tone: candidates.length <= 1 ? "warn" : "neutral",
+  };
+}
+
+function buildProbabilityEvidenceItem(
+  validationReq: Record<string, unknown>,
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const verdict = asRecord(validationRes.run_verdict);
+  const candidate = topCandidateForEvidence(validationRes);
+  const psr =
+    numberOrNull(verdict.top_candidate_psr) ?? numberOrNull(candidate.psr);
+  const dsr =
+    numberOrNull(verdict.top_candidate_dsr) ?? numberOrNull(candidate.dsr);
+  const minPsr = numberOrNull(validationReq.min_psr);
+  const minDsr = numberOrNull(validationReq.min_dsr);
+  const psrTone = toneForGate(psr, minPsr, "min");
+  const dsrTone = toneForGate(dsr, minDsr, "min");
+  const tone =
+    psrTone === "bad" || dsrTone === "bad"
+      ? "bad"
+      : psrTone === "warn" || dsrTone === "warn"
+        ? "warn"
+        : psrTone === "good" || dsrTone === "good"
+          ? "good"
+          : "neutral";
+  const gateDetail = [
+    minPsr != null ? `PSR >= ${formatGate(minPsr)}` : "",
+    minDsr != null ? `DSR >= ${formatGate(minDsr)}` : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join(", ");
+  return {
+    id: "probability",
+    label: "PSR / DSR",
+    value:
+      psr != null || dsr != null
+        ? `PSR ${formatDecimal(psr)} · DSR ${formatDecimal(dsr)}`
+        : "not reported",
+    detail: gateDetail ? `gates ${gateDetail}` : "no probability gate set",
+    tone,
+  };
+}
+
+function buildPboEvidenceItem(
+  validationReq: Record<string, unknown>,
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const requested = requestModuleSummary(validationReq, "cscv_pbo");
+  const cscv = resultModuleRecord(validationRes, "cscv_pbo");
+  const verdict = asRecord(validationRes.run_verdict);
+  const skippedReason = moduleSkippedReason(cscv);
+  const pbo = numberOrNull(cscv.pbo) ?? numberOrNull(verdict.pbo);
+  const maxPbo =
+    numberOrNull(validationReq.max_pbo) ?? numberOrNull(verdict.max_pbo);
+  if (skippedReason) {
+    return {
+      id: "pbo",
+      label: "CSCV / PBO",
+      value: "skipped",
+      detail: skippedReason,
+      tone: requested ? "warn" : "neutral",
+    };
+  }
+  if (pbo == null) {
+    return {
+      id: "pbo",
+      label: "CSCV / PBO",
+      value: requested ? "missing" : "not requested",
+      detail: requested ? "requested but no PBO result was returned" : "no CSCV/PBO request",
+      tone: requested ? "warn" : "neutral",
+    };
+  }
+  const combinations = integerOrNull(cscv.combinations);
+  const combinationsPossible = integerOrNull(cscv.combinations_possible);
+  const comboDetail =
+    combinations != null && combinationsPossible != null
+      ? `${formatCount(combinations)}/${formatCount(combinationsPossible)} combinations`
+      : combinations != null
+        ? `${formatCount(combinations)} combinations`
+        : "";
+  const tone =
+    maxPbo != null
+      ? toneForGate(pbo, maxPbo, "max")
+      : pbo > 0.3
+        ? "warn"
+        : "good";
+  return {
+    id: "pbo",
+    label: "CSCV / PBO",
+    value: formatProbability(pbo),
+    detail: [
+      maxPbo != null ? `max ${formatProbability(maxPbo)}` : "",
+      comboDetail,
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · "),
+    tone,
+  };
+}
+
+function buildSpaEvidenceItem(
+  validationReq: Record<string, unknown>,
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const requested = requestModuleSummary(validationReq, "spa");
+  const spa = resultModuleRecord(validationRes, "spa");
+  const skippedReason = moduleSkippedReason(spa);
+  if (skippedReason) {
+    return {
+      id: "spa",
+      label: "SPA",
+      value: "skipped",
+      detail: skippedReason,
+      tone: requested ? "warn" : "neutral",
+    };
+  }
+  if (Object.keys(spa).length === 0) {
+    return {
+      id: "spa",
+      label: "SPA",
+      value: requested ? "missing" : "not requested",
+      detail: requested ? "requested but no SPA result was returned" : "no SPA request",
+      tone: requested ? "warn" : "neutral",
+    };
+  }
+  const pValue = numberOrNull(spa.p_value);
+  const passed = spa.passed !== false;
+  const slices = integerOrNull(spa.slice_count);
+  const samples = integerOrNull(spa.bootstrap_samples);
+  return {
+    id: "spa",
+    label: "SPA",
+    value: `${passed ? "pass" : "fail"}${pValue != null ? ` · p=${formatDecimal(pValue)}` : ""}`,
+    detail: [
+      slices != null ? `${formatCount(slices)} slices` : "",
+      samples != null ? `${formatCount(samples)} samples` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · "),
+    tone: passed ? "good" : "bad",
+  };
+}
+
+function buildTrackRecordEvidenceItem(
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const verdict = asRecord(validationRes.run_verdict);
+  const candidate = topCandidateForEvidence(validationRes);
+  const observed =
+    integerOrNull(verdict.top_candidate_track_record_bars) ??
+    integerOrNull(candidate.track_record_bars);
+  const required =
+    integerOrNull(verdict.top_candidate_min_track_record_length_bars) ??
+    integerOrNull(candidate.min_track_record_length_bars);
+  if (observed == null && required == null) {
+    return {
+      id: "track_record",
+      label: "Track Record",
+      value: "not reported",
+      detail: "minimum track-record length was not returned",
+      tone: "neutral",
+    };
+  }
+  const passes = observed != null && required != null ? observed >= required : true;
+  return {
+    id: "track_record",
+    label: "Track Record",
+    value:
+      observed != null
+        ? `${formatCount(observed)}${required != null ? `/${formatCount(required)} bars` : " bars"}`
+        : `min ${formatCount(required)} bars`,
+    detail:
+      observed != null && required != null
+        ? passes
+          ? "meets minimum evidence length"
+          : "below minimum evidence length"
+        : "minimum evidence length is advisory",
+    tone: observed != null && required != null ? (passes ? "good" : "bad") : "neutral",
+  };
+}
+
+function buildWalkForwardEvidenceItem(
+  validationReq: Record<string, unknown>,
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const candidate = topCandidateForEvidence(validationRes);
+  const walkForward = asRecord(candidate.walk_forward);
+  const reopt = resultModuleRecord(validationRes, "reopt_walk_forward");
+  const walkRequested = requestModuleSummary(validationReq, "walk_forward");
+  const reoptRequested = requestModuleSummary(validationReq, "reopt_walk_forward");
+  const wfWindows = integerOrNull(walkForward.windows);
+  const reoptWindows = integerOrNull(reopt.windows);
+  const wfSkipped = moduleSkippedReason(walkForward);
+  const reoptSkipped = moduleSkippedReason(reopt);
+  if (wfSkipped || reoptSkipped) {
+    return {
+      id: "walk_forward",
+      label: "Walk-forward",
+      value: "skipped",
+      detail: wfSkipped || reoptSkipped,
+      tone: walkRequested || reoptRequested ? "warn" : "neutral",
+    };
+  }
+  if (wfWindows == null && reoptWindows == null) {
+    return {
+      id: "walk_forward",
+      label: "Walk-forward",
+      value: walkRequested || reoptRequested ? "missing" : "not requested",
+      detail:
+        walkRequested || reoptRequested
+          ? "requested but no walk-forward evidence was returned"
+          : "no walk-forward request",
+      tone: walkRequested || reoptRequested ? "warn" : "neutral",
+    };
+  }
+  const worstSharpe =
+    numberOrNull(walkForward.sharpe_worst) ??
+    numberOrNull(reopt.forward_sharpe_worst);
+  const worstPnl =
+    numberOrNull(walkForward.pnl_worst) ?? numberOrNull(reopt.forward_pnl_worst);
+  return {
+    id: "walk_forward",
+    label: "Walk-forward",
+    value: [
+      wfWindows != null ? `WF ${formatCount(wfWindows)}` : "",
+      reoptWindows != null ? `reopt ${formatCount(reoptWindows)}` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · "),
+    detail: [
+      worstSharpe != null ? `worst Sharpe ${formatDecimal(worstSharpe)}` : "",
+      worstPnl != null ? `worst PnL ${formatDecimal(worstPnl)}` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · "),
+    tone: worstSharpe != null && worstSharpe < 0 ? "warn" : "good",
+  };
+}
+
+function buildDistributionEvidenceItem(
+  validationReq: Record<string, unknown>,
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const candidate = topCandidateForEvidence(validationRes);
+  const monteCarlo = asRecord(candidate.monte_carlo);
+  const bootstrap = asRecord(candidate.trade_bootstrap);
+  const requested = requestModuleSummary(validationReq, "monte_carlo");
+  const mcAdvisory = asRecord(monteCarlo.advisory);
+  if (Object.keys(monteCarlo).length > 0) {
+    const failReasons = Array.isArray(mcAdvisory.fail_reasons)
+      ? mcAdvisory.fail_reasons.map(text).filter((entry) => entry.length > 0)
+      : [];
+    const warnings = Array.isArray(mcAdvisory.warning_flags)
+      ? mcAdvisory.warning_flags.map(text).filter((entry) => entry.length > 0)
+      : [];
+    const passed = mcAdvisory.passed !== false;
+    return {
+      id: "distribution",
+      label: "Distribution",
+      value: `${formatCount(monteCarlo.simulations)} MC sims`,
+      detail: [
+        `${formatCount(monteCarlo.trade_count)} trades`,
+        failReasons[0] || warnings[0] || "",
+      ]
+        .filter((part) => part.length > 0)
+        .join(" · "),
+      tone: !passed || failReasons.length > 0 ? "bad" : warnings.length > 0 ? "warn" : "good",
+    };
+  }
+  if (Object.keys(bootstrap).length > 0) {
+    return {
+      id: "distribution",
+      label: "Distribution",
+      value: `${formatCount(bootstrap.simulations)} bootstrap`,
+      detail: [
+        `${formatCount(bootstrap.trade_count)} trades`,
+        `PnL+ ${formatProbability(bootstrap.prob_pnl_positive)}`,
+        `p05 ${formatDecimal(bootstrap.pnl_p05)}`,
+      ].join(" · "),
+      tone:
+        numberOrNull(bootstrap.prob_pnl_positive) != null &&
+        Number(bootstrap.prob_pnl_positive) < 0.5
+          ? "warn"
+          : "good",
+    };
+  }
+  return {
+    id: "distribution",
+    label: "Distribution",
+    value: requested ? "missing" : "not requested",
+    detail: requested
+      ? "requested but no Monte Carlo or bootstrap result was returned"
+      : "no distribution stress request",
+    tone: requested ? "warn" : "neutral",
+  };
+}
+
+function buildFrictionEvidenceItem(
+  validationRes: Record<string, unknown>,
+): ValidationOverfitEvidenceItem {
+  const candidate = topCandidateForEvidence(validationRes);
+  const friction = asRecord(candidate.friction_stress);
+  if (Object.keys(friction).length === 0) {
+    return {
+      id: "friction",
+      label: "Friction",
+      value: "not reported",
+      detail: "no fee/slippage stress result",
+      tone: "neutral",
+    };
+  }
+  const passCount = integerOrNull(friction.pass_count) ?? 0;
+  const scenarioCount = integerOrNull(friction.scenario_count) ?? 0;
+  const passFrac = numberOrNull(friction.pass_frac);
+  const worst = firstText(friction.worst_scenario_label);
+  return {
+    id: "friction",
+    label: "Friction",
+    value:
+      scenarioCount > 0
+        ? `${formatCount(passCount)}/${formatCount(scenarioCount)} pass`
+        : `${formatProbability(passFrac)} pass`,
+    detail: worst ? `worst ${worst}` : "fee/slippage stress evaluated",
+    tone:
+      scenarioCount > 0 && passCount < scenarioCount
+        ? "warn"
+        : passFrac != null && passFrac < 1
+          ? "warn"
+          : "good",
+  };
+}
+
+export function buildValidationOverfitEvidenceSummary(
+  input: BuildValidationEvidenceSummaryInput,
+): ValidationOverfitEvidenceSummary {
+  const validationReq = asRecord(input.validationReq);
+  const validationRes = asRecord(input.validationRes);
+  const optimizationRes = asRecord(input.optimizationRes);
+  if (Object.keys(validationRes).length === 0) {
+    return {
+      status: "not_run",
+      statusLabel: "Not run",
+      summaryLine: "Overfit evidence not run.",
+      items: [],
+    };
+  }
+
+  const items: ValidationOverfitEvidenceItem[] = [
+    buildVerdictEvidenceItem(validationRes),
+    buildSearchEvidenceItem(optimizationRes, validationReq, validationRes),
+    buildProbabilityEvidenceItem(validationReq, validationRes),
+    buildPboEvidenceItem(validationReq, validationRes),
+    buildSpaEvidenceItem(validationReq, validationRes),
+    buildTrackRecordEvidenceItem(validationRes),
+    buildWalkForwardEvidenceItem(validationReq, validationRes),
+    buildDistributionEvidenceItem(validationReq, validationRes),
+    buildFrictionEvidenceItem(validationRes),
+  ];
+  const status = evidenceStatusFromItems(validationRes, items);
+  const headline = [
+    items.find((item) => item.id === "verdict")?.value,
+    items.find((item) => item.id === "search")?.value,
+    items.find((item) => item.id === "pbo")?.value !== "not requested"
+      ? `PBO ${items.find((item) => item.id === "pbo")?.value}`
+      : "",
+    items.find((item) => item.id === "probability")?.value,
+  ]
+    .map((part) => text(part))
+    .filter((part) => part.length > 0)
+    .join("; ");
+  return {
+    status,
+    statusLabel: statusLabel(status),
+    summaryLine: `Overfit evidence ${status === "attention" ? "needs review" : "available"}${headline ? `; ${headline}` : ""}.`,
+    items,
+  };
+}
+
 export function buildValidationEvidenceSummary(
   input: BuildValidationEvidenceSummaryInput,
 ): ValidationEvidenceSummary {
   const validationReq = asRecord(input.validationReq);
   const validationRes = asRecord(input.validationRes);
   const datasetMeta = asRecord(input.datasetMeta);
+  const overfit = buildValidationOverfitEvidenceSummary(input);
 
   if (Object.keys(validationRes).length === 0) {
     return {
@@ -198,6 +777,7 @@ export function buildValidationEvidenceSummary(
       modules: MODULES.map((module) =>
         buildModuleSummary(validationReq, validationRes, module),
       ),
+      overfit,
     };
   }
 
@@ -246,5 +826,6 @@ export function buildValidationEvidenceSummary(
     reportState,
     datasetIdentity: datasetIdentityFromMeta(datasetMeta),
     modules,
+    overfit,
   };
 }

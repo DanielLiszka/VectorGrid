@@ -148,13 +148,15 @@ const {
   validationCrossSummary,
   validationSkippedSummary,
   validationEvidenceSummary,
+  validationOverfitSummary,
+  validationOverfitStatus,
+  validationOverfitItems,
   validationWarningSummary,
   validationReoptMeta,
   validationShortlistMeta,
   validationColumns,
   validationRows,
   validationOutputPreview,
-  crossMeta,
   tableRowCount,
   candidates,
   admissionPolicy,
@@ -196,7 +198,6 @@ const {
   crossDatasets,
   crossSelectedCount,
   crossTotalCount,
-  tableVisible,
   canOpenReportsDir,
   canExportValidationCsv,
   canExportValidationJson,
@@ -362,6 +363,32 @@ const validationSummaryChips = computed(() => {
     crossSummary || "",
   ].filter((chip) => String(chip || "").trim().length > 0);
 });
+const showOverfitEvidencePanel = computed(
+  () =>
+    validationOverfitStatus.value !== "not_run" ||
+    validationOverfitItems.value.length > 0,
+);
+const validationOverfitStatusLabel = computed(() => {
+  if (validationOverfitStatus.value === "attention") return "Needs review";
+  if (validationOverfitStatus.value === "available")
+    return "Evidence available";
+  return "Not run";
+});
+const validationOverfitToneClass = (tone: string) => {
+  if (tone === "good" || tone === "available") return "toneGood";
+  if (tone === "warn" || tone === "attention") return "toneWarn";
+  if (tone === "bad") return "toneBad";
+  return "toneNeutral";
+};
+const validationOverfitItemTitle = (item: {
+  label?: string;
+  value?: string;
+  detail?: string;
+}) =>
+  [item.label, item.value, item.detail]
+    .map((part) => String(part || "").trim())
+    .filter((part) => part.length > 0)
+    .join(": ");
 const columnVisibilitySummary = computed(
   () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
 );
@@ -1138,56 +1165,59 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div class="gridFour compactMetaGrid">
-          <div>
-            <label>Expected Route</label>
-            <div class="metaLine mono">
-              {{ expectedExecutionSummary.routeSummary }}
+        <details class="columnDetails runPreviewDetails">
+          <summary>Run preview</summary>
+          <div class="gridFour compactMetaGrid">
+            <div>
+              <label>Expected Route</label>
+              <div class="metaLine mono">
+                {{ expectedExecutionSummary.routeSummary }}
+              </div>
+            </div>
+            <div>
+              <label>Expected Cross</label>
+              <div class="metaLine mono">
+                {{ expectedExecutionSummary.crossSummary }}
+              </div>
+            </div>
+            <div>
+              <label>Expected Modules</label>
+              <div class="metaLine mono">
+                {{ expectedExecutionSummary.moduleSummary }}
+              </div>
+            </div>
+            <div>
+              <label>Expected Categories</label>
+              <div class="metaLine mono">
+                {{ expectedExecutionSummary.categorySummary }}
+              </div>
+            </div>
+            <div>
+              <label>Expected Skips</label>
+              <div class="metaLine mono">
+                {{ expectedExecutionSummary.skippedSummary }}
+              </div>
+            </div>
+            <div>
+              <label>Expected Notes</label>
+              <div class="metaLine mono">
+                {{ expectedExecutionSummary.warningSummary }}
+              </div>
+            </div>
+            <div>
+              <label>Admission Compare</label>
+              <div class="metaLine mono">
+                {{ expectedAdmissionComparison.summary }}
+              </div>
+            </div>
+            <div>
+              <label>Admission Delta</label>
+              <div class="metaLine mono">
+                {{ expectedAdmissionComparison.detail }}
+              </div>
             </div>
           </div>
-          <div>
-            <label>Expected Cross</label>
-            <div class="metaLine mono">
-              {{ expectedExecutionSummary.crossSummary }}
-            </div>
-          </div>
-          <div>
-            <label>Expected Modules</label>
-            <div class="metaLine mono">
-              {{ expectedExecutionSummary.moduleSummary }}
-            </div>
-          </div>
-          <div>
-            <label>Expected Categories</label>
-            <div class="metaLine mono">
-              {{ expectedExecutionSummary.categorySummary }}
-            </div>
-          </div>
-          <div>
-            <label>Expected Skips</label>
-            <div class="metaLine mono">
-              {{ expectedExecutionSummary.skippedSummary }}
-            </div>
-          </div>
-          <div>
-            <label>Expected Notes</label>
-            <div class="metaLine mono">
-              {{ expectedExecutionSummary.warningSummary }}
-            </div>
-          </div>
-          <div>
-            <label>Admission Compare</label>
-            <div class="metaLine mono">
-              {{ expectedAdmissionComparison.summary }}
-            </div>
-          </div>
-          <div>
-            <label>Admission Delta</label>
-            <div class="metaLine mono">
-              {{ expectedAdmissionComparison.detail }}
-            </div>
-          </div>
-        </div>
+        </details>
       </section>
 
       <section class="pane">
@@ -1196,18 +1226,9 @@ onBeforeUnmount(() => {
             <div class="panelEyebrow">Policies</div>
             <h3 class="panelPaneTitle">Modules and automation</h3>
             <div class="panelSectionLead">
-              Configure robustness modules, automation, and cross-dataset policy
-              before the next validation pass. Results, exports, and debug
-              output remain below once a run completes.
+              Configure robustness modules, automation, and cross-dataset policy.
             </div>
           </div>
-        </div>
-        <div class="panelMuted">
-          {{
-            showValidationResults
-              ? "These settings still shape reruns and follow-up validation passes for the current shortlist."
-              : "Set automation and module policy now so the first validation run already reflects the intended robustness workflow."
-          }}
         </div>
         <div class="checks">
           <label>
@@ -1710,7 +1731,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="metaLine mono">{{ crossMeta }}</div>
         <div class="metaLine mono" role="status" aria-live="polite">
           Selected {{ crossSelectedCount }}/{{ crossTotalCount }}
         </div>
@@ -1755,10 +1775,6 @@ onBeforeUnmount(() => {
           <div class="panelHeadCopy">
             <div class="panelEyebrow">Results</div>
             <h3 class="panelPaneTitle">Validation summary table</h3>
-            <div class="panelSectionLead">
-              Review route, category, cross-check, and warning outcomes for the
-              current shortlist before export.
-            </div>
           </div>
         </div>
         <div class="validationSummary surfaceSunken">
@@ -1822,20 +1838,55 @@ onBeforeUnmount(() => {
                 <label>Top Warning</label>
                 <div class="metaLine mono">{{ validationWarningSummary }}</div>
               </div>
+              <div>
+                <label>Run</label>
+                <div class="metaLine mono">{{ validationMeta }}</div>
+              </div>
             </div>
           </details>
           <div class="validationSummaryMeta">
-            <div class="metaLine mono" role="status" aria-live="polite">
-              {{ validationMeta }}
-            </div>
             <div v-if="validationReoptMeta !== '-'" class="metaLine mono">
               {{ validationReoptMeta }}
             </div>
             <div class="metaLine mono">{{ validationShortlistMeta }}</div>
-            <div class="metaLine mono">
-              Table visible: {{ tableVisible ? "yes" : "no" }}
-            </div>
           </div>
+          <section
+            v-if="showOverfitEvidencePanel"
+            class="overfitEvidencePanel"
+            data-qa-panel="validation.overfitEvidence"
+            :data-qa-state="validationOverfitStatus"
+            :title="validationOverfitSummary"
+            aria-label="Overfit evidence"
+          >
+            <div class="overfitEvidenceHeader">
+              <div>
+                <label>Overfit Evidence</label>
+                <div class="srOnly">{{ validationOverfitSummary }}</div>
+              </div>
+              <span
+                class="overfitEvidenceStatus"
+                :class="validationOverfitToneClass(validationOverfitStatus)"
+              >
+                {{ validationOverfitStatusLabel }}
+              </span>
+            </div>
+            <div class="overfitEvidenceGrid">
+              <div
+                v-for="item in validationOverfitItems"
+                :key="item.id"
+                class="overfitEvidenceItem"
+                :class="validationOverfitToneClass(item.tone)"
+                :data-qa-state="`validation.overfitEvidence.${item.id}`"
+                :title="validationOverfitItemTitle(item)"
+              >
+                <div class="overfitEvidenceLabel">{{ item.label }}</div>
+                <div class="overfitEvidenceValue mono">{{ item.value }}</div>
+                <div v-if="item.detail" class="overfitEvidenceDetail">
+                  {{ item.detail }}
+                </div>
+              </div>
+            </div>
+          </section>
           <div
             v-if="renderedMonteCarloHistogram.length > 0"
             class="monteCarloHistogram"
@@ -2204,6 +2255,79 @@ onBeforeUnmount(() => {
   border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
 }
 
+.overfitEvidencePanel {
+  display: grid;
+  gap: 0.45rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+}
+
+.overfitEvidenceHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.overfitEvidenceHeader label,
+.overfitEvidenceLabel {
+  display: block;
+  margin-bottom: 0.12rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+}
+
+.overfitEvidenceStatus {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-strong);
+}
+
+.overfitEvidenceGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+}
+
+.overfitEvidenceItem {
+  min-width: 0;
+  display: grid;
+  gap: 0.16rem;
+  padding: 0.25rem 0 0.35rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 58%, transparent);
+}
+
+.overfitEvidenceValue {
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.overfitEvidenceDetail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+  color: var(--muted-strong);
+}
+
+.overfitEvidenceItem.toneGood .overfitEvidenceValue,
+.overfitEvidenceStatus.toneGood {
+  color: #047857;
+}
+
+.overfitEvidenceItem.toneWarn .overfitEvidenceValue,
+.overfitEvidenceStatus.toneWarn {
+  color: var(--warning-ink);
+}
+
+.overfitEvidenceItem.toneBad .overfitEvidenceValue,
+.overfitEvidenceStatus.toneBad {
+  color: var(--danger-ink);
+}
+
 .monteCarloHistogram {
   min-height: 54px;
   display: grid;
@@ -2552,7 +2676,8 @@ onBeforeUnmount(() => {
 @media (max-width: 1100px) {
   .gridFive,
   .gridFour,
-  .gridThree {
+  .gridThree,
+  .overfitEvidenceGrid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -2573,7 +2698,8 @@ onBeforeUnmount(() => {
 
   .gridFive,
   .gridFour,
-  .gridThree {
+  .gridThree,
+  .overfitEvidenceGrid {
     grid-template-columns: 1fr;
   }
 

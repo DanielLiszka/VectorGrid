@@ -1,7 +1,10 @@
 import {
   fastForHeatmapCol,
+  finiteValues,
   heatmapIndex,
+  heatmapPalette,
   labelDerivedPlateau,
+  resolveHeatmapRange,
   slowForHeatmapLogicalRow,
   type HeatmapMode,
   type HeatmapModel,
@@ -9,6 +12,7 @@ import {
   type HeatmapPlateauCellDiagnostics,
   type HeatmapRange,
 } from './heatmapModel'
+import type { Heatmap3dSlice, HeatmapSlice3dModel, HeatmapSliceCell } from './heatmapSliceModel'
 
 export interface HeatmapMarker {
   col: number
@@ -42,6 +46,24 @@ export interface HeatmapCanvasRequestModel {
   scoreLabel: string
 }
 
+export type HeatmapSliceCanvasMode = 'slice' | 'delta'
+
+export type HeatmapFitMode = 'full' | 'valid'
+
+export interface HeatmapCanvasSliceSelection {
+  mode: HeatmapSliceCanvasMode
+  axisLabel: string
+  scoreLabel: string
+  selectedSliceKey: string
+  selectedSliceLabel: string
+  baselineSliceKey: string | null
+  baselineSliceLabel: string | null
+  selectedValues: Array<number | null>
+  baselineValues: Array<number | null> | null
+  selectedSampleCounts: Array<number | null>
+  selectedCells: Array<HeatmapSliceCell | null>
+}
+
 export interface HeatmapCanvasRenderModel {
   signature: string
   meta: string
@@ -56,6 +78,8 @@ export interface HeatmapCanvasRenderModel {
   range: HeatmapRange
   palette: HeatmapPalette
   plateauDiagnostics: Array<HeatmapPlateauCellDiagnostics | null> | null
+  slice3d: HeatmapSlice3dModel | null
+  sliceSelection?: HeatmapCanvasSliceSelection | null
 }
 
 export type HeatmapCellParams = Record<string, unknown>
@@ -67,6 +91,24 @@ export const DEFAULT_HEATMAP_VIEWPORT: HeatmapCanvasViewport = {
   scale: 1,
   offsetX: 0,
   offsetY: 0,
+}
+
+export interface HeatmapCanvasSummaryItem {
+  key: string
+  label: string
+  value: string
+  detail?: string
+  tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'accent'
+  title?: string
+}
+
+export interface HeatmapFiniteBounds {
+  minCol: number
+  maxCol: number
+  minDrawRow: number
+  maxDrawRow: number
+  finiteCells: number
+  totalCells: number
 }
 
 export interface HeatmapLegendTargets {
@@ -162,6 +204,15 @@ function prepareLogicalCanvasContext(
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function cleanText(value: unknown, fallback = ''): string {
+  const text = String(value ?? '').trim()
+  return text ? text : fallback
 }
 
 function trimFixed(src: string): string {
@@ -278,6 +329,267 @@ export function clearHeatmapCanvas(canvas: HTMLCanvasElement | null): void {
   if (!ctx || !canvas) return
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+}
+
+function bestMarkerForValues(
+  model: HeatmapModel,
+  values: Array<number | null>,
+  label: string,
+  preferMin = false,
+): HeatmapMarker | null {
+  let bestIdx = -1
+  let bestValue = preferMin ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY
+  for (let idx = 0; idx < values.length; idx += 1) {
+    const value = values[idx]
+    if (!finiteNumber(value)) continue
+    if ((preferMin && value < bestValue) || (!preferMin && value > bestValue)) {
+      bestValue = value
+      bestIdx = idx
+    }
+  }
+  if (bestIdx < 0) return null
+  const logicalRow = Math.floor(bestIdx / Math.max(1, model.binsFast))
+  const col = bestIdx % Math.max(1, model.binsFast)
+  return {
+    col,
+    drawRow: model.binsSlow - 1 - logicalRow,
+    label,
+  }
+}
+
+function sliceByKey(
+  slices: Heatmap3dSlice[],
+  key: string,
+): Heatmap3dSlice | null {
+  return slices.find((slice) => slice.key === key) ?? null
+}
+
+function firstDifferentSlice(
+  slices: Heatmap3dSlice[],
+  selectedKey: string,
+): Heatmap3dSlice | null {
+  return slices.find((slice) => slice.key !== selectedKey) ?? null
+}
+
+export function buildHeatmapSliceCanvasRenderModel(
+  renderModel: HeatmapCanvasRenderModel,
+  options: {
+    mode: HeatmapSliceCanvasMode
+    selectedSliceKey?: string
+    baselineSliceKey?: string
+  },
+): HeatmapCanvasRenderModel | null {
+  const sliceModel = renderModel.slice3d
+  const slices = sliceModel?.slices ?? []
+  if (!sliceModel || slices.length < 2) return null
+
+  const selected = sliceByKey(slices, cleanText(options.selectedSliceKey)) ?? slices[0] ?? null
+  if (!selected) return null
+  const baseline =
+    options.mode === 'delta'
+      ? (sliceByKey(slices, cleanText(options.baselineSliceKey)) ?? firstDifferentSlice(slices, selected.key))
+      : null
+  if (options.mode === 'delta' && (!baseline || baseline.key === selected.key)) return null
+
+  const displayValues =
+    options.mode === 'delta' && baseline
+      ? selected.values.map((value, idx) => (
+          finiteNumber(value) && finiteNumber(baseline.values[idx])
+            ? value - (baseline.values[idx] as number)
+            : null
+        ))
+      : selected.values.slice()
+  const finite = finiteValues(displayValues)
+  if (!finite.length) return null
+
+  const modeLabel = options.mode === 'delta' ? 'Delta vs baseline' : 'Selected slice'
+  const scoreLabel = cleanText(sliceModel.scoreLabel, renderModel.request.scoreLabel || 'Score')
+  const markers = [
+    bestMarkerForValues(renderModel.model, selected.values, 'Best'),
+    options.mode === 'delta' ? bestMarkerForValues(renderModel.model, displayValues, '+Δ') : null,
+    options.mode === 'delta' ? bestMarkerForValues(renderModel.model, displayValues, '-Δ', true) : null,
+  ].filter((marker): marker is HeatmapMarker => Boolean(marker))
+  const deltaRange = options.mode === 'delta' ? resolveHeatmapRange(finite) : sliceModel.range
+
+  return {
+    ...renderModel,
+    signature: `${renderModel.signature}:slice2d:${options.mode}:${selected.key}:${baseline?.key ?? ''}`,
+    meta: options.mode === 'delta' && baseline
+      ? `${scoreLabel} delta heatmap: ${selected.label} minus ${baseline.label}.`
+      : `${scoreLabel} slice heatmap: ${selected.label}.`,
+    displayMode: 'objective',
+    displayValues,
+    displayLabel: options.mode === 'delta' ? `${scoreLabel} Δ` : scoreLabel,
+    displayLegendNote: options.mode === 'delta' ? 'Delta vs baseline slice' : modeLabel,
+    markers,
+    range: deltaRange,
+    palette: options.mode === 'delta' ? heatmapPalette('objective') : sliceModel.palette,
+    plateauDiagnostics: null,
+    sliceSelection: {
+      mode: options.mode,
+      axisLabel: sliceModel.axisLabel,
+      scoreLabel,
+      selectedSliceKey: selected.key,
+      selectedSliceLabel: selected.label,
+      baselineSliceKey: baseline?.key ?? null,
+      baselineSliceLabel: baseline?.label ?? null,
+      selectedValues: selected.values,
+      baselineValues: baseline?.values ?? null,
+      selectedSampleCounts: selected.sampleCounts,
+      selectedCells: selected.cells,
+    },
+  }
+}
+
+export function finiteHeatmapDisplayBounds(
+  renderModel: HeatmapCanvasRenderModel,
+): HeatmapFiniteBounds | null {
+  const { model, displayValues } = renderModel
+  const totalCells = Math.max(0, model.binsFast * model.binsSlow)
+  if (!totalCells) return null
+  let minCol = Number.POSITIVE_INFINITY
+  let maxCol = Number.NEGATIVE_INFINITY
+  let minDrawRow = Number.POSITIVE_INFINITY
+  let maxDrawRow = Number.NEGATIVE_INFINITY
+  let finiteCells = 0
+  for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
+    const drawRow = model.binsSlow - 1 - logicalRow
+    for (let col = 0; col < model.binsFast; col += 1) {
+      const value = displayValues[heatmapIndex(model, logicalRow, col)]
+      if (!finiteNumber(value)) continue
+      finiteCells += 1
+      minCol = Math.min(minCol, col)
+      maxCol = Math.max(maxCol, col)
+      minDrawRow = Math.min(minDrawRow, drawRow)
+      maxDrawRow = Math.max(maxDrawRow, drawRow)
+    }
+  }
+  if (!finiteCells) return null
+  return { minCol, maxCol, minDrawRow, maxDrawRow, finiteCells, totalCells }
+}
+
+export function fitHeatmapViewportToFiniteDomain(
+  renderModel: HeatmapCanvasRenderModel,
+  width: number,
+  height: number,
+  paddingCells = 0.75,
+): HeatmapCanvasViewport {
+  const bounds = finiteHeatmapDisplayBounds(renderModel)
+  if (!bounds) return { ...DEFAULT_HEATMAP_VIEWPORT }
+  const { model } = renderModel
+  const logicalWidth = Math.max(1, Number.isFinite(width) ? width : 1)
+  const logicalHeight = Math.max(1, Number.isFinite(height) ? height : 1)
+  const cellW = logicalWidth / Math.max(1, model.binsFast)
+  const cellH = logicalHeight / Math.max(1, model.binsSlow)
+  const x0 = Math.max(0, (bounds.minCol - paddingCells) * cellW)
+  const x1 = Math.min(logicalWidth, (bounds.maxCol + 1 + paddingCells) * cellW)
+  const y0 = Math.max(0, (bounds.minDrawRow - paddingCells) * cellH)
+  const y1 = Math.min(logicalHeight, (bounds.maxDrawRow + 1 + paddingCells) * cellH)
+  const domainWidth = Math.max(cellW, x1 - x0)
+  const domainHeight = Math.max(cellH, y1 - y0)
+  const scale = Math.min(
+    HEATMAP_MAX_VIEWPORT_SCALE,
+    Math.max(HEATMAP_MIN_VIEWPORT_SCALE, Math.min(logicalWidth / domainWidth, logicalHeight / domainHeight) * 0.96),
+  )
+  if (scale <= HEATMAP_MIN_VIEWPORT_SCALE + 0.02) return { ...DEFAULT_HEATMAP_VIEWPORT }
+  return clampHeatmapViewport({
+    scale,
+    offsetX: (logicalWidth - domainWidth * scale) / 2 - x0 * scale,
+    offsetY: (logicalHeight - domainHeight * scale) / 2 - y0 * scale,
+  }, logicalWidth, logicalHeight)
+}
+
+export function buildHeatmapCanvasSummaryItems(
+  renderModel: HeatmapCanvasRenderModel,
+): HeatmapCanvasSummaryItem[] {
+  const bounds = finiteHeatmapDisplayBounds(renderModel)
+  const { model, displayValues } = renderModel
+  if (!bounds) {
+    return [{ key: 'coverage', label: 'Coverage', value: '0%', detail: 'No populated cells', tone: 'warning' }]
+  }
+  const finite = finiteValues(displayValues)
+  const best = bestMarkerForValues(model, displayValues, 'best')
+  const bestValue = best ? displayValues[heatmapIndex(model, model.binsSlow - 1 - best.drawRow, best.col)] : null
+  const coverage = bounds.totalCells > 0 ? Math.round((bounds.finiteCells / bounds.totalCells) * 100) : 0
+
+  const colMeans = Array.from({ length: model.binsFast }, (_, col) => {
+    const values: number[] = []
+    for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
+      const value = displayValues[heatmapIndex(model, logicalRow, col)]
+      if (finiteNumber(value)) values.push(value)
+    }
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
+  })
+  const rowMeans = Array.from({ length: model.binsSlow }, (_, logicalRow) => {
+    const values: number[] = []
+    for (let col = 0; col < model.binsFast; col += 1) {
+      const value = displayValues[heatmapIndex(model, logicalRow, col)]
+      if (finiteNumber(value)) values.push(value)
+    }
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
+  })
+  const bestColMarker = bestMarkerForValues(
+    { ...model, binsSlow: 1, values: colMeans },
+    colMeans,
+    'fast',
+  )
+  const bestRowIdx = rowMeans.reduce<number>((bestIdx, value, idx) => {
+    if (!finiteNumber(value)) return bestIdx
+    const current = bestIdx >= 0 ? rowMeans[bestIdx] : null
+    return !finiteNumber(current) || value > current ? idx : bestIdx
+  }, -1)
+
+  const bestFast =
+    bestColMarker ? fastForHeatmapCol(model, bestColMarker.col) : null
+  const bestSlow =
+    bestRowIdx >= 0 ? slowForHeatmapLogicalRow(model, bestRowIdx) : null
+  const slice = renderModel.sliceSelection
+  const deltaTone =
+    slice?.mode === 'delta' && finite.length
+      ? (Math.max(...finite) > 0 ? 'success' : 'danger')
+      : 'accent'
+
+  const items: HeatmapCanvasSummaryItem[] = []
+  if (slice) {
+    items.push({
+      key: 'slice',
+      label: slice.mode === 'delta' ? 'Delta' : 'Slice',
+      value: slice.mode === 'delta' ? 'Compare' : 'Selected',
+      detail: slice.mode === 'delta' && slice.baselineSliceLabel
+        ? `${slice.selectedSliceLabel} vs ${slice.baselineSliceLabel}`
+        : slice.selectedSliceLabel,
+      tone: slice.mode === 'delta' ? deltaTone : 'accent',
+    })
+  }
+  items.push(
+    {
+      key: 'coverage',
+      label: 'Coverage',
+      value: `${coverage}%`,
+      detail: `${bounds.finiteCells}/${bounds.totalCells} populated bins`,
+      tone: coverage < 50 ? 'warning' : 'neutral',
+    },
+    {
+      key: 'best',
+      label: slice?.mode === 'delta' ? 'Best Δ' : 'Best cell',
+      value: formatHeatmapDisplay(bestValue, 4),
+      detail: best ? `Fast ${fastForHeatmapCol(model, best.col)} · Slow ${slowForHeatmapLogicalRow(model, model.binsSlow - 1 - best.drawRow)}` : '—',
+      tone: slice?.mode === 'delta' && finiteNumber(bestValue) && bestValue > 0 ? 'success' : 'neutral',
+    },
+    {
+      key: 'fast-band',
+      label: 'Best fast band',
+      value: bestFast != null ? String(bestFast) : '—',
+      detail: bestColMarker ? `mean ${formatHeatmapDisplay(colMeans[bestColMarker.col], 4)}` : 'No populated fast band',
+    },
+    {
+      key: 'slow-band',
+      label: 'Best slow band',
+      value: bestSlow != null ? String(bestSlow) : '—',
+      detail: bestRowIdx >= 0 ? `mean ${formatHeatmapDisplay(rowMeans[bestRowIdx], 4)}` : 'No populated slow band',
+    },
+  )
+  return items
 }
 
 export function paintHeatmapBase(
@@ -418,7 +730,11 @@ export function buildHeatmapCellParams(
   renderModel: HeatmapCanvasRenderModel,
   cell: HeatmapResolvedCell,
 ): HeatmapCellParams | null {
-  const value = renderModel.model.values[cell.idx]
+  const exactParams = renderModel.sliceSelection?.selectedCells[cell.idx]?.params
+  if (exactParams && Object.keys(exactParams).length > 0) return exactParams
+  const value = renderModel.sliceSelection
+    ? renderModel.displayValues[cell.idx]
+    : renderModel.model.values[cell.idx]
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
   const fast = fastForHeatmapCol(renderModel.model, cell.col)
   const slowBase = slowForHeatmapLogicalRow(renderModel.model, cell.logicalRow)
@@ -437,14 +753,29 @@ export function heatmapTooltipText(
   renderModel: HeatmapCanvasRenderModel,
   cell: HeatmapResolvedCell,
 ): string | null {
+  const slice = renderModel.sliceSelection ?? null
   const objectiveValue = renderModel.model.values[cell.idx]
-  if (typeof objectiveValue !== 'number' || !Number.isFinite(objectiveValue)) return null
+  if (!slice && (typeof objectiveValue !== 'number' || !Number.isFinite(objectiveValue))) return null
   const displayValue = renderModel.displayValues[cell.idx]
+  if (slice && !finiteNumber(displayValue)) return null
   const fast = fastForHeatmapCol(renderModel.model, cell.col)
   const slow = slowForHeatmapLogicalRow(renderModel.model, cell.logicalRow)
   const fastLabel = renderModel.request.fastMaType.toUpperCase() || 'FAST'
   const slowLabel = renderModel.request.slowMaType.toUpperCase() || 'SLOW'
   const objectiveDisplay = formatHeatmapDisplay(objectiveValue, 4)
+
+  if (slice) {
+    const selectedValue = slice.selectedValues[cell.idx]
+    const baselineValue = slice.baselineValues?.[cell.idx] ?? null
+    const sampleCount = slice.selectedSampleCounts[cell.idx]
+    const sampleDisplay = finiteNumber(sampleCount)
+      ? ` · samples ${Math.max(0, Math.floor(sampleCount))}`
+      : ''
+    if (slice.mode === 'delta') {
+      return `${slice.selectedSliceLabel} vs ${slice.baselineSliceLabel ?? 'baseline'}\n${fastLabel} ${fast} · ${slowLabel} ${slow} · Δ ${formatHeatmapDisplay(displayValue, 4)} · selected ${formatHeatmapDisplay(selectedValue, 4)} · baseline ${formatHeatmapDisplay(baselineValue, 4)}${sampleDisplay}`
+    }
+    return `${slice.selectedSliceLabel}\n${fastLabel} ${fast} · ${slowLabel} ${slow} · ${slice.scoreLabel} ${formatHeatmapDisplay(selectedValue, 4)}${sampleDisplay}`
+  }
 
   if (renderModel.displayMode === 'plateau') {
     const plateauDetails = renderModel.plateauDiagnostics?.[cell.idx] ?? null

@@ -1,6 +1,6 @@
 
 import { mount } from '@vue/test-utils'
-import { Info } from 'lucide-vue-next'
+import { Info } from '@lucide/vue'
 import { describe, expect, it } from 'vitest'
 import AppIconButton from './AppIconButton.vue'
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick } from 'vue'
-import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight } from '@lucide/vue'
 import type { WorkbenchInspectorMode, WorkbenchInspectorState } from '../../utils/inspectorModel'
 
 const props = defineProps<{

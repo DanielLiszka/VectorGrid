@@ -1,9 +1,12 @@
 import type { BrowserContext, Page } from '@playwright/test'
+import type { MockTauriScheduledEvent } from '../fixtures/types'
 
 export interface MockTauriOptions {
   holdStartupOverlay?: boolean
   strictUnknownInvoke?: boolean
   commandResults?: Record<string, unknown>
+  commandDelays?: Record<string, number>
+  commandEvents?: Record<string, MockTauriScheduledEvent[]>
 }
 
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
@@ -21,7 +24,7 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
     ...DEFAULT_COMMAND_RESULTS,
     ...(options.commandResults ?? {}),
   }
-  await context.addInitScript(({ hold, holdKey, strictInvoke, results }) => {
+  await context.addInitScript(({ hold, holdKey, strictInvoke, results, delays, scheduledEvents }) => {
     const handlers: Record<string, number[]> = {}
     const callbacks: Record<number, unknown> = {}
     const invokeLog: string[] = []
@@ -48,6 +51,20 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
           // ignore callback failures in browser UX smoke
         }
       }
+    }
+    const scheduleCommandEvents = (command: string) => {
+      const rows = (scheduledEvents as Record<string, Array<{ event: string; delayMs?: number; payload: unknown }>>)[command] || []
+      for (const row of rows) {
+        const event = String(row?.event || '').trim()
+        if (!event) continue
+        const delayMs = Math.max(0, Number(row.delayMs || 0))
+        globalThis.setTimeout(() => emitEvent(event, row.payload), delayMs)
+      }
+    }
+    const waitForCommandDelay = async (command: string) => {
+      const delayMs = Math.max(0, Number((delays as Record<string, unknown>)[command] || 0))
+      if (delayMs <= 0) return
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, delayMs))
     }
     const listen = async (event: string, cb: (payload: { event: string; payload: unknown }) => void) => {
       const callbackId = transformCallback(cb)
@@ -80,6 +97,8 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
         return null
       }
       if (Object.prototype.hasOwnProperty.call(results, key)) {
+        scheduleCommandEvents(key)
+        await waitForCommandDelay(key)
         const result = (results as Record<string, unknown>)[key]
         if (
           result
@@ -174,6 +193,8 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
     holdKey: HOLD_STORAGE_KEY,
     strictInvoke: strictUnknownInvoke,
     results: commandResults,
+    delays: options.commandDelays ?? {},
+    scheduledEvents: options.commandEvents ?? {},
   })
 }
 

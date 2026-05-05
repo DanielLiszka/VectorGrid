@@ -9,7 +9,16 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: process.env.CI ? [['list'], ['html', { open: 'never', outputFolder: '../output/playwright/browser-ux-report' }]] : 'list',
+  reporter: process.env.CI
+    ? [
+        ['list'],
+        ['html', { open: 'never', outputFolder: '../output/playwright/browser-ux-report' }],
+        ['json', { outputFile: '../output/playwright/browser-ux-results.json' }],
+      ]
+    : [
+        ['list'],
+        ['json', { outputFile: '../output/playwright/browser-ux-results.json' }],
+      ],
   outputDir: '../output/playwright/browser-ux-artifacts',
   use: {
     baseURL: BASE_URL,

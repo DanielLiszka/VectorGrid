@@ -2954,6 +2954,9 @@ export async function runValidation(
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
       validationEvidenceSummary: "Validation evidence not run.",
+      validationOverfitSummary: "Overfit evidence not run.",
+      validationOverfitStatus: "not_run",
+      validationOverfitItems: [],
       validationWarningSummary: "-",
     });
     writeDomTextContent("status", message, VALIDATION_PANEL_SELECTOR);
@@ -2976,6 +2979,9 @@ export async function runValidation(
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
       validationEvidenceSummary: "Validation evidence not run.",
+      validationOverfitSummary: "Overfit evidence not run.",
+      validationOverfitStatus: "not_run",
+      validationOverfitItems: [],
       validationWarningSummary: "-",
     });
     writeDomTextContent("status", message, VALIDATION_PANEL_SELECTOR);
@@ -2994,6 +3000,9 @@ export async function runValidation(
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
       validationEvidenceSummary: "Validation evidence not run.",
+      validationOverfitSummary: "Overfit evidence not run.",
+      validationOverfitStatus: "not_run",
+      validationOverfitItems: [],
       validationWarningSummary: "-",
     });
     writeDomTextContent("status", message, VALIDATION_PANEL_SELECTOR);
@@ -3068,6 +3077,9 @@ export async function runValidation(
     validationCrossSummary: "-",
     validationSkippedSummary: "-",
     validationEvidenceSummary: "Validation evidence not run.",
+    validationOverfitSummary: "Overfit evidence not run.",
+    validationOverfitStatus: "not_run",
+    validationOverfitItems: [],
     validationWarningSummary: "-",
     validationReoptMeta: "-",
   });
@@ -3189,6 +3201,7 @@ export async function runValidation(
     const evidenceSummary = buildValidationEvidenceSummary({
       validationReq,
       validationRes,
+      optimizationRes: runRes,
       datasetMeta,
       reportPath: reportXlsxPath,
       replayClass: "exact_evidence_review",
@@ -3250,6 +3263,9 @@ export async function runValidation(
       validationCrossSummary: executionSummary.crossSummary,
       validationSkippedSummary: executionSummary.skippedSummary,
       validationEvidenceSummary: evidenceSummary.summaryLine,
+      validationOverfitSummary: evidenceSummary.overfit.summaryLine,
+      validationOverfitStatus: evidenceSummary.overfit.status,
+      validationOverfitItems: evidenceSummary.overfit.items,
       validationWarningSummary: executionSummary.warningSummary,
       validationReoptMeta,
       validationColumns,
@@ -3290,6 +3306,9 @@ export async function runValidation(
       validationCrossSummary: "-",
       validationSkippedSummary: "-",
       validationEvidenceSummary: "Validation evidence not run.",
+      validationOverfitSummary: "Overfit evidence not run.",
+      validationOverfitStatus: "not_run",
+      validationOverfitItems: [],
       validationWarningSummary: "-",
       validationReoptMeta: "-",
     });

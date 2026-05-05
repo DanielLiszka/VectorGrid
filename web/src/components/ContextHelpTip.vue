@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CircleHelp } from 'lucide-vue-next'
+import { CircleHelp } from '@lucide/vue'
 import {
   HoverCardContent,
   HoverCardPortal,
@@ -35,8 +35,8 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { mode, isFull, isOff } = useHelpMode()
 
-const fullHelpOpenDelayMs = 1600
-const conciseTooltipDelayMs = 750
+const fullHelpOpenDelayMs = 700
+const conciseTooltipDelayMs = 450
 
 const label = computed(() => String(props.ariaLabel || props.title || 'Help').trim() || 'Help')
 const detailBody = computed(() => String(props.detail || '').trim())
@@ -53,7 +53,7 @@ const textBadge = computed(() => String(props.badge || '').trim())
         </button>
       </HoverCardTrigger>
       <HoverCardPortal>
-        <HoverCardContent class="contextHelpCard" :side="side" :align="align" :side-offset="10" :collision-padding="12">
+        <HoverCardContent role="tooltip" class="contextHelpCard" :side="side" :align="align" :side-offset="10" :collision-padding="12">
           <div v-if="title" class="contextHelpTitle">{{ title }}</div>
           <div class="contextHelpSummary">{{ summary }}</div>
           <div v-if="detailBody" class="contextHelpDetail">{{ detailBody }}</div>
