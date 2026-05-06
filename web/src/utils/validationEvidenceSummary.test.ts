@@ -100,6 +100,129 @@ describe("validationEvidenceSummary", () => {
     ).toBe(true);
   });
 
+  it("prefers validation evidence pack data when present", () => {
+    const summary = buildValidationEvidenceSummary({
+      validationReq: {
+        backend: { backend: "CpuOnly" },
+        cscv_pbo: { slices: 16 },
+        spa: { slices: 16 },
+      },
+      validationRes: {
+        requested_backend: "CpuOnly",
+        backend_used: "Cpu",
+        backend_route: "CpuOnly",
+        cscv_pbo: { pbo: 0.99 },
+        validation_evidence_pack: {
+          schema_version: "1-0-0",
+          version: 1,
+          workflow: "double_ma_validation",
+          status: "incomplete",
+          status_reason: "requested validation evidence incomplete: spa",
+          route: {
+            requested_backend: "GpuKernel",
+            realized_backend: "Gpu",
+            route_label: "GpuKernel",
+            residency_tier: "gpu_kernel",
+          },
+          candidate_universe: {
+            source: "validation_request_candidates",
+            requested_candidates: 4,
+            evaluated_candidates: 4,
+            retained_candidates: 2,
+            survived_hard_gates: 2,
+            approved_candidates: 1,
+            optimization_trials: 58300,
+          },
+          verdict: {
+            passed: true,
+            approved: true,
+            recommendation: "approved_with_warnings",
+            summary: "approved",
+            warning_flags: ["high_pbo"],
+          },
+          metrics: [
+            {
+              metric: "psr",
+              availability: "available",
+              value: 0.91,
+              threshold: 0.75,
+              sample_unit: "raw_bars",
+            },
+            {
+              metric: "dsr",
+              availability: "available",
+              value: 0.72,
+              threshold: 0.6,
+              sample_unit: "raw_bars",
+            },
+            {
+              metric: "cscv_pbo",
+              availability: "available",
+              value: 0.14,
+              threshold: 0.25,
+              comparability_basis: "candidate_set_slices",
+            },
+            {
+              metric: "spa_p_value",
+              availability: "skipped",
+              unavailable_reason: "spa_skipped_not_enough_slices",
+            },
+            {
+              metric: "min_track_record_length",
+              availability: "available",
+              value: 512,
+              threshold: 256,
+            },
+          ],
+          modules: [
+            {
+              module: "cscv_pbo",
+              availability: "available",
+              requested: true,
+              summary: "evaluated",
+              combinations: 70,
+            },
+            {
+              module: "spa",
+              availability: "skipped",
+              requested: true,
+              summary: "skipped",
+              skipped_reason: "spa_skipped_not_enough_slices",
+            },
+          ],
+        },
+      },
+      optimizationRes: {
+        num_combos: 1,
+      },
+    });
+
+    expect(summary.status).toBe("incomplete");
+    expect(summary.summaryLine).toBe(
+      "Validation evidence incomplete; pack schema 1-0-0 v1; 1/2 requested modules available; route Gpu.",
+    );
+    expect(summary.requestedBackend).toBe("GpuKernel");
+    expect(summary.realizedBackend).toBe("Gpu");
+    expect(summary.route).toBe("GpuKernel");
+    expect(summary.modules.find((module) => module.id === "spa")).toMatchObject({
+      availability: "skipped",
+      detail: "spa_skipped_not_enough_slices",
+    });
+    expect(summary.overfit.summaryLine).toBe(
+      "Overfit evidence needs review; approved; 58,300 trials; PBO 14.0%; PSR 0.910 · DSR 0.720.",
+    );
+    expect(summary.overfit.items.find((item) => item.id === "pbo")).toMatchObject({
+      value: "14.0%",
+      detail: "max 25.0% · 70 combinations",
+      tone: "good",
+    });
+    expect(summary.overfit.items.find((item) => item.id === "spa")).toMatchObject({
+      value: "skipped",
+      detail: "spa_skipped_not_enough_slices",
+      tone: "warn",
+    });
+  });
+
   it("builds an overfit evidence panel model from validation verdicts and optional evidence blocks", () => {
     const summary = buildValidationEvidenceSummary({
       validationReq: {

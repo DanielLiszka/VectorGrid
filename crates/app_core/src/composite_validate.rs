@@ -108,8 +108,9 @@ use crate::rocb_gpu_kernel::{
 };
 use crate::validation_pipeline::{
     build_general_validation_evidence_policy_summary, build_run_verdict,
-    build_validation_semantics_provenance, sanitize_hard_gates, ValidationCandidateVerdict,
-    ValidationPostCandidate, ValidationRunVerdict,
+    build_validation_evidence_pack, build_validation_semantics_provenance, sanitize_hard_gates,
+    ValidationCandidateVerdict, ValidationEvidencePackBuildInput, ValidationPostCandidate,
+    ValidationRunVerdict,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::vcc_momentum_roundtrip_parity;
@@ -185,8 +186,8 @@ pub use crate::validation_shared::{
     MonteCarloValidationConfig, MonteCarloValidationStats, PerturbConfig, PerturbStats,
     ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, ValidationArtifactContext, ValidationSemanticsProvenance,
-    WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
+    TradeBootstrapStats, ValidationArtifactContext, ValidationEvidencePackV1,
+    ValidationSemanticsProvenance, WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
 };
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -9745,7 +9746,57 @@ pub struct CompositeValidationResult {
     pub validation_provenance: Option<ValidationSemanticsProvenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_policy_summary: Option<EvidencePolicySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_evidence_pack: Option<ValidationEvidencePackV1>,
     pub run_verdict: ValidationRunVerdict,
+}
+
+fn backend_used_label(backend_used: &BackendUsed) -> &'static str {
+    match backend_used {
+        BackendUsed::Cpu => "Cpu",
+        BackendUsed::Gpu => "Gpu",
+    }
+}
+
+pub fn refresh_composite_validation_evidence_pack(
+    res: &mut CompositeValidationResult,
+    req: &CompositeValidationRequest,
+) {
+    let hard_gates = sanitize_hard_gates(
+        req.min_psr,
+        req.min_dsr,
+        req.min_cscv_oos_rank_frac,
+        req.min_cscv_oos_metric,
+        req.max_pbo,
+    );
+    let route_diagnostics = res.route_diagnostics.as_deref().unwrap_or(&[]);
+    res.validation_evidence_pack = Some(build_validation_evidence_pack(
+        ValidationEvidencePackBuildInput {
+            workflow: "composite_validation",
+            data_id: &res.data_id,
+            validation_context: req.validation_context.as_ref(),
+            requested_backend: &res.requested_backend,
+            realized_backend: backend_used_label(&res.backend_used),
+            backend_route: res.backend_route.as_deref(),
+            residency_tier: &res.validation_residency_tier,
+            fallback_reason: res.backend_fallback_reason.as_deref(),
+            route_diagnostics,
+            candidate_source: "validation_request_candidates",
+            requested_candidate_count: req.candidates.len(),
+            evaluated_candidate_count: res.run_verdict.candidates_tested,
+            retained_candidate_count: res.candidates.len(),
+            optimization_trials: None,
+            admission_policy: None,
+            hard_gates: &hard_gates,
+            run_verdict: &res.run_verdict,
+            evidence_policy_summary: res.evidence_policy_summary.as_ref(),
+            validation_provenance: res.validation_provenance.as_ref(),
+            cscv_requested: req.cscv_pbo.is_some(),
+            cscv_pbo: res.cscv_pbo.as_ref(),
+            spa_requested: req.spa.is_some(),
+            spa: res.spa.as_ref(),
+        },
+    ));
 }
 
 fn emit_progress(
@@ -12920,8 +12971,8 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
     let requested_backend = validation_backend_label(&req.backend).to_string();
     let validation_residency_tier =
         validation_residency_tier(&backend_used, backend_route.as_deref()).to_string();
-    Ok(CompositeValidationResult {
-        data_id: req.data_id,
+    let mut result = CompositeValidationResult {
+        data_id: req.data_id.clone(),
         runtime_ms,
         requested_backend,
         validation_residency_tier,
@@ -12936,8 +12987,11 @@ pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
         cscv_pbo,
         validation_provenance,
         evidence_policy_summary,
+        validation_evidence_pack: None,
         run_verdict,
-    })
+    };
+    refresh_composite_validation_evidence_pack(&mut result, &req);
+    Ok(result)
 }
 
 fn slice_return_sums_for_series(
@@ -13960,6 +14014,24 @@ mod tests {
                 .pointer("/evidence_policy_summary/metrics/0/sample_unit")
                 .and_then(|entry| entry.as_str()),
             Some("raw_bars")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_evidence_pack/schema_version")
+                .and_then(|entry| entry.as_str()),
+            Some(crate::VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_evidence_pack/route/route_label")
+                .and_then(|entry| entry.as_str()),
+            Some("CpuOnly")
+        );
+        assert_eq!(
+            value
+                .pointer("/validation_evidence_pack/modules/0/module")
+                .and_then(|entry| entry.as_str()),
+            Some("run_verdict")
         );
     }
 

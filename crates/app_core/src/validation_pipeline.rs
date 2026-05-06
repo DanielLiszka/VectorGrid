@@ -14,8 +14,12 @@ use crate::validation_shared::{
     MonteCarloModeStats, MonteCarloThresholdConfig, MonteCarloValidationConfig,
     MonteCarloValidationStats, PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional,
     ReoptWalkForwardStats, ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats,
-    TradeBootstrapConfig, TradeBootstrapStats, ValidationSemanticsProvenance,
-    WalkForwardConfigOptional, WalkForwardStats,
+    TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
+    ValidationEvidenceAvailability, ValidationEvidenceCandidateUniverseV1,
+    ValidationEvidenceDatasetV1, ValidationEvidenceMetricV1, ValidationEvidenceModuleV1,
+    ValidationEvidencePackStatus, ValidationEvidencePackV1, ValidationEvidenceRouteV1,
+    ValidationEvidenceVerdictV1, ValidationSemanticsProvenance, WalkForwardConfigOptional,
+    WalkForwardStats, VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION, VALIDATION_EVIDENCE_PACK_VERSION,
 };
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -23,6 +27,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
@@ -840,6 +845,449 @@ pub fn build_run_verdict<C: ValidationPostCandidate>(
         top_candidate_dsr,
         pbo,
         max_pbo: gates.max_pbo,
+    }
+}
+
+pub struct ValidationEvidencePackBuildInput<'a> {
+    pub workflow: &'a str,
+    pub data_id: &'a str,
+    pub validation_context: Option<&'a ValidationArtifactContext>,
+    pub requested_backend: &'a str,
+    pub realized_backend: &'a str,
+    pub backend_route: Option<&'a str>,
+    pub residency_tier: &'a str,
+    pub fallback_reason: Option<&'a str>,
+    pub route_diagnostics: &'a [String],
+    pub candidate_source: &'a str,
+    pub requested_candidate_count: usize,
+    pub evaluated_candidate_count: usize,
+    pub retained_candidate_count: usize,
+    pub optimization_trials: Option<usize>,
+    pub admission_policy: Option<&'a str>,
+    pub hard_gates: &'a ValidationHardGateConfig,
+    pub run_verdict: &'a ValidationRunVerdict,
+    pub evidence_policy_summary: Option<&'a EvidencePolicySummary>,
+    pub validation_provenance: Option<&'a ValidationSemanticsProvenance>,
+    pub cscv_requested: bool,
+    pub cscv_pbo: Option<&'a CscvPboResult>,
+    pub spa_requested: bool,
+    pub spa: Option<&'a SpaValidationStats>,
+}
+
+fn finite_f64(value: Option<f64>) -> Option<f64> {
+    value.filter(|next| next.is_finite())
+}
+
+fn serde_scalar_label<T>(value: &T) -> String
+where
+    T: Serialize + Debug,
+{
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|json| json.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| format!("{value:?}"))
+}
+
+fn policy_metric<'a>(
+    policy: Option<&'a EvidencePolicySummary>,
+    metric: &str,
+) -> Option<&'a EvidencePolicyMetric> {
+    policy.and_then(|summary| {
+        summary
+            .metrics
+            .iter()
+            .find(|entry| entry.metric.eq_ignore_ascii_case(metric))
+    })
+}
+
+fn metric_entry(
+    policy: Option<&EvidencePolicySummary>,
+    metric: &str,
+    availability: ValidationEvidenceAvailability,
+    value: Option<f64>,
+    threshold: Option<f64>,
+    scope: &str,
+    comparability_basis: &str,
+    unavailable_reason: Option<String>,
+) -> ValidationEvidenceMetricV1 {
+    let policy_metric = policy_metric(policy, metric);
+    ValidationEvidenceMetricV1 {
+        metric: metric.to_string(),
+        availability,
+        value: finite_f64(value),
+        threshold: finite_f64(threshold),
+        scope: scope.to_string(),
+        sample_unit: policy_metric
+            .map(|entry| entry.sample_unit.clone())
+            .unwrap_or_default(),
+        metric_class: policy_metric
+            .map(|entry| serde_scalar_label(&entry.metric_class))
+            .unwrap_or_default(),
+        gate_role: policy_metric
+            .map(|entry| serde_scalar_label(&entry.gate_role))
+            .unwrap_or_default(),
+        comparability_basis: comparability_basis.to_string(),
+        interpretation: policy_metric
+            .map(|entry| entry.interpretation.clone())
+            .unwrap_or_default(),
+        caveats: policy_metric
+            .map(|entry| entry.caveats.clone())
+            .unwrap_or_default(),
+        unavailable_reason,
+    }
+}
+
+fn cscv_availability(
+    requested: bool,
+    result: Option<&CscvPboResult>,
+) -> ValidationEvidenceAvailability {
+    if !requested {
+        ValidationEvidenceAvailability::NotRequested
+    } else if let Some(result) = result {
+        if result.skipped_reason.is_some() || result.combinations == 0 {
+            ValidationEvidenceAvailability::Skipped
+        } else {
+            ValidationEvidenceAvailability::Available
+        }
+    } else {
+        ValidationEvidenceAvailability::Unavailable
+    }
+}
+
+fn spa_availability(
+    requested: bool,
+    result: Option<&SpaValidationStats>,
+) -> ValidationEvidenceAvailability {
+    if !requested {
+        ValidationEvidenceAvailability::NotRequested
+    } else if let Some(result) = result {
+        if result.skipped_reason.is_some() {
+            ValidationEvidenceAvailability::Skipped
+        } else {
+            ValidationEvidenceAvailability::Available
+        }
+    } else {
+        ValidationEvidenceAvailability::Unavailable
+    }
+}
+
+fn evidence_status_reason(missing_requested_modules: &[&str]) -> String {
+    if missing_requested_modules.is_empty() {
+        "all requested validation evidence modules produced review metadata".to_string()
+    } else {
+        format!(
+            "requested validation evidence incomplete: {}",
+            missing_requested_modules.join(", ")
+        )
+    }
+}
+
+fn validation_verdict_summary(verdict: &ValidationRunVerdict) -> String {
+    if verdict.approved {
+        "approved".to_string()
+    } else if verdict.passed {
+        "passed_not_approved".to_string()
+    } else {
+        "failed".to_string()
+    }
+}
+
+pub fn build_validation_evidence_pack(
+    input: ValidationEvidencePackBuildInput<'_>,
+) -> ValidationEvidencePackV1 {
+    let cscv_availability = cscv_availability(input.cscv_requested, input.cscv_pbo);
+    let spa_availability = spa_availability(input.spa_requested, input.spa);
+    let mut missing_requested_modules: Vec<&str> = Vec::new();
+    if input.cscv_requested && cscv_availability != ValidationEvidenceAvailability::Available {
+        missing_requested_modules.push("cscv_pbo");
+    }
+    if input.spa_requested && spa_availability != ValidationEvidenceAvailability::Available {
+        missing_requested_modules.push("spa");
+    }
+
+    let status = if missing_requested_modules.is_empty() {
+        ValidationEvidencePackStatus::Complete
+    } else {
+        ValidationEvidencePackStatus::Incomplete
+    };
+    let status_reason = evidence_status_reason(&missing_requested_modules);
+    let probability_source = input
+        .validation_provenance
+        .map(|entry| entry.probability_metric_source.as_str())
+        .filter(|entry| !entry.trim().is_empty())
+        .unwrap_or("raw_bar_probability_metrics");
+    let probability_basis = format!(
+        "{probability_source}; probability metrics are comparable only within the same validation workflow and sample-unit contract"
+    );
+    let cscv_basis =
+        "candidate_set_slices; set-level CSCV/PBO evidence, not candidate-specific proof";
+    let spa_basis = "candidate_set_slices; SPA compares the retained search set against the configured benchmark";
+    let track_record_basis = "raw_bars; recommendation support, not a statistical approval proof";
+
+    let context = input.validation_context;
+    let cscv_pbo_value = input.cscv_pbo.and_then(|result| {
+        if cscv_availability == ValidationEvidenceAvailability::Available {
+            finite_f64(Some(result.pbo))
+        } else {
+            None
+        }
+    });
+    let spa_p_value = input.spa.and_then(|result| {
+        if spa_availability == ValidationEvidenceAvailability::Available {
+            finite_f64(Some(result.p_value))
+        } else {
+            None
+        }
+    });
+    let psr = finite_f64(input.run_verdict.top_candidate_psr);
+    let dsr = finite_f64(input.run_verdict.top_candidate_dsr);
+    let track_record_bars = input
+        .run_verdict
+        .top_candidate_track_record_bars
+        .map(|value| value as f64);
+    let min_track_record_bars = input
+        .run_verdict
+        .top_candidate_min_track_record_length_bars
+        .map(|value| value as f64);
+
+    let mut warnings = input.run_verdict.warning_flags.clone();
+    if let Some(reason) = input
+        .cscv_pbo
+        .and_then(|result| result.skipped_reason.clone())
+    {
+        warnings.push(format!("cscv_pbo_skipped:{reason}"));
+    }
+    if let Some(reason) = input.spa.and_then(|result| result.skipped_reason.clone()) {
+        warnings.push(format!("spa_skipped:{reason}"));
+    }
+    warnings.sort();
+    warnings.dedup();
+
+    ValidationEvidencePackV1 {
+        schema_version: VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION.to_string(),
+        version: VALIDATION_EVIDENCE_PACK_VERSION,
+        workflow: input.workflow.to_string(),
+        status,
+        status_reason,
+        generated_by: "ta_app_core.validation_pipeline".to_string(),
+        dataset: ValidationEvidenceDatasetV1 {
+            data_id: input.data_id.to_string(),
+            strategy_kind: context
+                .map(|entry| entry.strategy_kind.clone())
+                .filter(|entry| !entry.trim().is_empty()),
+            csv_path: context.and_then(|entry| entry.csv_path.clone()),
+            timeframe: context.and_then(|entry| entry.timeframe.clone()),
+            label: context.and_then(|entry| entry.label.clone()),
+        },
+        route: ValidationEvidenceRouteV1 {
+            requested_backend: input.requested_backend.to_string(),
+            realized_backend: input.realized_backend.to_string(),
+            route_label: input.backend_route.map(ToOwned::to_owned),
+            residency_tier: input.residency_tier.to_string(),
+            fallback_reason: input.fallback_reason.map(ToOwned::to_owned),
+            diagnostics: input.route_diagnostics.to_vec(),
+        },
+        candidate_universe: ValidationEvidenceCandidateUniverseV1 {
+            source: input.candidate_source.to_string(),
+            requested_candidates: input.requested_candidate_count,
+            evaluated_candidates: input.evaluated_candidate_count,
+            retained_candidates: input.retained_candidate_count,
+            survived_hard_gates: input.run_verdict.candidates_survived_hard_gates,
+            approved_candidates: input.run_verdict.approved_candidate_count,
+            optimization_trials: input.optimization_trials,
+            admission_policy: input.admission_policy.map(ToOwned::to_owned),
+            selection_scope: "retained_validation_candidates".to_string(),
+        },
+        verdict: ValidationEvidenceVerdictV1 {
+            passed: input.run_verdict.passed,
+            approved: input.run_verdict.approved,
+            recommendation: serde_scalar_label(&input.run_verdict.final_recommendation),
+            first_approved_rank: input.run_verdict.first_approved_rank,
+            summary: validation_verdict_summary(input.run_verdict),
+            warning_flags: input.run_verdict.warning_flags.clone(),
+            fail_reasons: input.run_verdict.fail_reasons.clone(),
+        },
+        metrics: vec![
+            metric_entry(
+                input.evidence_policy_summary,
+                "psr",
+                if psr.is_some() {
+                    ValidationEvidenceAvailability::Available
+                } else {
+                    ValidationEvidenceAvailability::NotComputed
+                },
+                psr,
+                input.hard_gates.min_psr,
+                "top_retained_candidate",
+                &probability_basis,
+                None,
+            ),
+            metric_entry(
+                input.evidence_policy_summary,
+                "dsr",
+                if dsr.is_some() {
+                    ValidationEvidenceAvailability::Available
+                } else {
+                    ValidationEvidenceAvailability::NotComputed
+                },
+                dsr,
+                input.hard_gates.min_dsr,
+                "top_retained_candidate",
+                &probability_basis,
+                None,
+            ),
+            metric_entry(
+                input.evidence_policy_summary,
+                "cscv_pbo",
+                cscv_availability.clone(),
+                cscv_pbo_value,
+                input.hard_gates.max_pbo,
+                "candidate_universe",
+                cscv_basis,
+                input
+                    .cscv_pbo
+                    .and_then(|result| result.skipped_reason.clone())
+                    .or_else(|| {
+                        if input.cscv_requested && input.cscv_pbo.is_none() {
+                            Some("requested but no CSCV/PBO result was returned".to_string())
+                        } else {
+                            None
+                        }
+                    }),
+            ),
+            metric_entry(
+                input.evidence_policy_summary,
+                "spa_p_value",
+                spa_availability.clone(),
+                spa_p_value,
+                None,
+                "candidate_universe",
+                spa_basis,
+                input
+                    .spa
+                    .and_then(|result| result.skipped_reason.clone())
+                    .or_else(|| {
+                        if input.spa_requested && input.spa.is_none() {
+                            Some("requested but no SPA result was returned".to_string())
+                        } else {
+                            None
+                        }
+                    }),
+            ),
+            metric_entry(
+                input.evidence_policy_summary,
+                "min_track_record_length",
+                if track_record_bars.is_some() || min_track_record_bars.is_some() {
+                    ValidationEvidenceAvailability::Available
+                } else {
+                    ValidationEvidenceAvailability::NotComputed
+                },
+                track_record_bars,
+                min_track_record_bars,
+                "top_retained_candidate",
+                track_record_basis,
+                None,
+            ),
+        ],
+        modules: vec![
+            ValidationEvidenceModuleV1 {
+                module: "run_verdict".to_string(),
+                availability: ValidationEvidenceAvailability::Available,
+                requested: true,
+                scope: "validation_run".to_string(),
+                summary: validation_verdict_summary(input.run_verdict),
+                value: None,
+                threshold: None,
+                p_value: None,
+                candidate_count: Some(input.run_verdict.candidates_tested),
+                slice_count: None,
+                combinations: None,
+                combinations_possible: None,
+                skipped_reason: None,
+                caveats: vec![
+                    "approved is a retained-run recommendation; passed remains hard-gate survival"
+                        .to_string(),
+                ],
+            },
+            ValidationEvidenceModuleV1 {
+                module: "cscv_pbo".to_string(),
+                availability: cscv_availability,
+                requested: input.cscv_requested,
+                scope: "candidate_universe".to_string(),
+                summary: input
+                    .cscv_pbo
+                    .map(|result| {
+                        if result.skipped_reason.is_some() || result.combinations == 0 {
+                            "skipped".to_string()
+                        } else {
+                            "evaluated".to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        if input.cscv_requested {
+                            "requested_missing".to_string()
+                        } else {
+                            "not_requested".to_string()
+                        }
+                    }),
+                value: cscv_pbo_value,
+                threshold: input.hard_gates.max_pbo,
+                p_value: None,
+                candidate_count: input.cscv_pbo.map(|result| result.candidates),
+                slice_count: input.cscv_pbo.map(|result| result.slices),
+                combinations: input.cscv_pbo.map(|result| result.combinations),
+                combinations_possible: input.cscv_pbo.map(|result| result.combinations_possible),
+                skipped_reason: input
+                    .cscv_pbo
+                    .and_then(|result| result.skipped_reason.clone()),
+                caveats: vec![
+                    "CSCV/PBO is set-level overfit evidence and cannot certify a single candidate."
+                        .to_string(),
+                ],
+            },
+            ValidationEvidenceModuleV1 {
+                module: "spa".to_string(),
+                availability: spa_availability,
+                requested: input.spa_requested,
+                scope: "candidate_universe".to_string(),
+                summary: input
+                    .spa
+                    .map(|result| {
+                        if result.skipped_reason.is_some() {
+                            "skipped".to_string()
+                        } else if result.passed {
+                            "passed".to_string()
+                        } else {
+                            "not_significant".to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        if input.spa_requested {
+                            "requested_missing".to_string()
+                        } else {
+                            "not_requested".to_string()
+                        }
+                    }),
+                value: input.spa.and_then(|result| finite_f64(Some(result.best_candidate_t_stat))),
+                threshold: None,
+                p_value: spa_p_value,
+                candidate_count: input.spa.map(|result| result.candidate_count),
+                slice_count: input.spa.map(|result| result.slice_count),
+                combinations: None,
+                combinations_possible: None,
+                skipped_reason: input.spa.and_then(|result| result.skipped_reason.clone()),
+                caveats: vec![
+                    "SPA is search-set evidence against the configured benchmark and remains review metadata."
+                        .to_string(),
+                ],
+            },
+        ],
+        policy_summary: input.evidence_policy_summary.cloned(),
+        warnings,
+        caveats: input
+            .evidence_policy_summary
+            .map(|summary| summary.caveats.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -3735,6 +4183,183 @@ mod tests {
             .iter()
             .any(|flag| flag == "cscv_skipped"));
         assert_eq!(verdict.pbo, None);
+    }
+
+    #[test]
+    fn validation_evidence_pack_records_schema_route_and_metric_scope() {
+        let gates = ValidationHardGateConfig {
+            min_psr: Some(0.75),
+            min_dsr: Some(0.60),
+            max_pbo: Some(0.25),
+            ..ValidationHardGateConfig::default()
+        };
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.2,
+                ..Metrics::default()
+            },
+            psr: Some(0.91),
+            dsr: Some(0.72),
+            track_record_bars: 512,
+            min_track_record_length_bars: Some(256),
+            robust_score: 1.2,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        apply_candidate_hard_gates(&mut out, &gates, None);
+        let cscv = CscvPboResult {
+            slices: 8,
+            slice_bars: 32,
+            candidates: 3,
+            combinations: 70,
+            combinations_possible: 70,
+            pbo: 0.14,
+            lambda_p25: -0.2,
+            lambda_p50: 0.1,
+            lambda_p75: 0.4,
+            degradation_slope: 0.0,
+            degradation_intercept: 0.0,
+            degradation_r2: 0.0,
+            threshold: 0.0,
+            prob_oos_below_threshold: 0.2,
+            skipped_reason: None,
+        };
+        let verdict = build_run_verdict(&out, 3, &gates, Some(&cscv), None);
+        let policy = build_general_validation_evidence_policy_summary(&gates, true, Some(&cscv));
+        let pack = build_validation_evidence_pack(ValidationEvidencePackBuildInput {
+            workflow: "double_ma_validation",
+            data_id: "dataset-a",
+            validation_context: None,
+            requested_backend: "GpuKernel",
+            realized_backend: "Gpu",
+            backend_route: Some("GpuKernel"),
+            residency_tier: "gpu_kernel",
+            fallback_reason: None,
+            route_diagnostics: &[],
+            candidate_source: "validation_request_candidates",
+            requested_candidate_count: 3,
+            evaluated_candidate_count: 3,
+            retained_candidate_count: out.len(),
+            optimization_trials: Some(58_300),
+            admission_policy: Some("scalar_union"),
+            hard_gates: &gates,
+            run_verdict: &verdict,
+            evidence_policy_summary: Some(&policy),
+            validation_provenance: None,
+            cscv_requested: true,
+            cscv_pbo: Some(&cscv),
+            spa_requested: false,
+            spa: None,
+        });
+
+        assert_eq!(pack.version, VALIDATION_EVIDENCE_PACK_VERSION);
+        assert_eq!(pack.schema_version, VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION);
+        assert_eq!(pack.status, ValidationEvidencePackStatus::Complete);
+        assert_eq!(pack.route.route_label.as_deref(), Some("GpuKernel"));
+        assert_eq!(pack.candidate_universe.optimization_trials, Some(58_300));
+        let pbo = pack
+            .metrics
+            .iter()
+            .find(|metric| metric.metric == "cscv_pbo")
+            .expect("cscv metric");
+        assert_eq!(pbo.availability, ValidationEvidenceAvailability::Available);
+        assert_eq!(pbo.scope, "candidate_universe");
+        assert_eq!(pbo.sample_unit, "candidate_set_slices");
+        assert_eq!(pbo.metric_class, "approximate");
+        assert!(pbo.comparability_basis.contains("set-level CSCV/PBO"));
+        assert_eq!(pbo.value, Some(0.14));
+        assert_eq!(pbo.threshold, Some(0.25));
+    }
+
+    #[test]
+    fn validation_evidence_pack_marks_requested_skipped_modules_incomplete() {
+        let gates = ValidationHardGateConfig::default();
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.1,
+                ..Metrics::default()
+            },
+            psr: Some(0.88),
+            dsr: Some(0.70),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(128),
+            robust_score: 1.1,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        apply_candidate_hard_gates(&mut out, &gates, None);
+        let cscv = CscvPboResult {
+            slices: 8,
+            slice_bars: 32,
+            candidates: 1,
+            combinations: 0,
+            combinations_possible: 0,
+            pbo: 0.0,
+            lambda_p25: 0.0,
+            lambda_p50: 0.0,
+            lambda_p75: 0.0,
+            degradation_slope: 0.0,
+            degradation_intercept: 0.0,
+            degradation_r2: 0.0,
+            threshold: 0.0,
+            prob_oos_below_threshold: 0.0,
+            skipped_reason: Some("CSCV/PBO requires at least 2 candidates.".to_string()),
+        };
+        let verdict = build_run_verdict(&out, 1, &gates, Some(&cscv), None);
+        let policy = build_general_validation_evidence_policy_summary(&gates, true, Some(&cscv));
+        let pack = build_validation_evidence_pack(ValidationEvidencePackBuildInput {
+            workflow: "composite_validation",
+            data_id: "dataset-b",
+            validation_context: None,
+            requested_backend: "CpuOnly",
+            realized_backend: "Cpu",
+            backend_route: Some("CpuOnly"),
+            residency_tier: "cpu",
+            fallback_reason: None,
+            route_diagnostics: &[],
+            candidate_source: "validation_request_candidates",
+            requested_candidate_count: 1,
+            evaluated_candidate_count: 1,
+            retained_candidate_count: out.len(),
+            optimization_trials: None,
+            admission_policy: None,
+            hard_gates: &gates,
+            run_verdict: &verdict,
+            evidence_policy_summary: Some(&policy),
+            validation_provenance: None,
+            cscv_requested: true,
+            cscv_pbo: Some(&cscv),
+            spa_requested: true,
+            spa: None,
+        });
+
+        assert_eq!(pack.status, ValidationEvidencePackStatus::Incomplete);
+        assert!(pack.status_reason.contains("cscv_pbo"));
+        assert!(pack.status_reason.contains("spa"));
+        let cscv_module = pack
+            .modules
+            .iter()
+            .find(|module| module.module == "cscv_pbo")
+            .expect("cscv module");
+        assert_eq!(
+            cscv_module.availability,
+            ValidationEvidenceAvailability::Skipped
+        );
+        assert_eq!(
+            cscv_module.skipped_reason.as_deref(),
+            Some("CSCV/PBO requires at least 2 candidates.")
+        );
+        let spa_module = pack
+            .modules
+            .iter()
+            .find(|module| module.module == "spa")
+            .expect("spa module");
+        assert_eq!(
+            spa_module.availability,
+            ValidationEvidenceAvailability::Unavailable
+        );
     }
 
     #[test]

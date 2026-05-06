@@ -1853,6 +1853,90 @@ fn validation_feature_rows(model: &ValidationExportModel) -> Vec<ValidationFeatu
     });
 
     rows.push(ValidationFeatureRow {
+        feature: "Validation evidence pack".to_string(),
+        scope: "Run".to_string(),
+        status: model
+            .validation_evidence_pack
+            .as_ref()
+            .map(|pack| {
+                if pack.status == "complete" {
+                    "observed"
+                } else {
+                    "watch"
+                }
+                .to_string()
+            })
+            .unwrap_or_else(|| "not run".to_string()),
+        evidence: model
+            .validation_evidence_pack
+            .as_ref()
+            .map(|pack| {
+                format!(
+                    "schema={} version={} status={} workflow={}",
+                    if pack.schema_version.is_empty() {
+                        "-"
+                    } else {
+                        pack.schema_version.as_str()
+                    },
+                    pack.version
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    if pack.status.is_empty() {
+                        "-"
+                    } else {
+                        pack.status.as_str()
+                    },
+                    if pack.workflow.is_empty() {
+                        "-"
+                    } else {
+                        pack.workflow.as_str()
+                    }
+                )
+            })
+            .unwrap_or_else(|| "artifact did not include validation_evidence_pack".to_string()),
+        key_metrics: model
+            .validation_evidence_pack
+            .as_ref()
+            .map(|pack| {
+                format!(
+                    "requested={} evaluated={} retained={} approved={}",
+                    pack.requested_candidates,
+                    pack.evaluated_candidates,
+                    pack.retained_candidates,
+                    pack.approved_candidates
+                )
+            })
+            .unwrap_or_else(|| "not recorded".to_string()),
+        gate_or_policy: model
+            .validation_evidence_pack
+            .as_ref()
+            .map(|pack| {
+                if pack.module_statuses.is_empty() {
+                    "module availability not recorded".to_string()
+                } else {
+                    pack.module_statuses.clone()
+                }
+            })
+            .unwrap_or_else(|| "legacy fallback".to_string()),
+        inspect: "Dashboard; History; Report Guide".to_string(),
+        notes: model
+            .validation_evidence_pack
+            .as_ref()
+            .map(|pack| {
+                if pack.metric_summaries.is_empty() {
+                    pack.status_reason.clone()
+                } else {
+                    pack.metric_summaries.clone()
+                }
+            })
+            .filter(|entry| !entry.trim().is_empty())
+            .unwrap_or_else(|| {
+                "Pack-backed evidence is additive; legacy run_verdict/provenance fallback remains available."
+                    .to_string()
+            }),
+    });
+
+    rows.push(ValidationFeatureRow {
         feature: "Validation provenance contract".to_string(),
         scope: "Run".to_string(),
         status: if model.validation_provenance.is_some() {

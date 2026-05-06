@@ -3198,9 +3198,13 @@ export async function runValidation(
         autoExportStatus = `Auto-export XLSX failed: ${reason}`;
       }
     }
+    const validationResRecord = asRecord(validationRes) ?? {};
     const evidenceSummary = buildValidationEvidenceSummary({
       validationReq,
       validationRes,
+      validationEvidencePack:
+        validationResRecord.validation_evidence_pack ??
+        validationResRecord.validationEvidencePack,
       optimizationRes: runRes,
       datasetMeta,
       reportPath: reportXlsxPath,

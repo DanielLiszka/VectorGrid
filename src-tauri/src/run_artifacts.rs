@@ -3470,7 +3470,47 @@ fn stage_completion_run_verdict(validation_res: &Value) -> Option<&Value> {
         .or_else(|| validation_res.get("runVerdict"))
 }
 
+fn stage_completion_validation_evidence_pack(validation_res: &Value) -> Option<&Value> {
+    validation_res
+        .get("validation_evidence_pack")
+        .or_else(|| validation_res.get("validationEvidencePack"))
+}
+
 fn stage_completion_verdict(validation_res: &Value) -> &'static str {
+    if let Some(pack_verdict) = stage_completion_validation_evidence_pack(validation_res)
+        .and_then(|pack| pack.get("verdict"))
+    {
+        let warnings = stage_completion_string_list(
+            pack_verdict
+                .get("warning_flags")
+                .or_else(|| pack_verdict.get("warningFlags")),
+        );
+        let blockers = stage_completion_string_list(
+            pack_verdict
+                .get("fail_reasons")
+                .or_else(|| pack_verdict.get("failReasons")),
+        );
+        let approved = pack_verdict.get("approved").and_then(Value::as_bool);
+        let passed = pack_verdict.get("passed").and_then(Value::as_bool);
+        if approved == Some(true) {
+            return if warnings.is_empty() {
+                "approved"
+            } else {
+                "approved_with_warnings"
+            };
+        }
+        if passed == Some(false) || !blockers.is_empty() {
+            return "rejected";
+        }
+        if passed == Some(true) {
+            return if warnings.is_empty() {
+                "passed"
+            } else {
+                "approved_with_warnings"
+            };
+        }
+    }
+
     let Some(run_verdict) = stage_completion_run_verdict(validation_res) else {
         return "review";
     };
@@ -3607,6 +3647,7 @@ fn build_optimization_stage_completion(artifact_path: &Path, artifact: &Value) -
 fn build_validation_stage_completion(artifact_path: &Path, artifact: &Value) -> Option<Value> {
     let validation_res = artifact.pointer("/validation/res")?;
     let route = extract_route_provenance_from_artifact(artifact);
+    let evidence_pack = stage_completion_validation_evidence_pack(validation_res);
     let mut packet = run_artifact_stage_completion_common(
         artifact_path,
         artifact,
@@ -3616,13 +3657,67 @@ fn build_validation_stage_completion(artifact_path: &Path, artifact: &Value) -> 
     insert_stage_completion_string(
         &mut packet,
         "backend_used",
-        stage_completion_backend_used(validation_res, route.as_ref()),
+        evidence_pack
+            .and_then(|pack| pack.pointer("/route/realized_backend"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| stage_completion_backend_used(validation_res, route.as_ref())),
     );
     insert_stage_completion_string(
         &mut packet,
         "route",
-        stage_completion_backend_route(validation_res, route.as_ref()),
+        evidence_pack
+            .and_then(|pack| pack.pointer("/route/route_label"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| stage_completion_backend_route(validation_res, route.as_ref())),
     );
+    if let Some(evidence_pack) = evidence_pack {
+        let summary = packet
+            .entry("summary".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(summary) = summary.as_object_mut() {
+            insert_stage_completion_string(
+                summary,
+                "validationEvidencePackStatus",
+                normalize_text_value(evidence_pack.get("status")),
+            );
+            insert_stage_completion_string(
+                summary,
+                "validationEvidencePackSchema",
+                normalize_text_value(evidence_pack.get("schema_version")),
+            );
+            insert_stage_completion_u64(
+                summary,
+                "validationEvidencePackVersion",
+                evidence_pack.get("version").and_then(Value::as_u64),
+            );
+            if let Some(modules) = evidence_pack.get("modules").and_then(Value::as_array) {
+                let requested = modules
+                    .iter()
+                    .filter(|module| module.get("requested").and_then(Value::as_bool) == Some(true))
+                    .count() as u64;
+                let available = modules
+                    .iter()
+                    .filter(|module| {
+                        normalize_text_value(module.get("availability")) == "available"
+                    })
+                    .count() as u64;
+                insert_stage_completion_u64(
+                    summary,
+                    "validationEvidenceRequestedModules",
+                    Some(requested),
+                );
+                insert_stage_completion_u64(
+                    summary,
+                    "validationEvidenceAvailableModules",
+                    Some(available),
+                );
+            }
+        }
+    }
     if let Some(run_verdict) = stage_completion_run_verdict(validation_res) {
         insert_stage_completion_string(
             &mut packet,
@@ -7593,6 +7688,33 @@ mod tests {
             "validation": {
                 "req": { "strategy_kind": "DoubleMa" },
                 "res": {
+                    "validation_evidence_pack": {
+                        "schema_version": "1-0-0",
+                        "version": 1,
+                        "workflow": "double_ma_validation",
+                        "status": "complete",
+                        "route": {
+                            "realized_backend": "Gpu",
+                            "route_label": "GpuKernel"
+                        },
+                        "verdict": {
+                            "approved": true,
+                            "passed": true,
+                            "warning_flags": ["pbo_elevated"]
+                        },
+                        "modules": [
+                            {
+                                "module": "run_verdict",
+                                "availability": "available",
+                                "requested": true
+                            },
+                            {
+                                "module": "cscv_pbo",
+                                "availability": "available",
+                                "requested": true
+                            }
+                        ]
+                    },
                     "run_verdict": {
                         "approved": true,
                         "passed": true,
@@ -7632,8 +7754,34 @@ mod tests {
             Some("approved_with_warnings")
         );
         assert_eq!(
+            packets[1].get("backend_used").and_then(Value::as_str),
+            Some("Gpu")
+        );
+        assert_eq!(
+            packets[1].get("route").and_then(Value::as_str),
+            Some("GpuKernel")
+        );
+        assert_eq!(
             packets[1].get("recommendation").and_then(Value::as_str),
             Some("review_before_live")
+        );
+        assert_eq!(
+            packets[1]
+                .pointer("/summary/validationEvidencePackStatus")
+                .and_then(Value::as_str),
+            Some("complete")
+        );
+        assert_eq!(
+            packets[1]
+                .pointer("/summary/validationEvidencePackSchema")
+                .and_then(Value::as_str),
+            Some("1-0-0")
+        );
+        assert_eq!(
+            packets[1]
+                .pointer("/summary/validationEvidenceAvailableModules")
+                .and_then(Value::as_u64),
+            Some(2)
         );
         assert_eq!(
             packets[1]

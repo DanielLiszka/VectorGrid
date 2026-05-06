@@ -32,6 +32,12 @@ These docs refine the remaining work from the first eight plans into smaller imp
 14. [GPU Validation Non-Benchmark Productization](14_gpu_validation_nonbenchmark_productization.md)
 15. [Simple Mode Public Workflow Polish](15_simple_mode_public_workflow_polish.md)
 16. [Frontend QA Fixture Matrix Full Implementation](16_frontend_qa_fixture_matrix_full_implementation.md)
+17. [Validation Evidence Pack](17_validation_evidence_pack.md)
+18. [Research Campaign Studio](18_research_campaign_studio.md)
+19. [Candidate Explainability And Local Stability Workbench](19_candidate_explainability_local_stability_workbench.md)
+20. [Artifact Analytics Lab](20_artifact_analytics_lab.md)
+21. [Options Finalist Studio](21_options_finalist_studio.md)
+22. [GPU Follow-Up Acceleration](22_gpu_follow_up_acceleration.md)
 
 ## Research Pass Assessment
 
@@ -47,6 +53,8 @@ The original plans are scoped and actionable, but they are not all equally imple
 - GPU validation: implementation-ready for docs and disabled-CI metadata only while CUDA benchmark work is deferred.
 - Simple Mode polish: implementation-ready for frontend-first public workflow clarity, run summaries, optional validation recommendations, empty/error states, and release-facing Simple path QA.
 - Frontend QA fixture matrix full implementation: implemented locally on 2026-05-04 as an additive, non-runtime QA infrastructure program that splits fixtures, expands deterministic browser workflows, covers aggregate Meta, aggregate Batch campaign, Composite route-summary, and task-center lifecycle paths, tightens action coverage, and improves local evidence reporting.
+- Validation evidence pack: implemented locally on 2026-05-04 as an additive validation-local artifact/report/frontend evidence contract that defines the app-core pack DTO and builder without changing scoring, ranking, or route policy.
+- Research workstation expansion wave: researched on 2026-05-06 as five implementation plans focused on Campaign Studio, Candidate Explainability, Artifact Analytics, Options Finalist Studio, and GPU Follow-Up Acceleration. These plans prioritize research leverage, comparability, diagnostics, and follow-up speed without adding broker risk or strategy sprawl.
 
 The research notes are captured in [External Research Notes](external_research_notes_2026-04-29.md).
 

@@ -47,6 +47,33 @@ pub(super) struct ExportValidationProvenance {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ExportValidationEvidencePack {
+    pub schema_version: String,
+    pub version: Option<u64>,
+    pub workflow: String,
+    pub status: String,
+    pub status_reason: String,
+    pub generated_by: String,
+    pub requested_backend: String,
+    pub realized_backend: String,
+    pub route_label: String,
+    pub residency_tier: String,
+    pub fallback_reason: String,
+    pub candidate_source: String,
+    pub requested_candidates: usize,
+    pub evaluated_candidates: usize,
+    pub retained_candidates: usize,
+    pub survived_hard_gates: usize,
+    pub approved_candidates: usize,
+    pub optimization_trials: Option<usize>,
+    pub verdict_summary: String,
+    pub verdict_recommendation: String,
+    pub module_statuses: String,
+    pub metric_summaries: String,
+}
+
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub(super) struct ExportSpaSummary {
     pub scope: String,
@@ -249,6 +276,8 @@ pub(super) struct ValidationExportModel {
     pub run_verdict: Option<ExportRunVerdict>,
     #[allow(dead_code)]
     pub validation_provenance: Option<ExportValidationProvenance>,
+    #[allow(dead_code)]
+    pub validation_evidence_pack: Option<ExportValidationEvidencePack>,
     pub spa: Option<ExportSpaSummary>,
     pub reopt_walk_forward: Option<ExportReoptSummary>,
     pub cscv_pbo: Option<ExportCscvSummary>,
@@ -1038,6 +1067,131 @@ fn parse_validation_provenance(validation_res: &Value) -> Option<ExportValidatio
     } else {
         Some(parsed)
     }
+}
+
+fn parse_validation_evidence_pack(validation_res: &Value) -> Option<ExportValidationEvidencePack> {
+    let pack = validation_res
+        .get("validation_evidence_pack")
+        .or_else(|| validation_res.get("validationEvidencePack"))?;
+    let route = pack.get("route").unwrap_or(&Value::Null);
+    let universe = pack
+        .get("candidate_universe")
+        .or_else(|| pack.get("candidateUniverse"))
+        .unwrap_or(&Value::Null);
+    let verdict = pack.get("verdict").unwrap_or(&Value::Null);
+    let module_statuses = pack
+        .get("modules")
+        .and_then(Value::as_array)
+        .map(|modules| {
+            modules
+                .iter()
+                .filter_map(|module| {
+                    let name = first_nonempty_text(module, &["/module", "/id"]);
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let availability = first_nonempty_text(module, &["/availability"]);
+                    let summary = first_nonempty_text(module, &["/summary"]);
+                    Some(if summary.is_empty() {
+                        format!("{name}={availability}")
+                    } else {
+                        format!("{name}={availability}:{summary}")
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default();
+    let metric_summaries = pack
+        .get("metrics")
+        .and_then(Value::as_array)
+        .map(|metrics| {
+            metrics
+                .iter()
+                .filter_map(|metric| {
+                    let name = first_nonempty_text(metric, &["/metric"]);
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let availability = first_nonempty_text(metric, &["/availability"]);
+                    let value = metric
+                        .get("value")
+                        .and_then(Value::as_f64)
+                        .filter(|value| value.is_finite())
+                        .map(|value| format!("{value:.6}"));
+                    let threshold = metric
+                        .get("threshold")
+                        .and_then(Value::as_f64)
+                        .filter(|value| value.is_finite())
+                        .map(|value| format!("{value:.6}"));
+                    Some(match (value, threshold) {
+                        (Some(value), Some(threshold)) => {
+                            format!("{name}={value} threshold={threshold}")
+                        }
+                        (Some(value), None) => format!("{name}={value}"),
+                        (None, _) => format!("{name}={availability}"),
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default();
+
+    Some(ExportValidationEvidencePack {
+        schema_version: first_nonempty_text(pack, &["/schema_version", "/schemaVersion"]),
+        version: pack.get("version").and_then(Value::as_u64),
+        workflow: first_nonempty_text(pack, &["/workflow"]),
+        status: first_nonempty_text(pack, &["/status"]),
+        status_reason: first_nonempty_text(pack, &["/status_reason", "/statusReason"]),
+        generated_by: first_nonempty_text(pack, &["/generated_by", "/generatedBy"]),
+        requested_backend: first_nonempty_text(route, &["/requested_backend", "/requestedBackend"]),
+        realized_backend: first_nonempty_text(route, &["/realized_backend", "/realizedBackend"]),
+        route_label: first_nonempty_text(route, &["/route_label", "/routeLabel"]),
+        residency_tier: first_nonempty_text(route, &["/residency_tier", "/residencyTier"]),
+        fallback_reason: first_nonempty_text(route, &["/fallback_reason", "/fallbackReason"]),
+        candidate_source: first_nonempty_text(universe, &["/source"]),
+        requested_candidates: universe
+            .get("requested_candidates")
+            .or_else(|| universe.get("requestedCandidates"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        evaluated_candidates: universe
+            .get("evaluated_candidates")
+            .or_else(|| universe.get("evaluatedCandidates"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        retained_candidates: universe
+            .get("retained_candidates")
+            .or_else(|| universe.get("retainedCandidates"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        survived_hard_gates: universe
+            .get("survived_hard_gates")
+            .or_else(|| universe.get("survivedHardGates"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        approved_candidates: universe
+            .get("approved_candidates")
+            .or_else(|| universe.get("approvedCandidates"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        optimization_trials: universe
+            .get("optimization_trials")
+            .or_else(|| universe.get("optimizationTrials"))
+            .and_then(Value::as_u64)
+            .map(|value| value as usize),
+        verdict_summary: first_nonempty_text(verdict, &["/summary"]),
+        verdict_recommendation: first_nonempty_text(
+            verdict,
+            &[
+                "/recommendation",
+                "/final_recommendation",
+                "/finalRecommendation",
+            ],
+        ),
+        module_statuses,
+        metric_summaries,
+    })
 }
 
 fn parse_spa_summary(validation_res: &Value) -> Option<ExportSpaSummary> {
@@ -3189,6 +3343,7 @@ fn build_model_from_validation_res_with_context(
         max_pbo: None,
         run_verdict,
         validation_provenance: parse_validation_provenance(validation_res),
+        validation_evidence_pack: parse_validation_evidence_pack(validation_res),
         spa: parse_spa_summary(validation_res),
         reopt_walk_forward: parse_reopt_summary(validation_res),
         cscv_pbo: parse_cscv_summary(validation_res),
@@ -3581,6 +3736,102 @@ mod tests {
         let model = build_model_from_validation_res(&validation_res, None)
             .expect("report model should build without provenance");
         assert!(model.validation_provenance.is_none());
+    }
+
+    #[test]
+    fn validation_evidence_pack_round_trips_into_report_model() {
+        let validation_res = json!({
+            "data_id": "dataset",
+            "validation_evidence_pack": {
+                "schema_version": "1-0-0",
+                "version": 1,
+                "workflow": "double_ma_validation",
+                "status": "complete",
+                "status_reason": "all requested validation evidence modules produced review metadata",
+                "generated_by": "ta_app_core.validation_pipeline",
+                "route": {
+                    "requested_backend": "GpuKernel",
+                    "realized_backend": "Gpu",
+                    "route_label": "GpuKernel",
+                    "residency_tier": "gpu_kernel"
+                },
+                "candidate_universe": {
+                    "source": "validation_request_candidates",
+                    "requested_candidates": 4,
+                    "evaluated_candidates": 4,
+                    "retained_candidates": 2,
+                    "survived_hard_gates": 2,
+                    "approved_candidates": 1,
+                    "optimization_trials": 58300
+                },
+                "verdict": {
+                    "passed": true,
+                    "approved": true,
+                    "recommendation": "approved_with_warnings",
+                    "summary": "approved"
+                },
+                "metrics": [
+                    {
+                        "metric": "cscv_pbo",
+                        "availability": "available",
+                        "value": 0.14,
+                        "threshold": 0.25
+                    }
+                ],
+                "modules": [
+                    {
+                        "module": "cscv_pbo",
+                        "availability": "available",
+                        "requested": true,
+                        "summary": "evaluated"
+                    },
+                    {
+                        "module": "spa",
+                        "availability": "not_requested",
+                        "requested": false,
+                        "summary": "not_requested"
+                    }
+                ]
+            },
+            "candidates": [
+                test_candidate(
+                    1.0,
+                    true,
+                    120,
+                    60,
+                    json!({
+                        "fast_ma_type": "ema",
+                        "slow_ma_type": "sma",
+                        "fast_len": 10,
+                        "slow_len": 20
+                    }),
+                    0.4,
+                    0.2
+                )
+            ],
+            "run_verdict": {
+                "passed": true,
+                "approved": true
+            }
+        });
+
+        let model = build_model_from_validation_res(&validation_res, None)
+            .expect("report model should include validation evidence pack");
+        let pack = model
+            .validation_evidence_pack
+            .as_ref()
+            .expect("evidence pack");
+        assert_eq!(pack.schema_version, "1-0-0");
+        assert_eq!(pack.version, Some(1));
+        assert_eq!(pack.requested_backend, "GpuKernel");
+        assert_eq!(pack.realized_backend, "Gpu");
+        assert_eq!(pack.route_label, "GpuKernel");
+        assert_eq!(pack.optimization_trials, Some(58_300));
+        assert_eq!(pack.verdict_recommendation, "approved_with_warnings");
+        assert!(pack
+            .module_statuses
+            .contains("cscv_pbo=available:evaluated"));
+        assert!(pack.metric_summaries.contains("cscv_pbo=0.140000"));
     }
 
     #[test]

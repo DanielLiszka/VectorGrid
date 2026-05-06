@@ -687,6 +687,179 @@ pub struct EvidencePolicySummary {
     pub caveats: Vec<String>,
 }
 
+pub const VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION: &str = "1-0-0";
+pub const VALIDATION_EVIDENCE_PACK_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationEvidencePackStatus {
+    #[default]
+    Complete,
+    Incomplete,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationEvidenceAvailability {
+    Available,
+    NotRequested,
+    #[default]
+    NotComputed,
+    NotComparable,
+    Skipped,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ValidationEvidenceDatasetV1 {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub data_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csv_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ValidationEvidenceRouteV1 {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requested_backend: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub realized_backend: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_label: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub residency_tier: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ValidationEvidenceCandidateUniverseV1 {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(default)]
+    pub requested_candidates: usize,
+    #[serde(default)]
+    pub evaluated_candidates: usize,
+    #[serde(default)]
+    pub retained_candidates: usize,
+    #[serde(default)]
+    pub survived_hard_gates: usize,
+    #[serde(default)]
+    pub approved_candidates: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization_trials: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selection_scope: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ValidationEvidenceVerdictV1 {
+    #[serde(default)]
+    pub passed: bool,
+    #[serde(default)]
+    pub approved: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recommendation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_approved_rank: Option<usize>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warning_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fail_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ValidationEvidenceMetricV1 {
+    pub metric: String,
+    pub availability: ValidationEvidenceAvailability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sample_unit: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub metric_class: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub gate_role: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comparability_basis: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub interpretation: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ValidationEvidenceModuleV1 {
+    pub module: String,
+    pub availability: ValidationEvidenceAvailability,
+    #[serde(default)]
+    pub requested: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combinations: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combinations_possible: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ValidationEvidencePackV1 {
+    pub schema_version: String,
+    pub version: u16,
+    pub workflow: String,
+    pub status: ValidationEvidencePackStatus,
+    pub status_reason: String,
+    pub generated_by: String,
+    pub dataset: ValidationEvidenceDatasetV1,
+    pub route: ValidationEvidenceRouteV1,
+    pub candidate_universe: ValidationEvidenceCandidateUniverseV1,
+    pub verdict: ValidationEvidenceVerdictV1,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metrics: Vec<ValidationEvidenceMetricV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<ValidationEvidenceModuleV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_summary: Option<EvidencePolicySummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CrossTickerStats {
     pub datasets: usize,

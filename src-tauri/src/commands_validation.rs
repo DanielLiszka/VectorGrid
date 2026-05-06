@@ -634,10 +634,12 @@ fn apply_cross_ticker_validation_with_stack(
         res.cscv_pbo.as_ref(),
         res.spa.as_ref(),
     );
+    let cscv_requested = finalists_cross_mode && cscv_pbo.is_some();
+    let spa_requested = full_stack_cross_mode && spa.is_some();
     res.validation_provenance = Some(
         ta_app_core::validation_pipeline::build_validation_semantics_provenance(
             &res.candidates,
-            res.cscv_pbo.is_some(),
+            cscv_requested,
             res.cscv_pbo.as_ref(),
             res.cross_ticker.as_ref(),
             Some("volatility_terciles_plus_trend_range"),
@@ -646,8 +648,42 @@ fn apply_cross_ticker_validation_with_stack(
     res.evidence_policy_summary = Some(
         ta_app_core::validation_pipeline::build_general_validation_evidence_policy_summary(
             &hard_gates,
-            res.cscv_pbo.is_some(),
+            cscv_requested,
             res.cscv_pbo.as_ref(),
+        ),
+    );
+    let route_diagnostics = res.route_diagnostics.clone().unwrap_or_default();
+    let realized_backend = match &res.backend_used {
+        ta_app_core::BackendUsed::Cpu => "Cpu",
+        ta_app_core::BackendUsed::Gpu => "Gpu",
+    };
+    res.validation_evidence_pack = Some(
+        ta_app_core::validation_pipeline::build_validation_evidence_pack(
+            ta_app_core::validation_pipeline::ValidationEvidencePackBuildInput {
+                workflow: "composite_validation",
+                data_id: &res.data_id,
+                validation_context: None,
+                requested_backend: &res.requested_backend,
+                realized_backend,
+                backend_route: res.backend_route.as_deref(),
+                residency_tier: &res.validation_residency_tier,
+                fallback_reason: res.backend_fallback_reason.as_deref(),
+                route_diagnostics: &route_diagnostics,
+                candidate_source: "cross_ticker_finalists",
+                requested_candidate_count: original_candidates_tested,
+                evaluated_candidate_count: res.run_verdict.candidates_tested,
+                retained_candidate_count: res.candidates.len(),
+                optimization_trials: None,
+                admission_policy: None,
+                hard_gates: &hard_gates,
+                run_verdict: &res.run_verdict,
+                evidence_policy_summary: res.evidence_policy_summary.as_ref(),
+                validation_provenance: res.validation_provenance.as_ref(),
+                cscv_requested,
+                cscv_pbo: res.cscv_pbo.as_ref(),
+                spa_requested,
+                spa: res.spa.as_ref(),
+            },
         ),
     );
     Ok(())
@@ -944,10 +980,12 @@ fn apply_cross_ticker_validation_double_ma(
         res.cscv_pbo.as_ref(),
         res.spa.as_ref(),
     );
+    let cscv_requested = finalists_cross_mode && cscv_pbo.is_some();
+    let spa_requested = full_stack_cross_mode && spa.is_some();
     res.validation_provenance = Some(
         ta_app_core::validation_pipeline::build_validation_semantics_provenance(
             &res.candidates,
-            res.cscv_pbo.is_some(),
+            cscv_requested,
             res.cscv_pbo.as_ref(),
             res.cross_ticker.as_ref(),
             Some("volatility_terciles_plus_trend_range"),
@@ -956,8 +994,42 @@ fn apply_cross_ticker_validation_double_ma(
     res.evidence_policy_summary = Some(
         ta_app_core::validation_pipeline::build_general_validation_evidence_policy_summary(
             &hard_gates,
-            res.cscv_pbo.is_some(),
+            cscv_requested,
             res.cscv_pbo.as_ref(),
+        ),
+    );
+    let route_diagnostics: Vec<String> = Vec::new();
+    let realized_backend = match &res.backend_used {
+        ta_app_core::BackendUsed::Cpu => "Cpu",
+        ta_app_core::BackendUsed::Gpu => "Gpu",
+    };
+    res.validation_evidence_pack = Some(
+        ta_app_core::validation_pipeline::build_validation_evidence_pack(
+            ta_app_core::validation_pipeline::ValidationEvidencePackBuildInput {
+                workflow: "double_ma_validation",
+                data_id: &res.data_id,
+                validation_context: None,
+                requested_backend: &res.requested_backend,
+                realized_backend,
+                backend_route: res.backend_route.as_deref(),
+                residency_tier: &res.validation_residency_tier,
+                fallback_reason: res.backend_fallback_reason.as_deref(),
+                route_diagnostics: &route_diagnostics,
+                candidate_source: "cross_ticker_finalists",
+                requested_candidate_count: original_candidates_tested,
+                evaluated_candidate_count: res.run_verdict.candidates_tested,
+                retained_candidate_count: res.candidates.len(),
+                optimization_trials: None,
+                admission_policy: None,
+                hard_gates: &hard_gates,
+                run_verdict: &res.run_verdict,
+                evidence_policy_summary: res.evidence_policy_summary.as_ref(),
+                validation_provenance: res.validation_provenance.as_ref(),
+                cscv_requested,
+                cscv_pbo: res.cscv_pbo.as_ref(),
+                spa_requested,
+                spa: res.spa.as_ref(),
+            },
         ),
     );
     Ok(())

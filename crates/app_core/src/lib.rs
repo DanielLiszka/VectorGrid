@@ -138,13 +138,13 @@ pub use composite_mo::{
 };
 
 pub use composite_validate::{
-    run_composite_validation_blocking_with_candles,
+    refresh_composite_validation_evidence_pack, run_composite_validation_blocking_with_candles,
     run_composite_validation_blocking_with_candles_with_aux_mask, CompositeParams,
     CompositeValidationRequest, CompositeValidationResult,
 };
 
 pub use double_ma_validate::{
-    run_double_ma_validation_blocking_with_candles,
+    refresh_double_ma_validation_evidence_pack, run_double_ma_validation_blocking_with_candles,
     run_double_ma_validation_blocking_with_candles_with_aux_mask, DoubleMaValidationParams,
     DoubleMaValidationRequest, DoubleMaValidationResult, ValidationExecutionProfile,
 };
@@ -159,7 +159,12 @@ pub use validation_shared::{
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
     TradeBootstrapStats, ValidationAdmissionHeadProvenance, ValidationAdmissionPolicy,
     ValidationAdmissionProvenance, ValidationArtifactContext, ValidationAuxWorkMask,
-    ValidationSemanticsProvenance, WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
+    ValidationEvidenceAvailability, ValidationEvidenceCandidateUniverseV1,
+    ValidationEvidenceDatasetV1, ValidationEvidenceMetricV1, ValidationEvidenceModuleV1,
+    ValidationEvidencePackStatus, ValidationEvidencePackV1, ValidationEvidenceRouteV1,
+    ValidationEvidenceVerdictV1, ValidationSemanticsProvenance, WalkForwardConfig,
+    WalkForwardConfigOptional, WalkForwardStats, VALIDATION_EVIDENCE_PACK_SCHEMA_VERSION,
+    VALIDATION_EVIDENCE_PACK_VERSION,
 };
 
 pub use iterative_sim::{

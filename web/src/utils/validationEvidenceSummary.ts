@@ -3,6 +3,8 @@ export type ValidationEvidenceAvailability =
   | "available"
   | "unavailable"
   | "skipped"
+  | "not_computed"
+  | "not_comparable"
   | "unknown";
 
 export interface ValidationEvidenceModuleSummary {
@@ -55,10 +57,24 @@ export interface ValidationEvidenceSummary {
 export interface BuildValidationEvidenceSummaryInput {
   validationReq?: unknown;
   validationRes?: unknown;
+  validationEvidencePack?: unknown;
   optimizationRes?: unknown;
   datasetMeta?: unknown;
   reportPath?: unknown;
   replayClass?: unknown;
+}
+
+interface NormalizedValidationEvidencePack {
+  schemaVersion: string;
+  version: number | null;
+  workflow: string;
+  status: string;
+  statusReason: string;
+  route: Record<string, unknown>;
+  candidateUniverse: Record<string, unknown>;
+  verdict: Record<string, unknown>;
+  metrics: Record<string, unknown>[];
+  modules: Record<string, unknown>[];
 }
 
 const MODULES: Array<{
@@ -169,6 +185,78 @@ function firstRecord(
   return null;
 }
 
+function normalizeAvailability(
+  value: unknown,
+): ValidationEvidenceAvailability {
+  const next = text(value) as ValidationEvidenceAvailability;
+  if (
+    next === "available" ||
+    next === "not_requested" ||
+    next === "unavailable" ||
+    next === "skipped" ||
+    next === "not_computed" ||
+    next === "not_comparable"
+  ) {
+    return next;
+  }
+  return "unknown";
+}
+
+function validationEvidencePackFromInput(
+  input: BuildValidationEvidenceSummaryInput,
+  validationRes: Record<string, unknown>,
+): NormalizedValidationEvidencePack | null {
+  const raw =
+    input.validationEvidencePack ??
+    validationRes.validation_evidence_pack ??
+    validationRes.validationEvidencePack;
+  const pack = asRecord(raw);
+  if (Object.keys(pack).length === 0) return null;
+  const version = integerOrNull(pack.version);
+  if (version != null && version > 1) return null;
+  const schemaVersion = firstText(pack.schema_version, pack.schemaVersion);
+  if (version == null && !schemaVersion) return null;
+  const candidateUniverse = asRecord(
+    pack.candidate_universe ?? pack.candidateUniverse,
+  );
+  return {
+    schemaVersion,
+    version,
+    workflow: firstText(pack.workflow),
+    status: firstText(pack.status),
+    statusReason: firstText(pack.status_reason, pack.statusReason),
+    route: asRecord(pack.route),
+    candidateUniverse,
+    verdict: asRecord(pack.verdict),
+    metrics: Array.isArray(pack.metrics)
+      ? pack.metrics.map((entry) => asRecord(entry))
+      : [],
+    modules: Array.isArray(pack.modules)
+      ? pack.modules.map((entry) => asRecord(entry))
+      : [],
+  };
+}
+
+function packMetric(
+  pack: NormalizedValidationEvidencePack,
+  name: string,
+): Record<string, unknown> {
+  return (
+    pack.metrics.find((metric) => firstText(metric.metric) === name) ?? {}
+  );
+}
+
+function packModule(
+  pack: NormalizedValidationEvidencePack,
+  name: string,
+): Record<string, unknown> {
+  return (
+    pack.modules.find(
+      (module) => firstText(module.module, module.id) === name,
+    ) ?? {}
+  );
+}
+
 function hasRequestModule(row: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => {
     const value = row[key];
@@ -223,6 +311,33 @@ function buildModuleSummary(
     label: module.label,
     availability: "unavailable",
     detail: "requested but result missing",
+  };
+}
+
+function buildPackModuleSummary(
+  pack: NormalizedValidationEvidencePack,
+  fallbackReq: Record<string, unknown>,
+  fallbackRes: Record<string, unknown>,
+  module: (typeof MODULES)[number],
+): ValidationEvidenceModuleSummary {
+  const packModuleRow = packModule(pack, module.id);
+  if (Object.keys(packModuleRow).length === 0) {
+    return buildModuleSummary(fallbackReq, fallbackRes, module);
+  }
+  const availability = normalizeAvailability(packModuleRow.availability);
+  const detail =
+    firstText(
+      packModuleRow.skipped_reason,
+      packModuleRow.skippedReason,
+      packModuleRow.unavailable_reason,
+      packModuleRow.unavailableReason,
+      packModuleRow.summary,
+    ) || availability.replace(/_/g, " ");
+  return {
+    id: module.id,
+    label: module.label,
+    availability,
+    detail,
   };
 }
 
@@ -709,12 +824,319 @@ function buildFrictionEvidenceItem(
   };
 }
 
+function toneForAvailability(
+  availability: ValidationEvidenceAvailability,
+  requested: boolean,
+): ValidationOverfitEvidenceTone {
+  if (availability === "available") return "good";
+  if (availability === "not_requested") return "neutral";
+  if (availability === "skipped" || availability === "unavailable") {
+    return requested ? "warn" : "neutral";
+  }
+  if (availability === "not_comparable") return "warn";
+  return "neutral";
+}
+
+function packMetricAvailability(
+  metric: Record<string, unknown>,
+): ValidationEvidenceAvailability {
+  return normalizeAvailability(metric.availability);
+}
+
+function packRequested(module: Record<string, unknown>): boolean {
+  return module.requested === true;
+}
+
+function packMetricTone(
+  metric: Record<string, unknown>,
+  direction: "min" | "max",
+): ValidationOverfitEvidenceTone {
+  const availability = packMetricAvailability(metric);
+  const value = numberOrNull(metric.value);
+  const threshold = numberOrNull(metric.threshold);
+  if (availability !== "available") {
+    return toneForAvailability(availability, availability !== "not_requested");
+  }
+  return toneForGate(value, threshold, direction);
+}
+
+function buildPackVerdictEvidenceItem(
+  pack: NormalizedValidationEvidencePack,
+): ValidationOverfitEvidenceItem {
+  const approved = pack.verdict.approved === true;
+  const passed = pack.verdict.passed !== false;
+  const evaluated =
+    integerOrNull(pack.candidateUniverse.evaluated_candidates) ??
+    integerOrNull(pack.candidateUniverse.evaluatedCandidates);
+  const survived =
+    integerOrNull(pack.candidateUniverse.survived_hard_gates) ??
+    integerOrNull(pack.candidateUniverse.survivedHardGates);
+  const approvedCount =
+    integerOrNull(pack.candidateUniverse.approved_candidates) ??
+    integerOrNull(pack.candidateUniverse.approvedCandidates);
+  const warnings = Array.isArray(pack.verdict.warning_flags)
+    ? pack.verdict.warning_flags.map(text).filter((entry) => entry.length > 0)
+    : [];
+  const blockers = Array.isArray(pack.verdict.fail_reasons)
+    ? pack.verdict.fail_reasons.map(text).filter((entry) => entry.length > 0)
+    : [];
+  const recommendation = firstText(
+    pack.verdict.recommendation,
+    pack.verdict.final_recommendation,
+    pack.verdict.finalRecommendation,
+  );
+  return {
+    id: "verdict",
+    label: "Run Verdict",
+    value: approved ? "approved" : passed ? "not approved" : "failed",
+    detail: [
+      `hard gates ${formatCount(survived)}/${formatCount(evaluated)}`,
+      `approved ${formatCount(approvedCount)}/${formatCount(survived)}`,
+      blockers[0] || warnings[0] || recommendation,
+    ]
+      .filter((part) => text(part).length > 0)
+      .join(" · "),
+    tone:
+      !passed || blockers.length > 0
+        ? "bad"
+        : approved && warnings.length === 0
+          ? "good"
+          : "warn",
+  };
+}
+
+function buildPackSearchEvidenceItem(
+  pack: NormalizedValidationEvidencePack,
+): ValidationOverfitEvidenceItem {
+  const trials =
+    integerOrNull(pack.candidateUniverse.optimization_trials) ??
+    integerOrNull(pack.candidateUniverse.optimizationTrials);
+  const requested =
+    integerOrNull(pack.candidateUniverse.requested_candidates) ??
+    integerOrNull(pack.candidateUniverse.requestedCandidates);
+  const evaluated =
+    integerOrNull(pack.candidateUniverse.evaluated_candidates) ??
+    integerOrNull(pack.candidateUniverse.evaluatedCandidates);
+  const retained =
+    integerOrNull(pack.candidateUniverse.retained_candidates) ??
+    integerOrNull(pack.candidateUniverse.retainedCandidates);
+  const source = firstText(pack.candidateUniverse.source);
+  return {
+    id: "search",
+    label: "Search Exposure",
+    value:
+      trials != null
+        ? `${formatCount(trials)} trials`
+        : `${formatCount(evaluated)} validated`,
+    detail: [
+      `retained ${formatCount(retained)}${requested != null ? `/${formatCount(requested)}` : ""}`,
+      source,
+    ]
+      .filter((part) => text(part).length > 0)
+      .join(" · "),
+    tone: (evaluated ?? retained ?? 0) <= 1 ? "warn" : "neutral",
+  };
+}
+
+function buildPackProbabilityEvidenceItem(
+  pack: NormalizedValidationEvidencePack,
+): ValidationOverfitEvidenceItem {
+  const psr = packMetric(pack, "psr");
+  const dsr = packMetric(pack, "dsr");
+  const psrTone = packMetricTone(psr, "min");
+  const dsrTone = packMetricTone(dsr, "min");
+  const tone =
+    psrTone === "bad" || dsrTone === "bad"
+      ? "bad"
+      : psrTone === "warn" || dsrTone === "warn"
+        ? "warn"
+        : psrTone === "good" || dsrTone === "good"
+          ? "good"
+          : "neutral";
+  const psrValue = numberOrNull(psr.value);
+  const dsrValue = numberOrNull(dsr.value);
+  const psrGate = numberOrNull(psr.threshold);
+  const dsrGate = numberOrNull(dsr.threshold);
+  return {
+    id: "probability",
+    label: "PSR / DSR",
+    value:
+      psrValue != null || dsrValue != null
+        ? `PSR ${formatDecimal(psrValue)} · DSR ${formatDecimal(dsrValue)}`
+        : "not reported",
+    detail: [
+      psrGate != null ? `PSR >= ${formatGate(psrGate)}` : "",
+      dsrGate != null ? `DSR >= ${formatGate(dsrGate)}` : "",
+      firstText(psr.sample_unit, dsr.sample_unit),
+    ]
+      .filter((part) => text(part).length > 0)
+      .join(" · "),
+    tone,
+  };
+}
+
+function buildPackPboEvidenceItem(
+  pack: NormalizedValidationEvidencePack,
+): ValidationOverfitEvidenceItem {
+  const metric = packMetric(pack, "cscv_pbo");
+  const module = packModule(pack, "cscv_pbo");
+  const availability = normalizeAvailability(
+    metric.availability ?? module.availability,
+  );
+  const requested = packRequested(module);
+  const skippedReason = firstText(
+    module.skipped_reason,
+    module.skippedReason,
+    metric.unavailable_reason,
+    metric.unavailableReason,
+  );
+  const value = numberOrNull(metric.value ?? module.value);
+  const threshold = numberOrNull(metric.threshold ?? module.threshold);
+  if (availability !== "available") {
+    return {
+      id: "pbo",
+      label: "CSCV / PBO",
+      value:
+        availability === "not_requested"
+          ? "not requested"
+          : availability.replace(/_/g, " "),
+      detail: skippedReason || firstText(module.summary, metric.comparability_basis),
+      tone: toneForAvailability(availability, requested),
+    };
+  }
+  return {
+    id: "pbo",
+    label: "CSCV / PBO",
+    value: formatProbability(value),
+    detail: [
+      threshold != null ? `max ${formatProbability(threshold)}` : "",
+      integerOrNull(module.combinations) != null
+        ? `${formatCount(module.combinations)} combinations`
+        : "",
+    ]
+      .filter((part) => text(part).length > 0)
+      .join(" · "),
+    tone: toneForGate(value, threshold, "max"),
+  };
+}
+
+function buildPackSpaEvidenceItem(
+  pack: NormalizedValidationEvidencePack,
+): ValidationOverfitEvidenceItem {
+  const metric = packMetric(pack, "spa_p_value");
+  const module = packModule(pack, "spa");
+  const availability = normalizeAvailability(
+    metric.availability ?? module.availability,
+  );
+  const requested = packRequested(module);
+  const pValue = numberOrNull(metric.value ?? module.p_value ?? module.pValue);
+  const summary = firstText(module.summary);
+  if (availability !== "available") {
+    return {
+      id: "spa",
+      label: "SPA",
+      value:
+        availability === "not_requested"
+          ? "not requested"
+          : availability.replace(/_/g, " "),
+      detail:
+        firstText(module.skipped_reason, module.skippedReason, metric.unavailable_reason) ||
+        summary,
+      tone: toneForAvailability(availability, requested),
+    };
+  }
+  const passed = summary === "passed";
+  return {
+    id: "spa",
+    label: "SPA",
+    value: `${passed ? "pass" : "review"}${pValue != null ? ` · p=${formatDecimal(pValue)}` : ""}`,
+    detail: [
+      integerOrNull(module.slice_count) != null
+        ? `${formatCount(module.slice_count)} slices`
+        : "",
+      integerOrNull(module.candidate_count) != null
+        ? `${formatCount(module.candidate_count)} candidates`
+        : "",
+    ]
+      .filter((part) => text(part).length > 0)
+      .join(" · "),
+    tone: passed ? "good" : "warn",
+  };
+}
+
+function buildPackTrackRecordEvidenceItem(
+  pack: NormalizedValidationEvidencePack,
+): ValidationOverfitEvidenceItem {
+  const metric = packMetric(pack, "min_track_record_length");
+  const observed = integerOrNull(metric.value);
+  const required = integerOrNull(metric.threshold);
+  if (observed == null && required == null) {
+    return {
+      id: "track_record",
+      label: "Track Record",
+      value: "not reported",
+      detail:
+        firstText(metric.unavailable_reason) ||
+        "minimum track-record length was not returned",
+      tone: "neutral",
+    };
+  }
+  const passes = observed != null && required != null ? observed >= required : true;
+  return {
+    id: "track_record",
+    label: "Track Record",
+    value:
+      observed != null
+        ? `${formatCount(observed)}${required != null ? `/${formatCount(required)} bars` : " bars"}`
+        : `min ${formatCount(required)} bars`,
+    detail: passes
+      ? "meets minimum evidence length"
+      : "below minimum evidence length",
+    tone: passes ? "good" : "bad",
+  };
+}
+
+function buildPackOverfitEvidenceSummary(
+  pack: NormalizedValidationEvidencePack,
+): ValidationOverfitEvidenceSummary {
+  const items: ValidationOverfitEvidenceItem[] = [
+    buildPackVerdictEvidenceItem(pack),
+    buildPackSearchEvidenceItem(pack),
+    buildPackProbabilityEvidenceItem(pack),
+    buildPackPboEvidenceItem(pack),
+    buildPackSpaEvidenceItem(pack),
+    buildPackTrackRecordEvidenceItem(pack),
+  ];
+  const status = items.some((item) => item.tone === "bad" || item.tone === "warn")
+    ? "attention"
+    : "available";
+  const headline = [
+    items.find((item) => item.id === "verdict")?.value,
+    items.find((item) => item.id === "search")?.value,
+    items.find((item) => item.id === "pbo")?.value !== "not requested"
+      ? `PBO ${items.find((item) => item.id === "pbo")?.value}`
+      : "",
+    items.find((item) => item.id === "probability")?.value,
+  ]
+    .map((part) => text(part))
+    .filter((part) => part.length > 0)
+    .join("; ");
+  return {
+    status,
+    statusLabel: statusLabel(status),
+    summaryLine: `Overfit evidence ${status === "attention" ? "needs review" : "available"}${headline ? `; ${headline}` : ""}.`,
+    items,
+  };
+}
+
 export function buildValidationOverfitEvidenceSummary(
   input: BuildValidationEvidenceSummaryInput,
 ): ValidationOverfitEvidenceSummary {
   const validationReq = asRecord(input.validationReq);
   const validationRes = asRecord(input.validationRes);
   const optimizationRes = asRecord(input.optimizationRes);
+  const pack = validationEvidencePackFromInput(input, validationRes);
+  if (pack) return buildPackOverfitEvidenceSummary(pack);
   if (Object.keys(validationRes).length === 0) {
     return {
       status: "not_run",
@@ -761,9 +1183,10 @@ export function buildValidationEvidenceSummary(
   const validationReq = asRecord(input.validationReq);
   const validationRes = asRecord(input.validationRes);
   const datasetMeta = asRecord(input.datasetMeta);
+  const pack = validationEvidencePackFromInput(input, validationRes);
   const overfit = buildValidationOverfitEvidenceSummary(input);
 
-  if (Object.keys(validationRes).length === 0) {
+  if (Object.keys(validationRes).length === 0 && !pack) {
     return {
       status: "not_run",
       summaryLine: "Validation evidence not run.",
@@ -777,6 +1200,59 @@ export function buildValidationEvidenceSummary(
       modules: MODULES.map((module) =>
         buildModuleSummary(validationReq, validationRes, module),
       ),
+      overfit,
+    };
+  }
+
+  if (pack) {
+    const modules = MODULES.map((module) =>
+      buildPackModuleSummary(pack, validationReq, validationRes, module),
+    );
+    const availableCount = modules.filter(
+      (module) => module.availability === "available",
+    ).length;
+    const requestedCount = modules.filter(
+      (module) => module.availability !== "not_requested",
+    ).length;
+    const missingCount = modules.filter(
+      (module) =>
+        module.availability === "unavailable" ||
+        module.availability === "skipped" ||
+        module.availability === "not_comparable",
+    ).length;
+    const status =
+      pack.status === "incomplete" || missingCount > 0
+        ? "incomplete"
+        : "available";
+    const requestedBackend = firstText(pack.route.requested_backend, pack.route.requestedBackend);
+    const realizedBackend = firstText(pack.route.realized_backend, pack.route.realizedBackend);
+    const route = firstText(pack.route.route_label, pack.route.routeLabel);
+    const fallbackReason = firstText(
+      pack.route.fallback_reason,
+      pack.route.fallbackReason,
+    );
+    const routeLabel = realizedBackend || route || requestedBackend || "backend unknown";
+    const packLabel = [
+      pack.schemaVersion ? `schema ${pack.schemaVersion}` : "",
+      pack.version != null ? `v${pack.version}` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join(" ");
+    const summaryLine =
+      requestedCount > 0
+        ? `Validation evidence ${status}; pack ${packLabel || "present"}; ${availableCount}/${requestedCount} requested modules available; route ${routeLabel}.`
+        : `Validation evidence ${status}; pack ${packLabel || "present"}; no optional evidence modules requested; route ${routeLabel}.`;
+    return {
+      status,
+      summaryLine,
+      requestedBackend,
+      realizedBackend,
+      route,
+      fallbackReason,
+      replayClass: text(input.replayClass) || "unknown",
+      reportState: text(input.reportPath) ? "generated" : "not_generated",
+      datasetIdentity: datasetIdentityFromMeta(datasetMeta),
+      modules,
       overfit,
     };
   }
