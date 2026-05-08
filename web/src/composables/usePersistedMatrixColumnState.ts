@@ -54,9 +54,10 @@ function sanitizeVisibleColumnKeys(
   const allowed = new Set(allColumnKeys);
   const stored = dedupeKeys(candidateKeys ?? []).filter((key) => allowed.has(key));
   const known = dedupeKeys(knownKeys ?? []).filter((key) => allowed.has(key));
+  const knownSet = new Set(known);
   const visible = stored.length ? new Set(stored) : new Set(allColumnKeys);
   for (const key of allColumnKeys) {
-    if (!known.includes(key)) visible.add(key);
+    if (!knownSet.has(key)) visible.add(key);
   }
   if (!visible.size) visible.add(allColumnKeys[0]!);
   return allColumnKeys.filter((key) => visible.has(key));
@@ -69,7 +70,8 @@ function sanitizeColumnOrderKeys(
   if (!allColumnKeys.length) return [];
   const allowed = new Set(allColumnKeys);
   const ordered = dedupeKeys(candidateKeys ?? []).filter((key) => allowed.has(key));
-  const missing = allColumnKeys.filter((key) => !ordered.includes(key));
+  const orderedSet = new Set(ordered);
+  const missing = allColumnKeys.filter((key) => !orderedSet.has(key));
   return [...ordered, ...missing];
 }
 
@@ -210,10 +212,11 @@ export function usePersistedMatrixColumnState<TColumn extends MatrixColumnLike>(
 
   const visibleColumnKeySet = computed(() => new Set(visibleColumnKeys.value));
   const columnVisibility = computed<Record<string, boolean>>(() => {
-    const hiddenEntries = allColumnKeys.value
-      .filter((key) => !visibleColumnKeySet.value.has(key))
-      .map((key) => [key, false] as const);
-    return Object.fromEntries(hiddenEntries);
+    const visibility: Record<string, boolean> = {};
+    for (const key of allColumnKeys.value) {
+      if (!visibleColumnKeySet.value.has(key)) visibility[key] = false;
+    }
+    return visibility;
   });
 
   const orderedColumnOptions = computed(() => {

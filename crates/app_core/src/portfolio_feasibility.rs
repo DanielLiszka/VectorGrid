@@ -134,8 +134,8 @@ pub struct PortfolioMissingEvidenceV1 {
 }
 
 #[derive(Clone, Debug)]
-struct CandidateDraft {
-    value: Value,
+struct CandidateDraft<'a> {
+    value: &'a Value,
     source_artifact_index: usize,
     source_role: PortfolioSourceRole,
     artifact_has_replay_matrix: bool,
@@ -335,12 +335,12 @@ fn detect_source_role(value: &Value) -> PortfolioSourceRole {
     PortfolioSourceRole::Unknown
 }
 
-fn extract_candidate_drafts(
-    artifact: &Value,
+fn extract_candidate_drafts<'a>(
+    artifact: &'a Value,
     source_artifact_index: usize,
     role: PortfolioSourceRole,
     artifact_has_replay_matrix: bool,
-) -> Vec<CandidateDraft> {
+) -> Vec<CandidateDraft<'a>> {
     let mut values = Vec::new();
     match role {
         PortfolioSourceRole::OptionsExpressionArtifact => {
@@ -402,10 +402,10 @@ fn extract_candidate_drafts(
         .collect()
 }
 
-fn collect_array_paths(value: &Value, keys: &[&str], out: &mut Vec<Value>) {
+fn collect_array_paths<'a>(value: &'a Value, keys: &[&str], out: &mut Vec<&'a Value>) {
     for key in keys {
         if let Some(items) = value.get(*key).and_then(Value::as_array) {
-            out.extend(items.iter().cloned());
+            out.extend(items.iter());
         }
     }
     if let Some(obj) = value.as_object() {
@@ -417,8 +417,8 @@ fn collect_array_paths(value: &Value, keys: &[&str], out: &mut Vec<Value>) {
     }
 }
 
-fn normalize_candidate(draft: CandidateDraft) -> PortfolioCandidateEvidenceV1 {
-    let candidate_source = representative_candidate_value(&draft.value).unwrap_or(&draft.value);
+fn normalize_candidate(draft: CandidateDraft<'_>) -> PortfolioCandidateEvidenceV1 {
+    let candidate_source = representative_candidate_value(draft.value).unwrap_or(draft.value);
     let params_hash = canonical_candidate_params_hash(candidate_source);
     let candidate_id = first_text(
         candidate_source,
@@ -437,7 +437,7 @@ fn normalize_candidate(draft: CandidateDraft) -> PortfolioCandidateEvidenceV1 {
     let replay_status = if draft.artifact_has_replay_matrix || has_replay_matrix(candidate_source) {
         PortfolioReplayEvidenceStatus::ReplayMatrixPresent
     } else if draft.source_role == PortfolioSourceRole::MetaSelectionArtifact
-        && representative_candidate_value(&draft.value).is_none()
+        && representative_candidate_value(draft.value).is_none()
     {
         PortfolioReplayEvidenceStatus::NotApplicable
     } else {

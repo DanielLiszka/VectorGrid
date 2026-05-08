@@ -1314,7 +1314,7 @@ fn mean(values: &[f64]) -> Option<f64> {
     }
 }
 
-fn median(mut values: Vec<f64>) -> Option<f64> {
+fn median(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -1419,6 +1419,10 @@ fn dataset_quote_quality_from_imported_dataset(
         return None;
     }
 
+    let mean_spread_bps = mean(&global.spread_bps_values);
+    let max_spread_bps = max_value(&global.spread_bps_values);
+    let median_spread_bps = median(&mut global.spread_bps_values);
+
     Some(OptionsExpressionDatasetQuoteQualitySummary {
         price_semantics: dataset.manifest.price_semantics,
         row_count: global.row_count,
@@ -1439,9 +1443,9 @@ fn dataset_quote_quality_from_imported_dataset(
         bid_ask_coverage_rate: quote_quality_ratio(global.bid_ask_row_count, global.row_count),
         mid_coverage_rate: quote_quality_ratio(global.mid_row_count, global.row_count),
         stale_quote_rate: quote_quality_ratio(global.stale_quote_row_count, global.row_count),
-        mean_spread_bps: mean(&global.spread_bps_values),
-        median_spread_bps: median(global.spread_bps_values.clone()),
-        max_spread_bps: max_value(&global.spread_bps_values),
+        mean_spread_bps,
+        median_spread_bps,
+        max_spread_bps,
         max_quote_age_ms: global.max_quote_age_ms,
         per_contract,
         warnings: quote_quality_warnings(&global),

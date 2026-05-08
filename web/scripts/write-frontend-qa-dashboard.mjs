@@ -12,9 +12,31 @@ const outputDir = path.resolve(repoRoot, "output", "qa");
 const jsonPath = path.resolve(outputDir, "frontend-qa-dashboard.json");
 const markdownPath = path.resolve(outputDir, "frontend-qa-dashboard.md");
 
+const existsCache = new Map();
+const statCache = new Map();
+const listAllFilesCache = new Map();
+
+function fileExists(fullPath) {
+  let exists = existsCache.get(fullPath);
+  if (exists === undefined) {
+    exists = fs.existsSync(fullPath);
+    existsCache.set(fullPath, exists);
+  }
+  return exists;
+}
+
+function fileStat(fullPath) {
+  let stat = statCache.get(fullPath);
+  if (!stat) {
+    stat = fs.statSync(fullPath);
+    statCache.set(fullPath, stat);
+  }
+  return stat;
+}
+
 function readJson(relativePath) {
   const fullPath = path.resolve(repoRoot, relativePath);
-  if (!fs.existsSync(fullPath)) return null;
+  if (!fileExists(fullPath)) return null;
   return JSON.parse(fs.readFileSync(fullPath, "utf8"));
 }
 
@@ -30,29 +52,41 @@ function safeGit(args) {
   }
 }
 
-function listFiles(dir, predicate) {
-  if (!fs.existsSync(dir)) return [];
+function listAllFiles(dir) {
+  const cached = listAllFilesCache.get(dir);
+  if (cached) return cached;
+  if (!fileExists(dir)) {
+    listAllFilesCache.set(dir, []);
+    return [];
+  }
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...listFiles(fullPath, predicate));
-    else if (predicate(fullPath)) out.push(fullPath);
+    if (entry.isDirectory()) out.push(...listAllFiles(fullPath));
+    else out.push(fullPath);
   }
+  listAllFilesCache.set(dir, out);
   return out;
+}
+
+function listFiles(dir, predicate) {
+  const files = listAllFiles(dir);
+  if (!files.length) return files;
+  return files.filter(predicate);
 }
 
 function newestMtimeMs(entries) {
   let newest = 0;
   for (const entry of entries) {
     const fullPath = path.resolve(repoRoot, entry);
-    if (!fs.existsSync(fullPath)) continue;
-    const stat = fs.statSync(fullPath);
+    if (!fileExists(fullPath)) continue;
+    const stat = fileStat(fullPath);
     if (stat.isDirectory()) {
       for (const file of listFiles(
         fullPath,
         (item) => /\.(json|mjs|ts|tsx|vue)$/.test(item),
       )) {
-        newest = Math.max(newest, fs.statSync(file).mtimeMs);
+        newest = Math.max(newest, fileStat(file).mtimeMs);
       }
       continue;
     }
@@ -63,7 +97,7 @@ function newestMtimeMs(entries) {
 
 function reportFreshnessIssue(label, relativePath, sourceEntries, required = true) {
   const fullPath = path.resolve(repoRoot, relativePath);
-  if (!fs.existsSync(fullPath)) {
+  if (!fileExists(fullPath)) {
     return required ? `${label} report is missing: ${relativePath}` : null;
   }
   let generatedAtMs = 0;
@@ -75,7 +109,7 @@ function reportFreshnessIssue(label, relativePath, sourceEntries, required = tru
   }
   const reportMs = Number.isFinite(generatedAtMs)
     ? generatedAtMs
-    : fs.statSync(fullPath).mtimeMs;
+    : fileStat(fullPath).mtimeMs;
   const sourceMs = newestMtimeMs(sourceEntries);
   if (sourceMs > 0 && sourceMs - reportMs > 1000) {
     return `${label} report is stale: ${relativePath}`;
@@ -135,8 +169,8 @@ function collectFreshnessIssues() {
 
 function fileMeta(relativePath) {
   const fullPath = path.resolve(repoRoot, relativePath);
-  if (!fs.existsSync(fullPath)) return null;
-  const stat = fs.statSync(fullPath);
+  if (!fileExists(fullPath)) return null;
+  const stat = fileStat(fullPath);
   return {
     path: relativePath.replace(/\\/g, "/"),
     bytes: stat.size,
@@ -178,7 +212,7 @@ function existingArtifacts() {
 
 function directoryMeta(relativePath) {
   const fullPath = path.resolve(repoRoot, relativePath);
-  if (!fs.existsSync(fullPath)) {
+  if (!fileExists(fullPath)) {
     return {
       path: relativePath.replace(/\\/g, "/"),
       present: false,
@@ -188,10 +222,10 @@ function directoryMeta(relativePath) {
     };
   }
   const files = listFiles(fullPath, () => true);
-  const bytes = files.reduce((acc, file) => acc + fs.statSync(file).size, 0);
+  const bytes = files.reduce((acc, file) => acc + fileStat(file).size, 0);
   const modifiedMs = files.reduce(
-    (acc, file) => Math.max(acc, fs.statSync(file).mtimeMs),
-    fs.statSync(fullPath).mtimeMs,
+    (acc, file) => Math.max(acc, fileStat(file).mtimeMs),
+    fileStat(fullPath).mtimeMs,
   );
   return {
     path: relativePath.replace(/\\/g, "/"),
@@ -229,7 +263,7 @@ function collectVisualBaselineEvidence() {
   const snapshotDir = path.resolve(repoRoot, snapshotDirRelativePath);
   const projectName = "chromium";
   const platformName = process.platform;
-  const specContent = fs.existsSync(specPath) ? fs.readFileSync(specPath, "utf8") : "";
+  const specContent = fileExists(specPath) ? fs.readFileSync(specPath, "utf8") : "";
   const baselineNames = [
     ...new Set(
       [...specContent.matchAll(/\btoHaveScreenshot\s*\(\s*['"`]([^'"`]+\.png)['"`]/g)]
@@ -248,8 +282,8 @@ function collectVisualBaselineEvidence() {
   const expectedSet = new Set(expectedFiles);
   const files = expectedFiles.map((file, index) => {
     const fullPath = path.resolve(snapshotDir, file);
-    const exists = fs.existsSync(fullPath);
-    const stat = exists ? fs.statSync(fullPath) : null;
+    const exists = fileExists(fullPath);
+    const stat = exists ? fileStat(fullPath) : null;
     return {
       baselineName: baselineNames[index],
       file,
@@ -260,7 +294,7 @@ function collectVisualBaselineEvidence() {
       sha256: exists ? fileSha256(fullPath) : "",
     };
   });
-  const specMs = fs.existsSync(specPath) ? fs.statSync(specPath).mtimeMs : 0;
+  const specMs = fileExists(specPath) ? fileStat(specPath).mtimeMs : 0;
   const stale = files
     .filter((file) => {
       if (!file.present || specMs <= 0) return false;

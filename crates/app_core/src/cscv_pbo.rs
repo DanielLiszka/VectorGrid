@@ -442,11 +442,10 @@ fn compute_cscv_pbo_from_slices_with_phase(
     let pbo = pbo_hits as f64 / combos as f64;
     let prob_oos_below_threshold = below_threshold as f64 / combos as f64;
 
-    let mut lambda_sorted = lambdas.clone();
-    lambda_sorted.sort_by(|a, b| a.total_cmp(b));
-    let lambda_p25 = quantile(&lambda_sorted, 0.25);
-    let lambda_p50 = quantile(&lambda_sorted, 0.5);
-    let lambda_p75 = quantile(&lambda_sorted, 0.75);
+    lambdas.sort_by(|a, b| a.total_cmp(b));
+    let lambda_p25 = quantile(&lambdas, 0.25);
+    let lambda_p50 = quantile(&lambdas, 0.5);
+    let lambda_p75 = quantile(&lambdas, 0.75);
 
     let (slope, intercept, r2) = regression_slope_intercept_r2(&rn, &rbn);
 
@@ -463,14 +462,14 @@ fn compute_cscv_pbo_from_slices_with_phase(
             continue;
         }
 
-        let mut rks = selected_oos_rank_frac[n].clone();
+        let rks = &mut selected_oos_rank_frac[n];
         rks.sort_by(|a, b| a.total_cmp(b));
-        let mut ms = selected_oos_metric[n].clone();
+        let ms = &mut selected_oos_metric[n];
         ms.sort_by(|a, b| a.total_cmp(b));
         cand_stats.push(CscvCandidatePboStats {
             is_selected_frac: frac,
-            oos_rank_frac_p50: Some(quantile(&rks, 0.5)),
-            oos_metric_p50: Some(quantile(&ms, 0.5)),
+            oos_rank_frac_p50: Some(quantile(rks, 0.5)),
+            oos_metric_p50: Some(quantile(ms, 0.5)),
         });
     }
 

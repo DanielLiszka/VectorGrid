@@ -298,6 +298,10 @@ describe("validationRequestBuilder", () => {
       currentRunRes: { ok: true },
       topRows: [
         {
+          params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 6, slow_len: 24 },
+          metrics: { sharpe: Number.NaN, omega: Number.NaN, calmar: Number.NaN, max_dd: Number.NaN },
+        },
+        {
           params: { fast_ma_type: "sma", slow_ma_type: "ema", fast_len: 10, slow_len: 40 },
           metrics: { sharpe: 1.25, omega: 1.0, calmar: 0.8, max_dd: 0.20 },
         },

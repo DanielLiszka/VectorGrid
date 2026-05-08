@@ -44,20 +44,40 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function stableStringify(value: unknown): string {
-  if (value == null) return "null";
-  const kind = typeof value;
-  if (kind === "number" || kind === "boolean") return JSON.stringify(value);
-  if (kind === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+function stableEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left == null || right == null) return left == null && right == null;
+  const leftKind = typeof left;
+  const rightKind = typeof right;
+  if (leftKind !== rightKind) return false;
+  if (
+    leftKind === "number" ||
+    leftKind === "boolean" ||
+    leftKind === "string"
+  ) {
+    return JSON.stringify(left) === JSON.stringify(right);
   }
-  if (kind !== "object") return JSON.stringify(String(value));
-  const row = value as Record<string, unknown>;
-  const keys = Object.keys(row).sort();
-  return `{${keys
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(row[key])}`)
-    .join(",")}}`;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i += 1) {
+      if (!stableEqual(left[i], right[i])) return false;
+    }
+    return true;
+  }
+  if (leftKind !== "object") {
+    return JSON.stringify(String(left)) === JSON.stringify(String(right));
+  }
+
+  const leftRow = left as Record<string, unknown>;
+  const rightRow = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRow);
+  if (leftKeys.length !== Object.keys(rightRow).length) return false;
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(rightRow, key)) return false;
+    if (!stableEqual(leftRow[key], rightRow[key])) return false;
+  }
+  return true;
 }
 
 function syncSourceIfStoreBound(source: WorkflowArtifactsSource): void {
@@ -150,8 +170,7 @@ function latestSummaryMatchesCurrentStore(
     scoreSpace: normalizeText(currentRun.mlSignal?.scoreSpace),
     scoreScope: normalizeText(currentRun.mlSignal?.scoreScope),
   };
-  return (
-    stableStringify({
+  const latestSummary = {
       reportXlsxPath: normalizeText(
         latest.report_xlsx_path ?? latest.reportXlsxPath,
       ),
@@ -187,8 +206,8 @@ function latestSummaryMatchesCurrentStore(
             stageCompletions: normalizeStageCompletions(latestStageCompletions),
           }
         : {}),
-    }) ===
-    stableStringify({
+    };
+  const currentSummary = {
       reportXlsxPath: normalizeText(currentRun.reportXlsxPath),
       artifactKind: normalizeText(currentRun.artifactKind),
       artifactCompatibility: normalizeArtifactCompatibility(
@@ -215,8 +234,8 @@ function latestSummaryMatchesCurrentStore(
             ),
           }
         : {}),
-    })
-  );
+    };
+  return stableEqual(latestSummary, currentSummary);
 }
 
 export async function syncWorkflowArtifactsFromLegacyRuntime(

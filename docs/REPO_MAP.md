@@ -585,6 +585,9 @@ Open in this order:
 
 Open in this order:
 
+- `docs/performance_audit/README.md`
+- `scripts/performance_audit_case_registry.json`
+- `scripts/run_performance_audit_baseline_pack.ps1`
 - `src-tauri/src/bin/ta_workflow_regression.rs`
 - `src-tauri/src/bin/ta_profile_route_matrix.rs`
 - `src-tauri/src/bin/ta_headless_validate.rs`
@@ -598,22 +601,32 @@ Open in this order:
 
 ## Tauri Command Surface
 
-The Tauri app currently exposes `77` commands from `src-tauri/src/lib.rs`.
+The Tauri app currently exposes `130` commands from `src-tauri/src/lib.rs`.
 
 Use `src-tauri/src/lib.rs` to see the public command registry and `src-tauri/src/commands.rs` to see the grouped surface. The actual command modules already form a good workflow map.
+
+For performance-audit coverage, use `scripts/run_performance_audit_baseline_pack.ps1 -FailOnCoverageGap`; it extracts the live handler list from `src-tauri/src/lib.rs` and the command-module list from `src-tauri/src/commands.rs`.
 
 ### Command modules and ownership
 
 - `src-tauri/src/commands_data.rs`
   - CSV load/resample, repo/sample CSV discovery, market-data root config, MA/indicator catalog queries, Polygon cache/download/repair/live stream, native file pickers
+- `src-tauri/src/commands_options_data.rs`
+  - options dataset download/import/list/manifest operations
 - `src-tauri/src/commands_optimize.rs`
   - optimize entrypoints, run cancellation, progress sinks, product mode normalization
 - `src-tauri/src/commands_validation.rs`
   - validation entrypoints, cross-ticker orchestration, price-bar projection
+- `src-tauri/src/commands_campaign.rs`
+  - research campaign execution and headless dataset-pack orchestration
+- `src-tauri/src/commands_options_expression.rs`
+  - options-expression run, feasibility, validation replay, artifact list/load, tuple/event-path inspection, and CSV export
 - `src-tauri/src/commands_reports_api.rs`
   - public report/open/reveal/save wrappers
 - `src-tauri/src/commands_reports.rs`
   - internal report router and bulky workbook builders
+- `src-tauri/src/commands_simple_summary.rs`
+  - simple Markdown summary export
 - `src-tauri/src/commands_artifacts.rs`
   - thin facade for artifact CRUD/list/open operations
 - `src-tauri/src/commands_meta.rs`
@@ -622,6 +635,8 @@ Use `src-tauri/src/lib.rs` to see the public command registry and `src-tauri/src
   - ML-signal export, score cache, validation, policy sweep, bundle status
 - `src-tauri/src/commands_execution.rs`
   - one-shot strategy execution, live runner, Alpaca connectivity/snapshots
+- `src-tauri/src/commands_portfolio.rs`
+  - portfolio feasibility analysis
 - `src-tauri/src/commands_analysis.rs`
   - candidate-detail and local-stability follow-up computations
 - `src-tauri/src/commands_dynamic.rs`

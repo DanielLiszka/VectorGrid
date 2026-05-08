@@ -154,8 +154,31 @@ export function paretoAxisValue(
 
 export function paddedParetoRange(values: number[], padRatio = 0.08): ParetoRange {
   if (!values.length) return { min: 0, max: 1 }
-  let min = Math.min(...values)
-  let max = Math.max(...values)
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  for (const value of values) {
+    if (value < min) min = value
+    if (value > max) max = value
+  }
+  if (min === max) {
+    min -= 1
+    max += 1
+  }
+  const pad = (max - min) * Math.max(0, padRatio)
+  return {
+    min: min - pad,
+    max: max + pad,
+  }
+}
+
+function paddedParetoRangeFromBounds(
+  minRaw: number,
+  maxRaw: number,
+  padRatio = 0.08,
+): ParetoRange {
+  let min = minRaw
+  let max = maxRaw
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, max: 1 }
   if (min === max) {
     min -= 1
     max += 1
@@ -209,26 +232,34 @@ export function buildParetoViewModel<T>({
 }: BuildParetoViewModelOptions<T>): ParetoViewModel<T> {
   const normalizedXKey = text(xKey || 'max_dd') || 'max_dd'
   const normalizedYKey = text(yKey || 'pnl') || 'pnl'
-  const cappedRows = rows.slice(0, Math.max(0, Math.floor(limit)))
-  const points = cappedRows
-    .map((row, index): ParetoPoint<T> | null => {
-      const x = finiteNumber(axisValueFor(row, normalizedXKey))
-      const y = finiteNumber(axisValueFor(row, normalizedYKey))
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return null
-      const rank = rankFor?.(row, index) ?? index + 1
-      const rowId = rowIdFor?.(row, index) ?? String(rank)
-      return {
-        index,
-        row,
-        rowId,
-        rank,
-        x,
-        y,
-        frontier: true,
-        summary: `#${rank} • ${normalizedXKey}=${formatValue(x, 3)} • ${normalizedYKey}=${formatValue(y, 3)}`,
-      }
+  const rowLimit = Math.min(rows.length, Math.max(0, Math.floor(limit)))
+  const points: ParetoPoint<T>[] = []
+  let xMin = Number.POSITIVE_INFINITY
+  let xMax = Number.NEGATIVE_INFINITY
+  let yMin = Number.POSITIVE_INFINITY
+  let yMax = Number.NEGATIVE_INFINITY
+  for (let index = 0; index < rowLimit; index += 1) {
+    const row = rows[index]!
+    const x = finiteNumber(axisValueFor(row, normalizedXKey))
+    const y = finiteNumber(axisValueFor(row, normalizedYKey))
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    const rank = rankFor?.(row, index) ?? index + 1
+    const rowId = rowIdFor?.(row, index) ?? String(rank)
+    points.push({
+      index,
+      row,
+      rowId,
+      rank,
+      x,
+      y,
+      frontier: true,
+      summary: `#${rank} • ${normalizedXKey}=${formatValue(x, 3)} • ${normalizedYKey}=${formatValue(y, 3)}`,
     })
-    .filter((point): point is ParetoPoint<T> => point != null)
+    if (x < xMin) xMin = x
+    if (x > xMax) xMax = x
+    if (y < yMin) yMin = y
+    if (y > yMax) yMax = y
+  }
 
   const confidenceNote = buildParetoConfidenceNote(hasValidationResult)
   if (!points.length) {
@@ -247,8 +278,8 @@ export function buildParetoViewModel<T>({
     }
   }
 
-  const xRange = paddedParetoRange(points.map((point) => point.x))
-  const yRange = paddedParetoRange(points.map((point) => point.y))
+  const xRange = paddedParetoRangeFromBounds(xMin, xMax)
+  const yRange = paddedParetoRangeFromBounds(yMin, yMax)
   return {
     xKey: normalizedXKey,
     yKey: normalizedYKey,

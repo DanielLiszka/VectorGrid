@@ -156,9 +156,12 @@ function Invoke-ProcessAndEcho(
 }
 
 function Find-LatestBenchExecutable([string]$benchName) {
-  $benchExe = Get-ChildItem -Path "target/release/deps" -File -Filter "${benchName}-*.exe" |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
+  $benchExe = $null
+  foreach ($candidate in Get-ChildItem -Path "target/release/deps" -File -Filter "${benchName}-*.exe") {
+    if ($null -eq $benchExe -or $candidate.LastWriteTime -gt $benchExe.LastWriteTime) {
+      $benchExe = $candidate
+    }
+  }
   if ($null -eq $benchExe) {
     throw "Could not find built benchmark executable for ${benchName} under target/release/deps"
   }

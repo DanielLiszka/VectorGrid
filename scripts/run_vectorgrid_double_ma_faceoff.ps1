@@ -54,9 +54,11 @@ function Invoke-LoggedProcess {
     $proc = [System.Diagnostics.Process]::new()
     $proc.StartInfo = $psi
     [void]$proc.Start()
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
 
     $combined = @($stdout, $stderr) -join ""
     Set-Content -Path $OutputPath -Value $combined -Encoding UTF8

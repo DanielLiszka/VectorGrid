@@ -711,25 +711,23 @@ pub fn build_run_verdict<C: ValidationPostCandidate>(
     cscv_pbo: Option<&CscvPboResult>,
     spa: Option<&SpaValidationStats>,
 ) -> ValidationRunVerdict {
-    let candidates_survived_hard_gates = out
-        .iter()
-        .filter(|cand| cand.validation_verdict().passed)
-        .count();
-    let approved_candidates: Vec<(usize, &C)> = out
-        .iter()
-        .enumerate()
-        .filter(|(_, cand)| {
-            cand.validation_verdict().passed
-                && cand
-                    .min_track_record_length_bars()
-                    .map(|mintrl| cand.track_record_bars().max(2) >= mintrl)
-                    .unwrap_or(false)
-        })
-        .collect();
-    let approved_candidate_count = approved_candidates.len();
-    let first_approved_rank = approved_candidates
-        .first()
-        .map(|(idx, _)| idx.saturating_add(1));
+    let mut candidates_survived_hard_gates = 0usize;
+    let mut approved_candidate_count = 0usize;
+    let mut first_approved_rank = None;
+    for (idx, cand) in out.iter().enumerate() {
+        if !cand.validation_verdict().passed {
+            continue;
+        }
+        candidates_survived_hard_gates += 1;
+        let approved = cand
+            .min_track_record_length_bars()
+            .map(|mintrl| cand.track_record_bars().max(2) >= mintrl)
+            .unwrap_or(false);
+        if approved {
+            approved_candidate_count += 1;
+            first_approved_rank.get_or_insert_with(|| idx.saturating_add(1));
+        }
+    }
 
     let mut warning_flags: Vec<String> = Vec::new();
     let mut fail_reasons: Vec<String> = Vec::new();
@@ -1601,44 +1599,6 @@ fn estimated_window_count(n: usize, start_t: usize, window: usize, step: usize) 
     count
 }
 
-pub(crate) fn merged_interval_len(intervals: &[(usize, usize)]) -> usize {
-    if intervals.is_empty() {
-        return 0;
-    }
-    let mut sorted = intervals.to_vec();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    let mut total = 0usize;
-    let mut current = sorted[0];
-    for interval in sorted.into_iter().skip(1) {
-        if interval.0 <= current.1 {
-            current.1 = current.1.max(interval.1);
-        } else {
-            total = total.saturating_add(current.1.saturating_sub(current.0));
-            current = interval;
-        }
-    }
-    total.saturating_add(current.1.saturating_sub(current.0))
-}
-
-pub(crate) fn max_pairwise_disjoint_interval_count(intervals: &[(usize, usize)]) -> usize {
-    if intervals.is_empty() {
-        return 0;
-    }
-    let mut sorted = intervals.to_vec();
-    sorted.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    let mut count = 0usize;
-    let mut last_end = 0usize;
-    let mut has_last = false;
-    for (start, end) in sorted {
-        if !has_last || start >= last_end {
-            count = count.saturating_add(1);
-            last_end = end;
-            has_last = true;
-        }
-    }
-    count
-}
-
 fn quantile_index(len: usize, q: f64) -> usize {
     let qq = q.clamp(0.0, 1.0);
     (qq * (len.saturating_sub(1) as f64)).round() as usize
@@ -1741,7 +1701,12 @@ where
     let mut underwater_fracs: Vec<f64> = Vec::with_capacity(estimated_windows);
     let mut underwater_durations: Vec<u32> = Vec::with_capacity(estimated_windows);
     let mut trades: Vec<u32> = Vec::with_capacity(estimated_windows);
-    let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(estimated_windows);
+    let mut bars_covered = 0usize;
+    let mut merged_start = 0usize;
+    let mut merged_end = 0usize;
+    let mut has_merged_interval = false;
+    let mut effective_windows_upper_bound = 0usize;
+    let mut last_disjoint_end = 0usize;
 
     let mut t0 = start_t;
     while t0 + 2 <= n {
@@ -1749,7 +1714,22 @@ where
         if end <= t0 + 1 {
             break;
         }
-        intervals.push((t0, end));
+        if !has_merged_interval {
+            merged_start = t0;
+            merged_end = end;
+            has_merged_interval = true;
+        } else if t0 <= merged_end {
+            merged_end = merged_end.max(end);
+        } else {
+            bars_covered = bars_covered.saturating_add(merged_end.saturating_sub(merged_start));
+            merged_start = t0;
+            merged_end = end;
+        }
+        if effective_windows_upper_bound == 0 || t0 >= last_disjoint_end {
+            effective_windows_upper_bound = effective_windows_upper_bound.saturating_add(1);
+            last_disjoint_end = end;
+        }
+
         let m = eval_metrics_window(t0, end);
         sharpes.push(m.sharpe);
         dds.push(m.max_dd);
@@ -1767,6 +1747,9 @@ where
         }
         t0 = t0.saturating_add(step);
     }
+    if has_merged_interval {
+        bars_covered = bars_covered.saturating_add(merged_end.saturating_sub(merged_start));
+    }
 
     let sharpe_worst = worst_min(&sharpes);
     let max_dd_worst = worst_max(&dds);
@@ -1783,8 +1766,8 @@ where
 
     WalkForwardStats {
         windows: sharpes.len(),
-        effective_windows_upper_bound: Some(max_pairwise_disjoint_interval_count(&intervals)),
-        bars_covered: Some(merged_interval_len(&intervals)),
+        effective_windows_upper_bound: Some(effective_windows_upper_bound),
+        bars_covered: Some(bars_covered),
         sharpe_median: select_median_in_place(&mut sharpes),
         sharpe_worst,
         max_dd_median: select_median_in_place(&mut dds),

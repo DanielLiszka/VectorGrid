@@ -587,11 +587,21 @@ fn join_string_array(v: Option<&Value>) -> String {
     let Some(xs) = v.and_then(|value| value.as_array()) else {
         return String::new();
     };
-    xs.iter()
-        .filter_map(|entry| entry.as_str().map(str::trim))
-        .filter(|entry| !entry.is_empty())
-        .collect::<Vec<_>>()
-        .join(" | ")
+    let mut out = String::new();
+    for entry in xs {
+        let Some(text) = entry
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
+            continue;
+        };
+        if !out.is_empty() {
+            out.push_str(" | ");
+        }
+        out.push_str(text);
+    }
+    out
 }
 
 fn scalar_text(value: &Value) -> String {
@@ -737,7 +747,7 @@ fn params_summary(params: &Map<String, Value>) -> String {
     }
 }
 
-fn legacy_shortlist_flags(candidates: &[&Value]) -> Vec<bool> {
+fn legacy_shortlist_flags(candidates: &[Value]) -> Vec<bool> {
     let has_cross = candidates.iter().any(|cand| {
         cand.get("cross_ticker")
             .and_then(Value::as_object)
@@ -2870,8 +2880,7 @@ fn build_rows(validation_res: &Value) -> Result<(Vec<ExportCandidateRow>, bool),
         .get("candidates")
         .and_then(Value::as_array)
         .ok_or_else(|| "missing validation.res.candidates".to_string())?;
-    let candidate_refs: Vec<&Value> = candidates.iter().collect();
-    let legacy_shortlist = legacy_shortlist_flags(&candidate_refs);
+    let legacy_shortlist = legacy_shortlist_flags(candidates);
     let has_candidate_verdicts = candidates.iter().any(|cand| {
         cand.get("validation_verdict")
             .and_then(Value::as_object)

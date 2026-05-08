@@ -1,10 +1,9 @@
 import {
   fastForHeatmapCol,
-  finiteValues,
   heatmapIndex,
   heatmapPalette,
   labelDerivedPlateau,
-  resolveHeatmapRange,
+  resolveNullableHeatmapRange,
   slowForHeatmapLogicalRow,
   type HeatmapMode,
   type HeatmapModel,
@@ -399,8 +398,11 @@ export function buildHeatmapSliceCanvasRenderModel(
             : null
         ))
       : selected.values.slice()
-  const finite = finiteValues(displayValues)
-  if (!finite.length) return null
+  let finiteCount = 0
+  for (const value of displayValues) {
+    if (finiteNumber(value)) finiteCount += 1
+  }
+  if (!finiteCount) return null
 
   const modeLabel = options.mode === 'delta' ? 'Delta vs baseline' : 'Selected slice'
   const scoreLabel = cleanText(sliceModel.scoreLabel, renderModel.request.scoreLabel || 'Score')
@@ -409,7 +411,7 @@ export function buildHeatmapSliceCanvasRenderModel(
     options.mode === 'delta' ? bestMarkerForValues(renderModel.model, displayValues, '+Δ') : null,
     options.mode === 'delta' ? bestMarkerForValues(renderModel.model, displayValues, '-Δ', true) : null,
   ].filter((marker): marker is HeatmapMarker => Boolean(marker))
-  const deltaRange = options.mode === 'delta' ? resolveHeatmapRange(finite) : sliceModel.range
+  const deltaRange = options.mode === 'delta' ? resolveNullableHeatmapRange(displayValues) : sliceModel.range
 
   return {
     ...renderModel,
@@ -507,32 +509,42 @@ export function buildHeatmapCanvasSummaryItems(
   if (!bounds) {
     return [{ key: 'coverage', label: 'Coverage', value: '0%', detail: 'No populated cells', tone: 'warning' }]
   }
-  const finite = finiteValues(displayValues)
   const best = bestMarkerForValues(model, displayValues, 'best')
   const bestValue = best ? displayValues[heatmapIndex(model, model.binsSlow - 1 - best.drawRow, best.col)] : null
   const coverage = bounds.totalCells > 0 ? Math.round((bounds.finiteCells / bounds.totalCells) * 100) : 0
 
-  const colMeans = Array.from({ length: model.binsFast }, (_, col) => {
-    const values: number[] = []
-    for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
-      const value = displayValues[heatmapIndex(model, logicalRow, col)]
-      if (finiteNumber(value)) values.push(value)
-    }
-    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
-  })
-  const rowMeans = Array.from({ length: model.binsSlow }, (_, logicalRow) => {
-    const values: number[] = []
+  const colSums = Array<number>(model.binsFast).fill(0)
+  const colCounts = Array<number>(model.binsFast).fill(0)
+  const rowSums = Array<number>(model.binsSlow).fill(0)
+  const rowCounts = Array<number>(model.binsSlow).fill(0)
+  let finiteMax = Number.NEGATIVE_INFINITY
+  let finiteDisplayCount = 0
+  for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
     for (let col = 0; col < model.binsFast; col += 1) {
       const value = displayValues[heatmapIndex(model, logicalRow, col)]
-      if (finiteNumber(value)) values.push(value)
+      if (!finiteNumber(value)) continue
+      finiteDisplayCount += 1
+      if (value > finiteMax) finiteMax = value
+      colSums[col] = (colSums[col] ?? 0) + value
+      colCounts[col] = (colCounts[col] ?? 0) + 1
+      rowSums[logicalRow] = (rowSums[logicalRow] ?? 0) + value
+      rowCounts[logicalRow] = (rowCounts[logicalRow] ?? 0) + 1
     }
-    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
-  })
-  const bestColMarker = bestMarkerForValues(
-    { ...model, binsSlow: 1, values: colMeans },
-    colMeans,
-    'fast',
+  }
+  const colMeans = colSums.map((sum, col) =>
+    colCounts[col] ? sum / colCounts[col] : null,
   )
+  const rowMeans = rowSums.map((sum, logicalRow) =>
+    rowCounts[logicalRow] ? sum / rowCounts[logicalRow] : null,
+  )
+  let bestColIdx = -1
+  let bestColValue = Number.NEGATIVE_INFINITY
+  for (let col = 0; col < colMeans.length; col += 1) {
+    const value = colMeans[col]
+    if (!finiteNumber(value) || value <= bestColValue) continue
+    bestColValue = value
+    bestColIdx = col
+  }
   const bestRowIdx = rowMeans.reduce<number>((bestIdx, value, idx) => {
     if (!finiteNumber(value)) return bestIdx
     const current = bestIdx >= 0 ? rowMeans[bestIdx] : null
@@ -540,13 +552,13 @@ export function buildHeatmapCanvasSummaryItems(
   }, -1)
 
   const bestFast =
-    bestColMarker ? fastForHeatmapCol(model, bestColMarker.col) : null
+    bestColIdx >= 0 ? fastForHeatmapCol(model, bestColIdx) : null
   const bestSlow =
     bestRowIdx >= 0 ? slowForHeatmapLogicalRow(model, bestRowIdx) : null
   const slice = renderModel.sliceSelection
   const deltaTone =
-    slice?.mode === 'delta' && finite.length
-      ? (Math.max(...finite) > 0 ? 'success' : 'danger')
+    slice?.mode === 'delta' && finiteDisplayCount
+      ? (finiteMax > 0 ? 'success' : 'danger')
       : 'accent'
 
   const items: HeatmapCanvasSummaryItem[] = []
@@ -580,7 +592,7 @@ export function buildHeatmapCanvasSummaryItems(
       key: 'fast-band',
       label: 'Best fast band',
       value: bestFast != null ? String(bestFast) : '—',
-      detail: bestColMarker ? `mean ${formatHeatmapDisplay(colMeans[bestColMarker.col], 4)}` : 'No populated fast band',
+      detail: bestColIdx >= 0 ? `mean ${formatHeatmapDisplay(colMeans[bestColIdx], 4)}` : 'No populated fast band',
     },
     {
       key: 'slow-band',

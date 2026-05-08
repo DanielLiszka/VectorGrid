@@ -60,11 +60,12 @@ describe("useHeadlessMatrixTable", () => {
       pnl: false,
     });
 
-    const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
-      computed(() => columns.value),
-      computed(() => rows.value),
-      { columnVisibility: computed(() => columnVisibility.value) },
-    );
+    const { headerGroups, rowModelRows, visibleLeafColumns } =
+      useHeadlessMatrixTable(
+        computed(() => columns.value),
+        computed(() => rows.value),
+        { columnVisibility: computed(() => columnVisibility.value) },
+      );
 
     expect(headerGroups.value).toHaveLength(1);
     expect(headerGroups.value[0]?.headers).toHaveLength(2);
@@ -80,9 +81,27 @@ describe("useHeadlessMatrixTable", () => {
 
   it("keeps source cell access stable when display columns are reordered", () => {
     const columns = ref([
-      { key: "pnl", label: "PnL", alignLeft: false, sort: "" as const, sourceColumnIndex: 2 },
-      { key: "rank", label: "#", alignLeft: true, sort: "asc" as const, sourceColumnIndex: 0 },
-      { key: "name", label: "Name", alignLeft: true, sort: "" as const, sourceColumnIndex: 1 },
+      {
+        key: "pnl",
+        label: "PnL",
+        alignLeft: false,
+        sort: "" as const,
+        sourceColumnIndex: 2,
+      },
+      {
+        key: "rank",
+        label: "#",
+        alignLeft: true,
+        sort: "asc" as const,
+        sourceColumnIndex: 0,
+      },
+      {
+        key: "name",
+        label: "Name",
+        alignLeft: true,
+        sort: "" as const,
+        sourceColumnIndex: 1,
+      },
     ]);
     const rows = ref([
       {
@@ -100,12 +119,16 @@ describe("useHeadlessMatrixTable", () => {
       computed(() => rows.value),
     );
 
-    expect(visibleLeafColumns.value.map((column) => column.id)).toEqual(["pnl", "rank", "name"]);
-    expect(rowModelRows.value[0]?.getVisibleCells().map((cell) => (cell.getValue() as { text: string }).text)).toEqual([
-      "12.5",
-      "1",
-      "candidate_a",
+    expect(visibleLeafColumns.value.map((column) => column.id)).toEqual([
+      "pnl",
+      "rank",
+      "name",
     ]);
+    expect(
+      rowModelRows.value[0]
+        ?.getVisibleCells()
+        .map((cell) => (cell.getValue() as { text: string }).text),
+    ).toEqual(["12.5", "1", "candidate_a"]);
   });
 
   it("supports client-side sortable matrix columns when enabled", async () => {
@@ -175,6 +198,47 @@ describe("useHeadlessMatrixTable", () => {
     ]);
   });
 
+  it("keeps blank sortable cells last for ascending and descending sorts", async () => {
+    const columns = ref([
+      { key: "pnl", label: "PnL", alignLeft: false, sort: "asc" as const },
+    ]);
+    const rows = ref([
+      {
+        rowId: "blank",
+        cells: [{ text: "", className: "mono", title: "" }],
+      },
+      {
+        rowId: "low",
+        cells: [{ text: "1", className: "mono", title: "1" }],
+      },
+      {
+        rowId: "high",
+        cells: [{ text: "3", className: "mono", title: "3" }],
+      },
+    ]);
+
+    const { rowModelRows, toggleSortColumn } = useHeadlessMatrixTable(
+      computed(() => columns.value),
+      computed(() => rows.value),
+      { enableClientSorting: true },
+    );
+
+    expect(rowModelRows.value.map((row) => row.original.rowId)).toEqual([
+      "low",
+      "high",
+      "blank",
+    ]);
+
+    toggleSortColumn("pnl");
+    await nextTick();
+
+    expect(rowModelRows.value.map((row) => row.original.rowId)).toEqual([
+      "high",
+      "low",
+      "blank",
+    ]);
+  });
+
   it("carries persisted column widths into table column metadata", () => {
     const columns = ref([
       { key: "rank", label: "#", alignLeft: true, sort: "asc" as const },
@@ -201,6 +265,8 @@ describe("useHeadlessMatrixTable", () => {
     );
     const pnlMeta = pnlHeader?.column.columnDef.meta as MatrixColumnMeta;
     expect(pnlMeta.widthPx).toBe(184);
-    expect(visibleLeafColumns.value.find((column) => column.id === "pnl")?.getSize()).toBe(184);
+    expect(
+      visibleLeafColumns.value.find((column) => column.id === "pnl")?.getSize(),
+    ).toBe(184);
   });
 });

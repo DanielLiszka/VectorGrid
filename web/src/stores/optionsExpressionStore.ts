@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { markRaw } from "vue";
 import type {
   AnalyzeOptionsExpressionFeasibilitySummary,
   AnalyzeOptionsExpressionValidationFeasibilitySummary,
@@ -37,6 +38,16 @@ import {
   validateOptionsValidationFormValues,
   type OptionsValidationFormValues,
 } from "../utils/optionsValidationForm";
+
+function markImmutablePayload<T>(value: T): T {
+  if (
+    value == null ||
+    (typeof value !== "object" && typeof value !== "function")
+  ) {
+    return value;
+  }
+  return markRaw(value as T & object) as T;
+}
 
 export const OPTIONS_MONEYNESS_BUCKET_OPTIONS = [
   "atm",
@@ -424,7 +435,8 @@ function optionsValidationValuesFromState(state: {
     normalizeText(state.selectedArtifactPath);
   return createOptionsValidationFormValues({
     artifactPath: activeArtifactPath,
-    activeArtifactOptionsDatasetId: state.activeArtifact?.optionsDatasetId || "",
+    activeArtifactOptionsDatasetId:
+      state.activeArtifact?.optionsDatasetId || "",
     selectedDatasetId: state.selectedDatasetId,
     datasetPolicy: pickSupported(
       state.validationDatasetPolicy,
@@ -581,7 +593,9 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     },
 
     validationFormErrorMessages(state): string[] {
-      return optionsValidationErrorMessages(optionsValidationValuesFromState(state));
+      return optionsValidationErrorMessages(
+        optionsValidationValuesFromState(state),
+      );
     },
 
     validationFormValid(state): boolean {
@@ -1130,7 +1144,9 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
 
       this.runBusy = true;
       try {
-        const result = await runOptionsExpression(request);
+        const result = markImmutablePayload(
+          await runOptionsExpression(request),
+        );
         this.latestRun = result;
         this.activeArtifact = null;
         this.activeTupleInspection = null;
@@ -1208,62 +1224,66 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
           this.statusLine = validatedFilters.error;
           return;
         }
-        const preview = await analyzeOptionsExpressionFeasibility({
-          parent_artifact_path: this.parentArtifactPath,
-          options_dataset_id: this.selectedDatasetId,
-          delay_minutes: parseIntegerList(this.delayMinutesInput, [0, 1, 5]),
-          dte_buckets: parseIntegerList(this.dteBucketsInput, [1, 3, 5]),
-          moneyness_buckets:
-            this.selectedMoneynessBuckets.length > 0
-              ? [...this.selectedMoneynessBuckets]
-              : [...OPTIONS_MONEYNESS_BUCKET_OPTIONS],
-          hold_minutes: parseIntegerList(
-            this.holdMinutesInput,
-            [5, 15, 30, 60],
-          ),
-          target_return_buckets: parseFloatList(
-            this.targetReturnInput,
-            [0.25, 0.5, 1],
-          ),
-          stop_return_buckets: parseFloatList(
-            this.stopReturnInput,
-            [0.25, 0.5],
-          ),
-          exit_template: pickSupported(
-            this.exitTemplate,
-            OPTIONS_EXIT_TEMPLATE_OPTIONS,
-            "fixed_hold_or_target_stop",
-          ),
-          fill_model: fillModel,
-          structure_family: pickSupported(
-            this.structureFamily,
-            OPTIONS_STRUCTURE_FAMILY_OPTIONS,
-            "long_single",
-          ),
-          backend_preference: pickSupported(
-            this.backendPreference,
-            OPTIONS_BACKEND_PREFERENCE_OPTIONS,
-            "auto",
-          ),
-          objective_config: {
-            profile: pickSupported(
-              this.objectiveProfile,
-              OPTIONS_OBJECTIVE_PROFILE_OPTIONS,
-              "balanced",
+        const preview = markImmutablePayload(
+          await analyzeOptionsExpressionFeasibility({
+            parent_artifact_path: this.parentArtifactPath,
+            options_dataset_id: this.selectedDatasetId,
+            delay_minutes: parseIntegerList(this.delayMinutesInput, [0, 1, 5]),
+            dte_buckets: parseIntegerList(this.dteBucketsInput, [1, 3, 5]),
+            moneyness_buckets:
+              this.selectedMoneynessBuckets.length > 0
+                ? [...this.selectedMoneynessBuckets]
+                : [...OPTIONS_MONEYNESS_BUCKET_OPTIONS],
+            hold_minutes: parseIntegerList(
+              this.holdMinutesInput,
+              [5, 15, 30, 60],
             ),
-          },
-          split_assignment_mode: pickSupported(
-            this.splitAssignmentMode,
-            OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
-            "event_chronological",
-          ),
-          filters: validatedFilters.filters,
-          top_k: topK,
-          min_valid_trades: normalizeOptionalInteger(this.minValidTradesInput),
-          split_ratio_search: splitRatioSearch,
-          split_ratio_holdout: splitRatioHoldout,
-          sealed_finalist_count: sealedFinalistCount,
-        });
+            target_return_buckets: parseFloatList(
+              this.targetReturnInput,
+              [0.25, 0.5, 1],
+            ),
+            stop_return_buckets: parseFloatList(
+              this.stopReturnInput,
+              [0.25, 0.5],
+            ),
+            exit_template: pickSupported(
+              this.exitTemplate,
+              OPTIONS_EXIT_TEMPLATE_OPTIONS,
+              "fixed_hold_or_target_stop",
+            ),
+            fill_model: fillModel,
+            structure_family: pickSupported(
+              this.structureFamily,
+              OPTIONS_STRUCTURE_FAMILY_OPTIONS,
+              "long_single",
+            ),
+            backend_preference: pickSupported(
+              this.backendPreference,
+              OPTIONS_BACKEND_PREFERENCE_OPTIONS,
+              "auto",
+            ),
+            objective_config: {
+              profile: pickSupported(
+                this.objectiveProfile,
+                OPTIONS_OBJECTIVE_PROFILE_OPTIONS,
+                "balanced",
+              ),
+            },
+            split_assignment_mode: pickSupported(
+              this.splitAssignmentMode,
+              OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
+              "event_chronological",
+            ),
+            filters: validatedFilters.filters,
+            top_k: topK,
+            min_valid_trades: normalizeOptionalInteger(
+              this.minValidTradesInput,
+            ),
+            split_ratio_search: splitRatioSearch,
+            split_ratio_holdout: splitRatioHoldout,
+            sealed_finalist_count: sealedFinalistCount,
+          }),
+        );
         this.latestFeasibility = preview;
         this.statusLine = `Feasibility preview compiled ${preview.compiledTupleCount} tuple${preview.compiledTupleCount === 1 ? "" : "s"} with ${(preview.candidateDensity * 100).toFixed(1)}% candidate density.`;
       } catch (error) {
@@ -1283,7 +1303,9 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       }
       this.loadBusy = true;
       try {
-        const artifact = await loadOptionsExpressionArtifact(nextPath);
+        const artifact = markImmutablePayload(
+          await loadOptionsExpressionArtifact(nextPath),
+        );
         this.selectedArtifactPath = nextPath;
         this.activeArtifact = artifact;
         this.realismLane = realismLaneForPriceSemantics(
@@ -1338,8 +1360,10 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     async previewValidationFeasibility(): Promise<void> {
       this.validationFeasibilityBusy = true;
       try {
-        const preview = await analyzeOptionsExpressionValidationFeasibility(
-          this.buildValidationRequest(),
+        const preview = markImmutablePayload(
+          await analyzeOptionsExpressionValidationFeasibility(
+            this.buildValidationRequest(),
+          ),
         );
         this.latestValidationFeasibility = preview;
         this.statusLine = `Validation preview selected ${preview.selectedTupleCount} tuple${preview.selectedTupleCount === 1 ? "" : "s"} for ${preview.datasetPolicy}.`;
@@ -1355,8 +1379,10 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
     async validateActiveArtifact(): Promise<void> {
       this.validationBusy = true;
       try {
-        const validation = await validateOptionsExpressionArtifact(
-          this.buildValidationRequest(),
+        const validation = markImmutablePayload(
+          await validateOptionsExpressionArtifact(
+            this.buildValidationRequest(),
+          ),
         );
         this.latestValidation = validation;
         this.latestValidationFeasibility = null;
@@ -1448,8 +1474,7 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       const inspection = this.activeTupleInspection;
       const rows = inspection?.rows ?? [];
       if (!inspection || !rows.length) {
-        this.statusLine =
-          "Load tuple detail before exporting inspection rows.";
+        this.statusLine = "Load tuple detail before exporting inspection rows.";
         return;
       }
 
@@ -1559,10 +1584,12 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       this.inspectionBusy = true;
       this.activeEventPathInspection = null;
       try {
-        const inspection = await inspectOptionsExpressionTuple({
-          artifactPath,
-          tupleIndex,
-        });
+        const inspection = markImmutablePayload(
+          await inspectOptionsExpressionTuple({
+            artifactPath,
+            tupleIndex,
+          }),
+        );
         this.activeTupleInspection = inspection;
         this.statusLine = `Loaded ${inspection.rows.length} event row${inspection.rows.length === 1 ? "" : "s"} for tuple #${tupleIndex + 1}.`;
       } catch (error) {
@@ -1585,11 +1612,13 @@ export const useOptionsExpressionStore = defineStore("optionsExpression", {
       }
       this.eventPathBusy = true;
       try {
-        const inspection = await inspectOptionsExpressionEventPath({
-          artifactPath,
-          tupleIndex,
-          eventIndex,
-        });
+        const inspection = markImmutablePayload(
+          await inspectOptionsExpressionEventPath({
+            artifactPath,
+            tupleIndex,
+            eventIndex,
+          }),
+        );
         this.activeEventPathInspection = inspection;
         this.statusLine = `Loaded ${inspection.pointCount} path point${inspection.pointCount === 1 ? "" : "s"} for event ${inspection.eventId}.`;
       } catch (error) {

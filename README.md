@@ -196,6 +196,19 @@ For paper/live trading changes that do not need benchmarks or real credentials, 
 powershell -ExecutionPolicy Bypass -File scripts/run_execution_safety_gate.ps1
 ```
 
+For maintainer performance work, use the performance audit docs and baseline-pack runner. These are internal evidence tools, not public desktop support promises:
+
+- `docs/performance_audit/README.md`
+- `scripts/run_performance_audit_baseline_pack.ps1`
+- `scripts/run_support_perf_gate.ps1`
+- `scripts/run_campaign_perf_gate.ps1`
+
+Safe inventory:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_performance_audit_baseline_pack.ps1 -FailOnCoverageGap
+```
+
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 
 For public contribution, support, security-reporting, privacy, disclaimer, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, `PRIVACY.md`, `DISCLAIMER.md`, and `LICENSE`.

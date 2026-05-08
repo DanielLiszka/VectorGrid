@@ -6,7 +6,7 @@ use crate::indicator_catalog::{
 #[cfg(feature = "cuda")]
 use std::cell::RefCell;
 #[cfg(feature = "cuda")]
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 #[cfg(feature = "cuda")]
 use std::sync::{Arc, OnceLock};
 use vector_ta::indicators::dispatch::{
@@ -774,25 +774,20 @@ impl PreparedCudaIndicatorInputs {
 
         PREPARED_CUDA_INPUT_CACHE.with(|cell| {
             let mut cache = cell.borrow_mut();
-            if !cache.contains_key(&device_id) {
-                let runtime = Arc::new(CudaRuntime::new(device_id).map_err(|e| {
-                    DynamicIndicatorAdapterError::CudaPreparation {
-                        details: e.to_string(),
-                    }
-                })?);
-                cache.insert(
-                    device_id,
-                    PreparedCudaDeviceState {
+            let device_state = match cache.entry(device_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let runtime = Arc::new(CudaRuntime::new(device_id).map_err(|e| {
+                        DynamicIndicatorAdapterError::CudaPreparation {
+                            details: e.to_string(),
+                        }
+                    })?);
+                    entry.insert(PreparedCudaDeviceState {
                         runtime,
                         dataset: None,
-                    },
-                );
-            }
-            let device_state = cache.get_mut(&device_id).ok_or_else(|| {
-                DynamicIndicatorAdapterError::CudaPreparation {
-                    details: "prepared CUDA device state missing".to_string(),
+                    })
                 }
-            })?;
+            };
             let rebuild = device_state
                 .dataset
                 .as_ref()
@@ -825,23 +820,24 @@ impl PreparedCudaIndicatorInputs {
             })?;
             ensure_prepared_cuda_base_fields(entry, runtime.as_ref(), candles, required_fields)?;
 
-            if source_kind == PreparedCudaSourceKind::Derived
-                && !entry.source_overrides.contains_key(&source_key)
-            {
-                let source_override = cast_f64_slice_to_f32_arc(source_type(candles, ma_source));
-                let d_source_override = Arc::new(
-                    runtime
-                        .upload_f32(source_override.as_slice())
-                        .map_err(|e| DynamicIndicatorAdapterError::CudaPreparation {
-                            details: e.to_string(),
-                        })?,
-                );
-                entry
-                    .source_overrides
-                    .insert(source_key.clone(), source_override);
-                entry
-                    .d_source_overrides
-                    .insert(source_key.clone(), d_source_override);
+            if source_kind == PreparedCudaSourceKind::Derived {
+                if let Entry::Vacant(source_entry) =
+                    entry.source_overrides.entry(source_key.clone())
+                {
+                    let source_override =
+                        cast_f64_slice_to_f32_arc(source_type(candles, ma_source));
+                    let d_source_override = Arc::new(
+                        runtime
+                            .upload_f32(source_override.as_slice())
+                            .map_err(|e| DynamicIndicatorAdapterError::CudaPreparation {
+                                details: e.to_string(),
+                            })?,
+                    );
+                    source_entry.insert(source_override);
+                    entry
+                        .d_source_overrides
+                        .insert(source_key.clone(), d_source_override);
+                }
             }
 
             Ok(Self {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { invokeCommand } from "../tauri/invoke";
 import { bindRuntimePinia } from "../stores/runtimePinia";
@@ -343,6 +343,47 @@ describe("analysis service", () => {
     expect(store.source).toBe("vue");
   });
 
+  it("invalidates cached top-row score sort when the run objective mutates in place", async () => {
+    const req: Record<string, unknown> = {
+      strategy_kind: "DoubleMa",
+      objective: "Sharpe",
+    };
+    const res = {
+      top: [
+        [
+          {
+            fast_ma_type: "ema",
+            fast_len: 5,
+            slow_ma_type: "ema",
+            slow_len: 20,
+          },
+          { pnl: 10, sharpe: 0.2, max_dd: 0.2, trades: 10, exposure: 0.4 },
+        ],
+        [
+          {
+            fast_ma_type: "ema",
+            fast_len: 7,
+            slow_ma_type: "ema",
+            slow_len: 30,
+          },
+          { pnl: 1, sharpe: 2.0, max_dd: 0.1, trades: 20, exposure: 0.5 },
+        ],
+      ],
+    };
+    seedWorkflowRun({ req, res });
+    const store = useAnalysisStore(pinia);
+
+    refreshTopTableFromWorkflowRun();
+    await sortTopTable("score");
+
+    expect(store.topTableRows[0]?.cells[1]?.text).toBe("ema(7)");
+
+    req.objective = "Pnl";
+    refreshTopTableFromWorkflowRun();
+
+    expect(store.topTableRows[0]?.cells[1]?.text).toBe("ema(5)");
+  });
+
   it("computes candidate detail/stability via Vue command path on top-row selection", async () => {
     seedWorkflowRun({
       req: {
@@ -453,10 +494,29 @@ describe("analysis service", () => {
     mountDrillDom();
     const drillCurves = {
       equity: { start_t: 1, end_t: 4, bins: 2, minmax: [1, 1.02, 1.01, 1.05] },
-      drawdown: { start_t: 1, end_t: 4, bins: 2, minmax: [0, -0.01, -0.02, -0.01] },
+      drawdown: {
+        start_t: 1,
+        end_t: 4,
+        bins: 2,
+        minmax: [0, -0.01, -0.02, -0.01],
+      },
       trades: [
-        { entry_t: 1, exit_t: 2, direction: 1, pnl: 0.03, bars: 1, open: false },
-        { entry_t: 3, exit_t: 4, direction: -1, pnl: -0.01, bars: 1, open: false },
+        {
+          entry_t: 1,
+          exit_t: 2,
+          direction: 1,
+          pnl: 0.03,
+          bars: 1,
+          open: false,
+        },
+        {
+          entry_t: 3,
+          exit_t: 4,
+          direction: -1,
+          pnl: -0.01,
+          bars: 1,
+          open: false,
+        },
       ],
       trade_stats: {
         closed_trades: 2,
@@ -470,25 +530,93 @@ describe("analysis service", () => {
         expectancy: 0.01,
       },
       indicator_bars: [
-        { time: 1_744_500_000, from_index: 1, to_index: 1, fast: 100.2, slow: 100.0 },
-        { time: 1_744_500_060, from_index: 2, to_index: 2, fast: 100.5, slow: 100.1 },
-        { time: 1_744_500_120, from_index: 3, to_index: 3, fast: 100.3, slow: 100.2 },
-        { time: 1_744_500_180, from_index: 4, to_index: 4, fast: 100.1, slow: 100.25 },
+        {
+          time: 1_744_500_000,
+          from_index: 1,
+          to_index: 1,
+          fast: 100.2,
+          slow: 100.0,
+        },
+        {
+          time: 1_744_500_060,
+          from_index: 2,
+          to_index: 2,
+          fast: 100.5,
+          slow: 100.1,
+        },
+        {
+          time: 1_744_500_120,
+          from_index: 3,
+          to_index: 3,
+          fast: 100.3,
+          slow: 100.2,
+        },
+        {
+          time: 1_744_500_180,
+          from_index: 4,
+          to_index: 4,
+          fast: 100.1,
+          slow: 100.25,
+        },
       ],
     };
     const drillBars = [
-      { time: 1_744_500_000, open: 100, high: 101, low: 99.8, close: 100.6, fromIndex: 1, toIndex: 1, volume: 0 },
-      { time: 1_744_500_060, open: 100.6, high: 101.2, low: 100.3, close: 101.0, fromIndex: 2, toIndex: 2, volume: 0 },
-      { time: 1_744_500_120, open: 101.0, high: 101.1, low: 100.2, close: 100.4, fromIndex: 3, toIndex: 3, volume: 0 },
-      { time: 1_744_500_180, open: 100.4, high: 100.8, low: 99.9, close: 100.0, fromIndex: 4, toIndex: 4, volume: 0 },
+      {
+        time: 1_744_500_000,
+        open: 100,
+        high: 101,
+        low: 99.8,
+        close: 100.6,
+        fromIndex: 1,
+        toIndex: 1,
+        volume: 0,
+      },
+      {
+        time: 1_744_500_060,
+        open: 100.6,
+        high: 101.2,
+        low: 100.3,
+        close: 101.0,
+        fromIndex: 2,
+        toIndex: 2,
+        volume: 0,
+      },
+      {
+        time: 1_744_500_120,
+        open: 101.0,
+        high: 101.1,
+        low: 100.2,
+        close: 100.4,
+        fromIndex: 3,
+        toIndex: 3,
+        volume: 0,
+      },
+      {
+        time: 1_744_500_180,
+        open: 100.4,
+        high: 100.8,
+        low: 99.9,
+        close: 100.0,
+        fromIndex: 4,
+        toIndex: 4,
+        volume: 0,
+      },
     ];
     const markers = __analysisTestUtils.buildDrillTradeMarkers(
       drillCurves,
       drillBars,
     );
-    expect(markers.some((marker) => marker.id === "trade-0-entry" && marker.text === "L1")).toBe(true);
+    expect(
+      markers.some(
+        (marker) => marker.id === "trade-0-entry" && marker.text === "L1",
+      ),
+    ).toBe(true);
     expect(markers.some((marker) => marker.id === "trade-0-exit")).toBe(true);
-    expect(markers.some((marker) => marker.id === "trade-1-entry" && marker.text === "S2")).toBe(true);
+    expect(
+      markers.some(
+        (marker) => marker.id === "trade-1-entry" && marker.text === "S2",
+      ),
+    ).toBe(true);
 
     seedWorkflowRun({
       req: {
@@ -560,7 +688,9 @@ describe("analysis service", () => {
       drillBars,
       1,
     );
-    expect(selectedMarkers.find((marker) => marker.id === "trade-1-entry")?.size).toBe(1.4);
+    expect(
+      selectedMarkers.find((marker) => marker.id === "trade-1-entry")?.size,
+    ).toBe(1.4);
   });
 
   it("omits drill-only fields and propagates DoubleMa score_mode in local stability requests", async () => {
@@ -630,7 +760,8 @@ describe("analysis service", () => {
       ([command]) => command === "compute_double_ma_local_stability",
     );
     expect(stabilityCall).toBeTruthy();
-    const req = (stabilityCall?.[1] as { req?: Record<string, unknown> }).req ?? {};
+    const req =
+      (stabilityCall?.[1] as { req?: Record<string, unknown> }).req ?? {};
     expect(req.backend_hint).toEqual({ backend: "GpuKernel", device_id: 0 });
     expect(req.followup_cache_key).toBe("cache-token-1");
     expect(req.score_mode).toBe("balanced_risk_adjusted_10");
@@ -748,7 +879,11 @@ describe("analysis service", () => {
               fast_len: 5,
               slow_ma_type: "sma",
               slow_len: 20,
-              halftrend: { amplitude: 9, atr_period: 21, channel_deviation: 1.6 },
+              halftrend: {
+                amplitude: 9,
+                atr_period: 21,
+                channel_deviation: 1.6,
+              },
               macz: { fast_length: 12, slow_length: 26, signal_length: 9 },
               ott: { period: 6, percent: 1.3, ma_type: "EMA" },
               signal_mode: "entry_core_exit_overlay",
@@ -959,39 +1094,48 @@ describe("analysis service", () => {
     refreshTopTableFromWorkflowRun();
     const barsDeferred = createDeferred<unknown>();
 
-    invokeCommandMock.mockImplementation(async (command: unknown, args?: unknown) => {
-      if (command === "compute_double_ma_drilldown") {
-        const req = (args as { req?: Record<string, unknown> })?.req ?? {};
-        const fastLen = Number((req.params as Record<string, unknown>)?.fast_len ?? 0);
-        return {
-          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [fastLen, fastLen] },
-          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
-          trades: [],
-          trade_stats: null,
-          indicator_bars: [],
-        } as never;
-      }
-      if (command === "get_price_bars") {
-        return await barsDeferred.promise;
-      }
-      if (command === "compute_double_ma_local_stability") {
-        return {
-          base: {
-            fast_len: 7,
-            slow_len: 30,
-            fast_ma_type: "ema",
-            slow_ma_type: "ema",
-          },
-          objective: "Sharpe",
-          radius: 1,
-          step: 1,
-          start_t: 1,
-          points: [],
-          summary: { base: 0, min: 0, median: 0, max: 0 },
-        } as never;
-      }
-      return undefined as never;
-    });
+    invokeCommandMock.mockImplementation(
+      async (command: unknown, args?: unknown) => {
+        if (command === "compute_double_ma_drilldown") {
+          const req = (args as { req?: Record<string, unknown> })?.req ?? {};
+          const fastLen = Number(
+            (req.params as Record<string, unknown>)?.fast_len ?? 0,
+          );
+          return {
+            equity: {
+              start_t: 1,
+              end_t: 2,
+              bins: 1,
+              minmax: [fastLen, fastLen],
+            },
+            drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+            trades: [],
+            trade_stats: null,
+            indicator_bars: [],
+          } as never;
+        }
+        if (command === "get_price_bars") {
+          return await barsDeferred.promise;
+        }
+        if (command === "compute_double_ma_local_stability") {
+          return {
+            base: {
+              fast_len: 7,
+              slow_len: 30,
+              fast_ma_type: "ema",
+              slow_ma_type: "ema",
+            },
+            objective: "Sharpe",
+            radius: 1,
+            step: 1,
+            start_t: 1,
+            points: [],
+            summary: { base: 0, min: 0, median: 0, max: 0 },
+          } as never;
+        }
+        return undefined as never;
+      },
+    );
 
     const first = selectTopRow(0);
     await Promise.resolve();
@@ -1171,7 +1315,7 @@ describe("analysis service", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
       function (this: HTMLCanvasElement) {
         const id = this.id;
-        return ({
+        return {
           clearRect: () => undefined,
           fillRect: (...args: unknown[]) => {
             if (id === "heatmapCanvasVue") {
@@ -1195,7 +1339,7 @@ describe("analysis service", () => {
           scale: () => undefined,
           rotate: () => undefined,
           createLinearGradient: () => ({ addColorStop: () => undefined }),
-        }) as never;
+        } as never;
       },
     );
     seedWorkflowRun({
@@ -1319,7 +1463,13 @@ describe("analysis service", () => {
                 slow_ma_type: "ema",
                 slow_len: 25,
               },
-              { pnl: 0.2, sharpe: 1.1, max_dd: 0.12, trades: 18, exposure: 0.45 },
+              {
+                pnl: 0.2,
+                sharpe: 1.1,
+                max_dd: 0.12,
+                trades: 18,
+                exposure: 0.45,
+              },
             ],
           ],
           heatmap: {
@@ -1331,50 +1481,34 @@ describe("analysis service", () => {
             slow_max: 30,
             values,
             mean_values: meanValues,
-            sample_counts: [
-              1, 1, 1,
-              1, 4, 1,
-              1, 1, 1,
-            ],
+            sample_counts: [1, 1, 1, 1, 4, 1, 1, 1, 1],
           },
         },
       });
 
       expect(refreshHeatmapFromWorkflowRun()).toBe(true);
       expect(store.heatmapCanvasModel).toBeTruthy();
-      return heatmapTooltipText(store.heatmapCanvasModel!, {
-        col: 1,
-        drawRow: 1,
-        logicalRow: 1,
-        idx: 4,
-      }) ?? "";
+      return (
+        heatmapTooltipText(store.heatmapCanvasModel!, {
+          col: 1,
+          drawRow: 1,
+          logicalRow: 1,
+          idx: 4,
+        }) ?? ""
+      );
     };
 
     const centeredTooltip = readPlateauTooltip(
-      [
-        1, 2, 1,
-        2, 3, 2,
-        1, 2, 1,
-      ],
-      [
-        0.9, 1.8, 0.9,
-        1.8, 2.6, 1.8,
-        0.9, 1.8, 0.9,
-      ],
+      [1, 2, 1, 2, 3, 2, 1, 2, 1],
+      [0.9, 1.8, 0.9, 1.8, 2.6, 1.8, 0.9, 1.8, 0.9],
     );
     const shiftedTooltip = readPlateauTooltip(
-      [
-        11, 12, 11,
-        12, 13, 12,
-        11, 12, 11,
-      ],
-      [
-        10.9, 11.8, 10.9,
-        11.8, 12.6, 11.8,
-        10.9, 11.8, 10.9,
-      ],
+      [11, 12, 11, 12, 13, 12, 11, 12, 11],
+      [10.9, 11.8, 10.9, 11.8, 12.6, 11.8, 10.9, 11.8, 10.9],
     );
-    const centeredScore = centeredTooltip.match(/Plateau\s+\w+\s+([0-9.]+)/)?.[1];
+    const centeredScore = centeredTooltip.match(
+      /Plateau\s+\w+\s+([0-9.]+)/,
+    )?.[1];
     const shiftedScore = shiftedTooltip.match(/Plateau\s+\w+\s+([0-9.]+)/)?.[1];
 
     expect(centeredScore).toBeTruthy();
@@ -1413,21 +1547,9 @@ describe("analysis service", () => {
           fast_max: 9,
           slow_min: 20,
           slow_max: 30,
-          values: [
-            0.42, 0.61, 0.39,
-            0.57, 0.86, 0.58,
-            0.35, 0.54, 0.33,
-          ],
-          mean_values: [
-            0.40, 0.58, 0.37,
-            0.54, 0.74, 0.55,
-            0.34, 0.52, 0.32,
-          ],
-          sample_counts: [
-            1, 1, 1,
-            1, 4, 1,
-            1, 1, 1,
-          ],
+          values: [0.42, 0.61, 0.39, 0.57, 0.86, 0.58, 0.35, 0.54, 0.33],
+          mean_values: [0.4, 0.58, 0.37, 0.54, 0.74, 0.55, 0.34, 0.52, 0.32],
+          sample_counts: [1, 1, 1, 1, 4, 1, 1, 1, 1],
         },
         shortlist_slice_diagnostics: {
           ranking_mode: "score",
@@ -1447,9 +1569,15 @@ describe("analysis service", () => {
     store.heatmapMode = "plateau";
     expect(restoreHeatmapVisible()).toBe(false);
     expect(refreshHeatmapFromWorkflowRun()).toBe(true);
-    expect(String(store.heatmapMeta || "")).toContain("Derived plateau heatmap");
-    expect(String(store.heatmapMeta || "")).toContain("supportive=8-neighbor agreement");
-    expect(String(store.heatmapMeta || "")).toContain("density-aware=1 multi-sample cells");
+    expect(String(store.heatmapMeta || "")).toContain(
+      "Derived plateau heatmap",
+    );
+    expect(String(store.heatmapMeta || "")).toContain(
+      "supportive=8-neighbor agreement",
+    );
+    expect(String(store.heatmapMeta || "")).toContain(
+      "density-aware=1 multi-sample cells",
+    );
     expect(String(store.heatmapStatusLine || "")).toContain(
       "exact winner robustness Strong 0.8125",
     );
@@ -1458,12 +1586,13 @@ describe("analysis service", () => {
     );
 
     expect(store.heatmapCanvasModel).toBeTruthy();
-    const tooltip = heatmapTooltipText(store.heatmapCanvasModel!, {
-      col: 1,
-      drawRow: 1,
-      logicalRow: 1,
-      idx: 4,
-    }) ?? "";
+    const tooltip =
+      heatmapTooltipText(store.heatmapCanvasModel!, {
+        col: 1,
+        drawRow: 1,
+        logicalRow: 1,
+        idx: 4,
+      }) ?? "";
     expect(tooltip).toContain("Plateau");
     expect(tooltip).toContain("Sharpe");
     expect(tooltip).toContain("supportive ");
@@ -1502,18 +1631,22 @@ describe("analysis service", () => {
     expect(refreshAnalysisFromWorkflowRun()).toBe(true);
     expect(store.heatmapWrapVisible).toBe(true);
     expect(store.heatmapCanvasModel).toBeTruthy();
-    expect(heatmapTooltipText(store.heatmapCanvasModel!, {
-      col: 0,
-      drawRow: 1,
-      logicalRow: 0,
-      idx: 0,
-    })).toContain("Sharpe");
-    expect(heatmapTooltipText(store.heatmapCanvasModel!, {
-      col: 1,
-      drawRow: 1,
-      logicalRow: 0,
-      idx: 1,
-    })).toBeNull();
+    expect(
+      heatmapTooltipText(store.heatmapCanvasModel!, {
+        col: 0,
+        drawRow: 1,
+        logicalRow: 0,
+        idx: 0,
+      }),
+    ).toContain("Sharpe");
+    expect(
+      heatmapTooltipText(store.heatmapCanvasModel!, {
+        col: 1,
+        drawRow: 1,
+        logicalRow: 0,
+        idx: 1,
+      }),
+    ).toBeNull();
   });
 
   it("keeps heatmap markers aligned with the visible filtered shortlist", () => {
@@ -1565,11 +1698,7 @@ describe("analysis service", () => {
           fast_max: 9,
           slow_min: 20,
           slow_max: 30,
-          values: [
-            0.42, 0.61, 0.39,
-            0.57, 0.86, 0.58,
-            0.35, 0.54, 0.33,
-          ],
+          values: [0.42, 0.61, 0.39, 0.57, 0.86, 0.58, 0.35, 0.54, 0.33],
         },
       },
     });
@@ -1624,8 +1753,12 @@ describe("analysis service", () => {
     });
 
     expect(refreshHeatmapFromWorkflowRun()).toBe(true);
-    expect(store.heatmapStatusLine).toContain("markers use the best candidate only.");
-    expect(store.heatmapCanvasModel?.markers.map((marker) => marker.label)).toContain("1");
+    expect(store.heatmapStatusLine).toContain(
+      "markers use the best candidate only.",
+    );
+    expect(
+      store.heatmapCanvasModel?.markers.map((marker) => marker.label),
+    ).toContain("1");
   });
 
   it("omits synthetic heatmap metrics from representative-bin drill headers", async () => {
@@ -1652,11 +1785,7 @@ describe("analysis service", () => {
           fast_max: 9,
           slow_min: 20,
           slow_max: 30,
-          values: [
-            0.42, 0.61, 0.39,
-            0.57, 0.86, 0.58,
-            0.35, 0.54, 0.33,
-          ],
+          values: [0.42, 0.61, 0.39, 0.57, 0.86, 0.58, 0.35, 0.54, 0.33],
         },
       },
     });

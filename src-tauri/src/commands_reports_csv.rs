@@ -1,11 +1,13 @@
 use super::commands_reports_validation_common::build_model_from_validation_res;
 use serde_json::Value;
+use std::borrow::Cow;
+use std::fmt::Write as _;
 
-fn csv_escape(v: &str) -> String {
+fn csv_escape(v: &str) -> Cow<'_, str> {
     if v.contains(',') || v.contains('"') || v.contains('\n') || v.contains('\r') {
-        format!("\"{}\"", v.replace('"', "\"\""))
+        Cow::Owned(format!("\"{}\"", v.replace('"', "\"\"")))
     } else {
-        v.to_string()
+        Cow::Borrowed(v)
     }
 }
 
@@ -33,12 +35,13 @@ pub(super) fn build_validation_shortlist_csv_text(
         return Err("validation_res has no candidates".to_string());
     }
 
-    let mut lines: Vec<String> = Vec::with_capacity(rows.len().saturating_add(1));
-
-    lines.push("rank,approval_label,approval_reason,hard_gate_passed,legacy_shortlisted,profile_kind,params_summary,robust_score,psr,dsr,track_record_bars,min_track_record_length_bars,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,wf_sharpe_median,wf_dd_worst,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_metric_p50,cross_score,cross_pareto,bootstrap_prob_pnl_positive,perturb_pnl_mean,warning_flags,fail_reasons,params_json,monte_carlo_mode,monte_carlo_prob_pnl_positive,monte_carlo_pnl_p05,monte_carlo_pnl_p50,monte_carlo_max_dd_p95,monte_carlo_stationary_mean_block_len,monte_carlo_stationary_pnl_p05,monte_carlo_stationary_max_dd_p95,monte_carlo_sample_count".to_string());
+    let mut out = String::with_capacity(rows.len().saturating_mul(256).saturating_add(1024));
+    out.push_str("rank,approval_label,approval_reason,hard_gate_passed,legacy_shortlisted,profile_kind,params_summary,robust_score,psr,dsr,track_record_bars,min_track_record_length_bars,in_sample_pnl,in_sample_sharpe,in_sample_max_dd,in_sample_trades,wf_sharpe_median,wf_dd_worst,cscv_selected_frac,cscv_oos_rank_frac_p50,cscv_oos_metric_p50,cross_score,cross_pareto,bootstrap_prob_pnl_positive,perturb_pnl_mean,warning_flags,fail_reasons,params_json,monte_carlo_mode,monte_carlo_prob_pnl_positive,monte_carlo_pnl_p05,monte_carlo_pnl_p50,monte_carlo_max_dd_p95,monte_carlo_stationary_mean_block_len,monte_carlo_stationary_pnl_p05,monte_carlo_stationary_max_dd_p95,monte_carlo_sample_count");
 
     for row in rows {
-        lines.push(format!(
+        out.push('\n');
+        write!(
+            out,
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             row.rank,
             csv_escape(&row.approval_label),
@@ -79,10 +82,11 @@ pub(super) fn build_validation_shortlist_csv_text(
             csv_optional(row.monte_carlo_stationary_pnl_p05),
             csv_optional(row.monte_carlo_stationary_max_dd_p95),
             csv_optional(row.monte_carlo_sample_count),
-        ));
+        )
+        .map_err(|e| format!("write validation shortlist csv: {e}"))?;
     }
 
-    Ok(lines.join("\n"))
+    Ok(out)
 }
 
 #[cfg(test)]

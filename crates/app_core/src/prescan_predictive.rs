@@ -184,6 +184,16 @@ pub(crate) fn predictive_prescan_seed_pairs(
         return Ok(Vec::new());
     }
 
+    let keep = params.top_k.min(scored.len());
+    if keep < scored.len() {
+        scored.select_nth_unstable_by(keep, |a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        scored.truncate(keep);
+    }
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
             .unwrap_or(Ordering::Equal)
@@ -191,8 +201,8 @@ pub(crate) fn predictive_prescan_seed_pairs(
             .then_with(|| a.2.cmp(&b.2))
     });
 
-    let mut out: Vec<(u16, u16)> = Vec::with_capacity(params.top_k.min(scored.len()));
-    for (_, f, s) in scored.into_iter().take(params.top_k) {
+    let mut out: Vec<(u16, u16)> = Vec::with_capacity(scored.len());
+    for (_, f, s) in scored {
         out.push((f, s));
     }
     Ok(out)

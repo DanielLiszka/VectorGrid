@@ -44,6 +44,7 @@ data/*.csv
 !/docs/frontend_premium_desktop_ui_ux_implementation_plan_2026-04-26.md
 !/docs/frontend_workflow_evidence_decision_authority.md
 !/docs/verification_benchmark_release_authority.md
+!/docs/master_code_review_tracker.md
 !/docs/autonomous_agent_regression_attribution_plan.md
 !/docs/gpt55_pro_hard_problem_meta_research_plan_2026-04-27.md
 !/docs/gpt55_pro_hard_problem_atlas_2026-04-27.md
@@ -65,6 +66,8 @@ data/*.csv
 !/docs/hard_problem_decisions/**
 !/docs/long_running_feature_tasks/
 !/docs/long_running_feature_tasks/**
+!/docs/performance_audit/
+!/docs/performance_audit/**
 /.github/workflows.disabled/
 /Archive/
 /research/

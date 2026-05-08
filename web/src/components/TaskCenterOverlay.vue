@@ -100,6 +100,16 @@ const cancellingTasks = computed(() => (expanded.value ? posture.value.cancellin
 const completedTasks = computed(() => posture.value.completed)
 const failedTasks = computed(() => posture.value.failed)
 const cancelledTasks = computed(() => posture.value.cancelled)
+type RelatedTaskAction = { label: string; run: () => void }
+type TaskWithRelatedAction = { task: TrackedTask; action: RelatedTaskAction | null }
+
+function taskRowsWithRelatedAction(tasks: TrackedTask[]): TaskWithRelatedAction[] {
+  return tasks.map((task) => ({ task, action: relatedActionFor(task) }))
+}
+
+const attentionTasks = computed(() => failedTasks.value.concat(cancelledTasks.value))
+const attentionTaskRows = computed(() => taskRowsWithRelatedAction(attentionTasks.value))
+const completedTaskRows = computed(() => taskRowsWithRelatedAction(completedTasks.value))
 const postureSummary = computed(() => {
   const parts = [
     posture.value.counts.running ? `${posture.value.counts.running} running` : '',
@@ -401,7 +411,7 @@ function taskSecondaryMeta(task: TrackedTask): string {
   return detail
 }
 
-function relatedActionFor(task: TrackedTask): { label: string; run: () => void } | null {
+function relatedActionFor(task: TrackedTask): RelatedTaskAction | null {
   const command = String(task.command || '').trim()
   if (!command) return null
   if (command.includes('validation')) {
@@ -428,8 +438,7 @@ function relatedActionFor(task: TrackedTask): { label: string; run: () => void }
   return null
 }
 
-function openRelatedView(task: TrackedTask): void {
-  const action = relatedActionFor(task)
+function openRelatedAction(action: RelatedTaskAction | null): void {
   if (!action) return
   action.run()
   closePanel()
@@ -608,32 +617,32 @@ function openRelatedView(task: TrackedTask): void {
           <div class="postureColumn">
             <div class="postureHead">
               <span>Attention</span>
-              <span class="eventBadge warn">{{ failedTasks.length + cancelledTasks.length }}</span>
+              <span class="eventBadge warn">{{ attentionTasks.length }}</span>
             </div>
-            <div v-if="failedTasks.length + cancelledTasks.length === 0" class="muted">{{ sectionEmptyLabel('attention') }}</div>
+            <div v-if="attentionTasks.length === 0" class="muted">{{ sectionEmptyLabel('attention') }}</div>
             <div v-else v-motion-list class="taskList">
               <article
-                v-for="task in [...failedTasks, ...cancelledTasks]"
-                :key="task.id"
+                v-for="row in attentionTaskRows"
+                :key="row.task.id"
                 class="taskCard"
               >
                 <div class="taskRow">
-                  <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-                  <div class="taskStatus" :class="statusClass(task)">
-                    <AppVisualIcon :icon="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" />
-                    <span>{{ statusLabel(task) }}</span>
+                  <div class="taskName">{{ formatCommandLabel(row.task.command) }}</div>
+                  <div class="taskStatus" :class="statusClass(row.task)">
+                    <AppVisualIcon :icon="statusIcon(row.task)" class="statusIcon" :class="statusIconClass(row.task)" />
+                    <span>{{ statusLabel(row.task) }}</span>
                   </div>
                 </div>
-                <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
+                <div class="taskMeta">{{ taskSecondaryMeta(row.task) }}</div>
                 <div class="taskRow foot">
-                  <div class="time">{{ absoluteTime(task.endedAt || task.startedAt) }}</div>
+                  <div class="time">{{ absoluteTime(row.task.endedAt || row.task.startedAt) }}</div>
                   <button
-                    v-if="relatedActionFor(task)"
+                    v-if="row.action"
                     type="button"
                     class="relatedBtn"
-                    @click="openRelatedView(task)"
+                    @click="openRelatedAction(row.action)"
                   >
-                    {{ relatedActionFor(task)?.label }}
+                    {{ row.action.label }}
                   </button>
                 </div>
               </article>
@@ -647,24 +656,24 @@ function openRelatedView(task: TrackedTask): void {
             </div>
             <div v-if="completedTasks.length === 0" class="muted">{{ sectionEmptyLabel('completed') }}</div>
             <div v-else v-motion-list class="taskList">
-              <article v-for="task in completedTasks" :key="task.id" class="taskCard taskCardSuccess">
+              <article v-for="row in completedTaskRows" :key="row.task.id" class="taskCard taskCardSuccess">
                 <div class="taskRow">
-                  <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-                  <div class="taskStatus" :class="statusClass(task)">
-                    <AppVisualIcon :icon="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" />
-                    <span>{{ statusLabel(task) }}</span>
+                  <div class="taskName">{{ formatCommandLabel(row.task.command) }}</div>
+                  <div class="taskStatus" :class="statusClass(row.task)">
+                    <AppVisualIcon :icon="statusIcon(row.task)" class="statusIcon" :class="statusIconClass(row.task)" />
+                    <span>{{ statusLabel(row.task) }}</span>
                   </div>
                 </div>
-                <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
+                <div class="taskMeta">{{ taskSecondaryMeta(row.task) }}</div>
                 <div class="taskRow foot">
-                  <div class="time">{{ absoluteTime(task.endedAt || task.startedAt) }}</div>
+                  <div class="time">{{ absoluteTime(row.task.endedAt || row.task.startedAt) }}</div>
                   <button
-                    v-if="relatedActionFor(task)"
+                    v-if="row.action"
                     type="button"
                     class="relatedBtn"
-                    @click="openRelatedView(task)"
+                    @click="openRelatedAction(row.action)"
                   >
-                    {{ relatedActionFor(task)?.label }}
+                    {{ row.action.label }}
                   </button>
                 </div>
               </article>

@@ -116,12 +116,12 @@ pub fn resample_candles(candles: &Candles, interval_ms: i64) -> Result<Candles, 
         }
     }
 
-    let mut out_ts: Vec<i64> = Vec::new();
-    let mut out_open: Vec<f64> = Vec::new();
-    let mut out_high: Vec<f64> = Vec::new();
-    let mut out_low: Vec<f64> = Vec::new();
-    let mut out_close: Vec<f64> = Vec::new();
-    let mut out_vol: Vec<f64> = Vec::new();
+    let mut out_ts: Vec<i64> = Vec::with_capacity(n);
+    let mut out_open: Vec<f64> = Vec::with_capacity(n);
+    let mut out_high: Vec<f64> = Vec::with_capacity(n);
+    let mut out_low: Vec<f64> = Vec::with_capacity(n);
+    let mut out_close: Vec<f64> = Vec::with_capacity(n);
+    let mut out_vol: Vec<f64> = Vec::with_capacity(n);
 
     let mut has_open_any = false;
     let mut has_high_any = false;

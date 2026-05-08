@@ -450,22 +450,23 @@ function selectAdmissionPolicy(
   return requested;
 }
 
-function stableObjectiveSort(
+function stableFiniteObjectiveRows(
   rows: ValidationAdmissionRow[],
   objective: ValidationObjectiveKind,
 ): ValidationAdmissionRow[] {
   // OrderingPolicyV1: finite objective scores rank first, descending by score;
   // exact score ties preserve the original artifact/input row order.
-  return [...rows].sort((left, right) => {
-    const leftScore = scoreMetricsForObjective(left.metrics, objective);
-    const rightScore = scoreMetricsForObjective(right.metrics, objective);
-    const leftFinite = Number.isFinite(leftScore);
-    const rightFinite = Number.isFinite(rightScore);
-    if (leftFinite !== rightFinite) return leftFinite ? -1 : 1;
-    if (leftFinite && rightFinite && leftScore !== rightScore)
-      return rightScore - leftScore;
-    return left.input_index - right.input_index;
+  const scored: Array<{ row: ValidationAdmissionRow; score: number }> = [];
+  for (const row of rows) {
+    const score = scoreMetricsForObjective(row.metrics, objective);
+    if (!Number.isFinite(score)) continue;
+    scored.push({ row, score });
+  }
+  scored.sort((left, right) => {
+    if (left.score !== right.score) return right.score - left.score;
+    return left.row.input_index - right.row.input_index;
   });
+  return scored.map((entry) => entry.row);
 }
 
 function dedupeAdmissionRows(
@@ -545,9 +546,7 @@ function buildScalarUnionSelection(
   const orderedHeads: ValidationAdmissionRow[][] = [];
   const heads: ValidationAdmissionHeadProvenance[] = [];
   for (const objective of objectives) {
-    const ranked = stableObjectiveSort(rows, objective).filter((row) =>
-      Number.isFinite(scoreMetricsForObjective(row.metrics, objective)),
-    );
+    const ranked = stableFiniteObjectiveRows(rows, objective);
     if (!ranked.length) {
       heads.push({
         head: objective === objectives[0] ? "primary" : "secondary",

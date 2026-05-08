@@ -1901,12 +1901,10 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
             .then_with(|| b_m.total_cmp(&a_m))
     });
 
-    let mut rows: Vec<&Value> = all_rows.clone();
-    if let Some(n) = max_rows {
-        if rows.len() > n {
-            rows.truncate(n);
-        }
-    }
+    let row_limit = max_rows
+        .map(|n| n.min(all_rows.len()))
+        .unwrap_or(all_rows.len());
+    let rows: Vec<&Value> = all_rows.iter().take(row_limit).copied().collect();
 
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();

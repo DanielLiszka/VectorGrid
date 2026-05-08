@@ -488,14 +488,15 @@ fn list_csvs_in_dir(
         let mut child_files: Vec<PathBuf> = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
+            let file_type = entry.file_type().map_err(|e| e.to_string())?;
             let path = entry.path();
-            if path.is_dir() {
+            if file_type.is_dir() {
                 if recursive {
                     child_dirs.push(path);
                 }
                 continue;
             }
-            if path.is_file() && is_csv_path(&path) {
+            if file_type.is_file() && is_csv_path(&path) {
                 child_files.push(path);
             }
         }
@@ -534,8 +535,8 @@ fn build_repo_data_csv_list(
 
     for path in paths {
         let csv_path = path.to_string_lossy().to_string();
-        csv_paths.push(csv_path.clone());
         if include_identity {
+            csv_paths.push(csv_path.clone());
             let (size, mtime) = match crate::data_cache::identity_for_source(&path) {
                 Ok(id) => (Some(id.size), Some(id.mtime_utc_ms)),
                 Err(_) => (None, None),
@@ -545,6 +546,8 @@ fn build_repo_data_csv_list(
                 source_size_bytes: size,
                 source_mtime_utc_ms: mtime,
             });
+        } else {
+            csv_paths.push(csv_path);
         }
     }
 
@@ -1120,19 +1123,17 @@ fn handle_polygon_ws_text(
                 bar.time_close_unix_ms,
                 now_unix_ms(),
             );
-            let _ = app.emit(POLYGON_LIVE_BAR_EVENT, bar.clone());
-            super::commands_execution::on_live_execution_bar(
-                app,
-                super::commands_execution::LiveExecutionRunnerBar {
-                    symbol: bar.symbol.clone(),
-                    time_open_unix_ms: bar.time_open_unix_ms,
-                    open: bar.open,
-                    high: bar.high,
-                    low: bar.low,
-                    close: bar.close,
-                    volume: bar.volume,
-                },
-            );
+            let runner_bar = super::commands_execution::LiveExecutionRunnerBar {
+                symbol: bar.symbol.clone(),
+                time_open_unix_ms: bar.time_open_unix_ms,
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                close: bar.close,
+                volume: bar.volume,
+            };
+            let _ = app.emit(POLYGON_LIVE_BAR_EVENT, bar);
+            super::commands_execution::on_live_execution_bar(app, runner_bar);
         }
     }
 }

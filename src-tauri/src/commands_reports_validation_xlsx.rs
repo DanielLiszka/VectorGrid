@@ -358,11 +358,10 @@ fn plateau_summary_label(row: &ExportCandidateRow) -> String {
     }
 }
 
-fn median_option_f64(values: &[Option<f64>]) -> Option<f64> {
+fn median_option_f64(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
     let mut xs: Vec<f64> = values
-        .iter()
+        .into_iter()
         .flatten()
-        .copied()
         .filter(|value| value.is_finite())
         .collect();
     if xs.is_empty() {
@@ -4803,18 +4802,10 @@ fn build_dashboard(
     } else {
         &model.approved_rows
     };
-    let median_wf_pnl_eff = median_option_f64(
-        &efficiency_rows
-            .iter()
-            .map(|row| row.wf_pnl_efficiency)
-            .collect::<Vec<_>>(),
-    );
-    let median_wf_sharpe_eff = median_option_f64(
-        &efficiency_rows
-            .iter()
-            .map(|row| row.wf_sharpe_efficiency)
-            .collect::<Vec<_>>(),
-    );
+    let median_wf_pnl_eff =
+        median_option_f64(efficiency_rows.iter().map(|row| row.wf_pnl_efficiency));
+    let median_wf_sharpe_eff =
+        median_option_f64(efficiency_rows.iter().map(|row| row.wf_sharpe_efficiency));
     for (offset, label, value) in [
         (
             1u32,
@@ -5485,15 +5476,15 @@ pub(super) fn build_validation_report_xlsx(
     } else {
         String::new()
     };
+    let approved_rows = if model.approved_rows.len() > model.visible_cap {
+        &model.approved_rows[..model.visible_cap]
+    } else {
+        &model.approved_rows
+    };
     write_candidate_sheet(
         &mut workbook,
         "Approved Candidates",
-        &model
-            .approved_rows
-            .iter()
-            .take(model.visible_cap)
-            .cloned()
-            .collect::<Vec<_>>(),
+        approved_rows,
         &approved_note,
         &header_fmt,
         &text_fmt,

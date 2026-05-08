@@ -54,7 +54,7 @@ pub(crate) fn vdps_period_window_slice(periods: &[u16], center: u16, window: u16
 }
 
 pub(crate) fn vdps_rank_candidates(
-    mut rows: Vec<(DoubleMaParams, Metrics)>,
+    rows: Vec<(DoubleMaParams, Metrics)>,
     objective: ObjectiveKind,
     score_mode: Option<DoubleMaScoreMode>,
     limit: usize,
@@ -62,23 +62,21 @@ pub(crate) fn vdps_rank_candidates(
     if rows.is_empty() || limit == 0 {
         return Vec::new();
     }
-    rows.sort_by(|(pa, ma), (pb, mb)| {
-        let sa = {
-            let v = effective_score(ma, objective, score_mode);
-            if v.is_finite() {
-                v
-            } else {
-                f64::NEG_INFINITY
-            }
-        };
-        let sb = {
-            let v = effective_score(mb, objective, score_mode);
-            if v.is_finite() {
-                v
-            } else {
-                f64::NEG_INFINITY
-            }
-        };
+    let mut scored_rows: Vec<(DoubleMaParams, Metrics, f64)> = rows
+        .into_iter()
+        .map(|(params, metrics)| {
+            let score = {
+                let v = effective_score(&metrics, objective, score_mode);
+                if v.is_finite() {
+                    v
+                } else {
+                    f64::NEG_INFINITY
+                }
+            };
+            (params, metrics, score)
+        })
+        .collect();
+    scored_rows.sort_by(|(pa, ma, sa), (pb, mb, sb)| {
         sb.total_cmp(&sa)
             .then_with(|| ma.max_dd.total_cmp(&mb.max_dd))
             .then_with(|| mb.trades.cmp(&ma.trades))
@@ -87,14 +85,17 @@ pub(crate) fn vdps_rank_candidates(
             .then_with(|| pa.fast_ma_id.cmp(&pb.fast_ma_id))
             .then_with(|| pa.slow_ma_id.cmp(&pb.slow_ma_id))
     });
-    rows.dedup_by(|(pa, _), (pb, _)| {
+    scored_rows.dedup_by(|(pa, _, _), (pb, _, _)| {
         pa.fast_len == pb.fast_len
             && pa.slow_len == pb.slow_len
             && pa.fast_ma_id == pb.fast_ma_id
             && pa.slow_ma_id == pb.slow_ma_id
     });
-    rows.truncate(limit.min(rows.len()));
-    rows
+    scored_rows.truncate(limit.min(scored_rows.len()));
+    scored_rows
+        .into_iter()
+        .map(|(params, metrics, _)| (params, metrics))
+        .collect()
 }
 
 pub(crate) fn vdps_local_anchor_axes(

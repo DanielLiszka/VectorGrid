@@ -1035,45 +1035,51 @@ fn apply_cross_ticker_validation_double_ma(
     Ok(())
 }
 
-fn validation_candidate_is_approved<
-    C: ta_app_core::validation_pipeline::ValidationPostCandidate,
->(
-    cand: &C,
-) -> bool {
-    cand.validation_verdict().passed
-        && cand
-            .min_track_record_length_bars()
-            .map(|mintrl| cand.track_record_bars().max(2) >= mintrl)
-            .unwrap_or(false)
-}
-
 fn select_cross_ticker_preserved_finalists<
     C: ta_app_core::validation_pipeline::ValidationPostCandidate + Clone,
 >(
     candidates: &[C],
 ) -> Vec<C> {
-    let mut approved: Vec<_> = candidates
-        .iter()
-        .filter(|cand| validation_candidate_is_approved(*cand))
-        .cloned()
-        .collect();
-    if !approved.is_empty() {
-        approved.truncate(PRESERVED_FINALISTS_CROSS_TICKER_LIMIT);
-        return approved;
+    let mut approved_indices = Vec::with_capacity(PRESERVED_FINALISTS_CROSS_TICKER_LIMIT);
+    let mut hard_gate_survivor_indices = Vec::with_capacity(PRESERVED_FINALISTS_CROSS_TICKER_LIMIT);
+    for (index, cand) in candidates.iter().enumerate() {
+        let hard_gate_passed = cand.validation_verdict().passed;
+        if hard_gate_passed {
+            if approved_indices.len() < PRESERVED_FINALISTS_CROSS_TICKER_LIMIT
+                && cand
+                    .min_track_record_length_bars()
+                    .map(|mintrl| cand.track_record_bars().max(2) >= mintrl)
+                    .unwrap_or(false)
+            {
+                approved_indices.push(index);
+            }
+            if hard_gate_survivor_indices.len() < PRESERVED_FINALISTS_CROSS_TICKER_LIMIT {
+                hard_gate_survivor_indices.push(index);
+            }
+        }
+        if approved_indices.len() >= PRESERVED_FINALISTS_CROSS_TICKER_LIMIT
+            && hard_gate_survivor_indices.len() >= PRESERVED_FINALISTS_CROSS_TICKER_LIMIT
+        {
+            break;
+        }
+    }
+    if !approved_indices.is_empty() {
+        return approved_indices
+            .into_iter()
+            .filter_map(|index| candidates.get(index).cloned())
+            .collect();
     }
 
-    let mut hard_gate_survivors: Vec<_> = candidates
-        .iter()
-        .filter(|cand| cand.validation_verdict().passed)
-        .cloned()
-        .collect();
-    if !hard_gate_survivors.is_empty() {
-        hard_gate_survivors.truncate(PRESERVED_FINALISTS_CROSS_TICKER_LIMIT);
-        return hard_gate_survivors;
+    if !hard_gate_survivor_indices.is_empty() {
+        return hard_gate_survivor_indices
+            .into_iter()
+            .filter_map(|index| candidates.get(index).cloned())
+            .collect();
     }
 
-    let mut fallback = candidates.to_vec();
-    fallback.truncate(PRESERVED_FINALISTS_CROSS_TICKER_LIMIT);
+    let fallback_len = candidates.len().min(PRESERVED_FINALISTS_CROSS_TICKER_LIMIT);
+    let mut fallback = Vec::with_capacity(fallback_len);
+    fallback.extend_from_slice(&candidates[..fallback_len]);
     fallback
 }
 
@@ -1228,43 +1234,27 @@ fn build_price_bars(
         let to = to_exclusive.saturating_sub(1);
 
         let mut open = f64::NAN;
-        for i in from..to_exclusive {
-            let o = candles.open[i];
-            if o.is_finite() {
-                open = o;
-                break;
-            }
-            let c = candles.close[i];
-            if c.is_finite() {
-                open = c;
-                break;
-            }
-        }
-
         let mut close = f64::NAN;
-        for i in (from..to_exclusive).rev() {
-            let c = candles.close[i];
-            if c.is_finite() {
-                close = c;
-                break;
-            }
-            let o = candles.open[i];
-            if o.is_finite() {
-                close = o;
-                break;
-            }
-        }
-
         let mut high = f64::NEG_INFINITY;
         let mut low = f64::INFINITY;
         let mut volume = 0.0f64;
         for i in from..to_exclusive {
-            for v in [
-                candles.high[i],
-                candles.open[i],
-                candles.close[i],
-                candles.low[i],
-            ] {
+            let o = candles.open[i];
+            let c = candles.close[i];
+            if !open.is_finite() {
+                if o.is_finite() {
+                    open = o;
+                } else if c.is_finite() {
+                    open = c;
+                }
+            }
+            if c.is_finite() {
+                close = c;
+            } else if o.is_finite() {
+                close = o;
+            }
+
+            for v in [candles.high[i], o, c, candles.low[i]] {
                 if v.is_finite() {
                     if v > high {
                         high = v;
@@ -1282,7 +1272,7 @@ fn build_price_bars(
 
         if open.is_finite() && close.is_finite() && high.is_finite() && low.is_finite() {
             let time = candles.timestamp[from];
-            if prev_time.map_or(true, |p| time > p) {
+            if prev_time.is_none_or(|p| time > p) {
                 out.push(PriceBar {
                     time,
                     open,
@@ -1657,6 +1647,30 @@ mod tests {
         assert_eq!(bars[1].time, 11);
         assert_eq!(bars[1].from_index, 2);
         assert_eq!(bars[1].to_index, 2);
+    }
+
+    #[test]
+    fn build_price_bars_preserves_nan_open_close_fallback_order_inside_bucket() {
+        let mut rows = vec![
+            (10, f64::NAN, 10.0, 1.0, 5.0, 2.0),
+            (11, 7.0, 12.0, 2.0, f64::NAN, 3.0),
+        ];
+        rows.extend((2..301).map(|idx| {
+            let value = idx as f64;
+            (10 + idx as i64, value, value, value, value, 0.0)
+        }));
+        let candles = candles_from_rows(&rows);
+
+        let bars = build_price_bars(&candles, 1).expect("price bars");
+
+        assert_eq!(bars[0].time, 10);
+        assert_eq!(bars[0].from_index, 0);
+        assert_eq!(bars[0].to_index, 1);
+        assert!((bars[0].open - 5.0).abs() < 1e-12);
+        assert!((bars[0].close - 7.0).abs() < 1e-12);
+        assert!((bars[0].high - 12.0).abs() < 1e-12);
+        assert!((bars[0].low - 1.0).abs() < 1e-12);
+        assert!((bars[0].volume - 5.0).abs() < 1e-12);
     }
 
     #[test]

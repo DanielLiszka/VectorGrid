@@ -2,7 +2,12 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ref } from 'vue'
 
 const virtualMockState = vi.hoisted(() => ({
-  virtualItems: [] as Array<{ index: number; start: number; end: number }>,
+  virtualItems: [] as Array<{
+    index: number
+    start: number
+    end: number
+    key?: string | number
+  }>,
   totalSize: 0,
   measureCalls: 0,
   scrollCalls: [] as number[],
@@ -67,6 +72,7 @@ describe('useVirtualTableRows', () => {
     expect(table.topSpacerPx.value).toBe(28)
     expect(table.bottomSpacerPx.value).toBe(56)
     expect(table.virtualRows.value.map((entry) => entry.index)).toEqual([1, 2])
+    expect(table.virtualRows.value.map((entry) => entry.key)).toEqual([1, 2])
     expect(table.virtualRows.value[0]?.row).toBe(rows.value[1])
     expect(table.virtualRows.value[1]?.row).toBe(rows.value[2])
   })
@@ -98,6 +104,18 @@ describe('useVirtualTableRows', () => {
 
     expect(virtualMockState.latestOptions?.getItemKey?.(0)).toBe('saved_run_a:0')
     expect(getItemKey).toHaveBeenCalledWith(0, rows.value[0])
+  })
+
+  it('exposes stable virtual item keys on mapped rows', () => {
+    virtualMockState.virtualItems = [{ index: 0, start: 0, end: 28, key: 'row:a' }]
+    virtualMockState.totalSize = 28
+
+    const rows = ref([{ id: 'saved_run_a' }])
+    const table = useVirtualTableRows(rows, {
+      getItemKey: (_index, row) => row.id,
+    })
+
+    expect(table.virtualRows.value[0]?.key).toBe('row:a')
   })
 
   it('handles empty virtual windows and supports scrollToTop', () => {

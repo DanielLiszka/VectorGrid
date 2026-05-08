@@ -2384,6 +2384,40 @@ pub(crate) fn upload_host_regime_filter(
     })
 }
 
+pub(crate) fn upload_host_regime_filter_f64(
+    device_id: u32,
+    regime: &[f64],
+    first_valid: usize,
+) -> Result<DeviceRegimeFilter, String> {
+    let len = regime.len();
+    if len == 0 {
+        return Err("device regime upload requires a non-empty series".to_string());
+    }
+    if first_valid > len {
+        return Err(format!(
+            "device regime first_valid {first_valid} exceeds input len {len}"
+        ));
+    }
+
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<DeviceRegimeFilter, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+        let buffer = upload_resident_series_f64(&rt.stream, regime)?;
+        Ok(DeviceRegimeFilter {
+            buffer,
+            scratch_f32: Vec::new(),
+            scratch_dispatch_f32: Vec::new(),
+            len,
+            first_valid,
+            device_id,
+        })
+    })
+}
+
 #[allow(dead_code)]
 pub(crate) struct UploadedGpuStrategyProgram {
     pub(crate) d_indicator_slots: DeviceBuffer<GpuIndicatorSlotAbi>,

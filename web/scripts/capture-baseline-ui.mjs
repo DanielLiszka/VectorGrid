@@ -100,7 +100,16 @@ async function main() {
   const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width: 1720, height: 1080 } })
   await seedAdvancedUiMode(context)
-  await installMockedTauri(context, { holdStartupOverlay: true, emitTestEvents: true })
+  await installMockedTauri(context, {
+    holdStartupOverlay: true,
+    emitTestEvents: true,
+    commandDelays: {
+      load_latest_run_artifact_hydration: 12,
+      load_latest_run_artifact_summary: 8,
+      list_live_session_artifacts: 6,
+      load_live_session_artifact_detail: 6,
+    },
+  })
   const page = await context.newPage()
 
   const navStart = Date.now()
@@ -204,6 +213,56 @@ async function main() {
     fullPage: true,
   })
 
+  const frontendPerf = await page.evaluate(() => {
+    const cloneEntries = (entries) => Array.isArray(entries)
+      ? entries.map((entry) => ({
+        ...entry,
+        meta: entry && entry.meta && typeof entry.meta === 'object' ? { ...entry.meta } : entry?.meta,
+      }))
+      : []
+    const artifactHistoryEntries = cloneEntries(window.__VTA_ARTIFACT_HISTORY_PERF__?.readEntries?.() ?? [])
+    const validationReportEntries = cloneEntries(window.__VTA_VALIDATION_REPORT_PERF__?.readEntries?.() ?? [])
+    const invokeLog = cloneEntries(window.__VTA_TEST_INVOKE_LOG ?? [])
+    const durationFor = (entries, name) => {
+      const found = entries.find((entry) => entry?.name === name)
+      const duration = Number(found?.durationMs)
+      return Number.isFinite(duration) ? Number(duration.toFixed(3)) : null
+    }
+    const invokeTotalMs = invokeLog.reduce((sum, entry) => {
+      const duration = Number(entry?.durationMs)
+      return sum + (Number.isFinite(duration) ? duration : 0)
+    }, 0)
+    const invokeMaxMs = invokeLog.reduce((max, entry) => {
+      const duration = Number(entry?.durationMs)
+      return Math.max(max, Number.isFinite(duration) ? duration : 0)
+    }, 0)
+    const invokeDelayTotalMs = invokeLog.reduce((sum, entry) => {
+      const duration = Number(entry?.delayedMs)
+      return sum + (Number.isFinite(duration) ? duration : 0)
+    }, 0)
+    return {
+      artifact_history_entries: artifactHistoryEntries,
+      validation_report_entries: validationReportEntries,
+      mock_tauri_invoke_log: invokeLog,
+      observations: {
+        main_boot_to_ready_ms: durationFor(artifactHistoryEntries, 'main.bootToReadyMs'),
+        main_desktop_initialization_ms: durationFor(artifactHistoryEntries, 'main.desktopInitializationMs'),
+        workflow_startup_data_hydration_ms: durationFor(
+          artifactHistoryEntries,
+          'workflowBootstrap.startupDataHydrationMs',
+        ),
+        workflow_latest_run_sync_ms: durationFor(artifactHistoryEntries, 'workflowBootstrap.latestRunSyncMs'),
+        latest_run_fast_path_ms: durationFor(artifactHistoryEntries, 'workflowArtifactsSync.latestRunFastPathMs'),
+        mock_tauri_invoke_count: invokeLog.length,
+        mock_tauri_invoke_total_ms: Number(invokeTotalMs.toFixed(3)),
+        mock_tauri_invoke_max_ms: Number(invokeMaxMs.toFixed(3)),
+        mock_tauri_invoke_delay_total_ms: Number(invokeDelayTotalMs.toFixed(3)),
+        artifact_history_entry_count: artifactHistoryEntries.length,
+        validation_report_entry_count: validationReportEntries.length,
+      },
+    }
+  })
+
   const metrics = {
     generated_at: new Date().toISOString(),
     app_cold_start_ms: domContentLoadedMs,
@@ -211,6 +270,7 @@ async function main() {
     js_heap_used_bytes_at_idle: jsHeapUsedBytes,
     startup_capture_mode: startupCapture,
     chart_live_feed_responsiveness: chartResponsiveness,
+    frontend_perf: frontendPerf,
     capture_runtime_ms: Date.now() - startedAt,
     note: 'Synthetic live-bar event throughput captured via mocked Tauri event emitter.',
   }

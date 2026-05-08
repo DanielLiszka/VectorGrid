@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -2871,41 +2872,9 @@ fn load_artifact_catalog_snapshot(
     path: &Path,
     expected_fingerprint: &str,
 ) -> Result<Option<ArtifactLibrarySnapshot>, String> {
-    if !path.is_file() {
+    let Some(conn) = open_valid_artifact_catalog_connection(path, expected_fingerprint)? else {
         return Ok(None);
-    }
-
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute_batch("PRAGMA busy_timeout = 5000;")
-        .map_err(|e| e.to_string())?;
-
-    let schema_version: Option<String> = conn
-        .query_row(
-            "SELECT value FROM catalog_meta WHERE key = 'schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    if schema_version.as_deref() != Some(ARTIFACT_CATALOG_SCHEMA_VERSION) {
-        return Ok(None);
-    }
-
-    let fingerprint: Option<String> = conn
-        .query_row(
-            "SELECT value FROM catalog_meta WHERE key = 'fingerprint'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    if fingerprint.as_deref() != Some(expected_fingerprint) {
-        return Ok(None);
-    }
+    };
 
     let mut snapshot = ArtifactLibrarySnapshot {
         runs: Vec::new(),
@@ -2949,6 +2918,77 @@ fn load_artifact_catalog_snapshot(
 
     sort_artifact_library_snapshot(&mut snapshot);
     Ok(Some(snapshot))
+}
+
+fn open_valid_artifact_catalog_connection(
+    path: &Path,
+    expected_fingerprint: &str,
+) -> Result<Option<Connection>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute_batch("PRAGMA busy_timeout = 5000;")
+        .map_err(|e| e.to_string())?;
+
+    let schema_version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM catalog_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if schema_version.as_deref() != Some(ARTIFACT_CATALOG_SCHEMA_VERSION) {
+        return Ok(None);
+    }
+
+    let fingerprint: Option<String> = conn
+        .query_row(
+            "SELECT value FROM catalog_meta WHERE key = 'fingerprint'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if fingerprint.as_deref() != Some(expected_fingerprint) {
+        return Ok(None);
+    }
+
+    Ok(Some(conn))
+}
+
+fn load_artifact_catalog_family<T: DeserializeOwned>(
+    path: &Path,
+    expected_fingerprint: &str,
+    family: &str,
+) -> Result<Option<Vec<T>>, String> {
+    let Some(conn) = open_valid_artifact_catalog_connection(path, expected_fingerprint)? else {
+        return Ok(None);
+    };
+
+    let mut out = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT summary_json
+            FROM artifact_index
+            WHERE family = ?1
+            ORDER BY ts DESC, path ASC
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query(params![family]).map_err(|e| e.to_string())?;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let summary_json: String = row.get(0).map_err(|e| e.to_string())?;
+        out.push(serde_json::from_str(&summary_json).map_err(|e| e.to_string())?);
+    }
+    Ok(Some(out))
 }
 
 fn maybe_write_artifact_catalog_snapshot(
@@ -3991,12 +4031,11 @@ fn format_ml_score_contract_summary(
 
 fn format_ml_score_note(score_space: Option<&str>, score_scope: Option<&str>) -> Option<String> {
     let mut notes = Vec::new();
-    match score_space.map(|value| value.trim()) {
-        Some("RawMargin") => notes.push(
+    if let Some("RawMargin") = score_space.map(|value| value.trim()) {
+        notes.push(
             "Raw-margin scores are ranking-oriented only; threshold validation expects probability columns."
                 .to_string(),
-        ),
-        _ => {}
+        );
     }
     match score_scope.map(|value| value.trim()) {
         Some("WalkforwardTest") => {
@@ -4463,6 +4502,10 @@ fn build_run_artifact_detail_response(
         replay_reasons,
         &artifact_compatibility,
     );
+    let has_validation = validation_res.is_some();
+    let ml_run_verdict_summary = format_ml_run_verdict_summary(validation_res.as_ref());
+    let ml_top_candidates_summary = format_ml_top_candidates_summary(validation_res.as_ref());
+    let params_text = build_req_snapshot(run_req.as_ref(), validation_req.as_ref());
 
     Ok(RunArtifactDetailResponse {
         ts: resolved_ts,
@@ -4476,7 +4519,7 @@ fn build_run_artifact_detail_response(
         report_xlsx_exists,
         report_path: report_xlsx_path,
         report_path_exists: report_xlsx_exists,
-        has_validation: validation_res.is_some(),
+        has_validation,
         replay_class,
         replay_reasons,
         config_fingerprint,
@@ -4485,13 +4528,13 @@ fn build_run_artifact_detail_response(
         dataset_meta,
         route_provenance: extract_route_provenance_from_artifact(artifact),
         lineage: extract_artifact_lineage_from_artifact(artifact),
-        ml_signal: ml_signal.clone(),
+        ml_signal,
         optimization_metric_surface,
         stage_completions: stage_completions_for_run_artifact(Path::new(artifact_path), artifact),
-        run_req: run_req.clone(),
-        run_res: run_res.clone(),
-        validation_req: validation_req.clone(),
-        validation_res: validation_res.clone(),
+        run_req,
+        run_res,
+        validation_req,
+        validation_res,
         ml_signal_stage: normalize_text_value(artifact.pointer("/ml_signal/stage")),
         ml_bundle_id: normalize_text_value(artifact.pointer("/ml_signal/bundle_id")),
         ml_score_cache_path: normalize_text_value(artifact.pointer("/ml_signal/score_cache_path")),
@@ -4541,9 +4584,9 @@ fn build_run_artifact_detail_response(
         ml_policy_sweep_summary: format_ml_policy_sweep_summary(
             artifact.pointer("/ml_signal/policy_sweep"),
         ),
-        ml_run_verdict_summary: format_ml_run_verdict_summary(validation_res.as_ref()),
-        ml_top_candidates_summary: format_ml_top_candidates_summary(validation_res.as_ref()),
-        params_text: build_req_snapshot(run_req.as_ref(), validation_req.as_ref()),
+        ml_run_verdict_summary,
+        ml_top_candidates_summary,
+        params_text,
     })
 }
 
@@ -5162,6 +5205,40 @@ pub fn list_artifact_library_blocking<R: tauri::Runtime>(
     Ok(snapshot)
 }
 
+fn list_artifact_catalog_family_blocking<R, T>(
+    app: &tauri::AppHandle<R>,
+    family: &str,
+) -> Result<Option<Vec<T>>, String>
+where
+    R: tauri::Runtime,
+    T: DeserializeOwned,
+{
+    let dir = runs_dir(app)?;
+    let identities = scan_artifact_file_identities_in_dir(&dir)?;
+    let fingerprint = artifact_catalog_fingerprint(&identities);
+    let path = artifact_catalog_db_path(app)?;
+    load_artifact_catalog_family(&path, &fingerprint, family)
+}
+
+fn try_list_artifact_catalog_family_blocking<R, T>(
+    app: &tauri::AppHandle<R>,
+    family: &str,
+) -> Option<Vec<T>>
+where
+    R: tauri::Runtime,
+    T: DeserializeOwned,
+{
+    match list_artifact_catalog_family_blocking(app, family) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "artifact catalog family {family} could not be used; falling back to library scan: {error}"
+            );
+            None
+        }
+    }
+}
+
 pub fn rebuild_artifact_catalog_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<ArtifactLibrarySnapshot, String> {
@@ -5175,14 +5252,36 @@ pub fn rebuild_artifact_catalog_blocking<R: tauri::Runtime>(
     Ok(snapshot)
 }
 
-pub(super) fn load_meta_artifacts_with_paths_blocking(
-    app: &tauri::AppHandle,
+pub(super) fn load_meta_artifacts_with_paths_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
 ) -> Result<Vec<(PathBuf, Value)>, String> {
-    let mut out = Vec::new();
-    for entry in scan_artifact_library(app)? {
-        if !is_meta_artifact_file_name(&entry.file_name) {
+    let dir = runs_dir(app)?;
+    let mut paths: Vec<(PathBuf, String)> = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
+        let Some(file_name) = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
+        if !is_meta_artifact_file_name(&file_name) {
+            continue;
+        }
+        paths.push((path, file_name));
+    }
+    paths.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+
+    let mut out = Vec::new();
+    for (path, file_name) in paths {
+        let Some(entry) = read_artifact_scan_entry(path, file_name) else {
+            continue;
+        };
         if !is_meta_selection_kind(
             entry
                 .value
@@ -5194,7 +5293,6 @@ pub(super) fn load_meta_artifacts_with_paths_blocking(
         }
         out.push((entry.path, entry.value));
     }
-    out.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
     Ok(out)
 }
 
@@ -5634,14 +5732,10 @@ pub(super) fn compute_config_fingerprint_from_artifact(artifact: &Value) -> Stri
 pub(super) fn list_run_artifacts_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<Vec<RunArtifactSummary>, String> {
-    let mut runs = Vec::new();
-    for entry in scan_artifact_library(&app)? {
-        if let Some(summary) = build_run_artifact_summary(&entry.path, entry.bytes, &entry.value) {
-            runs.push(summary);
-        }
+    if let Some(runs) = try_list_artifact_catalog_family_blocking(&app, "runs") {
+        return Ok(runs);
     }
-    runs.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
-    Ok(runs)
+    Ok(list_artifact_library_blocking(app)?.runs)
 }
 
 pub(super) fn list_live_session_artifacts_blocking<R: tauri::Runtime>(
@@ -5662,27 +5756,39 @@ pub(super) fn list_live_session_artifacts_blocking<R: tauri::Runtime>(
     Ok(sessions)
 }
 
-pub(super) fn list_meta_artifacts_blocking(
-    app: tauri::AppHandle,
+pub(super) fn list_meta_artifacts_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<Vec<MetaArtifactSummary>, String> {
+    if let Some(meta) = try_list_artifact_catalog_family_blocking(&app, "meta") {
+        return Ok(meta);
+    }
     Ok(list_artifact_library_blocking(app)?.meta)
 }
 
-pub(super) fn list_stage4_artifacts_blocking(
-    app: tauri::AppHandle,
+pub(super) fn list_stage4_artifacts_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<Vec<Stage4ArtifactSummary>, String> {
+    if let Some(stage5) = try_list_artifact_catalog_family_blocking(&app, "stage5") {
+        return Ok(stage5);
+    }
     Ok(list_artifact_library_blocking(app)?.stage5)
 }
 
-pub(super) fn list_stage5_artifacts_blocking(
-    app: tauri::AppHandle,
+pub(super) fn list_stage5_artifacts_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<Vec<Stage5ArtifactSummary>, String> {
+    if let Some(stage5) = try_list_artifact_catalog_family_blocking(&app, "stage5") {
+        return Ok(stage5);
+    }
     Ok(list_artifact_library_blocking(app)?.stage5)
 }
 
-pub(super) fn list_ml_policy_eval_artifacts_blocking(
-    app: tauri::AppHandle,
+pub(super) fn list_ml_policy_eval_artifacts_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<Vec<MlPolicyEvalArtifactSummary>, String> {
+    if let Some(policy_evals) = try_list_artifact_catalog_family_blocking(&app, "policy_evals") {
+        return Ok(policy_evals);
+    }
     Ok(list_artifact_library_blocking(app)?.policy_evals)
 }
 
@@ -5770,6 +5876,7 @@ mod tests {
     use super::super::metric_surface::build_optimization_metric_surface_artifact_value;
     use super::{
         append_live_session_broker_snapshot_blocking, append_live_session_event_blocking,
+        artifact_catalog_db_path, artifact_catalog_fingerprint,
         artifact_retention_env_overrides_from_reader, artifact_retention_policy_for_base,
         artifact_retention_policy_for_base_with_env_overrides, build_meta_artifact_summary,
         build_ml_policy_eval_summary, build_run_artifact_detail_response,
@@ -5781,15 +5888,17 @@ mod tests {
         finalize_live_session_artifact_blocking, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
         is_run_artifact_file_name, is_run_artifact_kind, list_live_session_artifacts_blocking,
-        list_run_artifacts_blocking, load_artifact_value_checked_blocking,
-        load_latest_run_artifact_hydration_blocking, load_latest_run_artifact_summary_blocking,
-        load_live_session_artifact_detail_blocking, load_run_artifact_detail_blocking,
+        list_meta_artifacts_blocking, list_run_artifacts_blocking,
+        load_artifact_value_checked_blocking, load_latest_run_artifact_hydration_blocking,
+        load_latest_run_artifact_summary_blocking, load_live_session_artifact_detail_blocking,
+        load_meta_artifacts_with_paths_blocking, load_run_artifact_detail_blocking,
         normalize_dataset_meta, normalize_run_artifact_value_canonical,
         open_runs_dir_with_revealer, prune_old_meta_artifacts_blocking,
         repair_run_artifact_blocking, resolve_run_artifact_csv_path,
         resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
-        save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
-        update_artifact_tags_blocking,
+        save_run_artifact_blocking, scan_artifact_file_identities_in_dir,
+        suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
+        write_artifact_catalog_snapshot, ArtifactLibrarySnapshot,
     };
     use crate::settings;
     use crate::state::{AppState, BackgroundTaskState};
@@ -6248,6 +6357,41 @@ mod tests {
         assert!(!is_meta_artifact_file_name(
             "vectorgrid_run_2026-03-13.json"
         ));
+    }
+
+    #[test]
+    fn load_meta_artifacts_with_paths_filters_to_meta_file_prefixes() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let runs = runs_dir(&handle).expect("runs dir");
+        std::fs::create_dir_all(&runs).expect("create runs");
+        let meta_path =
+            suggest_meta_artifact_path("2026-04-10T13:00:00Z", &handle).expect("meta path");
+        std::fs::write(
+            &meta_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_meta_selection",
+                "ts": "2026-04-10T13:00:00Z",
+                "report_path": "C:/runs/meta.xlsx"
+            }))
+            .expect("serialize meta"),
+        )
+        .expect("write meta");
+        std::fs::write(
+            runs.join("vectorgrid_run_2026-04-10T13-00-00Z.json"),
+            serde_json::to_vec_pretty(&minimal_run_artifact("2026-04-10T13:00:00Z"))
+                .expect("serialize run"),
+        )
+        .expect("write run");
+
+        let loaded = load_meta_artifacts_with_paths_blocking(&handle).expect("load meta");
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, meta_path);
+        assert_eq!(
+            loaded[0].1.get("kind").and_then(Value::as_str),
+            Some("vectorgrid_meta_selection")
+        );
     }
 
     #[test]
@@ -8702,6 +8846,136 @@ mod tests {
         assert_eq!(runs[0].path, newer.path);
         assert_eq!(runs[1].path, older.path);
         assert!(runs.iter().all(|entry| entry.kind.contains("run_artifact")));
+    }
+
+    #[test]
+    fn list_run_artifacts_blocking_uses_valid_catalog_snapshot() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let saved = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+            None,
+        )
+        .expect("save run");
+        let artifact_path = PathBuf::from(&saved.path);
+        let artifact_value: Value =
+            serde_json::from_slice(&std::fs::read(&artifact_path).expect("read saved artifact"))
+                .expect("parse saved artifact");
+        let summary =
+            build_run_artifact_summary(&artifact_path, saved.bytes as u64, &artifact_value)
+                .expect("summary");
+
+        std::fs::write(&artifact_path, b"{not valid json").expect("corrupt artifact json");
+        let runs = runs_dir(&handle).expect("runs dir");
+        let identities = scan_artifact_file_identities_in_dir(&runs).expect("scan identities");
+        let fingerprint = artifact_catalog_fingerprint(&identities);
+        let catalog_path = artifact_catalog_db_path(&handle).expect("catalog path");
+        write_artifact_catalog_snapshot(
+            &catalog_path,
+            &fingerprint,
+            &ArtifactLibrarySnapshot {
+                runs: vec![summary.clone()],
+                meta: Vec::new(),
+                stage5: Vec::new(),
+                policy_evals: Vec::new(),
+                options_expression: Vec::new(),
+            },
+        )
+        .expect("write catalog");
+        let conn = rusqlite::Connection::open(&catalog_path).expect("open catalog");
+        conn.execute(
+            r#"
+            INSERT INTO artifact_index (path, family, ts, kind, bytes, summary_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            rusqlite::params![
+                "C:/runs/vectorgrid_meta_corrupt.json",
+                "meta",
+                "2026-04-10T13:00:00Z",
+                "vectorgrid_meta_selection",
+                16_i64,
+                "{not valid json"
+            ],
+        )
+        .expect("insert unrelated invalid catalog row");
+        drop(conn);
+
+        let listed = list_run_artifacts_blocking(handle).expect("list via catalog");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, summary.path);
+        assert_eq!(listed[0].ts, "2026-04-10T12:00:00Z");
+    }
+
+    #[test]
+    fn list_meta_artifacts_blocking_uses_valid_catalog_snapshot() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let meta_path =
+            suggest_meta_artifact_path("2026-04-10T13:00:00Z", &handle).expect("meta path");
+        let artifact = json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": "2026-04-10T13:00:00Z",
+            "req": {
+                "strategy_kind": "DoubleMa",
+                "timeframe": "15m",
+                "required_tag": "baseline",
+            },
+            "res": {
+                "groups": [],
+                "artifacts_used": 2,
+                "holdout": { "datasets": 1 }
+            }
+        });
+        std::fs::write(
+            &meta_path,
+            serde_json::to_vec_pretty(&artifact).expect("meta json"),
+        )
+        .expect("write meta artifact");
+        let bytes = std::fs::metadata(&meta_path).expect("meta metadata").len();
+        let summary = build_meta_artifact_summary(&meta_path, bytes, &artifact).expect("summary");
+
+        std::fs::write(&meta_path, b"{not valid json").expect("corrupt meta json");
+        let runs = runs_dir(&handle).expect("runs dir");
+        let identities = scan_artifact_file_identities_in_dir(&runs).expect("scan identities");
+        let fingerprint = artifact_catalog_fingerprint(&identities);
+        let catalog_path = artifact_catalog_db_path(&handle).expect("catalog path");
+        write_artifact_catalog_snapshot(
+            &catalog_path,
+            &fingerprint,
+            &ArtifactLibrarySnapshot {
+                runs: Vec::new(),
+                meta: vec![summary.clone()],
+                stage5: Vec::new(),
+                policy_evals: Vec::new(),
+                options_expression: Vec::new(),
+            },
+        )
+        .expect("write catalog");
+        let conn = rusqlite::Connection::open(&catalog_path).expect("open catalog");
+        conn.execute(
+            r#"
+            INSERT INTO artifact_index (path, family, ts, kind, bytes, summary_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            rusqlite::params![
+                "C:/runs/vectorgrid_run_corrupt.json",
+                "runs",
+                "2026-04-10T12:00:00Z",
+                "vectorgrid_run_artifact",
+                16_i64,
+                "{not valid json"
+            ],
+        )
+        .expect("insert unrelated invalid catalog row");
+        drop(conn);
+
+        let listed = list_meta_artifacts_blocking(handle).expect("list via catalog");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, summary.path);
+        assert_eq!(listed[0].ts, "2026-04-10T13:00:00Z");
     }
 
     #[test]

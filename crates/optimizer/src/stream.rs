@@ -260,30 +260,38 @@ impl StreamAggregator {
         self.num_combos = self.num_combos.saturating_add(1);
         let s = self.score_value(&params, &metrics);
 
-        if let Some(all) = self.all.as_mut() {
-            all.push((params.clone(), metrics.clone()));
-        }
-
         if let Some(h) = self.heatmap.as_mut() {
             h.push(params.fast_len, params.slow_len, s);
+        }
+
+        if let Some(all) = self.all.as_mut() {
+            all.push((params.clone(), metrics.clone()));
         }
 
         let candidate = ScoredCombo {
             score: s,
             tie_index,
-            params: params.clone(),
-            metrics: metrics.clone(),
+            params,
+            metrics,
         };
+
+        if self.top_k == 0 {
+            match self.best.as_ref() {
+                None => {
+                    self.best = Some(candidate);
+                }
+                Some(b) if candidate.cmp(b).is_gt() => self.best = Some(candidate),
+                _ => {}
+            }
+            return;
+        }
+
         match self.best.as_ref() {
             None => {
                 self.best = Some(candidate.clone());
             }
             Some(b) if candidate.cmp(b).is_gt() => self.best = Some(candidate.clone()),
             _ => {}
-        }
-
-        if self.top_k == 0 {
-            return;
         }
 
         let entry = candidate;

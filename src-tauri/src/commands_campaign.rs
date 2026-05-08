@@ -1704,41 +1704,39 @@ fn build_scalar_union_validation_admission_selection(
     requested_policy: ValidationAdmissionPolicy,
     max_candidates: usize,
 ) -> Result<CampaignValidationAdmissionSelection, String> {
+    fn ranked_finite_rows_for_objective(
+        rows: &[CampaignValidationAdmissionRow],
+        objective: CampaignValidationObjective,
+    ) -> Vec<usize> {
+        let mut scored: Vec<(usize, f64)> = Vec::with_capacity(rows.len());
+        for (index, row) in rows.iter().enumerate() {
+            let score = row
+                .metrics
+                .as_ref()
+                .map(|metrics| score_metrics_for_validation_objective(metrics, objective))
+                .unwrap_or(f64::NAN);
+            if score.is_finite() {
+                scored.push((index, score));
+            }
+        }
+        scored.sort_by(|(left_index, left_score), (right_index, right_score)| {
+            if left_score != right_score {
+                return right_score
+                    .partial_cmp(left_score)
+                    .unwrap_or(std::cmp::Ordering::Equal);
+            }
+            rows[*left_index]
+                .input_index
+                .cmp(&rows[*right_index].input_index)
+        });
+        scored.into_iter().map(|(index, _)| index).collect()
+    }
+
     let objectives = collect_scalar_union_objectives(run_req);
-    let mut ordered_heads: Vec<Vec<CampaignValidationAdmissionRow>> = Vec::new();
+    let mut ordered_heads: Vec<Vec<usize>> = Vec::new();
     let mut heads = Vec::new();
     for (index, objective) in objectives.iter().copied().enumerate() {
-        let mut ranked = rows.to_vec();
-        ranked.sort_by(|left, right| {
-            let left_score = left
-                .metrics
-                .as_ref()
-                .map(|metrics| score_metrics_for_validation_objective(metrics, objective))
-                .unwrap_or(f64::NAN);
-            let right_score = right
-                .metrics
-                .as_ref()
-                .map(|metrics| score_metrics_for_validation_objective(metrics, objective))
-                .unwrap_or(f64::NAN);
-            let left_finite = left_score.is_finite();
-            let right_finite = right_score.is_finite();
-            match (left_finite, right_finite) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                (true, true) if left_score != right_score => right_score
-                    .partial_cmp(&left_score)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                _ => left.input_index.cmp(&right.input_index),
-            }
-        });
-        ranked.retain(|row| {
-            row.metrics
-                .as_ref()
-                .map(|metrics| {
-                    score_metrics_for_validation_objective(metrics, objective).is_finite()
-                })
-                .unwrap_or(false)
-        });
+        let ranked = ranked_finite_rows_for_objective(rows, objective);
         if ranked.is_empty() {
             heads.push(ValidationAdmissionHeadProvenance {
                 head: if index == 0 { "primary" } else { "secondary" }.to_string(),
@@ -1768,27 +1766,44 @@ fn build_scalar_union_validation_admission_selection(
     }
 
     let longest_head = ordered_heads.iter().map(Vec::len).max().unwrap_or(0);
-    let mut concatenated = Vec::new();
+    let pre_dedupe_count: usize = ordered_heads.iter().map(Vec::len).sum();
+    let mut selected_rows = Vec::with_capacity(max_candidates.min(rows.len()));
+    let mut seen = HashSet::new();
+    let mut params_keys: Vec<Option<String>> = vec![None; rows.len()];
+    let mut post_dedupe_count = 0usize;
     for rank in 0..longest_head {
         for head_rows in &ordered_heads {
-            if let Some(next) = head_rows.get(rank) {
-                concatenated.push(next.clone());
+            if let Some(row_index) = head_rows.get(rank).copied() {
+                let key = match &params_keys[row_index] {
+                    Some(key) => key.clone(),
+                    None => {
+                        let key = serde_json::to_string(&rows[row_index].params_value)
+                            .map_err(|e| e.to_string())?;
+                        params_keys[row_index] = Some(key.clone());
+                        key
+                    }
+                };
+                if seen.insert(key) {
+                    post_dedupe_count += 1;
+                    if selected_rows.len() < max_candidates {
+                        selected_rows.push(rows[row_index].clone());
+                    }
+                }
             }
         }
     }
-    let deduped = dedupe_validation_admission_rows(&concatenated)?;
-    let post_cap_count = deduped.len().min(max_candidates);
+    let post_cap_count = post_dedupe_count.min(max_candidates);
     let (trimmed_count, trim_ratio, cap_applied) =
-        admission_trim_telemetry(deduped.len(), post_cap_count, max_candidates);
+        admission_trim_telemetry(post_dedupe_count, post_cap_count, max_candidates);
     Ok(CampaignValidationAdmissionSelection {
-        rows: deduped.iter().take(max_candidates).cloned().collect(),
+        rows: selected_rows,
         provenance: ValidationAdmissionProvenance {
             requested_policy,
             applied_policy: ValidationAdmissionPolicy::ScalarUnion,
             source_kind: source_kind.to_string(),
             source_candidate_count: rows.len(),
-            pre_dedupe_count: concatenated.len(),
-            post_dedupe_count: deduped.len(),
+            pre_dedupe_count,
+            post_dedupe_count,
             post_cap_count,
             candidate_cap_limit: max_candidates,
             trimmed_count,
@@ -1817,67 +1832,72 @@ fn build_pareto_frontier_validation_admission_selection(
         );
     }
     let deduped = dedupe_validation_admission_rows(rows)?;
-    let select_evenly_spaced_rows = |source_rows: &[CampaignValidationAdmissionRow],
-                                     keep_count: usize|
-     -> Vec<CampaignValidationAdmissionRow> {
-        if source_rows.len() <= keep_count {
-            return source_rows.to_vec();
-        }
-        if keep_count <= 1 {
-            return source_rows.iter().take(1).cloned().collect();
-        }
-        let mut indices = BTreeSet::new();
-        for slot in 0..keep_count {
-            let raw_index = (slot as f64 * (source_rows.len().saturating_sub(1) as f64))
-                / ((keep_count - 1) as f64);
-            indices.insert(raw_index.round() as usize);
-        }
-        for index in 0..source_rows.len() {
-            if indices.len() >= keep_count {
-                break;
+    let select_evenly_spaced_indices =
+        |source_indices: &[usize], keep_count: usize| -> Vec<usize> {
+            if source_indices.len() <= keep_count {
+                return source_indices.to_vec();
             }
-            indices.insert(index);
-        }
-        indices
-            .into_iter()
-            .take(keep_count)
-            .filter_map(|index| source_rows.get(index).cloned())
-            .collect()
-    };
-    let feasible: Vec<CampaignValidationAdmissionRow> = deduped
+            if keep_count <= 1 {
+                return source_indices.iter().take(1).copied().collect();
+            }
+            let mut indices = BTreeSet::new();
+            for slot in 0..keep_count {
+                let raw_index = (slot as f64 * (source_indices.len().saturating_sub(1) as f64))
+                    / ((keep_count - 1) as f64);
+                indices.insert(raw_index.round() as usize);
+            }
+            for index in 0..source_indices.len() {
+                if indices.len() >= keep_count {
+                    break;
+                }
+                indices.insert(index);
+            }
+            indices
+                .into_iter()
+                .take(keep_count)
+                .filter_map(|index| source_indices.get(index).copied())
+                .collect()
+        };
+    let feasible: Vec<usize> = deduped
         .iter()
-        .filter(|row| row.violation.unwrap_or(0.0) <= 0.0)
-        .cloned()
+        .enumerate()
+        .filter(|(_, row)| row.violation.unwrap_or(0.0) <= 0.0)
+        .map(|(index, _)| index)
         .collect();
-    let infeasible: Vec<CampaignValidationAdmissionRow> = deduped
+    let infeasible: Vec<usize> = deduped
         .iter()
-        .filter(|row| row.violation.unwrap_or(0.0) > 0.0)
-        .cloned()
+        .enumerate()
+        .filter(|(_, row)| row.violation.unwrap_or(0.0) > 0.0)
+        .map(|(index, _)| index)
         .collect();
-    let trimmed_rows = if deduped.len() > max_candidates {
+    let trimmed_indices = if deduped.len() > max_candidates {
         if feasible.len() >= max_candidates {
-            select_evenly_spaced_rows(&feasible, max_candidates)
+            select_evenly_spaced_indices(&feasible, max_candidates)
         } else {
             let mut selected = feasible;
-            selected.extend(select_evenly_spaced_rows(
+            selected.extend(select_evenly_spaced_indices(
                 &infeasible,
                 max_candidates.saturating_sub(selected.len()),
             ));
             selected
         }
     } else {
-        deduped.iter().take(max_candidates).cloned().collect()
+        (0..deduped.len().min(max_candidates)).collect()
     };
+    let selected_rows: Vec<CampaignValidationAdmissionRow> = trimmed_indices
+        .iter()
+        .filter_map(|index| deduped.get(*index).cloned())
+        .collect();
     let trim_note = if deduped.len() > max_candidates {
         Some("pareto_diversity_trim".to_string())
     } else {
         None
     };
-    let post_cap_count = trimmed_rows.len();
+    let post_cap_count = selected_rows.len();
     let (trimmed_count, trim_ratio, cap_applied) =
         admission_trim_telemetry(deduped.len(), post_cap_count, max_candidates);
     Ok(CampaignValidationAdmissionSelection {
-        rows: trimmed_rows.clone(),
+        rows: selected_rows,
         provenance: ValidationAdmissionProvenance {
             requested_policy,
             applied_policy: ValidationAdmissionPolicy::ParetoFrontier,
@@ -2008,6 +2028,24 @@ fn candidate_selection_from_optimization(
         )?,
     };
 
+    let candidate_cap = validation_cfg.max_candidates.max(1);
+    if family == CampaignOptimizationFamily::CompositeMo {
+        let candidates: Vec<Value> = selection
+            .rows
+            .iter()
+            .take(candidate_cap)
+            .map(|row| row.params_value.clone())
+            .collect();
+        if candidates.is_empty() {
+            return Err(
+                "campaign validation could not derive any candidates from optimization output"
+                    .to_string(),
+            );
+        }
+        selection.provenance.post_cap_count = candidates.len();
+        return Ok((candidates, selection.provenance));
+    }
+
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
     for row in &selection.rows {
@@ -2019,7 +2057,7 @@ fn candidate_selection_from_optimization(
         let key = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
         if seen.insert(key) {
             candidates.push(candidate);
-            if candidates.len() >= validation_cfg.max_candidates.max(1) {
+            if candidates.len() >= candidate_cap {
                 break;
             }
         }
@@ -5929,6 +5967,53 @@ mod tests {
             provenance.selection_bias_note.as_deref(),
             Some("candidate_cap_trim")
         );
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[0].get("fast_len").and_then(Value::as_u64),
+            Some(5)
+        );
+        assert_eq!(
+            candidates[1].get("fast_len").and_then(Value::as_u64),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn campaign_scalar_union_admission_counts_full_dedupe_with_duplicate_params() {
+        let run_req = json!({
+            "strategy_kind": "DoubleMa",
+            "strategy": {},
+            "objective": "Sharpe"
+        });
+        let optimization = CampaignOptimizationResult::Backend(sample_backend_result(vec![
+            (sample_params(5, 20), sample_metrics(3.0, 1.0, 1.0, 30.0)),
+            (sample_params(8, 30), sample_metrics(2.0, 4.0, 4.0, 10.0)),
+            (sample_params(5, 20), sample_metrics(2.5, 1.5, 1.5, 31.0)),
+            (sample_params(12, 48), sample_metrics(1.5, 3.0, 3.0, 8.0)),
+        ]));
+        let validation_cfg = ResearchCampaignValidationConfig {
+            max_candidates: 2,
+            admission_policy: ValidationAdmissionPolicy::ScalarUnion,
+            ..ResearchCampaignValidationConfig::default()
+        };
+
+        let (candidates, provenance) = candidate_selection_from_optimization(
+            "DoubleMa",
+            CampaignOptimizationFamily::DoubleLike,
+            &run_req,
+            &optimization,
+            &validation_cfg,
+        )
+        .expect("scalar-union candidates");
+
+        assert_eq!(
+            provenance.applied_policy,
+            ValidationAdmissionPolicy::ScalarUnion
+        );
+        assert_eq!(provenance.pre_dedupe_count, 16);
+        assert_eq!(provenance.post_dedupe_count, 3);
+        assert_eq!(provenance.post_cap_count, 2);
+        assert_eq!(provenance.trimmed_count, 1);
         assert_eq!(candidates.len(), 2);
         assert_eq!(
             candidates[0].get("fast_len").and_then(Value::as_u64),

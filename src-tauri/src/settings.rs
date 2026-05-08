@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 const SETTINGS_FILE: &str = "app_settings.json";
@@ -194,8 +195,9 @@ pub fn load_settings(app_local_data_dir: &Path) -> Result<AppSettings, String> {
     if !try_exists_with_context(&p, "settings file")? {
         return Ok(AppSettings::default());
     }
-    let text = fs::read_to_string(&p).map_err(|e| e.to_string())?;
-    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", p.display()))
+    let file = File::open(&p).map_err(|e| format!("failed to read {}: {e}", p.display()))?;
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader).map_err(|e| format!("failed to parse {}: {e}", p.display()))
 }
 
 pub fn save_settings(app_local_data_dir: &Path, settings: &AppSettings) -> Result<(), String> {

@@ -858,13 +858,13 @@ fn spa_slice_sums_from_slice_stats(
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn summarize_walk_forward_metric_samples_full(
-    mut sharpes: Vec<f64>,
-    mut dds: Vec<f64>,
-    mut pnls: Vec<f64>,
-    mut downside_ratios: Vec<f64>,
-    mut ulcers: Vec<f64>,
-    mut martins: Vec<f64>,
-    mut trades: Vec<u32>,
+    sharpes: Vec<f64>,
+    dds: Vec<f64>,
+    pnls: Vec<f64>,
+    downside_ratios: Vec<f64>,
+    ulcers: Vec<f64>,
+    martins: Vec<f64>,
+    trades: Vec<u32>,
 ) -> WalkForwardStats {
     summarize_walk_forward_metric_samples_rich(
         sharpes,
@@ -13000,10 +13000,171 @@ fn slice_return_sums_for_series(
     slice_bars: usize,
     slices: usize,
 ) -> Vec<f64> {
-    slice_return_stats_for_series(series, start_t, slice_bars, slices)
-        .into_iter()
-        .map(|entry| entry.sum)
-        .collect()
+    match series {
+        CandidateSeries::Composite(series) => {
+            let mut out = vec![0.0; slices];
+            if slices == 0 || slice_bars == 0 {
+                return out;
+            }
+            let end_t = start_t
+                .saturating_add(slice_bars.saturating_mul(slices))
+                .min(series.n);
+            if end_t <= start_t + 1 {
+                return out;
+            }
+
+            let trade_offset = if series.cfg.trade_on_next_bar {
+                1usize
+            } else {
+                0usize
+            };
+            let mut pos: i32 = 0;
+
+            for (slice_idx, slice_start) in (start_t..end_t).step_by(slice_bars).enumerate() {
+                let slice_end = slice_start.saturating_add(slice_bars).min(end_t);
+                for t in slice_start..slice_end {
+                    let t_sig = t.saturating_sub(trade_offset);
+                    let sign = ta_strategies::composite_cpu::composite_desired_position(
+                        series.fast[t_sig],
+                        series.slow[t_sig],
+                        series.halftrend_trend[t_sig],
+                        series.macz_hist[t_sig],
+                        series.ott_prices[t_sig],
+                        series.ott_line[t_sig],
+                        pos,
+                        &series.cfg,
+                        series.signal_mode,
+                    );
+
+                    if sign != pos {
+                        if pos == 0 || sign == 0 {
+                            pos = if sign == 0 { 0 } else { sign };
+                        } else if !series.cfg.allow_flip {
+                            pos = 0;
+                        } else {
+                            pos = sign;
+                        }
+                    }
+
+                    if pos != 0 {
+                        out[slice_idx] += (pos as f64) * series.lr[t].exp_m1();
+                    }
+                }
+            }
+            out
+        }
+        CandidateSeries::Asr(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Vcc(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Vemr(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Rocb(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Vcet(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Mkcs(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Kqsr(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Carm(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Kvdf(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+        CandidateSeries::Cdmc(series) => slice_return_sums_for_desired(
+            series.lr,
+            &series.desired,
+            series.n,
+            start_t,
+            slice_bars,
+            slices,
+        ),
+    }
+}
+
+fn slice_return_sums_for_desired(
+    lr: &[f64],
+    desired: &[i32],
+    n: usize,
+    start_t: usize,
+    slice_bars: usize,
+    slices: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0; slices];
+    if slices == 0 || slice_bars == 0 {
+        return out;
+    }
+    let end_t = start_t
+        .saturating_add(slice_bars.saturating_mul(slices))
+        .min(n);
+    if end_t <= start_t + 1 {
+        return out;
+    }
+
+    for (slice_idx, slice_start) in (start_t..end_t).step_by(slice_bars).enumerate() {
+        let slice_end = slice_start.saturating_add(slice_bars).min(end_t);
+        for t in slice_start..slice_end {
+            let pos = desired.get(t).copied().unwrap_or(0).clamp(-1, 1);
+            if pos != 0 {
+                out[slice_idx] += (pos as f64) * lr[t].exp_m1();
+            }
+        }
+    }
+    out
 }
 
 fn benchmark_slice_returns(
@@ -13020,15 +13181,14 @@ fn benchmark_slice_returns(
     let end_t = start_t
         .saturating_add(slice_bars.saturating_mul(slices))
         .min(lr.len());
-    for t in start_t..end_t {
-        let slice_idx = (t - start_t) / slice_bars;
-        if slice_idx >= slices {
-            break;
+    if matches!(benchmark, SpaBenchmarkKind::Flat) {
+        return out;
+    }
+    for (slice_idx, slice_start) in (start_t..end_t).step_by(slice_bars).enumerate() {
+        let slice_end = slice_start.saturating_add(slice_bars).min(end_t);
+        for value in &lr[slice_start..slice_end] {
+            out[slice_idx] += value.exp_m1();
         }
-        out[slice_idx] += match benchmark {
-            SpaBenchmarkKind::Flat => 0.0,
-            SpaBenchmarkKind::BuyAndHold => lr[t].exp_m1(),
-        };
     }
     out
 }

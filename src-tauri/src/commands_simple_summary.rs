@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri_plugin_dialog::DialogExt;
 
@@ -54,8 +55,21 @@ fn write_simple_summary_markdown(
     if content.trim().is_empty() {
         return Err("summary Markdown must not be empty".to_string());
     }
-    let bytes = format!("{content}\n").into_bytes();
-    std::fs::write(path, &bytes).map_err(|e| {
+    let mut file = std::fs::File::create(path).map_err(|e| {
+        format!(
+            "failed to write Simple summary at {}: {}",
+            path.to_string_lossy(),
+            e
+        )
+    })?;
+    file.write_all(content.as_bytes()).map_err(|e| {
+        format!(
+            "failed to write Simple summary at {}: {}",
+            path.to_string_lossy(),
+            e
+        )
+    })?;
+    file.write_all(b"\n").map_err(|e| {
         format!(
             "failed to write Simple summary at {}: {}",
             path.to_string_lossy(),
@@ -64,7 +78,7 @@ fn write_simple_summary_markdown(
     })?;
     Ok(SaveSimpleSummaryMarkdownResponse {
         path: path.to_string_lossy().to_string(),
-        bytes: bytes.len(),
+        bytes: content.len().saturating_add(1),
     })
 }
 

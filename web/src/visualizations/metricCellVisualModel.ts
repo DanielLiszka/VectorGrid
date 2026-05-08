@@ -112,22 +112,47 @@ export function buildMetricColumnVisualRanges(
   rows: readonly MetricVisualRow[],
 ): Record<string, MetricColumnVisualRange> {
   const ranges: Record<string, MetricColumnVisualRange> = {}
+  const eligible: Array<{
+    key: string
+    role: Exclude<MetricVisualRole, 'status'>
+    sourceIndex: number
+    min: number
+    max: number
+    seen: boolean
+  }> = []
   columns.forEach((column, index) => {
     const key = columnKey(column, index)
     const role = metricColumnVisualRole(key)
     if (!role || role === 'status') return
-    const sourceIndex = sourceIndexFor(column, index)
-    const values = rows
-      .map((row) => parseMetricCellNumber(row.cells[sourceIndex]))
-      .filter((value): value is number => value != null)
-    if (!values.length) return
-    ranges[key] = {
+    eligible.push({
       key,
       role,
-      min: Math.min(...values),
-      max: Math.max(...values),
-    }
+      sourceIndex: sourceIndexFor(column, index),
+      min: Number.POSITIVE_INFINITY,
+      max: Number.NEGATIVE_INFINITY,
+      seen: false,
+    })
   })
+
+  for (const row of rows) {
+    for (const column of eligible) {
+      const value = parseMetricCellNumber(row.cells[column.sourceIndex])
+      if (value == null) continue
+      column.seen = true
+      if (value < column.min) column.min = value
+      if (value > column.max) column.max = value
+    }
+  }
+
+  for (const column of eligible) {
+    if (!column.seen) continue
+    ranges[column.key] = {
+      key: column.key,
+      role: column.role,
+      min: column.min,
+      max: column.max,
+    }
+  }
   return ranges
 }
 

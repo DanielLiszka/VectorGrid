@@ -580,8 +580,19 @@ fn parse_retry_after_ms(value: &str, now: DateTime<Utc>, max_wait_ms: u64) -> Op
 
 fn compact_polygon_options_detail(raw: &str) -> String {
     const MAX_DETAIL_CHARS: usize = 320;
-    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut detail = compact.trim().to_string();
+    let mut detail = String::with_capacity(raw.len().min(MAX_DETAIL_CHARS));
+    for part in raw.split_whitespace() {
+        if part.is_empty() {
+            continue;
+        }
+        if !detail.is_empty() {
+            detail.push(' ');
+        }
+        detail.push_str(part);
+        if detail.len() > MAX_DETAIL_CHARS {
+            break;
+        }
+    }
     if detail.len() > MAX_DETAIL_CHARS {
         detail.truncate(MAX_DETAIL_CHARS);
         detail.push_str("...");

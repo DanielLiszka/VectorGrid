@@ -110,8 +110,8 @@ function firstNestedText(value: unknown, keys: readonly string[]): string {
   const row = value as Record<string, unknown>;
   const direct = firstText(row, keys);
   if (direct) return direct;
-  for (const item of Object.values(row)) {
-    const found = firstNestedText(item, keys);
+  for (const key in row) {
+    const found = firstNestedText(row[key], keys);
     if (found) return found;
   }
   return "";
@@ -121,11 +121,11 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function candidateArrays(
+function candidateArrayEntries(
   row: Record<string, unknown> | null,
-): Record<string, unknown> {
-  if (!row) return {};
-  const out: Record<string, unknown> = {};
+): Array<[string, unknown]> {
+  if (!row) return [];
+  const out: Array<[string, unknown]> = [];
   for (const key of [
     "top",
     "candidates",
@@ -134,7 +134,7 @@ function candidateArrays(
     "results",
   ]) {
     const items = asArray(row[key]);
-    if (items.length > 0) out[key] = items;
+    if (items.length > 0) out.push([key, items]);
   }
   return out;
 }
@@ -243,7 +243,7 @@ export function buildCurrentRunPortfolioSource(
     ["stage_completions", run.stageCompletions],
     ["run_req", runReq],
     ["run_res", runRes],
-    ...Object.entries(candidateArrays(runRes)),
+    ...candidateArrayEntries(runRes),
   ]);
   return {
     id: `current-run:${text(run.artifactPath) || text(run.ts) || "latest"}`,
@@ -295,7 +295,7 @@ export function buildCurrentValidationPortfolioSource(
     ["run_res", runRes],
     ["validation_req", validationReq],
     ["validation_res", validationRes],
-    ...Object.entries(candidateArrays(validationRes)),
+    ...candidateArrayEntries(validationRes),
   ]);
   return {
     id: `current-validation:${text(run?.artifactPath) || text(validation.ts) || "latest"}`,
@@ -338,8 +338,8 @@ export function buildSavedRunPortfolioSource(
     ["run_res", runRes],
     ["validation_req", validationReq],
     ["validation_res", validationRes],
-    ...Object.entries(candidateArrays(runRes)),
-    ...Object.entries(candidateArrays(validationRes)),
+    ...candidateArrayEntries(runRes),
+    ...candidateArrayEntries(validationRes),
   ]);
   if (!artifactPath && !hasKeys(runRes) && !hasKeys(validationRes)) return null;
   return {

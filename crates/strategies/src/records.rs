@@ -161,9 +161,14 @@ impl TradeRecords {
         let mut out: Vec<Trade> = Vec::new();
         for i in 0..self.len() {
             if self.col[i] == col {
-                if let Some(r) = self.get(i) {
-                    out.push(r.to_trade());
-                }
+                out.push(Trade {
+                    entry_t: self.entry_t[i] as usize,
+                    exit_t: self.exit_t[i] as usize,
+                    direction: self.direction[i],
+                    pnl: self.pnl[i],
+                    bars: self.bars[i],
+                    open: self.open[i],
+                });
             }
         }
         out

@@ -54,6 +54,22 @@ describe('metricCellVisualModel', () => {
     expect(ranges.name).toBeUndefined()
   })
 
+  it('skips metric ranges when no numeric cell values are present', () => {
+    const ranges = buildMetricColumnVisualRanges(
+      [
+        { key: 'pnl', label: 'PnL' },
+        { key: 'gate', label: 'Gate' },
+      ],
+      [
+        { cells: [{ text: '—' }, { text: 'pass' }] },
+        { cells: [{ text: 'not numeric' }, { text: 'warn' }] },
+      ],
+    )
+
+    expect(ranges.pnl).toBeUndefined()
+    expect(ranges.gate).toBeUndefined()
+  })
+
   it('resolves bar and status badge visuals from existing cell payloads', () => {
     const ranges = buildMetricColumnVisualRanges(
       [

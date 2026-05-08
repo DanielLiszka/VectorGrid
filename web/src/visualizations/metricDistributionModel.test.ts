@@ -47,6 +47,42 @@ describe('metricDistributionModel', () => {
     ])
   })
 
+  it('keeps option order with late numeric cells and source-column indirection', () => {
+    expect(metricDistributionOptions(
+      [
+        { key: 'rank', label: 'Rank' },
+        { key: 'pnl', label: 'PnL' },
+        { key: 'gate', label: 'Gate' },
+        { key: 'score', label: 'Score', sourceColumnIndex: 4 },
+        { key: 'omega', label: 'Omega', sourceColumnIndex: 5 },
+        { key: 'calmar', label: 'Calmar' },
+      ],
+      [
+        {
+          cells: [
+            { text: '1' },
+            { text: '-' },
+            { text: 'pass' },
+            { text: 'display only' },
+            { text: '-' },
+          ],
+        },
+        {
+          cells: [
+            { text: '2' },
+            { text: '7' },
+            { text: 'fail' },
+            { text: 'display only' },
+            { text: '0.91' },
+          ],
+        },
+      ],
+    )).toEqual([
+      { key: 'pnl', label: 'PnL' },
+      { key: 'score', label: 'Score' },
+    ])
+  })
+
   it('keeps a valid current metric before preferred fallbacks', () => {
     const options = metricDistributionOptions(columns, rows)
     expect(chooseMetricDistributionKey(options, ['pnl'], 'max_dd')).toBe('max_dd')

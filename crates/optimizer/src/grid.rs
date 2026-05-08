@@ -36,42 +36,48 @@ pub fn grid_search<E: BacktestEngine>(
     let mut best_idx = 0usize;
     let mut best_score = score(&metrics[0], objective);
 
-    for (i, m) in metrics.iter().enumerate().skip(1) {
-        let s = score(m, objective);
-        if compare_score_rank_desc(s, i, best_score, best_idx).is_lt() {
-            best_score = s;
-            best_idx = i;
+    let (top, top_scores) = if top_k == 0 {
+        for (i, metrics) in metrics.iter().enumerate().skip(1) {
+            let s = score(metrics, objective);
+            if compare_score_rank_desc(s, i, best_score, best_idx).is_lt() {
+                best_score = s;
+                best_idx = i;
+            }
         }
-    }
+        (Vec::new(), Vec::new())
+    } else {
+        let scores: Vec<f64> = metrics.iter().map(|m| score(m, objective)).collect();
+        best_score = scores[0];
+        for (i, &s) in scores.iter().enumerate().skip(1) {
+            if compare_score_rank_desc(s, i, best_score, best_idx).is_lt() {
+                best_score = s;
+                best_idx = i;
+            }
+        }
+        let keep = top_k.min(metrics.len());
+        let mut idx: Vec<usize> = (0..metrics.len()).collect();
+        if keep < idx.len() {
+            idx.select_nth_unstable_by(keep, |&a, &b| {
+                compare_score_rank_desc(scores[a], a, scores[b], b)
+            });
+            idx.truncate(keep);
+        }
+        idx.sort_by(|&a, &b| compare_score_rank_desc(scores[a], a, scores[b], b));
+        let top_scores = idx.iter().map(|&i| scores[i]).collect();
+        let top = idx
+            .into_iter()
+            .map(|i| (combos[i].clone(), metrics[i].clone()))
+            .collect();
+        (top, top_scores)
+    };
 
     let best_params = combos[best_idx].clone();
     let best_metrics = metrics[best_idx].clone();
-
-    let top = if top_k == 0 {
-        Vec::new()
-    } else {
-        let mut idx: Vec<usize> = (0..metrics.len()).collect();
-
-        idx.sort_by(|&a, &b| {
-            let sa = score(&metrics[a], objective);
-            let sb = score(&metrics[b], objective);
-            compare_score_rank_desc(sa, a, sb, b)
-        });
-        idx.truncate(top_k.min(metrics.len()));
-        idx.into_iter()
-            .map(|i| (combos[i].clone(), metrics[i].clone()))
-            .collect()
-    };
     let all = if include_all {
-        Some(combos.iter().cloned().zip(metrics.into_iter()).collect())
+        Some(combos.iter().cloned().zip(metrics).collect())
     } else {
         None
     };
-
-    let top_scores = top
-        .iter()
-        .map(|(_, metrics)| score(metrics, objective))
-        .collect();
 
     Some(OptimizationResult {
         best_params,

@@ -22,11 +22,18 @@ export async function installMockedTauri(context, options = {}) {
     ...DEFAULT_COMMAND_RESULTS,
     ...(options.commandResults ?? {}),
   }
-  await context.addInitScript(({ hold, emitEvents, holdKey, strictInvoke, results }) => {
+  const commandDelays = options.commandDelays ?? {}
+  await context.addInitScript(({ hold, emitEvents, holdKey, strictInvoke, results, delays }) => {
     const handlers = {}
     const callbacks = {}
     const invokeLog = []
+    const invokeLogEntries = []
     let nextCallbackId = 1
+    const nowMs = () => (
+      globalThis.performance && typeof globalThis.performance.now === 'function'
+        ? globalThis.performance.now()
+        : Date.now()
+    )
 
     const addListener = (event, callbackId) => {
       if (!handlers[event]) handlers[event] = []
@@ -55,28 +62,58 @@ export async function installMockedTauri(context, options = {}) {
         removeListener(event, callbackId)
       }
     }
+    const waitForCommandDelay = async (command) => {
+      const delayMs = Math.max(0, Number((delays || {})[command] || 0))
+      if (delayMs > 0) {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, delayMs))
+      }
+      return delayMs
+    }
 
     const invoke = async (command, args = {}) => {
       const key = String(command ?? '')
       invokeLog.push(key)
-      if (key === 'plugin:event|listen') {
-        return addListener(String(args.event || ''), Number(args.handler))
+      let clonedArgs = args
+      try {
+        clonedArgs = JSON.parse(JSON.stringify(args ?? {}))
+      } catch {
       }
-      if (key === 'plugin:event|unlisten') {
-        removeListener(String(args.event || ''), Number(args.eventId))
+      const entry = {
+        command: key,
+        args: clonedArgs,
+        startedAtMs: Number(nowMs().toFixed(3)),
+        endedAtMs: null,
+        durationMs: null,
+        delayedMs: 0,
+      }
+      invokeLogEntries.push(entry)
+      let delayedMs = 0
+      try {
+        if (key === 'plugin:event|listen') {
+          return addListener(String(args.event || ''), Number(args.handler))
+        }
+        if (key === 'plugin:event|unlisten') {
+          removeListener(String(args.event || ''), Number(args.eventId))
+          return null
+        }
+        if (key === 'plugin:event|emit') {
+          emitEvent(String(args.event || ''), args.payload)
+          return null
+        }
+        if (Object.prototype.hasOwnProperty.call(results, key)) {
+          delayedMs = await waitForCommandDelay(key)
+          return results[key]
+        }
+        if (strictInvoke) {
+          throw new Error(`Unexpected mocked Tauri invoke: ${key}`)
+        }
         return null
+      } finally {
+        const endedAtMs = nowMs()
+        entry.delayedMs = delayedMs
+        entry.endedAtMs = Number(endedAtMs.toFixed(3))
+        entry.durationMs = Number((endedAtMs - entry.startedAtMs).toFixed(3))
       }
-      if (key === 'plugin:event|emit') {
-        emitEvent(String(args.event || ''), args.payload)
-        return null
-      }
-      if (Object.prototype.hasOwnProperty.call(results, key)) {
-        return results[key]
-      }
-      if (strictInvoke) {
-        throw new Error(`Unexpected mocked Tauri invoke: ${key}`)
-      }
-      return null
     }
     const transformCallback = (cb) => {
       const id = nextCallbackId++
@@ -121,12 +158,14 @@ export async function installMockedTauri(context, options = {}) {
       window.__VTA_TEST_EMIT = emitEvent
     }
     window.__VTA_TEST_INVOKES = invokeLog
+    window.__VTA_TEST_INVOKE_LOG = invokeLogEntries
   }, {
     hold: holdStartupOverlay,
     emitEvents: emitTestEvents,
     holdKey: 'VTA_STARTUP_OVERLAY_HOLD',
     strictInvoke: strictUnknownInvoke,
     results: commandResults,
+    delays: commandDelays,
   })
 }
 

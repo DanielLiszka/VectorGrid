@@ -23,8 +23,8 @@ use crate::options_types::{
     OptionsTupleSpec, SignalSide,
 };
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
+use std::collections::hash_map::{DefaultHasher, Entry};
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -586,7 +586,7 @@ fn assign_splits(
         }
         OptionsSplitAssignmentMode::SessionChronological => {
             let mut ordered_sessions: Vec<String> = Vec::new();
-            let mut session_index_by_key = BTreeMap::<String, usize>::new();
+            let mut session_index_by_key = HashMap::<String, usize>::new();
             let mut event_session_indices = Vec::with_capacity(events.len());
             for event in &events {
                 let key = event
@@ -600,13 +600,14 @@ fn assign_splits(
                             event.earliest_tradable_timestamp.div_euclid(DAY_MS)
                         )
                     });
-                let next_index = if let Some(existing) = session_index_by_key.get(&key) {
-                    *existing
-                } else {
-                    let index = ordered_sessions.len();
-                    ordered_sessions.push(key.clone());
-                    session_index_by_key.insert(key, index);
-                    index
+                let next_index = match session_index_by_key.entry(key) {
+                    Entry::Occupied(entry) => *entry.get(),
+                    Entry::Vacant(entry) => {
+                        let index = ordered_sessions.len();
+                        ordered_sessions.push(entry.key().clone());
+                        entry.insert(index);
+                        index
+                    }
                 };
                 event_session_indices.push(next_index);
             }
@@ -658,17 +659,18 @@ fn validation_session_key(event: &OptionsSignalEvent) -> String {
 
 fn ordered_validation_session_indices(events: &[OptionsSignalEvent]) -> (Vec<String>, Vec<usize>) {
     let mut ordered_sessions: Vec<String> = Vec::new();
-    let mut session_index_by_key = BTreeMap::<String, usize>::new();
+    let mut session_index_by_key = HashMap::<String, usize>::new();
     let mut event_session_indices = Vec::with_capacity(events.len());
     for event in events {
         let key = validation_session_key(event);
-        let next_index = if let Some(existing) = session_index_by_key.get(&key) {
-            *existing
-        } else {
-            let index = ordered_sessions.len();
-            ordered_sessions.push(key.clone());
-            session_index_by_key.insert(key, index);
-            index
+        let next_index = match session_index_by_key.entry(key) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let index = ordered_sessions.len();
+                ordered_sessions.push(entry.key().clone());
+                entry.insert(index);
+                index
+            }
         };
         event_session_indices.push(next_index);
     }
@@ -679,21 +681,19 @@ fn refresh_prepared_split_diagnostics(
     prepared: &mut PreparedOptionsExpressionRun,
     dataset: &ImportedOptionsDataset,
 ) {
-    prepared.diagnostics.search_events = prepared
-        .events
-        .iter()
-        .filter(|event| event.fold == OptionsEvaluationSplit::Search)
-        .count();
-    prepared.diagnostics.holdout_events = prepared
-        .events
-        .iter()
-        .filter(|event| event.fold == OptionsEvaluationSplit::Holdout)
-        .count();
-    prepared.diagnostics.sealed_test_events = prepared
-        .events
-        .iter()
-        .filter(|event| event.fold == OptionsEvaluationSplit::SealedTest)
-        .count();
+    let mut search_events = 0usize;
+    let mut holdout_events = 0usize;
+    let mut sealed_test_events = 0usize;
+    for event in &prepared.events {
+        match event.fold {
+            OptionsEvaluationSplit::Search => search_events += 1,
+            OptionsEvaluationSplit::Holdout => holdout_events += 1,
+            OptionsEvaluationSplit::SealedTest => sealed_test_events += 1,
+        }
+    }
+    prepared.diagnostics.search_events = search_events;
+    prepared.diagnostics.holdout_events = holdout_events;
+    prepared.diagnostics.sealed_test_events = sealed_test_events;
     prepared.overlap_window =
         build_overlap_window_summary(&prepared.events, &prepared.diagnostics, dataset);
 }
@@ -1995,67 +1995,97 @@ fn return_on_premium_mean_and_volatility(
     (mean_return_on_premium, variance.sqrt())
 }
 
+#[derive(Debug, Default)]
+struct MetricsAccumulator {
+    event_count: usize,
+    valid_trades: usize,
+    total_pnl: f64,
+    total_premium: f64,
+    wins: usize,
+    sum_return_on_premium: f64,
+    sumsq_return_on_premium: f64,
+    returns: Vec<f64>,
+}
+
+impl MetricsAccumulator {
+    fn record_event(&mut self) {
+        self.event_count += 1;
+    }
+
+    fn record_outcome(&mut self, outcome: &TradeOutcome) {
+        self.valid_trades += 1;
+        self.total_pnl += outcome.pnl_per_contract;
+        self.total_premium += outcome.premium_paid;
+        if outcome.pnl_per_contract > 0.0 {
+            self.wins += 1;
+        }
+        let return_on_premium = outcome.return_on_premium;
+        self.sum_return_on_premium += return_on_premium;
+        self.sumsq_return_on_premium += return_on_premium * return_on_premium;
+        self.returns.push(return_on_premium);
+    }
+
+    fn finish(self) -> OptionsExpressionMetrics {
+        if self.event_count == 0 {
+            return OptionsExpressionMetrics::default();
+        }
+        let valid_trades = self.valid_trades;
+        let invalid_events = self.event_count.saturating_sub(valid_trades);
+        if valid_trades == 0 {
+            return OptionsExpressionMetrics {
+                valid_trades,
+                invalid_events,
+                invalid_rate: invalid_events as f64 / self.event_count as f64,
+                expectancy_per_trade: 0.0,
+                expectancy_per_premium: 0.0,
+                mean_return_on_premium: 0.0,
+                return_volatility_on_premium: 0.0,
+                median_return_on_premium: 0.0,
+                win_rate: 0.0,
+                total_pnl_per_contract: 0.0,
+            };
+        }
+
+        let (mean_return_on_premium, return_volatility_on_premium) =
+            return_on_premium_mean_and_volatility(
+                self.sum_return_on_premium,
+                self.sumsq_return_on_premium,
+                valid_trades,
+            );
+
+        OptionsExpressionMetrics {
+            valid_trades,
+            invalid_events,
+            invalid_rate: invalid_events as f64 / self.event_count as f64,
+            expectancy_per_trade: self.total_pnl / valid_trades as f64,
+            expectancy_per_premium: if self.total_premium > 0.0 {
+                self.total_pnl / self.total_premium
+            } else {
+                0.0
+            },
+            mean_return_on_premium,
+            return_volatility_on_premium,
+            median_return_on_premium: median(self.returns),
+            win_rate: self.wins as f64 / valid_trades as f64,
+            total_pnl_per_contract: self.total_pnl,
+        }
+    }
+}
+
+#[cfg(test)]
 fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpressionMetrics {
     if event_count == 0 {
         return OptionsExpressionMetrics::default();
     }
-    let valid_trades = outcomes.len();
-    let invalid_events = event_count.saturating_sub(valid_trades);
-    if valid_trades == 0 {
-        return OptionsExpressionMetrics {
-            valid_trades,
-            invalid_events,
-            invalid_rate: invalid_events as f64 / event_count as f64,
-            expectancy_per_trade: 0.0,
-            expectancy_per_premium: 0.0,
-            mean_return_on_premium: 0.0,
-            return_volatility_on_premium: 0.0,
-            median_return_on_premium: 0.0,
-            win_rate: 0.0,
-            total_pnl_per_contract: 0.0,
-        };
-    }
-
-    let mut total_pnl = 0.0;
-    let mut total_premium = 0.0;
-    let mut wins = 0usize;
-    let mut sum_return_on_premium = 0.0;
-    let mut sumsq_return_on_premium = 0.0;
-    let mut returns = Vec::with_capacity(valid_trades);
+    let mut acc = MetricsAccumulator {
+        event_count,
+        returns: Vec::with_capacity(outcomes.len()),
+        ..MetricsAccumulator::default()
+    };
     for outcome in outcomes {
-        total_pnl += outcome.pnl_per_contract;
-        total_premium += outcome.premium_paid;
-        if outcome.pnl_per_contract > 0.0 {
-            wins += 1;
-        }
-        let return_on_premium = outcome.return_on_premium;
-        sum_return_on_premium += return_on_premium;
-        sumsq_return_on_premium += return_on_premium * return_on_premium;
-        returns.push(return_on_premium);
+        acc.record_outcome(outcome);
     }
-    let (mean_return_on_premium, return_volatility_on_premium) =
-        return_on_premium_mean_and_volatility(
-            sum_return_on_premium,
-            sumsq_return_on_premium,
-            valid_trades,
-        );
-
-    OptionsExpressionMetrics {
-        valid_trades,
-        invalid_events,
-        invalid_rate: invalid_events as f64 / event_count as f64,
-        expectancy_per_trade: total_pnl / valid_trades as f64,
-        expectancy_per_premium: if total_premium > 0.0 {
-            total_pnl / total_premium
-        } else {
-            0.0
-        },
-        mean_return_on_premium,
-        return_volatility_on_premium,
-        median_return_on_premium: median(returns),
-        win_rate: wins as f64 / valid_trades as f64,
-        total_pnl_per_contract: total_pnl,
-    }
+    acc.finish()
 }
 
 #[derive(Clone, Debug)]
@@ -2118,6 +2148,28 @@ struct StructuralCandidateCache {
     invalid_reasons: Vec<Option<OptionsCandidateInvalidReason>>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct AxisBucketCoverageAccumulator {
+    slot_count: usize,
+    valid_slot_count: usize,
+    invalid_reasons: BTreeMap<OptionsCandidateInvalidReason, usize>,
+}
+
+impl AxisBucketCoverageAccumulator {
+    fn observe(&mut self, valid: bool, reason: Option<OptionsCandidateInvalidReason>) {
+        self.slot_count += 1;
+        if valid {
+            self.valid_slot_count += 1;
+        } else if let Some(reason) = reason {
+            *self.invalid_reasons.entry(reason).or_default() += 1;
+        }
+    }
+
+    fn invalid_slot_count(&self) -> usize {
+        self.slot_count.saturating_sub(self.valid_slot_count)
+    }
+}
+
 impl StructuralCandidateCache {
     fn candidate(
         &self,
@@ -2148,25 +2200,12 @@ impl StructuralCandidateCache {
         for reason in self.invalid_reasons.iter().flatten() {
             *counts.entry(*reason).or_default() += 1;
         }
-        counts
-            .into_iter()
-            .map(|(reason, count)| OptionsCandidateInvalidReasonCount { reason, count })
-            .collect()
+        Self::invalid_reason_counts_from_map(counts)
     }
 
-    fn invalid_reason_counts_for_slots<I>(
-        &self,
-        slot_indexes: I,
-    ) -> Vec<OptionsCandidateInvalidReasonCount>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        let mut counts: BTreeMap<OptionsCandidateInvalidReason, usize> = BTreeMap::new();
-        for slot_index in slot_indexes {
-            if let Some(reason) = self.invalid_reasons.get(slot_index).copied().flatten() {
-                *counts.entry(reason).or_default() += 1;
-            }
-        }
+    fn invalid_reason_counts_from_map(
+        counts: BTreeMap<OptionsCandidateInvalidReason, usize>,
+    ) -> Vec<OptionsCandidateInvalidReasonCount> {
         counts
             .into_iter()
             .map(|(reason, count)| OptionsCandidateInvalidReasonCount { reason, count })
@@ -2183,41 +2222,38 @@ impl StructuralCandidateCache {
         let dte_len = self.axis.dte_days.len();
         let moneyness_len = self.axis.moneyness_buckets.len();
 
+        let mut delay_acc = vec![AxisBucketCoverageAccumulator::default(); delay_len];
+        let mut dte_acc = vec![AxisBucketCoverageAccumulator::default(); dte_len];
+        let mut moneyness_acc = vec![AxisBucketCoverageAccumulator::default(); moneyness_len];
+        for event_index in 0..event_count {
+            let mut slot_index = event_index * per_event;
+            for delay_bucket in delay_acc.iter_mut().take(delay_len) {
+                for dte_bucket in dte_acc.iter_mut().take(dte_len) {
+                    for moneyness_bucket in moneyness_acc.iter_mut().take(moneyness_len) {
+                        let valid = self.slots.get(slot_index).copied().flatten().is_some();
+                        let reason = self.invalid_reasons.get(slot_index).copied().flatten();
+                        delay_bucket.observe(valid, reason);
+                        dte_bucket.observe(valid, reason);
+                        moneyness_bucket.observe(valid, reason);
+                        slot_index += 1;
+                    }
+                }
+            }
+        }
+
         let delay_minutes = self
             .axis
             .delay_minutes
             .iter()
             .copied()
-            .enumerate()
-            .map(|(delay_index, delay_minutes)| {
-                let mut valid_slot_count = 0usize;
-                let mut invalid_slot_indexes = Vec::new();
-                for event_index in 0..event_count {
-                    for dte_index in 0..dte_len {
-                        for moneyness_index in 0..moneyness_len {
-                            let slot_index = self.axis.slot_index(
-                                event_index,
-                                delay_index,
-                                dte_index,
-                                moneyness_index,
-                            );
-                            if self.slots.get(slot_index).copied().flatten().is_some() {
-                                valid_slot_count += 1;
-                            } else {
-                                invalid_slot_indexes.push(slot_index);
-                            }
-                        }
-                    }
-                }
-                let slot_count = event_count * dte_len * moneyness_len;
-                OptionsDelayBucketCoverage {
-                    delay_minutes,
-                    slot_count,
-                    valid_slot_count,
-                    invalid_slot_count: slot_count.saturating_sub(valid_slot_count),
-                    valid_rate: ratio_or_zero(valid_slot_count, slot_count),
-                    invalid_reasons: self.invalid_reason_counts_for_slots(invalid_slot_indexes),
-                }
+            .zip(delay_acc)
+            .map(|(delay_minutes, acc)| OptionsDelayBucketCoverage {
+                delay_minutes,
+                slot_count: acc.slot_count,
+                valid_slot_count: acc.valid_slot_count,
+                invalid_slot_count: acc.invalid_slot_count(),
+                valid_rate: ratio_or_zero(acc.valid_slot_count, acc.slot_count),
+                invalid_reasons: Self::invalid_reason_counts_from_map(acc.invalid_reasons),
             })
             .collect();
 
@@ -2226,36 +2262,14 @@ impl StructuralCandidateCache {
             .dte_days
             .iter()
             .copied()
-            .enumerate()
-            .map(|(dte_index, dte_days)| {
-                let mut valid_slot_count = 0usize;
-                let mut invalid_slot_indexes = Vec::new();
-                for event_index in 0..event_count {
-                    for delay_index in 0..delay_len {
-                        for moneyness_index in 0..moneyness_len {
-                            let slot_index = self.axis.slot_index(
-                                event_index,
-                                delay_index,
-                                dte_index,
-                                moneyness_index,
-                            );
-                            if self.slots.get(slot_index).copied().flatten().is_some() {
-                                valid_slot_count += 1;
-                            } else {
-                                invalid_slot_indexes.push(slot_index);
-                            }
-                        }
-                    }
-                }
-                let slot_count = event_count * delay_len * moneyness_len;
-                OptionsDteBucketCoverage {
-                    dte_days,
-                    slot_count,
-                    valid_slot_count,
-                    invalid_slot_count: slot_count.saturating_sub(valid_slot_count),
-                    valid_rate: ratio_or_zero(valid_slot_count, slot_count),
-                    invalid_reasons: self.invalid_reason_counts_for_slots(invalid_slot_indexes),
-                }
+            .zip(dte_acc)
+            .map(|(dte_days, acc)| OptionsDteBucketCoverage {
+                dte_days,
+                slot_count: acc.slot_count,
+                valid_slot_count: acc.valid_slot_count,
+                invalid_slot_count: acc.invalid_slot_count(),
+                valid_rate: ratio_or_zero(acc.valid_slot_count, acc.slot_count),
+                invalid_reasons: Self::invalid_reason_counts_from_map(acc.invalid_reasons),
             })
             .collect();
 
@@ -2264,36 +2278,14 @@ impl StructuralCandidateCache {
             .moneyness_buckets
             .iter()
             .copied()
-            .enumerate()
-            .map(|(moneyness_index, moneyness_bucket)| {
-                let mut valid_slot_count = 0usize;
-                let mut invalid_slot_indexes = Vec::new();
-                for event_index in 0..event_count {
-                    for delay_index in 0..delay_len {
-                        for dte_index in 0..dte_len {
-                            let slot_index = self.axis.slot_index(
-                                event_index,
-                                delay_index,
-                                dte_index,
-                                moneyness_index,
-                            );
-                            if self.slots.get(slot_index).copied().flatten().is_some() {
-                                valid_slot_count += 1;
-                            } else {
-                                invalid_slot_indexes.push(slot_index);
-                            }
-                        }
-                    }
-                }
-                let slot_count = event_count * delay_len * dte_len;
-                OptionsMoneynessBucketCoverage {
-                    moneyness_bucket,
-                    slot_count,
-                    valid_slot_count,
-                    invalid_slot_count: slot_count.saturating_sub(valid_slot_count),
-                    valid_rate: ratio_or_zero(valid_slot_count, slot_count),
-                    invalid_reasons: self.invalid_reason_counts_for_slots(invalid_slot_indexes),
-                }
+            .zip(moneyness_acc)
+            .map(|(moneyness_bucket, acc)| OptionsMoneynessBucketCoverage {
+                moneyness_bucket,
+                slot_count: acc.slot_count,
+                valid_slot_count: acc.valid_slot_count,
+                invalid_slot_count: acc.invalid_slot_count(),
+                valid_rate: ratio_or_zero(acc.valid_slot_count, acc.slot_count),
+                invalid_reasons: Self::invalid_reason_counts_from_map(acc.invalid_reasons),
             })
             .collect();
 
@@ -2423,7 +2415,15 @@ fn compile_tuple_grid(
     candidate_axis: &CandidateAxis,
     exit_axis: &ExitAxis,
 ) -> Vec<CompiledTupleSpec> {
-    let mut tuples = Vec::new();
+    let tuple_count = candidate_axis
+        .delay_minutes
+        .len()
+        .saturating_mul(candidate_axis.dte_days.len())
+        .saturating_mul(candidate_axis.moneyness_buckets.len())
+        .saturating_mul(exit_axis.hold_minutes.len())
+        .saturating_mul(exit_axis.target_values.len())
+        .saturating_mul(exit_axis.stop_values.len());
+    let mut tuples = Vec::with_capacity(tuple_count);
     for (delay_index, delay_minutes) in candidate_axis.delay_minutes.iter().copied().enumerate() {
         for (dte_index, dte_days) in candidate_axis.dte_days.iter().copied().enumerate() {
             for (moneyness_index, moneyness_bucket) in
@@ -4478,6 +4478,11 @@ fn compile_exit_summary_cache(
         let per_hold = target_prices.len() * stop_prices.len();
         debug_assert_eq!(candidate_outcomes.len(), axis.hold_minutes.len() * per_hold);
         let forced_expiry_cutoff = contract.expiration_timestamp_ms.saturating_sub(MINUTE_MS);
+        let eod_cutoff = matches!(
+            axis.exit_template,
+            OptionsExitTemplateFamily::EndOfDayOrTargetStop
+        )
+        .then(|| resolve_eod_cutoff(contract_rows, entry_index));
         let mut hold_cutoffs = Vec::with_capacity(axis.hold_minutes.len());
         let mut max_cutoff_index = entry_index;
         for (hold_index, hold_minutes) in axis.hold_minutes.iter().copied().enumerate() {
@@ -4487,7 +4492,7 @@ fn compile_exit_summary_cache(
                     entry_row.timestamp_ms + i64::from(hold_minutes) * MINUTE_MS
                 }
                 OptionsExitTemplateFamily::EndOfDayOrTargetStop => {
-                    resolve_eod_cutoff(contract_rows, entry_index)
+                    eod_cutoff.unwrap_or(entry_row.timestamp_ms)
                 }
                 OptionsExitTemplateFamily::BaseExitOrTargetStop => {
                     event.base_exit_timestamp.unwrap_or_else(|| {
@@ -4782,32 +4787,28 @@ fn evaluate_compiled_tuple_for_split(
     candidate_cache: &StructuralCandidateCache,
     exit_summary_cache: &ExitSummaryCache,
 ) -> OptionsExpressionMetrics {
-    let mut split_event_count = 0usize;
-    let mut outcomes: Vec<TradeOutcome> = Vec::new();
+    let mut acc = MetricsAccumulator::default();
     for (event_index, event) in events.iter().enumerate() {
         if event.fold != split {
             continue;
         }
-        split_event_count += 1;
+        acc.record_event();
         let candidate_slot_index = candidate_cache.candidate_slot_index(
             event_index,
             tuple.delay_index,
             tuple.dte_index,
             tuple.moneyness_index,
         );
-        if let Some(outcome) = exit_summary_cache
-            .outcome(
-                candidate_slot_index,
-                tuple.hold_index,
-                tuple.target_index,
-                tuple.stop_index,
-            )
-            .cloned()
-        {
-            outcomes.push(outcome);
+        if let Some(outcome) = exit_summary_cache.outcome(
+            candidate_slot_index,
+            tuple.hold_index,
+            tuple.target_index,
+            tuple.stop_index,
+        ) {
+            acc.record_outcome(outcome);
         }
     }
-    compute_metrics(split_event_count, &outcomes)
+    acc.finish()
 }
 
 fn evaluate_median_return_on_premium_for_split(
@@ -4849,13 +4850,12 @@ fn evaluate_exact_stress_for_split(
     price_semantics: OptionsPriceSemantics,
     stress_mode: AggregateStressMode,
 ) -> OptionsExpressionMetrics {
-    let mut split_event_count = 0usize;
-    let mut outcomes: Vec<TradeOutcome> = Vec::new();
+    let mut acc = MetricsAccumulator::default();
     for (event_index, event) in events.iter().enumerate() {
         if event.fold != split {
             continue;
         }
-        split_event_count += 1;
+        acc.record_event();
         let Some(candidate) = candidate_cache.candidate(
             event_index,
             tuple.delay_index,
@@ -4872,10 +4872,10 @@ fn evaluate_exact_stress_for_split(
             price_semantics,
             stress_mode,
         ) {
-            outcomes.push(outcome);
+            acc.record_outcome(&outcome);
         }
     }
-    compute_metrics(split_event_count, &outcomes)
+    acc.finish()
 }
 
 fn robust_score(

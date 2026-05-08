@@ -276,20 +276,6 @@ pub struct ValidationExecutionProfile {
     pub gpu_result_materialization_wall_ms: Option<u64>,
 }
 
-impl ValidationExecutionProfile {
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    fn from_candidate_keys(candidate_keys: &[String]) -> Self {
-        Self {
-            requested_candidates: candidate_keys.len(),
-            unique_candidates: candidate_keys
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            ..Self::default()
-        }
-    }
-}
-
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 #[derive(Clone)]
 struct PreparedHybridPrecomputedMa {
@@ -480,6 +466,12 @@ fn compute_gpu_walk_forward_stats_for_candidates(
     }
     unique_window_starts.sort_unstable();
     unique_window_starts.dedup();
+    let range_index_by_start: HashMap<usize, usize> = unique_window_starts
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(idx, start)| (start, idx))
+        .collect();
 
     let ranges: Vec<(usize, usize)> = unique_window_starts
         .iter()
@@ -490,32 +482,55 @@ fn compute_gpu_walk_forward_stats_for_candidates(
 
     let mut out = Vec::with_capacity(req.candidates.len());
     for (idx, cand) in req.candidates.iter().enumerate() {
-        let mut sharpes = Vec::new();
-        let mut dds = Vec::new();
-        let mut pnls = Vec::new();
-        let mut downside_ratios = Vec::new();
-        let mut ulcers = Vec::new();
-        let mut martins = Vec::new();
-        let mut underwater_fracs = Vec::new();
-        let mut underwater_durations = Vec::new();
-        let mut trades = Vec::new();
-        let mut intervals = Vec::new();
-        for &t0 in &candidate_windows[idx] {
-            let range_idx = unique_window_starts
-                .binary_search(&t0)
-                .map_err(|_| format!("missing GPU walk-forward range for window start {t0}"))?;
-            let combo_idx = *plan
-                .pair_to_idx
-                .get(&(cand.fast_len, cand.slow_len))
-                .ok_or_else(|| {
-                    format!(
-                        "GPU walk-forward validation missing pair index for ({}, {})",
-                        cand.fast_len, cand.slow_len
-                    )
-                })?;
+        let windows = candidate_windows
+            .get(idx)
+            .ok_or_else(|| format!("missing GPU walk-forward windows for candidate index {idx}"))?;
+        let window_count = windows.len();
+        let mut sharpes = Vec::with_capacity(window_count);
+        let mut dds = Vec::with_capacity(window_count);
+        let mut pnls = Vec::with_capacity(window_count);
+        let mut downside_ratios = Vec::with_capacity(window_count);
+        let mut ulcers = Vec::with_capacity(window_count);
+        let mut martins = Vec::with_capacity(window_count);
+        let mut underwater_fracs = Vec::with_capacity(window_count);
+        let mut underwater_durations = Vec::with_capacity(window_count);
+        let mut trades = Vec::with_capacity(window_count);
+        let mut bars_covered = 0usize;
+        let mut merged_start = 0usize;
+        let mut merged_end = 0usize;
+        let mut has_merged_interval = false;
+        let mut effective_windows_upper_bound = 0usize;
+        let mut last_disjoint_end = 0usize;
+        let combo_idx = *plan
+            .pair_to_idx
+            .get(&(cand.fast_len, cand.slow_len))
+            .ok_or_else(|| {
+                format!(
+                    "GPU walk-forward validation missing pair index for ({}, {})",
+                    cand.fast_len, cand.slow_len
+                )
+            })?;
+        for &t0 in windows {
+            let range_idx = *range_index_by_start
+                .get(&t0)
+                .ok_or_else(|| format!("missing GPU walk-forward range for window start {t0}"))?;
             let metric = dense.metric(range_idx, combo_idx);
             let end = t0.saturating_add(window).min(n);
-            intervals.push((t0, end));
+            if !has_merged_interval {
+                merged_start = t0;
+                merged_end = end;
+                has_merged_interval = true;
+            } else if t0 <= merged_end {
+                merged_end = merged_end.max(end);
+            } else {
+                bars_covered = bars_covered.saturating_add(merged_end.saturating_sub(merged_start));
+                merged_start = t0;
+                merged_end = end;
+            }
+            if effective_windows_upper_bound == 0 || t0 >= last_disjoint_end {
+                effective_windows_upper_bound = effective_windows_upper_bound.saturating_add(1);
+                last_disjoint_end = end;
+            }
             sharpes.push(metric.sharpe);
             dds.push(metric.max_dd);
             pnls.push(metric.pnl);
@@ -530,12 +545,13 @@ fn compute_gpu_walk_forward_stats_for_candidates(
             underwater_durations.push(metric.max_underwater_duration_bars);
             trades.push(metric.trades);
         }
+        if has_merged_interval {
+            bars_covered = bars_covered.saturating_add(merged_end.saturating_sub(merged_start));
+        }
         out.push(WalkForwardStats {
             windows: sharpes.len(),
-            effective_windows_upper_bound: Some(
-                crate::validation_pipeline::max_pairwise_disjoint_interval_count(&intervals),
-            ),
-            bars_covered: Some(crate::validation_pipeline::merged_interval_len(&intervals)),
+            effective_windows_upper_bound: Some(effective_windows_upper_bound),
+            bars_covered: Some(bars_covered),
             sharpe_median: crate::stats_common::median_in_place(&mut sharpes),
             sharpe_worst: crate::stats_common::worst_min(&sharpes),
             max_dd_median: crate::stats_common::median_in_place(&mut dds),
@@ -779,8 +795,16 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
 fn build_validation_execution_profile_from_candidates(
     candidates: &[DoubleMaValidationParams],
 ) -> Result<ValidationExecutionProfile, String> {
-    let candidate_keys: Result<Vec<_>, _> = candidates.iter().map(canonical_json_key).collect();
-    let mut profile = ValidationExecutionProfile::from_candidate_keys(&candidate_keys?);
+    let mut unique_candidate_keys =
+        std::collections::HashSet::with_capacity(candidates.len().saturating_mul(2));
+    for candidate in candidates {
+        unique_candidate_keys.insert(canonical_json_key(candidate)?);
+    }
+    let mut profile = ValidationExecutionProfile {
+        requested_candidates: candidates.len(),
+        unique_candidates: unique_candidate_keys.len(),
+        ..ValidationExecutionProfile::default()
+    };
     profile.unique_fast_periods = candidates
         .iter()
         .map(|candidate| candidate.fast_len)
@@ -903,7 +927,8 @@ fn prepare_gpu_validation_plan(
     let mut pair_to_idx = HashMap::with_capacity(candidates.len().saturating_mul(2));
     let mut combos = Vec::with_capacity(candidates.len());
     let mut start_ts = Vec::with_capacity(candidates.len());
-    let mut candidate_keys = Vec::with_capacity(candidates.len());
+    let mut candidate_keys =
+        std::collections::HashSet::with_capacity(candidates.len().saturating_mul(2));
 
     for cand in candidates {
         if cand.fast_ma_type.trim().to_ascii_lowercase() != fast_ma_type
@@ -938,7 +963,7 @@ fn prepare_gpu_validation_plan(
             ));
         }
 
-        candidate_keys.push(canonical_json_key(cand)?);
+        candidate_keys.insert(canonical_json_key(cand)?);
         fast_periods.push(cand.fast_len);
         slow_periods.push(cand.slow_len);
         let pair = (cand.fast_len, cand.slow_len);
@@ -989,9 +1014,9 @@ fn prepare_gpu_validation_plan(
         .map(|values| {
             let regime_first_valid = first_finite_idx(values)
                 .ok_or_else(|| "regime trend series all non-finite".to_string())?;
-            crate::gpu_backtest_kernel::upload_host_regime_filter(
+            crate::gpu_backtest_kernel::upload_host_regime_filter_f64(
                 device_id,
-                &values.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+                values,
                 regime_first_valid.max(shared_gate.regime_first_valid.unwrap_or(0)),
             )
             .map(Rc::new)
@@ -1081,10 +1106,7 @@ fn prepare_gpu_validation_plan(
         slow_alma_sigma,
         device_regime_filter,
         hybrid_precomputed,
-        unique_candidates: candidate_keys
-            .iter()
-            .collect::<std::collections::HashSet<_>>()
-            .len(),
+        unique_candidates: candidate_keys.len(),
         evaluated_pairs_on_device,
     })
 }
@@ -2245,10 +2267,74 @@ fn slice_return_sums_for_series(
     slice_bars: usize,
     slices: usize,
 ) -> Vec<f64> {
-    slice_return_stats_for_series(series, start_t, slice_bars, slices)
-        .into_iter()
-        .map(|entry| entry.sum)
-        .collect()
+    let mut out = vec![0.0; slices];
+    if slices == 0 || slice_bars == 0 {
+        return out;
+    }
+
+    let end_t = start_t
+        .saturating_add(slice_bars.saturating_mul(slices))
+        .min(series.n);
+    if end_t <= start_t + 1 {
+        return out;
+    }
+
+    let trade_offset = if series.cfg.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+    let mut pos: i32 = 0;
+
+    for (slice_idx, slice_start) in (start_t..end_t).step_by(slice_bars).enumerate() {
+        let slice_end = slice_start.saturating_add(slice_bars).min(end_t);
+        for t in slice_start..slice_end {
+            let t_sig = t.saturating_sub(trade_offset);
+            let f = series.fast[t_sig];
+            let s = series.slow[t_sig];
+
+            let mut sign: i32 = 0;
+            if f.is_finite() && s.is_finite() {
+                let eps = if series.cfg.eps_rel > 0.0 {
+                    series.cfg.eps_rel * 1.0_f64.max(s.abs())
+                } else {
+                    0.0
+                };
+                sign = (f > s + eps) as i32 - (f < s - eps) as i32;
+                if series.cfg.long_only && sign < 0 {
+                    sign = 0;
+                }
+            }
+
+            if let Some(ht) = series.halftrend_trend.as_ref() {
+                let v = ht[t_sig];
+                if !v.is_finite() {
+                    sign = 0;
+                } else if v < 0.5 {
+                    sign = sign.max(0);
+                } else {
+                    sign = sign.min(0);
+                }
+            }
+
+            if sign != pos {
+                if pos == 0 || sign == 0 {
+                    pos = if sign == 0 { 0 } else { sign };
+                } else if !series.cfg.allow_flip {
+                    pos = 0;
+                } else {
+                    pos = sign;
+                }
+            }
+
+            let lr_t = series.lr[t];
+            if pos != 0 {
+                out[slice_idx] += (pos as f64) * lr_t.exp_m1();
+            }
+        }
+    }
+
+    out
 }
 
 const DEFAULT_REGIME_SLICE_VOL_WINDOW: usize = 48;
@@ -3639,15 +3725,14 @@ fn benchmark_slice_returns(
     let end_t = start_t
         .saturating_add(slice_bars.saturating_mul(slices))
         .min(lr.len());
-    for t in start_t..end_t {
-        let slice_idx = (t - start_t) / slice_bars;
-        if slice_idx >= slices {
-            break;
+    if matches!(benchmark, SpaBenchmarkKind::Flat) {
+        return out;
+    }
+    for (slice_idx, slice_start) in (start_t..end_t).step_by(slice_bars).enumerate() {
+        let slice_end = slice_start.saturating_add(slice_bars).min(end_t);
+        for value in &lr[slice_start..slice_end] {
+            out[slice_idx] += value.exp_m1();
         }
-        out[slice_idx] += match benchmark {
-            SpaBenchmarkKind::Flat => 0.0,
-            SpaBenchmarkKind::BuyAndHold => lr[t].exp_m1(),
-        };
     }
     out
 }

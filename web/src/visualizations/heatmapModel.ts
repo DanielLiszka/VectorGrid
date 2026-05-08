@@ -48,6 +48,21 @@ export interface HeatmapDisplayModel {
   multiSampleCellCount: number
 }
 
+const HEATMAP_NEIGHBOR_OFFSETS_CARDINAL: ReadonlyArray<readonly [number, number]> = [
+  [0, -1],
+  [0, 1],
+  [-1, 0],
+  [1, 0],
+]
+
+const HEATMAP_NEIGHBOR_OFFSETS_ALL: ReadonlyArray<readonly [number, number]> = [
+  ...HEATMAP_NEIGHBOR_OFFSETS_CARDINAL,
+  [-1, -1],
+  [-1, 1],
+  [1, -1],
+  [1, 1],
+]
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 }
@@ -144,12 +159,26 @@ export function heatmapQuantile(sorted: number[], p: number): number {
 
 export function resolveHeatmapRange(values: number[]): HeatmapRange {
   if (!values.length) return { min: -1, max: 1, label: 'zero-centered' }
-  const magnitudes = values.map((value) => Math.abs(value)).sort((a, b) => a - b)
-  const maxAbs = Math.max(
-    1e-12,
-    heatmapQuantile(magnitudes, 0.98),
-    magnitudes[magnitudes.length - 1] ?? 1,
-  )
+  let maxAbs = 1e-12
+  for (const value of values) {
+    const magnitude = Math.abs(value)
+    if (Number.isNaN(magnitude) || magnitude > maxAbs) {
+      maxAbs = magnitude
+    }
+  }
+  return { min: -maxAbs, max: maxAbs, label: 'zero-centered' }
+}
+
+export function resolveNullableHeatmapRange(values: Array<number | null>): HeatmapRange {
+  let maxAbs = 1e-12
+  let count = 0
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    count += 1
+    const magnitude = Math.abs(value)
+    if (magnitude > maxAbs) maxAbs = magnitude
+  }
+  if (!count) return { min: -1, max: 1, label: 'zero-centered' }
   return { min: -maxAbs, max: maxAbs, label: 'zero-centered' }
 }
 
@@ -220,20 +249,10 @@ export function heatmapSampleCountAt(
 }
 
 export function heatmapNeighborOffsets(includeDiagonals = false): Array<[number, number]> {
-  const offsets: Array<[number, number]> = [
-    [0, -1],
-    [0, 1],
-    [-1, 0],
-    [1, 0],
-  ]
-  if (!includeDiagonals) return offsets
-  offsets.push(
-    [-1, -1],
-    [-1, 1],
-    [1, -1],
-    [1, 1],
-  )
-  return offsets
+  const offsets = includeDiagonals
+    ? HEATMAP_NEIGHBOR_OFFSETS_ALL
+    : HEATMAP_NEIGHBOR_OFFSETS_CARDINAL
+  return offsets.map(([rowOffset, colOffset]) => [rowOffset, colOffset])
 }
 
 export function heatmapNeighborValues(
@@ -242,11 +261,15 @@ export function heatmapNeighborValues(
   col: number,
   includeDiagonals = false,
 ): number[] {
-  return heatmapNeighborOffsets(includeDiagonals)
-    .map(([rowOffset, colOffset]) =>
-      heatmapValueAt(model, logicalRow + rowOffset, col + colOffset),
-    )
-    .filter((value): value is number => typeof value === 'number')
+  const offsets = includeDiagonals
+    ? HEATMAP_NEIGHBOR_OFFSETS_ALL
+    : HEATMAP_NEIGHBOR_OFFSETS_CARDINAL
+  const out: number[] = []
+  for (const [rowOffset, colOffset] of offsets) {
+    const value = heatmapValueAt(model, logicalRow + rowOffset, col + colOffset)
+    if (typeof value === 'number') out.push(value)
+  }
+  return out
 }
 
 export function labelDerivedPlateau(
@@ -266,26 +289,42 @@ export function buildDerivedPlateauSurface(
   model: HeatmapModel,
   options: { higherIsBetter: boolean },
 ): DerivedPlateauSurface {
-  const out = model.values.map(() => null as number | null)
-  const diagnostics = model.values.map(
-    () => null as HeatmapPlateauCellDiagnostics | null,
-  )
-  const finite = finiteHeatmapValues(model)
-  if (!finite.length) {
+  const out = Array<number | null>(model.values.length).fill(null)
+  const diagnostics = Array<HeatmapPlateauCellDiagnostics | null>(
+    model.values.length,
+  ).fill(null)
+  let surfaceMin = Number.POSITIVE_INFINITY
+  let surfaceMax = Number.NEGATIVE_INFINITY
+  let finiteCount = 0
+  for (const value of model.values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    finiteCount += 1
+    if (value < surfaceMin) surfaceMin = value
+    if (value > surfaceMax) surfaceMax = value
+  }
+  if (!finiteCount) {
     return { values: out, diagnostics, multiSampleCellCount: 0 }
   }
   const { higherIsBetter } = options
-  const surfaceMin = Math.min(...finite)
-  const surfaceMax = Math.max(...finite)
   const meritDenom = Math.max(1.0e-9, surfaceMax - surfaceMin)
   let multiSampleCellCount = 0
+  const neighbors: number[] = []
+  const localValues: number[] = []
 
   for (let logicalRow = 0; logicalRow < model.binsSlow; logicalRow += 1) {
     for (let col = 0; col < model.binsFast; col += 1) {
       const base = heatmapValueAt(model, logicalRow, col)
       if (base == null) continue
       const idx = heatmapIndex(model, logicalRow, col)
-      const neighbors = heatmapNeighborValues(model, logicalRow, col, true)
+      neighbors.length = 0
+      localValues.length = 0
+      localValues.push(base)
+      for (const [rowOffset, colOffset] of HEATMAP_NEIGHBOR_OFFSETS_ALL) {
+        const value = heatmapValueAt(model, logicalRow + rowOffset, col + colOffset)
+        if (value == null) continue
+        neighbors.push(value)
+        localValues.push(value)
+      }
       if (!neighbors.length) {
         out[idx] = 0
         diagnostics[idx] = {
@@ -300,11 +339,10 @@ export function buildDerivedPlateauSurface(
         continue
       }
 
-      const localValues = [base, ...neighbors]
-      const localSorted = [...localValues].sort((a, b) => a - b)
-      const localMedian = heatmapQuantile(localSorted, 0.5)
-      const localMin = localSorted[0] ?? base
-      const localMax = localSorted[localSorted.length - 1] ?? base
+      localValues.sort((a, b) => a - b)
+      const localMedian = heatmapQuantile(localValues, 0.5)
+      const localMin = localValues[0] ?? base
+      const localMax = localValues[localValues.length - 1] ?? base
       const localSpan = Math.abs(localMax - localMin)
       const scoreScale = Math.max(localSpan, meritDenom * 0.1, 1.0e-9)
       const supportTolerance = Math.max(localSpan * 0.75, meritDenom * 0.06, 1.0e-9)
@@ -324,38 +362,40 @@ export function buildDerivedPlateauSurface(
       const peakStability = 1 / (1 + peakDelta / scoreScale)
       const scoreStability = 0.6 * medianStability + 0.4 * peakStability
       const availableNeighbors = neighbors.length
-      const supportWeights = neighbors.map((value) => {
+      let supportiveNeighbors = 0
+      let supportWeightSum = 0
+      let roughnessSum = 0
+      for (const value of neighbors) {
         const adverseDelta = higherIsBetter
           ? Math.max(0, base - value)
           : Math.max(0, value - base)
-        return 1 / (1 + adverseDelta / supportTolerance)
-      })
-      const supportiveNeighbors = supportWeights.filter((weight) => weight >= 0.5).length
+        const weight = 1 / (1 + adverseDelta / supportTolerance)
+        supportWeightSum += weight
+        if (weight >= 0.5) supportiveNeighbors += 1
+        const delta = value - base
+        roughnessSum += delta * delta
+      }
       const supportStrength =
-        supportWeights.reduce((sum, value) => sum + value, 0) /
-        Math.max(1, supportWeights.length)
-      const roughnessRmsDelta = Math.sqrt(
-        neighbors.reduce((sum, value) => {
-          const delta = value - base
-          return sum + delta * delta
-        }, 0) / neighbors.length,
-      )
+        supportWeightSum / Math.max(1, neighbors.length)
+      const roughnessRmsDelta = Math.sqrt(roughnessSum / neighbors.length)
       const roughnessStability = 1 / (1 + roughnessRmsDelta / scoreScale)
 
-      const curvatureTerms: number[] = []
+      let curvaturePenaltySum = 0
+      let curvaturePenaltyCount = 0
       const left = heatmapValueAt(model, logicalRow, col - 1)
       const right = heatmapValueAt(model, logicalRow, col + 1)
       if (left != null && right != null) {
-        curvatureTerms.push(Math.abs(base - (left + right) / 2))
+        curvaturePenaltySum += Math.abs(base - (left + right) / 2)
+        curvaturePenaltyCount += 1
       }
       const up = heatmapValueAt(model, logicalRow - 1, col)
       const down = heatmapValueAt(model, logicalRow + 1, col)
       if (up != null && down != null) {
-        curvatureTerms.push(Math.abs(base - (up + down) / 2))
+        curvaturePenaltySum += Math.abs(base - (up + down) / 2)
+        curvaturePenaltyCount += 1
       }
-      const curvaturePenalty = curvatureTerms.length
-        ? curvatureTerms.reduce((sum, value) => sum + value, 0) /
-          curvatureTerms.length
+      const curvaturePenalty = curvaturePenaltyCount
+        ? curvaturePenaltySum / curvaturePenaltyCount
         : scoreScale
       const curvatureStability = 1 / (1 + curvaturePenalty / scoreScale)
       const sampleCount = heatmapSampleCountAt(model, logicalRow, col)
@@ -430,7 +470,7 @@ export function resolveHeatmapDisplayModel(options: {
 
   return {
     values: model.values,
-    range: resolveHeatmapRange(finiteHeatmapValues(model)),
+    range: resolveNullableHeatmapRange(model.values),
     palette: heatmapPalette(mode),
     label: heatmapDisplayLabel(mode, objectiveLabel),
     legendNote: heatmapLegendNote(mode),

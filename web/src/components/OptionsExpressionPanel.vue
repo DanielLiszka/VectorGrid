@@ -728,19 +728,23 @@ function buildValidationRegretRow(
   candidateExpectancies: Array<number | null>,
 ): ValidationInterpretationValueRow | null {
   if (selectedExpectancy == null) return null;
-  const comparators = candidateExpectancies
-    .filter((value): value is number => value != null)
-    .map((value) => Number(value))
-    .filter((value) => Number.isFinite(value));
-  if (comparators.length < 2) return null;
   const selected = Number(selectedExpectancy);
   if (!Number.isFinite(selected)) return null;
-  const best = Math.max(...comparators);
+  let best = Number.NEGATIVE_INFINITY;
+  let comparatorCount = 0;
+  for (const value of candidateExpectancies) {
+    if (value == null) continue;
+    const candidate = Number(value);
+    if (!Number.isFinite(candidate)) continue;
+    comparatorCount += 1;
+    if (candidate > best) best = candidate;
+  }
+  if (comparatorCount < 2) return null;
   return {
     key,
     label,
     value: formatOptionalDecimal(best - selected),
-    detail: `Best scope EV ${formatOptionalDecimal(best)} across ${comparators.length} scope row${comparators.length === 1 ? "" : "s"}.`,
+    detail: `Best scope EV ${formatOptionalDecimal(best)} across ${comparatorCount} scope row${comparatorCount === 1 ? "" : "s"}.`,
     scopeLabel,
   };
 }
@@ -903,13 +907,15 @@ function buildArtifactLaneDisagreementRows(
               Number(entry.validation) > Number(best.validation) ? entry : best,
             )
           : null;
-      const validationValues = validationRows.map((entry) =>
-        Number(entry.validation),
-      );
+      let validationMin = Number.POSITIVE_INFINITY;
+      let validationMax = Number.NEGATIVE_INFINITY;
+      for (const entry of validationRows) {
+        const value = Number(entry.validation);
+        if (value < validationMin) validationMin = value;
+        if (value > validationMax) validationMax = value;
+      }
       const validationSpread =
-        validationValues.length >= 2
-          ? Math.max(...validationValues) - Math.min(...validationValues)
-          : null;
+        validationRows.length >= 2 ? validationMax - validationMin : null;
       const driftLabel = validationWinner
         ? validationWinner.lane === selectionWinner.lane
           ? "Aligned"
@@ -1662,29 +1668,66 @@ const rootMismatch = computed(() => {
 });
 
 const activeRows = computed(() => activeRankedResults.value);
-const hasHoldoutMetrics = computed(() =>
-  activeRows.value.some((row) => row.holdoutMetrics != null),
+const activeMetricAvailability = computed(() => {
+  const availability = {
+    hasHoldoutMetrics: false,
+    hasSealedMetrics: false,
+    hasStressMetrics: false,
+    hasSealedStressMetrics: false,
+    hasHarsherStressMetrics: false,
+    hasSealedHarsherStressMetrics: false,
+    hasExtremeStressMetrics: false,
+    hasSealedExtremeStressMetrics: false,
+  };
+  for (const row of activeRows.value) {
+    availability.hasHoldoutMetrics ||= row.holdoutMetrics != null;
+    availability.hasSealedMetrics ||= row.sealedEvaluationMetrics != null;
+    availability.hasStressMetrics ||= row.stressMetrics != null;
+    availability.hasSealedStressMetrics ||= row.sealedStressMetrics != null;
+    availability.hasHarsherStressMetrics ||= row.harsherStressMetrics != null;
+    availability.hasSealedHarsherStressMetrics ||=
+      row.sealedHarsherStressMetrics != null;
+    availability.hasExtremeStressMetrics ||= row.extremeStressMetrics != null;
+    availability.hasSealedExtremeStressMetrics ||=
+      row.sealedExtremeStressMetrics != null;
+    if (
+      availability.hasHoldoutMetrics &&
+      availability.hasSealedMetrics &&
+      availability.hasStressMetrics &&
+      availability.hasSealedStressMetrics &&
+      availability.hasHarsherStressMetrics &&
+      availability.hasSealedHarsherStressMetrics &&
+      availability.hasExtremeStressMetrics &&
+      availability.hasSealedExtremeStressMetrics
+    ) {
+      break;
+    }
+  }
+  return availability;
+});
+const hasHoldoutMetrics = computed(
+  () => activeMetricAvailability.value.hasHoldoutMetrics,
 );
-const hasSealedMetrics = computed(() =>
-  activeRows.value.some((row) => row.sealedEvaluationMetrics != null),
+const hasSealedMetrics = computed(
+  () => activeMetricAvailability.value.hasSealedMetrics,
 );
-const hasStressMetrics = computed(() =>
-  activeRows.value.some((row) => row.stressMetrics != null),
+const hasStressMetrics = computed(
+  () => activeMetricAvailability.value.hasStressMetrics,
 );
-const hasSealedStressMetrics = computed(() =>
-  activeRows.value.some((row) => row.sealedStressMetrics != null),
+const hasSealedStressMetrics = computed(
+  () => activeMetricAvailability.value.hasSealedStressMetrics,
 );
-const hasHarsherStressMetrics = computed(() =>
-  activeRows.value.some((row) => row.harsherStressMetrics != null),
+const hasHarsherStressMetrics = computed(
+  () => activeMetricAvailability.value.hasHarsherStressMetrics,
 );
-const hasSealedHarsherStressMetrics = computed(() =>
-  activeRows.value.some((row) => row.sealedHarsherStressMetrics != null),
+const hasSealedHarsherStressMetrics = computed(
+  () => activeMetricAvailability.value.hasSealedHarsherStressMetrics,
 );
-const hasExtremeStressMetrics = computed(() =>
-  activeRows.value.some((row) => row.extremeStressMetrics != null),
+const hasExtremeStressMetrics = computed(
+  () => activeMetricAvailability.value.hasExtremeStressMetrics,
 );
-const hasSealedExtremeStressMetrics = computed(() =>
-  activeRows.value.some((row) => row.sealedExtremeStressMetrics != null),
+const hasSealedExtremeStressMetrics = computed(
+  () => activeMetricAvailability.value.hasSealedExtremeStressMetrics,
 );
 const selectedTupleIndex = ref(0);
 const inspectionSplitFilter = ref<"all" | "search" | "holdout" | "sealed_test">(

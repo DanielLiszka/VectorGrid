@@ -35,6 +35,13 @@ interface MatrixCellPayload {
   title: string;
 }
 
+interface SortableCellKey {
+  value: string;
+  numericValue: number;
+  numeric: boolean;
+  missing: boolean;
+}
+
 export interface MatrixColumnMeta {
   alignLeft: boolean;
   columnKey: string;
@@ -76,9 +83,14 @@ export interface MatrixHeaderSortState {
 
 export const MIN_MATRIX_COLUMN_WIDTH_PX = 48;
 export const MAX_MATRIX_COLUMN_WIDTH_PX = 960;
+const EMPTY_MATRIX_CELL: MatrixCellPayload = Object.freeze({
+  text: "",
+  className: "",
+  title: "",
+}) as MatrixCellPayload;
 
 function fallbackCell(): MatrixCellPayload {
-  return { text: "", className: "", title: "" };
+  return EMPTY_MATRIX_CELL;
 }
 
 export function normalizeMatrixColumnWidthPx(value: unknown): number | null {
@@ -94,7 +106,10 @@ function normalizeMatrixSortDirection(value: unknown): MatrixSortDirection {
   return value === "asc" || value === "desc" ? value : "";
 }
 
-function resolveColumnKey(column: MatrixColumnLike, columnIndex: number): string {
+function resolveColumnKey(
+  column: MatrixColumnLike,
+  columnIndex: number,
+): string {
   return String(column.key || "").trim() || `col_${columnIndex}`;
 }
 
@@ -142,23 +157,37 @@ function firstColumnSortState(
   return null;
 }
 
-function compareCellPayloads(
-  left: MatrixCellPayload,
-  right: MatrixCellPayload,
-): number {
-  const leftValue = String(left.title || left.text || "").trim();
-  const rightValue = String(right.title || right.text || "").trim();
-  if (!leftValue && !rightValue) return 0;
-  if (!leftValue) return 1;
-  if (!rightValue) return -1;
+function sortableCellKey(cell: MatrixCellPayload): SortableCellKey {
+  const value = String(cell.title || cell.text || "").trim();
+  if (!value) {
+    return {
+      value,
+      numericValue: Number.NaN,
+      numeric: false,
+      missing: true,
+    };
+  }
+  const numericValue = Number(value.replace(/[$,%]/g, ""));
+  return {
+    value,
+    numericValue,
+    numeric: Number.isFinite(numericValue),
+    missing: false,
+  };
+}
 
-  const leftNumber = Number(leftValue.replace(/[$,%]/g, ""));
-  const rightNumber = Number(rightValue.replace(/[$,%]/g, ""));
-  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-    return leftNumber - rightNumber;
+function compareSortableCellKeys(
+  left: SortableCellKey,
+  right: SortableCellKey,
+): number {
+  if (left.missing && right.missing) return 0;
+  if (left.missing) return 1;
+  if (right.missing) return -1;
+  if (left.numeric && right.numeric) {
+    return left.numericValue - right.numericValue;
   }
 
-  return leftValue.localeCompare(rightValue, undefined, {
+  return left.value.localeCompare(right.value, undefined, {
     numeric: true,
     sensitivity: "base",
   });
@@ -181,6 +210,20 @@ export function useHeadlessMatrixTable<
   const activeSortState = computed(
     () => clientSortOverride.value ?? localSortState.value,
   );
+  const columnMetaByKey = computed(() => {
+    const out = new Map<string, ResolvedMatrixColumnMeta>();
+    for (
+      let columnIndex = 0;
+      columnIndex < columns.value.length;
+      columnIndex += 1
+    ) {
+      const column = columns.value[columnIndex];
+      if (!column) continue;
+      const meta = resolveMatrixColumnMeta(column, columnIndex);
+      out.set(meta.columnKey, meta);
+    }
+    return out;
+  });
 
   const columnDefs = computed<ColumnDef<TRow, MatrixCellPayload>[]>(() =>
     columns.value.map((column, columnIndex) => {
@@ -193,7 +236,11 @@ export function useHeadlessMatrixTable<
         sortable: sortable.value,
       };
       if (persistedWidthPx != null) metaOptions.widthPx = persistedWidthPx;
-      const resolvedMeta = resolveMatrixColumnMeta(column, columnIndex, metaOptions);
+      const resolvedMeta = resolveMatrixColumnMeta(
+        column,
+        columnIndex,
+        metaOptions,
+      );
       const columnMeta = {
         ...resolvedMeta,
         sort: overrideSort
@@ -206,7 +253,8 @@ export function useHeadlessMatrixTable<
       const columnDef: ColumnDef<TRow, MatrixCellPayload> = {
         id: columnMeta.columnKey,
         header: columnMeta.columnLabel,
-        accessorFn: (row) => row.cells[columnMeta.sourceColumnIndex] ?? fallbackCell(),
+        accessorFn: (row) =>
+          row.cells[columnMeta.sourceColumnIndex] ?? fallbackCell(),
         meta: columnMeta satisfies MatrixColumnMeta,
         enableSorting: columnMeta.sortable,
         minSize: MIN_MATRIX_COLUMN_WIDTH_PX,
@@ -223,20 +271,26 @@ export function useHeadlessMatrixTable<
     if (!options?.enableClientSorting) return rows.value;
     const sortState = activeSortState.value;
     if (!sortState) return rows.value;
-    const columnMeta = columns.value
-      .map((column, columnIndex) => resolveMatrixColumnMeta(column, columnIndex))
-      .find((meta) => meta.columnKey === sortState.columnKey);
+    const columnMeta = columnMetaByKey.value.get(sortState.columnKey);
     if (!columnMeta) return rows.value;
     const directionMultiplier = sortState.direction === "asc" ? 1 : -1;
     return rows.value
-      .map((row, sourceIndex) => ({ row, sourceIndex }))
+      .map((row, sourceIndex) => ({
+        row,
+        sourceIndex,
+        sortKey: sortableCellKey(
+          row.cells[columnMeta.sourceColumnIndex] ?? fallbackCell(),
+        ),
+      }))
       .sort((left, right) => {
-        const leftCell =
-          left.row.cells[columnMeta.sourceColumnIndex] ?? fallbackCell();
-        const rightCell =
-          right.row.cells[columnMeta.sourceColumnIndex] ?? fallbackCell();
+        const comparedBase = compareSortableCellKeys(
+          left.sortKey,
+          right.sortKey,
+        );
         const compared =
-          compareCellPayloads(leftCell, rightCell) * directionMultiplier;
+          left.sortKey.missing || right.sortKey.missing
+            ? comparedBase
+            : comparedBase * directionMultiplier;
         return compared || left.sourceIndex - right.sourceIndex;
       })
       .map((entry) => entry.row);
@@ -280,9 +334,7 @@ export function useHeadlessMatrixTable<
   }
 
   function columnExists(columnKey: string): boolean {
-    return columns.value.some(
-      (column, columnIndex) => resolveColumnKey(column, columnIndex) === columnKey,
-    );
+    return columnMetaByKey.value.has(columnKey);
   }
 
   function currentSortDirectionFor(columnKey: string): MatrixSortDirection {
@@ -290,9 +342,7 @@ export function useHeadlessMatrixTable<
     if (overrideSort) {
       return overrideSort.columnKey === columnKey ? overrideSort.direction : "";
     }
-    const columnMeta = columns.value
-      .map((column, columnIndex) => resolveMatrixColumnMeta(column, columnIndex))
-      .find((meta) => meta.columnKey === columnKey);
+    const columnMeta = columnMetaByKey.value.get(columnKey);
     return columnMeta?.sort ?? "";
   }
 
@@ -329,9 +379,7 @@ export function useHeadlessMatrixTable<
 
   function getHeaderSortState(columnKey: string): MatrixHeaderSortState {
     const normalizedKey = String(columnKey || "").trim();
-    const columnMeta = columns.value
-      .map((column, columnIndex) => resolveMatrixColumnMeta(column, columnIndex))
-      .find((meta) => meta.columnKey === normalizedKey);
+    const columnMeta = columnMetaByKey.value.get(normalizedKey);
     const active = currentSortDirectionFor(normalizedKey);
     return {
       columnKey: normalizedKey,
@@ -339,7 +387,11 @@ export function useHeadlessMatrixTable<
       sortable: sortable.value && !!columnMeta,
       sort: active,
       ariaSort:
-        active === "asc" ? "ascending" : active === "desc" ? "descending" : "none",
+        active === "asc"
+          ? "ascending"
+          : active === "desc"
+            ? "descending"
+            : "none",
       nextDirection: nextSortDirectionFor(normalizedKey),
     };
   }

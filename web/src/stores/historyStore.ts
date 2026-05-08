@@ -62,6 +62,7 @@ interface SavedRunSearchRecord {
   artifactPath: string;
   artifactBasename: string;
   tags: string[];
+  shortFields: string[];
   searchText: string;
 }
 
@@ -199,17 +200,17 @@ function buildSavedRunSearchRecords(
     const replayReasons = normalizeTags(entry.replayReasons)
       .map((reason) => normalizeSearchText(reason))
       .filter((reason) => reason.length > 0);
-    const searchText = [
+    const shortFields = [
       ts,
       strategyKind,
       replayClass,
       ...replayReasons,
-      csvPath,
       csvBasename,
-      artifactPath,
       artifactBasename,
       ...tags,
     ]
+      .filter((part) => part.length > 0);
+    const searchText = [shortFields.join(" "), csvPath, artifactPath]
       .filter((part) => part.length > 0)
       .join(" ");
     return {
@@ -224,6 +225,7 @@ function buildSavedRunSearchRecords(
       artifactPath,
       artifactBasename,
       tags,
+      shortFields,
       searchText,
     };
   });
@@ -253,40 +255,30 @@ function filterSavedRunsEntries(
   const { records, fuse } = getSavedRunSearchIndex(entries);
 
   const shortQueryMatches = (): HistorySavedRunEntry[] => {
-    const scored = records
-      .map((record) => {
-        let totalScore = 0;
-        for (const token of tokens) {
-          const fields = [
-            record.ts,
-            record.strategyKind,
-            record.csvBasename,
-            record.artifactBasename,
-            ...record.tags,
-          ];
-          let tokenScore = -1;
-          for (const field of fields) {
-            if (!field) continue;
-            if (field === token) tokenScore = Math.max(tokenScore, 9);
-            else if (field.startsWith(token))
-              tokenScore = Math.max(tokenScore, 7);
-            else if (field.includes(token))
-              tokenScore = Math.max(tokenScore, 4);
-          }
-          if (tokenScore < 0) return null;
-          totalScore += tokenScore;
+    const scored: Array<{ record: SavedRunSearchRecord; totalScore: number }> = [];
+    for (const record of records) {
+      let totalScore = 0;
+      let matched = true;
+      for (const token of tokens) {
+        let tokenScore = -1;
+        for (const field of record.shortFields) {
+          if (field === token) tokenScore = Math.max(tokenScore, 9);
+          else if (field.startsWith(token)) tokenScore = Math.max(tokenScore, 7);
+          else if (field.includes(token)) tokenScore = Math.max(tokenScore, 4);
         }
-        return { record, totalScore };
-      })
-      .filter(
-        (row): row is { record: SavedRunSearchRecord; totalScore: number } =>
-          row !== null,
-      )
-      .sort((left, right) => {
-        if (right.totalScore !== left.totalScore)
-          return right.totalScore - left.totalScore;
-        return left.record.index - right.record.index;
-      });
+        if (tokenScore < 0) {
+          matched = false;
+          break;
+        }
+        totalScore += tokenScore;
+      }
+      if (matched) scored.push({ record, totalScore });
+    }
+    scored.sort((left, right) => {
+      if (right.totalScore !== left.totalScore)
+        return right.totalScore - left.totalScore;
+      return left.record.index - right.record.index;
+    });
     return scored.map((row) => row.record.entry);
   };
 
@@ -545,9 +537,17 @@ function buildSavedRunCompareOptions(
   return rawArray(options);
 }
 
+const overviewCompareOptionsCache = new WeakMap<
+  HistorySavedRunEntry[],
+  HistoryOption[]
+>();
+
 function buildOverviewCompareOptions(
   entries: HistorySavedRunEntry[],
 ): HistoryOption[] {
+  const cached = overviewCompareOptionsCache.get(entries);
+  if (cached) return cached;
+
   const options: HistoryOption[] = [
     {
       value: "",
@@ -569,7 +569,9 @@ function buildOverviewCompareOptions(
       disabled: false,
     });
   }
-  return rawArray(options);
+  const rawOptions = rawArray(options);
+  overviewCompareOptionsCache.set(entries, rawOptions);
+  return rawOptions;
 }
 
 function formatRepairSummary(result: HistoryRunArtifactRepairSummary): string {
@@ -1073,16 +1075,17 @@ export const useHistoryStore = defineStore("history", {
           disabled: false,
         });
       }
+      const filteredByPath = new Map(
+        filtered.map((entry) => [entry.path, entry] as const),
+      );
 
       const requestedPath = normalizePath(
         preferredPath ?? this.savedSelectedValue,
       );
-      const selectedPath =
-        requestedPath && filtered.some((entry) => entry.path === requestedPath)
-          ? requestedPath
-          : "";
-      const selectedEntry =
-        filtered.find((entry) => entry.path === selectedPath) || null;
+      const selectedEntry = requestedPath
+        ? (filteredByPath.get(requestedPath) ?? null)
+        : null;
+      const selectedPath = selectedEntry ? requestedPath : "";
 
       this.savedOptions = rawArray(options);
       this.savedRunsVisible = rawArray(filtered);
@@ -1113,17 +1116,12 @@ export const useHistoryStore = defineStore("history", {
         selectedPath,
       );
       const requestedComparePath = normalizePath(this.savedRunCompareSelected);
-      const compareSelected =
-        requestedComparePath &&
-        filtered.some(
-          (entry) =>
-            entry.path === requestedComparePath && entry.path !== selectedPath,
-        )
-          ? requestedComparePath
-          : "";
-      this.savedRunCompareSelected = compareSelected;
       const compareEntry =
-        filtered.find((entry) => entry.path === compareSelected) || null;
+        requestedComparePath && requestedComparePath !== selectedPath
+          ? (filteredByPath.get(requestedComparePath) ?? null)
+          : null;
+      const compareSelected = compareEntry ? requestedComparePath : "";
+      this.savedRunCompareSelected = compareSelected;
       const compareDetail = compareEntry
         ? this.savedRunDetailCache[compareEntry.path]
         : undefined;

@@ -1318,6 +1318,34 @@ struct TrainedCandidate {
     cv_warnings: Vec<String>,
 }
 
+fn cv_group_fold_plan(
+    rows: &[DatasetRow],
+    k_folds: usize,
+) -> (usize, usize, Vec<usize>, Vec<usize>) {
+    use std::collections::HashSet;
+
+    let mut uniq_groups: HashSet<&str> = HashSet::new();
+    for row in rows {
+        uniq_groups.insert(row.cv_group_id.as_str());
+    }
+
+    let uniq_count = uniq_groups.len();
+    let k = k_folds.clamp(2, 10).min(uniq_count.max(2));
+    let mut fold_counts = vec![0usize; k];
+    let folds = if uniq_count >= 2 && k >= 2 {
+        let mut folds = Vec::with_capacity(rows.len());
+        for row in rows {
+            let fold = (fnv1a64(&row.cv_group_id) % (k as u64)) as usize;
+            fold_counts[fold] += 1;
+            folds.push(fold);
+        }
+        folds
+    } else {
+        Vec::new()
+    };
+    (uniq_count, k, folds, fold_counts)
+}
+
 fn train_logistic_candidate(
     rows: &[DatasetRow],
     cfg: &MlConfidenceTrainConfig,
@@ -1329,25 +1357,18 @@ fn train_logistic_candidate(
     let mut cv_ys: Vec<f64> = Vec::new();
     let mut cv_warnings: Vec<String> = Vec::new();
 
-    let uniq_groups = {
-        use std::collections::HashSet;
-        let mut s = HashSet::new();
-        for r in rows {
-            s.insert(r.cv_group_id.clone());
-        }
-        s.len()
-    };
-    let k = cfg.k_folds.clamp(2, 10).min(uniq_groups.max(2));
+    let (uniq_groups, k, fold_ids, fold_counts) = cv_group_fold_plan(rows, cfg.k_folds);
     if uniq_groups >= 2 && k >= 2 {
         for fold in 0..k {
-            let mut train_x: Vec<Vec<f64>> = Vec::new();
-            let mut train_y: Vec<f64> = Vec::new();
-            let mut test_x: Vec<Vec<f64>> = Vec::new();
-            let mut test_y: Vec<f64> = Vec::new();
+            let test_count = fold_counts[fold];
+            let train_count = rows.len().saturating_sub(test_count);
+            let mut train_x: Vec<Vec<f64>> = Vec::with_capacity(train_count);
+            let mut train_y: Vec<f64> = Vec::with_capacity(train_count);
+            let mut test_x: Vec<Vec<f64>> = Vec::with_capacity(test_count);
+            let mut test_y: Vec<f64> = Vec::with_capacity(test_count);
 
-            for (r, x) in rows.iter().zip(xs_raw.iter()) {
-                let f = (fnv1a64(&r.cv_group_id) % (k as u64)) as usize;
-                if f == fold {
+            for ((r, x), &candidate_fold) in rows.iter().zip(xs_raw.iter()).zip(fold_ids.iter()) {
+                if candidate_fold == fold {
                     test_x.push(x.clone());
                     test_y.push(r.y);
                 } else {
@@ -1421,25 +1442,18 @@ fn train_gbdt_candidate(
     let mut cv_ys: Vec<f64> = Vec::new();
     let mut cv_warnings: Vec<String> = Vec::new();
 
-    let uniq_groups = {
-        use std::collections::HashSet;
-        let mut s = HashSet::new();
-        for r in rows {
-            s.insert(r.cv_group_id.clone());
-        }
-        s.len()
-    };
-    let k = cfg.k_folds.clamp(2, 10).min(uniq_groups.max(2));
+    let (uniq_groups, k, fold_ids, fold_counts) = cv_group_fold_plan(rows, cfg.k_folds);
     if uniq_groups >= 2 && k >= 2 {
         for fold in 0..k {
-            let mut train_x: Vec<Vec<f64>> = Vec::new();
-            let mut train_y: Vec<f64> = Vec::new();
-            let mut test_x: Vec<Vec<f64>> = Vec::new();
-            let mut test_y: Vec<f64> = Vec::new();
+            let test_count = fold_counts[fold];
+            let train_count = rows.len().saturating_sub(test_count);
+            let mut train_x: Vec<Vec<f64>> = Vec::with_capacity(train_count);
+            let mut train_y: Vec<f64> = Vec::with_capacity(train_count);
+            let mut test_x: Vec<Vec<f64>> = Vec::with_capacity(test_count);
+            let mut test_y: Vec<f64> = Vec::with_capacity(test_count);
 
-            for (r, x) in rows.iter().zip(xs_raw.iter()) {
-                let f = (fnv1a64(&r.cv_group_id) % (k as u64)) as usize;
-                if f == fold {
+            for ((r, x), &candidate_fold) in rows.iter().zip(xs_raw.iter()).zip(fold_ids.iter()) {
+                if candidate_fold == fold {
                     test_x.push(x.clone());
                     test_y.push(r.y);
                 } else {

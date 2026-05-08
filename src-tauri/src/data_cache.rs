@@ -113,6 +113,18 @@ fn content_fingerprint_hash_for_source(path: &Path) -> Result<u64, String> {
     Ok(hash)
 }
 
+fn cached_content_fingerprint_hash_for_source(
+    path: &Path,
+    cached: &mut Option<u64>,
+) -> Result<u64, String> {
+    if let Some(hash) = *cached {
+        return Ok(hash);
+    }
+    let hash = content_fingerprint_hash_for_source(path)?;
+    *cached = Some(hash);
+    Ok(hash)
+}
+
 pub fn content_fingerprint_for_source(path: &Path) -> Result<String, String> {
     let (mode, hash) = content_fingerprint_parts_for_source(path)?;
     Ok(format!("fnv1a64-{mode}-{hash:016x}"))
@@ -319,8 +331,10 @@ pub fn load_or_build_with_identity(
 ) -> Result<LoadOutcome, String> {
     let sidecar = sidecar_cache_path(csv_path);
     let fallback = fallback_cache_path(app_cache_dir, csv_path);
+    let mut source_content_hash = None;
 
-    if let Ok(Some(candles)) = try_load_cache(&sidecar, csv_path, src_id) {
+    if let Ok(Some(candles)) = try_load_cache(&sidecar, csv_path, src_id, &mut source_content_hash)
+    {
         return Ok(LoadOutcome {
             candles,
             cache_hit: true,
@@ -330,7 +344,9 @@ pub fn load_or_build_with_identity(
     }
 
     if sidecar != fallback {
-        if let Ok(Some(candles)) = try_load_cache(&fallback, csv_path, src_id) {
+        if let Ok(Some(candles)) =
+            try_load_cache(&fallback, csv_path, src_id, &mut source_content_hash)
+        {
             return Ok(LoadOutcome {
                 candles,
                 cache_hit: true,
@@ -343,10 +359,14 @@ pub fn load_or_build_with_identity(
     let candles = ta_app_core::read_candles_from_csv_compat(csv_path.to_string_lossy().as_ref())?;
 
     let mut wrote_path = None;
-    if let Ok(()) = write_cache(&sidecar, csv_path, &candles, src_id) {
+    let source_content_hash =
+        cached_content_fingerprint_hash_for_source(csv_path, &mut source_content_hash)?;
+    if let Ok(()) = write_cache_with_source_hash(&sidecar, &candles, src_id, source_content_hash) {
         wrote_path = Some(sidecar);
     } else if sidecar != fallback {
-        if let Ok(()) = write_cache(&fallback, csv_path, &candles, src_id) {
+        if let Ok(()) =
+            write_cache_with_source_hash(&fallback, &candles, src_id, source_content_hash)
+        {
             wrote_path = Some(fallback);
         }
     }
@@ -363,6 +383,7 @@ fn try_load_cache(
     cache_path: &Path,
     csv_path: &Path,
     src_id: SourceIdentity,
+    source_content_hash_cache: &mut Option<u64>,
 ) -> Result<Option<Candles>, String> {
     let mut f = match fs::File::open(cache_path) {
         Ok(file) => file,
@@ -386,7 +407,8 @@ fn try_load_cache(
         return Ok(None);
     }
 
-    let current_source_content_hash = content_fingerprint_hash_for_source(csv_path)?;
+    let current_source_content_hash =
+        cached_content_fingerprint_hash_for_source(csv_path, source_content_hash_cache)?;
     if source_content_hash != current_source_content_hash {
         return Ok(None);
     }
@@ -416,11 +438,22 @@ fn try_load_cache(
     )))
 }
 
+#[cfg(test)]
 fn write_cache(
     cache_path: &Path,
     csv_path: &Path,
     candles: &Candles,
     src_id: SourceIdentity,
+) -> Result<(), String> {
+    let source_content_hash = content_fingerprint_hash_for_source(csv_path)?;
+    write_cache_with_source_hash(cache_path, candles, src_id, source_content_hash)
+}
+
+fn write_cache_with_source_hash(
+    cache_path: &Path,
+    candles: &Candles,
+    src_id: SourceIdentity,
+    source_content_hash: u64,
 ) -> Result<(), String> {
     let len = candles.timestamp.len();
     if candles.open.len() != len
@@ -448,7 +481,6 @@ fn write_cache(
     }
 
     let fields_mask = flags_to_mask(candles.fields);
-    let source_content_hash = content_fingerprint_hash_for_source(csv_path)?;
     let mut header = [0u8; HEADER_LEN];
     write_header(
         &mut header,

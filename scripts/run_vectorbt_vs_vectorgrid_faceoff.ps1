@@ -275,10 +275,12 @@ function Invoke-LoggedCommand {
   $proc.StartInfo = New-ProcessStartInfo -Exe $Exe -CmdArgs $CmdArgs
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   [void]$proc.Start()
-  $stdout = $proc.StandardOutput.ReadToEnd()
-  $stderr = $proc.StandardError.ReadToEnd()
+  $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+  $stderrTask = $proc.StandardError.ReadToEndAsync()
   $proc.WaitForExit()
   $sw.Stop()
+  $stdout = $stdoutTask.GetAwaiter().GetResult()
+  $stderr = $stderrTask.GetAwaiter().GetResult()
 
   Set-Content -Path $StdoutPath -Value $stdout -Encoding UTF8
   Set-Content -Path $StderrPath -Value $stderr -Encoding UTF8
@@ -315,6 +317,8 @@ function Invoke-ObservedCommand {
   $proc.StartInfo = New-ProcessStartInfo -Exe $Exe -CmdArgs $CmdArgs
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   [void]$proc.Start()
+  $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+  $stderrTask = $proc.StandardError.ReadToEndAsync()
 
   $peakWorkingSet = 0L
   $peakPrivateBytes = 0L
@@ -337,8 +341,8 @@ function Invoke-ObservedCommand {
 
   try { $proc.WaitForExit() } catch { }
   $sw.Stop()
-  try { $stdout = $proc.StandardOutput.ReadToEnd() } catch { $stdout = "" }
-  try { $stderr = $proc.StandardError.ReadToEnd() } catch { $stderr = "" }
+  try { $stdout = $stdoutTask.GetAwaiter().GetResult() } catch { $stdout = "" }
+  try { $stderr = $stderrTask.GetAwaiter().GetResult() } catch { $stderr = "" }
   if ($timedOut -and [string]::IsNullOrWhiteSpace($stderr)) {
     $stderr = "Process timed out after $TimeoutSec seconds."
   }
@@ -767,7 +771,7 @@ $presetId = if ($scenario.PSObject.Properties.Name -contains "preset_id") { [str
 $intendedMetricContract = if ($scenario.PSObject.Properties.Name -contains "intended_metric_contract") { [string]$scenario.intended_metric_contract } else { "auto" }
 $fastRange = Parse-RangeSpec -Spec ([string]$scenario.ranges.fast)
 $slowRange = Parse-RangeSpec -Spec ([string]$scenario.ranges.slow)
-$intendedPairCount = if ($scenario.PSObject.Properties.Name -contains "intended_pair_count") { [int64]$scenario.intended_pair_count } else { Get-ValidPairCount -FastRange $fastRange -SlowRange $slowRange }
+$intendedPairCount = if ($scenario.PSObject.Properties.Name -contains "intended_pair_count") { [int64]$scenario.intended_pair_count } else { Count-ValidPairs -FastRange $fastRange -SlowRange $slowRange }
 $almaOffset = [double]$scenario.alma.offset
 $almaSigma = [double]$scenario.alma.sigma
 $topK = [int]$scenario.execution.top_k

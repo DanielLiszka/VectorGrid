@@ -3,7 +3,6 @@ import {
   heatmapIndex,
   heatmapLogicalRowForSlow,
   heatmapPalette,
-  resolveHeatmapRange,
   type HeatmapModel,
   type HeatmapPalette,
   type HeatmapRange,
@@ -178,12 +177,19 @@ export function buildHeatmapSlice3dModel(options: {
 
   if (slices.length < 2) return null
 
-  const values = slices.flatMap((slice) => slice.values).filter(finiteNumber)
+  let maxAbs = 1.0e-12
+  for (const slice of slices) {
+    for (const value of slice.values) {
+      if (!finiteNumber(value)) continue
+      const magnitude = Math.abs(value)
+      if (magnitude > maxAbs) maxAbs = magnitude
+    }
+  }
   return {
     axisLabel: 'MA type / parameter slice',
     scoreLabel: cleanText(scoreLabel, 'Score'),
     slices,
-    range: resolveHeatmapRange(values),
+    range: { min: -maxAbs, max: maxAbs, label: 'zero-centered' },
     palette: heatmapPalette('objective'),
     sourceRowCount: rows.length,
     retainedSliceRowCount,

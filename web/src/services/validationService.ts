@@ -740,22 +740,29 @@ function extractTopRowsFromRunResult(runRes: unknown): Array<{
 
   const paretoRowsRaw = Array.isArray(row.pareto) ? row.pareto : [];
   if (paretoRowsRaw.length > 0) {
-    const pts = paretoRowsRaw
-      .map((entry) => {
-        const point = asRecord(entry);
-        return {
-          params: asRecord(point?.params),
-          metrics: asRecord(point?.metrics),
-          maximize_value: Number(
-            point?.maximize_value ?? Number.NEGATIVE_INFINITY,
-          ),
-          minimize_value: Number(
-            point?.minimize_value ?? Number.POSITIVE_INFINITY,
-          ),
-          violation: Number(point?.violation ?? 0),
-        };
-      })
-      .filter((entry) => !!entry.params);
+    const pts: Array<{
+      params: Record<string, unknown>;
+      metrics: Record<string, unknown> | null;
+      maximize_value: number;
+      minimize_value: number;
+      violation: number;
+    }> = [];
+    for (const entry of paretoRowsRaw) {
+      const point = asRecord(entry);
+      const params = asRecord(point?.params);
+      if (!params) continue;
+      pts.push({
+        params,
+        metrics: asRecord(point?.metrics),
+        maximize_value: Number(
+          point?.maximize_value ?? Number.NEGATIVE_INFINITY,
+        ),
+        minimize_value: Number(
+          point?.minimize_value ?? Number.POSITIVE_INFINITY,
+        ),
+        violation: Number(point?.violation ?? 0),
+      });
+    }
     pts.sort((left, right) => {
       const leftFeasible = left.violation <= 0;
       const rightFeasible = right.violation <= 0;
@@ -2448,6 +2455,8 @@ function computeValidationShortlist(
   probPassN: number;
   hasBackendVerdicts: boolean;
   backendPassN: number;
+  robustParetoN: number;
+  crossParetoN: number;
   runVerdict: Record<string, unknown> | null;
 } {
   const CSCV_RANK_FRAC_MIN = 0.55;
@@ -2455,10 +2464,32 @@ function computeValidationShortlist(
   const hasProbGate = minPsr != null || minDsr != null;
   const cscvRankThreshold = minCscvRank ?? CSCV_RANK_FRAC_MIN;
   const runVerdict = asRecord(asRecord(result)?.run_verdict);
-  const hasBackendVerdicts = candidates.some((candidate) => {
+  let hasBackendVerdicts = false;
+  let backendPassN = 0;
+  let hasCross = false;
+  let hasCandidateCscv = false;
+  let robustParetoN = 0;
+  let crossParetoN = 0;
+  const robustRows: Array<Record<string, unknown>> = [];
+  const robustCrossRows: Array<Record<string, unknown>> = [];
+  for (const candidate of candidates) {
     const verdict = asRecord(candidate.validation_verdict);
-    return !!verdict && typeof verdict.passed === "boolean";
-  });
+    if (verdict && typeof verdict.passed === "boolean") {
+      hasBackendVerdicts = true;
+      if (verdict.passed === true) backendPassN += 1;
+    }
+    const cross = candidate.cross_ticker;
+    if (cross && typeof cross === "object") hasCross = true;
+    if (candidate.cscv_pbo && typeof candidate.cscv_pbo === "object") {
+      hasCandidateCscv = true;
+    }
+    if (candidate.robust_pareto) {
+      robustParetoN += 1;
+      robustRows.push(candidate);
+      if (candidate.cross_ticker_pareto) robustCrossRows.push(candidate);
+    }
+    if (candidate.cross_ticker_pareto) crossParetoN += 1;
+  }
   const passProbabilityGates = (
     candidate: Record<string, unknown>,
   ): boolean => {
@@ -2470,27 +2501,13 @@ function computeValidationShortlist(
     return true;
   };
 
-  const hasCross = candidates.some((candidate) => {
-    const cross = candidate.cross_ticker;
-    return !!(cross && typeof cross === "object");
-  });
-
-  const strict = candidates.filter((candidate) => {
-    if (!candidate.robust_pareto) return false;
-    if (hasCross) return !!candidate.cross_ticker_pareto;
-    return true;
-  });
+  const strict = hasCross ? robustCrossRows : robustRows;
 
   const resultRecord = asRecord(result);
   const cscv = asRecord(resultRecord?.cscv_pbo);
   const cscvCombos = Math.max(0, Math.floor(Number(cscv?.combinations ?? 0)));
   const cscvThreshold = Number(cscv?.threshold ?? 0);
-  const hasCscv =
-    cscvCombos > 0 &&
-    candidates.some((candidate) => {
-      const stats = candidate.cscv_pbo;
-      return !!(stats && typeof stats === "object");
-    });
+  const hasCscv = cscvCombos > 0 && hasCandidateCscv;
 
   const baseRows = strict.length > 0 ? strict : candidates;
   const usedFallback = strict.length === 0;
@@ -2530,12 +2547,6 @@ function computeValidationShortlist(
     : usedCscvFallback
       ? baseRows
       : cscvFiltered;
-  const backendPassN = hasBackendVerdicts
-    ? candidates.filter(
-        (candidate) => asRecord(candidate.validation_verdict)?.passed === true,
-      ).length
-    : 0;
-
   const sortByFinal = (
     left: Record<string, unknown>,
     right: Record<string, unknown>,
@@ -2576,6 +2587,8 @@ function computeValidationShortlist(
     probPassN: probFiltered.length,
     hasBackendVerdicts,
     backendPassN,
+    robustParetoN,
+    crossParetoN,
     runVerdict,
   };
 }
@@ -2585,14 +2598,8 @@ function buildValidationShortlistMetaText(
   minPsr: number | null,
   minDsr: number | null,
 ): string {
-  const robustParetoN = shortlist.candidates.filter(
-    (candidate) => !!candidate.robust_pareto,
-  ).length;
-  const crossParetoN = shortlist.hasCross
-    ? shortlist.candidates.filter(
-        (candidate) => !!candidate.cross_ticker_pareto,
-      ).length
-    : 0;
+  const robustParetoN = shortlist.robustParetoN;
+  const crossParetoN = shortlist.hasCross ? shortlist.crossParetoN : 0;
   const baseRule = shortlist.hasCross
     ? "robust_pareto && cross_ticker_pareto"
     : "robust_pareto";
@@ -2681,16 +2688,8 @@ function buildValidationTableRows(
     const cross = asRecord(candidate.cross_ticker);
     const cscv = asRecord(candidate.cscv_pbo);
     const verdict = asRecord(candidate.validation_verdict);
-    const failReasons = Array.isArray(verdict?.fail_reasons)
-      ? verdict.fail_reasons
-          .map((entry) => normalizeText(entry))
-          .filter((entry) => entry.length > 0)
-      : [];
-    const warningFlags = Array.isArray(verdict?.warning_flags)
-      ? verdict.warning_flags
-          .map((entry) => normalizeText(entry))
-          .filter((entry) => entry.length > 0)
-      : [];
+    const failReasons = normalizeStringList(verdict?.fail_reasons);
+    const warningFlags = normalizeStringList(verdict?.warning_flags);
     const gateText = verdict
       ? verdict.passed === false
         ? failReasons[0] || "fail"
@@ -2699,9 +2698,7 @@ function buildValidationTableRows(
           : "pass"
       : "-";
     const gateTitle = verdict
-      ? [...failReasons, ...warningFlags]
-          .filter((entry) => entry.length > 0)
-          .join(" • ")
+      ? failReasons.concat(warningFlags).join(" • ")
       : "";
 
     rows.push({

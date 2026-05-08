@@ -208,27 +208,48 @@ pub fn dataset_label(csv_path: &str, label: &str) -> String {
         .to_string()
 }
 
-fn canonicalize_json_value(v: &Value) -> Value {
+fn write_canonical_json_value(out: &mut String, v: &Value) {
     match v {
-        Value::Array(xs) => Value::Array(xs.iter().map(canonicalize_json_value).collect()),
+        Value::Null => out.push_str("null"),
+        Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+        Value::Number(value) => out.push_str(&value.to_string()),
+        Value::String(value) => {
+            out.push_str(&serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()));
+        }
+        Value::Array(xs) => {
+            out.push('[');
+            for (idx, value) in xs.iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                write_canonical_json_value(out, value);
+            }
+            out.push(']');
+        }
         Value::Object(map) => {
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort();
-            let mut out = serde_json::Map::new();
-            for k in keys {
+            out.push('{');
+            for (idx, k) in keys.into_iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
+                out.push(':');
                 if let Some(v2) = map.get(k) {
-                    out.insert(k.clone(), canonicalize_json_value(v2));
+                    write_canonical_json_value(out, v2);
                 }
             }
-            Value::Object(out)
+            out.push('}');
         }
-        _ => v.clone(),
     }
 }
 
 pub fn candidate_key_canonical<T: Serialize>(params: &T) -> Result<String, String> {
     let v = serde_json::to_value(params).map_err(|e| e.to_string())?;
-    serde_json::to_string(&canonicalize_json_value(&v)).map_err(|e| e.to_string())
+    let mut out = String::with_capacity(128);
+    write_canonical_json_value(&mut out, &v);
+    Ok(out)
 }
 
 pub fn push_metrics(acc: &mut CrossTickerAcc, m: &Metrics) {
@@ -930,5 +951,43 @@ mod tests {
             key_a,
             "{\"a\":{\"x\":[{\"k1\":1,\"k2\":2}],\"z\":true},\"b\":1}"
         );
+    }
+
+    #[test]
+    fn candidate_key_canonical_matches_sorted_value_serialization_contract() {
+        fn sorted_value(value: &Value) -> Value {
+            match value {
+                Value::Array(items) => Value::Array(items.iter().map(sorted_value).collect()),
+                Value::Object(map) => {
+                    let mut out = serde_json::Map::new();
+                    let mut keys: Vec<&String> = map.keys().collect();
+                    keys.sort();
+                    for key in keys {
+                        out.insert(key.clone(), sorted_value(&map[key]));
+                    }
+                    Value::Object(out)
+                }
+                other => other.clone(),
+            }
+        }
+
+        let value = serde_json::json!({
+            "escaped": "quote=\" backslash=\\ newline=\n unicode=\u{2603}",
+            "array": [
+                null,
+                true,
+                false,
+                { "z": -1.25, "a": 0, "m": 3.5e2 }
+            ],
+            "nested": {
+                "b": "bee",
+                "a": ["x", "y"]
+            }
+        });
+        let expected = serde_json::to_string(&sorted_value(&value)).expect("sorted json");
+
+        let actual = candidate_key_canonical(&value).expect("canonical key");
+
+        assert_eq!(actual, expected);
     }
 }

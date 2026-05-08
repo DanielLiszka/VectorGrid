@@ -3145,14 +3145,11 @@ fn block_unresolved_alpaca_intents_before_submit(
     symbol: &str,
     current_client_order_id: &str,
 ) -> Result<(), String> {
-    let conflicts: Vec<_> = read_all_alpaca_order_intent_records(app_local_data_dir)?
+    if let Some(conflict) = read_all_alpaca_order_intent_records(app_local_data_dir)?
         .into_iter()
         .filter(|record| symbol_matches(&record.symbol, symbol))
         .filter(|record| record.client_order_id != current_client_order_id)
         .filter(|record| unresolved_alpaca_intent_status(&record.status))
-        .collect();
-    if let Some(conflict) = conflicts
-        .iter()
         .max_by_key(|record| record.updated_at_unix_ms)
     {
         return Err(format!(

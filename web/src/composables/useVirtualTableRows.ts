@@ -4,6 +4,7 @@ import { computed, ref, type Ref } from 'vue'
 
 export interface VirtualTableRow<T> {
   index: number
+  key: string | number
   row: T
 }
 
@@ -67,7 +68,13 @@ export function useVirtualTableRows<T>(
     for (const item of items) {
       const row = source[item.index]
       if (row === undefined) continue
-      result.push({ index: item.index, row })
+      const virtualItemKey = (item as { key?: string | number }).key
+      const key =
+        virtualItemKey ??
+        (typeof getItemKey === 'function'
+          ? getItemKey(item.index, row)
+          : item.index)
+      result.push({ index: item.index, key, row })
     }
     return result
   })

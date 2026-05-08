@@ -2317,10 +2317,6 @@ function renderBatchDatasetList(extra = ""): void {
   const filtered = filterBatchDatasets(
     BATCH_DATASETS_CACHE,
     normalizeText(store.batchDatasetSearch),
-  ).sort((left, right) =>
-    `${left.market}${left.label}`.localeCompare(
-      `${right.market}${right.label}`,
-    ),
   );
 
   const maxRender = filtered.length > 1000 ? 500 : filtered.length;
@@ -2446,6 +2442,11 @@ async function refreshBatchDatasetsInternal(): Promise<void> {
   }
 
   BATCH_DATASETS_CACHE = Array.from(byPath.values());
+  BATCH_DATASETS_CACHE.sort((left, right) =>
+    `${left.market}${left.label}`.localeCompare(
+      `${right.market}${right.label}`,
+    ),
+  );
   const validPaths = new Set(BATCH_DATASETS_CACHE.map((entry) => entry.path));
   setBatchSelectedPaths(
     readBatchSelectedPaths().filter((path) => validPaths.has(path)),

@@ -53,20 +53,44 @@ export function metricDistributionOptions(
   columns: readonly MetricVisualColumn[],
   rows: readonly MetricVisualRow[],
 ): MetricDistributionOption[] {
-  return columns
-    .map((column, index) => {
-      const key = columnKey(column, index)
-      const role = metricColumnVisualRole(key)
-      if (!role || role === 'status') return null
-      const sourceIndex = sourceIndexFor(column, index)
-      const hasValues = rows.some((row) => parseMetricCellNumber(row.cells[sourceIndex]) != null)
-      if (!hasValues) return null
-      return {
-        key,
-        label: String(column.label || key).trim() || key,
-      }
+  const eligible: Array<{
+    key: string
+    label: string
+    sourceIndex: number
+    hasValues: boolean
+  }> = []
+  for (let index = 0; index < columns.length; index += 1) {
+    const column = columns[index]
+    if (!column) continue
+    const key = columnKey(column, index)
+    const role = metricColumnVisualRole(key)
+    if (!role || role === 'status') continue
+    eligible.push({
+      key,
+      label: String(column.label || key).trim() || key,
+      sourceIndex: sourceIndexFor(column, index),
+      hasValues: false,
     })
-    .filter((option): option is MetricDistributionOption => option != null)
+  }
+  if (!eligible.length || !rows.length) return []
+
+  let resolvedColumns = 0
+  for (const row of rows) {
+    for (const column of eligible) {
+      if (column.hasValues) continue
+      if (parseMetricCellNumber(row.cells[column.sourceIndex]) == null) continue
+      column.hasValues = true
+      resolvedColumns += 1
+    }
+    if (resolvedColumns === eligible.length) break
+  }
+
+  const options: MetricDistributionOption[] = []
+  for (const column of eligible) {
+    if (!column.hasValues) continue
+    options.push({ key: column.key, label: column.label })
+  }
+  return options
 }
 
 export function chooseMetricDistributionKey(
@@ -96,15 +120,20 @@ export function buildMetricDistributionModel(options: {
   const column = options.columns[columnIndex]
   if (!column) return null
   const sourceIndex = sourceIndexFor(column, columnIndex)
-  const values = options.rows
-    .map((row) => parseMetricCellNumber(row.cells[sourceIndex]))
-    .filter((value): value is number => value != null)
-    .sort((left, right) => left - right)
+  const values: number[] = []
+  let sum = 0
+  for (const row of options.rows) {
+    const value = parseMetricCellNumber(row.cells[sourceIndex])
+    if (value == null) continue
+    values.push(value)
+    sum += value
+  }
+  values.sort((left, right) => left - right)
   if (!values.length) return null
 
   const min = values[0] ?? 0
   const max = values[values.length - 1] ?? min
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length
+  const mean = sum / values.length
   const mid = Math.floor(values.length / 2)
   const median = values.length % 2 === 0
     ? ((values[mid - 1] ?? 0) + (values[mid] ?? 0)) / 2

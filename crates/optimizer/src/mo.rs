@@ -762,7 +762,6 @@ fn non_dominated_sort<T>(pop: &[MoPoint<T>]) -> Vec<Vec<usize>> {
         .collect();
 
     while !current.is_empty() {
-        fronts.push(current.clone());
         let mut next: Vec<usize> = Vec::new();
         for &p in &current {
             for &q in &dominates[p] {
@@ -772,6 +771,7 @@ fn non_dominated_sort<T>(pop: &[MoPoint<T>]) -> Vec<Vec<usize>> {
                 }
             }
         }
+        fronts.push(current);
         current = next;
     }
 
@@ -906,10 +906,15 @@ fn elite_indices<T>(pop: &[MoPoint<T>], population_size: usize) -> Vec<usize> {
         }
 
         let crowd = crowding_distance(&front, pop);
-        let mut idx: Vec<usize> = (0..front.len()).collect();
-        idx.sort_by(|&a, &b| crowd[b].total_cmp(&crowd[a]));
-
         let need = population_size - elites.len();
+        let mut idx: Vec<usize> = (0..front.len()).collect();
+        if need < idx.len() {
+            idx.select_nth_unstable_by(need, |&a, &b| {
+                crowd[b].total_cmp(&crowd[a]).then_with(|| a.cmp(&b))
+            });
+            idx.truncate(need);
+        }
+        idx.sort_by(|&a, &b| crowd[b].total_cmp(&crowd[a]).then_with(|| a.cmp(&b)));
         elites.extend(idx.into_iter().take(need).map(|i| front[i]));
         break;
     }
@@ -1872,17 +1877,13 @@ fn hypervolume_weights_for_good<T: Clone>(
     }
 
     if feas_points.len() < 2 {
-        for w in &mut weights {
-            *w = 1.0;
-        }
+        weights.fill(1.0);
         return weights;
     }
 
     let front = pareto_front_constrained_indices(&feas_points);
     if front.is_empty() {
-        for w in &mut weights {
-            *w = 1.0;
-        }
+        weights.fill(1.0);
         return weights;
     }
 
@@ -1913,9 +1914,7 @@ fn hypervolume_weights_for_good<T: Clone>(
         }
     }
     if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
-        for w in &mut weights {
-            *w = 1.0;
-        }
+        weights.fill(1.0);
         return weights;
     }
 
@@ -1951,9 +1950,7 @@ fn hypervolume_weights_for_good<T: Clone>(
 
     let sum_w: f64 = weights.iter().copied().sum();
     if !sum_w.is_finite() || sum_w <= 0.0 {
-        for w in &mut weights {
-            *w = 1.0;
-        }
+        weights.fill(1.0);
     }
 
     weights

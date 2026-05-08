@@ -1926,6 +1926,11 @@ function normalizeRunArtifactSummary(
   ]
     .filter((part) => part.length > 0)
     .join(" • ");
+  const mlScoreContractSummary = buildMlScoreContractSummary(
+    mlScoreSpace,
+    mlScoreScope,
+    row.ml_score_contract_summary,
+  );
 
   return {
     ts: normalizeText(row.ts),
@@ -1959,19 +1964,7 @@ function normalizeRunArtifactSummary(
     ),
     ...(mlScoreSpace ? { mlScoreSpace } : {}),
     ...(mlScoreScope ? { mlScoreScope } : {}),
-    ...(buildMlScoreContractSummary(
-      mlScoreSpace,
-      mlScoreScope,
-      row.ml_score_contract_summary,
-    )
-      ? {
-          mlScoreContractSummary: buildMlScoreContractSummary(
-            mlScoreSpace,
-            mlScoreScope,
-            row.ml_score_contract_summary,
-          ),
-        }
-      : {}),
+    ...(mlScoreContractSummary ? { mlScoreContractSummary } : {}),
     ...(mlScoreNote ? { mlScoreNote } : {}),
     ...(mlNativeBackendUsed ? { mlNativeBackendUsed } : {}),
     ...(mlNativeFallbackReason ? { mlNativeFallbackReason } : {}),
@@ -2000,7 +1993,10 @@ export async function refreshSavedRuns(): Promise<HistorySavedRunsRefreshSummary
     {
       onSuccessMeta: (summary) => ({
         runCount: summary.runs.length,
-        validationCount: summary.runs.filter((run) => run.hasValidation).length,
+        validationCount: summary.runs.reduce(
+          (count, run) => count + (run.hasValidation ? 1 : 0),
+          0,
+        ),
       }),
     },
   );

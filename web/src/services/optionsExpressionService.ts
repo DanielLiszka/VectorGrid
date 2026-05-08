@@ -2381,6 +2381,15 @@ function csvCell(value: unknown): string {
   return text;
 }
 
+function csvLine(values: readonly unknown[]): string {
+  let line = "";
+  for (let index = 0; index < values.length; index += 1) {
+    if (index > 0) line += ",";
+    line += csvCell(values[index]);
+  }
+  return line;
+}
+
 function downloadBlob(filename: string, blob: Blob): boolean {
   if (typeof document === "undefined") return false;
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function")
@@ -2653,10 +2662,12 @@ function buildOptionsExpressionCsvText(
     "backend_used",
     "price_semantics",
   ];
-  const lines = [
-    header.join(","),
-    ...tuples.map((row) =>
-      [
+  const backendUsed = normalizeText(input.backendUsed);
+  const priceSemantics = normalizeText(input.priceSemantics);
+  const lines: string[] = [header.join(",")];
+  for (const row of tuples) {
+    lines.push(
+      csvLine([
         row.delayMinutes,
         row.dteDays,
         row.structureFamily,
@@ -2687,13 +2698,11 @@ function buildOptionsExpressionCsvText(
         row.sealedHarsherStressMetrics?.expectancyPerPremium ?? "",
         row.extremeStressMetrics?.expectancyPerPremium ?? "",
         row.sealedExtremeStressMetrics?.expectancyPerPremium ?? "",
-        normalizeText(input.backendUsed),
-        normalizeText(input.priceSemantics),
-      ]
-        .map((value) => csvCell(value))
-        .join(","),
-    ),
-  ];
+        backendUsed,
+        priceSemantics,
+      ]),
+    );
+  }
   return {
     filename: `${stem}.csv`,
     text: lines.join("\r\n"),
@@ -2746,10 +2755,11 @@ function buildOptionsExpressionInspectionCsvText(
     "path_underlier_high",
     "artifact_path",
   ];
-  const lines = [
-    header.join(","),
-    ...rows.map((row) =>
-      [
+  const artifactPath = normalizeText(input.artifactPath);
+  const lines: string[] = [header.join(",")];
+  for (const row of rows) {
+    lines.push(
+      csvLine([
         row.eventIndex,
         row.eventId,
         row.split,
@@ -2785,12 +2795,10 @@ function buildOptionsExpressionInspectionCsvText(
         row.pathOptionHigh ?? "",
         row.pathUnderlierLow ?? "",
         row.pathUnderlierHigh ?? "",
-        normalizeText(input.artifactPath),
-      ]
-        .map((value) => csvCell(value))
-        .join(","),
-    ),
-  ];
+        artifactPath,
+      ]),
+    );
+  }
   return {
     filename: `${stem}.csv`,
     text: lines.join("\r\n"),
@@ -2816,24 +2824,25 @@ function buildOptionsExpressionEventPathCsvText(
     "tuple_index",
     "event_id",
   ];
-  const lines = [
-    header.join(","),
-    ...points.map((point) =>
-      [
+  const artifactPath = normalizeText(input.artifactPath);
+  const tupleIndex = input.tupleIndex == null ? "" : input.tupleIndex;
+  const eventId = normalizeText(input.eventId);
+  const lines: string[] = [header.join(",")];
+  for (const point of points) {
+    lines.push(
+      csvLine([
         point.timestampMs,
         point.optionOpen,
         point.optionHigh,
         point.optionLow,
         point.optionClose,
         point.underlyingPrice,
-        normalizeText(input.artifactPath),
-        input.tupleIndex == null ? "" : input.tupleIndex,
-        normalizeText(input.eventId),
-      ]
-        .map((value) => csvCell(value))
-        .join(","),
-    ),
-  ];
+        artifactPath,
+        tupleIndex,
+        eventId,
+      ]),
+    );
+  }
   return {
     filename: `${stem}.csv`,
     text: lines.join("\r\n"),

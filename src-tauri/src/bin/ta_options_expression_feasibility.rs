@@ -2,7 +2,8 @@ use clap::Parser;
 use serde::Serialize;
 use serde_json::Value;
 use std::fmt::Write as _;
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use ta_app_core::options_types::OptionsExpressionFeasibilityEventCoverage;
@@ -1320,22 +1321,33 @@ fn options_datasets_dir(app_local_data_dir: &Path) -> Result<PathBuf, String> {
 }
 
 fn latest_run_artifact_path(runs_dir: &Path) -> Result<PathBuf, String> {
-    let mut entries: Vec<_> = fs::read_dir(runs_dir)
+    let mut latest: Option<(PathBuf, Option<std::time::SystemTime>)> = None;
+    for entry in fs::read_dir(runs_dir)
         .map_err(|e| format!("failed to read runs dir {}: {e}", runs_dir.display()))?
         .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .map(|name| name.starts_with("vectorgrid_run_") && name.ends_with(".json"))
-                    .unwrap_or(false)
-        })
-        .collect();
-    entries.sort_by_key(|path| fs::metadata(path).and_then(|meta| meta.modified()).ok());
-    entries
-        .pop()
+    {
+        let path = entry.path();
+        if !path.is_file()
+            || !path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|name| name.starts_with("vectorgrid_run_") && name.ends_with(".json"))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
+        match &latest {
+            None => latest = Some((path, modified)),
+            Some((_, latest_modified)) if modified >= *latest_modified => {
+                latest = Some((path, modified));
+            }
+            _ => {}
+        }
+    }
+    latest
+        .map(|(path, _)| path)
         .ok_or_else(|| format!("no saved run artifacts found in {}", runs_dir.display()))
 }
 
@@ -1376,13 +1388,13 @@ fn derive_symbol_root_from_csv_path(csv_path: &str) -> String {
 }
 
 fn infer_run_root_symbol(artifact_path: &Path) -> Result<Option<String>, String> {
-    let raw = fs::read_to_string(artifact_path).map_err(|e| {
+    let file = File::open(artifact_path).map_err(|e| {
         format!(
             "failed to read run artifact {}: {e}",
             artifact_path.display()
         )
     })?;
-    let value: Value = serde_json::from_str(&raw).map_err(|e| {
+    let value: Value = serde_json::from_reader(BufReader::new(file)).map_err(|e| {
         format!(
             "failed to parse run artifact {}: {e}",
             artifact_path.display()

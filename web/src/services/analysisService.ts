@@ -177,6 +177,7 @@ interface WorkflowValidationState {
 
 interface TopRowModel {
   rank: number;
+  paramsKey?: string;
   params: Record<string, unknown>;
   metrics: Record<string, unknown>;
   mo?: { maximize_value?: number; minimize_value?: number; violation?: number };
@@ -282,6 +283,15 @@ let compareSeq = 0;
 let drillSeq = 0;
 let topRowsModelCache: TopRowModel[] = [];
 let topRowsAllModelCache: TopRowModel[] = [];
+let topRowsAllModelCacheValid = false;
+let topRowsAllModelCacheReq: unknown = null;
+let topRowsAllModelCacheRes: unknown = null;
+let topRowsAllModelCacheSortKey = "";
+let topRowsAllModelCacheSortDir: SortDir = "desc";
+let topRowsAllModelCacheTopK = 0;
+let topRowsAllModelCacheObjective = "";
+let topRowsAllModelCacheScoreMode = "";
+let topRowsAllModelCacheScoreContextKey = "";
 let registeredDrillChartController: DrillChartController | null = null;
 let registeredHeatmapCanvasController: HeatmapCanvasController | null = null;
 const baselineArtifactCache = new Map<string, BaselineRun | null>();
@@ -663,7 +673,10 @@ function derivedShortExposure(metrics: Record<string, unknown>): number {
 function derivedDirectionalBias(metrics: Record<string, unknown>): number {
   const exposure = Math.max(num(metrics.exposure, 0), SCORE_EPS);
   if (!Number.isFinite(exposure) || exposure <= SCORE_EPS) return 0;
-  return Math.max(0, Math.min(1, Math.abs(num(metrics.net_exposure, 0)) / exposure));
+  return Math.max(
+    0,
+    Math.min(1, Math.abs(num(metrics.net_exposure, 0)) / exposure),
+  );
 }
 
 function scoreExposurePenalty(metrics: Record<string, unknown>): number {
@@ -690,9 +703,13 @@ function scoreSupportProxyUnits(metrics: Record<string, unknown>): number {
 function scoreObservationContextOf(
   res: Record<string, unknown>,
 ): Record<string, unknown> {
-  return asRecord(
-    res.score_observation_context ?? res.scoreObservationContext,
-  );
+  return asRecord(res.score_observation_context ?? res.scoreObservationContext);
+}
+
+function scoreObservationContextCacheKey(
+  scoreContext: Record<string, unknown>,
+): string {
+  return stableStringify(scoreContext);
 }
 
 function effectiveSampleObsCount(
@@ -711,7 +728,10 @@ function effectiveSampleObsCount(
   const totalBars = Math.max(0, Math.floor(num(scoreContext.total_bars, 0)));
   const tradeOffset = bool(scoreContext.trade_on_next_bar, false) ? 1 : 0;
   const pairFirstValid = firstValid + Math.max(fastLen, slowLen) - 1;
-  const tValid = Math.max(pairFirstValid, Math.max(regimeFirstValid, evalStart));
+  const tValid = Math.max(
+    pairFirstValid,
+    Math.max(regimeFirstValid, evalStart),
+  );
   const startT = Math.max(tValid + tradeOffset, evalStart);
   const endT = Math.min(totalBars, evalEnd);
   return Math.max(endT - startT, 2);
@@ -883,27 +903,56 @@ function omegaVsSharpe10Score(metrics: Record<string, unknown>): number {
   );
 }
 
-function scoreMarginAtLeast(value: number, threshold: number, scale: number): number {
-  if (!Number.isFinite(value) || !Number.isFinite(threshold) || !Number.isFinite(scale) || scale <= 0) {
+function scoreMarginAtLeast(
+  value: number,
+  threshold: number,
+  scale: number,
+): number {
+  if (
+    !Number.isFinite(value) ||
+    !Number.isFinite(threshold) ||
+    !Number.isFinite(scale) ||
+    scale <= 0
+  ) {
     return 0;
   }
   return scoreClipSigned((value - threshold) / scale);
 }
 
-function scoreMarginAtMost(value: number, threshold: number, scale: number): number {
-  if (!Number.isFinite(value) || !Number.isFinite(threshold) || !Number.isFinite(scale) || scale <= 0) {
+function scoreMarginAtMost(
+  value: number,
+  threshold: number,
+  scale: number,
+): number {
+  if (
+    !Number.isFinite(value) ||
+    !Number.isFinite(threshold) ||
+    !Number.isFinite(scale) ||
+    scale <= 0
+  ) {
     return 0;
   }
   return scoreClipSigned((threshold - value) / scale);
 }
 
 function scoreSoftmin(values: number[], temperature: number): number {
-  if (!Array.isArray(values) || values.length === 0 || !Number.isFinite(temperature) || temperature <= 0) {
+  if (
+    !Array.isArray(values) ||
+    values.length === 0 ||
+    !Number.isFinite(temperature) ||
+    temperature <= 0
+  ) {
     return 0;
   }
-  const anchor = values.reduce((cur, value) => Math.min(cur, value), Number.POSITIVE_INFINITY);
+  const anchor = values.reduce(
+    (cur, value) => Math.min(cur, value),
+    Number.POSITIVE_INFINITY,
+  );
   if (!Number.isFinite(anchor)) return 0;
-  const sumExp = values.reduce((cur, value) => cur + Math.exp(-(value - anchor) / temperature), 0);
+  const sumExp = values.reduce(
+    (cur, value) => cur + Math.exp(-(value - anchor) / temperature),
+    0,
+  );
   if (!Number.isFinite(sumExp) || sumExp <= 0) return anchor;
   return scoreClipSigned(anchor - temperature * Math.log(sumExp));
 }
@@ -914,7 +963,11 @@ function robustMargin10Score(metrics: Record<string, unknown>): number {
     scoreMarginAtLeast(derivedActiveSortino(metrics), 1.25, 0.7),
     scoreMarginAtLeast(num(metrics.omega, 0), 1.05, 0.2),
     scoreMarginAtLeast(num(metrics.calmar, 0), 0.65, 0.35),
-    scoreMarginAtLeast(scoreTradeUtility(num(metrics.trades, 0), 24), 0.35, 0.18),
+    scoreMarginAtLeast(
+      scoreTradeUtility(num(metrics.trades, 0), 24),
+      0.35,
+      0.18,
+    ),
     scoreMarginAtMost(num(metrics.max_dd, 0), 0.22, 0.08),
     scoreMarginAtMost(num(metrics.ulcer_index, 0), 0.1, 0.04),
     scoreMarginAtMost(derivedDrawdownChronicity(metrics), 0.7, 0.2),
@@ -922,7 +975,8 @@ function robustMargin10Score(metrics: Record<string, unknown>): number {
     scoreMarginAtMost(scoreExposurePenalty(metrics), 0.7, 0.35),
   ];
   const softMargin = scoreSoftmin(margins, 0.55);
-  const meanMargin = margins.reduce((cur, value) => cur + value, 0) / margins.length;
+  const meanMargin =
+    margins.reduce((cur, value) => cur + value, 0) / margins.length;
   return 0.72 * softMargin + 0.28 * meanMargin;
 }
 
@@ -1025,7 +1079,10 @@ function readWorkflowRun(): WorkflowRunState | null {
     const run = wf.currentRun;
     if (run && typeof run === "object") return run as WorkflowRunState;
   }
-  const snapshot = readLatestWorkflowRunSnapshot() as Record<string, unknown> | null;
+  const snapshot = readLatestWorkflowRunSnapshot() as Record<
+    string,
+    unknown
+  > | null;
   if (!snapshot) return null;
   return {
     ts: snapshot.ts ?? null,
@@ -1186,16 +1243,26 @@ function collectTopRows(
   const allowBestFallback = options.allowBestFallback !== false;
   const pareto = Array.isArray(res.pareto) ? res.pareto : null;
   if (pareto) {
-    const pts = pareto.map((entry) => {
+    const pts: Array<{
+      params: Record<string, unknown>;
+      paramsKey: string;
+      metrics: Record<string, unknown>;
+      maximize_value: number;
+      minimize_value: number;
+      violation: number;
+    }> = [];
+    for (const entry of pareto) {
       const row = asRecord(entry);
-      return {
-        params: asRecord(row.params),
+      const params = asRecord(row.params);
+      pts.push({
+        params,
+        paramsKey: stableStringify(params),
         metrics: asRecord(row.metrics),
         maximize_value: num(row.maximize_value, Number.NEGATIVE_INFINITY),
         minimize_value: num(row.minimize_value, Number.POSITIVE_INFINITY),
         violation: num(row.violation, 0),
-      };
-    });
+      });
+    }
     pts.sort((a, b) => {
       const af = a.violation <= 0;
       const bf = b.violation <= 0;
@@ -1211,6 +1278,7 @@ function collectTopRows(
       if (!p) continue;
       out.push({
         rank: i + 1,
+        paramsKey: p.paramsKey,
         params: p.params,
         metrics: p.metrics,
         mo: {
@@ -1226,9 +1294,11 @@ function collectTopRows(
   const top = Array.isArray(res.top) ? res.top : [];
   for (let i = 0; i < top.length; i += 1) {
     const row = Array.isArray(top[i]) ? (top[i] as unknown[]) : [];
+    const params = asRecord(row[0]);
     out.push({
       rank: i + 1,
-      params: asRecord(row[0]),
+      paramsKey: stableStringify(params),
+      params,
       metrics: asRecord(row[1]),
     });
   }
@@ -1236,7 +1306,12 @@ function collectTopRows(
     const p = asRecord(res.best_params);
     const m = asRecord(res.best_metrics);
     if (Object.keys(p).length && Object.keys(m).length)
-      out.push({ rank: 1, params: p, metrics: m });
+      out.push({
+        rank: 1,
+        paramsKey: stableStringify(p),
+        params: p,
+        metrics: m,
+      });
   }
   return out;
 }
@@ -1287,7 +1362,7 @@ function hasActiveTopFilters(filters: TopFilterValues): boolean {
 }
 
 function topRowIdFor(row: TopRowModel): string {
-  return stableStringify(row.params || {});
+  return row.paramsKey || stableStringify(row.params || {});
 }
 
 function topBadgesFor(
@@ -1324,13 +1399,7 @@ function buildTopDecisionNote(
   const leadingMetricLabel = scoreMode ? scoreLabelOf(req) : objectiveOf(req);
   const leadingMetricValue = scoreMode
     ? fmtDisplay(
-        scoreOf(
-          metrics,
-          objectiveOf(req),
-          scoreMode,
-          params,
-          scoreContext,
-        ),
+        scoreOf(metrics, objectiveOf(req), scoreMode, params, scoreContext),
         4,
       )
     : (() => {
@@ -1356,12 +1425,21 @@ function buildTopDecisionNote(
   const notes: string[] = [
     `Rank #${rank} of ${Math.max(total, rank)} by ${leadingMetricLabel}${leadingMetricValue !== "-" ? ` (${leadingMetricValue})` : ""}.`,
   ];
-  if (trades > 0 && trades < 20) notes.push("Trade count is still light, so this candidate needs extra caution.")
-  else if (trades >= 40) notes.push("Trade count is healthy enough for shortlist review.")
-  if (maxDd > 0 && maxDd <= 0.12) notes.push("Drawdown stays controlled under the current ranking.")
-  else if (maxDd >= 0.25) notes.push("Drawdown is elevated and should be pressure-tested before promotion.")
-  if (exposure >= 0.2 && exposure <= 0.8) notes.push("Exposure remains balanced.")
-  else if (exposure >= 0.9) notes.push("Exposure is concentrated.")
+  if (trades > 0 && trades < 20)
+    notes.push(
+      "Trade count is still light, so this candidate needs extra caution.",
+    );
+  else if (trades >= 40)
+    notes.push("Trade count is healthy enough for shortlist review.");
+  if (maxDd > 0 && maxDd <= 0.12)
+    notes.push("Drawdown stays controlled under the current ranking.");
+  else if (maxDd >= 0.25)
+    notes.push(
+      "Drawdown is elevated and should be pressure-tested before promotion.",
+    );
+  if (exposure >= 0.2 && exposure <= 0.8)
+    notes.push("Exposure remains balanced.");
+  else if (exposure >= 0.9) notes.push("Exposure is concentrated.");
   return notes.join(" ");
 }
 
@@ -1406,7 +1484,8 @@ function syncTopSelectionState(
   res: Record<string, unknown>,
 ): void {
   const selectedIndex = readTopRows(store).findIndex((row) => !!row?.selected);
-  const selected = selectedIndex >= 0 ? filteredRows[selectedIndex] ?? null : null;
+  const selected =
+    selectedIndex >= 0 ? (filteredRows[selectedIndex] ?? null) : null;
   const filters = readFilters(store);
   const baselineSelected = text(readHistoryStore()?.compareSelectedValue);
   if (!selected) {
@@ -1448,8 +1527,14 @@ function syncPinnedTopCandidates(
 ): void {
   const filters = readFilters(store);
   const baselineSelected = text(readHistoryStore()?.compareSelectedValue);
-  const allById = new Map(allRows.map((row) => [topRowIdFor(row), row] as const));
-  const filteredIds = new Set(filteredRows.map((row) => topRowIdFor(row)));
+  const allById = new Map<string, TopRowModel>();
+  for (const row of allRows) {
+    allById.set(topRowIdFor(row), row);
+  }
+  const filteredIds = new Set<string>();
+  for (const row of filteredRows) {
+    filteredIds.add(topRowIdFor(row));
+  }
   const current = Array.isArray(store.pinnedTopCandidates)
     ? (store.pinnedTopCandidates as TopPinnedCandidate[])
     : [];
@@ -1469,13 +1554,20 @@ function syncPinnedTopCandidates(
     );
     return markRawEntity({
       ...next,
-      staleReason: filteredIds.has(next.id) ? "" : "Hidden by the current shortlist filters.",
+      staleReason: filteredIds.has(next.id)
+        ? ""
+        : "Hidden by the current shortlist filters.",
     });
   });
   store.pinnedTopCandidates = markRawEntity(reconciled.slice(0, 4));
-  const staleCues = reconciled
-    .map((entry) => text(entry.staleReason))
-    .filter((entry, index, items) => entry && items.indexOf(entry) === index);
+  const staleCues: string[] = [];
+  const staleCueSet = new Set<string>();
+  for (const entry of reconciled) {
+    const cue = text(entry.staleReason);
+    if (!cue || staleCueSet.has(cue)) continue;
+    staleCueSet.add(cue);
+    staleCues.push(cue);
+  }
   store.topStaleCues = markRawEntity(staleCues);
 }
 
@@ -1590,11 +1682,11 @@ function topColumnsFor(
             ? "Score (AS10)"
             : scoreMode === "effective_sample_lcb_10"
               ? "Score (ELCB10)"
-            : scoreMode === "omega_vs_sharpe_10"
-              ? "Score (OVS10)"
-              : scoreMode === "robust_margin_10"
-                ? "Score (RM10)"
-            : "Score";
+              : scoreMode === "omega_vs_sharpe_10"
+                ? "Score (OVS10)"
+                : scoreMode === "robust_margin_10"
+                  ? "Score (RM10)"
+                  : "Score";
   const columns: TopColumn[] = isMo(req, res)
     ? [
         { key: "rank", label: "#", sort: "", alignLeft: true },
@@ -2179,9 +2271,7 @@ function publishDrillChartModels(
   store.drillTradeTableModel = markRaw(tradeTableModel);
 }
 
-async function runVueDrillPipeline(
-  row: TopRowModel,
-): Promise<boolean> {
+async function runVueDrillPipeline(row: TopRowModel): Promise<boolean> {
   const store = readAnalysisStore();
   const run = readWorkflowRun();
   const runReq = asRecord(run?.req);
@@ -2205,7 +2295,8 @@ async function runVueDrillPipeline(
       drillCurvesCache,
       drillCurvesPending,
       drillKey,
-      async () => await invokeCommand(invocation.command, { req: invocation.request }),
+      async () =>
+        await invokeCommand(invocation.command, { req: invocation.request }),
       DRILL_CURVES_CACHE_MAX,
     );
     const curves = drillLoad.value;
@@ -2249,7 +2340,9 @@ async function runVueDrillPipeline(
     }
     setStatus(
       store,
-      cachedDrill ? "Candidate detail done (cached)." : "Candidate detail done.",
+      cachedDrill
+        ? "Candidate detail done (cached)."
+        : "Candidate detail done.",
     );
 
     const stability = buildLocalStabilityInvocation(params, invocation);
@@ -2276,7 +2369,8 @@ async function runVueDrillPipeline(
       stabilityCache,
       stabilityPending,
       stabilityKey,
-      async () => await invokeCommand(stability.command, { req: stability.request }),
+      async () =>
+        await invokeCommand(stability.command, { req: stability.request }),
       STABILITY_CACHE_MAX,
     );
     const stabilityRes = stabilityLoad.value;
@@ -2330,21 +2424,47 @@ export function refreshTopTableFromWorkflowRun(): boolean {
   const objective = objectiveOf(req);
   const scoreMode = scoreModeOf(req);
   const scoreContext = scoreObservationContextOf(res);
+  const scoreContextKey = scoreObservationContextCacheKey(scoreContext);
   const sort = readSortState(store);
   const topK = requestedTopK(req);
-  const collected = collectTopRows(res, { allowBestFallback: topK !== 0 });
-  const sorted = sortRows(
-    collected,
-    sort.key,
-    sort.dir,
-    objective,
-    scoreMode,
-    scoreContext,
-  );
+  const canReuseSorted =
+    topRowsAllModelCacheValid &&
+    topRowsAllModelCacheReq === run.req &&
+    topRowsAllModelCacheRes === run.res &&
+    topRowsAllModelCacheSortKey === sort.key &&
+    topRowsAllModelCacheSortDir === sort.dir &&
+    topRowsAllModelCacheTopK === topK &&
+    topRowsAllModelCacheObjective === objective &&
+    topRowsAllModelCacheScoreMode === scoreMode &&
+    topRowsAllModelCacheScoreContextKey === scoreContextKey;
+  const sorted = canReuseSorted
+    ? topRowsAllModelCache
+    : (() => {
+        const collected = collectTopRows(res, {
+          allowBestFallback: topK !== 0,
+        });
+        return sortRows(
+          collected,
+          sort.key,
+          sort.dir,
+          objective,
+          scoreMode,
+          scoreContext,
+        );
+      })();
   const filtered = buildTopRowModelsForCurrentFilters(store, req, res, sorted);
   const filters = readFilters(store);
   topRowsModelCache = filtered;
   topRowsAllModelCache = sorted;
+  topRowsAllModelCacheValid = true;
+  topRowsAllModelCacheReq = run.req;
+  topRowsAllModelCacheRes = run.res;
+  topRowsAllModelCacheSortKey = sort.key;
+  topRowsAllModelCacheSortDir = sort.dir;
+  topRowsAllModelCacheTopK = topK;
+  topRowsAllModelCacheObjective = objective;
+  topRowsAllModelCacheScoreMode = scoreMode;
+  topRowsAllModelCacheScoreContextKey = scoreContextKey;
   const selectedOldRows = readTopRows(store);
   const previousSelected = selectedOldRows.find((row) => !!row?.selected);
   const previousSelectedId = text(previousSelected?.rowId);
@@ -2356,8 +2476,8 @@ export function refreshTopTableFromWorkflowRun(): boolean {
     ? selectedByIdIndex >= 0
       ? selectedByIdIndex
       : selectedOld >= 0
-      ? Math.min(selectedOld, filtered.length - 1)
-      : 0
+        ? Math.min(selectedOld, filtered.length - 1)
+        : 0
     : -1;
   const mo = isMo(req, res);
 
@@ -2404,51 +2524,59 @@ export function refreshTopTableFromWorkflowRun(): boolean {
             className: "mono",
             title: fmt(m.exposure, 4),
           },
-          ...(showDerivedScoreColumns(scoreMode)
-            ? [
-                {
-                  text: fmtDisplay(derivedActiveMean(m), 4),
-                  className: "mono",
-                  title: fmt(derivedActiveMean(m), 6),
-                },
-                {
-                  text: fmtDisplay(derivedActiveDownsideDeviation(m), 4),
-                  className: "mono",
-                  title: fmt(derivedActiveDownsideDeviation(m), 6),
-                },
-                {
-                  text: fmtDisplay(derivedActiveSortino(m), 4),
-                  className: "mono",
-                  title: fmt(derivedActiveSortino(m), 6),
-                },
-                {
-                  text: fmtDisplay(derivedDrawdownChronicity(m), 4),
-                  className: "mono",
-                  title: fmt(derivedDrawdownChronicity(m), 6),
-                },
-                {
-                  text: fmtDisplay(derivedDownsideShare(m), 4),
-                  className: "mono",
-                  title: fmt(derivedDownsideShare(m), 6),
-                },
-                {
-                  text: fmtDisplay(derivedLongExposure(m), 4),
-                  className: "mono",
-                  title: fmt(derivedLongExposure(m), 6),
-                },
-                {
-                  text: fmtDisplay(derivedShortExposure(m), 4),
-                  className: "mono",
-                  title: fmt(derivedShortExposure(m), 6),
-                },
-                {
-                  text: fmtDisplay(derivedDirectionalBias(m), 4),
-                  className: "mono",
-                  title: fmt(derivedDirectionalBias(m), 6),
-                },
-              ]
-            : []),
         ];
+        if (showDerivedScoreColumns(scoreMode)) {
+          const activeMean = derivedActiveMean(m);
+          const activeDownsideDeviation = derivedActiveDownsideDeviation(m);
+          const activeSortino = derivedActiveSortino(m);
+          const drawdownChronicity = derivedDrawdownChronicity(m);
+          const downsideShare = derivedDownsideShare(m);
+          const longExposure = derivedLongExposure(m);
+          const shortExposure = derivedShortExposure(m);
+          const directionalBias = derivedDirectionalBias(m);
+          cells.push(
+            {
+              text: fmtDisplay(activeMean, 4),
+              className: "mono",
+              title: fmt(activeMean, 6),
+            },
+            {
+              text: fmtDisplay(activeDownsideDeviation, 4),
+              className: "mono",
+              title: fmt(activeDownsideDeviation, 6),
+            },
+            {
+              text: fmtDisplay(activeSortino, 4),
+              className: "mono",
+              title: fmt(activeSortino, 6),
+            },
+            {
+              text: fmtDisplay(drawdownChronicity, 4),
+              className: "mono",
+              title: fmt(drawdownChronicity, 6),
+            },
+            {
+              text: fmtDisplay(downsideShare, 4),
+              className: "mono",
+              title: fmt(downsideShare, 6),
+            },
+            {
+              text: fmtDisplay(longExposure, 4),
+              className: "mono",
+              title: fmt(longExposure, 6),
+            },
+            {
+              text: fmtDisplay(shortExposure, 4),
+              className: "mono",
+              title: fmt(shortExposure, 6),
+            },
+            {
+              text: fmtDisplay(directionalBias, 4),
+              className: "mono",
+              title: fmt(directionalBias, 6),
+            },
+          );
+        }
         if (!mo)
           cells.push({
             text: fmtDisplay(
@@ -2456,10 +2584,7 @@ export function refreshTopTableFromWorkflowRun(): boolean {
               4,
             ),
             className: "mono",
-            title: fmt(
-              scoreOf(m, objective, scoreMode, p, scoreContext),
-              6,
-            ),
+            title: fmt(scoreOf(m, objective, scoreMode, p, scoreContext), 6),
           });
         else {
           cells.push({
@@ -2518,7 +2643,7 @@ export function refreshTopTableFromWorkflowRun(): boolean {
     if (filtered.length && previousSelectedId && selectedByIdIndex < 0) {
       store.topSelectionGuardrail = hasActiveTopFilters(filters)
         ? "The prior selection fell out of the current shortlist filters; focus moved to the nearest available candidate."
-        : "The prior selection no longer exists in the current shortlist; focus moved to the nearest available candidate."
+        : "The prior selection no longer exists in the current shortlist; focus moved to the nearest available candidate.";
     } else {
       store.topSelectionGuardrail = filtered.length
         ? hasValidationResult()
@@ -2889,7 +3014,8 @@ export async function drillParetoPoint(rowIdRaw: unknown): Promise<boolean> {
   const res = asRecord(run.res);
   if (!Object.keys(res).length) return false;
   const rows = collectTopRows(res, { allowBestFallback: true }).slice(0, 512);
-  const row = rows.find((candidate) => topRowIdFor(candidate) === rowId) ?? null;
+  const row =
+    rows.find((candidate) => topRowIdFor(candidate) === rowId) ?? null;
   if (!row) return false;
   const pinia = resolveRuntimePinia();
   if (pinia) {
@@ -2899,8 +3025,9 @@ export async function drillParetoPoint(rowIdRaw: unknown): Promise<boolean> {
   return true;
 }
 
-function heatmapModeOf(store: AnalysisStoreState | null | undefined):
-  HeatmapMode {
+function heatmapModeOf(
+  store: AnalysisStoreState | null | undefined,
+): HeatmapMode {
   return heatmapModeFromValue(store?.heatmapMode);
 }
 
@@ -2936,7 +3063,10 @@ function resolveHeatmapDisplay(
     mode,
     objectiveLabel: scoreLabelOf(req),
     model,
-    higherIsBetter: modelHeatmapHigherIsBetter(objectiveOf(req), !!scoreModeOf(req)),
+    higherIsBetter: modelHeatmapHigherIsBetter(
+      objectiveOf(req),
+      !!scoreModeOf(req),
+    ),
   });
 }
 
@@ -3098,7 +3228,9 @@ function heatmapBaseSignature(
   });
 }
 
-function buildHeatmapCanvasRequest(req: Record<string, unknown>): HeatmapCanvasRequestModel {
+function buildHeatmapCanvasRequest(
+  req: Record<string, unknown>,
+): HeatmapCanvasRequestModel {
   return {
     fastMaType:
       text(
@@ -3192,7 +3324,14 @@ function setHeatmapCanvasModel(
     display.multiSampleCellCount,
   );
   const state: HeatmapCanvasRenderModel = {
-    signature: heatmapBaseSignature(readWorkflowRun(), req, res, model, mode, store),
+    signature: heatmapBaseSignature(
+      readWorkflowRun(),
+      req,
+      res,
+      model,
+      mode,
+      store,
+    ),
     meta,
     statusLine,
     model,
@@ -3242,7 +3381,13 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
   }
   const colorOptions =
     mode === "plateau"
-      ? [{ value: "derived_plateau", label: "Plateau sequential", disabled: false }]
+      ? [
+          {
+            value: "derived_plateau",
+            label: "Plateau sequential",
+            disabled: false,
+          },
+        ]
       : [
           {
             value: "diverging_zero",
@@ -3252,7 +3397,13 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
         ];
   const rangeOptions =
     mode === "plateau"
-      ? [{ value: "plateau_score", label: "Plateau score (0-1)", disabled: false }]
+      ? [
+          {
+            value: "plateau_score",
+            label: "Plateau score (0-1)",
+            disabled: false,
+          },
+        ]
       : [{ value: "zero_centered", label: "Zero-centered", disabled: false }];
   const showTopOptions = [
     { value: "true", label: "Show markers", disabled: false },
@@ -3404,6 +3555,15 @@ export function invalidateAnalysisExecutionCaches(): void {
   heatmapRenderState = null;
   topRowsModelCache = [];
   topRowsAllModelCache = [];
+  topRowsAllModelCacheValid = false;
+  topRowsAllModelCacheReq = null;
+  topRowsAllModelCacheRes = null;
+  topRowsAllModelCacheSortKey = "";
+  topRowsAllModelCacheSortDir = "desc";
+  topRowsAllModelCacheTopK = 0;
+  topRowsAllModelCacheObjective = "";
+  topRowsAllModelCacheScoreMode = "";
+  topRowsAllModelCacheScoreContextKey = "";
   drillSeq = (drillSeq + 1) >>> 0;
   const store = readAnalysisStore();
   if (store) {
@@ -3413,15 +3573,21 @@ export function invalidateAnalysisExecutionCaches(): void {
   registeredDrillChartController?.clearTradeSelection();
 }
 
-export function registerDrillChartController(controller: DrillChartController | null): void {
+export function registerDrillChartController(
+  controller: DrillChartController | null,
+): void {
   registeredDrillChartController = controller;
 }
 
-export function registerHeatmapCanvasController(controller: HeatmapCanvasController | null): void {
+export function registerHeatmapCanvasController(
+  controller: HeatmapCanvasController | null,
+): void {
   registeredHeatmapCanvasController = controller;
 }
 
-export function runHeatmapRepresentativeCandidateDetail(params: HeatmapCellParams): void {
+export function runHeatmapRepresentativeCandidateDetail(
+  params: HeatmapCellParams,
+): void {
   const pinia = resolveRuntimePinia();
   if (pinia) {
     useWorkflowStore(pinia).selectResultsTab("drill");
@@ -3511,9 +3677,11 @@ async function resolveBaselineSelection(
         current.route_provenance ?? current.routeProvenance,
       ),
       lineage: parseArtifactLineage(current.lineage),
-      optimizationMetricSurface: asRecord(
-        current.optimization_metric_surface ?? current.optimizationMetricSurface,
-      ) || null,
+      optimizationMetricSurface:
+        asRecord(
+          current.optimization_metric_surface ??
+            current.optimizationMetricSurface,
+        ) || null,
       req: currentReq,
       res: currentRes,
     };
@@ -3562,9 +3730,10 @@ function workflowRunToComparisonTarget(
     hasValidation: hasValidationResult(),
     configFingerprint: text(run.config_fingerprint ?? run.configFingerprint),
     datasetMeta: asRecord(run.dataset_meta ?? run.datasetMeta),
-    optimizationMetricSurface: asRecord(
-      run.optimization_metric_surface ?? run.optimizationMetricSurface,
-    ) || null,
+    optimizationMetricSurface:
+      asRecord(
+        run.optimization_metric_surface ?? run.optimizationMetricSurface,
+      ) || null,
     routeProvenance: parseRouteProvenance(
       run.route_provenance ?? run.routeProvenance,
     ),
@@ -3687,7 +3856,9 @@ function drillWrap(): HTMLElement | null {
 }
 
 function selectDrillTradeByIndex(tradeIdxRaw: unknown): boolean {
-  return registeredDrillChartController?.selectTradeByIndex(tradeIdxRaw) ?? false;
+  return (
+    registeredDrillChartController?.selectTradeByIndex(tradeIdxRaw) ?? false
+  );
 }
 
 function renderStabilityFilterChecklist(
@@ -4024,7 +4195,11 @@ function restoreDrillViewFromCache(
   }
 
   drillSeq = (drillSeq + 1) >>> 0;
-  publishDrillChartModels(store, drillRenderState.curves, drillRenderState.bars);
+  publishDrillChartModels(
+    store,
+    drillRenderState.curves,
+    drillRenderState.bars,
+  );
   const rendered = renderDrillDomFallback(
     drillRenderState.curves,
     drillRenderState.params,
@@ -4110,7 +4285,12 @@ export async function selectTopRow(index: number): Promise<void> {
   store.topTableRows = rows;
   const run = readWorkflowRun();
   if (run) {
-    syncTopSelectionState(store, topRowsModelCache, asRecord(run.req), asRecord(run.res));
+    syncTopSelectionState(
+      store,
+      topRowsModelCache,
+      asRecord(run.req),
+      asRecord(run.res),
+    );
   }
   const model = resolveTopRowModelAtIndex(store, bounded);
   store.topSelectionGuardrail = "—";
@@ -4176,7 +4356,10 @@ export async function replacePinnedTopCandidate(idRaw: unknown): Promise<void> {
   if (!targetId) return;
   const selectedIndex = readTopRows(store).findIndex((row) => !!row?.selected);
   if (selectedIndex < 0) {
-    setStatus(store, "Select a ranked candidate before replacing a compare slot.");
+    setStatus(
+      store,
+      "Select a ranked candidate before replacing a compare slot.",
+    );
     return;
   }
   const run = readWorkflowRun();
@@ -4198,7 +4381,9 @@ export async function replacePinnedTopCandidate(idRaw: unknown): Promise<void> {
     (Array.isArray(store.pinnedTopCandidates)
       ? (store.pinnedTopCandidates as TopPinnedCandidate[])
       : []
-    ).map((entry) => (text(entry.id) === targetId ? markRawEntity(candidate) : entry)),
+    ).map((entry) =>
+      text(entry.id) === targetId ? markRawEntity(candidate) : entry,
+    ),
   );
   syncPinnedTopCandidates(store, rows, rows, req);
   setStatus(store, `Replaced compare slot with candidate #${candidate.rank}.`);
@@ -4229,7 +4414,11 @@ export async function unpinTopCandidate(idRaw: unknown): Promise<void> {
 export async function clearPinnedTopCandidates(): Promise<void> {
   const store = readAnalysisStore();
   if (!store) return;
-  if (!Array.isArray(store.pinnedTopCandidates) || store.pinnedTopCandidates.length === 0) return;
+  if (
+    !Array.isArray(store.pinnedTopCandidates) ||
+    store.pinnedTopCandidates.length === 0
+  )
+    return;
   store.pinnedTopCandidates = markRawEntity([]);
   store.topStaleCues = markRawEntity([]);
   setStatus(store, "Cleared pinned candidates.");
@@ -4416,7 +4605,10 @@ export async function refreshCompareSummary(): Promise<void> {
       markAnalysisVue(store);
       return;
     }
-    store.compareSummary = buildRunCompareSummary(currentTarget, baselineTarget);
+    store.compareSummary = buildRunCompareSummary(
+      currentTarget,
+      baselineTarget,
+    );
     markAnalysisVue(store);
   } catch (error) {
     if (seq !== compareSeq) return;

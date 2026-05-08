@@ -2884,8 +2884,10 @@ fn build_exact_extra_shortlist_rows_with_telemetry(
     let mut total_head_picks = 0usize;
     let head_count = objectives.len();
     for head_objective in objectives {
-        let mut ranked = rows.to_vec();
-        ranked.sort_by(|a, b| {
+        let mut ranked: Vec<usize> = (0..rows.len()).collect();
+        let compare = |&a_idx: &usize, &b_idx: &usize| {
+            let a = &rows[a_idx];
+            let b = &rows[b_idx];
             let sa = objective_score(&a.1, head_objective);
             let sb = objective_score(&b.1, head_objective);
             sb.total_cmp(&sa).then_with(|| {
@@ -2896,8 +2898,14 @@ fn build_exact_extra_shortlist_rows_with_telemetry(
                     b.0.slow_ma_id,
                 ))
             })
-        });
-        for (params, metrics) in ranked.into_iter().take(top_k) {
+        };
+        if top_k < ranked.len() {
+            ranked.select_nth_unstable_by(top_k, compare);
+            ranked.truncate(top_k);
+        }
+        ranked.sort_by(compare);
+        for idx in ranked {
+            let (params, metrics) = rows[idx].clone();
             total_head_picks = total_head_picks.saturating_add(1);
             let key = (
                 params.fast_len,

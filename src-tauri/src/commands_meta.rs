@@ -595,14 +595,21 @@ fn cohort_dataset_key(artifact: &Value) -> Option<String> {
     let timeframe = value_string_at(artifact, &["/dataset_meta/timeframe", "/run/req/timeframe"])
         .map(|tf| normalize_timeframe_label(&tf))
         .unwrap_or_default();
-    let path_key = csv_path
-        .trim()
-        .replace('\\', "/")
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("/")
-        .to_ascii_lowercase();
+    let mut path_key = String::with_capacity(csv_path.len());
+    let mut needs_separator = false;
+    for part in csv_path.trim().split(['/', '\\']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if needs_separator {
+            path_key.push('/');
+        }
+        for ch in part.chars() {
+            path_key.push(ch.to_ascii_lowercase());
+        }
+        needs_separator = true;
+    }
     Some(format!("path:{}|tf:{}", path_key, timeframe))
 }
 
@@ -2612,7 +2619,7 @@ pub(super) fn run_meta_selection_blocking(
         }
         paths.push(path);
     }
-    paths.sort();
+    paths.sort_unstable();
 
     let sink = TauriProgressSink { app: app.clone() };
     let mut train_artifacts_with_paths: Vec<(PathBuf, Value)> = Vec::with_capacity(paths.len());
@@ -2843,9 +2850,10 @@ pub(super) fn run_meta_selection_blocking(
                 }
 
                 if explore_n > 0 {
+                    let selected_set: HashSet<usize> = selected.iter().copied().collect();
                     let mut rem: Vec<(usize, f64)> = scored
                         .iter()
-                        .filter(|(i, _)| !selected.contains(i))
+                        .filter(|(i, _)| !selected_set.contains(i))
                         .map(|(i, p)| (*i, (p - 0.5).abs()))
                         .collect();
                     rem.sort_by(|a, b| a.1.total_cmp(&b.1));

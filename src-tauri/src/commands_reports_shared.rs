@@ -43,7 +43,8 @@ pub(crate) fn sanitize_filename_component(raw: &str) -> String {
     if out.is_empty() {
         "unknown".to_string()
     } else {
-        out.chars().take(96).collect()
+        out.truncate(96);
+        out
     }
 }
 

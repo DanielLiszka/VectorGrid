@@ -23,7 +23,7 @@ const emit = defineEmits<{
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const selectedIndex = ref(0)
-const plottedPoints = ref<Array<{ x: number; y: number; point: ParetoRenderPoint }>>([])
+let plottedPoints: Array<{ x: number; y: number; point: ParetoRenderPoint }> = []
 let resizeObserver: ResizeObserver | null = null
 
 const hasPoints = computed(() => (props.model?.points.length ?? 0) > 0)
@@ -47,7 +47,7 @@ function drawPareto(): void {
   const canvas = canvasRef.value
   const model = props.model
   if (!canvas || !model || !model.points.length) {
-    plottedPoints.value = []
+    plottedPoints = []
     return
   }
 
@@ -61,7 +61,7 @@ function drawPareto(): void {
 
   const ctx = canvas.getContext('2d')
   if (!ctx) {
-    plottedPoints.value = []
+    plottedPoints = []
     return
   }
 
@@ -116,7 +116,7 @@ function drawPareto(): void {
     y: toY(point.y),
     point,
   }))
-  plottedPoints.value = plotted
+  plottedPoints = plotted
 
   const selected = selectedPoint.value
   for (const plottedPoint of plotted) {
@@ -146,7 +146,7 @@ function activatePoint(point: ParetoRenderPoint | null): void {
 
 function onCanvasClick(event: MouseEvent): void {
   const canvas = canvasRef.value
-  if (!canvas || !plottedPoints.value.length) return
+  if (!canvas || !plottedPoints.length) return
   const rect = canvas.getBoundingClientRect()
   if (!rect.width || !rect.height) return
   const px = event.clientX - rect.left
@@ -154,7 +154,7 @@ function onCanvasClick(event: MouseEvent): void {
   let bestPoint: ParetoRenderPoint | null = null
   let bestIndex = -1
   let bestDist = Number.POSITIVE_INFINITY
-  plottedPoints.value.forEach((plot, index) => {
+  plottedPoints.forEach((plot, index) => {
     const dx = plot.x - px
     const dy = plot.y - py
     const dist = Math.sqrt(dx * dx + dy * dy)

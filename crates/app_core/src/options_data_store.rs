@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use csv::{ReaderBuilder, StringRecord};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -488,14 +488,14 @@ pub fn load_imported_options_dataset_from_csv(
             *end = row.row.timestamp_ms;
         }
         row_count += 1;
-        if let Some(series) = grouped.get_mut(&row.contract_id) {
-            ensure_series_metadata_matches(series, &row)?;
-            series.rows.push(row.row.clone());
-        } else {
-            grouped.insert(
-                row.contract_id.clone(),
-                OptionsContractSeries {
-                    root_symbol: row.root_symbol.clone(),
+        match grouped.entry(row.contract_id.clone()) {
+            Entry::Occupied(mut entry) => {
+                ensure_series_metadata_matches(entry.get(), &row)?;
+                entry.get_mut().rows.push(row.row);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(OptionsContractSeries {
+                    root_symbol: row.root_symbol,
                     contract_id: row.contract_id,
                     option_type: row.option_type,
                     expiration_date: row.expiration_date,
@@ -503,8 +503,8 @@ pub fn load_imported_options_dataset_from_csv(
                     strike: row.strike,
                     multiplier: row.multiplier,
                     rows: vec![row.row],
-                },
-            );
+                });
+            }
         }
     }
 

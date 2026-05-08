@@ -1037,31 +1037,45 @@ fn build_price_data_meta(
     }
 }
 
-fn descendant_ids_locked(map: &HashMap<String, DatasetEntry>, root_id: &str) -> Vec<String> {
-    fn visit(
-        map: &HashMap<String, DatasetEntry>,
+type ChildDatasetIndex<'a> = HashMap<&'a str, Vec<&'a str>>;
+
+fn child_dataset_index_locked(map: &HashMap<String, DatasetEntry>) -> ChildDatasetIndex<'_> {
+    let mut children: ChildDatasetIndex<'_> = HashMap::new();
+    for (id, entry) in map {
+        if let Some(parent_id) = entry.version_meta.kind.parent_data_id() {
+            children.entry(parent_id).or_default().push(id.as_str());
+        }
+    }
+    children
+}
+
+fn descendant_ids_from_index(index: &ChildDatasetIndex<'_>, root_id: &str) -> Vec<String> {
+    fn visit<'a>(
+        index: &ChildDatasetIndex<'a>,
         root_id: &str,
-        seen: &mut HashSet<String>,
+        seen: &mut HashSet<&'a str>,
         out: &mut Vec<String>,
     ) {
-        let children: Vec<String> = map
-            .iter()
-            .filter_map(|(id, entry)| {
-                (entry.version_meta.kind.parent_data_id() == Some(root_id)).then(|| id.clone())
-            })
-            .collect();
-        for child_id in children {
-            if seen.insert(child_id.clone()) {
-                out.push(child_id.clone());
-                visit(map, &child_id, seen, out);
+        let Some(children) = index.get(root_id) else {
+            return;
+        };
+        for child_id in children.iter().copied() {
+            if seen.insert(child_id) {
+                out.push(child_id.to_string());
+                visit(index, child_id, seen, out);
             }
         }
     }
 
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    visit(map, root_id, &mut seen, &mut out);
+    visit(index, root_id, &mut seen, &mut out);
     out
+}
+
+fn descendant_ids_locked(map: &HashMap<String, DatasetEntry>, root_id: &str) -> Vec<String> {
+    let index = child_dataset_index_locked(map);
+    descendant_ids_from_index(&index, root_id)
 }
 
 fn remove_dataset_tree_locked(
@@ -1116,13 +1130,14 @@ fn retention_candidates_locked(
     kind: DatasetRetentionKind,
     protect_ids: &HashSet<String>,
 ) -> Vec<DatasetRetentionCandidate> {
+    let child_index = child_dataset_index_locked(map);
     map.iter()
         .filter_map(|(id, entry)| {
             (entry.version_meta.kind.retention_kind() == kind && !protect_ids.contains(id)).then(
                 || {
                     let strong_count = Arc::strong_count(&entry.candles);
                     let arc_shared = strong_count > 1;
-                    let descendant_count = descendant_ids_locked(map, id).len();
+                    let descendant_count = descendant_ids_from_index(&child_index, id).len();
                     let subtree_size = descendant_count.saturating_add(1);
                     let sharing_state = if arc_shared {
                         "arc_shared"

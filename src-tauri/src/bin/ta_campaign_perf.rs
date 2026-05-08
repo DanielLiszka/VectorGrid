@@ -1,7 +1,8 @@
 use clap::{Parser, ValueEnum};
 use serde::Serialize;
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
@@ -503,10 +504,10 @@ fn load_dataset_routes(
             let Some(path) = item.artifact_path.as_ref() else {
                 return route;
             };
-            let Ok(bytes) = fs::read_to_string(path) else {
+            let Ok(file) = File::open(path) else {
                 return route;
             };
-            let Ok(value) = serde_json::from_str::<Value>(&bytes) else {
+            let Ok(value) = serde_json::from_reader::<_, Value>(BufReader::new(file)) else {
                 return route;
             };
             let optimize = value.get("run").and_then(|run| run.get("res"));
@@ -554,45 +555,47 @@ fn measured_mean_option(
     (count > 0).then_some(total / count as f64)
 }
 
-fn mean_option_values(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
-    let mut total = 0.0;
-    let mut count = 0usize;
-    for value in values.flatten() {
-        total += value;
-        count += 1;
-    }
-    (count > 0).then_some(total / count as f64)
-}
-
 fn summarize_prefetch_economics(trials: &[TrialArtifact]) -> PrefetchEconomicsSummary {
-    let routes: Vec<&DatasetRouteArtifact> = trials
-        .iter()
-        .flat_map(|trial| trial.dataset_routes.iter())
-        .collect();
-    let attempted = routes
-        .iter()
-        .filter(|route| route.vram_prefetch_attempted == Some(true))
-        .count();
-    let staged = routes
-        .iter()
-        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("staged"))
-        .count();
-    let already_resident = routes
-        .iter()
-        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("already_resident"))
-        .count();
-    let warnings = routes
-        .iter()
-        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("warning"))
-        .count();
-    let fatals = routes
-        .iter()
-        .filter(|route| route.vram_prefetch_outcome.as_deref() == Some("fatal"))
-        .count();
-    let successful = routes
-        .iter()
-        .filter(|route| route.vram_prefetch_success == Some(true))
-        .count();
+    let mut attempted = 0usize;
+    let mut staged = 0usize;
+    let mut already_resident = 0usize;
+    let mut warnings = 0usize;
+    let mut fatals = 0usize;
+    let mut successful = 0usize;
+    let mut wall_total = 0.0;
+    let mut wall_count = 0usize;
+    let mut optimize_frac_total = 0.0;
+    let mut optimize_frac_count = 0usize;
+    let mut prepare_wait_frac_total = 0.0;
+    let mut prepare_wait_frac_count = 0usize;
+
+    for route in trials.iter().flat_map(|trial| trial.dataset_routes.iter()) {
+        if route.vram_prefetch_attempted == Some(true) {
+            attempted = attempted.saturating_add(1);
+        }
+        match route.vram_prefetch_outcome.as_deref() {
+            Some("staged") => staged = staged.saturating_add(1),
+            Some("already_resident") => already_resident = already_resident.saturating_add(1),
+            Some("warning") => warnings = warnings.saturating_add(1),
+            Some("fatal") => fatals = fatals.saturating_add(1),
+            _ => {}
+        }
+        if route.vram_prefetch_success == Some(true) {
+            successful = successful.saturating_add(1);
+        }
+        if let Some(value) = route.vram_prefetch_wall_ms {
+            wall_total += value;
+            wall_count = wall_count.saturating_add(1);
+        }
+        if let Some(value) = route.vram_prefetch_stage_cost_vs_optimize_frac {
+            optimize_frac_total += value;
+            optimize_frac_count = optimize_frac_count.saturating_add(1);
+        }
+        if let Some(value) = route.vram_prefetch_stage_cost_vs_prepare_wait_frac {
+            prepare_wait_frac_total += value;
+            prepare_wait_frac_count = prepare_wait_frac_count.saturating_add(1);
+        }
+    }
 
     PrefetchEconomicsSummary {
         mode_note:
@@ -604,17 +607,11 @@ fn summarize_prefetch_economics(trials: &[TrialArtifact]) -> PrefetchEconomicsSu
         warnings,
         fatals,
         successful,
-        mean_wall_ms: mean_option_values(routes.iter().map(|route| route.vram_prefetch_wall_ms)),
-        mean_stage_cost_vs_optimize_frac: mean_option_values(
-            routes
-                .iter()
-                .map(|route| route.vram_prefetch_stage_cost_vs_optimize_frac),
-        ),
-        mean_stage_cost_vs_prepare_wait_frac: mean_option_values(
-            routes
-                .iter()
-                .map(|route| route.vram_prefetch_stage_cost_vs_prepare_wait_frac),
-        ),
+        mean_wall_ms: (wall_count > 0).then_some(wall_total / wall_count as f64),
+        mean_stage_cost_vs_optimize_frac: (optimize_frac_count > 0)
+            .then_some(optimize_frac_total / optimize_frac_count as f64),
+        mean_stage_cost_vs_prepare_wait_frac: (prepare_wait_frac_count > 0)
+            .then_some(prepare_wait_frac_total / prepare_wait_frac_count as f64),
     }
 }
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { isReactive } from "vue";
 import { useOptionsExpressionStore } from "./optionsExpressionStore";
 
 const {
@@ -572,6 +573,8 @@ describe("optionsExpressionStore", () => {
     expect(store.latestRun?.artifactPath).toBe(
       "C:/runs/vectorgrid_options_expression_1.json",
     );
+    expect(isReactive(store.latestRun)).toBe(false);
+    expect(isReactive(store.latestRun?.rankedResults)).toBe(false);
     expect(store.activeStaging?.compiledCandidateCount).toBe(9);
     expect(store.activeBackendFallbackReason).toBe(
       "GPU planner probe failed; using CPU.",
@@ -1040,6 +1043,8 @@ describe("optionsExpressionStore", () => {
     await store.loadArtifact("C:/runs/vectorgrid_options_expression_1.json");
 
     expect(store.activeArtifact?.parentArtifactId).toBe("vectorgrid_run_1");
+    expect(isReactive(store.activeArtifact)).toBe(false);
+    expect(isReactive(store.activeArtifact?.selectionMetrics)).toBe(false);
     expect(store.objectiveProfile).toBe("balanced");
     expect(store.activeBackendFallbackReason).toBe(
       "GPU planner probe failed; using CPU.",

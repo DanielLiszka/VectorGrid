@@ -1395,7 +1395,6 @@ struct MlSignalFeatureEmissionState<'a> {
     log_return_sq_prefix: Vec<f64>,
     pattern_prefix: Vec<Vec<usize>>,
     last_seen: Vec<Option<usize>>,
-    feature_count: usize,
 }
 
 impl<'a> MlSignalFeatureEmissionState<'a> {
@@ -1427,11 +1426,16 @@ impl<'a> MlSignalFeatureEmissionState<'a> {
             log_return_sq_prefix,
             pattern_prefix,
             last_seen,
-            feature_count: feature_names_for_schema(&frame.pattern_ids).len(),
         }
     }
 
-    fn emit_feature_values(&mut self, candles: &Candles, t: usize) -> Result<Vec<f64>, String> {
+    fn emit_feature_values_into(
+        &mut self,
+        candles: &Candles,
+        t: usize,
+        values: &mut Vec<f64>,
+    ) -> Result<(), String> {
+        values.clear();
         let h = self.horizon_bars;
         let prev_close = candles.close[t.saturating_sub(1)];
         let open = candles.open[t];
@@ -1528,7 +1532,6 @@ impl<'a> MlSignalFeatureEmissionState<'a> {
             0.0
         };
 
-        let mut values = Vec::with_capacity(self.feature_count);
         values.extend([
             body_pct,
             abs_body_frac,
@@ -1574,7 +1577,7 @@ impl<'a> MlSignalFeatureEmissionState<'a> {
             realized_vol_3h,
             atr_h_over_close,
         ]);
-        Ok(values)
+        Ok(())
     }
 }
 
@@ -1655,12 +1658,13 @@ fn build_ml_signal_inference_feature_rows(
         .map(|_| Vec::with_capacity(row_count))
         .collect();
     let mut emitter = MlSignalFeatureEmissionState::new(candles, &frame, h);
+    let mut feature_values = Vec::with_capacity(schema.feature_names.len());
 
     for t in frame.first_valid_bar..=last_label_bar {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
-        let feature_values = emitter.emit_feature_values(candles, t)?;
+        emitter.emit_feature_values_into(candles, t, &mut feature_values)?;
 
         candle_indices.push(t);
         timestamps.push(candles.timestamp[t]);
@@ -1671,8 +1675,15 @@ fn build_ml_signal_inference_feature_rows(
                 float_features_transposed.len()
             ));
         }
-        for (column, value) in float_features_transposed.iter_mut().zip(feature_values) {
-            column.push(if value.is_finite() { value as f32 } else { 0.0 });
+        for (column, value) in float_features_transposed
+            .iter_mut()
+            .zip(feature_values.iter())
+        {
+            column.push(if value.is_finite() {
+                *value as f32
+            } else {
+                0.0
+            });
         }
     }
 
@@ -3060,11 +3071,13 @@ pub fn export_ml_signal_dataset_with_candles(
 
         let mut row_count = 0usize;
         let mut record: Vec<String> = Vec::with_capacity(4 + feature_names.len() + 6);
+        let mut feature_values = Vec::with_capacity(feature_names.len());
+        let mut split_cursor = 0usize;
         for t in frame.first_valid_bar..=last_label_bar {
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".to_string());
             }
-            let feature_values = emitter.emit_feature_values(candles, t)?;
+            emitter.emit_feature_values_into(candles, t, &mut feature_values)?;
             if feature_values.len() != feature_names.len() {
                 return Err(format!(
                     "feature frame emitted {} columns but schema expects {}",
@@ -3092,11 +3105,18 @@ pub fn export_ml_signal_dataset_with_candles(
             let keep_long = !((0.0..=deadband).contains(&r_long));
             let keep_short = !((0.0..=deadband).contains(&r_short));
 
-            let split_id = split_windows
-                .iter()
-                .find(|window| t >= window.train_start && t < window.test_end)
-                .map(|window| window.split_id.clone())
-                .unwrap_or_default();
+            while split_cursor < split_windows.len() && t >= split_windows[split_cursor].test_end {
+                split_cursor += 1;
+            }
+            let split_id = if let Some(window) = split_windows.get(split_cursor) {
+                if t >= window.train_start && t < window.test_end {
+                    window.split_id.clone()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
 
             record.clear();
             record.push(candles.timestamp[t].to_string());
@@ -3853,18 +3873,19 @@ fn filter_inference_rows_by_candle_indices(
         return Err("score-scope filter length does not match inference rows".to_string());
     }
     let selected_count = keep.iter().filter(|value| **value).count();
-    let candle_indices = rows
+    let mut candle_indices = Vec::with_capacity(selected_count);
+    let mut timestamps = Vec::with_capacity(selected_count);
+    for ((candle_index, timestamp), keep) in rows
         .candle_indices
         .iter()
+        .zip(rows.timestamps.iter())
         .zip(keep.iter())
-        .filter_map(|(value, keep)| keep.then_some(*value))
-        .collect();
-    let timestamps = rows
-        .timestamps
-        .iter()
-        .zip(keep.iter())
-        .filter_map(|(value, keep)| keep.then_some(*value))
-        .collect();
+    {
+        if *keep {
+            candle_indices.push(*candle_index);
+            timestamps.push(*timestamp);
+        }
+    }
     let mut float_features_transposed = Vec::with_capacity(rows.float_features_transposed.len());
     for column in rows.float_features_transposed {
         if column.len() != keep.len() {
@@ -3887,6 +3908,47 @@ fn filter_inference_rows_by_candle_indices(
     })
 }
 
+fn score_scope_keep_mask_for_intervals(
+    candle_indices: &[usize],
+    mut intervals: Vec<(usize, usize)>,
+) -> Vec<bool> {
+    if intervals.is_empty() {
+        return vec![false; candle_indices.len()];
+    }
+    intervals.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut interval_idx = 0usize;
+    let mut keep = Vec::with_capacity(candle_indices.len());
+    for &idx in candle_indices {
+        while interval_idx < intervals.len() && idx >= intervals[interval_idx].1 {
+            interval_idx += 1;
+        }
+        let in_scope = intervals
+            .get(interval_idx)
+            .is_some_and(|(start, end)| idx >= *start && idx < *end);
+        keep.push(in_scope);
+    }
+    keep
+}
+
+fn walkforward_test_intervals(split_windows: &[MlSignalSplitWindow]) -> Vec<(usize, usize)> {
+    split_windows
+        .iter()
+        .filter_map(|window| {
+            (window.test_end > window.test_start).then_some((window.test_start, window.test_end))
+        })
+        .collect()
+}
+
+fn calibration_intervals(split_windows: &[MlSignalSplitWindow]) -> Vec<(usize, usize)> {
+    split_windows
+        .iter()
+        .filter_map(|window| {
+            (window.calibration_end > window.calibration_start)
+                .then_some((window.calibration_start, window.calibration_end))
+        })
+        .collect()
+}
+
 fn restrict_inference_rows_to_score_scope(
     rows: MlSignalInferenceFeatureRows,
     scope: MlSignalScoreScope,
@@ -3907,15 +3969,7 @@ fn restrict_inference_rows_to_score_scope(
                         .to_string(),
                 );
             }
-            let keep: Vec<bool> = rows
-                .candle_indices
-                .iter()
-                .map(|idx| {
-                    intervals
-                        .iter()
-                        .any(|(start, end)| *idx >= *start && *idx < *end)
-                })
-                .collect();
+            let keep = score_scope_keep_mask_for_intervals(&rows.candle_indices, intervals);
             filter_inference_rows_by_candle_indices(rows, &keep)
         }
         MlSignalScoreScope::CalibrationSlice => {
@@ -3925,29 +3979,14 @@ fn restrict_inference_rows_to_score_scope(
                         .to_string(),
                 );
             };
-            let intervals: Vec<(usize, usize)> = split_manifest
-                .windows
-                .iter()
-                .filter_map(|window| {
-                    (window.calibration_end > window.calibration_start)
-                        .then_some((window.calibration_start, window.calibration_end))
-                })
-                .collect();
+            let intervals = calibration_intervals(&split_manifest.windows);
             if intervals.is_empty() {
                 return Err(
                     "calibration_slice native score-cache generation found no calibration intervals"
                         .to_string(),
                 );
             }
-            let keep: Vec<bool> = rows
-                .candle_indices
-                .iter()
-                .map(|idx| {
-                    intervals
-                        .iter()
-                        .any(|(start, end)| *idx >= *start && *idx < *end)
-                })
-                .collect();
+            let keep = score_scope_keep_mask_for_intervals(&rows.candle_indices, intervals);
             filter_inference_rows_by_candle_indices(rows, &keep)
         }
         MlSignalScoreScope::FullDataset | MlSignalScoreScope::CustomPartial => Ok(rows),
@@ -4640,24 +4679,10 @@ fn lower_bound_effective_score_observations(
     }
 }
 
-fn walkforward_test_intervals(split_windows: &[MlSignalSplitWindow]) -> Vec<(usize, usize)> {
-    split_windows
-        .iter()
-        .filter_map(|window| {
-            (window.test_end > window.test_start).then_some((window.test_start, window.test_end))
-        })
-        .collect()
-}
-
-fn merged_interval_len(intervals: &[(usize, usize)]) -> usize {
-    if intervals.is_empty() {
-        return 0;
-    }
-    let mut sorted = intervals.to_vec();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+fn merged_interval_len_from_sorted_by_start(sorted: &[(usize, usize)]) -> usize {
     let mut total = 0usize;
     let mut current = sorted[0];
-    for interval in sorted.into_iter().skip(1) {
+    for &interval in sorted.iter().skip(1) {
         if interval.0 <= current.1 {
             current.1 = current.1.max(interval.1);
         } else {
@@ -4668,16 +4693,11 @@ fn merged_interval_len(intervals: &[(usize, usize)]) -> usize {
     total.saturating_add(current.1.saturating_sub(current.0))
 }
 
-fn max_pairwise_disjoint_interval_count(intervals: &[(usize, usize)]) -> usize {
-    if intervals.is_empty() {
-        return 0;
-    }
-    let mut sorted = intervals.to_vec();
-    sorted.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+fn max_pairwise_disjoint_interval_count_from_sorted_by_end(sorted: &[(usize, usize)]) -> usize {
     let mut count = 0usize;
     let mut last_end = 0usize;
     let mut has_last = false;
-    for (start, end) in sorted {
+    for &(start, end) in sorted {
         if !has_last || start >= last_end {
             count = count.saturating_add(1);
             last_end = end;
@@ -4687,11 +4707,27 @@ fn max_pairwise_disjoint_interval_count(intervals: &[(usize, usize)]) -> usize {
     count
 }
 
+fn summarize_walkforward_test_intervals(
+    split_windows: &[MlSignalSplitWindow],
+) -> Option<(usize, usize, usize)> {
+    let mut intervals = walkforward_test_intervals(split_windows);
+    if intervals.is_empty() {
+        return None;
+    }
+    let raw_windows = intervals.len();
+    intervals.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let effective_windows_upper_bound =
+        max_pairwise_disjoint_interval_count_from_sorted_by_end(&intervals);
+    intervals.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let bars_covered = merged_interval_len_from_sorted_by_start(&intervals);
+    Some((raw_windows, effective_windows_upper_bound, bars_covered))
+}
+
 fn summarize_ml_signal_dependence(
     raw_score_observations: usize,
     overlap_metadata: &MlSignalOverlapMetadata,
 ) -> MlSignalDependenceSummary {
-    let intervals = walkforward_test_intervals(&overlap_metadata.split_windows);
+    let interval_summary = summarize_walkforward_test_intervals(&overlap_metadata.split_windows);
     MlSignalDependenceSummary {
         raw_score_observations,
         effective_score_observations_lower_bound: lower_bound_effective_score_observations(
@@ -4699,11 +4735,9 @@ fn summarize_ml_signal_dependence(
             overlap_metadata.label_horizon_bars,
         ),
         label_horizon_bars: overlap_metadata.label_horizon_bars,
-        raw_walkforward_test_windows: (!intervals.is_empty()).then_some(intervals.len()),
-        effective_walkforward_test_windows_upper_bound: (!intervals.is_empty())
-            .then(|| max_pairwise_disjoint_interval_count(&intervals)),
-        walkforward_test_bars_covered: (!intervals.is_empty())
-            .then(|| merged_interval_len(&intervals)),
+        raw_walkforward_test_windows: interval_summary.map(|summary| summary.0),
+        effective_walkforward_test_windows_upper_bound: interval_summary.map(|summary| summary.1),
+        walkforward_test_bars_covered: interval_summary.map(|summary| summary.2),
     }
 }
 
